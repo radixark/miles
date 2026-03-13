@@ -36,6 +36,14 @@ class NodeAgentRegistry:
     def registered_node_ids(self) -> set[str]:
         return set(self._agents.keys())
 
+    def unregister(self, node_id: str) -> None:
+        self._agents.pop(node_id, None)
+        self._metadata.pop(node_id, None)
+
+    def clear(self) -> None:
+        self._agents.clear()
+        self._metadata.clear()
+
     def get_metadata(self, node_id: str) -> dict[str, str] | None:
         return self._metadata.get(node_id)
 

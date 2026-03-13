@@ -95,6 +95,7 @@ def _build_recovery_context(
         monitoring_config=spec.config.monitoring_config,
         is_main_job_restart=is_main_job,
         restart_lock=context.shared.restart_lock,
+        on_node_evicted=context.on_node_evicted,
     )
     return RecoveryContext(
         trigger=trigger,

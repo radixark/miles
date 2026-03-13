@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from pydantic import ConfigDict
@@ -40,3 +41,5 @@ class MainContext(FtBaseModel):
 
     # Node metadata (refreshed each tick from NodeAgentRegistry)
     node_metadata: dict[str, dict[str, str]]
+
+    on_node_evicted: Callable[[str], None] | None = None

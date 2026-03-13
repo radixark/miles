@@ -18,6 +18,7 @@ from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.types import (
     DiagnosticOrchestratorProtocol,
     MetricStore,
+    ScrapeTargetManagerProtocol,
     SharedDeps,
 )
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
@@ -45,6 +46,7 @@ class TickDeps:
     registration_grace_ticks: int
     training_rank_roster_box: Box[TrainingRankRoster | None]
     node_agent_registry: NodeAgentRegistry
+    scrape_target_manager: ScrapeTargetManagerProtocol
 
 
 class TickLoop:
@@ -130,6 +132,15 @@ class TickLoop:
         self._run_start_tick = self.tick_count
         deps.on_main_job_new_run(run_id)
 
+    @staticmethod
+    def _make_on_node_evicted(deps: TickDeps) -> Callable[[str], None]:
+        def _on_node_evicted(node_id: str) -> None:
+            deps.node_agent_registry.unregister(node_id)
+            deps.scrape_target_manager.remove_scrape_target(target_id=node_id)
+            logger.info("evicted_node_agent_cleanup node_id=%s", node_id)
+
+        return _on_node_evicted
+
     # ------------------------------------------------------------------
     # Context factory
     # ------------------------------------------------------------------
@@ -159,6 +170,7 @@ class TickLoop:
             run_start_tick=self._run_start_tick,
             job_status=job_status,
             node_metadata=deps.node_agent_registry.all_metadata,
+            on_node_evicted=self._make_on_node_evicted(deps),
         )
 
     # ------------------------------------------------------------------

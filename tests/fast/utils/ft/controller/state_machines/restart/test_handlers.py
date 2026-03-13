@@ -75,6 +75,7 @@ def _make_context(
     monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
     is_main_job_restart: bool = False,
     pending_timeout_seconds: int = 300,
+    on_node_evicted: object | None = None,
 ) -> RestartContext:
     resolved_main_job = main_job or FakeMainJob()
     return RestartContext(
@@ -91,6 +92,7 @@ def _make_context(
         monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
         is_main_job_restart=is_main_job_restart,
         pending_timeout_seconds=pending_timeout_seconds,
+        on_node_evicted=on_node_evicted,
     )
 
 
@@ -217,6 +219,38 @@ class TestEvicting:
         assert isinstance(result, StoppingAndRestartingSt)
         assert node_manager.is_node_bad("ray-uuid-abc")
         assert node_manager.last_node_metadata is None
+
+    @pytest.mark.asyncio
+    async def test_on_node_evicted_called_for_each_evicted_node(self) -> None:
+        """Previously, evicted nodes were never cleaned up from the node agent
+        registry and scrape target list, causing stale agents to accumulate."""
+        evicted: list[str] = []
+        stepper = _make_stepper()
+        ctx = _make_context(on_node_evicted=lambda nid: evicted.append(nid))
+
+        state = EvictingSt(bad_node_ids=["node-A", "node-B"])
+        result = await _step_last(stepper, state, ctx)
+
+        assert isinstance(result, StoppingAndRestartingSt)
+        assert evicted == ["node-A", "node-B"]
+
+    @pytest.mark.asyncio
+    async def test_on_node_evicted_not_called_on_mark_bad_failure(self) -> None:
+        """If mark_node_bad fails, the node should not be cleaned up from registry."""
+        evicted: list[str] = []
+        node_manager = FakeNodeManager()
+        node_manager.mark_node_bad = failing_mark_node_bad  # type: ignore[assignment]
+        stepper = _make_stepper()
+        ctx = _make_context(
+            node_manager=node_manager,
+            on_node_evicted=lambda nid: evicted.append(nid),
+        )
+
+        state = EvictingSt(bad_node_ids=["node-A"])
+        result = await _step_last(stepper, state, ctx)
+
+        assert isinstance(result, RestartFailedSt)
+        assert evicted == []
 
 
 # ---------------------------------------------------------------------------

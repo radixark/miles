@@ -95,3 +95,4 @@ class RestartContext(FtBaseModel):
     is_main_job_restart: bool
     pending_timeout_seconds: int = Field(default=300, ge=0)
     restart_lock: asyncio.Lock | None = None
+    on_node_evicted: Callable[[str], None] | None = None

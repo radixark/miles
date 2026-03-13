@@ -113,6 +113,11 @@ class FtController:
             sorted(node_metadata) if node_metadata else "(none)",
         )
 
+    def unregister_node_agent(self, node_id: str) -> None:
+        self._node_agent_registry.unregister(node_id)
+        self._scrape_target_manager.remove_scrape_target(target_id=node_id)
+        logger.info("agent_unregistered node_id=%s", node_id)
+
     async def submit_initial_job(self) -> str:
         run_id = await self._main_job.start()
         self._activate_run(run_id)
@@ -176,6 +181,7 @@ class FtController:
             registration_grace_ticks=self._runtime_config.registration_grace_ticks,
             training_rank_roster_box=self._training_rank_roster_box,
             node_agent_registry=self._node_agent_registry,
+            scrape_target_manager=self._scrape_target_manager,
         )
 
     async def _tick(self) -> None:

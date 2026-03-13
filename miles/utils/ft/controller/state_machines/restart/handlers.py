@@ -63,6 +63,8 @@ class EvictingHandler(StateHandler[EvictingSt, RestartContext]):
             )
             if not result.ok:
                 return RestartFailedSt(bad_node_ids=state.bad_node_ids)
+            if ctx.on_node_evicted is not None:
+                ctx.on_node_evicted(node_id)
 
         await safe_notify(
             ctx.notifier,

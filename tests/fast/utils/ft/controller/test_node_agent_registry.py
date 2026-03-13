@@ -106,6 +106,42 @@ class TestMetadata:
         }
 
 
+class TestUnregister:
+    def test_unregister_removes_agent_and_metadata(self) -> None:
+        """Previously there was no way to remove a node agent from the registry.
+        After node eviction, stale agents would accumulate and interfere with
+        diagnostics and scrape loops."""
+        registry = NodeAgentRegistry()
+        registry.register(node_id="node-0", agent=MagicMock(), metadata={"ip": "10.0.0.1"})
+        registry.register(node_id="node-1", agent=MagicMock(), metadata={"ip": "10.0.0.2"})
+
+        registry.unregister("node-0")
+
+        assert registry.get("node-0") is None
+        assert registry.get_metadata("node-0") is None
+        assert registry.registered_node_ids() == {"node-1"}
+
+    def test_unregister_nonexistent_node_is_no_op(self) -> None:
+        registry = NodeAgentRegistry()
+        registry.unregister("ghost")
+        assert registry.registered_node_ids() == set()
+
+
+class TestClear:
+    def test_clear_removes_all_agents_and_metadata(self) -> None:
+        """Previously there was no bulk reset for the registry. After multiple
+        recovery cycles, stale entries would accumulate."""
+        registry = NodeAgentRegistry()
+        for i in range(3):
+            registry.register(node_id=f"node-{i}", agent=MagicMock(), metadata={"idx": str(i)})
+
+        registry.clear()
+
+        assert registry.get_all() == {}
+        assert registry.all_metadata == {}
+        assert registry.registered_node_ids() == set()
+
+
 class TestAllMetadataReturnsSnapshot:
     """all_metadata used to return self._metadata directly. If a caller iterated
     the dict (e.g. for nid, meta in controller.node_metadata.items()) while
