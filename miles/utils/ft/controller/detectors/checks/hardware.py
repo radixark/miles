@@ -79,6 +79,51 @@ def check_nic_down_in_window(
     ]
 
 
+def check_nic_persistent_down(
+    metric_store: TimeSeriesQueryProtocol,
+    window: timedelta,
+) -> list[NodeFault]:
+    """Detect NICs that crashed permanently: went down and never recovered.
+
+    A permanent NIC crash produces only a single down event (no flapping),
+    so it cannot be caught by `check_nic_down_in_window` which counts
+    up→down transitions.  This function catches NICs whose latest sample
+    within the window is down (value==0) and that had at least one prior
+    up sample (value>0) — confirming a transition from working to broken.
+    """
+    df = metric_store.query_range(NODE_NETWORK_UP, window=window)
+    if df is None or df.is_empty():
+        return []
+
+    df = df.sort("timestamp")
+
+    per_device = df.group_by("node_id", "device").agg(
+        first_value=pl.col("value").first(),
+        last_value=pl.col("value").last(),
+        had_up=(pl.col("value") > 0).any(),
+        sample_count=pl.len(),
+    )
+
+    persistent_down = per_device.filter(
+        (pl.col("last_value") == 0.0)
+        & (pl.col("had_up"))
+        & (pl.col("sample_count") >= 2)
+    )
+
+    if persistent_down.is_empty():
+        return []
+
+    node_faults: dict[str, NodeFault] = {}
+    for row in persistent_down.iter_rows(named=True):
+        nid = row["node_id"]
+        if nid not in node_faults:
+            node_faults[nid] = NodeFault(
+                node_id=nid,
+                reason=f"NIC {row['device']} persistently down on {nid}",
+            )
+    return list(node_faults.values())
+
+
 def check_majority_nic_down(metric_store: TimeSeriesQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_NETWORK_UP)
     if df is None or df.is_empty():
