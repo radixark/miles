@@ -95,10 +95,10 @@ class K8sNodeManager(NodeManagerProtocol):
                 self._core_v1 = None
 
     async def assert_worker_node_affinity(self) -> None:
-        """Validate that ray worker pods have a nodeAffinity NotIn rule for the label key.
+        """Validate that ALL ray worker pods have a nodeAffinity NotIn rule for the label key.
 
-        Raises RuntimeError if no worker pods are found or if the expected
-        anti-affinity rule is missing.
+        Raises RuntimeError if no worker pods are found or if any pod is missing
+        the expected anti-affinity rule.
         """
         core_v1 = await self._ensure_client()
 
@@ -117,35 +117,22 @@ class K8sNodeManager(NodeManagerProtocol):
         if not pod_list.items:
             raise RuntimeError("no ray worker pods found")
 
-        pod = pod_list.items[0]
-        affinity = getattr(pod.spec, "affinity", None)
-        if affinity is None:
-            raise RuntimeError(f"worker pod missing nodeAffinity NotIn rule for {self._label_key}")
+        non_compliant_pods: list[str] = []
+        for pod in pod_list.items:
+            if not _pod_has_required_notin_affinity(pod, label_key=self._label_key):
+                non_compliant_pods.append(pod.metadata.name)
 
-        node_affinity = getattr(affinity, "node_affinity", None)
-        required = (
-            getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None)
-            if node_affinity
-            else None
+        if non_compliant_pods:
+            raise RuntimeError(
+                f"worker pods missing nodeAffinity NotIn rule for {self._label_key}: "
+                f"{non_compliant_pods}"
+            )
+
+        logger.info(
+            "assert_worker_node_affinity passed label_key=%s total_pods=%d",
+            self._label_key,
+            len(pod_list.items),
         )
-        terms = getattr(required, "node_selector_terms", None) if required else None
-
-        if terms:
-            for term in terms:
-                for expr in getattr(term, "match_expressions", []) or []:
-                    if (
-                        getattr(expr, "key", None) == self._label_key
-                        and getattr(expr, "operator", None) == "NotIn"
-                        and "true" in (getattr(expr, "values", []) or [])
-                    ):
-                        logger.info(
-                            "assert_worker_node_affinity passed label_key=%s pod=%s",
-                            self._label_key,
-                            pod.metadata.name,
-                        )
-                        return
-
-        raise RuntimeError(f"worker pod missing nodeAffinity NotIn rule for {self._label_key}")
 
     async def _ensure_ray_cluster_name(self) -> str:
         async with self._init_lock:
@@ -267,3 +254,32 @@ def _build_label_keys(label_prefix: str) -> tuple[str, str]:
             f"{_LABEL_DOMAIN}/{label_prefix}-{_BASE_REASON}",
         )
     return _BASE_LABEL_KEY, _BASE_REASON_LABEL_KEY
+
+
+def _pod_has_required_notin_affinity(pod: object, *, label_key: str) -> bool:
+    """Check if a pod has the required nodeAffinity NotIn rule for the given label key."""
+    affinity = getattr(getattr(pod, "spec", None), "affinity", None)
+    if affinity is None:
+        return False
+
+    node_affinity = getattr(affinity, "node_affinity", None)
+    required = (
+        getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None)
+        if node_affinity
+        else None
+    )
+    terms = getattr(required, "node_selector_terms", None) if required else None
+
+    if not terms:
+        return False
+
+    for term in terms:
+        for expr in getattr(term, "match_expressions", []) or []:
+            if (
+                getattr(expr, "key", None) == label_key
+                and getattr(expr, "operator", None) == "NotIn"
+                and "true" in (getattr(expr, "values", []) or [])
+            ):
+                return True
+
+    return False

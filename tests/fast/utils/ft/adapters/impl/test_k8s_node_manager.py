@@ -282,6 +282,32 @@ class TestAssertWorkerNodeAffinity:
             await manager.assert_worker_node_affinity()
 
     @pytest.mark.anyio
+    async def test_first_pod_ok_second_pod_missing_affinity_raises(self) -> None:
+        """The old implementation only checked pod_list.items[0], so when
+        the first pod was correct but the second was missing the affinity
+        rule, it would incorrectly pass. Now all pods are checked."""
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        good_pod = _make_mock_pod_with_affinity()
+        bad_pod = SimpleNamespace(
+            metadata=SimpleNamespace(name="worker-bad"),
+            spec=SimpleNamespace(affinity=None),
+        )
+        mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=[good_pod, bad_pod])
+
+        with pytest.raises(RuntimeError, match="worker-bad"):
+            await manager.assert_worker_node_affinity()
+
+    @pytest.mark.anyio
+    async def test_all_pods_correct_passes(self) -> None:
+        manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
+        pods = [_make_mock_pod_with_affinity() for _ in range(3)]
+        for i, pod in enumerate(pods):
+            pod.metadata.name = f"worker-{i}"
+        mock_core_v1.list_namespaced_pod.return_value = SimpleNamespace(items=pods)
+
+        await manager.assert_worker_node_affinity()
+
+    @pytest.mark.anyio
     async def test_mark_node_bad_triggers_assertion_once(self) -> None:
         """First mark_node_bad calls assert_worker_node_affinity; second does not."""
         manager, mock_core_v1 = _make_manager_with_mock_api(ray_cluster_name="c1")
