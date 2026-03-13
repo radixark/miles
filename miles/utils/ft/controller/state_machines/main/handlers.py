@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
 from miles.utils.ft.controller.state_machines.main.restart_coordinator import (
     build_fresh_subsystem_states,
@@ -14,6 +16,8 @@ from miles.utils.ft.controller.state_machines.restart import create_restart_step
 from miles.utils.ft.controller.state_machines.subsystem import create_subsystem_stepper
 from miles.utils.ft.utils.state_machine import StateHandler
 
+logger = logging.getLogger(__name__)
+
 # Re-export for backward compatibility with existing test imports
 _find_restart_requestor = find_restart_requestor
 _update_external_execution_result = update_external_execution_result
@@ -27,6 +31,11 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         self._subsystem_stepper = create_subsystem_stepper()
 
     async def step(self, state: NormalSt, context: MainContext):  # type: ignore[override]
+        logger.debug(
+            "main_sm: NormalHandler.step tick=%s, subsystems=%s",
+            context.tick_count,
+            sorted(state.subsystems.keys()),
+        )
         # Production invariant: subsystem topology is static after controller
         # bootstrap, so state keys and config keys must always match.
         # Keep assert here to fail fast on programmer/config wiring errors.
@@ -52,9 +61,26 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
 
         # Step 2: Check for RestartingMainJob(external_execution_result=None)
         if (s := await trigger_main_job_restart(current_state, context)) is not None:
+            logger.info(
+                "main_sm: state transition: old=NormalSt, new=%s, trigger=main_job_restart",
+                type(s).__name__,
+            )
             yield s
 
 
 class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
     async def step(self, state: RestartingMainJobSt, context: MainContext) -> MainState | None:
-        return await resolve_main_job_restart(state=state, context=context)
+        logger.debug(
+            "main_sm: RestartingMainJobHandler.step requestor=%s, tick=%s",
+            state.requestor_name,
+            context.tick_count,
+        )
+        result = await resolve_main_job_restart(state=state, context=context)
+        if result is not None:
+            logger.info(
+                "main_sm: state transition: old=RestartingMainJobSt, new=%s, trigger=main_job_resolved",
+                type(result).__name__,
+            )
+        else:
+            logger.debug("main_sm: RestartingMainJobHandler returning None, job still pending")
+        return result

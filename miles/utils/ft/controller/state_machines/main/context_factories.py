@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from miles.utils.ft.controller.detectors.base import DetectorContext
@@ -10,6 +11,8 @@ from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemC
 from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemSpec
 from miles.utils.ft.controller.types import TriggerType
 from miles.utils.ft.utils.state_machine import StateMachineStepper
+
+logger = logging.getLogger(__name__)
 
 
 def build_subsystem_context(
@@ -22,6 +25,12 @@ def build_subsystem_context(
     active_node_ids = spec.runtime.get_active_node_ids()
     should_run = _should_run_detectors(active_node_ids=active_node_ids, context=context)
     detector_ctx = _build_detector_context(active_node_ids=active_node_ids, context=context) if should_run else None
+
+    logger.debug(
+        "main_sm: build_subsystem_context active_nodes=%d, should_run_detectors=%s",
+        len(active_node_ids),
+        should_run,
+    )
 
     return SubsystemContext(
         job_status=context.job_status,
@@ -53,10 +62,16 @@ def _should_run_detectors(
     context: MainContext,
 ) -> bool:
     if len(active_node_ids) == 0:
+        logger.debug("main_sm: _should_run_detectors=False, no active nodes")
         return False
 
     ticks_since_run_start = max(0, context.tick_count - context.run_start_tick)
     if ticks_since_run_start <= context.shared.registration_grace_ticks:
+        logger.debug(
+            "main_sm: _should_run_detectors=False, in registration grace period: ticks_since_start=%d, grace=%d",
+            ticks_since_run_start,
+            context.shared.registration_grace_ticks,
+        )
         return False
 
     return True
