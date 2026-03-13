@@ -267,10 +267,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
         text=True,
     )
 
-    ctx, gcs_address = _connect_to_started_ray_cluster(
-        start_stdout=result.stdout,
-        preferred_host=head_ip,
-    )
+    ctx, gcs_address = _connect_to_started_ray_cluster(start_stdout=result.stdout)
 
     for i in range(1, num_nodes):
         node_ip = f"127.0.0.{i + 1}"
