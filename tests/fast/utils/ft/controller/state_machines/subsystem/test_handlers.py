@@ -14,6 +14,7 @@ from tests.fast.utils.ft.utils.controller_fakes import (
 from tests.fast.utils.ft.utils.metric_injectors import make_detector_context
 
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.recovery import (
@@ -99,8 +100,8 @@ def _make_subsystem_context(
 
 async def _step_last(stepper, state, ctx):
     result = None
-    async for result in stepper(state, ctx):
-        pass
+    async for next_result in stepper(state, ctx):
+        result = next_result
     return result
 
 

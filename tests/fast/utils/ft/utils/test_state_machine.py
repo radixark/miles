@@ -136,8 +136,8 @@ def _make_gen_stepper(
 
 async def _step_last(stepper: StateMachineStepper, state, ctx):
     result = None
-    async for result in stepper(state, ctx):
-        pass
+    async for next_result in stepper(state, ctx):
+        result = next_result
     return result
 
 
@@ -848,7 +848,7 @@ class TestRunStepperToConvergenceContextFactory:
             return call_count
 
         stepper = _make_context_aware_stepper()
-        results = [
+        _results = [
             s
             async for s in run_stepper_to_convergence(
                 stepper,
@@ -872,7 +872,7 @@ class TestRunStepperToConvergenceContextFactory:
             return iteration_counter
 
         stepper = _make_context_aware_stepper()
-        results = [
+        _results = [
             s
             async for s in run_stepper_to_convergence(
                 stepper,

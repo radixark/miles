@@ -37,8 +37,8 @@ class GpuCollector(BaseCollector):
 
         try:
             device_count = pynvml.nvmlDeviceGetCount()
-        except Exception:
-            raise RuntimeError("nvmlDeviceGetCount failed")
+        except Exception as err:
+            raise RuntimeError("nvmlDeviceGetCount failed") from err
 
         samples: list[GaugeSample] = []
         for index in range(device_count):

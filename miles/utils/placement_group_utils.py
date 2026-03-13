@@ -59,7 +59,7 @@ def _partial_resort_snapshots(
         key=_bundle_sort_key,
     )
     empty_ranks = [r for r in range(len(result)) if result[r] is None]
-    for rank, snapshot in zip(empty_ranks, unmatched):
+    for rank, snapshot in zip(empty_ranks, unmatched, strict=True):
         result[rank] = snapshot
 
     return result  # type: ignore[return-value]

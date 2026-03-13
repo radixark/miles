@@ -62,17 +62,17 @@ class EvictingAndRestartingHandler(StateHandler[EvictingAndRestartingSt, Recover
         state: EvictingAndRestartingSt,
         ctx: RecoveryContext,
     ) -> RecoveryState | None:
-        new_restart = None
-        async for new_restart in ctx.restart_stepper(state.restart, ctx.restart_context):
-            pass
-        if new_restart is None:
+        latest_restart = None
+        async for _new_restart in ctx.restart_stepper(state.restart, ctx.restart_context):
+            latest_restart = _new_restart
+        if latest_restart is None:
             return None
-        if isinstance(new_restart, RestartDoneSt):
+        if isinstance(latest_restart, RestartDoneSt):
             return RecoveryDoneSt()
-        if isinstance(new_restart, RestartFailedSt):
+        if isinstance(latest_restart, RestartFailedSt):
             return state.failed_next_state
         return EvictingAndRestartingSt(
-            restart=new_restart,
+            restart=latest_restart,
             failed_next_state=state.failed_next_state,
         )
 

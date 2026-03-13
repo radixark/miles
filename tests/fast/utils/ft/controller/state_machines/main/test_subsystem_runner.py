@@ -70,8 +70,6 @@ class TestAdvanceSubsystemsEarlyStop:
         request. This caused unnecessary side effects in later subsystems
         that would be discarded by trigger_main_job_restart() anyway. Now
         the loop breaks early once a pending request is detected."""
-        stepper_calls: list[str] = []
-
         # Subsystem "a_requestor" already has a pending MAIN_JOB restart.
         # Subsystem "b_later" should NOT be stepped.
         requestor_state = _make_requestor_state()
@@ -291,7 +289,7 @@ class TestAdvanceSubsystemsContextFactory:
             assert build_ctx_call_count == 0
 
             # Call context_factory to simulate a convergence iteration
-            fresh_ctx = context_factory(sub_state)
+            context_factory(sub_state)
             assert build_ctx_call_count == 1
             return
             yield

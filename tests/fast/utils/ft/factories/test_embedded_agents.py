@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,7 +31,7 @@ class TestEnsureRayActorOnNode:
         """Creates and starts the actor when ray.get_actor raises ValueError."""
         with (
             patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
-            patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy") as mock_strategy,
+            patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
         ):
             mock_ray.get_actor.side_effect = ValueError("not found")
             actor_cls = MagicMock()

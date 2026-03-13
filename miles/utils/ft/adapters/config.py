@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator
 
 from miles.utils.ft.controller.detectors.chain import DetectorChainConfig
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+if TYPE_CHECKING:
+    from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 
 
 class FtControllerConfig(FtBaseModel):

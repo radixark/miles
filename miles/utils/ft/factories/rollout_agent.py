@@ -31,7 +31,10 @@ def build_rollout_agent(
     cell_node_ids: dict[str, list[str]] | None = None,
 ) -> FtRolloutAgent:
     if health_checker is None:
-        health_checker = lambda engine: engine.health_generate.remote()  # type: ignore[attr-defined]
+        def _default_health_checker(engine: object) -> object:
+            return engine.health_generate.remote()  # type: ignore[attr-defined]
+
+        health_checker = _default_health_checker
 
     agent = FtRolloutAgent(
         cell_ids=cell_ids,

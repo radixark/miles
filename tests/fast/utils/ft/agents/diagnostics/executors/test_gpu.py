@@ -253,6 +253,6 @@ class TestGpuNodeExecutorRealGpu:
         compute_hashes = result.metadata["compute_hashes"]
         assert isinstance(compute_hashes, dict)
         assert len(compute_hashes) >= 1
-        for gpu_idx, h in compute_hashes.items():
+        for _gpu_idx, h in compute_hashes.items():
             assert isinstance(h, str)
             assert len(h) == 64

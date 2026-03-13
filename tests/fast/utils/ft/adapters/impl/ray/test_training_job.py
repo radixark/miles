@@ -136,7 +136,7 @@ class TestSubmitJob:
         assert original_env == original_env_copy
 
 
-class TestStopJob:
+class TestStopJobHelper:
     @pytest.mark.anyio
     async def test_stop_polls_until_stopped(self) -> None:
         job, mock_client = _make_job(poll_interval_seconds=0.001)

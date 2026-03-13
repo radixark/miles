@@ -330,8 +330,6 @@ class TestEnsureTriggerXidBinary:
         binary = tmp_path / "trigger_xid"
         compile_count = 0
 
-        original_run = subprocess.run
-
         def counting_run(*args: Any, **kwargs: Any) -> MagicMock:
             nonlocal compile_count
             compile_count += 1

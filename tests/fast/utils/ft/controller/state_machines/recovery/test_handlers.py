@@ -143,8 +143,8 @@ async def _step(
 
 async def _step_last(stepper, state, ctx):
     result = None
-    async for result in stepper(state, ctx):
-        pass
+    async for next_result in stepper(state, ctx):
+        result = next_result
     return result
 
 

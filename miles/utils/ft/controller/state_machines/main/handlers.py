@@ -36,21 +36,22 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
         )
 
         # Step 1: Step all subsystems to convergence
-        curr_state = state
+        current_state = state
         del state
 
-        async for curr_state in advance_subsystems(
-            curr_state,
+        async for next_state in advance_subsystems(
+            current_state,
             context,
             subsystem_stepper=self._subsystem_stepper,
             recovery_stepper=self._recovery_stepper,
             restart_stepper=self._restart_stepper,
             on_convergence_failure=context.shared.on_convergence_failure,
         ):
-            yield curr_state
+            current_state = next_state
+            yield current_state
 
         # Step 2: Check for RestartingMainJob(external_execution_result=None)
-        if (s := await trigger_main_job_restart(curr_state, context)) is not None:
+        if (s := await trigger_main_job_restart(current_state, context)) is not None:
             yield s
 
 

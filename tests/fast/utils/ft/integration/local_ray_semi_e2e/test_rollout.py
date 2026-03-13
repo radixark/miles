@@ -133,7 +133,7 @@ async def test_two_sequential_rollout_crashes_both_recover(
         rollout_monitoring_alive_duration_seconds=0,
     )
 
-    for cycle in range(2):
+    for _cycle in range(2):
         # Step 2: wait for stable state
         await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
 

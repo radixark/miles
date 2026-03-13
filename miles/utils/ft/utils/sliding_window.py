@@ -57,7 +57,7 @@ class SlidingWindowCounter:
 
     def _prune(self, now: float) -> None:
         cutoff = now - self._window_seconds
-        self._events = [(t, l) for t, l in self._events if t >= cutoff]
+        self._events = [(t, label) for t, label in self._events if t >= cutoff]
         if len(self._events) < self._threshold:
             self._notified = False
 

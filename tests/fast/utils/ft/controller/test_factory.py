@@ -23,7 +23,10 @@ class TestRankPidsProviderTOCTOU:
 
     def test_returns_empty_dict_when_box_is_none(self) -> None:
         box: Box[MagicMock | None] = Box(None)
-        provider = lambda node_id: (r.get_rank_pids_for_node(node_id) if (r := box.value) is not None else {})
+
+        def provider(node_id: str) -> dict[int, int]:
+            roster = box.value
+            return roster.get_rank_pids_for_node(node_id) if roster is not None else {}
 
         assert provider("node-1") == {}
 
@@ -31,7 +34,10 @@ class TestRankPidsProviderTOCTOU:
         roster = MagicMock()
         roster.get_rank_pids_for_node.return_value = {0: 1234}
         box: Box[MagicMock | None] = Box(roster)
-        provider = lambda node_id: (r.get_rank_pids_for_node(node_id) if (r := box.value) is not None else {})
+
+        def provider(node_id: str) -> dict[int, int]:
+            current_roster = box.value
+            return current_roster.get_rank_pids_for_node(node_id) if current_roster is not None else {}
 
         result = provider("node-1")
 
@@ -42,7 +48,10 @@ class TestRankPidsProviderTOCTOU:
         roster = MagicMock()
         roster.get_rank_pids_for_node.return_value = {0: 1234}
         box: Box[MagicMock | None] = Box(roster)
-        provider = lambda node_id: (r.get_rank_pids_for_node(node_id) if (r := box.value) is not None else {})
+
+        def provider(node_id: str) -> dict[int, int]:
+            current_roster = box.value
+            return current_roster.get_rank_pids_for_node(node_id) if current_roster is not None else {}
 
         box.value = None
         assert provider("node-1") == {}

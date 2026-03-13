@@ -93,11 +93,8 @@ class TestCollectorBasedNodeExecutor:
             evaluator=_always_pass_evaluator,
         )
 
-        try:
+        with pytest.raises(RuntimeError, match="hw failure"):
             asyncio.run(executor.run(node_id="node-0"))
-            assert False, "Expected RuntimeError"
-        except RuntimeError as exc:
-            assert "hw failure" in str(exc)
 
     def test_empty_metrics_pass(self) -> None:
         collector = _FakeCollector(metrics=[])

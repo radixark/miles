@@ -164,8 +164,8 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             state.recovery_start_time,
         )
         new_recovery = None
-        async for new_recovery in ctx.recovery_stepper(state.recovery, recovery_ctx):
-            pass
+        async for _new_recovery in ctx.recovery_stepper(state.recovery, recovery_ctx):
+            new_recovery = _new_recovery
 
         if new_recovery is None:
             return None
