@@ -4,7 +4,7 @@ from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext, check_metric_blind
 from miles.utils.ft.controller.detectors.checks.hardware import check_nic_down_in_window, check_nic_persistent_down
-from miles.utils.ft.controller.types import Decision, TriggerType
+from miles.utils.ft.controller.types import Decision, NodeFault, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
 
@@ -51,12 +51,10 @@ class NetworkAlertDetector(BaseFaultDetector):
             window=self._alert_window,
         )
 
-        seen_nodes: set[str] = set()
-        merged: list = []
+        by_node: dict[str, NodeFault] = {}
         for fault in flap_faults + persistent_faults:
-            if fault.node_id not in seen_nodes:
-                seen_nodes.add(fault.node_id)
-                merged.append(fault)
+            by_node.setdefault(fault.node_id, fault)
+        merged = list(by_node.values())
 
         return Decision.from_node_faults(
             merged,
