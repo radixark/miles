@@ -65,7 +65,7 @@ class TestbedTrainRayActor:
         """
         os.environ["MILES_FT_ID"] = self._ft_id
         os.environ["MILES_FT_TRAINING_RUN_ID"] = self._run_id
-        os.environ[MILES_HOST_IP_ENV] = ray.util.get_node_ip_address()
+        os.environ[MILES_HOST_IP_ENV] = "127.0.0.1"
 
         self._controller_client = RayControllerClient(ft_id=self._ft_id)
         self._agent = FtTrainingRankAgent(

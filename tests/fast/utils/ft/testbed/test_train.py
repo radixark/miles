@@ -5,8 +5,8 @@ from tests.fast.utils.ft.testbed.train import _actor_runtime_env
 
 
 def test_actor_runtime_env_sets_miles_host_ip() -> None:
-    assert _actor_runtime_env("127.0.0.3") == {
+    assert _actor_runtime_env() == {
         "env_vars": {
-            MILES_HOST_IP_ENV: "127.0.0.3",
+            MILES_HOST_IP_ENV: "127.0.0.1",
         }
     }

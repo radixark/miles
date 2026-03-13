@@ -44,7 +44,7 @@ class TestbedRolloutManager:
         """
         from miles.utils.ft.factories.rollout_agent import build_rollout_agent
 
-        os.environ[MILES_HOST_IP_ENV] = ray.util.get_node_ip_address()
+        os.environ[MILES_HOST_IP_ENV] = "127.0.0.1"
         build_rollout_agent(
             cell_ids=self._cell_ids,
             get_engines=lambda cid: [self._engines[cid]] if cid in self._engines else [],

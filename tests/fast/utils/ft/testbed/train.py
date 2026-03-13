@@ -33,10 +33,11 @@ if TYPE_CHECKING:
     from tests.fast.utils.ft.integration.conftest import RayNodeInfo
 
 logger = logging.getLogger(__name__)
+_TESTBED_EXPORTER_HOST = "127.0.0.1"
 
 
-def _actor_runtime_env(node_ip: str) -> dict[str, dict[str, str]]:
-    return {"env_vars": {MILES_HOST_IP_ENV: node_ip}}
+def _actor_runtime_env() -> dict[str, dict[str, str]]:
+    return {"env_vars": {MILES_HOST_IP_ENV: _TESTBED_EXPORTER_HOST}}
 
 
 @dataclass
@@ -94,11 +95,6 @@ class MilesTestbed:
             config=config,
             ray_nodes=ray_nodes,
         )
-        ray_node_ip_by_id = {
-            node.ray_node_id: node.node_ip
-            for node in ray_nodes
-        }
-
         # Step 2: Create state actors for node manager, notifier
         node_manager = TestbedNodeManager.create()
         cleanup_handles.append(node_manager.state_actor)
@@ -183,9 +179,7 @@ class MilesTestbed:
                     node_id=ray_node_id,
                     soft=False,
                 ),
-                runtime_env=_actor_runtime_env(
-                    node_ip=ray_node_ip_by_id[ray_node_id],
-                ),
+                runtime_env=_actor_runtime_env(),
             ).remote(
                 builder=build_node_agent,
                 node_id=node_id,
