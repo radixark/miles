@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'docker/Dockerfile.dev'
+      - 'docker/Dockerfile'
 
   schedule:
     # Every 12 hours: midnight and noon UTC
@@ -22,31 +22,34 @@ on:
           - cu129-arm64
           - cu13-arm64
           - debug
+      image_tag:
+        description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
+        required: true
+        type: choice
+        options:
+          - dev
+          - latest
+          - custom
+      custom_tag:
+        description: 'Custom tag name (only used when image_tag is custom)'
+        required: false
+        default: ''
+        type: string
       dockerfile:
-        description: 'Path to dockerfile (e.g. docker/Dockerfile.dev)'
+        description: 'Path to Dockerfile (e.g. docker/Dockerfile)'
         required: false
         default: 'docker/Dockerfile'
         type: string
+      simulate_schedule:
+        description: '[DEBUG] Simulate a scheduled build (runs upstream check)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  set-build-config:
-    # Runs on schedule and push — sets dev defaults
-    if: github.event_name == 'schedule' || github.event_name == 'push'
-    runs-on: ubuntu-latest
-    outputs:
-      variant: ${{ steps.defaults.outputs.variant }}
-      dockerfile: ${{ steps.defaults.outputs.dockerfile }}
-    steps:
-      - name: Set dev build defaults
-        id: defaults
-        run: |
-          echo "variant=dev" >> "$GITHUB_OUTPUT"
-          echo "dockerfile=docker/Dockerfile.dev" >> "$GITHUB_OUTPUT"
-
   check-upstream:
-    # Only run on schedule — check if upstream repos have new commits
-    if: github.event_name == 'schedule'
-    needs: [set-build-config]
+    # Only run on schedule (or simulated schedule) — check if upstream repos have new commits
+    if: github.event_name == 'schedule' || inputs.simulate_schedule == true
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
@@ -64,11 +67,11 @@ jobs:
           SHOULD_BUILD=false
 
           # Check sglang (sglang-miles branch)
-          SGLANG_SHA=$(curl -sf -H "Accept: application/vnd.github.sha" \
+          SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
             "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
 
           # Check Megatron-LM (main branch)
-          MEGATRON_SHA=$(curl -sf -H "Accept: application/vnd.github.sha" \
+          MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
             "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
@@ -105,14 +108,12 @@ jobs:
           key: upstream-shas-${{ github.run_id }}
 
   build-and-push:
-    needs: [set-build-config, check-upstream]
-    # push: set-build-config ran, check-upstream skipped → build
-    # schedule: both ran → only build if upstream changed
-    # dispatch: both skipped → build
+    needs: [check-upstream]
+    # schedule: only build if upstream changed
+    # push/dispatch: check-upstream skipped → build
     if: |
       always() &&
-      (needs.check-upstream.result == 'skipped' || needs.check-upstream.outputs.should_build == 'true') &&
-      needs.set-build-config.result != 'failed'
+      (needs.check-upstream.result == 'skipped' || needs.check-upstream.outputs.should_build == 'true')
     runs-on: self-hosted
     steps:
       - name: Checkout repository
@@ -125,6 +126,11 @@ jobs:
             image=moby/buildkit:latest
             network=host
 
+      - name: Install Python + dependencies
+        run: |
+          apt-get update && apt-get install -y python3 python3-pip
+          pip3 install --break-system-packages typer
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -133,13 +139,15 @@ jobs:
 
       - name: Build and push
         run: |
-          python docker/build.py \
-            --variant ${{ needs.set-build-config.outputs.variant || inputs.variant }} \
-            --dockerfile ${{ needs.set-build-config.outputs.dockerfile || inputs.dockerfile }} \
+          python3 docker/build.py \
+            --variant ${{ inputs.variant || 'primary' }} \
+            --image-tag ${{ inputs.image_tag || 'dev' }} \
+            --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
+            ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
             --push
 
       - name: Prune old dev tags
-        if: github.event_name == 'schedule' || github.event_name == 'push'
+        if: github.event_name == 'schedule'
         run: |
           KEEP=20
           IMAGE=radixark/miles
