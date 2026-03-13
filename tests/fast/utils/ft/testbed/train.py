@@ -199,6 +199,7 @@ class MilesTestbed:
                 collectors_override=[collectors_by_node[node_id]],
                 diagnostics_override=diagnostics,
             )
+            cleanup_handles.append(node_agent)
             cleanup_names.append(agent_name)
 
             ray.get(node_agent.start.remote(), timeout=15)
