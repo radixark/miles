@@ -48,7 +48,7 @@ class TestTrainingRankAgentRegistration:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         handle, run_id = running_controller
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
         with patch("socket.gethostname", return_value="fake-node-0"):
@@ -66,7 +66,7 @@ class TestTrainingRankAgentRegistration:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         handle, run_id = running_controller
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
         agents: list[FtTrainingRankAgent] = []
@@ -92,7 +92,7 @@ class TestTrackingAgentLogStep:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         handle, run_id = running_controller
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
         tracking = FtTrackingAgent(run_id=run_id, controller_client=client)
@@ -108,7 +108,7 @@ class TestTrackingAgentLogStep:
         controller_actor: ray.actor.ActorHandle,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", "")
+        monkeypatch.setenv("MILES_FT_RUN_ID", "")
 
         client = RayControllerClient(ft_id="")
         tracking = FtTrackingAgent(run_id="", controller_client=client)
@@ -127,7 +127,7 @@ class TestPidCorrectness:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         handle, run_id = running_controller
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
         with patch("socket.gethostname", return_value="pid-test-node"):

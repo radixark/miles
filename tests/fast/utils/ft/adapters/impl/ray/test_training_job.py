@@ -70,7 +70,7 @@ class TestSubmitJob:
         mock_client.submit_job.assert_called_once()
         call_kwargs = mock_client.submit_job.call_args.kwargs
         assert call_kwargs["entrypoint"] == "python train.py"
-        assert call_kwargs["runtime_env"]["env_vars"]["MILES_FT_TRAINING_RUN_ID"] == run_id
+        assert call_kwargs["runtime_env"]["env_vars"]["MILES_FT_RUN_ID"] == run_id
 
     @pytest.mark.anyio
     async def test_submit_raises_when_previous_job_is_active(self) -> None:

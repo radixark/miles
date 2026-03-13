@@ -6,7 +6,7 @@ import socket
 from typing import TYPE_CHECKING, Literal
 
 from miles.utils.ft.agents.metrics.training_rank_exporter import TrainingRankExporter
-from miles.utils.ft.utils.env import get_training_run_id
+from miles.utils.ft.utils.env import get_run_id
 from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 from miles.utils.ft.utils.retry import retry_sync
 
@@ -37,16 +37,12 @@ class FtTrainingRankAgent:
         self._rank = rank
         self._world_size = world_size
         self._controller_client = controller_client
-        self._run_id: str = get_training_run_id()
+        self._run_id: str = get_run_id()
         self._node_id: str = node_id or socket.gethostname()
 
-        if not self._run_id:
-            logger.warning("No MILES_FT_TRAINING_RUN_ID set, disabling rank metric exporter")
-            self._metric_exporter: TrainingRankExporter | None = None
-        else:
-            self._metric_exporter = TrainingRankExporter(
-                rank=rank, node_id=self._node_id, run_id=self._run_id,
-            )
+        self._metric_exporter = TrainingRankExporter(
+            rank=rank, node_id=self._node_id, run_id=self._run_id,
+        )
 
         self._register_training_rank()
 
@@ -73,24 +69,19 @@ class FtTrainingRankAgent:
     # ------------------------------------------------------------------
 
     def get_exporter_address(self) -> str:
-        if self._metric_exporter is None:
-            return ""
         return self._metric_exporter.get_exporter_address()
 
     def set_phase(
         self,
         phase: Literal["idle", "training", "checkpoint_saving"],
     ) -> None:
-        if self._metric_exporter is not None:
-            self._metric_exporter.set_phase(phase)
+        self._metric_exporter.set_phase(phase)
 
     def step(self) -> None:
-        if self._metric_exporter is not None:
-            self._metric_exporter.step()
+        self._metric_exporter.step()
 
     def shutdown(self) -> None:
-        if self._metric_exporter is not None:
-            self._metric_exporter.shutdown()
+        self._metric_exporter.shutdown()
 
     # ------------------------------------------------------------------
     # Internal: controller communication
@@ -100,16 +91,11 @@ class FtTrainingRankAgent:
     _REGISTER_RETRY_DELAY = 2.0
 
     def _register_training_rank(self) -> None:
-        if not self._run_id:
-            logger.info("No MILES_FT_TRAINING_RUN_ID set, skipping rank registration")
-            return
-
         if self._controller_client is None:
             logger.warning("Cannot register rank: no controller client provided")
             return
 
-        if self._metric_exporter is not None:
-            self._metric_exporter.wait_until_ready()
+        self._metric_exporter.wait_until_ready()
 
         def _do_register() -> None:
             self._controller_client.register_training_rank(  # type: ignore[union-attr]

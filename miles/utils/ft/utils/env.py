@@ -16,8 +16,11 @@ def get_ft_id() -> str:
     return os.environ.get("MILES_FT_ID", "")
 
 
-def get_training_run_id() -> str:
-    return os.environ.get("MILES_FT_TRAINING_RUN_ID", "")
+def get_run_id() -> str:
+    value = os.environ.get("MILES_FT_RUN_ID", "")
+    if not value:
+        raise RuntimeError("MILES_FT_RUN_ID environment variable is required but not set")
+    return value
 
 
 def get_exception_inject_path() -> Path | None:

@@ -10,7 +10,7 @@ from miles.utils.ft.utils.env import (
     get_exception_inject_dir,
     get_exception_inject_path,
     get_ft_id,
-    get_training_run_id,
+    get_run_id,
 )
 
 
@@ -24,14 +24,22 @@ class TestGetFtId:
             assert get_ft_id() == ""
 
 
-class TestGetTrainingRunId:
+class TestGetRunId:
     def test_returns_value_when_set(self) -> None:
-        with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "run-abc"}):
-            assert get_training_run_id() == "run-abc"
+        with patch.dict("os.environ", {"MILES_FT_RUN_ID": "run-abc"}):
+            assert get_run_id() == "run-abc"
 
-    def test_returns_empty_string_when_unset(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            assert get_training_run_id() == ""
+    def test_raises_when_unset(self) -> None:
+        import pytest
+
+        with patch.dict("os.environ", {}, clear=True), pytest.raises(RuntimeError, match="MILES_FT_RUN_ID"):
+            get_run_id()
+
+    def test_raises_when_empty(self) -> None:
+        import pytest
+
+        with patch.dict("os.environ", {"MILES_FT_RUN_ID": ""}), pytest.raises(RuntimeError, match="MILES_FT_RUN_ID"):
+            get_run_id()
 
 
 class TestGetExceptionInjectPath:

@@ -32,7 +32,7 @@ class TestAgentSurvivesControllerDeath:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         handle, run_id = running_controller
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
         tracking = FtTrackingAgent(run_id=run_id, controller_client=client)
@@ -94,7 +94,7 @@ class TestAgentCreatedWithoutController:
         local_ray: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", "no-ctrl-test")
+        monkeypatch.setenv("MILES_FT_RUN_ID", "no-ctrl-test")
 
         client = RayControllerClient(ft_id="nonexistent_ft_999")
         with patch("socket.gethostname", return_value="fake-node"):
@@ -107,7 +107,7 @@ class TestAgentCreatedWithoutController:
         local_ray: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", "no-ctrl-track")
+        monkeypatch.setenv("MILES_FT_RUN_ID", "no-ctrl-track")
 
         client = RayControllerClient(ft_id="nonexistent_ft_999")
         tracking = FtTrackingAgent(run_id="no-ctrl-track", controller_client=client)
@@ -127,7 +127,7 @@ class TestBlockingCallRetryAfterControllerDeath:
         ray.kill(handle, no_restart=True)
         time.sleep(0.5)
 
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
         with patch("socket.gethostname", return_value="fake-retry-node"):

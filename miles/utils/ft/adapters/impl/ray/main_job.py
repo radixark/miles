@@ -109,7 +109,7 @@ class RayMainJob(MainJobProtocol):
         run_id = uuid4().hex[:8]
         env_override = {
             **self._runtime_env.get("env_vars", {}),
-            "MILES_FT_TRAINING_RUN_ID": run_id,
+            "MILES_FT_RUN_ID": run_id,
             "MILES_FT_ID": self._ft_id,
             "MILES_FT_K8S_LABEL_PREFIX": self._k8s_label_prefix,
         }

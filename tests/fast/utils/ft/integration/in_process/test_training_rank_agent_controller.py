@@ -77,7 +77,7 @@ class TestScrapeTargetRegistration:
     async def test_register_training_rank_adds_scrape_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
         harness = make_test_controller()
         run_id = "integ-megatron-3"
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
         agent = _make_agent(rank=0, world_size=4)
         try:
             exporter_address = agent.get_exporter_address()
@@ -102,7 +102,7 @@ class TestHeartbeatScrape:
     async def test_scrape_reads_heartbeat_gauges(self, monkeypatch: pytest.MonkeyPatch) -> None:
         harness = make_test_controller()
         run_id = "integ-megatron-4"
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", run_id)
+        monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
         agent = _make_agent(rank=0, world_size=4)
         try:
             exporter_address = agent.get_exporter_address()
@@ -179,7 +179,7 @@ class TestControllerUnreachable:
 class TestPhaseSwitch:
     @pytest.mark.anyio
     async def test_phase_switch_visible_in_exporter(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MILES_FT_TRAINING_RUN_ID", "integ-megatron-phase-switch")
+        monkeypatch.setenv("MILES_FT_RUN_ID", "integ-megatron-phase-switch")
         agent = _make_agent(rank=0, world_size=4)
         try:
             agent.set_phase("training")

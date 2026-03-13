@@ -8,7 +8,7 @@ from miles.utils.ft.utils.env import (
     build_exception_inject_flag_path,
     get_exception_inject_dir,
     get_exception_inject_path,
-    get_training_run_id,
+    get_run_id,
 )
 from miles.utils.ft.utils.graceful_degrade import FaultInjectionError, graceful_degrade
 
@@ -32,7 +32,7 @@ class FtTrackingAgent:
         controller_client: ControllerClientProtocol | None = None,
         rank: int | None = None,
     ) -> None:
-        self._run_id = run_id or get_training_run_id()
+        self._run_id = run_id or get_run_id()
         self._controller_client = controller_client
 
         self._exception_inject_path = _resolve_inject_path(rank=rank)
@@ -40,9 +40,6 @@ class FtTrackingAgent:
     @graceful_degrade()
     def log(self, *, metrics: dict[str, float], step: int) -> None:
         self._check_exception_injection()
-
-        if not self._run_id:
-            return
 
         if self._controller_client is not None:
             self._controller_client.log_step(

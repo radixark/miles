@@ -9,7 +9,7 @@ import ray
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 from miles.utils.http_utils import MILES_HOST_IP_ENV
-from miles.utils.ft.utils.env import get_training_run_id
+from miles.utils.ft.utils.env import get_run_id
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class TestbedTrainRayActor:
         against agent initialization.
         """
         os.environ["MILES_FT_ID"] = self._ft_id
-        os.environ["MILES_FT_TRAINING_RUN_ID"] = self._run_id
+        os.environ["MILES_FT_RUN_ID"] = self._run_id
         os.environ[MILES_HOST_IP_ENV] = self._host_ip
 
         self._controller_client = RayControllerClient(ft_id=self._ft_id)

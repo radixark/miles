@@ -92,9 +92,9 @@ class TestSubmitAndStatus:
         make_main_job: ...,
         job_client: ...,
     ) -> None:
-        """The MILES_FT_TRAINING_RUN_ID env var should appear in the job logs."""
+        """The MILES_FT_RUN_ID env var should appear in the job logs."""
         job: RayMainJob = make_main_job(
-            entrypoint="python -c \"import os; print(os.environ['MILES_FT_TRAINING_RUN_ID'])\"",
+            entrypoint="python -c \"import os; print(os.environ['MILES_FT_RUN_ID'])\"",
         )
         run_id = await job.start()
         assert job.job_id is not None
