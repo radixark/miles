@@ -39,24 +39,6 @@ def patch_weight_to_mcore_format_preserve_fp32():
     print("[Patch] Applied patch to preserve FP32 precision in _weight_to_mcore_format")
 
 
-def patch_weight_to_mcore_format_preserve_fp32():
-
-    original_method = Bridge._weight_to_mcore_format
-
-    @wraps(original_method)
-    def patched_method(self, mcore_weights_name, hf_weights):
-        original_dtype = getattr(self, "dtype", None)
-        self.dtype = None
-        try:
-            result = original_method(self, mcore_weights_name, hf_weights)
-        finally:
-            self.dtype = original_dtype
-        return result
-
-    Bridge._weight_to_mcore_format = patched_method
-    print("[Patch] Applied patch to preserve FP32 precision in _weight_to_mcore_format")
-
-
 def add_convertion_args(parser):
     """Add conversion arguments to the parser"""
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")

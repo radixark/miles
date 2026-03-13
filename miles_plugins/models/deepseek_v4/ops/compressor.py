@@ -1,23 +1,17 @@
 import os
 from types import SimpleNamespace
-from typing import Optional
-
-import torch
-import torch.nn as nn
-from torch.nn import Linear
 
 import einops
-
+import torch
+import torch.nn as nn
 from megatron.core.transformer.transformer_config import TransformerConfig
-from .ref_model import (
-    Compressor as CompressorRef,
-    RMSNorm,
-    apply_rotary_emb,
-    rotate_activation,
-)
-from .utils import wrapped_precompute_freqs_cis
-from .cp_utils import all_gather_cp_natural_order, natural_to_zigzag_slice, get_freqs_cis_for_cp
+from torch.nn import Linear
+
+from .cp_utils import all_gather_cp_natural_order, get_freqs_cis_for_cp, natural_to_zigzag_slice
 from .qat import fp8_simulate_qat
+from .ref_model import Compressor as CompressorRef
+from .ref_model import RMSNorm, apply_rotary_emb, rotate_activation
+from .utils import wrapped_precompute_freqs_cis
 
 
 class DeepSeekV4Compressor(nn.Module):
@@ -27,7 +21,7 @@ class DeepSeekV4Compressor(nn.Module):
         head_dim: int,
         compress_ratio: int,
         rotate: bool,
-        cp_group: Optional[torch.distributed.ProcessGroup] = None,
+        cp_group: torch.distributed.ProcessGroup | None = None,
     ):
         super().__init__()
 
@@ -55,9 +49,7 @@ class DeepSeekV4Compressor(nn.Module):
         self.cp_size = cp_group.size() if cp_group is not None else 1
         self.cp_rank = cp_group.rank() if cp_group is not None else 0
 
-        self.ape = nn.Parameter(
-            torch.empty(compress_ratio, coff * self.head_dim, dtype=torch.float32)
-        )
+        self.ape = nn.Parameter(torch.empty(compress_ratio, coff * self.head_dim, dtype=torch.float32))
         self.wkv = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.float32)
         self.wgate = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.float32)
         self.norm = RMSNorm(self.head_dim, norm_eps)
@@ -107,7 +99,7 @@ class DeepSeekV4Compressor(nn.Module):
         assert self.wgate.weight.dtype == torch.float32
 
         bsz, seqlen_local, _ = x.size()
-        ratio, overlap, d = self.compress_ratio, self.overlap, self.head_dim
+        ratio, overlap, _ = self.compress_ratio, self.overlap, self.head_dim
         dtype = x.dtype
 
         assert (seqlen_local >= ratio) and (seqlen_local % ratio == 0), f"{seqlen_local=} {ratio=}"
@@ -130,11 +122,9 @@ class DeepSeekV4Compressor(nn.Module):
 
         kv = self.norm(kv.to(dtype))
 
-        freqs_cis = get_freqs_cis_for_cp(
-            self.freqs_cis, seqlen_local, self.cp_size, self.cp_group, stride=ratio
-        )
+        freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen_local, self.cp_size, self.cp_group, stride=ratio)
 
-        apply_rotary_emb(kv[..., -self.rope_head_dim:], freqs_cis)
+        apply_rotary_emb(kv[..., -self.rope_head_dim :], freqs_cis)
 
         if self.rotate:
             kv = rotate_activation(kv)
@@ -143,7 +133,7 @@ class DeepSeekV4Compressor(nn.Module):
         else:
             if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
                 kv = kv.clone()
-                kv[..., :self.nope_head_dim] = fp8_simulate_qat(kv[..., :self.nope_head_dim], 64)
+                kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
             else:
                 pass
 
@@ -156,7 +146,7 @@ class DeepSeekV4Compressor(nn.Module):
         Returns:
             k: [seqlen // compress_ratio, batch, head_dim] SBHD layout
         """
-        x_bshd = einops.rearrange(x, 's b d -> b s d')
+        x_bshd = einops.rearrange(x, "s b d -> b s d")
         k_bshd = self.forward_raw(x_bshd)
-        k = einops.rearrange(k_bshd, 'b sc d -> sc b d')
+        k = einops.rearrange(k_bshd, "b sc d -> sc b d")
         return k

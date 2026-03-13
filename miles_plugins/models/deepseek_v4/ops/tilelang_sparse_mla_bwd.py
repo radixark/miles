@@ -1,7 +1,8 @@
 # ruff: noqa
 import tilelang
-from tilelang import language as T
 import torch
+from tilelang import language as T
+
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
@@ -174,19 +175,32 @@ def bwd(
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
-                    acc_p[h_i, bi_i] = T.exp2(acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - Lse[by, s_i, bz * block_H + h_i])
+                    acc_p[h_i, bi_i] = T.exp2(
+                        acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - Lse[by, s_i, bz * block_H + h_i]
+                    )
 
                 T.copy(acc_p, P_shared_cast)
 
-                T.gemm(dO_shared, KV_shared, acc_dp, transpose_B=True, policy=T.GemmWarpPolicy.FullCol, clear_accum=True)
+                T.gemm(
+                    dO_shared, KV_shared, acc_dp, transpose_B=True, policy=T.GemmWarpPolicy.FullCol, clear_accum=True
+                )
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
-                    acc_dp[h_i, bi_i] = acc_p[h_i, bi_i] * (acc_dp[h_i, bi_i] - Delta[by, s_i, bz * block_H + h_i]) * sm_scale
+                    acc_dp[h_i, bi_i] = (
+                        acc_p[h_i, bi_i] * (acc_dp[h_i, bi_i] - Delta[by, s_i, bz * block_H + h_i]) * sm_scale
+                    )
 
                 T.copy(acc_dp, dP_shared_cast)
                 T.gemm(dP_shared_cast, KV_shared, acc_dq, policy=T.GemmWarpPolicy.FullCol)
 
-                T.gemm(dP_shared_cast, Q_shared, acc_dkv, transpose_A=True, policy=T.GemmWarpPolicy.FullCol, clear_accum=True)
+                T.gemm(
+                    dP_shared_cast,
+                    Q_shared,
+                    acc_dkv,
+                    transpose_A=True,
+                    policy=T.GemmWarpPolicy.FullCol,
+                    clear_accum=True,
+                )
                 T.gemm(P_shared_cast, dO_shared, acc_dkv, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
 
                 for s in range(split_store):
@@ -209,13 +223,16 @@ def bwd(
             for h_i in T.Parallel(block_H):
                 T.atomic_add(
                     dAttnSink[bz * block_H + h_i],
-                    -Delta[by, s_i, bz * block_H + h_i] * T.exp2(attn_sink_local[h_i] * log2_e - Lse[by, s_i, bz * block_H + h_i]),
+                    -Delta[by, s_i, bz * block_H + h_i]
+                    * T.exp2(attn_sink_local[h_i] * log2_e - Lse[by, s_i, bz * block_H + h_i]),
                 )
 
     return sparse_mla_bwd_kernel
 
 
-def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, indices, lse, sm_scale=None, is_casual=True, delta=None, block_size=32):
+def sparse_mqa_bwd_interface(
+    q, kv, attn_sink, o, do, indices, lse, sm_scale=None, is_casual=True, delta=None, block_size=32
+):
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous() and lse.is_contiguous()
     batch, seq_len, heads, dim = q.shape
     _, seq_len_kv, kv_dim = kv.shape
@@ -248,7 +265,7 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, indices, lse, sm_scale=Non
         lse_padded = torch.zeros(batch, seq_len, padded_heads, dtype=lse.dtype, device=lse.device)
         lse_padded[:, :, :heads] = lse
         lse = lse_padded
-        attn_sink_padded = torch.full((padded_heads,), float('-inf'), dtype=attn_sink.dtype, device=attn_sink.device)
+        attn_sink_padded = torch.full((padded_heads,), float("-inf"), dtype=attn_sink.dtype, device=attn_sink.device)
         attn_sink_padded[:heads] = attn_sink
         attn_sink = attn_sink_padded
 

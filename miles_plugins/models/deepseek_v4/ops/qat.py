@@ -17,4 +17,5 @@ class DeepSeekV4LinearQATFunc(torch.autograd.Function):
     def backward(ctx, grad_kv):
         return grad_kv, None
 
+
 fp8_simulate_qat = DeepSeekV4LinearQATFunc.apply

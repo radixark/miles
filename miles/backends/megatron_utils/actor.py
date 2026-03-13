@@ -27,7 +27,6 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ...utils.transformers_patch import with_transformers_patch
 from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data

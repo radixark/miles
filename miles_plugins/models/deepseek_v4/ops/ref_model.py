@@ -44,15 +44,9 @@ class RMSNorm(nn.Module):
 
 
 @lru_cache(2)
-def precompute_freqs_cis(
-    dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow
-) -> torch.Tensor:
+def precompute_freqs_cis(dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow) -> torch.Tensor:
     def find_correction_dim(num_rotations, dim, base, max_seq_len):
-        return (
-            dim
-            * math.log(max_seq_len / (num_rotations * 2 * math.pi))
-            / (2 * math.log(base))
-        )
+        return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
 
     def find_correction_range(low_rot, high_rot, dim, base, max_seq_len):
         low = math.floor(find_correction_dim(low_rot, dim, base, max_seq_len))
@@ -68,9 +62,7 @@ def precompute_freqs_cis(
 
     freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
     if original_seq_len > 0:
-        low, high = find_correction_range(
-            beta_fast, beta_slow, dim, base, original_seq_len
-        )
+        low, high = find_correction_range(beta_fast, beta_slow, dim, base, original_seq_len)
         smooth = 1 - linear_ramp_factor(low, high, dim // 2)
         freqs = freqs / factor * (1 - smooth) + freqs * smooth
 
@@ -80,9 +72,7 @@ def precompute_freqs_cis(
     return freqs_cis
 
 
-def apply_rotary_emb(
-    x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False
-) -> torch.Tensor:
+def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False) -> torch.Tensor:
     y = x
     x = torch.view_as_complex(x.float().unflatten(-1, (-1, 2)))
     if inverse:
@@ -109,14 +99,10 @@ def get_window_topk_idxs(window_size: int, bsz: int, seqlen: int, start_pos: int
         if start_pos >= window_size - 1:
             return torch.arange(window_size)
         elif start_pos > 0:
-            return F.pad(
-                torch.arange(start_pos + 1), (0, window_size - start_pos - 1), value=-1
-            )
+            return F.pad(torch.arange(start_pos + 1), (0, window_size - start_pos - 1), value=-1)
         else:
             base = torch.arange(seqlen).unsqueeze(1)
-            matrix = (base - window_size + 1).clamp(0) + torch.arange(
-                min(seqlen, window_size)
-            )
+            matrix = (base - window_size + 1).clamp(0) + torch.arange(min(seqlen, window_size))
             matrix = torch.where(matrix > base, -1, matrix)
             return matrix
 
@@ -124,9 +110,7 @@ def get_window_topk_idxs(window_size: int, bsz: int, seqlen: int, start_pos: int
 
 
 @lru_cache(2)
-def get_compress_topk_idxs(
-    ratio: int, bsz: int, seqlen: int, start_pos: int, offset: int
-):
+def get_compress_topk_idxs(ratio: int, bsz: int, seqlen: int, start_pos: int, offset: int):
     def _get_compress_topk_idxs():
         if start_pos > 0:
             return torch.arange(0, (start_pos + 1) // ratio) + offset

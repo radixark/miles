@@ -1,6 +1,7 @@
 import torch
-from . import tilelang_sparse_mla_fwd as sparse_mla_fwd
+
 from . import tilelang_sparse_mla_bwd as sparse_mla_bwd
+from . import tilelang_sparse_mla_fwd as sparse_mla_fwd
 
 
 def sparse_attn_torch(q, kv, attn_sink, topk_idxs, sm_scale=None):
@@ -21,13 +22,12 @@ def sparse_attn_torch(q, kv, attn_sink, topk_idxs, sm_scale=None):
     k_len = kv.shape[1]
     _, _, topk = topk_idxs.shape
 
-    assert (topk_idxs < k_len).all(), \
-        f"topk_idxs should be smaller than length of k: {k_len}, but got {topk_idxs}"
+    assert (topk_idxs < k_len).all(), f"topk_idxs should be smaller than length of k: {k_len}, but got {topk_idxs}"
 
     if sm_scale is None:
         sm_scale = (1.0 / d) ** 0.5
 
-    mask = (topk_idxs != -1)
+    mask = topk_idxs != -1
     safe_idxs = topk_idxs.masked_fill(~mask, 0)
 
     batch_idx = torch.arange(b, device=q.device).view(b, 1, 1)
@@ -77,7 +77,7 @@ def dense_attn_torch(q, kv, attn_sink, topk_idxs, sm_scale=None):
     batch_idx = torch.arange(b, device=q.device).view(b, 1, 1).expand(b, m, topk)
     seq_idx = torch.arange(m, device=q.device).view(1, m, 1).expand(b, m, topk)
 
-    valid_mask = (topk_idxs != -1)
+    valid_mask = topk_idxs != -1
 
     valid_batch = batch_idx[valid_mask]
     valid_seq = seq_idx[valid_mask]
@@ -109,9 +109,7 @@ class DeepSeekV4SparseAttention(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, kv, attn_sink, topk_idxs, sm_scale=None):
-        o, lse = sparse_mla_fwd.sparse_mqa_fwd_interface(
-            q, kv, attn_sink, topk_idxs, sm_scale=sm_scale
-        )
+        o, lse = sparse_mla_fwd.sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=sm_scale)
 
         ctx.save_for_backward(q, kv, attn_sink, topk_idxs, o.clone(), lse)
         ctx.sm_scale = sm_scale

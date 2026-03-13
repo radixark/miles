@@ -1,5 +1,3 @@
-from typing import Optional, Tuple
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -34,9 +32,7 @@ def fast_round_scale(amax, fp8_max_inv):
 
 
 @tilelang.jit(pass_configs=pass_configs)
-def act_quant_kernel(
-    N, block_size=128, in_dtype=BF16, out_dtype=FP8, scale_dtype=FP32, round_scale=False
-):
+def act_quant_kernel(N, block_size=128, in_dtype=BF16, out_dtype=FP8, scale_dtype=FP32, round_scale=False):
     M = T.symbolic("M")
     fp8_min = -448.0
     fp8_max = 448.0
@@ -73,9 +69,7 @@ def act_quant_kernel(
                     else:
                         s_local[i] = amax_local[i] * fp8_max_inv
                 for i, j in T.Parallel(blk_m, group_size):
-                    y_local[i, j] = T.clamp(
-                        x_local[i, j] / s_local[i], fp8_min, fp8_max
-                    )
+                    y_local[i, j] = T.clamp(x_local[i, j] / s_local[i], fp8_min, fp8_max)
                 for i in T.Parallel(blk_m):
                     S[pid_m * blk_m + i, pid_n] = s_local[i]
                 T.copy(y_local, y_shared)
@@ -85,8 +79,8 @@ def act_quant_kernel(
 
 
 def act_quant(
-    x: torch.Tensor, block_size: int = 128, scale_fmt: Optional[str] = None
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    x: torch.Tensor, block_size: int = 128, scale_fmt: str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
     assert x.is_contiguous(), "Input tensor must be contiguous"
     assert (
         x.size(-1) % block_size == 0
@@ -150,13 +144,9 @@ def fp8_gemm_kernel(N, K, out_dtype=BF16, accum_dtype="float32"):
     return fp8_gemm_kernel_
 
 
-def fp8_gemm(
-    a: torch.Tensor, a_s: torch.Tensor, b: torch.Tensor, b_s: torch.Tensor
-) -> torch.Tensor:
+def fp8_gemm(a: torch.Tensor, a_s: torch.Tensor, b: torch.Tensor, b_s: torch.Tensor) -> torch.Tensor:
     assert a.is_contiguous() and b.is_contiguous(), "Input tensors must be contiguous"
-    assert (
-        a_s.is_contiguous() and b_s.is_contiguous()
-    ), "Scaling factor tensors must be contiguous"
+    assert a_s.is_contiguous() and b_s.is_contiguous(), "Scaling factor tensors must be contiguous"
     K = a.size(-1)
     M = a.numel() // K
     N = b.size(0)
@@ -212,13 +202,9 @@ def sparse_attn_kernel(h: int, d: int, scale=None):
 
             for t in T.Pipelined(num_blocks, num_stages=num_stages):
                 for i in T.Parallel(block):
-                    idxs[i] = T.if_then_else(
-                        t * block + i < topk, topk_idxs[by, bx, t * block + i], -1
-                    )
+                    idxs[i] = T.if_then_else(t * block + i < topk, topk_idxs[by, bx, t * block + i], -1)
                 for i, j in T.Parallel(block, d):
-                    kv_shared[i, j] = T.if_then_else(
-                        idxs[i] != -1, kv[by, idxs[i], j], 0
-                    )
+                    kv_shared[i, j] = T.if_then_else(idxs[i] != -1, kv[by, idxs[i], j], 0)
                 for i, j in T.Parallel(h, block):
                     acc_s[i, j] = T.if_then_else(idxs[j] != -1, 0, -T.infinity(FP32))
                 T.gemm(
@@ -289,14 +275,9 @@ def hc_split_sinkhorn_kernel(hc: int, sinkhorn_iters: int, eps: float):
             for j in T.Parallel(hc):
                 pre[i, j] = T.sigmoid(mixes_shared[j] * hc_scale[0] + hc_base[j]) + eps
             for j in T.Parallel(hc):
-                post[i, j] = 2 * T.sigmoid(
-                    mixes_shared[j + hc] * hc_scale[1] + hc_base[j + hc]
-                )
+                post[i, j] = 2 * T.sigmoid(mixes_shared[j + hc] * hc_scale[1] + hc_base[j + hc])
             for j, k in T.Parallel(hc, hc):
-                comb_frag[j, k] = (
-                    mixes_shared[j * hc + k + hc * 2] * hc_scale[2]
-                    + hc_base[j * hc + k + hc * 2]
-                )
+                comb_frag[j, k] = mixes_shared[j * hc + k + hc * 2] * hc_scale[2] + hc_base[j * hc + k + hc * 2]
 
             row_sum = T.alloc_fragment(hc, FP32)
             col_sum = T.alloc_fragment(hc, FP32)

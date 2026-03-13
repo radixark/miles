@@ -1,14 +1,11 @@
-from typing import Optional, Tuple, Union
-
 import einops
 import torch
 import torch.nn.functional as F
+from megatron.core.transformer.module import MegatronModule
+from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from .ref_kernel import hc_split_sinkhorn
-from megatron.core.transformer.module import MegatronModule
-from megatron.core.transformer.transformer_config import TransformerConfig
-
 
 _HYPER_CONNECTION_MIXER_NO_GRAD = True
 
@@ -45,7 +42,7 @@ class DeepSeekV4HyperConnectionUtil:
         hc_fn: Tensor,
         hc_scale: Tensor,
         hc_base: Tensor,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor]:
         shape, dtype = x.size(), x.dtype
         x_flat = x.flatten(2).float()
 
@@ -118,19 +115,19 @@ class DeepSeekV4HyperConnectionUtil:
         hc_fn: Tensor,
         hc_scale: Tensor,
         hc_base: Tensor,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor]:
         assert hc_fn.dtype == torch.float32
         assert hc_scale.dtype == torch.float32
         assert hc_base.dtype == torch.float32
 
-        x = einops.rearrange(hidden_states, 's b hc d -> b s hc d')
+        x = einops.rearrange(hidden_states, "s b hc d -> b s hc d")
         x, post, comb = self.hc_pre_raw(x=x, hc_fn=hc_fn, hc_scale=hc_scale, hc_base=hc_base)
-        hidden_states = einops.rearrange(x, 'b s d -> s b d')
+        hidden_states = einops.rearrange(x, "b s d -> s b d")
         return hidden_states, post, comb
 
     def layer_post(
         self,
-        output_with_bias: Union[Tensor, Tuple[Tensor, Optional[Tensor]]],
+        output_with_bias: Tensor | tuple[Tensor, Tensor | None],
         residual: Tensor,
         post: Tensor,
         comb: Tensor,
@@ -142,13 +139,13 @@ class DeepSeekV4HyperConnectionUtil:
             out = output_with_bias
         assert isinstance(out, torch.Tensor)
 
-        out = einops.rearrange(out, 's b d -> b s d')
-        residual_bshd = einops.rearrange(residual, 's b hc d -> b s hc d')
+        out = einops.rearrange(out, "s b d -> b s d")
+        residual_bshd = einops.rearrange(residual, "s b hc d -> b s hc d")
         hidden_states = self.hc_post_raw(x=out, residual=residual_bshd, post=post, comb=comb)
-        return einops.rearrange(hidden_states, 'b s hc d -> s b hc d')
+        return einops.rearrange(hidden_states, "b s hc d -> s b hc d")
 
     def block_expand(self, hidden_states: Tensor) -> Tensor:
-        return einops.repeat(hidden_states, 's b d -> s b hc d', hc=self.hc_mult)
+        return einops.repeat(hidden_states, "s b d -> s b hc d", hc=self.hc_mult)
 
     def block_head(
         self,
@@ -157,6 +154,6 @@ class DeepSeekV4HyperConnectionUtil:
         hc_scale: Tensor,
         hc_base: Tensor,
     ) -> Tensor:
-        x = einops.rearrange(hidden_states, 's b hc d -> b s hc d')
+        x = einops.rearrange(hidden_states, "s b hc d -> b s hc d")
         x = self.hc_head_raw(x=x, hc_fn=hc_fn, hc_scale=hc_scale, hc_base=hc_base)
-        return einops.rearrange(x, 'b s d -> s b d')
+        return einops.rearrange(x, "b s d -> s b d")

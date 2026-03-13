@@ -1,11 +1,15 @@
 import re
 
 import torch
-from sglang.srt.utils import is_blackwell_supported
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
-from ...sglang import per_block_cast_to_fp8, quant_weight_ue8m0, transform_scale_ue8m0
+from ...sglang import (
+    per_block_cast_to_fp8,
+    quant_weight_ue8m0,
+    should_deepgemm_weight_requant_ue8m0,
+    transform_scale_ue8m0,
+)
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):

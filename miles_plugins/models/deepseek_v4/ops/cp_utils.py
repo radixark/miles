@@ -3,13 +3,11 @@ Utility functions for DeepSeek V4 Context Parallelism support.
 """
 
 import torch
+from megatron.core.models.common.embeddings.rope_utils import get_pos_emb_on_this_cp_rank
 from torch import Tensor
 
-from megatron.core.models.common.embeddings.rope_utils import get_pos_emb_on_this_cp_rank
-from .ref_model import (
-    get_window_topk_idxs as get_window_topk_idxs_ref,
-    get_compress_topk_idxs as get_compress_topk_idxs_ref,
-)
+from .ref_model import get_compress_topk_idxs as get_compress_topk_idxs_ref
+from .ref_model import get_window_topk_idxs as get_window_topk_idxs_ref
 
 
 def zigzag_to_natural(tensor: Tensor, dim: int, cp_size: int) -> Tensor:

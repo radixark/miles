@@ -1,6 +1,6 @@
 # ruff: noqa
-import torch
 import tilelang
+import torch
 from tilelang import language as T
 
 
@@ -149,7 +149,9 @@ def sparse_mla_fwd(
     return main
 
 
-def sparse_mqa_fwd_interface(q, kv, attn_sink, indices, sm_scale=None, return_p_sum: bool = False, block_I=64, num_stages=2, threads=256):
+def sparse_mqa_fwd_interface(
+    q, kv, attn_sink, indices, sm_scale=None, return_p_sum: bool = False, block_I=64, num_stages=2, threads=256
+):
     is_casual = True
     assert return_p_sum == False, "This kernel file is for fwd only"
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
@@ -173,7 +175,7 @@ def sparse_mqa_fwd_interface(q, kv, attn_sink, indices, sm_scale=None, return_p_
         q_padded = torch.zeros(batch, seq_len, padded_heads, dim, dtype=q.dtype, device=q.device)
         q_padded[:, :, :heads, :] = q
         q = q_padded
-        attn_sink_padded = torch.full((padded_heads,), float('-inf'), dtype=attn_sink.dtype, device=attn_sink.device)
+        attn_sink_padded = torch.full((padded_heads,), float("-inf"), dtype=attn_sink.dtype, device=attn_sink.device)
         attn_sink_padded[:heads] = attn_sink
         attn_sink = attn_sink_padded
 

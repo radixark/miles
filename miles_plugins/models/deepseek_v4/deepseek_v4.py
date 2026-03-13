@@ -1,12 +1,9 @@
 import copy
 import os
-from typing import Optional
 
 import einops
 import torch
 import torch.nn as nn
-
-from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TELinear, TENorm
 from megatron.core.models.gpt import experimental_attention_variant_module_specs as _eav_specs
@@ -20,10 +17,7 @@ from megatron.core.tensor_parallel.mappings import (
     gather_from_sequence_parallel_region,
     scatter_to_sequence_parallel_region,
 )
-from megatron.core.transformer.experimental_attention_variant.dsa import (
-    DSAIndexer,
-    DSAIndexerSubmodules,
-)
+from megatron.core.transformer.experimental_attention_variant.dsa import DSAIndexer, DSAIndexerSubmodules
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -57,12 +51,12 @@ class DeepSeekV4Attention(MegatronModule):
         super().__init__(config=config)
 
         if pg_collection is None:
-            pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=['tp'])
+            pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp"])
         else:
-            assert hasattr(pg_collection, 'tp')
+            assert hasattr(pg_collection, "tp")
         self.pg_collection = pg_collection
         self.tp_group = self.pg_collection.tp
-        self.cp_group = pg_collection.cp if hasattr(pg_collection, 'cp') else None
+        self.cp_group = pg_collection.cp if hasattr(pg_collection, "cp") else None
         self.cp_size = self.cp_group.size() if self.cp_group else 1
 
         layer_id = layer_number - 1
@@ -154,7 +148,7 @@ class DeepSeekV4Attention(MegatronModule):
             input_is_parallel=True,
             skip_bias_add=False,
         )
-        self.softmax_scale = self.head_dim ** -0.5
+        self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
 
         if self.compress_ratio:
@@ -181,17 +175,22 @@ class DeepSeekV4Attention(MegatronModule):
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
     def sharded_state_dict(
-        self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[dict] = None,
+        self,
+        prefix: str = "",
+        sharded_offsets: tuple = (),
+        metadata: dict | None = None,
     ) -> ShardedStateDict:
         ans = super().sharded_state_dict(prefix, sharded_offsets, metadata)
-        ans.update(make_sharded_tensors_for_checkpoint(
-            state_dict={'attn_sink': self.attn_sink},
-            prefix=prefix,
-            tensor_parallel_layers_axis_map={'attn_sink': 0},
-            sharded_offsets=sharded_offsets,
-            tp_group=self.tp_group,
-            dp_cp_group=metadata['dp_cp_group'],
-        ))
+        ans.update(
+            make_sharded_tensors_for_checkpoint(
+                state_dict={"attn_sink": self.attn_sink},
+                prefix=prefix,
+                tensor_parallel_layers_axis_map={"attn_sink": 0},
+                sharded_offsets=sharded_offsets,
+                tp_group=self.tp_group,
+                dp_cp_group=metadata["dp_cp_group"],
+            )
+        )
         return ans
 
     def forward(
@@ -212,7 +211,7 @@ class DeepSeekV4Attention(MegatronModule):
                 hidden_states, tensor_parallel_output_grad=False, group=self.tp_group
             )
 
-        x = einops.rearrange(hidden_states, 's b d -> b s d')
+        x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
         freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen_local, self.cp_size, self.cp_group)
@@ -236,15 +235,17 @@ class DeepSeekV4Attention(MegatronModule):
             kv_vanilla = fp8_simulate_qat(kv_vanilla, 64)
 
         seqlen_global = seqlen_local * self.cp_size
-        q_positions = get_q_positions_for_cp(seqlen_local, cp_size=self.cp_size, cp_group=self.cp_group, device=x.device)
+        q_positions = get_q_positions_for_cp(
+            seqlen_local, cp_size=self.cp_size, cp_group=self.cp_group, device=x.device
+        )
 
         topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=win, cp_size=self.cp_size, bsz=bsz)
 
         if self.compress_ratio:
             kv_compress_offset = seqlen_global
             if self.indexer is not None:
-                x_sbd = einops.rearrange(x, 'b s d -> s b d')
-                qr_sbd = einops.rearrange(qr, 'b s d -> s b d')
+                x_sbd = einops.rearrange(x, "b s d -> s b d")
+                qr_sbd = einops.rearrange(qr, "b s d -> s b d")
                 if self.sequence_parallel:
                     x_sbd = scatter_to_sequence_parallel_region(x_sbd, group=self.tp_group)
                     qr_sbd = scatter_to_sequence_parallel_region(qr_sbd, group=self.tp_group)
@@ -260,17 +261,19 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv_compress = None
         if self.compress_ratio:
-            x_sbd = einops.rearrange(x, 'b s d -> s b d')
+            x_sbd = einops.rearrange(x, "b s d -> s b d")
             kv_compress_sbd = self.compressor(x_sbd)
             if kv_compress_sbd is not None:
-                kv_compress = einops.rearrange(kv_compress_sbd, 's b d -> b s d')
+                kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
 
         assert self.attn_sink.dtype == torch.float32
 
         if self.cp_size > 1:
             kv_vanilla = all_gather_cp_natural_order(kv_vanilla, dim=1, cp_size=self.cp_size, cp_group=self.cp_group)
             if kv_compress is not None:
-                kv_compress = all_gather_cp_natural_order(kv_compress, dim=1, cp_size=self.cp_size, cp_group=self.cp_group)
+                kv_compress = all_gather_cp_natural_order(
+                    kv_compress, dim=1, cp_size=self.cp_size, cp_group=self.cp_group
+                )
 
         if kv_compress is not None:
             kv = torch.cat([kv_vanilla, kv_compress], dim=1)
@@ -295,7 +298,7 @@ class DeepSeekV4Attention(MegatronModule):
         o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
         x, _ = self.wo_b(o.flatten(2))
 
-        output = einops.rearrange(x, 'b s d -> s b d')
+        output = einops.rearrange(x, "b s d -> s b d")
 
         if self.sequence_parallel:
             output = scatter_to_sequence_parallel_region(output, group=self.tp_group)
@@ -335,8 +338,6 @@ def get_dsv4_spec(args, config, vp_stage):
 
     _eav_specs.get_experimental_attention_variant_module_spec = _patched_get_spec
     try:
-        return get_transformer_block_with_experimental_attention_variant_spec(
-            config, vp_stage=vp_stage
-        )
+        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
     finally:
         _eav_specs.get_experimental_attention_variant_module_spec = _orig_get_spec

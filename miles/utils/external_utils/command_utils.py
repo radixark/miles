@@ -46,9 +46,9 @@ def convert_checkpoint(
         print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
         hostnames_raw = os.environ["SLURM_JOB_HOSTNAMES"].strip()
         job_hostnames = hostnames_raw.split(",") if "," in hostnames_raw else hostnames_raw.split("\n")
-        master_addr = job_hostnames[0]
-        nnodes = len(job_hostnames)
-        node_rank = int(os.environ["SLURM_NODEID"])
+        master_addr = job_hostnames[0]  # noqa: F841
+        nnodes = len(job_hostnames)  # noqa: F841
+        node_rank = int(os.environ["SLURM_NODEID"])  # noqa: F841
 
         multinode_args = (
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
