@@ -518,17 +518,28 @@ async def test_cooldown_expiry_allows_recovery(
         observation_ticks=20,
         timeout=FAST_TIMEOUT,
     )
+    old_run_id = (await testbed.get_status()).active_run_id
 
     # Step 3: wait for cooldown window to expire. Training is dead, detector
     # keeps firing, and once cooldown expires the next fire triggers recovery.
     await asyncio.sleep(window_seconds + 3)
 
-    # Step 4: verify recovery was triggered automatically after cooldown expiry
-    final = await testbed.wait_for_mode_transition(
-        target_mode=ControllerMode.MONITORING,
-        timeout=RECOVERY_TIMEOUT,
-    )
-    assert final.mode == ControllerMode.MONITORING
+    # Step 4: verify recovery was triggered automatically after cooldown expiry.
+    # The recovery may complete before this assertion starts polling, so use
+    # run_id change instead of waiting to observe a transient mode transition.
+    deadline = time.monotonic() + RECOVERY_TIMEOUT
+    while time.monotonic() < deadline:
+        status = await testbed.get_status()
+        if status.active_run_id != old_run_id and status.mode == ControllerMode.MONITORING:
+            break
+        await asyncio.sleep(0.5)
+    else:
+        raise TimeoutError(
+            f"Recovery did not complete within {RECOVERY_TIMEOUT}s after cooldown expiry: "
+            f"run_id changed={status.active_run_id != old_run_id}, mode={status.mode}"
+        )
+
+    assert status.mode == ControllerMode.MONITORING
 
 
 # ------------------------------------------------------------------
