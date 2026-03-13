@@ -232,7 +232,7 @@ class TestEvictingAndRestarting:
 
     @pytest.mark.asyncio
     async def test_restart_in_progress_returns_updated_state(self) -> None:
-        new_restart = StoppingAndRestartingSt(bad_node_ids=["n"], submitted=True)
+        new_restart = StoppingAndRestartingSt(bad_node_ids=["n"], submitted=True, submit_time=_now())
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(new_restart))
         state = EvictingAndRestartingSt(
@@ -249,7 +249,7 @@ class TestEvictingAndRestarting:
         stepper = _make_stepper()
         ctx = _make_ctx(restart_stepper=_mock_stepper_yielding(None))
         state = EvictingAndRestartingSt(
-            restart=StoppingAndRestartingSt(submitted=True),
+            restart=StoppingAndRestartingSt(submitted=True, submit_time=_now()),
             failed_next_state=StopTimeDiagnosticsSt(),
         )
         result = await _step_last(stepper, state, ctx)
