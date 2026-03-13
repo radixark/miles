@@ -29,6 +29,12 @@ async def recovery_timeout_check(
 ) -> RecoveryState | None:
     elapsed = (datetime.now(timezone.utc) - ctx.recovery_start_time).total_seconds()
     if elapsed > ctx.timeout_seconds and not isinstance(state, (NotifyHumansSt, RecoveryDoneSt)):
+        logger.warning(
+            "recovery_sm: timeout exceeded: elapsed=%.0f, timeout=%d, state=%s",
+            elapsed,
+            ctx.timeout_seconds,
+            type(state).__name__,
+        )
         return NotifyHumansSt(state_before=type(state).__name__, reason="recovery_timeout_exceeded")
     return None
 
@@ -40,7 +46,17 @@ async def recovery_timeout_check(
 
 class RealtimeChecksHandler(StateHandler[RealtimeChecksSt, RecoveryContext]):
     async def step(self, state: RealtimeChecksSt, ctx: RecoveryContext) -> RecoveryState:
+        logger.debug(
+            "recovery_sm: RealtimeChecksHandler.step trigger=%s, pre_identified_bad_nodes=%d",
+            ctx.trigger,
+            len(state.pre_identified_bad_nodes),
+        )
         if state.pre_identified_bad_nodes:
+            logger.info(
+                "recovery_sm: state transition: old=RealtimeChecksSt, new=EvictingAndRestartingSt, "
+                "trigger=pre_identified_bad_nodes, bad_nodes=%s",
+                state.pre_identified_bad_nodes,
+            )
             return EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(
                 bad_node_ids=state.pre_identified_bad_nodes,
             )
@@ -53,6 +69,10 @@ class RealtimeChecksHandler(StateHandler[RealtimeChecksSt, RecoveryContext]):
         # do not name bad nodes up front; future audits should treat the
         # "restart before diagnostics" ordering as a non-goal unless product
         # requirements change.
+        logger.info(
+            "recovery_sm: state transition: old=RealtimeChecksSt, new=EvictingAndRestartingSt, "
+            "trigger=direct_restart (no bad nodes)"
+        )
         return EvictingAndRestartingSt.direct_restart()
 
 
@@ -62,14 +82,26 @@ class EvictingAndRestartingHandler(StateHandler[EvictingAndRestartingSt, Recover
         state: EvictingAndRestartingSt,
         ctx: RecoveryContext,
     ) -> RecoveryState | None:
+        logger.debug(
+            "recovery_sm: EvictingAndRestartingHandler.step restart_state=%s",
+            type(state.restart).__name__,
+        )
         latest_restart = None
         async for _new_restart in ctx.restart_stepper(state.restart, ctx.restart_context):
             latest_restart = _new_restart
         if latest_restart is None:
+            logger.debug("recovery_sm: EvictingAndRestartingHandler returning None, restart stepper idle")
             return None
         if isinstance(latest_restart, RestartDoneSt):
+            logger.info(
+                "recovery_sm: state transition: old=EvictingAndRestartingSt, new=RecoveryDoneSt, trigger=restart_done"
+            )
             return RecoveryDoneSt()
         if isinstance(latest_restart, RestartFailedSt):
+            logger.info(
+                "recovery_sm: state transition: old=EvictingAndRestartingSt, new=%s, trigger=restart_failed",
+                type(state.failed_next_state).__name__,
+            )
             return state.failed_next_state
         return EvictingAndRestartingSt(
             restart=latest_restart,
@@ -83,6 +115,7 @@ class StopTimeDiagnosticsHandler(StateHandler[StopTimeDiagnosticsSt, RecoveryCon
         state: StopTimeDiagnosticsSt,
         ctx: RecoveryContext,
     ) -> RecoveryState:
+        logger.debug("recovery_sm: StopTimeDiagnosticsHandler.step trigger=%s", ctx.trigger)
         pre_executors: list[ClusterExecutorProtocol] = []
         if ctx.trigger == TriggerType.HANG and ctx.rank_pids_provider is not None:
             pre_executors.append(StackTraceClusterExecutor(rank_pids_provider=ctx.rank_pids_provider))
@@ -127,4 +160,7 @@ class NotifyHumansHandler(StateHandler[NotifyHumansSt, RecoveryContext]):
         )
         logger.warning("recovery_notify reason=%s", message)
         await safe_notify(ctx.notifier, title="Recovery Alert", content=message)
+        logger.info(
+            "recovery_sm: state transition: old=NotifyHumansSt, new=RecoveryDoneSt, trigger=human_notified"
+        )
         return RecoveryDoneSt()

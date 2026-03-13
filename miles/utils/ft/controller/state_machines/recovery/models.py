@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
 
@@ -14,6 +15,8 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 )
 from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class RecoveryState(FtBaseModel):
@@ -30,6 +33,7 @@ class EvictingAndRestartingSt(RecoveryState):
 
     @classmethod
     def direct_restart(cls) -> EvictingAndRestartingSt:
+        logger.debug("recovery_sm: EvictingAndRestartingSt.direct_restart (no eviction)")
         return cls(
             restart=StoppingAndRestartingSt(),
             failed_next_state=StopTimeDiagnosticsSt(),
@@ -37,6 +41,10 @@ class EvictingAndRestartingSt(RecoveryState):
 
     @classmethod
     def evict_and_restart_next_stop_time_diag(cls, *, bad_node_ids: tuple[str, ...]) -> EvictingAndRestartingSt:
+        logger.debug(
+            "recovery_sm: EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag bad_nodes=%s",
+            bad_node_ids,
+        )
         return cls(
             restart=EvictingSt(bad_node_ids=bad_node_ids),
             failed_next_state=StopTimeDiagnosticsSt(),
@@ -44,6 +52,10 @@ class EvictingAndRestartingSt(RecoveryState):
 
     @classmethod
     def evict_and_restart_final(cls, *, bad_node_ids: tuple[str, ...]) -> EvictingAndRestartingSt:
+        logger.debug(
+            "recovery_sm: EvictingAndRestartingSt.evict_and_restart_final bad_nodes=%s",
+            bad_node_ids,
+        )
         return cls(
             restart=EvictingSt(bad_node_ids=bad_node_ids),
             failed_next_state=NotifyHumansSt(state_before="EvictingAndRestartingSt", reason="final_restart_failed"),
