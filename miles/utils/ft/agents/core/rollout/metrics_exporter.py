@@ -26,6 +26,7 @@ class RolloutMetricsExporter:
             labelnames=["cell_id"],
             registry=self._exporter.registry,
         )
+        logger.info("rollout: metrics exporter initialized: address=%s", self._exporter.get_address())
 
     @property
     def registry(self) -> object:
@@ -36,7 +37,9 @@ class RolloutMetricsExporter:
         return self._exporter.get_address()
 
     def update(self, *, cell_id: str, is_healthy: bool) -> None:
+        logger.debug("rollout: updating cell health metric: cell_id=%s, is_healthy=%s", cell_id, is_healthy)
         self._cell_alive.labels(cell_id=cell_id).set(float(is_healthy))
 
     def shutdown(self) -> None:
+        logger.info("rollout: metrics exporter shutting down")
         self._exporter.shutdown()

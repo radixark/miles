@@ -41,6 +41,11 @@ class RolloutHealthChecker:
 
         self._cells: dict[str, CellEntry] = {entry.cell_id: entry for entry in cells}
 
+        logger.info(
+            "rollout: health checker initialized: num_cells=%d, cell_ids=%s, check_interval=%s, timeout=%s",
+            len(self._cells), list(self._cells.keys()), check_interval, timeout,
+        )
+
         # Accepted product decision: rollout-agent construction is only
         # supported from an already-running event loop. We intentionally do
         # not offer a sync-safe/lazy-start variant for callers outside async
@@ -54,26 +59,30 @@ class RolloutHealthChecker:
 
     def pause(self) -> None:
         self._paused = True
-        logger.info("rollout_health_checker_paused")
+        logger.info("rollout: health checker paused")
 
     def resume(self) -> None:
         self._paused = False
-        logger.info("rollout_health_checker_resumed")
+        logger.info("rollout: health checker resumed")
 
     async def shutdown(self) -> None:
+        logger.info("rollout: health checker shutting down")
         self._task.cancel()
         try:
             await self._task
         except asyncio.CancelledError:
             pass
-        logger.info("rollout_health_checker_shutdown")
+        logger.info("rollout: health checker shutdown complete")
 
     # --- Private ---
 
     async def _loop(self) -> None:
         while True:
             if not self._paused:
+                logger.debug("rollout: health check loop iteration: num_cells=%d", len(self._cells))
                 await asyncio.gather(*(self._check_one_cell(entry) for entry in self._cells.values()))
+            else:
+                logger.debug("rollout: health check loop skipped, paused")
             await asyncio.sleep(self._check_interval)
 
     async def _check_one_cell(self, entry: CellEntry) -> None:
@@ -87,10 +96,11 @@ class RolloutHealthChecker:
             )
         except Exception:
             logger.warning(
-                "health_check_failed cell_id=%s",
+                "rollout: health check failed: cell_id=%s",
                 entry.cell_id,
                 exc_info=True,
             )
+        logger.debug("rollout: health check result: cell_id=%s, is_healthy=%s", entry.cell_id, is_healthy)
         self._report_fn(cell_id=entry.cell_id, is_healthy=is_healthy)
 
 
@@ -113,11 +123,15 @@ async def _probe_cell(
     # Miles will make the engine object none when it is killed (stopped)
     lead_engine = engines[0]
     if lead_engine is None:
+        logger.debug("rollout: lead engine is None, cell unhealthy: cell_id=%s", cell_id)
         return False
 
     try:
         await asyncio.wait_for(engine_health_fn(lead_engine), timeout=timeout)
         return True
+    except asyncio.TimeoutError:
+        logger.warning("rollout: engine health check timed out: cell_id=%s, timeout=%s", cell_id, timeout)
+        return False
     except Exception:
-        logger.info("engine_health_check_failed cell_id=%s", cell_id, exc_info=True)
+        logger.info("rollout: engine health check failed: cell_id=%s", cell_id, exc_info=True)
         return False

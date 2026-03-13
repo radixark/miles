@@ -34,7 +34,7 @@ class FtRolloutAgent:
         )
 
         logger.info(
-            "ft_rollout_agent_started address=%s cells=%s",
+            "rollout: agent started: address=%s, cells=%s",
             self.address,
             self._health_checker.cell_ids,
         )
@@ -44,12 +44,15 @@ class FtRolloutAgent:
         return self._metrics_exporter.address
 
     async def shutdown(self) -> None:
+        logger.info("rollout: agent shutting down")
         await self._health_checker.shutdown()
         self._metrics_exporter.shutdown()
-        logger.info("ft_rollout_agent_shutdown")
+        logger.info("rollout: agent shutdown complete")
 
     def pause(self) -> None:
+        logger.info("rollout: agent pausing health checks")
         self._health_checker.pause()
 
     def resume(self) -> None:
+        logger.info("rollout: agent resuming health checks")
         self._health_checker.resume()
