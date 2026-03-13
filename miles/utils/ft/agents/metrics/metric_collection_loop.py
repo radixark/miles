@@ -6,7 +6,7 @@ import time
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.metrics.prometheus_exporter import PrometheusExporter
-from miles.utils.ft.agents.types import GaugeSample
+from miles.utils.ft.agents.types import CounterSample, GaugeSample, MetricSample
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,8 @@ class MetricCollectionLoop:
         while True:
             try:
                 result = await collector.collect()
-                self._exporter.update_metrics(result.metrics)
+                labeled = _inject_node_id(result.metrics, node_id=self._node_id)
+                self._exporter.update_metrics(labeled)
                 consecutive_failures = 0
                 self._last_success_timestamps[collector_name] = time.time()
             except Exception:
@@ -109,3 +110,24 @@ class MetricCollectionLoop:
                 ),
             ]
         )
+
+
+def _inject_node_id(
+    samples: list[MetricSample],
+    *,
+    node_id: str,
+) -> list[GaugeSample | CounterSample]:
+    """Merge node_id into every sample's labels.
+
+    Collector-returned samples typically lack node_id because collectors
+    don't know their placement. This ensures all node-agent metrics carry
+    node_id regardless of backend (MiniPrometheus auto-injects via
+    target_id, but real Prometheus does not).
+    """
+    result: list[GaugeSample | CounterSample] = []
+    for sample in samples:
+        if "node_id" not in sample.labels:
+            merged_labels = {**sample.labels, "node_id": node_id}
+            sample = sample.model_copy(update={"labels": merged_labels})
+        result.append(sample)
+    return result

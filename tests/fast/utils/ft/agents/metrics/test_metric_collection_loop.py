@@ -9,8 +9,8 @@ import pytest
 from tests.fast.utils.ft.utils import FailingCloseCollector, FailingCollector
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
-from miles.utils.ft.agents.metrics.metric_collection_loop import MetricCollectionLoop
-from miles.utils.ft.agents.types import GaugeSample
+from miles.utils.ft.agents.metrics.metric_collection_loop import MetricCollectionLoop, _inject_node_id
+from miles.utils.ft.agents.types import CounterSample, GaugeSample
 
 
 class _PassCollector(BaseCollector):
@@ -144,6 +144,26 @@ class TestRunSingleCollector:
         assert call_args[0][0][0].name == "m"
 
     @pytest.mark.anyio
+    async def test_collector_samples_get_node_id_injected(self) -> None:
+        """Node agent collectors don't include node_id in their labels.
+        Without injection, Prometheus backend would lack node_id on hardware
+        metrics, causing detectors to crash or silently fail."""
+        sample = GaugeSample(name="gpu_temp", labels={"gpu": "0"}, value=65.0)
+        collector = _PassCollector(metrics=[sample])
+        exporter = _make_exporter()
+        loop = MetricCollectionLoop(node_id="my-node", collectors=[collector], exporter=exporter)
+
+        await loop.start()
+        await asyncio.sleep(0.05)
+        await loop.stop()
+
+        assert exporter.update_metrics.call_count >= 1
+        first_call_samples = exporter.update_metrics.call_args_list[0][0][0]
+        metric_sample = first_call_samples[0]
+        assert metric_sample.labels["node_id"] == "my-node"
+        assert metric_sample.labels["gpu"] == "0"
+
+    @pytest.mark.anyio
     async def test_collect_exception_does_not_kill_loop(self) -> None:
         """A collector that raises on collect() should not stop the loop."""
         collector = FailingCollector(collect_interval=0.01)
@@ -204,3 +224,44 @@ class TestRealAsyncTiming:
 
         assert healthy.collect_count >= 3
         assert failing.call_count >= 3
+
+
+class TestInjectNodeId:
+    """Unit tests for _inject_node_id — ensures all collector samples
+    carry node_id so Prometheus backend doesn't lack the column that
+    node-level detectors depend on."""
+
+    def test_adds_node_id_to_gauge_without_it(self) -> None:
+        samples = [GaugeSample(name="gpu_temp", labels={"gpu": "0"}, value=65.0)]
+        result = _inject_node_id(samples, node_id="node-1")
+
+        assert len(result) == 1
+        assert result[0].labels["node_id"] == "node-1"
+        assert result[0].labels["gpu"] == "0"
+
+    def test_adds_node_id_to_counter_without_it(self) -> None:
+        samples = [CounterSample(name="xid_count", labels={}, delta=1.0)]
+        result = _inject_node_id(samples, node_id="node-1")
+
+        assert result[0].labels["node_id"] == "node-1"
+
+    def test_preserves_existing_node_id(self) -> None:
+        samples = [GaugeSample(name="m", labels={"node_id": "original"}, value=1.0)]
+        result = _inject_node_id(samples, node_id="injected")
+
+        assert result[0].labels["node_id"] == "original"
+
+    def test_handles_empty_list(self) -> None:
+        result = _inject_node_id([], node_id="node-1")
+
+        assert result == []
+
+    def test_multiple_samples_all_get_node_id(self) -> None:
+        samples = [
+            GaugeSample(name="a", labels={"gpu": "0"}, value=1.0),
+            GaugeSample(name="b", labels={"device": "ib0"}, value=0.0),
+            CounterSample(name="c", labels={}, delta=1.0),
+        ]
+        result = _inject_node_id(samples, node_id="node-2")
+
+        assert all(s.labels["node_id"] == "node-2" for s in result)
