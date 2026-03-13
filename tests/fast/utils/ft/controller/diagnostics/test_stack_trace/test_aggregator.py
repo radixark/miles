@@ -233,6 +233,38 @@ class TestStackTraceAggregatorFingerprint:
         assert fp != ""
 
 
+class TestEmptyFingerprintHandling:
+    def test_node_with_empty_fingerprint_is_suspect(self) -> None:
+        """Previously a node whose threads all had empty frames produced
+        fingerprint "" which was treated as a valid group in majority
+        voting. This could mask the real outlier or produce misleading
+        aggregation. Now empty-fingerprint nodes are excluded from
+        fingerprint grouping and always marked as suspects."""
+        empty_threads = [
+            PySpyThread(thread_name="T", active=False, owns_gil=False, frames=[]),
+        ]
+        agg = StackTraceAggregator()
+        traces = {
+            "node-0": SAMPLE_PYSPY_THREADS_NORMAL,
+            "node-1": SAMPLE_PYSPY_THREADS_NORMAL,
+            "node-empty": empty_threads,
+        }
+        result = agg.aggregate(traces=traces)
+        assert "node-empty" in result.suspect_node_ids
+
+    def test_all_nodes_empty_fingerprint_returns_all_suspect(self) -> None:
+        empty_threads = [
+            PySpyThread(thread_name="T", active=False, owns_gil=False, frames=[]),
+        ]
+        agg = StackTraceAggregator()
+        traces = {
+            "node-0": empty_threads,
+            "node-1": empty_threads,
+        }
+        result = agg.aggregate(traces=traces)
+        assert sorted(result.suspect_node_ids) == ["node-0", "node-1"]
+
+
 class TestAggregationResult:
     def test_result_contains_fingerprint_groups(self) -> None:
         agg = StackTraceAggregator()

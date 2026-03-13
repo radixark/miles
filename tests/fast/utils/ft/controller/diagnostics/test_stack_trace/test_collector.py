@@ -104,6 +104,40 @@ class TestCollectStackTraceSuspects:
 
         assert "node-0" in result
 
+    def test_empty_rank_pids_marks_node_as_suspect(self) -> None:
+        """Previously an empty rank_pids dict caused a silent return with
+        no suspect recorded. During a hang, if the training process has
+        just exited and rank_pids_provider reads no PIDs, the node should
+        still be treated as a diagnostic failure."""
+        node_agents = {"node-0": _make_agent_with_trace("node-0")}
+
+        result = asyncio.run(
+            collect_stack_trace_suspects(
+                node_agents=node_agents,
+                rank_pids_provider=lambda nid: {},
+                default_timeout_seconds=30,
+            )
+        )
+
+        assert "node-0" in result
+
+    def test_empty_threads_marks_node_as_suspect(self) -> None:
+        """Previously when py-spy returned an empty thread list, the node
+        was recorded as traces[node_id]=[] with an empty fingerprint "".
+        This polluted aggregation by treating it as a valid (but vacuous)
+        trace. Now empty threads are treated as diagnostic failure."""
+        node_agents = {"node-0": _make_agent_with_trace("node-0", details="[]")}
+
+        result = asyncio.run(
+            collect_stack_trace_suspects(
+                node_agents=node_agents,
+                rank_pids_provider=lambda nid: {0: 1234},
+                default_timeout_seconds=30,
+            )
+        )
+
+        assert "node-0" in result
+
     def test_successful_collection_returns_aggregation_suspects(self) -> None:
         threads_json = json.dumps(_normal_threads())
         node_agents = {

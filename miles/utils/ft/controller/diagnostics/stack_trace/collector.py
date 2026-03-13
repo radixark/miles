@@ -35,6 +35,8 @@ async def collect_stack_trace_suspects(
             return
 
         if not rank_pids:
+            suspect_from_failures.append(node_id)
+            logger.warning("stack_trace_no_pids node=%s", node_id)
             return
 
         result = await call_agent_diagnostic(
@@ -56,6 +58,10 @@ async def collect_stack_trace_suspects(
                     exc,
                     exc_info=True,
                 )
+                return
+            if not threads:
+                suspect_from_failures.append(node_id)
+                logger.warning("stack_trace_empty_threads node=%s", node_id)
                 return
             traces[node_id] = threads
         else:
