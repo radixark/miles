@@ -100,9 +100,12 @@ async def run_stepper_to_convergence(
     *,
     max_iterations: int = _MAX_CONVERGENCE_ITERATIONS,
     on_convergence_failure: ConvergenceFailureCallback | None = None,
+    context_factory: Callable[[StateT], ContextT] | None = None,
 ) -> AsyncGenerator[StateT, None]:
     current = state
     for _ in range(max_iterations):
+        if context_factory is not None:
+            context = context_factory(current)
         had_transition = False
         async for new_state in stepper(current, context):
             if new_state != current:

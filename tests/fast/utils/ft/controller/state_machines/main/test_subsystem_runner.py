@@ -125,7 +125,7 @@ class TestAdvanceSubsystemsEarlyStop:
         def tracking_build_ctx(*, spec, context, recovery_stepper, restart_stepper):
             return MagicMock()
 
-        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None):
+        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
             # Determine which subsystem this is by checking the current state
             subsystems_stepped.append(type(sub_state).__name__)
             return
@@ -181,7 +181,7 @@ class TestAdvanceSubsystemsEarlyStop:
         def tracking_build_ctx(*, spec, context, recovery_stepper, restart_stepper):
             return MagicMock()
 
-        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None):
+        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
             subsystems_stepped.append(type(sub_state).__name__)
             return
             yield
@@ -200,6 +200,126 @@ class TestAdvanceSubsystemsEarlyStop:
                 pass
 
             assert len(subsystems_stepped) == 2
+        finally:
+            runner_mod.build_subsystem_context = original_build_ctx
+            runner_mod.run_stepper_to_convergence = original_run_convergence
+
+
+# ---------------------------------------------------------------------------
+# advance_subsystems context factory
+# ---------------------------------------------------------------------------
+
+
+class TestAdvanceSubsystemsContextFactory:
+    """Previously advance_subsystems built a single SubsystemContext before
+    calling run_stepper_to_convergence, then reused that same context for
+    every iteration of the convergence loop. If a subsystem completed
+    recovery and returned to DetectingAnomalySt within one tick, the stale
+    context (e.g. old job_status, old active_node_ids) would cause the
+    detector to immediately re-trigger recovery or re-send notifications.
+
+    Now advance_subsystems passes a context_factory callback to
+    run_stepper_to_convergence so the context is refreshed each iteration."""
+
+    @pytest.mark.asyncio
+    async def test_context_factory_passed_to_run_stepper_to_convergence(self) -> None:
+        """advance_subsystems must pass a context_factory to
+        run_stepper_to_convergence so that each convergence iteration gets
+        a fresh SubsystemContext instead of reusing a stale snapshot."""
+        state = NormalSt(subsystems={"training": DetectingAnomalySt()})
+
+        from unittest.mock import MagicMock
+
+        context = MagicMock()
+        context.shared.subsystem_specs = {"training": MagicMock()}
+
+        import miles.utils.ft.controller.state_machines.main.subsystem_runner as runner_mod
+
+        original_build_ctx = runner_mod.build_subsystem_context
+        original_run_convergence = runner_mod.run_stepper_to_convergence
+
+        captured_context_factory = []
+
+        def tracking_build_ctx(*, spec, context, recovery_stepper, restart_stepper):
+            return MagicMock()
+
+        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
+            captured_context_factory.append(context_factory)
+            return
+            yield
+
+        runner_mod.build_subsystem_context = tracking_build_ctx
+        runner_mod.run_stepper_to_convergence = tracking_run_convergence
+        try:
+            async for _ in advance_subsystems(
+                state,
+                context,
+                subsystem_stepper=MagicMock(),
+                recovery_stepper=MagicMock(),
+                restart_stepper=MagicMock(),
+                on_convergence_failure=None,
+            ):
+                pass
+
+            assert len(captured_context_factory) == 1
+            assert captured_context_factory[0] is not None, (
+                "context_factory must be provided so that each convergence "
+                "iteration rebuilds SubsystemContext with fresh data"
+            )
+        finally:
+            runner_mod.build_subsystem_context = original_build_ctx
+            runner_mod.run_stepper_to_convergence = original_run_convergence
+
+    @pytest.mark.asyncio
+    async def test_context_factory_calls_build_subsystem_context(self) -> None:
+        """The context_factory callback passed to run_stepper_to_convergence
+        must call build_subsystem_context each time it is invoked, ensuring
+        fresh job_status, active_node_ids, etc."""
+        state = NormalSt(subsystems={"training": DetectingAnomalySt()})
+
+        from unittest.mock import MagicMock
+
+        context = MagicMock()
+        context.shared.subsystem_specs = {"training": MagicMock()}
+
+        import miles.utils.ft.controller.state_machines.main.subsystem_runner as runner_mod
+
+        original_build_ctx = runner_mod.build_subsystem_context
+        original_run_convergence = runner_mod.run_stepper_to_convergence
+
+        build_ctx_call_count = 0
+
+        def counting_build_ctx(*, spec, context, recovery_stepper, restart_stepper):
+            nonlocal build_ctx_call_count
+            build_ctx_call_count += 1
+            return MagicMock(name=f"ctx_{build_ctx_call_count}")
+
+        async def capturing_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
+            # Step 1: initial context was built (build_ctx_call_count == 1)
+            assert build_ctx_call_count == 1
+
+            # Step 2: call context_factory to simulate a convergence iteration
+            if context_factory is not None:
+                fresh_ctx = context_factory(sub_state)
+                # build_subsystem_context should have been called again
+                assert build_ctx_call_count == 2
+            return
+            yield
+
+        runner_mod.build_subsystem_context = counting_build_ctx
+        runner_mod.run_stepper_to_convergence = capturing_run_convergence
+        try:
+            async for _ in advance_subsystems(
+                state,
+                context,
+                subsystem_stepper=MagicMock(),
+                recovery_stepper=MagicMock(),
+                restart_stepper=MagicMock(),
+                on_convergence_failure=None,
+            ):
+                pass
+
+            assert build_ctx_call_count == 2
         finally:
             runner_mod.build_subsystem_context = original_build_ctx
             runner_mod.run_stepper_to_convergence = original_run_convergence

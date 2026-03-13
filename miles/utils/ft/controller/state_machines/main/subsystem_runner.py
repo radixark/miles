@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator, Callable
 from miles.utils.ft.controller.state_machines.main.context_factories import build_subsystem_context
 from miles.utils.ft.controller.state_machines.main.models import MainContext, NormalSt
 from miles.utils.ft.controller.state_machines.main.restart_coordinator import has_pending_main_job_restart
+from miles.utils.ft.controller.state_machines.subsystem.models import SubsystemState
 from miles.utils.ft.utils.state_machine import StateMachineStepper, run_stepper_to_convergence
 
 
@@ -21,8 +22,18 @@ async def advance_subsystems(
     curr_state = state
 
     for name in sorted(curr_state.subsystems):
-        sub_ctx = build_subsystem_context(
-            spec=context.shared.subsystem_specs[name],
+        spec = context.shared.subsystem_specs[name]
+
+        def _context_factory(_current_sub_state: SubsystemState, _name: str = name) -> object:
+            return build_subsystem_context(
+                spec=context.shared.subsystem_specs[_name],
+                context=context,
+                recovery_stepper=recovery_stepper,
+                restart_stepper=restart_stepper,
+            )
+
+        initial_ctx = build_subsystem_context(
+            spec=spec,
             context=context,
             recovery_stepper=recovery_stepper,
             restart_stepper=restart_stepper,
@@ -31,8 +42,9 @@ async def advance_subsystems(
         async for new_sub_state in run_stepper_to_convergence(
             subsystem_stepper,
             old_sub_state,
-            sub_ctx,
+            initial_ctx,
             on_convergence_failure=on_convergence_failure,
+            context_factory=_context_factory,
         ):
             curr_state = NormalSt(subsystems={**curr_state.subsystems, name: new_sub_state})
             yield curr_state

@@ -740,3 +740,173 @@ class TestConvergenceFailureCallback:
         await machine.step(None)
 
         assert callback_calls == []
+
+
+# -- Tests: context_factory parameter ------------------------------------------
+
+
+class _ContextAwareState(DummyState):
+    """State that carries the context value it was created with, to verify context refresh."""
+    ctx_value: int = 0
+
+
+class _ContextAwareTerminal(DummyState):
+    ctx_value: int = 0
+
+
+class _ContextAwareHandler:
+    """Handler that reads context value and embeds it in the next state.
+
+    Transitions: ctx_value < 3 → _ContextAwareState(ctx_value=ctx+1)
+                 ctx_value >= 3 → _ContextAwareTerminal(ctx_value=ctx)
+    """
+
+    async def step(self, state: _ContextAwareState, context: int) -> DummyState:
+        if context >= 3:
+            return _ContextAwareTerminal(ctx_value=context)
+        return _ContextAwareState(ctx_value=context + 1)
+
+
+class _ContextAwareTerminalHandler:
+    async def step(self, state: _ContextAwareTerminal, context: int) -> None:
+        return None
+
+
+def _make_context_aware_stepper() -> StateMachineStepper[DummyState, int]:
+    return StateMachineStepper(
+        handler_map={
+            _ContextAwareState: _ContextAwareHandler,
+            _ContextAwareTerminal: _ContextAwareTerminalHandler,
+        },
+        terminal_states=frozenset({_ContextAwareTerminal}),
+    )
+
+
+class TestRunStepperToConvergenceContextFactory:
+    """Previously run_stepper_to_convergence used the same context object
+    for every iteration of the convergence loop. If a subsystem completed
+    recovery and returned to its initial detecting state within one tick,
+    the stale context (e.g. old job_status) would cause the same fault to
+    be re-detected immediately, leading to duplicate recoveries and
+    notifications. Now an optional context_factory callback refreshes the
+    context before each iteration."""
+
+    @pytest.mark.asyncio
+    async def test_context_factory_called_each_iteration(self) -> None:
+        """context_factory is invoked before each stepper dispatch, receiving
+        the current state so it can build a fresh context."""
+        factory_calls: list[DummyState] = []
+        call_count = 0
+
+        def context_factory(current_state: DummyState) -> int:
+            nonlocal call_count
+            factory_calls.append(current_state)
+            call_count += 1
+            return call_count
+
+        stepper = _make_context_aware_stepper()
+        results = [
+            s async for s in run_stepper_to_convergence(
+                stepper,
+                _ContextAwareState(),
+                0,
+                context_factory=context_factory,
+            )
+        ]
+
+        assert len(factory_calls) >= 2
+        assert isinstance(factory_calls[0], _ContextAwareState)
+
+    @pytest.mark.asyncio
+    async def test_context_factory_provides_fresh_context_each_iteration(self) -> None:
+        """Each iteration gets a fresh context value from the factory,
+        not the stale initial context."""
+        iteration_counter = 0
+
+        def context_factory(current_state: DummyState) -> int:
+            nonlocal iteration_counter
+            iteration_counter += 1
+            return iteration_counter
+
+        stepper = _make_context_aware_stepper()
+        results = [
+            s async for s in run_stepper_to_convergence(
+                stepper,
+                _ContextAwareState(),
+                0,
+                context_factory=context_factory,
+            )
+        ]
+
+        assert any(isinstance(s, _ContextAwareTerminal) for s in results)
+
+    @pytest.mark.asyncio
+    async def test_without_context_factory_uses_initial_context(self) -> None:
+        """Without context_factory, the initial context is reused (backward compatible)."""
+        stepper = _make_context_aware_stepper()
+        results = [
+            s async for s in run_stepper_to_convergence(
+                stepper,
+                _ContextAwareState(),
+                1,
+            )
+        ]
+
+        assert len(results) >= 1
+        assert all(not isinstance(s, _ContextAwareTerminal) or s.ctx_value >= 1 for s in results)
+
+    @pytest.mark.asyncio
+    async def test_context_factory_prevents_stale_context_replay(self) -> None:
+        """Core scenario: a handler completes recovery (state goes back to
+        initial), and the refreshed context no longer triggers re-entry.
+
+        Without context_factory, the stale context would cause the handler
+        to re-trigger the same transition in the same tick."""
+        transitions: list[tuple[str, int]] = []
+
+        class _ReplayState(DummyState):
+            pass
+
+        class _RecoveredState(DummyState):
+            pass
+
+        class _ReplayHandler:
+            async def step(self, state: _ReplayState, context: dict) -> DummyState | None:
+                transitions.append(("replay", context["fault_count"]))
+                if context["fault_count"] > 0:
+                    return _RecoveredState()
+                return None
+
+        class _RecoveredHandler:
+            async def step(self, state: _RecoveredState, context: dict) -> DummyState | None:
+                transitions.append(("recovered", context["fault_count"]))
+                return _ReplayState()
+
+        stepper: StateMachineStepper = StateMachineStepper(handler_map={
+            _ReplayState: _ReplayHandler,
+            _RecoveredState: _RecoveredHandler,
+        })
+
+        call_count = 0
+
+        def factory(current_state: DummyState) -> dict:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"fault_count": 1}
+            return {"fault_count": 0}
+
+        results = [
+            s async for s in run_stepper_to_convergence(
+                stepper,
+                _ReplayState(),
+                {"fault_count": 1},
+                context_factory=factory,
+            )
+        ]
+
+        replay_triggers = [t for t in transitions if t[0] == "replay" and t[1] > 0]
+        assert len(replay_triggers) == 1, (
+            "Without context refresh, the stale fault_count=1 would cause "
+            "multiple recovery triggers in the same tick"
+        )
