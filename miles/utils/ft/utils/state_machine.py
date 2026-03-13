@@ -134,10 +134,12 @@ class StateMachine(Generic[StateT, ContextT]):
 
     _MAX_HISTORY = 128
 
-    # TODO: state is currently ephemeral (in-memory only). If the controller
-    # process crashes, all recovery progress is lost and detectors re-discover
-    # faults from scratch. This should be made persistent (e.g. checkpoint to
-    # disk/etcd) in the future to avoid redundant evictions and lost diagnostics.
+    # Accepted product decision: state is intentionally ephemeral (in-memory
+    # only). If the controller process crashes, recovery progress is lost and
+    # the next controller instance re-discovers faults from scratch. We do not
+    # currently plan to add crash-recovery persistence here, so future audits
+    # should not flag the lack of state checkpointing as a standalone issue
+    # unless product requirements change.
 
     def __init__(
         self,
