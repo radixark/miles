@@ -6,31 +6,28 @@ from tests.fast.utils.ft.conftest import inject_disk_fault, inject_nic_down, inj
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.checks.hardware import (
+    _analyze_nic_flap_transitions,
+    _analyze_nic_persistent_down,
+    _query_nic_timeseries,
+    check_all_nic_faults,
     check_disk_fault,
     check_majority_nic_down,
-    check_nic_down_in_window,
 )
 from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
 
+WINDOW = timedelta(minutes=5)
 
-class TestCheckNicDownInWindow:
-    def test_returns_non_ephemeral_faults(self) -> None:
-        """NodeFault from check_nic_down_in_window are non-ephemeral so
-        NetworkAlertDetector can trigger recovery via Decision.from_node_faults."""
-        store = make_fake_metric_store()
-        inject_nic_up(store, node_id="node-0", device="ib0")
-        inject_nic_down(store, node_id="node-0", device="ib0")
-        inject_nic_up(store, node_id="node-0", device="ib0")
-        inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=2)
+def _build_nic_df(store, window=WINDOW):
+    return _query_nic_timeseries(store, window)
 
-        assert len(faults) == 1
-        assert faults[0].node_id == "node-0"
-        assert faults[0].ephemeral is False
 
-    # --- Core semantics: transitions vs sample counts ---
+# ---------------------------------------------------------------------------
+# _analyze_nic_flap_transitions
+# ---------------------------------------------------------------------------
 
+
+class TestAnalyzeNicFlapTransitions:
     def test_consecutive_down_samples_are_single_transition(self) -> None:
         """Multiple consecutive down samples after one up should count as 1 transition."""
         store = make_fake_metric_store()
@@ -39,7 +36,8 @@ class TestCheckNicDownInWindow:
         inject_nic_down(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=1, window=WINDOW)
 
         assert len(faults) == 1
         assert "1 time(s)" in faults[0].reason
@@ -50,7 +48,8 @@ class TestCheckNicDownInWindow:
         inject_nic_down(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=1, window=WINDOW)
 
         assert faults == []
 
@@ -60,7 +59,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_up(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=1, window=WINDOW)
 
         assert faults == []
 
@@ -74,7 +74,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib1")
         inject_nic_down(store, node_id="node-0", device="ib1")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=2)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=2, window=WINDOW)
 
         assert len(faults) == 1
         assert faults[0].node_id == "node-0"
@@ -91,7 +92,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib1")
         inject_nic_down(store, node_id="node-0", device="ib1")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=3)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=3, window=WINDOW)
 
         assert len(faults) == 1
         assert "3 time(s)" in faults[0].reason
@@ -108,7 +110,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-1", device="ib0")
         inject_nic_down(store, node_id="node-1", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=2)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=2, window=WINDOW)
 
         assert len(faults) == 1
         assert faults[0].node_id == "node-1"
@@ -122,7 +125,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=2)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=2, window=WINDOW)
 
         assert len(faults) == 1
 
@@ -131,7 +135,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=2)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=2, window=WINDOW)
 
         assert faults == []
 
@@ -140,35 +145,10 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=1, window=WINDOW)
 
         assert len(faults) == 1
-
-    # --- Edge cases ---
-
-    def test_empty_store_returns_empty(self) -> None:
-        store = make_fake_metric_store()
-
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
-
-        assert faults == []
-
-    def test_single_down_sample_only(self) -> None:
-        """A single down sample has no predecessor, so no transition."""
-        store = make_fake_metric_store()
-        inject_nic_down(store, node_id="node-0", device="ib0")
-
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
-
-        assert faults == []
-
-    def test_single_up_sample_only(self) -> None:
-        store = make_fake_metric_store()
-        inject_nic_up(store, node_id="node-0", device="ib0")
-
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
-
-        assert faults == []
 
     # --- Complex sequences ---
 
@@ -182,7 +162,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=3)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=3, window=WINDOW)
 
         assert len(faults) == 1
         assert "3 time(s)" in faults[0].reason
@@ -194,7 +175,8 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=1, window=WINDOW)
 
         assert len(faults) == 1
         assert "1 time(s)" in faults[0].reason
@@ -206,11 +188,233 @@ class TestCheckNicDownInWindow:
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
 
-        faults = check_nic_down_in_window(store, window=timedelta(minutes=5), threshold=1)
+        df = _build_nic_df(store)
+        faults = _analyze_nic_flap_transitions(df, threshold=1, window=WINDOW)
 
         assert len(faults) == 1
         assert "2 time(s)" in faults[0].reason
         assert "went down" in faults[0].reason
+
+
+# ---------------------------------------------------------------------------
+# _analyze_nic_persistent_down
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeNicPersistentDown:
+    def test_nic_went_up_then_stayed_down(self) -> None:
+        """Classic permanent crash: was up, then went down and never recovered."""
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert len(faults) == 1
+        assert faults[0].node_id == "node-0"
+        assert "persistently down" in faults[0].reason
+        assert "ib0" in faults[0].reason
+
+    def test_always_down_no_fault(self) -> None:
+        """NIC that was never up: no had_up → not a crash, just never started."""
+        store = make_fake_metric_store()
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert faults == []
+
+    def test_single_sample_not_enough(self) -> None:
+        """Need at least 2 samples (sample_count >= 2) to confirm a transition."""
+        store = make_fake_metric_store()
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert faults == []
+
+    def test_recovered_nic_no_fault(self) -> None:
+        """NIC went down but came back up: last_value > 0 → not persistent."""
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert faults == []
+
+    def test_all_up_no_fault(self) -> None:
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert faults == []
+
+    def test_multiple_devices_one_persistent(self) -> None:
+        """Two devices on same node: ib0 persistent down, ib1 recovered."""
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib1")
+        inject_nic_down(store, node_id="node-0", device="ib1")
+        inject_nic_up(store, node_id="node-0", device="ib1")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert len(faults) == 1
+        assert "ib0" in faults[0].reason
+        assert "ib1" not in faults[0].reason
+
+    def test_multiple_devices_both_persistent_aggregated(self) -> None:
+        """Two devices on same node both persistently down: single fault listing both."""
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib1")
+        inject_nic_down(store, node_id="node-0", device="ib1")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert len(faults) == 1
+        assert "ib0" in faults[0].reason
+        assert "ib1" in faults[0].reason
+
+    def test_multiple_nodes_independent(self) -> None:
+        store = make_fake_metric_store()
+        # node-0: persistent down
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        # node-1: recovered
+        inject_nic_up(store, node_id="node-1", device="ib0")
+        inject_nic_down(store, node_id="node-1", device="ib0")
+        inject_nic_up(store, node_id="node-1", device="ib0")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert len(faults) == 1
+        assert faults[0].node_id == "node-0"
+
+    def test_reason_lists_device_names_sorted(self) -> None:
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib2")
+        inject_nic_down(store, node_id="node-0", device="ib2")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        df = _build_nic_df(store)
+        faults = _analyze_nic_persistent_down(df)
+
+        assert len(faults) == 1
+        assert "ib0, ib2" in faults[0].reason
+
+
+# ---------------------------------------------------------------------------
+# check_all_nic_faults (combined: flap + persistent)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAllNicFaults:
+    def test_empty_store_returns_empty(self) -> None:
+        store = make_fake_metric_store()
+        faults = check_all_nic_faults(store, window=WINDOW, flap_threshold=2)
+        assert faults == []
+
+    def test_flap_only_detected(self) -> None:
+        """NIC flapping that ends up: flap fires but not persistent."""
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+
+        faults = check_all_nic_faults(store, window=WINDOW, flap_threshold=2)
+
+        assert len(faults) == 1
+        assert "went down" in faults[0].reason
+
+    def test_persistent_only_detected(self) -> None:
+        """Single up→down (below flap threshold) but persistent: detected."""
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        faults = check_all_nic_faults(store, window=WINDOW, flap_threshold=5)
+
+        assert len(faults) == 1
+        assert "persistently down" in faults[0].reason
+
+    def test_both_flap_and_persistent_deduped_by_node(self) -> None:
+        """Same node triggers both flap and persistent: only one fault returned."""
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        faults = check_all_nic_faults(store, window=WINDOW, flap_threshold=2)
+
+        assert len(faults) == 1
+        assert faults[0].node_id == "node-0"
+        assert "went down" in faults[0].reason
+
+    def test_different_nodes_different_fault_types(self) -> None:
+        """node-0: flap only (ends up), node-1: persistent only (below threshold)."""
+        store = make_fake_metric_store()
+        # node-0: 2 transitions ending up → flap at threshold=2, not persistent
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        # node-1: 1 transition ending down → persistent, below flap threshold
+        inject_nic_up(store, node_id="node-1", device="ib0")
+        inject_nic_down(store, node_id="node-1", device="ib0")
+
+        faults = check_all_nic_faults(store, window=WINDOW, flap_threshold=2)
+
+        assert len(faults) == 2
+        node_ids = {f.node_id for f in faults}
+        assert node_ids == {"node-0", "node-1"}
+
+    def test_no_fault_when_healthy(self) -> None:
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+
+        faults = check_all_nic_faults(store, window=WINDOW, flap_threshold=1)
+
+        assert faults == []
+
+    def test_returns_non_ephemeral_faults(self) -> None:
+        store = make_fake_metric_store()
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+        inject_nic_up(store, node_id="node-0", device="ib0")
+        inject_nic_down(store, node_id="node-0", device="ib0")
+
+        faults = check_all_nic_faults(store, window=WINDOW, flap_threshold=2)
+
+        assert len(faults) == 1
+        assert faults[0].ephemeral is False
+
+
+# ---------------------------------------------------------------------------
+# check_majority_nic_down
+# ---------------------------------------------------------------------------
 
 
 class TestCheckMajorityNicDown:
@@ -260,6 +464,11 @@ class TestCheckMajorityNicDown:
         store = make_fake_metric_store()
         result = check_majority_nic_down(store)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# check_disk_fault
+# ---------------------------------------------------------------------------
 
 
 class TestCheckDiskFault:

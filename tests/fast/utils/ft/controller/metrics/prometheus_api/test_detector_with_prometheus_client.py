@@ -17,9 +17,9 @@ import httpx
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.detectors.checks.hardware import (
+    check_all_nic_faults,
     check_disk_fault,
     check_majority_nic_down,
-    check_nic_down_in_window,
 )
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
@@ -166,7 +166,7 @@ class TestHangDetectorWithPrometheusClient:
 
 class TestNicDownDetectionWithPrometheusClient:
     def test_nic_down_transitions_detected(self) -> None:
-        """NIC goes up→down: check_nic_down_in_window returns a fault."""
+        """NIC goes up→down: check_all_nic_faults returns a fault."""
         now = time.time()
         matrix_result = _matrix_json(
             [
@@ -185,10 +185,10 @@ class TestNicDownDetectionWithPrometheusClient:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(matrix_result)):
             client = PrometheusClient(url="http://fake:9090")
-            faults = check_nic_down_in_window(
+            faults = check_all_nic_faults(
                 metric_store=client,
                 window=timedelta(minutes=5),
-                threshold=1,
+                flap_threshold=1,
             )
 
         assert len(faults) == 1
@@ -208,10 +208,10 @@ class TestNicDownDetectionWithPrometheusClient:
 
         with patch.object(httpx.Client, "get", return_value=_make_response(matrix_result)):
             client = PrometheusClient(url="http://fake:9090")
-            faults = check_nic_down_in_window(
+            faults = check_all_nic_faults(
                 metric_store=client,
                 window=timedelta(minutes=5),
-                threshold=1,
+                flap_threshold=1,
             )
 
         assert faults == []

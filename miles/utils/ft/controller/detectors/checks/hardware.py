@@ -107,22 +107,6 @@ def _analyze_nic_persistent_down(df: pl.DataFrame) -> list[NodeFault]:
     ]
 
 
-def check_nic_down_in_window(
-    metric_store: TimeSeriesQueryProtocol,
-    window: timedelta,
-    threshold: int,
-) -> list[NodeFault]:
-    """Count NIC up→down transitions per node over *window*; fault nodes at or above *threshold*.
-
-    Counts state transitions (up→down), not raw down-sample counts.
-    This decouples the threshold from the scrape interval.
-    """
-    df = _query_nic_timeseries(metric_store, window)
-    if df is None:
-        return []
-    return _analyze_nic_flap_transitions(df, threshold=threshold, window=window)
-
-
 def check_all_nic_faults(
     metric_store: TimeSeriesQueryProtocol,
     window: timedelta,
