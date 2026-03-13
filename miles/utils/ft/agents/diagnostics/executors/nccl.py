@@ -14,7 +14,7 @@ _DEFAULT_NUM_GPUS: int = 8
 class NcclNodeExecutor(BaseNodeExecutor):
     """Unified NCCL diagnostic executor.
 
-    Handles both single-node (all_reduce_perf) and pairwise two-node
+    Handles both single-node (alltoall_perf) and pairwise two-node
     (all_gather_perf) diagnostics.  The ``diagnostic_type`` selects which
     variant is run; pairwise mode is activated by passing ``master_addr``
     and/or ``master_port`` to :meth:`run`.
@@ -27,7 +27,7 @@ class NcclNodeExecutor(BaseNodeExecutor):
         diagnostic_type: str,
         expected_bandwidth_gbps: float,
         num_gpus: int = _DEFAULT_NUM_GPUS,
-        nccl_test_binary: str = "all_reduce_perf",
+        nccl_test_binary: str = "alltoall_perf",
     ) -> None:
         self.diagnostic_type = diagnostic_type
         self._expected_bandwidth_gbps = expected_bandwidth_gbps

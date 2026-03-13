@@ -233,6 +233,17 @@ class TestNcclSimple:
         assert result.node_id == "my-special-node"
         assert result.diagnostic_type == "nccl_simple"
 
+    async def test_default_binary_is_alltoall(self) -> None:
+        """Default intra-node test uses alltoall_perf to cover all GPU pair
+        communication paths (paper §4.2 specifies all-to-all)."""
+        diag = _make_simple()
+        mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await diag.run(node_id="node-0")
+
+        assert mock_exec.call_args.args[0] == "alltoall_perf"
+
     async def test_custom_binary_name(self) -> None:
         diag = _make_simple(nccl_test_binary="/opt/nccl/all_reduce_perf")
         mock_proc = make_mock_subprocess(stdout=NCCL_OUTPUT_WITH_SUMMARY)
