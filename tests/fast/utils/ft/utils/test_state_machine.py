@@ -466,7 +466,7 @@ def _make_null_stepper() -> StateMachineStepper[DummyState, None]:
 class TestRunStepperToConvergenceNoTransition:
     @pytest.mark.asyncio
     async def test_handler_returns_none_yields_nothing(self) -> None:
-        results = [s async for s in run_stepper_to_convergence(_make_null_stepper(), StateA(), None)]
+        results = [s async for s in run_stepper_to_convergence(_make_null_stepper(), StateA(), context_factory=lambda _: None)]
         assert results == []
 
 
@@ -475,7 +475,7 @@ class TestRunStepperToConvergenceChain:
     async def test_full_chain_yields_all_intermediates(self) -> None:
         """A→B(1)→B(2)→B(3)→Terminal: 4 stepper dispatches, 4 yields."""
         stepper = _make_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None)]
 
         assert len(results) == 4
         assert results[0] == StateB(value=1)
@@ -487,20 +487,20 @@ class TestRunStepperToConvergenceChain:
     async def test_starting_mid_chain_converges(self) -> None:
         """B(2)→B(3)→Terminal: start from middle of chain."""
         stepper = _make_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateB(value=2), None)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateB(value=2), context_factory=lambda _: None)]
 
         assert results == [StateB(value=3), TerminalState()]
 
     @pytest.mark.asyncio
     async def test_starting_at_terminal_yields_nothing(self) -> None:
         stepper = _make_stepper(terminal_states=frozenset({TerminalState}))
-        results = [s async for s in run_stepper_to_convergence(stepper, TerminalState(), None)]
+        results = [s async for s in run_stepper_to_convergence(stepper, TerminalState(), context_factory=lambda _: None)]
         assert results == []
 
     @pytest.mark.asyncio
     async def test_yields_are_in_transition_order(self) -> None:
         stepper = _make_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None)]
 
         state_b_values = [s.value for s in results if isinstance(s, StateB)]
         assert state_b_values == sorted(state_b_values)
@@ -511,7 +511,7 @@ class TestRunStepperToConvergenceGenerator:
     async def test_gen_handler_yields_all_intermediate_states(self) -> None:
         """Gen handler yields B(1), B(2) in one step; then B handler chains to Terminal."""
         stepper = _make_gen_stepper(StateAGenHandler)
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None)]
 
         assert results[0] == StateB(value=1)
         assert results[1] == StateB(value=2)
@@ -521,7 +521,7 @@ class TestRunStepperToConvergenceGenerator:
     async def test_gen_handler_both_yields_visible(self) -> None:
         """Both yields from the gen handler appear — not just the last."""
         stepper = _make_gen_stepper(StateAGenHandler)
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None)]
 
         values = [s.value for s in results if isinstance(s, StateB)]
         assert 1 in values
@@ -536,7 +536,7 @@ class TestRunStepperToConvergenceSameStateYield:
         the loop would never converge. Now it uses value equality like
         StateMachine.step, so same-state yields are skipped."""
         stepper = _make_gen_stepper(SameStateGenHandler)
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None)]
 
         assert results == []
 
@@ -547,7 +547,7 @@ class TestRunStepperToConvergenceSameStateYield:
         """Convergence should complete immediately without hitting the cap."""
         stepper = _make_gen_stepper(SameStateGenHandler)
         with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
-            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None)]
 
         assert "hit max iterations" not in caplog.text
 
@@ -557,7 +557,7 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_oscillating_stops_at_max_iterations(self) -> None:
         """A→B→A→B→... should stop at max_iterations."""
         stepper = _make_oscillating_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=5)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=5)]
 
         assert len(results) == 5
 
@@ -565,7 +565,7 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_max_iterations_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         stepper = _make_oscillating_stepper()
         with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
-            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=3)]
+            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=3)]
 
         assert "hit max iterations (3)" in caplog.text
 
@@ -573,7 +573,7 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_normal_convergence_no_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         stepper = _make_stepper()
         with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
-            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), None)]
+            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None)]
 
         assert "hit max iterations" not in caplog.text
 
@@ -581,7 +581,7 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_max_iterations_one_yields_single_dispatch(self) -> None:
         """max_iterations=1 allows exactly one stepper dispatch."""
         stepper = _make_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=1)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=1)]
 
         assert len(results) == 1
         assert results[0] == StateB(value=1)
@@ -590,7 +590,7 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_oscillating_yields_alternate_states(self) -> None:
         """Verify the oscillating pattern: A→B(0)→A→B(0)→A."""
         stepper = _make_oscillating_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), None, max_iterations=4)]
+        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=4)]
 
         types = [type(s).__name__ for s in results]
         assert types == ["StateB", "StateA", "StateB", "StateA"]
@@ -673,7 +673,8 @@ class TestConvergenceFailureCallback:
             callback_calls.append((state, iterations))
 
         _ = [s async for s in run_stepper_to_convergence(
-            stepper, StateA(), None,
+            stepper, StateA(),
+            context_factory=lambda _: None,
             max_iterations=3,
             on_convergence_failure=on_failure,
         )]
@@ -690,7 +691,8 @@ class TestConvergenceFailureCallback:
             callback_calls.append((state, iterations))
 
         _ = [s async for s in run_stepper_to_convergence(
-            stepper, StateA(), None,
+            stepper, StateA(),
+            context_factory=lambda _: None,
             on_convergence_failure=on_failure,
         )]
 
@@ -701,7 +703,8 @@ class TestConvergenceFailureCallback:
         """No error when on_convergence_failure is None (default)."""
         stepper = _make_oscillating_stepper()
         _ = [s async for s in run_stepper_to_convergence(
-            stepper, StateA(), None,
+            stepper, StateA(),
+            context_factory=lambda _: None,
             max_iterations=3,
             on_convergence_failure=None,
         )]
@@ -809,7 +812,6 @@ class TestRunStepperToConvergenceContextFactory:
             s async for s in run_stepper_to_convergence(
                 stepper,
                 _ContextAwareState(),
-                0,
                 context_factory=context_factory,
             )
         ]
@@ -833,27 +835,11 @@ class TestRunStepperToConvergenceContextFactory:
             s async for s in run_stepper_to_convergence(
                 stepper,
                 _ContextAwareState(),
-                0,
                 context_factory=context_factory,
             )
         ]
 
         assert any(isinstance(s, _ContextAwareTerminal) for s in results)
-
-    @pytest.mark.asyncio
-    async def test_without_context_factory_uses_initial_context(self) -> None:
-        """Without context_factory, the initial context is reused (backward compatible)."""
-        stepper = _make_context_aware_stepper()
-        results = [
-            s async for s in run_stepper_to_convergence(
-                stepper,
-                _ContextAwareState(),
-                1,
-            )
-        ]
-
-        assert len(results) >= 1
-        assert all(not isinstance(s, _ContextAwareTerminal) or s.ctx_value >= 1 for s in results)
 
     @pytest.mark.asyncio
     async def test_context_factory_prevents_stale_context_replay(self) -> None:
@@ -900,7 +886,6 @@ class TestRunStepperToConvergenceContextFactory:
             s async for s in run_stepper_to_convergence(
                 stepper,
                 _ReplayState(),
-                {"fault_count": 1},
                 context_factory=factory,
             )
         ]

@@ -22,7 +22,6 @@ async def advance_subsystems(
     curr_state = state
 
     for name in sorted(curr_state.subsystems):
-        spec = context.shared.subsystem_specs[name]
 
         def _context_factory(_current_sub_state: SubsystemState, _name: str = name) -> object:
             return build_subsystem_context(
@@ -32,19 +31,12 @@ async def advance_subsystems(
                 restart_stepper=restart_stepper,
             )
 
-        initial_ctx = build_subsystem_context(
-            spec=spec,
-            context=context,
-            recovery_stepper=recovery_stepper,
-            restart_stepper=restart_stepper,
-        )
         old_sub_state = curr_state.subsystems[name]
         async for new_sub_state in run_stepper_to_convergence(
             subsystem_stepper,
             old_sub_state,
-            initial_ctx,
-            on_convergence_failure=on_convergence_failure,
             context_factory=_context_factory,
+            on_convergence_failure=on_convergence_failure,
         ):
             curr_state = NormalSt(subsystems={**curr_state.subsystems, name: new_sub_state})
             yield curr_state

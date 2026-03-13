@@ -125,7 +125,7 @@ class TestAdvanceSubsystemsEarlyStop:
         def tracking_build_ctx(*, spec, context, recovery_stepper, restart_stepper):
             return MagicMock()
 
-        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
+        async def tracking_run_convergence(stepper, sub_state, *, context_factory, on_convergence_failure=None):
             # Determine which subsystem this is by checking the current state
             subsystems_stepped.append(type(sub_state).__name__)
             return
@@ -181,7 +181,7 @@ class TestAdvanceSubsystemsEarlyStop:
         def tracking_build_ctx(*, spec, context, recovery_stepper, restart_stepper):
             return MagicMock()
 
-        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
+        async def tracking_run_convergence(stepper, sub_state, *, context_factory, on_convergence_failure=None):
             subsystems_stepped.append(type(sub_state).__name__)
             return
             yield
@@ -243,7 +243,7 @@ class TestAdvanceSubsystemsContextFactory:
         def tracking_build_ctx(*, spec, context, recovery_stepper, restart_stepper):
             return MagicMock()
 
-        async def tracking_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
+        async def tracking_run_convergence(stepper, sub_state, *, context_factory, on_convergence_failure=None):
             captured_context_factory.append(context_factory)
             return
             yield
@@ -294,15 +294,13 @@ class TestAdvanceSubsystemsContextFactory:
             build_ctx_call_count += 1
             return MagicMock(name=f"ctx_{build_ctx_call_count}")
 
-        async def capturing_run_convergence(stepper, sub_state, ctx, *, on_convergence_failure=None, context_factory=None):
-            # Step 1: initial context was built (build_ctx_call_count == 1)
-            assert build_ctx_call_count == 1
+        async def capturing_run_convergence(stepper, sub_state, *, context_factory, on_convergence_failure=None):
+            # No initial context built upfront anymore
+            assert build_ctx_call_count == 0
 
-            # Step 2: call context_factory to simulate a convergence iteration
-            if context_factory is not None:
-                fresh_ctx = context_factory(sub_state)
-                # build_subsystem_context should have been called again
-                assert build_ctx_call_count == 2
+            # Call context_factory to simulate a convergence iteration
+            fresh_ctx = context_factory(sub_state)
+            assert build_ctx_call_count == 1
             return
             yield
 
@@ -319,7 +317,7 @@ class TestAdvanceSubsystemsContextFactory:
             ):
                 pass
 
-            assert build_ctx_call_count == 2
+            assert build_ctx_call_count == 1
         finally:
             runner_mod.build_subsystem_context = original_build_ctx
             runner_mod.run_stepper_to_convergence = original_run_convergence
