@@ -405,3 +405,41 @@ class TestBuildControllerStatus:
 
         assert status.recovery is not None
         assert status.recovery.bad_nodes == ["node-x"]
+
+    def test_restarting_main_job_shows_frozen_recovery_phase_and_bad_nodes(self) -> None:
+        """Previously RestartingMainJobSt exported phase='RestartingMainJobSt'
+        with empty bad_nodes, hiding what the requestor was actually doing
+        before the main job restart. Now the frozen recovery state is used
+        to extract the real phase and bad node info."""
+        from datetime import timezone
+
+        frozen = RecoveringSt(
+            recovery=EvictingAndRestartingSt.evict_and_restart_next_stop_time_diag(
+                bad_node_ids=("node-bad-1", "node-bad-2"),
+            ),
+            trigger="hang",
+            recovery_start_time=_now(),
+            known_bad_node_ids=["node-bad-1", "node-bad-2"],
+        )
+        restarting_state = RestartingMainJobSt(
+            requestor_name="training",
+            start_time=datetime.now(timezone.utc),
+            requestor_frozen_state=frozen,
+        )
+        sm: StateMachine[MainState, MainContext] = StateMachine(
+            initial_state=restarting_state,
+            stepper=StateMachineStepper(handler_map={}),
+        )
+        status = build_controller_status(
+            controller_state_machine=sm,
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+
+        assert status.recovery is not None
+        # Step 1: phase reflects the actual recovery sub-state, not RestartingMainJobSt
+        assert status.recovery.phase == "EvictingSt"
+        # Step 2: bad_nodes are preserved from the frozen state
+        assert status.recovery.bad_nodes == ["node-bad-1", "node-bad-2"]
+        assert status.recovery.bad_nodes_confirmed is True

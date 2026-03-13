@@ -60,13 +60,16 @@ def build_controller_status(
 
     match controller_state:
         case RestartingMainJobSt():
-            recoveries = {
-                controller_state.requestor_name: RecoveryInfo(
+            frozen = controller_state.requestor_frozen_state
+            if isinstance(frozen, RecoveringSt):
+                requestor_info = _classify_recovery(frozen)
+            else:
+                requestor_info = RecoveryInfo(
                     phase=type(controller_state).__name__,
                     bad_nodes=[],
                     bad_nodes_confirmed=False,
-                ),
-            }
+                )
+            recoveries = {controller_state.requestor_name: requestor_info}
             subsystem_states: dict[str, str] = {}
 
         case NormalSt(subsystems=subs):
