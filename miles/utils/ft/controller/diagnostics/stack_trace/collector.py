@@ -80,7 +80,9 @@ async def collect_stack_trace_suspects(
         aggregation_suspects = aggregation_result.suspect_node_ids
     except StackTraceTieError:
         logger.warning("stack_trace_aggregation_tie traces_collected=%d", len(traces), exc_info=True)
-        if not suspect_from_failures:
+        if suspect_from_failures:
+            logger.info("aggregation_tie_suppressed: returning %d failure suspects", len(suspect_from_failures))
+        else:
             raise
 
     all_suspects = sorted(set(suspect_from_failures) | set(aggregation_suspects))

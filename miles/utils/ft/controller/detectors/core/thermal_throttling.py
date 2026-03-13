@@ -132,11 +132,6 @@ def _find_temperature_outlier_gpus(
         for row in hot_gpus.iter_rows(named=True)
     ]
 
-    seen: set[str] = set()
-    node_ids: list[str] = []
-    for outlier in gpu_outliers:
-        if outlier.node_id not in seen:
-            seen.add(outlier.node_id)
-            node_ids.append(outlier.node_id)
+    node_ids = list(dict.fromkeys(o.node_id for o in gpu_outliers))
 
     return _TemperatureOutlierResult(node_ids=node_ids, gpu_outliers=gpu_outliers)
