@@ -60,7 +60,11 @@ def discover_disk_mounts(proc_mounts: Path = Path("/proc/mounts")) -> list[Path]
     except Exception:
         logger.warning("Failed to parse %s", proc_mounts, exc_info=True)
 
-    logger.info("Discovered %d real mount points: %s", len(mounts), mounts)
+    if not any(m == Path("/") for m in mounts):
+        mounts.append(Path("/"))
+        logger.info("Root mount / not in discovered mounts (likely overlay container); added as fallback")
+
+    logger.info("Discovered %d mount points: %s", len(mounts), mounts)
     return mounts
 
 

@@ -44,6 +44,29 @@ class TestDiscoverDiskMounts:
         assert len(mounts) == 2
 
 
+class TestDiscoverDiskMountsRootFallback:
+    def test_overlay_root_adds_fallback(self, tmp_path: Path) -> None:
+        """Previously, containers using overlay filesystem for root had /
+        filtered out because 'overlay' was in the virtual FS blocklist. This
+        left the disk collector with no root mount to monitor."""
+        proc_mounts = tmp_path / "mounts"
+        proc_mounts.write_text(
+            "overlay / overlay rw,relatime 0 0\n"
+            "proc /proc proc rw,nosuid 0 0\n"
+            "tmpfs /tmp tmpfs rw 0 0\n"
+        )
+        mounts = discover_disk_mounts(proc_mounts=proc_mounts)
+        mount_strs = [str(m) for m in mounts]
+        assert "/" in mount_strs
+
+    def test_no_fallback_when_root_already_present(self, tmp_path: Path) -> None:
+        proc_mounts = tmp_path / "mounts"
+        proc_mounts.write_text("/dev/sda1 / ext4 rw,relatime 0 0\n")
+        mounts = discover_disk_mounts(proc_mounts=proc_mounts)
+        root_count = sum(1 for m in mounts if str(m) == "/")
+        assert root_count == 1
+
+
 class TestDiskCollectorAutoDiscover:
     def test_auto_discovers_when_no_mounts_given(self, tmp_path: Path) -> None:
         proc_mounts = tmp_path / "mounts"
