@@ -439,7 +439,7 @@ class TestSubsystemSteppingOrder:
         to build_subsystem_context in what order.
         """
         from unittest.mock import patch
-        import miles.utils.ft.controller.state_machines.main.handlers as handlers_mod
+        import miles.utils.ft.controller.state_machines.main.subsystem_runner as runner_mod
 
         call_order: list[str] = []
         specs = {}
@@ -447,7 +447,7 @@ class TestSubsystemSteppingOrder:
             specs[name] = _make_subsystem_spec()
         subsystems = {name: DetectingAnomalySt() for name in specs}
 
-        original_build = handlers_mod.build_subsystem_context
+        original_build = runner_mod.build_subsystem_context
 
         def tracking_build(*, spec, **kwargs):
             name = next(n for n, s in specs.items() if s is spec)
@@ -457,9 +457,9 @@ class TestSubsystemSteppingOrder:
         state = NormalSt(subsystems=subsystems)
         context = _make_controller_context(subsystem_specs=specs)
 
-        with patch.object(handlers_mod, "build_subsystem_context", tracking_build):
-            handler = handlers_mod.NormalHandler()
-            async for _ in handler.step(state, context):
+        with patch.object(runner_mod, "build_subsystem_context", tracking_build):
+            stepper = create_main_stepper()
+            async for _ in stepper(state, context):
                 pass
 
         assert call_order == ["aa_first", "mm_middle", "zz_last"]
