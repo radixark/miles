@@ -46,6 +46,7 @@ class HangDetector(BaseFaultDetector):
 
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
         if ctx.job_status != JobStatus.RUNNING:
+            logger.debug("hang_detector: job not running (status=%s), skipping", ctx.job_status)
             return Decision.no_fault(reason="job not running, skipping hang check")
 
         if ctx.active_run_id is None:
@@ -75,7 +76,9 @@ class HangDetector(BaseFaultDetector):
 
         if not has_any_data:
             if within_startup:
+                logger.debug("hang_detector: no heartbeat data but within startup grace, ignoring")
                 return Decision.no_fault(reason="within startup grace period, ignoring missing heartbeat")
+            logger.warning("hang_detector: no heartbeat data from rank-0 after grace period")
             return Decision(
                 action=ActionType.NOTIFY_HUMAN,
                 reason="no heartbeat data from rank-0 agent after grace period",
@@ -88,8 +91,14 @@ class HangDetector(BaseFaultDetector):
 
         if heartbeat_changes == 0:
             if within_startup:
+                logger.debug("hang_detector: heartbeat stalled but within startup grace, ignoring")
                 return Decision.no_fault(reason="within startup grace period, ignoring stalled heartbeat")
             phase_label = _PHASE_LABEL[phase]
+            logger.info(
+                "hang_detector: heartbeat stalled for %dmin during %s, entering recovery",
+                timeout_minutes,
+                phase_label,
+            )
             return Decision(
                 action=ActionType.ENTER_RECOVERY,
                 reason=f"heartbeat stalled for {timeout_minutes}min during {phase_label}",

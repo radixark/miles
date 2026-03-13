@@ -37,6 +37,7 @@ class CollectorHealthDetector(BaseFaultDetector):
             _CONSECUTIVE_FAILURES_METRIC,
         )
         if df.is_empty():
+            logger.debug("detector: CollectorHealthDetector no data yet")
             return Decision.no_fault(reason="no collector health data yet")
 
         bad = df.filter(

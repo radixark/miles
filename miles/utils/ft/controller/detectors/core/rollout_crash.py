@@ -38,6 +38,7 @@ class RolloutCrashDetector(BaseFaultDetector):
         )
 
         if df.is_empty():
+            logger.debug("detector: RolloutCrashDetector cell_id=%s, no metric data", self._cell_id)
             if ctx.active_node_ids:
                 return Decision(
                     action=ActionType.NOTIFY_HUMAN,
