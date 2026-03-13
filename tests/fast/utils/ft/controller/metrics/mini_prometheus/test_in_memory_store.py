@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from miles.utils.ft.agents.types import CounterSample, GaugeSample
-from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore
+from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore, OutOfOrderSampleError
 
 
 def _ts(seconds: int) -> datetime:
@@ -71,6 +71,107 @@ class TestIngestSamples:
         assert len(df) == 2
         values = sorted(df["value"].to_list())
         assert values == [70.0, 80.0]
+
+
+class TestOutOfOrderSampleRejection:
+    """ingest_samples() used to silently accept out-of-order timestamps.
+    Query functions assumed monotonic append order (e.g. samples[-1] is latest,
+    reversed() iteration breaks on old timestamps), so out-of-order writes would
+    silently corrupt query results. Now ingest rejects them with OutOfOrderSampleError."""
+
+    def test_in_order_writes_succeed(self) -> None:
+        store = InMemoryMetricStore()
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=1.0)],
+            timestamp=_ts(10),
+        )
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=2.0)],
+            timestamp=_ts(20),
+        )
+        df = store.query_latest("m")
+        assert df["value"][0] == 2.0
+
+    def test_equal_timestamp_allowed(self) -> None:
+        store = InMemoryMetricStore()
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=1.0)],
+            timestamp=_ts(10),
+        )
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=2.0)],
+            timestamp=_ts(10),
+        )
+        df = store.query_latest("m")
+        assert df["value"][0] == 2.0
+
+    def test_out_of_order_raises_error(self) -> None:
+        store = InMemoryMetricStore()
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=1.0)],
+            timestamp=_ts(20),
+        )
+
+        with pytest.raises(OutOfOrderSampleError, match="out-of-order"):
+            store.ingest_samples(
+                target_id="n",
+                samples=[GaugeSample(name="m", labels={}, value=2.0)],
+                timestamp=_ts(10),
+            )
+
+    def test_out_of_order_does_not_corrupt_existing_data(self) -> None:
+        store = InMemoryMetricStore()
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=1.0)],
+            timestamp=_ts(10),
+        )
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=2.0)],
+            timestamp=_ts(20),
+        )
+
+        with pytest.raises(OutOfOrderSampleError):
+            store.ingest_samples(
+                target_id="n",
+                samples=[GaugeSample(name="m", labels={}, value=999.0)],
+                timestamp=_ts(15),
+            )
+
+        df = store.query_latest("m")
+        assert df["value"][0] == 2.0
+
+    def test_different_series_independent(self) -> None:
+        """Out-of-order check is per-series, not global."""
+        store = InMemoryMetricStore()
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={"gpu": "0"}, value=1.0)],
+            timestamp=_ts(20),
+        )
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={"gpu": "1"}, value=2.0)],
+            timestamp=_ts(10),
+        )
+        df = store.query_latest("m")
+        assert len(df) == 2
+
+    def test_first_sample_in_series_always_accepted(self) -> None:
+        store = InMemoryMetricStore()
+        store.ingest_samples(
+            target_id="n",
+            samples=[GaugeSample(name="m", labels={}, value=1.0)],
+            timestamp=_ts(1),
+        )
+        df = store.query_latest("m")
+        assert df["value"][0] == 1.0
 
 
 class TestQueryLatest:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +13,12 @@ from miles.utils.ft.controller.metrics.mini_prometheus.query import query_latest
 from miles.utils.ft.controller.metrics.mini_prometheus.query import query_range as _query_range
 from miles.utils.ft.controller.metrics.mini_prometheus.query import query_single_latest as _query_single_latest
 from miles.utils.ft.controller.metrics.mini_prometheus.query import range_aggregate as _range_aggregate
+
+logger = logging.getLogger(__name__)
+
+
+class OutOfOrderSampleError(ValueError):
+    """A sample was ingested with a timestamp older than the latest in that series."""
 
 
 class InMemoryMetricStore(RangeAggregationMixin):
@@ -39,8 +46,15 @@ class InMemoryMetricStore(RangeAggregationMixin):
                 self._label_maps[key] = labels
                 self._name_index.setdefault(sample.name, set()).add(key)
 
+            existing = self._series[key]
+            if existing and ts < existing[-1].timestamp:
+                raise OutOfOrderSampleError(
+                    f"out-of-order sample for metric={sample.name!r} target={target_id!r}: "
+                    f"new_ts={ts} < latest_ts={existing[-1].timestamp}"
+                )
+
             raw_value = sample.value if isinstance(sample, GaugeSample) else sample.delta
-            self._series[key].append(TimeSeriesSample(timestamp=ts, value=raw_value))
+            existing.append(TimeSeriesSample(timestamp=ts, value=raw_value))
 
     def query_single_latest(
         self,
