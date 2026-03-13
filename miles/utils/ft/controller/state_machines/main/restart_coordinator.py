@@ -103,6 +103,7 @@ async def trigger_main_job_restart(
     """
     requestor = find_restart_requestor(state.subsystems)
     if requestor is None:
+        logger.debug("main_sm: trigger_main_job_restart: no requestor found, returning None")
         return None
 
     for name, sub_state in state.subsystems.items():
@@ -128,6 +129,7 @@ async def trigger_main_job_restart(
         restart_lock=context.shared.restart_lock,
     )
     if not success:
+        logger.warning("main_sm: stop_and_submit failed for requestor=%s, returning to NormalSt", requestor)
         await safe_notify(
             context.shared.notifier,
             title="Main job restart failed",
@@ -139,6 +141,10 @@ async def trigger_main_job_restart(
         )
         return NormalSt(subsystems={**state.subsystems, requestor: updated_requestor})
 
+    logger.info(
+        "main_sm: state transition: old=NormalSt, new=RestartingMainJobSt, trigger=requestor=%s",
+        requestor,
+    )
     return RestartingMainJobSt(
         requestor_name=requestor,
         start_time=datetime.now(timezone.utc),
@@ -165,11 +171,22 @@ async def resolve_main_job_restart(
     else:
         elapsed = (datetime.now(timezone.utc) - state.start_time).total_seconds()
         if elapsed > context.shared.recovery_timeout_seconds:
+            logger.warning(
+                "main_sm: resolve_main_job_restart timeout: elapsed=%.0f, timeout=%d",
+                elapsed,
+                context.shared.recovery_timeout_seconds,
+            )
             execution_result = ExternalExecutionResult.TIMEOUT
 
     if execution_result is None:
+        logger.debug("main_sm: resolve_main_job_restart: job still pending, status=%s", status.value)
         return None
 
+    logger.info(
+        "main_sm: resolve_main_job_restart: execution_result=%s, requestor=%s",
+        execution_result.value,
+        state.requestor_name,
+    )
     fresh_states = build_fresh_subsystem_states(context.shared.subsystem_specs)
     if state.requestor_name in fresh_states:
         restored = update_external_execution_result(state.requestor_frozen_state, execution_result)
