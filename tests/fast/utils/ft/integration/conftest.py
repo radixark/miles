@@ -25,6 +25,7 @@ RECOVERY_TIMEOUT = 60.0 * _TIMEOUT_SCALE
 LONG_RECOVERY_TIMEOUT = 120.0 * _TIMEOUT_SCALE
 _WORKER_PORT_BLOCK_SIZE = 100
 _WORKER_PORT_BASE = 20000
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _ray_start_env() -> dict[str, str]:
@@ -58,11 +59,16 @@ def _normalize_local_ray_node_ip(node_ip: str, head_ip: str) -> str:
     return head_ip
 
 
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
 def _connect_to_started_ray_cluster(
     start_stdout: str,
     preferred_host: str | None = None,
 ) -> tuple[Any, str]:
-    match = re.search(r"--address='([^']+)'", start_stdout)
+    normalized_stdout = _strip_ansi(start_stdout)
+    match = re.search(r"--address='([^']+)'", normalized_stdout)
     if match:
         gcs_address = _override_gcs_host(match.group(1), preferred_host=preferred_host)
         return ray.init(address=gcs_address), gcs_address
