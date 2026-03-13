@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass, field
 
 from miles.utils.ft.controller.types import TimeSeriesStoreLifecycle
@@ -15,30 +14,22 @@ _MAX_SCRAPE_RESTARTS = 20
 
 @dataclass
 class MetricStoreTaskHandle:
-    task: asyncio.Task[None]
-    restart_exhausted: bool = False
+    task: asyncio.Task[None] = field(init=False)
     last_exception: Exception | None = None
-    last_failure_at: float | None = None
 
+    @property
+    def is_unhealthy(self) -> bool:
+        return self.task.done()
 
-def is_metric_store_unhealthy(handle: MetricStoreTaskHandle) -> bool:
-    return handle.task.done() or handle.restart_exhausted
-
-
-def format_metric_store_health_error(handle: MetricStoreTaskHandle) -> str:
-    parts = [
-        f"task_done={handle.task.done()}",
-        f"restart_exhausted={handle.restart_exhausted}",
-    ]
-    if handle.last_exception is not None:
-        parts.append(f"last_exception={type(handle.last_exception).__name__}: {handle.last_exception}")
-    if handle.last_failure_at is not None:
-        parts.append(f"last_failure_at={handle.last_failure_at:.1f}")
-    return "Metric store unhealthy: " + ", ".join(parts)
+    def format_health_error(self) -> str:
+        parts = [f"task_done={self.task.done()}"]
+        if self.last_exception is not None:
+            parts.append(f"last_exception={type(self.last_exception).__name__}: {self.last_exception}")
+        return "Metric store unhealthy: " + ", ".join(parts)
 
 
 async def start_metric_store_task(store: TimeSeriesStoreLifecycle) -> MetricStoreTaskHandle:
-    handle = MetricStoreTaskHandle(task=asyncio.Future())  # placeholder, replaced below
+    handle = MetricStoreTaskHandle()
 
     async def _run() -> None:
         restarts = 0
@@ -50,7 +41,6 @@ async def start_metric_store_task(store: TimeSeriesStoreLifecycle) -> MetricStor
             except Exception as exc:
                 restarts += 1
                 handle.last_exception = exc
-                handle.last_failure_at = time.monotonic()
                 logger.error(
                     "metric_store_crashed restart=%d/%d, restarting in %.0fs",
                     restarts,
@@ -60,11 +50,9 @@ async def start_metric_store_task(store: TimeSeriesStoreLifecycle) -> MetricStor
                 )
                 await asyncio.sleep(_SCRAPE_RESTART_DELAY_SECONDS)
 
-        handle.restart_exhausted = True
         logger.error("metric_store_exhausted_restarts max=%d", _MAX_SCRAPE_RESTARTS)
 
-    task = asyncio.create_task(_run())
-    handle.task = task
+    handle.task = asyncio.create_task(_run())
     logger.info("metric_store_started")
     return handle
 

@@ -7,13 +7,7 @@ from typing import NamedTuple
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
-from miles.utils.ft.controller.metrics.lifecycle import (
-    MetricStoreTaskHandle,
-    format_metric_store_health_error,
-    is_metric_store_unhealthy,
-    start_metric_store_task,
-    stop_metric_store_task,
-)
+from miles.utils.ft.controller.metrics.lifecycle import MetricStoreTaskHandle, start_metric_store_task, stop_metric_store_task
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
@@ -131,7 +125,8 @@ class FtController:
         scrape_handle = await start_metric_store_task(self._metric_store.time_series_store)
         try:
             while not self._shutting_down:
-                self._check_metric_store_health(scrape_handle)
+                if scrape_handle.is_unhealthy:
+                    raise RuntimeError(scrape_handle.format_health_error())
                 await self._tick()
                 if not self._shutting_down:
                     await asyncio.sleep(self._runtime_config.tick_interval)
@@ -189,11 +184,6 @@ class FtController:
 
     async def _tick(self) -> None:
         await self._tick_loop.tick(self._build_tick_deps())
-
-    @staticmethod
-    def _check_metric_store_health(handle: MetricStoreTaskHandle) -> None:
-        if is_metric_store_unhealthy(handle):
-            raise RuntimeError(format_metric_store_health_error(handle))
 
     async def _stop_services(self, scrape_handle: MetricStoreTaskHandle) -> None:
         await stop_metric_store_task(self._metric_store.time_series_store, scrape_handle)

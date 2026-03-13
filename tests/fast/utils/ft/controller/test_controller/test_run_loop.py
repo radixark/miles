@@ -1,9 +1,7 @@
-"""Tests for controller run loop metric store health checks.
+"""Tests for MetricStoreTaskHandle health checking.
 
-Previously the controller continued ticking even after the scrape loop
-died (exhausted restarts), running detectors on stale/empty data.
-Now the controller checks MetricStoreTaskHandle health before each tick
-and raises RuntimeError if the metric store is unhealthy.
+The controller checks handle.is_unhealthy before each tick and raises
+RuntimeError if the metric store is unhealthy.
 """
 
 from __future__ import annotations
@@ -13,52 +11,35 @@ import asyncio
 import pytest
 
 from miles.utils.ft.controller.metrics.lifecycle import MetricStoreTaskHandle
-from miles.utils.ft.controller.controller import FtController
 
 
-class TestCheckMetricStoreHealth:
-    def test_healthy_handle_does_not_raise(self) -> None:
+class TestMetricStoreTaskHandleHealthCheck:
+    def test_running_handle_is_healthy(self) -> None:
         async def _run() -> None:
-            task = asyncio.create_task(asyncio.Event().wait())
-            handle = MetricStoreTaskHandle(task=task)
+            handle = MetricStoreTaskHandle()
+            handle.task = asyncio.create_task(asyncio.Event().wait())
             try:
-                FtController._check_metric_store_health(handle)
+                assert handle.is_unhealthy is False
             finally:
-                task.cancel()
+                handle.task.cancel()
                 try:
-                    await task
+                    await handle.task
                 except asyncio.CancelledError:
                     pass
 
         asyncio.run(_run())
 
-    def test_raises_when_task_is_done(self) -> None:
+    def test_done_task_is_unhealthy(self) -> None:
         async def _run() -> None:
             async def _finish() -> None:
                 pass
 
-            task = asyncio.create_task(_finish())
-            await task
-            handle = MetricStoreTaskHandle(task=task)
+            handle = MetricStoreTaskHandle()
+            handle.task = asyncio.create_task(_finish())
+            await handle.task
 
-            with pytest.raises(RuntimeError, match="Metric store unhealthy"):
-                FtController._check_metric_store_health(handle)
-
-        asyncio.run(_run())
-
-    def test_raises_when_restart_exhausted(self) -> None:
-        async def _run() -> None:
-            task = asyncio.create_task(asyncio.Event().wait())
-            handle = MetricStoreTaskHandle(task=task, restart_exhausted=True)
-            try:
-                with pytest.raises(RuntimeError, match="Metric store unhealthy"):
-                    FtController._check_metric_store_health(handle)
-            finally:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            assert handle.is_unhealthy is True
+            assert "Metric store unhealthy" in handle.format_health_error()
 
         asyncio.run(_run())
 
@@ -67,16 +48,13 @@ class TestCheckMetricStoreHealth:
             async def _finish() -> None:
                 pass
 
-            task = asyncio.create_task(_finish())
-            await task
-            handle = MetricStoreTaskHandle(
-                task=task,
-                restart_exhausted=True,
-                last_exception=ValueError("scrape crashed"),
-                last_failure_at=12345.0,
-            )
+            handle = MetricStoreTaskHandle()
+            handle.task = asyncio.create_task(_finish())
+            await handle.task
+            handle.last_exception = ValueError("scrape crashed")
 
-            with pytest.raises(RuntimeError, match="scrape crashed"):
-                FtController._check_metric_store_health(handle)
+            error = handle.format_health_error()
+            assert "scrape crashed" in error
+            assert "ValueError" in error
 
         asyncio.run(_run())

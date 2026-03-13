@@ -9,7 +9,6 @@ import pytest
 
 from miles.utils.ft.controller.metrics.lifecycle import (
     MetricStoreTaskHandle,
-    is_metric_store_unhealthy,
     start_metric_store_task,
     stop_metric_store_task,
 )
@@ -75,11 +74,11 @@ class TestStopMetricStoreTask:
             async def _noop() -> None:
                 await asyncio.Event().wait()
 
-            task = asyncio.create_task(_noop())
-            handle = MetricStoreTaskHandle(task=task)
+            handle = MetricStoreTaskHandle()
+            handle.task = asyncio.create_task(_noop())
             await stop_metric_store_task(store=store, handle=handle)
 
-            assert task.cancelled()
+            assert handle.task.cancelled()
             store.stop.assert_awaited_once()
 
         asyncio.run(_run())
@@ -92,9 +91,9 @@ class TestStopMetricStoreTask:
             async def _already_done() -> None:
                 pass
 
-            task = asyncio.create_task(_already_done())
-            await task
-            handle = MetricStoreTaskHandle(task=task)
+            handle = MetricStoreTaskHandle()
+            handle.task = asyncio.create_task(_already_done())
+            await handle.task
             await stop_metric_store_task(store=store, handle=handle)
 
         asyncio.run(_run())
@@ -107,15 +106,15 @@ class TestStopMetricStoreTask:
             async def _noop() -> None:
                 await asyncio.Event().wait()
 
-            task = asyncio.create_task(_noop())
-            handle = MetricStoreTaskHandle(task=task)
+            handle = MetricStoreTaskHandle()
+            handle.task = asyncio.create_task(_noop())
 
             try:
                 await stop_metric_store_task(store=store, handle=handle)
             except RuntimeError:
                 pass
 
-            assert task.cancelled() or task.done()
+            assert handle.task.cancelled() or handle.task.done()
 
         asyncio.run(_run())
 
@@ -189,11 +188,10 @@ class TestScrapeLoopMaxRestarts:
         asyncio.run(_run())
 
 
-class TestMetricStoreTaskHandleState:
-    def test_restart_exhausted_set_after_max_failures(self) -> None:
-        """After exhausting all restarts, the handle's restart_exhausted flag
-        and last_exception should be set correctly. Previously the lifecycle
-        just logged and the controller had no way to detect this state."""
+class TestMetricStoreTaskHandleHealth:
+    def test_last_exception_set_after_max_failures(self) -> None:
+        """After exhausting all restarts, the handle's last_exception should
+        be set and task should be done (unhealthy)."""
         call_count = 0
 
         async def _always_fail() -> None:
@@ -215,30 +213,29 @@ class TestMetricStoreTaskHandleState:
                 handle = await start_metric_store_task(store)
                 await asyncio.sleep(0.5)
 
-                assert handle.restart_exhausted is True
+                assert handle.task.done()
                 assert handle.last_exception is not None
                 assert "failure" in str(handle.last_exception)
-                assert handle.last_failure_at is not None
-                assert is_metric_store_unhealthy(handle) is True
+                assert handle.is_unhealthy is True
             finally:
                 mod._SCRAPE_RESTART_DELAY_SECONDS = original_delay
                 mod._MAX_SCRAPE_RESTARTS = original_max
 
         asyncio.run(_run())
 
-    def test_healthy_handle_is_not_unhealthy(self) -> None:
+    def test_running_handle_is_healthy(self) -> None:
         async def _run() -> None:
             async def _wait_forever() -> None:
                 await asyncio.Event().wait()
 
-            task = asyncio.create_task(_wait_forever())
-            handle = MetricStoreTaskHandle(task=task)
+            handle = MetricStoreTaskHandle()
+            handle.task = asyncio.create_task(_wait_forever())
 
-            assert is_metric_store_unhealthy(handle) is False
+            assert handle.is_unhealthy is False
 
-            task.cancel()
+            handle.task.cancel()
             try:
-                await task
+                await handle.task
             except asyncio.CancelledError:
                 pass
 
