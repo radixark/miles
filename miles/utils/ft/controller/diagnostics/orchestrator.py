@@ -48,7 +48,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         pre_executors: list[ClusterExecutorProtocol] | None = None,
     ) -> DiagnosticPipelineResult:
         logger.info(
-            "diagnostic_pipeline_start pipeline_steps=%d pre_executors=%d",
+            "diagnostics: pipeline start steps=%d, pre_executors=%d",
             len(self._pipeline),
             len(pre_executors) if pre_executors else 0,
         )
@@ -60,7 +60,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "diagnostic_pipeline_timeout timeout=%d",
+                "diagnostics: pipeline timeout after %ds",
                 self._pipeline_timeout_seconds,
             )
             return DiagnosticPipelineResult(
@@ -76,7 +76,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         all_executors = (pre_executors or []) + self._pipeline
 
         if not all_executors:
-            logger.info("diagnostic_pipeline_empty — no diagnostics configured")
+            logger.info("diagnostics: pipeline empty, no diagnostics configured")
             return DiagnosticPipelineResult(
                 bad_node_ids=[],
                 reason="no diagnostics configured (empty pipeline)",
@@ -92,7 +92,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
                 )
             except Exception:
                 logger.error(
-                    "diagnostic_step_failed executor=%s",
+                    "diagnostics: step failed executor=%s",
                     type(executor).__name__,
                     exc_info=True,
                 )
@@ -101,8 +101,9 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
 
             if bad_node_ids:
                 logger.info(
-                    "diagnostic_step_found_bad bad_nodes=%s",
+                    "diagnostics: step found bad nodes=%s, executor=%s",
                     bad_node_ids,
+                    type(executor).__name__,
                 )
                 return DiagnosticPipelineResult(
                     bad_node_ids=sorted(bad_node_ids),
@@ -117,7 +118,7 @@ class DiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
             reason = "all diagnostics passed — no bad nodes found"
             status = DiagnosticPipelineStatus.PASSED
 
-        logger.info("diagnostic_pipeline_done reason=%s status=%s", reason, status.value)
+        logger.info("diagnostics: pipeline done reason=%s, status=%s", reason, status.value)
         return DiagnosticPipelineResult(
             bad_node_ids=[],
             reason=reason,

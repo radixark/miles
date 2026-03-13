@@ -64,7 +64,7 @@ class NodeAgentCoverageChecker:
             key = _SubsystemNodeKey(subsystem_name=subsystem_name, node_id=node_id)
             counter = self._counters.pop(key, None)
             if counter is not None and counter.has_been_notified:
-                logger.info("Node agent coverage restored: %s/%s", subsystem_name, node_id)
+                logger.info("node_agents: coverage restored subsystem=%s, node_id=%s", subsystem_name, node_id)
                 result.newly_restored_node_ids.append(node_id)
 
         for node_id in uncovered:
@@ -79,7 +79,7 @@ class NodeAgentCoverageChecker:
 
             if counter.should_notify:
                 logger.warning(
-                    "Node %s has been running %s without node agent: %s",
+                    "node_agents: persistent coverage gap node_id=%s, subsystem=%s, summary=%s",
                     node_id,
                     subsystem_name,
                     counter.summary(),
