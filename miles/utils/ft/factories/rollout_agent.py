@@ -30,6 +30,10 @@ def build_rollout_agent(
     ft_id: str = "",
     cell_node_ids: dict[str, list[str]] | None = None,
 ) -> FtRolloutAgent:
+    logger.info(
+        "wiring: build_rollout_agent cell_ids=%s, check_interval=%s, ft_id=%s",
+        cell_ids, check_interval, ft_id or "(auto)",
+    )
     if health_checker is None:
 
         def _default_health_checker(engine: object) -> object:

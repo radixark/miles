@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from miles.utils.ft.adapters.impl.ray.node_discovery import CPU_ONLY_RESOURCE, assert_cpu_only_nodes_exist
+
+logger = logging.getLogger(__name__)
 
 
 def get_cpu_only_scheduling_options() -> dict[str, Any]:
@@ -14,5 +17,6 @@ def get_cpu_only_scheduling_options() -> dict[str, Any]:
     ``cpu_only`` custom resource before returning, so callers fail fast
     instead of blocking on an unsatisfiable resource request.
     """
+    logger.debug("wiring: get_cpu_only_scheduling_options validating cpu_only nodes")
     assert_cpu_only_nodes_exist()
     return {"resources": {CPU_ONLY_RESOURCE: 0.001}}

@@ -31,7 +31,9 @@ def build_tracking_agent(
     run_id: str | None = None,
     ft_id: str = "",
 ) -> FtTrackingAgent:
-    client = RayControllerClient(ft_id=ft_id or get_ft_id())
+    resolved_ft_id = ft_id or get_ft_id()
+    logger.info("wiring: build_tracking_agent rank=%d, ft_id=%s", rank, resolved_ft_id)
+    client = RayControllerClient(ft_id=resolved_ft_id)
     return FtTrackingAgent(rank=rank, run_id=run_id, controller_client=client)
 
 
@@ -44,8 +46,14 @@ def build_training_rank_agent(
     node_id: str | None = None,
 ) -> FtTrainingRankAgent | None:
     if not enabled:
+        logger.debug("wiring: build_training_rank_agent disabled, returning None")
         return None
-    client = RayControllerClient(ft_id=ft_id or get_ft_id())
+    resolved_ft_id = ft_id or get_ft_id()
+    logger.info(
+        "wiring: build_training_rank_agent rank=%d, world_size=%d, ft_id=%s",
+        rank, world_size, resolved_ft_id,
+    )
+    client = RayControllerClient(ft_id=resolved_ft_id)
     return FtTrainingRankAgent(rank=rank, world_size=world_size, controller_client=client, node_id=node_id)
 
 
@@ -91,6 +99,7 @@ def ensure_node_agent(ft_id: str = "") -> None:
     resolved_ft_id = ft_id or get_ft_id()
     node_id = ray.get_runtime_context().get_node_id()
     name = ft_node_agent_actor_name(resolved_ft_id, node_id)
+    logger.info("wiring: ensure_node_agent ft_id=%s, node_id=%s, actor_name=%s", resolved_ft_id, node_id, name)
 
     _ensure_ray_actor_on_node(
         actor_cls=FtNodeAgentActor,

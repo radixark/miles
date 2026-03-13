@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -12,6 +13,8 @@ from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
 from miles.utils.ft.controller.types import NullScrapeTargetManager
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
@@ -32,6 +35,7 @@ def build_platform_components(
     ray_stop_job_timeout_seconds: float = 30.0,
 ) -> tuple[StubNodeManager | K8sNodeManager, StubMainJob | RayMainJob]:
     if platform == "stub":
+        logger.info("wiring: build_platform_components using stub platform")
         return StubNodeManager(), StubMainJob()
 
     if platform == "k8s-ray":
@@ -44,6 +48,10 @@ def build_platform_components(
         if not namespace:
             raise RuntimeError("K8s namespace not configured. " "Set --k8s-namespace or the K8S_NAMESPACE env var.")
 
+        logger.info(
+            "wiring: build_platform_components platform=k8s-ray, namespace=%s, ray_address=%s",
+            namespace, ray_address,
+        )
         node_manager = K8sNodeManager(
             label_prefix=k8s_label_prefix,
             namespace=namespace,
@@ -70,6 +78,10 @@ def build_metric_store(
 ) -> tuple[MiniPrometheus | PrometheusClient, MiniPrometheus | NullScrapeTargetManager]:
     """Return (metric_store, scrape_target_manager) based on config backend."""
     if config.metric_store_backend == "mini":
+        logger.info(
+            "wiring: build_metric_store backend=mini, scrape_interval=%ss, retention=%smin",
+            config.scrape_interval_seconds, config.mini_prometheus_retention_minutes,
+        )
         mini_prom = MiniPrometheus(
             config=MiniPrometheusConfig(
                 scrape_interval=timedelta(seconds=config.scrape_interval_seconds),
@@ -83,6 +95,7 @@ def build_metric_store(
         return mini_prom, mini_prom
 
     if config.metric_store_backend == "prometheus":
+        logger.info("wiring: build_metric_store backend=prometheus, url=%s", config.prometheus_url)
         return PrometheusClient(url=config.prometheus_url), NullScrapeTargetManager()
 
     raise ValueError(f"Unknown metric-store-backend: {config.metric_store_backend}")

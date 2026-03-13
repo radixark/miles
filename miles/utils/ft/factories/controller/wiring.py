@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from miles.utils.ft.adapters.impl.training_actuator import TrainingSubsystemActuator
@@ -32,6 +33,8 @@ from miles.utils.ft.utils.box import Box
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine
 
+logger = logging.getLogger(__name__)
+
 
 def assemble_ft_controller(
     runtime_config: ControllerRuntimeConfig,
@@ -54,6 +57,12 @@ def assemble_ft_controller(
     from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
     from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
 
+    logger.info(
+        "wiring: assemble_ft_controller notifier=%s, detector_count=%d, rollout_cells=%s",
+        type(notifier).__name__ if notifier else "None",
+        len(detectors) if detectors else 0,
+        rollout_cell_ids or [],
+    )
     node_agent_registry = NodeAgentRegistry()
     training_rank_roster_box: Box[TrainingRankRoster | None] = Box(None)
 
@@ -147,6 +156,10 @@ def assemble_ft_controller(
         controller_exporter=controller_exporter,
     )
 
+    logger.info(
+        "wiring: assemble_ft_controller complete subsystem_count=%d",
+        len(subsystem_specs),
+    )
     return FtControllerBundle(controller=instance, subsystem_hub=subsystem_hub)
 
 

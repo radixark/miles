@@ -93,6 +93,7 @@ def build_all_diagnostics(
     which subset to actually run (e.g. local CLI excludes nccl_pairwise).
     """
     resolved_num_gpus = num_gpus if num_gpus is not None else detect_gpu_count()
+    logger.debug("wiring: build_all_diagnostics num_gpus=%d", resolved_num_gpus)
     return [
         StackTraceNodeExecutor(),
         GpuNodeExecutor(),
@@ -134,6 +135,10 @@ def build_node_agent(
     collectors = collectors_override if collectors_override is not None else build_default_collectors()
     diagnostics = (
         diagnostics_override if diagnostics_override is not None else build_all_diagnostics(num_gpus=num_gpus)
+    )
+    logger.info(
+        "wiring: build_node_agent node_id=%s, collectors=%d, diagnostics=%d, interval=%ss",
+        resolved_node_id, len(collectors), len(diagnostics), collect_interval_seconds,
     )
     return FtNodeAgent(
         node_id=resolved_node_id,

@@ -26,9 +26,12 @@ _NOTIFIER_SENTINEL: object = object()
 
 def _rollout_num_cells_to_ids(num_cells: int) -> list[str] | None:
     if num_cells == 0:
+        logger.debug("wiring: rollout_num_cells=0, no rollout cell IDs")
         return None
     if num_cells == 1:
+        logger.debug("wiring: rollout_num_cells=1, using ['default']")
         return ["default"]
+    logger.debug("wiring: rollout_num_cells=%d, using numeric IDs", num_cells)
     return [str(i) for i in range(num_cells)]
 
 
@@ -134,6 +137,7 @@ def launch_ft_controller_actor(
     from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
     from miles.utils.ft.factories.scheduling import get_cpu_only_scheduling_options
 
+    logger.info("wiring: launch_ft_controller_actor actor_name=%s", actor_name)
     options_kwargs = get_cpu_only_scheduling_options()
     options_kwargs["name"] = actor_name
 
