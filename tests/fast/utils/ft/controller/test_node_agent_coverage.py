@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from miles.utils.ft.controller.node_agents import NodeAgentCoverageChecker
+from miles.utils.ft.controller.node_agents import CoverageResult, NodeAgentCoverageChecker
 
 
 class TestNodeAgentCoverageChecker:
@@ -98,3 +98,47 @@ class TestNodeAgentCoverageChecker:
         checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
         checker.check(subsystem_node_ids=set(), registered_agent_node_ids=set())
         checker.check(subsystem_node_ids=set(), registered_agent_node_ids=set())
+
+
+class TestCoverageResultStructured:
+    """Previously check() only logged warnings and returned None. Now it returns
+    CoverageResult with persistently_uncovered_node_ids, enabling tick_loop to
+    escalate to formal notification instead of just logging."""
+
+    def test_returns_persistently_uncovered_at_threshold(self) -> None:
+        checker = NodeAgentCoverageChecker(window_seconds=600, threshold=3)
+
+        for _ in range(2):
+            result = checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            assert result.persistently_uncovered_node_ids == []
+
+        result = checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        assert result.persistently_uncovered_node_ids == ["n1"]
+
+    def test_returns_empty_when_all_covered(self) -> None:
+        checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
+
+        result = checker.check(subsystem_node_ids={"n1", "n2"}, registered_agent_node_ids={"n1", "n2"})
+
+        assert result.persistently_uncovered_node_ids == []
+        assert result.newly_restored_node_ids == []
+
+    def test_returns_newly_restored_on_recovery(self) -> None:
+        checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
+
+        checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        result = checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids={"n1"})
+
+        assert result.newly_restored_node_ids == ["n1"]
+
+    def test_not_reported_again_until_restored(self) -> None:
+        """After threshold is reached, node is not re-reported in subsequent calls."""
+        checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
+
+        checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        result1 = checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        result2 = checker.check(subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+
+        assert result1.persistently_uncovered_node_ids == ["n1"]
+        assert result2.persistently_uncovered_node_ids == []

@@ -1,22 +1,32 @@
-"""Sliding-window checker that warns when training nodes lack a registered node agent."""
+"""Sliding-window checker that warns when subsystem nodes lack a registered node agent."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class CoverageResult:
+    """Structured output from a single coverage check call."""
+
+    persistently_uncovered_node_ids: list[str] = field(default_factory=list)
+    newly_restored_node_ids: list[str] = field(default_factory=list)
+
+
 class NodeAgentCoverageChecker:
     """Tracks node agent coverage over a sliding window and warns on sustained gaps.
 
-    Each call to ``check()`` records whether each training node has a
+    Each call to ``check()`` records whether each subsystem node has a
     registered agent. Only after a node has been uncovered for
-    *threshold* events within *window_seconds* does a warning fire,
-    filtering out transient registration delays. Once warned, a node
-    is not warned again until coverage is restored and then lost again.
+    *threshold* events within *window_seconds* does it appear in the
+    returned ``CoverageResult.persistently_uncovered_node_ids``,
+    filtering out transient registration delays. Once reported, a node
+    is not reported again until coverage is restored and then lost again.
     """
 
     def __init__(
@@ -32,7 +42,8 @@ class NodeAgentCoverageChecker:
         self,
         subsystem_node_ids: set[str],
         registered_agent_node_ids: set[str],
-    ) -> None:
+    ) -> CoverageResult:
+        result = CoverageResult()
         uncovered = subsystem_node_ids - registered_agent_node_ids
         covered = subsystem_node_ids & registered_agent_node_ids
 
@@ -40,6 +51,7 @@ class NodeAgentCoverageChecker:
             counter = self._counters.pop(node_id, None)
             if counter is not None and counter._notified:
                 logger.info("Node agent coverage restored: %s", node_id)
+                result.newly_restored_node_ids.append(node_id)
 
         for node_id in uncovered:
             if node_id not in self._counters:
@@ -52,7 +64,10 @@ class NodeAgentCoverageChecker:
 
             if counter.should_notify:
                 logger.warning(
-                    "Node %s has been running training without node agent: %s",
+                    "Node %s has been running without node agent: %s",
                     node_id,
                     counter.summary(),
                 )
+                result.persistently_uncovered_node_ids.append(node_id)
+
+        return result
