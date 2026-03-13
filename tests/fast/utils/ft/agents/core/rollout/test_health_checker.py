@@ -134,6 +134,37 @@ class TestProbeCell:
                 timeout=10.0,
             )
 
+    @pytest.mark.anyio
+    async def test_lead_engine_none_returns_false(self) -> None:
+        """engines[0] is None (killed engine) → probe returns False without calling health_fn."""
+        called = False
+
+        async def _spy_health_fn(engine: object) -> None:
+            nonlocal called
+            called = True
+
+        result = await _probe_cell(
+            engines=[None],  # type: ignore[list-item]
+            engine_health_fn=_spy_health_fn,
+            cell_id="killed",
+            timeout=10.0,
+        )
+
+        assert result is False
+        assert not called, "health_fn should not be called when lead engine is None"
+
+    @pytest.mark.anyio
+    async def test_lead_engine_none_with_healthy_followers_returns_false(self) -> None:
+        """engines[0] is None but followers are alive → still returns False."""
+        result = await _probe_cell(
+            engines=[None, _MockEngine(True), _MockEngine(True)],  # type: ignore[list-item]
+            engine_health_fn=_engine_health_fn,
+            cell_id="killed-lead",
+            timeout=10.0,
+        )
+
+        assert result is False
+
     # P2 item 27: additional probe edge cases
     @pytest.mark.anyio
     async def test_engine_raises_timeout_error_returns_false(self) -> None:
@@ -303,6 +334,55 @@ class TestCheckOneCellExceptionReportsUnhealthy:
         try:
             await asyncio.sleep(0.15)
             assert collector.latest("crash") is False
+        finally:
+            await checker.shutdown()
+
+
+class TestNoneEngineIntegration:
+    """RolloutHealthChecker correctly reports unhealthy when engines become None."""
+
+    @pytest.mark.anyio
+    async def test_none_engine_reported_unhealthy(self) -> None:
+        """get_engines() returns [None] (killed engine) → reported as unhealthy."""
+        collector = _ReportCollector()
+        checker = RolloutHealthChecker(
+            cells=[
+                CellEntry(cell_id="killed", get_engines=lambda: [None]),  # type: ignore[list-item]
+            ],
+            engine_health_fn=_engine_health_fn,
+            report_fn=collector,
+            check_interval=0.05,
+        )
+
+        try:
+            await asyncio.sleep(0.15)
+            assert collector.latest("killed") is False
+        finally:
+            await checker.shutdown()
+
+    @pytest.mark.anyio
+    async def test_engine_becomes_none_after_initial_healthy(self) -> None:
+        """Engine starts healthy, then gets replaced with None → transitions to unhealthy."""
+        engines: list[object | None] = [_MockEngine(True)]
+        collector = _ReportCollector()
+        checker = RolloutHealthChecker(
+            cells=[
+                CellEntry(cell_id="dynamic", get_engines=lambda: engines),  # type: ignore[return-value]
+            ],
+            engine_health_fn=_engine_health_fn,
+            report_fn=collector,
+            check_interval=0.05,
+        )
+
+        try:
+            # Step 1: initially healthy
+            await asyncio.sleep(0.15)
+            assert collector.latest("dynamic") is True
+
+            # Step 2: engine gets killed (set to None)
+            engines[0] = None
+            await asyncio.sleep(0.15)
+            assert collector.latest("dynamic") is False
         finally:
             await checker.shutdown()
 
