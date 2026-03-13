@@ -142,12 +142,16 @@ async def test_all_pass_diagnostics_escalates_to_notify(
 async def test_crashing_notifier_does_not_break_recovery(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """Notifier raises on send() -> safe_notify catches -> recovery completes."""
+    """Notifier raises on send() -> safe_notify catches -> recovery completes.
+
+    is_throttled() is checked before record(), so max_count=1 allows exactly
+    1 recovery. The second crash is throttled, triggering the notifier (which crashes).
+    """
     # Step 1: create testbed with crashing notifier
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=[TrainingCrashDetector()],
-        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=2),
+        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=1),
         notifier_override=_CrashingNotifier(),
     )
 
