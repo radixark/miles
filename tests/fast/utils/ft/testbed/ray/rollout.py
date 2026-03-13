@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 from tests.fast.utils.ft.testbed.backends.sglang_utils.sglang_engine import TestbedSGLangEngine
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,7 @@ class TestbedRolloutManager:
         """
         from miles.utils.ft.factories.rollout_agent import build_rollout_agent
 
+        os.environ[MILES_HOST_IP_ENV] = ray.util.get_node_ip_address()
         build_rollout_agent(
             cell_ids=self._cell_ids,
             get_engines=lambda cid: [self._engines[cid]] if cid in self._engines else [],

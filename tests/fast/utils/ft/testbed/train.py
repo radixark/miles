@@ -15,6 +15,7 @@ from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
 from miles.utils.ft.adapters.types import ft_controller_actor_name, ft_node_agent_actor_name
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.ft.utils.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
 from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
 from miles.utils.ft.factories.controller.from_config import build_ft_controller
@@ -32,6 +33,10 @@ if TYPE_CHECKING:
     from tests.fast.utils.ft.integration.conftest import RayNodeInfo
 
 logger = logging.getLogger(__name__)
+
+
+def _actor_runtime_env(node_ip: str) -> dict[str, dict[str, str]]:
+    return {"env_vars": {MILES_HOST_IP_ENV: node_ip}}
 
 
 @dataclass
@@ -89,6 +94,10 @@ class MilesTestbed:
             config=config,
             ray_nodes=ray_nodes,
         )
+        ray_node_ip_by_id = {
+            node.ray_node_id: node.node_ip
+            for node in ray_nodes
+        }
 
         # Step 2: Create state actors for node manager, notifier
         node_manager = TestbedNodeManager.create()
@@ -174,6 +183,9 @@ class MilesTestbed:
                     node_id=ray_node_id,
                     soft=False,
                 ),
+                runtime_env=_actor_runtime_env(
+                    node_ip=ray_node_ip_by_id[ray_node_id],
+                ),
             ).remote(
                 builder=build_node_agent,
                 node_id=node_id,
@@ -207,6 +219,9 @@ class MilesTestbed:
                 rollout_node_mapping=rollout_node_mapping,
             )
             cleanup_handles.append(rollout_manager)
+
+            for cell_id in rollout_cell_ids:
+                ray.get(rollout_manager.start_cell.remote(cell_id), timeout=15)
 
             ray.get(rollout_manager.init_ft_agent.remote(), timeout=15)
 
