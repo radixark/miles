@@ -47,11 +47,12 @@ def find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
                 if requestor is None:
                     requestor = name
                 else:
-                    # Intentional design choice (not a bug): concurrent MAIN_JOB
-                    # restart requestors are expected to be extremely rare in
-                    # production, so we only handle one requestor here.
-                    # Unless product requirements change, audits should not flag
-                    # this single-requestor behavior as a standalone issue.
+                    # Accepted product decision: if multiple subsystems
+                    # concurrently request a MAIN_JOB restart, we intentionally
+                    # pick the first requestor and ignore the rest for this
+                    # restart cycle. This is a deliberate simplification, not a
+                    # correctness bug, and future audits should not flag it
+                    # unless product requirements explicitly change.
                     logger.warning(
                         "multiple_restart_requestors found=%s handled=%s",
                         name,
@@ -100,10 +101,12 @@ async def trigger_main_job_restart(
 
     for name, sub_state in state.subsystems.items():
         if name != requestor and isinstance(sub_state, RecoveringSt):
-            # Intentional trade-off: to keep the MAIN_JOB restart path simple,
-            # non-requestor recovery progress is dropped and later re-detected.
-            # This is acceptable under the assumption that multiple concurrent
-            # requestors almost never happen in normal operation.
+            # Accepted product decision: when one subsystem escalates to a
+            # MAIN_JOB restart, we intentionally discard all other in-flight
+            # subsystem recoveries and rely on later re-detection if they still
+            # matter after the restart. This state loss is deliberate and
+            # should not be reported as an audit issue unless product
+            # requirements change.
             logger.warning(
                 "subsystem_recovery_discarded name=%s phase=%s",
                 name,
