@@ -11,6 +11,22 @@ from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqCompara
 
 logger = logging.getLogger(__name__)
 
+_TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
+
+
+def _message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
+    """Compare only the fields that affect chat-template tokenization.
+
+    External client libraries (e.g. litellm) may inject extra keys like
+    ``provider_specific_fields`` into messages.  These have no effect on
+    the Jinja2 chat template output, so we only compare the keys that
+    templates actually read: role, content, reasoning_content, tool_calls.
+    """
+    for key in _TEMPLATE_RELEVANT_KEYS:
+        if stored.get(key) != new.get(key):
+            return False
+    return True
+
 
 class SingleUserTurnTrajectory(BaseModel):
     """State for a single-user-turn trajectory.
@@ -131,14 +147,8 @@ class SingleUserTurnTrajectoryManager:
                 # empty trajectory, no pretokenized input available
                 return None
 
-            if not self._validate_message_structure(request_messages):
-                raise ValueError("invalid message structure: must contain exactly one user message")
-
-            if not self._is_append_only(session.messages, request_messages):
-                raise ValueError(
-                    "new messages are not append-only: only tool and system "
-                    "messages may be appended after the stored prefix"
-                )
+            self._assert_no_user_after_assistant(request_messages)
+            self._assert_append_only(session.messages, request_messages)
 
             return {
                 "pretokenized_token_ids": session.token_ids,
@@ -192,34 +202,54 @@ class SingleUserTurnTrajectoryManager:
             session.token_ids = all_token_ids
 
     @staticmethod
-    def _validate_message_structure(messages: list[dict[str, Any]]) -> bool:
-        """Check that messages contain exactly one user message."""
-        user_count = sum(1 for msg in messages if msg.get("role") == "user")
-        return user_count == 1
+    def _assert_no_user_after_assistant(messages: list[dict[str, Any]]) -> None:
+        """Assert no user message appears after the first assistant message."""
+        seen_assistant = False
+        for i, msg in enumerate(messages):
+            role = msg.get("role")
+            if role == "assistant":
+                seen_assistant = True
+            elif role == "user" and seen_assistant:
+                raise ValueError(
+                    f"invalid message structure: user message at index {i} "
+                    f"appears after the first assistant message"
+                )
 
     @staticmethod
-    def _is_append_only(
+    def _assert_append_only(
         stored_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
-    ) -> bool:
-        """Check new_messages is append-only vs stored_messages.
+    ) -> None:
+        """Assert new_messages is append-only vs stored_messages.
 
         The stored prefix must match exactly, and any new messages appended
         after the stored prefix must have role 'tool' or 'system'.
         """
         if not stored_messages:
-            return True
+            return
 
         if len(new_messages) < len(stored_messages):
-            return False
+            raise ValueError(
+                f"new messages ({len(new_messages)}) are fewer than " f"stored messages ({len(stored_messages)})"
+            )
 
         for i, stored_msg in enumerate(stored_messages):
-            if new_messages[i] != stored_msg:
-                return False
+            if not _message_matches(stored_msg, new_messages[i]):
+                diffs = {
+                    key: {"stored": repr(stored_msg.get(key))[:200], "new": repr(new_messages[i].get(key))[:200]}
+                    for key in _TEMPLATE_RELEVANT_KEYS
+                    if stored_msg.get(key) != new_messages[i].get(key)
+                }
+                raise ValueError(
+                    f"message mismatch at index {i} "
+                    f"(role: stored={stored_msg.get('role')}, new={new_messages[i].get('role')}). "
+                    f"Diffs: {diffs}"
+                )
 
         ALLOWED_APPEND_ROLES = {"tool", "system"}
-        for msg in new_messages[len(stored_messages) :]:
+        for j, msg in enumerate(new_messages[len(stored_messages) :]):
             if msg.get("role") not in ALLOWED_APPEND_ROLES:
-                return False
-
-        return True
+                raise ValueError(
+                    f"appended message at index {len(stored_messages) + j} "
+                    f"has role={msg.get('role')!r}, allowed={ALLOWED_APPEND_ROLES}"
+                )

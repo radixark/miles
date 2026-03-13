@@ -108,8 +108,9 @@ def setup_session_routes(app, router: "MilesRouter"):
         # SGLang sets content=None when the assistant only produces
         # thinking + tool_calls (no text).  Jinja2 renders Python None
         # as the literal string "None", so normalise to empty string.
-        if assistant_message.get("content") is None:
-            assistant_message["content"] = ""
+        assert (
+            assistant_message.get("content") is not None
+        ), "assistant message content is None, when tool call parser failed SGLang should still return a empty content rather than None. Please check your modified SGLang version."
 
         prompt_token_ids = choice.get("prompt_token_ids")
         meta_info = choice["meta_info"]
