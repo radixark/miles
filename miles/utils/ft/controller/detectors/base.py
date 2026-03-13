@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.types import Decision, MetricStore
+from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
 
 logger = logging.getLogger(__name__)
 
@@ -61,3 +61,26 @@ class BaseFaultDetector(ABC):
 
     @abstractmethod
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision: ...
+
+
+def check_metric_blind(
+    ctx: DetectorContext,
+    metric_name: str,
+    *,
+    detector_name: str,
+) -> Decision | None:
+    """Return a TELEMETRY_BLIND decision if *metric_name* has no data for
+    any active node, or ``None`` if data is present (caller should proceed
+    with normal evaluation)."""
+    if not ctx.active_node_ids:
+        return None
+
+    df = ctx.metric_store.time_series_store.query_latest(metric_name)
+    if df is not None and not df.is_empty():
+        return None
+
+    return Decision(
+        action=ActionType.NOTIFY_HUMAN,
+        reason=f"{detector_name}: core metric {metric_name} missing for active nodes",
+        trigger=TriggerType.TELEMETRY_BLIND,
+    )

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import polars as pl
 from pydantic import ConfigDict, Field
 
-from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext, check_metric_blind
 from miles.utils.ft.controller.detectors.checks.mfu_health import check_mfu_health
 from miles.utils.ft.utils.metric_names import DCGM_FI_DEV_GPU_TEMP
 from miles.utils.ft.controller.types import ActionType, Decision, TimeSeriesQueryProtocol, TriggerType
@@ -42,6 +42,10 @@ class ThermalThrottlingDetector(BaseFaultDetector):
         self._config = config or ThermalThrottlingDetectorConfig()
 
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
+        blind = check_metric_blind(ctx, DCGM_FI_DEV_GPU_TEMP, detector_name="ThermalThrottlingDetector")
+        if blind is not None:
+            return blind
+
         result = _find_temperature_outlier_gpus(
             metric_store=ctx.metric_store.time_series_store,
             active_node_ids=ctx.active_node_ids,

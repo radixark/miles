@@ -2,10 +2,11 @@ from datetime import timedelta
 
 from pydantic import ConfigDict, field_validator
 
-from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext, check_metric_blind
 from miles.utils.ft.controller.detectors.checks.hardware import check_nic_down_in_window, check_nic_persistent_down
 from miles.utils.ft.controller.types import Decision, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
+from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
 
 
 class NetworkAlertDetectorConfig(FtBaseModel):
@@ -36,6 +37,10 @@ class NetworkAlertDetector(BaseFaultDetector):
         self._alert_threshold = self._config.alert_threshold
 
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
+        blind = check_metric_blind(ctx, NODE_NETWORK_UP, detector_name="NetworkAlertDetector")
+        if blind is not None:
+            return blind
+
         flap_faults = check_nic_down_in_window(
             ctx.metric_store.time_series_store,
             window=self._alert_window,

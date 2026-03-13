@@ -1,10 +1,11 @@
 import pytest
-from tests.fast.utils.ft.utils.metric_injectors import make_detector_context
+from tests.fast.utils.ft.utils.metric_injectors import inject_healthy_node, make_detector_context, make_fake_metric_store
 
 from miles.utils.ft.controller.detectors.base import (
     BaseFaultDetector,
     DetectorContext,
     _filter_node_ids_by_active,
+    check_metric_blind,
 )
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
@@ -134,3 +135,35 @@ class TestBaseFaultDetectorEvaluate:
         result = detector.evaluate(ctx)
         assert result.action == ActionType.NONE
         assert "no active nodes" in result.reason
+
+
+class TestCheckMetricBlind:
+    def test_returns_telemetry_blind_when_metric_missing_and_active_nodes_present(self) -> None:
+        """Previously, detectors silently treated missing metrics as 'no fault'.
+        When active nodes exist but core metrics are absent (collector failure),
+        this helper returns a TELEMETRY_BLIND decision to alert operators."""
+        store = make_fake_metric_store()
+        ctx = make_detector_context(metric_store=store, active_node_ids={"node-0"})
+
+        result = check_metric_blind(ctx, "miles_ft_gpu_available", detector_name="TestDetector")
+
+        assert result is not None
+        assert result.action == ActionType.NOTIFY_HUMAN
+        assert result.trigger == TriggerType.TELEMETRY_BLIND
+
+    def test_returns_none_when_metric_present(self) -> None:
+        store = make_fake_metric_store()
+        inject_healthy_node(store, node_id="node-0")
+        ctx = make_detector_context(metric_store=store, active_node_ids={"node-0"})
+
+        result = check_metric_blind(ctx, "miles_ft_gpu_available", detector_name="TestDetector")
+
+        assert result is None
+
+    def test_returns_none_when_no_active_nodes(self) -> None:
+        store = make_fake_metric_store()
+        ctx = make_detector_context(metric_store=store, active_node_ids=set())
+
+        result = check_metric_blind(ctx, "miles_ft_gpu_available", detector_name="TestDetector")
+
+        assert result is None
