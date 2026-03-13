@@ -104,18 +104,8 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
         result: DetectorResult,
         ctx: SubsystemContext,
     ) -> None:
-        """Send each NOTIFY_HUMAN decision through dedup and notify."""
-        dedup = ctx.notify_deduplicator
-        current_dedup_ids: set[str] = set()
-
-        for notify_decision in result.notify_decisions:
-            dedup_id = notify_decision.notify_deduplicator_id
-            if dedup.should_notify(dedup_id):
-                await handle_notify_human(decision=notify_decision, notifier=ctx.notifier)
-            if dedup_id is not None:
-                current_dedup_ids.add(dedup_id)
-
-        dedup.sync_active_ids(current_dedup_ids)
+        for decision in ctx.notify_deduplicator.check_batch(result.notify_decisions):
+            await handle_notify_human(decision=decision, notifier=ctx.notifier)
 
 
 class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):

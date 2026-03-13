@@ -12,7 +12,7 @@ from miles.utils.ft.controller.state_machines.subsystem.models import (
     RecoveringSt,
 )
 from miles.utils.ft.controller.state_machines.recovery.models import RealtimeChecksSt
-from miles.utils.ft.controller.types import TriggerType
+from miles.utils.ft.controller.types import Decision, TriggerType
 
 
 class TestSubsystemStateConstruction:
@@ -83,30 +83,45 @@ class TestImmutableDefaults:
         assert state.bad_node_ids == ("a",)
 
 
+def _decision_with_dedup_id(dedup_id: str | None) -> Decision:
+    from miles.utils.ft.controller.types import ActionType, TriggerType
+    return Decision(
+        action=ActionType.NOTIFY_HUMAN,
+        reason="test",
+        trigger=TriggerType.MISC,
+        notify_deduplicator_id=dedup_id,
+    )
+
+
 class TestNotifyDeduplicator:
     def test_first_occurrence_allows_notify(self) -> None:
         dedup = NotifyDeduplicator()
-        assert dedup.should_notify("hang:no_heartbeat") is True
+        result = dedup.check_batch([_decision_with_dedup_id("hang:no_heartbeat")])
+        assert len(result) == 1
 
-    def test_repeated_occurrence_suppressed_after_sync(self) -> None:
+    def test_repeated_occurrence_suppressed(self) -> None:
         dedup = NotifyDeduplicator()
-        dedup.sync_active_ids({"hang:no_heartbeat"})
-        assert dedup.should_notify("hang:no_heartbeat") is False
+        dedup.check_batch([_decision_with_dedup_id("hang:no_heartbeat")])
+        result = dedup.check_batch([_decision_with_dedup_id("hang:no_heartbeat")])
+        assert len(result) == 0
 
     def test_different_id_still_allows_notify(self) -> None:
         dedup = NotifyDeduplicator()
-        dedup.sync_active_ids({"hang:no_heartbeat"})
-        assert dedup.should_notify("metric_blind:gpu") is True
+        dedup.check_batch([_decision_with_dedup_id("hang:no_heartbeat")])
+        result = dedup.check_batch([_decision_with_dedup_id("metric_blind:gpu")])
+        assert len(result) == 1
 
     def test_cleared_id_allows_notify_again(self) -> None:
-        """When a problem disappears (ID removed from active set),
+        """When a problem disappears (ID absent from next batch),
         re-occurrence should trigger a new notification."""
         dedup = NotifyDeduplicator()
-        dedup.sync_active_ids({"hang:no_heartbeat"})
-        dedup.sync_active_ids(set())
-        assert dedup.should_notify("hang:no_heartbeat") is True
+        dedup.check_batch([_decision_with_dedup_id("hang:no_heartbeat")])
+        dedup.check_batch([])
+        result = dedup.check_batch([_decision_with_dedup_id("hang:no_heartbeat")])
+        assert len(result) == 1
 
     def test_none_dedup_id_always_allows(self) -> None:
         dedup = NotifyDeduplicator()
-        dedup.sync_active_ids({"some_other"})
-        assert dedup.should_notify(None) is True
+        dedup.check_batch([_decision_with_dedup_id("some_other")])
+        result = dedup.check_batch([_decision_with_dedup_id(None)])
+        assert len(result) == 1

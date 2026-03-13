@@ -9,7 +9,7 @@ from miles.utils.ft.adapters.types import JobStatus, NotifierProtocol
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.state_machines.recovery.models import RecoveryContext, RecoveryState
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
-from miles.utils.ft.controller.types import MetricStore, TriggerType
+from miles.utils.ft.controller.types import Decision, MetricStore, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 
@@ -40,13 +40,25 @@ class NotifyDeduplicator:
     def __init__(self) -> None:
         self._active_ids: set[str] = set()
 
-    def should_notify(self, dedup_id: str | None) -> bool:
-        if dedup_id is None:
-            return True
-        return dedup_id not in self._active_ids
+    def check_batch(self, decisions: list[Decision]) -> list[Decision]:
+        """Filter to decisions that should fire, and sync active IDs.
 
-    def sync_active_ids(self, current_ids: set[str]) -> None:
-        self._active_ids = current_ids
+        Returns the subset of *decisions* whose dedup_id is new (or None).
+        After the call, active_ids reflects exactly this batch's IDs — so
+        IDs that disappear on the next tick will allow re-notification.
+        """
+        to_notify: list[Decision] = []
+        new_active: set[str] = set()
+
+        for decision in decisions:
+            dedup_id = decision.notify_deduplicator_id
+            if dedup_id is None or dedup_id not in self._active_ids:
+                to_notify.append(decision)
+            if dedup_id is not None:
+                new_active.add(dedup_id)
+
+        self._active_ids = new_active
+        return to_notify
 
     @property
     def active_ids(self) -> frozenset[str]:
