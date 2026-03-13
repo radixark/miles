@@ -74,18 +74,21 @@ async def collect_stack_trace_suspects(
 
     await asyncio.gather(*(_collect_node(nid) for nid in node_agents))
 
+    aggregation_suspects: list[str] = []
     try:
         aggregation_result = StackTraceAggregator().aggregate(traces=traces)
+        aggregation_suspects = aggregation_result.suspect_node_ids
     except StackTraceTieError:
         logger.warning("stack_trace_aggregation_tie traces_collected=%d", len(traces), exc_info=True)
-        raise
+        if not suspect_from_failures:
+            raise
 
-    all_suspects = sorted(set(suspect_from_failures) | set(aggregation_result.suspect_node_ids))
+    all_suspects = sorted(set(suspect_from_failures) | set(aggregation_suspects))
 
     logger.info(
         "collect_stack_trace_suspects_done traces_collected=%d suspect_from_failures=%s suspect_from_aggregation=%s",
         len(traces),
         suspect_from_failures,
-        aggregation_result.suspect_node_ids,
+        aggregation_suspects,
     )
     return all_suspects

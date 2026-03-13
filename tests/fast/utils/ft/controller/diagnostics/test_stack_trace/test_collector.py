@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from tests.fast.utils.ft.utils import make_trace_result
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeNodeAgent
 
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import PySpyThread
+from miles.utils.ft.controller.diagnostics.stack_trace.aggregator import StackTraceTieError
 from miles.utils.ft.controller.diagnostics.stack_trace.collector import collect_stack_trace_suspects
 
 
@@ -155,3 +157,72 @@ class TestCollectStackTraceSuspects:
         )
 
         assert isinstance(result, list)
+
+
+class TestCollectStackTraceTieHandling:
+    """Previously, when the aggregator raised StackTraceTieError, the collector
+    re-raised it unconditionally, discarding already-identified failure suspects.
+    Now the collector catches the tie and returns failure suspects if available."""
+
+    def test_tie_with_failure_suspects_returns_suspects_not_exception(self) -> None:
+        """node-a fails collection, node-b and node-c produce different traces
+        of equal size (tie). The collector should return node-a as suspect
+        instead of re-raising StackTraceTieError."""
+        threads_b = json.dumps([
+            PySpyThread(
+                id=1, name="MainThread", active=True, owns_gil=False,
+                frames=[{"name": "func_b", "filename": "b.py", "line": 1}],
+            ).model_dump()
+        ])
+        threads_c = json.dumps([
+            PySpyThread(
+                id=1, name="MainThread", active=True, owns_gil=False,
+                frames=[{"name": "func_c", "filename": "c.py", "line": 1}],
+            ).model_dump()
+        ])
+
+        node_agents = {
+            "node-a": _make_agent_with_trace("node-a", passed=False, details="py-spy failed"),
+            "node-b": _make_agent_with_trace("node-b", details=threads_b),
+            "node-c": _make_agent_with_trace("node-c", details=threads_c),
+        }
+
+        result = asyncio.run(
+            collect_stack_trace_suspects(
+                node_agents=node_agents,
+                rank_pids_provider=lambda nid: {0: 1234},
+                default_timeout_seconds=30,
+            )
+        )
+
+        assert "node-a" in result
+
+    def test_pure_tie_no_failure_suspects_still_raises(self) -> None:
+        """When there are no failure suspects and aggregation ties, the exception
+        should still propagate to signal the need for human intervention."""
+        threads_b = json.dumps([
+            PySpyThread(
+                id=1, name="MainThread", active=True, owns_gil=False,
+                frames=[{"name": "func_b", "filename": "b.py", "line": 1}],
+            ).model_dump()
+        ])
+        threads_c = json.dumps([
+            PySpyThread(
+                id=1, name="MainThread", active=True, owns_gil=False,
+                frames=[{"name": "func_c", "filename": "c.py", "line": 1}],
+            ).model_dump()
+        ])
+
+        node_agents = {
+            "node-b": _make_agent_with_trace("node-b", details=threads_b),
+            "node-c": _make_agent_with_trace("node-c", details=threads_c),
+        }
+
+        with pytest.raises(StackTraceTieError):
+            asyncio.run(
+                collect_stack_trace_suspects(
+                    node_agents=node_agents,
+                    rank_pids_provider=lambda nid: {0: 1234},
+                    default_timeout_seconds=30,
+                )
+            )
