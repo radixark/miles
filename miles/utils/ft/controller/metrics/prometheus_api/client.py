@@ -62,6 +62,12 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
     ) -> pl.DataFrame:
         df = self.query_latest(metric_name=metric_name, label_filters=label_filters)
         if len(df) > 1:
+            logger.error(
+                "prom_api: query_single_latest ambiguous metric=%s, filters=%s, matched=%d",
+                metric_name,
+                label_filters,
+                len(df),
+            )
             raise AmbiguousSeriesError(
                 metric_name=metric_name,
                 label_filters=label_filters,
@@ -92,6 +98,7 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         return self._range_query_raw(promql, window)
 
     async def start(self) -> None:
+        logger.info("prom_api: starting health probe loop url=%s, interval=%.1fs", self._url, self._health_probe_interval)
         self._stop_event = asyncio.Event()
         consecutive_failures = 0
 
@@ -99,16 +106,21 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
             try:
                 await asyncio.to_thread(self._health_probe)
                 if consecutive_failures > 0:
-                    logger.info("prometheus_health_probe_recovered after %d failures", consecutive_failures)
+                    logger.info("prom_api: health probe recovered after %d failures", consecutive_failures)
                 consecutive_failures = 0
             except Exception:
                 consecutive_failures += 1
                 logger.warning(
-                    "prometheus_health_probe_failed consecutive=%d",
+                    "prom_api: health probe failed consecutive=%d",
                     consecutive_failures,
                     exc_info=True,
                 )
                 if consecutive_failures >= self._health_probe_failure_threshold:
+                    logger.error(
+                        "prom_api: health probe threshold reached, consecutive=%d >= threshold=%d",
+                        consecutive_failures,
+                        self._health_probe_failure_threshold,
+                    )
                     raise
 
             try:
@@ -125,6 +137,7 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         response.raise_for_status()
 
     async def stop(self) -> None:
+        logger.info("prom_api: stopping client")
         if self._stop_event is not None:
             self._stop_event.set()
         self._client.close()
@@ -200,6 +213,7 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
             max_backoff=_FETCH_RETRY_DELAY_SECONDS,
         )
         if not result.ok:
+            logger.error("prom_api: query failed after %d retries path=%s", _FETCH_MAX_RETRIES, path)
             raise PrometheusQueryError(
                 f"Prometheus query failed after {_FETCH_MAX_RETRIES} retries: {path}"
             ) from result.exception

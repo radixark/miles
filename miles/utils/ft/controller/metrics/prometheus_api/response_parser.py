@@ -23,7 +23,7 @@ def parse_instant_response(data: dict[str, Any]) -> pl.DataFrame:
     if result_type == "scalar":
         return _parse_scalar(result)
 
-    logger.warning("prometheus_unsupported_result_type type=%s", result_type)
+    logger.warning("prom_api: unsupported instant result type=%s", result_type)
     return EMPTY_INSTANT
 
 
@@ -34,7 +34,7 @@ def parse_range_response(data: dict[str, Any]) -> pl.DataFrame:
 
     result, result_type = extracted
     if result_type != "matrix":
-        logger.warning("prometheus_unsupported_range_result_type type=%s", result_type)
+        logger.warning("prom_api: unsupported range result type=%s", result_type)
         return EMPTY_RANGE
 
     return _parse_matrix(result)
@@ -42,11 +42,13 @@ def parse_range_response(data: dict[str, Any]) -> pl.DataFrame:
 
 def _extract_results(data: dict[str, Any]) -> tuple[list[dict[str, Any]], str] | None:
     if data.get("status") != "success":
+        logger.error("prom_api: query error status=%s, error=%s", data.get("status"), data.get("error", ""))
         raise PrometheusQueryError(f"Prometheus returned status={data.get('status')}: {data.get('error', '')}")
 
     data_section = data.get("data") or {}
     result = data_section.get("result") or []
     if not result:
+        logger.debug("prom_api: query returned empty result")
         return None
 
     return result, data_section.get("resultType", "")
