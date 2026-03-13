@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import signal
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -204,18 +206,34 @@ _TRIGGER_XID_SOURCE = Path(__file__).parent / "trigger_xid.cu"
 _TRIGGER_XID_BINARY = Path("/tmp/trigger_xid")
 
 
-def _ensure_trigger_xid_binary() -> None:
-    if _TRIGGER_XID_BINARY.exists():
-        return
+_TRIGGER_XID_LOCK = Path("/tmp/trigger_xid.lock")
 
-    logger.info("Compiling %s -> %s", _TRIGGER_XID_SOURCE, _TRIGGER_XID_BINARY)
-    subprocess.run(
-        ["nvcc", "-o", str(_TRIGGER_XID_BINARY), str(_TRIGGER_XID_SOURCE)],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+
+def _ensure_trigger_xid_binary() -> None:
+    lock_fd = os.open(str(_TRIGGER_XID_LOCK), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        if _TRIGGER_XID_BINARY.exists() and os.access(_TRIGGER_XID_BINARY, os.X_OK):
+            return
+
+        tmp_path = Path(f"/tmp/trigger_xid.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            logger.info("Compiling %s -> %s (via %s)", _TRIGGER_XID_SOURCE, _TRIGGER_XID_BINARY, tmp_path)
+            subprocess.run(
+                ["nvcc", "-o", str(tmp_path), str(_TRIGGER_XID_SOURCE)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            os.replace(str(tmp_path), str(_TRIGGER_XID_BINARY))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def _kill_if_exists(pid: int) -> None:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import signal
+import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import psutil
@@ -204,6 +206,119 @@ class TestTriggerGpuXid:
             patch("subprocess.run", return_value=mock_result),
         ):
             actor.trigger_gpu_xid()
+
+
+class TestEnsureTriggerXidBinary:
+    """Tests for the atomic compilation logic that protects against concurrent
+    processes compiling and overwriting /tmp/trigger_xid simultaneously.
+
+    Before this fix, multiple callers could race on check-then-compile:
+    two processes see the binary missing, both compile into the same path,
+    and a third caller might execute a half-written file."""
+
+    def test_existing_executable_is_reused_without_compilation(self, tmp_path: Path) -> None:
+        binary = tmp_path / "trigger_xid"
+        binary.touch()
+        binary.chmod(0o755)
+
+        with (
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_BINARY", binary),
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_LOCK", tmp_path / "trigger_xid.lock"),
+            patch("subprocess.run") as mock_run,
+        ):
+            from miles.utils.ft.fault_injectors.fault_injector import _ensure_trigger_xid_binary
+
+            _ensure_trigger_xid_binary()
+            mock_run.assert_not_called()
+
+    def test_non_executable_file_triggers_recompilation(self, tmp_path: Path) -> None:
+        """If the binary exists but is not executable (e.g. corrupted by a
+        previous incomplete write), it should be recompiled."""
+        binary = tmp_path / "trigger_xid"
+        binary.write_text("corrupted")
+        binary.chmod(0o644)
+
+        with (
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_BINARY", binary),
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_LOCK", tmp_path / "trigger_xid.lock"),
+            patch("subprocess.run") as mock_run,
+            patch("os.replace") as mock_replace,
+        ):
+            from miles.utils.ft.fault_injectors.fault_injector import _ensure_trigger_xid_binary
+
+            _ensure_trigger_xid_binary()
+            mock_run.assert_called_once()
+            mock_replace.assert_called_once()
+
+    def test_compilation_failure_cleans_up_temp_file(self, tmp_path: Path) -> None:
+        binary = tmp_path / "trigger_xid"
+
+        with (
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_BINARY", binary),
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_LOCK", tmp_path / "trigger_xid.lock"),
+            patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "nvcc")),
+            pytest.raises(subprocess.CalledProcessError),
+        ):
+            from miles.utils.ft.fault_injectors.fault_injector import _ensure_trigger_xid_binary
+
+            _ensure_trigger_xid_binary()
+
+        temp_files = list(tmp_path.glob("trigger_xid.*.tmp"))
+        assert temp_files == [], f"Temp files not cleaned up: {temp_files}"
+
+    def test_atomic_replace_writes_to_final_path(self, tmp_path: Path) -> None:
+        binary = tmp_path / "trigger_xid"
+
+        captured_replace_args: list[tuple[str, str]] = []
+
+        def fake_replace(src: str, dst: str) -> None:
+            captured_replace_args.append((src, dst))
+            Path(dst).write_text("compiled")
+
+        with (
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_BINARY", binary),
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_LOCK", tmp_path / "trigger_xid.lock"),
+            patch("subprocess.run"),
+            patch("os.replace", side_effect=fake_replace),
+        ):
+            from miles.utils.ft.fault_injectors.fault_injector import _ensure_trigger_xid_binary
+
+            _ensure_trigger_xid_binary()
+
+        assert len(captured_replace_args) == 1
+        src, dst = captured_replace_args[0]
+        assert dst == str(binary)
+        assert ".tmp" in src
+
+    def test_concurrent_callers_serialize_via_lock(self, tmp_path: Path) -> None:
+        """Two callers must not both enter the compilation path. The file
+        lock serializes them so only one compiles."""
+        binary = tmp_path / "trigger_xid"
+        compile_count = 0
+
+        original_run = subprocess.run
+
+        def counting_run(*args: Any, **kwargs: Any) -> MagicMock:
+            nonlocal compile_count
+            compile_count += 1
+            return MagicMock(returncode=0)
+
+        def fake_replace(src: str, dst: str) -> None:
+            Path(dst).touch()
+            Path(dst).chmod(0o755)
+
+        with (
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_BINARY", binary),
+            patch("miles.utils.ft.fault_injectors.fault_injector._TRIGGER_XID_LOCK", tmp_path / "trigger_xid.lock"),
+            patch("subprocess.run", side_effect=counting_run),
+            patch("os.replace", side_effect=fake_replace),
+        ):
+            from miles.utils.ft.fault_injectors.fault_injector import _ensure_trigger_xid_binary
+
+            _ensure_trigger_xid_binary()
+            _ensure_trigger_xid_binary()
+
+        assert compile_count == 1
 
 
 class TestTrainingCmdlinePatterns:
