@@ -26,10 +26,12 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
 
 
 def _classify_recovery(state: RecoveringSt) -> RecoveryInfo:
-    if isinstance(state.recovery, NotifyHumansSt) and state.recovery.bad_node_ids:
-        bad_nodes = list(sorted(state.recovery.bad_node_ids))
-    else:
-        bad_nodes = list(sorted(state.known_bad_node_ids))
+    raw_bad_ids = (
+        state.recovery.bad_node_ids
+        if isinstance(state.recovery, NotifyHumansSt) and state.recovery.bad_node_ids
+        else state.known_bad_node_ids
+    )
+    bad_nodes = sorted(raw_bad_ids)
 
     match state.recovery:
         case RecoveryDoneSt():
