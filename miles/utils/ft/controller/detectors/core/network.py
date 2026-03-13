@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 
 from pydantic import ConfigDict, field_validator
@@ -7,6 +8,8 @@ from miles.utils.ft.controller.detectors.checks.hardware import check_all_nic_fa
 from miles.utils.ft.controller.types import Decision, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
+
+logger = logging.getLogger(__name__)
 
 
 class NetworkAlertDetectorConfig(FtBaseModel):
@@ -46,6 +49,11 @@ class NetworkAlertDetector(BaseFaultDetector):
             window=self._alert_window,
             flap_threshold=self._alert_threshold,
         )
+        if faults:
+            logger.info(
+                "detector: NetworkAlertDetector found faults: nodes=%s",
+                [f.node_id for f in faults],
+            )
 
         return Decision.from_node_faults(
             faults,

@@ -1,7 +1,11 @@
+import logging
+
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext, check_metric_blind
 from miles.utils.ft.controller.detectors.checks.gpu.checks import check_gpu_faults
 from miles.utils.ft.controller.types import Decision, TriggerType
 from miles.utils.ft.utils.metric_names import GPU_AVAILABLE
+
+logger = logging.getLogger(__name__)
 
 
 class GpuFaultDetector(BaseFaultDetector):
@@ -11,6 +15,8 @@ class GpuFaultDetector(BaseFaultDetector):
             return blind
 
         faults = check_gpu_faults(ctx.metric_store.time_series_store)
+        if faults:
+            logger.info("gpu_fault_detector: found faults: %s", [(f.node_id, f.reason) for f in faults])
 
         return Decision.from_node_faults(
             faults,

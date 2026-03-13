@@ -1,6 +1,10 @@
+import logging
+
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.checks.metrics import get_non_finite_loss
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
+
+logger = logging.getLogger(__name__)
 
 
 class NanLossDetector(BaseFaultDetector):
@@ -17,6 +21,7 @@ class NanLossDetector(BaseFaultDetector):
         bad_loss = get_non_finite_loss(ctx.metric_store.mini_wandb)
 
         if bad_loss is not None:
+            logger.info("detector: NanLossDetector detected non-finite loss=%s", bad_loss)
             return Decision(
                 action=ActionType.ENTER_RECOVERY,
                 reason=f"loss is {bad_loss}",
