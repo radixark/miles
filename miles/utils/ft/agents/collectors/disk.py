@@ -44,7 +44,7 @@ _VIRTUAL_FS_TYPES = frozenset(
 def discover_disk_mounts(proc_mounts: Path = Path("/proc/mounts")) -> list[Path]:
     """Auto-discover real (non-virtual) mount points from /proc/mounts."""
     if not proc_mounts.exists():
-        logger.warning("Cannot discover mounts: %s not found", proc_mounts)
+        logger.warning("collector: cannot discover mounts, file not found: path=%s", proc_mounts)
         return []
 
     mounts: list[Path] = []
@@ -58,13 +58,13 @@ def discover_disk_mounts(proc_mounts: Path = Path("/proc/mounts")) -> list[Path]
                 continue
             mounts.append(Path(mountpoint))
     except Exception:
-        logger.warning("Failed to parse %s", proc_mounts, exc_info=True)
+        logger.warning("collector: failed to parse proc mounts: path=%s", proc_mounts, exc_info=True)
 
     if not any(m == Path("/") for m in mounts):
         mounts.append(Path("/"))
-        logger.info("Root mount / not in discovered mounts (likely overlay container); added as fallback")
+        logger.info("collector: root mount not in discovered mounts, added as fallback (likely overlay container)")
 
-    logger.info("Discovered %d mount points: %s", len(mounts), mounts)
+    logger.info("collector: discovered mount points: count=%d, mounts=%s", len(mounts), mounts)
     return mounts
 
 
@@ -78,6 +78,7 @@ class DiskCollector(BaseCollector):
         samples: list[GaugeSample] = []
         samples.extend(self._collect_disk_avail())
         samples.extend(self._collect_disk_io_time())
+        logger.debug("collector: disk collect complete: num_samples=%d", len(samples))
         return samples
 
     def _collect_disk_avail(self) -> list[GaugeSample]:
@@ -94,12 +95,13 @@ class DiskCollector(BaseCollector):
                     )
                 )
             except Exception:
-                logger.warning("Failed to statvfs %s", mount, exc_info=True)
+                logger.warning("collector: failed to statvfs: mount=%s", mount, exc_info=True)
         return samples
 
     def _collect_disk_io_time(self) -> list[GaugeSample]:
         sys_block = Path("/sys/block")
         if not sys_block.exists():
+            logger.debug("collector: /sys/block not found, skipping disk io time")
             return []
 
         samples: list[GaugeSample] = []

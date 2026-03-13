@@ -99,9 +99,11 @@ def _kernel_event_samples(count: int) -> list[CounterSample]:
 
 def _create_reader(kmsg_path: Path) -> KernelLogReader:
     try:
-        return KmsgFileReader(kmsg_path=kmsg_path)
+        reader = KmsgFileReader(kmsg_path=kmsg_path)
+        logger.info("collector: using KmsgFileReader: path=%s", kmsg_path)
+        return reader
     except OSError:
-        logger.info("Cannot open %s, falling back to dmesg", kmsg_path, exc_info=True)
+        logger.info("collector: cannot open kmsg, falling back to dmesg: path=%s", kmsg_path, exc_info=True)
         return DmesgSubprocessReader()
 
 
@@ -124,6 +126,7 @@ class KmsgCollector(BaseCollector):
         self._reader: KernelLogReader | None = None
 
     async def close(self) -> None:
+        logger.info("collector: closing KmsgCollector")
         if self._reader is not None:
             self._reader.close()
         await super().close()
@@ -133,6 +136,8 @@ class KmsgCollector(BaseCollector):
         now = datetime.now(timezone.utc)
 
         new_xids = _parse_xid_codes(lines)
+        if new_xids:
+            logger.info("collector: new xid errors detected: codes=%s, count=%d", new_xids, len(new_xids))
         for code in new_xids:
             self._xid_events.append((now, code))
         _prune_xid_window(
@@ -142,6 +147,12 @@ class KmsgCollector(BaseCollector):
         )
 
         non_auto_recoverable_count = sum(1 for code in new_xids if code in NON_AUTO_RECOVERABLE_XIDS)
+        if non_auto_recoverable_count > 0:
+            logger.warning(
+                "collector: non-auto-recoverable xid errors: count=%d, codes=%s",
+                non_auto_recoverable_count,
+                [c for c in new_xids if c in NON_AUTO_RECOVERABLE_XIDS],
+            )
 
         current_codes = {code for _, code in self._xid_events}
         samples = _build_xid_samples(
@@ -152,12 +163,17 @@ class KmsgCollector(BaseCollector):
         )
         self._prev_xid_codes = current_codes
 
-        samples.extend(_kernel_event_samples(_count_kernel_events(lines)))
+        kernel_event_count = _count_kernel_events(lines)
+        if kernel_event_count > 0:
+            logger.warning("collector: kernel events detected: count=%d", kernel_event_count)
+        samples.extend(_kernel_event_samples(kernel_event_count))
+        logger.debug("collector: kmsg collect complete: num_lines=%d, num_samples=%d", len(lines), len(samples))
         return samples
 
     def _read_lines(self) -> list[str]:
         if self._reader is None:
             if self._since is not None:
+                logger.debug("collector: initializing dmesg reader with since=%s", self._since)
                 self._reader = DmesgSubprocessReader(since=self._since)
             else:
                 self._reader = _create_reader(self._kmsg_path)

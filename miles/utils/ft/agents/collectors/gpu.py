@@ -19,27 +19,32 @@ class GpuCollector(BaseCollector):
 
             pynvml.nvmlInit()
             self._pynvml = pynvml
+            logger.info("collector: pynvml initialized successfully")
         except Exception:
-            logger.warning("pynvml unavailable — GpuCollector will report all GPUs as unavailable", exc_info=True)
+            logger.warning("collector: pynvml unavailable, GpuCollector will report all GPUs as unavailable", exc_info=True)
 
     async def close(self) -> None:
         if self._pynvml is not None:
+            logger.info("collector: shutting down pynvml")
             try:
                 self._pynvml.nvmlShutdown()
             except Exception:
-                logger.warning("nvmlShutdown failed", exc_info=True)
+                logger.warning("collector: nvmlShutdown failed", exc_info=True)
             self._pynvml = None
 
     def _collect_sync(self) -> list[GaugeSample]:
         pynvml = self._pynvml
         if pynvml is None:
+            logger.error("collector: pynvml unavailable, cannot collect GPU metrics")
             raise RuntimeError("pynvml unavailable — cannot collect GPU metrics")
 
         try:
             device_count = pynvml.nvmlDeviceGetCount()
         except Exception as err:
+            logger.error("collector: nvmlDeviceGetCount failed", exc_info=True)
             raise RuntimeError("nvmlDeviceGetCount failed") from err
 
+        logger.debug("collector: gpu collect starting: device_count=%d", device_count)
         samples: list[GaugeSample] = []
         for index in range(device_count):
             gpu_label = {"gpu": str(index)}
@@ -47,7 +52,7 @@ class GpuCollector(BaseCollector):
             try:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(index)
             except Exception:
-                logger.warning("Cannot get handle for GPU %d", index, exc_info=True)
+                logger.warning("collector: cannot get handle for GPU: index=%d", index, exc_info=True)
                 samples.append(GaugeSample(name=mn.GPU_AVAILABLE, labels=gpu_label, value=0.0))
                 continue
 
@@ -57,6 +62,7 @@ class GpuCollector(BaseCollector):
             samples.extend(self._collect_pcie_bandwidth(pynvml, handle, gpu_label))
             samples.extend(self._collect_utilization(pynvml, handle, gpu_label))
 
+        logger.debug("collector: gpu collect complete: num_samples=%d", len(samples))
         return samples
 
     @graceful_degrade(default=[])

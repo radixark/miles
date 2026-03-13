@@ -37,7 +37,7 @@ class NetworkCollector(BaseCollector):
 
     def _collect_sync(self) -> list[GaugeSample]:
         if not self._sysfs_net_path.exists():
-            logger.warning("sysfs net path %s does not exist", self._sysfs_net_path)
+            logger.warning("collector: sysfs net path does not exist: path=%s", self._sysfs_net_path)
             return []
 
         samples: list[GaugeSample] = []
@@ -45,12 +45,14 @@ class NetworkCollector(BaseCollector):
         for iface_dir in sorted(self._sysfs_net_path.iterdir()):
             iface_name = iface_dir.name
             if not self._should_collect(iface_name):
+                logger.debug("collector: skipping network interface: iface=%s", iface_name)
                 continue
 
             iface_label = {"device": iface_name}
             samples.extend(self._collect_operstate(iface_dir, iface_label))
             samples.extend(self._collect_statistics(iface_dir, iface_label))
 
+        logger.debug("collector: network collect complete: num_samples=%d", len(samples))
         return samples
 
     def _should_collect(self, iface_name: str) -> bool:
@@ -82,6 +84,7 @@ class NetworkCollector(BaseCollector):
     ) -> list[GaugeSample]:
         stats_dir = iface_dir / "statistics"
         if not stats_dir.exists():
+            logger.debug("collector: statistics dir not found: iface=%s", iface_label.get("device"))
             return []
 
         samples: list[GaugeSample] = []
@@ -92,7 +95,7 @@ class NetworkCollector(BaseCollector):
                 samples.append(GaugeSample(name=metric_name, labels=iface_label, value=float(value)))
             except Exception:
                 logger.warning(
-                    "Failed to read %s for %s",
+                    "collector: failed to read network stat: stat=%s, iface=%s",
                     stat_filename,
                     iface_label["device"],
                     exc_info=True,
