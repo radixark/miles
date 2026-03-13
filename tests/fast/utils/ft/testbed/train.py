@@ -26,7 +26,7 @@ from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.k8s_node_manager import 
 from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.notifiers.webhook_notifier import TestbedNotifier
 from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.ray.main_job import TestbedMainJob
 from tests.fast.utils.ft.testbed.utils.ft.agents.collectors.collector import TestbedCollector
-from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator, StubDiagnostic
+from tests.fast.utils.ft.utils.diagnostic_fakes import StubDiagnostic
 
 if TYPE_CHECKING:
     from tests.fast.utils.ft.integration.conftest import RayNodeInfo
@@ -139,7 +139,7 @@ class MilesTestbed:
             node_manager_override=node_manager,
             notifier_override=resolved_notifier,
             detectors_override=detectors,
-            diagnostic_orchestrator_override=config.diagnostic_orchestrator_override or FakeDiagnosticOrchestrator(),
+            diagnostic_orchestrator_override=config.diagnostic_orchestrator_override,
             start_exporter=True,
         )
 

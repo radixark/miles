@@ -325,20 +325,20 @@ async def test_all_diagnostics_pass_escalates_to_notify(
     )
 
     # Step 3: crash during MonitoringProgress -> diagnostics -> all pass -> NotifyHumans
+    # NotifyHumansSt is transient (converges through in one tick), so we wait
+    # for the final MONITORING mode and verify via notifications.
     await testbed.crash_training()
 
-    deadline = time.monotonic() + RECOVERY_TIMEOUT
-    while time.monotonic() < deadline:
-        status = await testbed.get_status()
-        if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
-            break
-        await asyncio.sleep(0.5)
-    else:
-        raise TimeoutError(
-            f"All-pass diagnostics did not escalate to NotifyHumans within {RECOVERY_TIMEOUT}s"
-        )
+    await testbed.wait_for_mode(
+        mode=ControllerMode.MONITORING,
+        timeout=RECOVERY_TIMEOUT,
+    )
 
-    # Step 4: notifier should have received a notification
+    # Step 4: no nodes should be evicted (all diagnostics passed)
+    assert not testbed.node_manager.was_ever_marked_bad("node-0")
+    assert not testbed.node_manager.was_ever_marked_bad("node-1")
+
+    # Step 5: notifier should have received a notification (proves NotifyHumans path)
     assert len(testbed.notifications) > 0, (
         "Notifier should have received notification for all-pass diagnostics"
     )
@@ -366,6 +366,7 @@ async def test_notification_contains_trigger_and_context(
     await testbed.wait_for_training_stable(n_iterations=1, timeout=FAST_TIMEOUT)
 
     # Step 2: crash -> MonitoringProgress -> crash -> diagnostics -> all pass -> NotifyHumans
+    # NotifyHumansSt is transient, so wait for MONITORING mode and verify via notifications.
     await testbed.crash_training()
     await testbed.wait_for_recovery_phase(
         phase="MonitoringProgressSt",
@@ -373,14 +374,10 @@ async def test_notification_contains_trigger_and_context(
     )
     await testbed.crash_training()
 
-    deadline = time.monotonic() + RECOVERY_TIMEOUT
-    while time.monotonic() < deadline:
-        status = await testbed.get_status()
-        if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
-            break
-        await asyncio.sleep(0.5)
-    else:
-        raise TimeoutError(f"NotifyHumans not reached within {RECOVERY_TIMEOUT}s")
+    await testbed.wait_for_mode(
+        mode=ControllerMode.MONITORING,
+        timeout=RECOVERY_TIMEOUT,
+    )
 
     # Step 3: verify notification content includes trigger and state_before
     calls = testbed.notifications

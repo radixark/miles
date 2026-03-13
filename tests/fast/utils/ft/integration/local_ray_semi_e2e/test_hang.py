@@ -18,6 +18,7 @@ from tests.fast.utils.ft.integration.conftest import (
 )
 from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
+from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,10 @@ async def test_monitoring_progress_timeout(
 
     After crash, recovery restarts training but workers advance every 999s,
     so MonitoringProgress sees no progress and times out.
+
+    Uses initial_stable_iterations=0 because step_interval=999 prevents
+    the default stability check from completing. Uses DelayedDiagnosticOrchestrator
+    so StopTimeDiagnosticsSt is observable across ticks.
     """
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
@@ -110,9 +115,12 @@ async def test_monitoring_progress_timeout(
         step_interval=999.0,
         monitoring_timeout_seconds=5,
         monitoring_success_iterations=100,
+        initial_stable_iterations=0,
+        diagnostic_orchestrator_override=DelayedDiagnosticOrchestrator(delay_seconds=5.0),
     )
 
-    # Step 1: crash -> recovery -> MonitoringProgress but never progresses
+    # Step 1: wait for workers to spawn, then crash
+    await asyncio.sleep(3)
     await testbed.crash_training()
 
     # Step 2: wait for StopTimeDiagnostics phase due to monitoring timeout
@@ -180,6 +188,10 @@ async def test_monitoring_timeout_zero(
 
     MonitoringProgress times out immediately because timeout is 0 and workers
     never advance (step_interval=999s).
+
+    Uses initial_stable_iterations=0 because step_interval=999 prevents
+    the default stability check from completing. Uses DelayedDiagnosticOrchestrator
+    so StopTimeDiagnosticsSt is observable across ticks.
     """
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
@@ -187,9 +199,12 @@ async def test_monitoring_timeout_zero(
         step_interval=999.0,
         monitoring_timeout_seconds=0,
         monitoring_success_iterations=999,
+        initial_stable_iterations=0,
+        diagnostic_orchestrator_override=DelayedDiagnosticOrchestrator(delay_seconds=5.0),
     )
 
-    # Step 1: crash -> recovery
+    # Step 1: wait for workers to spawn, then crash
+    await asyncio.sleep(3)
     await testbed.crash_training()
 
     # Step 2: MonitoringProgress should time out immediately -> StopTimeDiagnostics

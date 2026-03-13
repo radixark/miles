@@ -20,6 +20,7 @@ from tests.fast.utils.ft.integration.conftest import (
 )
 from tests.fast.utils.ft.testbed.config import TestbedNodeConfig
 from tests.fast.utils.ft.testbed.train import MilesTestbed
+from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ async def test_multi_rank_registration_and_targeted_eviction(
             window_minutes=1.0,
             max_count=2,
         ),
+        diagnostic_orchestrator_override=DelayedDiagnosticOrchestrator(delay_seconds=5.0),
     )
 
     # Step 1: verify training is stable across both nodes
