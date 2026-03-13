@@ -107,8 +107,13 @@ async def _probe_cell(
     if not engines:
         raise ValueError("engines must not be empty")
 
+    # Miles will make the engine object none when it is killed (stopped)
+    lead_engine = engines[0]
+    if lead_engine is None:
+        return False
+
     try:
-        await asyncio.wait_for(engine_health_fn(engines[0]), timeout=timeout)
+        await asyncio.wait_for(engine_health_fn(lead_engine), timeout=timeout)
         return True
     except Exception:
         logger.info("engine_health_check_failed cell_id=%s", cell_id, exc_info=True)
