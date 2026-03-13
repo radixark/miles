@@ -140,13 +140,45 @@ class RayMainJob(MainJobProtocol):
             logger.warning("stop_job called with no active job")
             return
 
-        await _stop_job(
-            client=self._client,
-            job_id=self._job_id,
-            timeout_seconds=timeout_seconds,
-            poll_interval=self._poll_interval,
-        )
-        self._job_id = None
+        try:
+            await _stop_job(
+                client=self._client,
+                job_id=self._job_id,
+                timeout_seconds=timeout_seconds,
+                poll_interval=self._poll_interval,
+            )
+            self._job_id = None
+        except Exception:
+            self._reconcile_after_stop_failure()
+            raise
+
+    def _reconcile_after_stop_failure(self) -> None:
+        """Query remote status after a failed stop; clear _job_id if already terminal."""
+        assert self._job_id is not None
+        try:
+            raw_status = self._client.get_job_status(self._job_id)
+            status_str = _parse_ray_status(raw_status)
+        except Exception:
+            logger.warning(
+                "reconcile_get_status_failed job_id=%s",
+                self._job_id,
+                exc_info=True,
+            )
+            return
+
+        if status_str in _TERMINAL_STATUSES:
+            logger.info(
+                "reconcile_cleared_stale_job job_id=%s remote_status=%s",
+                self._job_id,
+                status_str,
+            )
+            self._job_id = None
+        else:
+            logger.warning(
+                "reconcile_job_still_active job_id=%s remote_status=%s",
+                self._job_id,
+                status_str,
+            )
 
     async def _get_status_locked(self) -> JobStatus:
         if self._job_id is None:
@@ -164,6 +196,14 @@ class RayMainJob(MainJobProtocol):
         if job_status is None:
             logger.warning("unknown_ray_status raw_status=%s", status_str)
             job_status = JobStatus.FAILED
+
+        if status_str in _TERMINAL_STATUSES:
+            logger.info(
+                "get_status_clearing_terminal_job job_id=%s raw_status=%s",
+                self._job_id,
+                status_str,
+            )
+            self._job_id = None
 
         logger.info(
             "get_job_status job_id=%s raw_status=%s job_status=%s elapsed_seconds=%.3f",
