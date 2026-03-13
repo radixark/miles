@@ -289,6 +289,57 @@ class TestDeclineDurationClamp:
         assert duration >= 0.0
 
 
+class TestNonFiniteMfuInDeclineDetector:
+    """NaN/Inf in MFU data used to produce NaN arithmetic that always
+    evaluated avg_mfu < threshold as False, so the detector would
+    return "MFU within acceptable range" even with corrupt telemetry."""
+
+    def test_nan_mfu_returns_telemetry_blind(self) -> None:
+        wandb = _make_wandb_with_mfu([float("nan")] * 10)
+        detector = MfuDeclineDetector(
+            config=MfuDeclineDetectorConfig(
+                mfu_baseline=0.5,
+                consecutive_steps=10,
+            )
+        )
+
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert "invalid" in decision.reason.lower()
+
+    def test_mixed_nan_and_normal_in_recent_returns_telemetry_blind(self) -> None:
+        values = [0.5] * 9 + [float("nan")]
+        wandb = _make_wandb_with_mfu(values)
+        detector = MfuDeclineDetector(
+            config=MfuDeclineDetectorConfig(
+                mfu_baseline=0.5,
+                consecutive_steps=10,
+            )
+        )
+
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert "invalid" in decision.reason.lower()
+
+    def test_nan_in_baseline_returns_telemetry_blind(self) -> None:
+        values = [0.5] * 49 + [float("nan")] + [0.3] * 10
+        wandb = _make_wandb_with_mfu(values)
+        detector = MfuDeclineDetector(
+            config=MfuDeclineDetectorConfig(
+                mfu_baseline=None,
+                consecutive_steps=10,
+                baseline_steps=50,
+            )
+        )
+
+        decision = detector.evaluate(make_detector_context(mini_wandb=wandb))
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert "invalid" in decision.reason.lower()
+
+
 class TestMfuDeclineDetectorValidation:
     @pytest.mark.parametrize(
         "kwargs,match",

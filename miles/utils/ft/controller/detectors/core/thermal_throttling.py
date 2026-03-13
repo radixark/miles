@@ -62,6 +62,15 @@ class ThermalThrottlingDetector(BaseFaultDetector):
             baseline=cfg.mfu_baseline,
             baseline_steps=cfg.mfu_baseline_steps,
         )
+        if mfu is not None and not mfu.telemetry_valid:
+            return Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason=(
+                    f"temperature outlier on {result.node_ids} "
+                    "but MFU telemetry invalid (non-finite values)"
+                ),
+                trigger=TriggerType.TELEMETRY_BLIND,
+            )
         if mfu is None or not mfu.is_declining:
             return Decision.no_fault(
                 reason=f"temperature outlier on {result.node_ids} but MFU is healthy",

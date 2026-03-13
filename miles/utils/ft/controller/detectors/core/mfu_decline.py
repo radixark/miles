@@ -36,6 +36,13 @@ class MfuDeclineDetector(BaseFaultDetector):
         if mfu is None:
             return Decision.no_fault(reason="insufficient MFU data or no baseline")
 
+        if not mfu.telemetry_valid:
+            return Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="MFU telemetry invalid: non-finite values detected in MFU data",
+                trigger=TriggerType.TELEMETRY_BLIND,
+            )
+
         if cfg.mfu_absolute_minimum > 0 and mfu.avg_mfu < cfg.mfu_absolute_minimum:
             return Decision(
                 action=ActionType.NOTIFY_HUMAN,
