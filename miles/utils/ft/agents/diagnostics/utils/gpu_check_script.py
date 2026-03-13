@@ -22,10 +22,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import os
 import sys
 from dataclasses import asdict, dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,9 +73,11 @@ def main() -> None:
 
     import pynvml
 
+    logger.info("diagnostics: gpu check script starting, initializing nvml")
     pynvml.nvmlInit()
     try:
         device_count = pynvml.nvmlDeviceGetCount()
+        logger.info("diagnostics: gpu check found devices: count=%s", device_count)
         model_and_input = _build_deterministic_model_and_input()
 
         results: list[GpuCheckResult] = []
@@ -84,12 +89,15 @@ def main() -> None:
                     handle=handle,
                     model_and_input=model_and_input,
                 )
+                logger.debug("diagnostics: gpu check result: gpu=%s, nvml_passed=%s, details=%s", i, result.nvml_passed, result.details)
             except Exception as exc:
                 msg = f"check failed: {exc}"
+                logger.error("diagnostics: gpu check failed: gpu=%s", i, exc_info=True)
                 result = GpuCheckResult(gpu_index=i, compute_error=msg, details=msg)
             results.append(result)
     finally:
         pynvml.nvmlShutdown()
+        logger.info("diagnostics: gpu check script complete, nvml shut down")
 
     json.dump([asdict(r) for r in results], sys.stdout)
 
@@ -119,8 +127,10 @@ def _check_single_gpu(
     compute_error = ""
     try:
         compute_hash = _compute_fingerprint(gpu_index, *model_and_input)
+        logger.debug("diagnostics: compute fingerprint: gpu=%s, hash=%s", gpu_index, compute_hash)
     except Exception as exc:
         compute_error = str(exc)
+        logger.error("diagnostics: compute fingerprint failed: gpu=%s", gpu_index, exc_info=True)
         failures.append(f"compute fingerprint failed: {exc}")
 
     details = "; ".join(failures) if failures else "all checks passed"

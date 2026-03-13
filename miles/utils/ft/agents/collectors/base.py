@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 
 from miles.utils.ft.agents.types import MetricSample
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+logger = logging.getLogger(__name__)
 
 _COLLECT_TIMEOUT_MULTIPLIER = 2.0
 
@@ -20,13 +23,24 @@ class BaseCollector(ABC):
             val = cls.__dict__["collect_interval"]
             if isinstance(val, (int, float)) and val < 0:
                 raise ValueError(f"{cls.__name__}.collect_interval must be >= 0, got {val}")
+            logger.debug("collector: subclass registered: name=%s, collect_interval=%s", cls.__name__, val)
 
     async def collect(self) -> CollectorOutput:
         timeout = self.collect_interval * _COLLECT_TIMEOUT_MULTIPLIER
-        metrics = await asyncio.wait_for(
-            asyncio.to_thread(self._collect_sync),
-            timeout=timeout,
-        )
+        logger.debug("collector: starting collect: collector=%s, timeout=%s", type(self).__name__, timeout)
+        try:
+            metrics = await asyncio.wait_for(
+                asyncio.to_thread(self._collect_sync),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("collector: collect timed out: collector=%s, timeout=%s", type(self).__name__, timeout)
+            raise
+        except Exception:
+            logger.error("collector: collect failed: collector=%s", type(self).__name__, exc_info=True)
+            raise
+
+        logger.debug("collector: collect complete: collector=%s, num_metrics=%s", type(self).__name__, len(metrics))
         return CollectorOutput(metrics=metrics)
 
     @abstractmethod

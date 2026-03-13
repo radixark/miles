@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from abc import abstractmethod
 from typing import Any
 
 from miles.utils.ft.adapters.types import DIAGNOSTIC_TIMEOUT_SECONDS, NodeExecutorProtocol
 from miles.utils.ft.agents.types import DiagnosticResult
+
+logger = logging.getLogger(__name__)
 
 
 class BaseNodeExecutor(NodeExecutorProtocol):
@@ -40,6 +43,7 @@ class BaseNodeExecutor(NodeExecutorProtocol):
         details: str,
         metadata: dict[str, Any] | None = None,
     ) -> DiagnosticResult:
+        logger.info("diagnostics: diagnostic failed: type=%s, node=%s, details=%s", self.diagnostic_type, node_id, details)
         return DiagnosticResult.fail_result(
             diagnostic_type=self.diagnostic_type,
             node_id=node_id,
@@ -53,6 +57,7 @@ class BaseNodeExecutor(NodeExecutorProtocol):
         details: str,
         metadata: dict[str, Any] | None = None,
     ) -> DiagnosticResult:
+        logger.info("diagnostics: diagnostic passed: type=%s, node=%s, details=%s", self.diagnostic_type, node_id, details)
         return DiagnosticResult.pass_result(
             diagnostic_type=self.diagnostic_type,
             node_id=node_id,

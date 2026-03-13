@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from miles.utils.ft.adapters.types import DIAGNOSTIC_TIMEOUT_SECONDS
 from miles.utils.ft.agents.diagnostics.base import BaseNodeExecutor
 from miles.utils.ft.agents.diagnostics.utils.nccl_utils import build_nccl_test_cmd, run_nccl_test
 from miles.utils.ft.agents.types import DiagnosticResult
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_NCCL_MASTER_PORT: int = 29500
 _DEFAULT_NUM_GPUS: int = 8
@@ -42,12 +45,21 @@ class NcclNodeExecutor(BaseNodeExecutor):
         master_addr: str | None = None,
         master_port: int | None = None,
     ) -> DiagnosticResult:
+        logger.info(
+            "diagnostics: running NCCL diagnostic: type=%s, node=%s, binary=%s, num_gpus=%s, master_addr=%s",
+            self.diagnostic_type, node_id, self._nccl_test_binary, self._num_gpus, master_addr,
+        )
+
         env: dict[str, str] | None = None
         if master_addr is not None or master_port is not None:
             env = {**os.environ}
             if master_addr is not None:
                 env["MASTER_ADDR"] = master_addr
             env["MASTER_PORT"] = str(master_port if master_port is not None else DEFAULT_NCCL_MASTER_PORT)
+            logger.debug(
+                "diagnostics: NCCL env override: MASTER_ADDR=%s, MASTER_PORT=%s",
+                env.get("MASTER_ADDR"), env.get("MASTER_PORT"),
+            )
 
         return await run_nccl_test(
             cmd=build_nccl_test_cmd(binary=self._nccl_test_binary, num_gpus=self._num_gpus),
