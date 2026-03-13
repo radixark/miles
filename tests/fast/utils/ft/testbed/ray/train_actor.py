@@ -132,3 +132,11 @@ class TestbedTrainRayActor:
 
     def get_host_ip(self) -> str:
         return self._host_ip
+
+    def get_exporter_address(self) -> str:
+        if self._agent is None:
+            return ""
+        return self._agent.get_exporter_address()
+
+    def get_rank(self) -> int:
+        return self._rank
