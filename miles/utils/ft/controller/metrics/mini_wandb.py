@@ -42,6 +42,7 @@ class MiniWandb(TrainingMetricStoreProtocol):
         return self._active_run_id
 
     def set_active_run_id(self, run_id: str) -> None:
+        logger.info("mini_wandb: active run changed old=%s, new=%s", self._active_run_id, run_id)
         self._active_run_id = run_id
 
     def log_step(
@@ -53,7 +54,7 @@ class MiniWandb(TrainingMetricStoreProtocol):
     ) -> None:
         if self._active_run_id is not None and run_id != self._active_run_id:
             logger.debug(
-                "Discarding log_step: run_id=%s does not match active=%s",
+                "mini_wandb: discarding log_step run_id=%s does not match active=%s",
                 run_id,
                 self._active_run_id,
             )
@@ -62,7 +63,7 @@ class MiniWandb(TrainingMetricStoreProtocol):
         last = self._last_step.get(run_id, -1)
         if step <= last:
             logger.debug(
-                "Discarding log_step: step=%d <= last_step=%d",
+                "mini_wandb: discarding log_step step=%d <= last_step=%d",
                 step,
                 last,
             )
@@ -128,6 +129,7 @@ class MiniWandb(TrainingMetricStoreProtocol):
             if metric_name in record.metrics:
                 return record.metrics[metric_name]
 
+        logger.debug("mini_wandb: latest metric=%s not found in active data", metric_name)
         return None
 
     def _active_data(self) -> deque[_StepRecord]:
@@ -158,7 +160,7 @@ class MiniWandb(TrainingMetricStoreProtocol):
 def _sanitize_metrics(metrics: dict[str, float]) -> dict[str, float]:
     for key, value in metrics.items():
         if not math.isfinite(value):
-            logger.warning("non_finite_metric_observed key=%s value=%s", key, value)
+            logger.warning("mini_wandb: non-finite metric observed key=%s, value=%s", key, value)
     return metrics
 
 

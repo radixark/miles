@@ -36,6 +36,7 @@ class InMemoryMetricStore(RangeAggregationMixin):
         timestamp: datetime | None = None,
     ) -> None:
         ts = timestamp or datetime.now(timezone.utc)
+        logger.debug("mini_prom: ingest target_id=%s, samples=%d", target_id, len(samples))
         for sample in samples:
             labels = dict(sample.labels)
             labels.setdefault("node_id", target_id)
