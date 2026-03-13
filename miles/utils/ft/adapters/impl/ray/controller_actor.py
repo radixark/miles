@@ -110,6 +110,11 @@ class _FtControllerActorCls:
 
 FtControllerActor = ray.remote(
     num_gpus=0,
+    # Accepted product decision: the controller actor itself may restart, but
+    # FT runtime state is intentionally in-memory only. We do not attempt to
+    # reconstruct rank / node-agent / rollout registrations after a controller
+    # restart; later audits should treat that as a non-goal unless product
+    # requirements change.
     max_restarts=-1,
     max_task_retries=-1,
 )(_FtControllerActorCls)
