@@ -52,6 +52,13 @@ class HangDetector(BaseFaultDetector):
         if ctx.job_status != JobStatus.RUNNING:
             return Decision.no_fault(reason="job not running, skipping hang check")
 
+        if ctx.active_run_id is None:
+            return Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="active_run_id not established, run-scoped metric queries unreliable",
+                trigger=TriggerType.TELEMETRY_BLIND,
+            )
+
         label_filters = build_training_metric_filters(rank="0", run_id=ctx.active_run_id)
 
         phase = self._get_current_phase(ctx.metric_store.time_series_store, label_filters=label_filters)

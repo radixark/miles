@@ -26,8 +26,8 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -43,8 +43,8 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -69,8 +69,8 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -95,8 +95,8 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -119,8 +119,8 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -135,8 +135,8 @@ class TestHangDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=JobStatus.FAILED,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -154,6 +154,7 @@ class TestHangDetector:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -178,6 +179,7 @@ class TestGetCurrentPhaseEdgeCases:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -196,6 +198,7 @@ class TestGetCurrentPhaseEdgeCases:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -215,6 +218,7 @@ class TestGetCurrentPhaseEdgeCases:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -236,6 +240,7 @@ class TestHangDetectorSingleSampleFalsePositive:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -254,6 +259,7 @@ class TestHangDetectorSingleSampleFalsePositive:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -287,6 +293,7 @@ class TestHangDetectorAmbiguousPhaseSeries:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -332,6 +339,7 @@ class TestHangDetectorMultipleRank0Series:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -385,6 +393,7 @@ class TestHangDetectorTelemetryBlind:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -404,6 +413,7 @@ class TestHangDetectorTelemetryBlind:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -423,6 +433,7 @@ class TestHangDetectorTelemetryBlind:
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
             job_status=JobStatus.RUNNING,
+            active_run_id="test-run",
         )
 
         decision = detector.evaluate(ctx)
@@ -560,9 +571,12 @@ class TestHangDetectorRunIsolation:
 
         assert decision.action == ActionType.NONE
 
-    def test_no_run_id_in_context_queries_all_runs_for_backwards_compat(self) -> None:
-        """When active_run_id is None (e.g. older controller code path),
-        the detector must still work by querying without ft_run_id filter."""
+    def test_no_run_id_in_context_returns_telemetry_blind(self) -> None:
+        """When active_run_id is None, run-scoped metric queries cannot be
+        reliable (label filter without ft_run_id would match stale data from
+        any run). Previously this fell through and queried all runs for
+        backwards compatibility, but that hid run_id mismatch issues.
+        Now short-circuits to TELEMETRY_BLIND so humans investigate."""
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
         inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
@@ -578,4 +592,6 @@ class TestHangDetectorRunIsolation:
 
         decision = detector.evaluate(ctx)
 
-        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.trigger == TriggerType.TELEMETRY_BLIND
+        assert "active_run_id" in decision.reason
