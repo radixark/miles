@@ -18,9 +18,9 @@ from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
-    post_process_weights,
     update_weights_from_distributed,
 )
+from .update_weight_from_remote import post_process_weights
 
 logger = logging.getLogger(__name__)
 

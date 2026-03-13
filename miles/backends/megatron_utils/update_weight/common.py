@@ -149,6 +149,49 @@ def named_params_and_buffers(
     return ans
 
 
+def split_expert_and_non_expert_param_names(param_names: Sequence[str]) -> tuple[list[str], list[str]]:
+    expert_params = []
+    non_expert_params = []
+    for name in param_names:
+        if ".experts." in name:
+            expert_params.append(name)
+        else:
+            non_expert_params.append(name)
+    return expert_params, non_expert_params
+
+
+def non_expert_named_params_and_buffers(
+    args: Namespace,
+    model: Sequence[torch.nn.Module],
+    convert_to_global_name: bool = True,
+    translate_gpu_to_cpu: bool = False,
+) -> Iterator[tuple[str, torch.Tensor]]:
+    for name, tensor in named_params_and_buffers(
+        args,
+        model,
+        convert_to_global_name,
+        translate_gpu_to_cpu,
+    ):
+        if ".experts." not in name:
+            yield name, tensor
+
+
+def expert_named_params_and_buffers(
+    args: Namespace,
+    model: Sequence[torch.nn.Module],
+    convert_to_global_name: bool = True,
+    translate_gpu_to_cpu: bool = False,
+) -> Iterator[tuple[str, torch.Tensor]]:
+    for name, tensor in named_params_and_buffers(
+        args,
+        model,
+        convert_to_global_name,
+        translate_gpu_to_cpu,
+    ):
+        if ".experts." in name:
+            yield name, tensor
+
+
 def _maybe_get_cpu_backup(x: torch.Tensor):
     from torch_memory_saver import torch_memory_saver
 
