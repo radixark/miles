@@ -68,6 +68,7 @@ class MilesRouter:
         """Setup all the HTTP routes except catch-all proxy"""
         # sglang-router api
         self.app.post("/add_worker")(self.add_worker)
+        self.app.post("/remove_worker")(self.remove_worker)
         self.app.get("/list_workers")(self.list_workers)
         # Session routes - must be registered before catch-all
         setup_session_routes(self.app, self)
@@ -198,14 +199,43 @@ class MilesRouter:
                 status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
             )
 
-        # Add if new, keep a simple request count per worker
-        if worker_url not in self.worker_request_counts:
-            self.worker_request_counts[worker_url] = 0
-            self.worker_failure_counts[worker_url] = 0
-            if self.verbose:
-                print(f"[miles-router] Added new worker: {worker_url}")
+        is_new = worker_url not in self.worker_request_counts
+        self.worker_request_counts.setdefault(worker_url, 0)
+        self.worker_failure_counts[worker_url] = 0
+        self.dead_workers.discard(worker_url)
+
+        if is_new and self.verbose:
+            print(f"[miles-router] Added new worker: {worker_url}")
+        if not is_new:
+            logger.info(f"[miles-router] Re-registered worker {worker_url}, cleared dead/failure state")
 
         return {"status": "success", "worker_urls": self.worker_request_counts}
+
+    async def remove_worker(self, request: Request):
+        """Remove a worker from the router.
+        Supports providing the URL via query string or JSON body.
+        Examples:
+        - POST /remove_worker?url=http://127.0.0.1:10090
+        - POST /remove_worker  with body {"url": "http://127.0.0.1:10090"}
+        """
+        worker_url = request.query_params.get("url") or request.query_params.get("worker_url")
+
+        if not worker_url:
+            body = await request.body()
+            payload = json.loads(body) if body else {}
+            worker_url = payload.get("url") or payload.get("worker_url")
+
+        if not worker_url:
+            return JSONResponse(
+                status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
+            )
+
+        self.worker_request_counts.pop(worker_url, None)
+        self.worker_failure_counts.pop(worker_url, None)
+        self.dead_workers.discard(worker_url)
+        logger.info(f"[miles-router] Removed worker: {worker_url}")
+
+        return {"status": "success"}
 
     async def list_workers(self, request: Request):
         """List all registered workers"""

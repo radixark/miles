@@ -33,6 +33,9 @@ class RolloutHealthMonitor:
         self._need_first_wait = True  # Need to wait after each resume
         self._is_checking_enabled = False  # Track if health checking should be active
 
+        self._max_kill_ratio_per_round = getattr(args, "rollout_max_kill_ratio_per_round", 0.5)
+        self.total_kills = 0
+
     def start(self) -> bool:
         """Start the health monitor thread. Called once during initialization.
 
@@ -103,6 +106,11 @@ class RolloutHealthMonitor:
         """Return whether health checking is currently enabled (not paused)."""
         return self._is_checking_enabled
 
+    def _should_stop(self) -> bool:
+        return (self._stop_event is not None and self._stop_event.is_set()) or (
+            self._pause_event is not None and self._pause_event.is_set()
+        )
+
     def _health_monitor_loop(self) -> None:
         assert self._stop_event is not None
         assert self._pause_event is not None
@@ -136,27 +144,65 @@ class RolloutHealthMonitor:
                 break
 
     def _run_health_checks(self) -> None:
-        for rollout_engine_id, engine in enumerate(self._rollout_manager.rollout_engines):
-            if self._stop_event is not None and self._stop_event.is_set():
-                break
-            if self._pause_event is not None and self._pause_event.is_set():
-                break
-            self._check_engine_health(rollout_engine_id, engine)
+        engines = self._rollout_manager.rollout_engines
 
-    def _check_engine_health(self, rollout_engine_id, engine) -> None:
-        if engine is None:
-            logger.info(f"Skipping health check for engine {rollout_engine_id} (None)")
+        # Send all health checks in parallel
+        pending: dict[ray.ObjectRef, int] = {}
+        for engine_id, engine in enumerate(engines):
+            if self._should_stop():
+                return
+            if engine is None:
+                logger.info(f"Skipping health check for engine {engine_id} (None)")
+                continue
+            ref = engine.health_generate.remote(timeout=self._check_timeout)
+            pending[ref] = engine_id
+
+        if not pending:
             return
 
-        try:
-            ray.get(engine.health_generate.remote(timeout=self._check_timeout))
-        except Exception as e:
+        timeout = self._check_timeout + 5
+        ready, not_ready = ray.wait(list(pending.keys()), num_returns=len(pending), timeout=timeout)
+
+        failed_engine_ids = []
+        for ref in ready:
+            engine_id = pending[ref]
+            try:
+                ray.get(ref)
+            except Exception as e:
+                logger.error(
+                    f"Health check failed for rollout engine {engine_id} (ray error). "
+                    f"Killing actor. Exception: {e}"
+                )
+                failed_engine_ids.append(engine_id)
+            else:
+                logger.debug(f"Health check passed for rollout engine {engine_id}")
+
+        for ref in not_ready:
+            engine_id = pending[ref]
             logger.error(
-                f"Health check failed for rollout engine {rollout_engine_id} (ray timeout or error). Killing actor. Exception: {e}"
+                f"Health check timed out for rollout engine {engine_id} "
+                f"(no response within {timeout}s). Killing actor."
             )
-            self._kill_engine(rollout_engine_id=rollout_engine_id)
-        else:
-            logger.debug(f"Health check passed for rollout engine {rollout_engine_id}")
+            ray.cancel(ref, force=True)
+            failed_engine_ids.append(engine_id)
+
+        if not failed_engine_ids:
+            return
+
+        # Anti-cascade: cap kills per round to prevent mass kill from transient failures
+        kill_list = sorted(set(failed_engine_ids))
+        max_kills = max(1, int(len(engines) * self._max_kill_ratio_per_round))
+        if len(kill_list) > max_kills:
+            logger.warning(
+                f"Anti-cascade: {len(kill_list)} engines to kill but limiting to {max_kills} this round "
+                f"(max_kill_ratio={self._max_kill_ratio_per_round})"
+            )
+            kill_list = kill_list[:max_kills]
+
+        self.total_kills += len(kill_list)
+
+        for engine_id in kill_list:
+            self._kill_engine(rollout_engine_id=engine_id)
 
     def _kill_engine(self, rollout_engine_id: int):
         logger.info(f"Killing engine group {rollout_engine_id}...")
