@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator, Callable
 
 from miles.utils.ft.controller.state_machines.main.context_factories import build_subsystem_context
 from miles.utils.ft.controller.state_machines.main.models import MainContext, NormalSt
+from miles.utils.ft.controller.state_machines.main.restart_coordinator import has_pending_main_job_restart
 from miles.utils.ft.utils.state_machine import StateMachineStepper, run_stepper_to_convergence
 
 
@@ -16,7 +17,13 @@ async def advance_subsystems(
     restart_stepper: StateMachineStepper,
     on_convergence_failure: Callable[[], None] | None,
 ) -> AsyncGenerator[NormalSt, None]:
-    """Step every subsystem to convergence, yielding each intermediate state."""
+    """Step every subsystem to convergence, yielding each intermediate state.
+
+    If any subsystem produces a pending MAIN_JOB restart request after
+    convergence, subsequent subsystems are skipped so that
+    trigger_main_job_restart() in the caller can handle the request
+    without unnecessary side effects from later subsystems.
+    """
     curr_state = state
 
     for name in sorted(curr_state.subsystems):
@@ -35,3 +42,6 @@ async def advance_subsystems(
         ):
             curr_state = NormalSt(subsystems={**curr_state.subsystems, name: new_sub_state})
             yield curr_state
+
+        if has_pending_main_job_restart(curr_state.subsystems):
+            return

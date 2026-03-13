@@ -27,6 +27,25 @@ from miles.utils.ft.controller.subsystem_hub import SubsystemSpec
 logger = logging.getLogger(__name__)
 
 
+def has_pending_main_job_restart(subsystems: dict[str, SubsystemState]) -> bool:
+    """Quick check: does any subsystem have an unfulfilled MAIN_JOB restart request?
+
+    Lightweight counterpart of find_restart_requestor() — no logging, no
+    iteration beyond the first match. Used by advance_subsystems() for
+    early-stop so that later subsystems are not needlessly advanced when
+    a MAIN_JOB restart is already pending.
+    """
+    for sub_state in subsystems.values():
+        match sub_state:
+            case RecoveringSt(
+                recovery=EvictingAndRestartingSt(
+                    restart=ExternalRestartingMainJobSt(external_execution_result=None)
+                )
+            ):
+                return True
+    return False
+
+
 def find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
     """Find a subsystem requesting a main job restart.
 
