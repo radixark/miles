@@ -223,6 +223,7 @@ class RolloutManager:
     def stop_profile_all(self):
         stop_refs = [engine.stop_profile.remote() for engine in self.rollout_engines if engine is not None]
         results = []
+        non_benign_errors = []
         for ref in stop_refs:
             try:
                 results.append(ray.get(ref))
@@ -230,7 +231,11 @@ class RolloutManager:
                 if is_benign_stop_profile_error(str(e)):
                     logger.warning("stop_profile_all: got benign stop-profile error; ignoring: %s", e)
                     continue
-                raise
+                non_benign_errors.append(e)
+        if non_benign_errors:
+            for e in non_benign_errors:
+                logger.error("stop_profile_all: non-benign stop-profile error: %s", e)
+            raise non_benign_errors[0]
         return results
 
     def onload(self, tags: list[str] | None = None):
