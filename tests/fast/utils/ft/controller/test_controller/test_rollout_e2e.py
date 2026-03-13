@@ -18,7 +18,7 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
 from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringRunningAfterDelayConfig
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator
@@ -41,7 +41,7 @@ def _override_rollout_monitoring(harness: _RolloutTestHarness, *, cell_ids: list
     resolved = cell_ids or ["ep72"]
     for cell_id in resolved:
         spec = harness.controller._subsystem_specs[f"rollout_{cell_id}"]
-        spec.config.monitoring_config = MonitoringSustainedAliveConfig(
+        spec.config.monitoring_config = MonitoringRunningAfterDelayConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )

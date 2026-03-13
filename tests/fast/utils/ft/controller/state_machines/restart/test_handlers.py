@@ -31,7 +31,7 @@ from miles.utils.ft.controller.state_machines.restart import (
     create_restart_stepper,
     iteration_progress,
 )
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
@@ -72,7 +72,7 @@ def _make_context(
     on_new_run: object | None = None,
     node_metadata: dict[str, dict[str, str]] | None = None,
     actuator: SubsystemActuatorProtocol | None = None,
-    monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
+    monitoring_config: MonitoringIterationProgressConfig | MonitoringRunningAfterDelayConfig | None = None,
     is_main_job_restart: bool = False,
     pending_timeout_seconds: int = 300,
     on_node_evicted: object | None = None,
@@ -567,13 +567,13 @@ class TestMonitoringProgress:
 # ---------------------------------------------------------------------------
 
 
-class TestSustainedAlive:
+class TestRunningAfterDelay:
     @pytest.mark.asyncio
-    async def test_sustained_alive_success(self) -> None:
+    async def test_running_after_delay_success(self) -> None:
         """actuator.get_status()==RUNNING for alive_duration_seconds -> RestartDone."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         stepper = _make_stepper()
-        config = MonitoringSustainedAliveConfig(alive_duration_seconds=60, timeout_seconds=600)
+        config = MonitoringRunningAfterDelayConfig(alive_duration_seconds=60, timeout_seconds=600)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
@@ -585,11 +585,11 @@ class TestSustainedAlive:
         assert isinstance(result, RestartDoneSt)
 
     @pytest.mark.asyncio
-    async def test_sustained_alive_failed(self) -> None:
+    async def test_running_after_delay_failed(self) -> None:
         """actuator.get_status()==FAILED -> RestartFailed."""
         actuator = FakeActuator(status_sequence=[JobStatus.FAILED])
         stepper = _make_stepper()
-        config = MonitoringSustainedAliveConfig(alive_duration_seconds=60)
+        config = MonitoringRunningAfterDelayConfig(alive_duration_seconds=60)
         ctx = _make_context(actuator=actuator, monitoring_config=config)
 
         state = MonitoringProgressSt(start_time=datetime.now(timezone.utc), base_iteration=0)
@@ -597,11 +597,11 @@ class TestSustainedAlive:
         assert isinstance(result, RestartFailedSt)
 
     @pytest.mark.asyncio
-    async def test_sustained_alive_timeout(self) -> None:
+    async def test_running_after_delay_timeout(self) -> None:
         """actuator.get_status()==PENDING past monitoring_timeout_seconds -> RestartFailed."""
         actuator = FakeActuator(status_sequence=[JobStatus.PENDING])
         stepper = _make_stepper()
-        config = MonitoringSustainedAliveConfig(alive_duration_seconds=60, timeout_seconds=60)
+        config = MonitoringRunningAfterDelayConfig(alive_duration_seconds=60, timeout_seconds=60)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,
@@ -613,14 +613,14 @@ class TestSustainedAlive:
         assert isinstance(result, RestartFailedSt)
 
     @pytest.mark.asyncio
-    async def test_sustained_alive_uses_single_elapsed_computation(self) -> None:
+    async def test_running_after_delay_uses_single_elapsed_computation(self) -> None:
         """elapsed was computed twice with separate datetime.now() calls, which
         could cause the alive check and timeout check to use different values,
         potentially missing a borderline timeout. Now a single elapsed is
         computed once and reused for both checks."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         stepper = _make_stepper()
-        config = MonitoringSustainedAliveConfig(
+        config = MonitoringRunningAfterDelayConfig(
             alive_duration_seconds=120,
             timeout_seconds=60,
         )
@@ -633,11 +633,11 @@ class TestSustainedAlive:
         assert isinstance(result, RestartFailedSt)
 
     @pytest.mark.asyncio
-    async def test_sustained_alive_in_progress_returns_none(self) -> None:
+    async def test_running_after_delay_in_progress_returns_none(self) -> None:
         """Running but not yet alive_duration_seconds -> None."""
         actuator = FakeActuator(status_sequence=[JobStatus.RUNNING])
         stepper = _make_stepper()
-        config = MonitoringSustainedAliveConfig(alive_duration_seconds=300, timeout_seconds=600)
+        config = MonitoringRunningAfterDelayConfig(alive_duration_seconds=300, timeout_seconds=600)
         ctx = _make_context(
             actuator=actuator,
             monitoring_config=config,

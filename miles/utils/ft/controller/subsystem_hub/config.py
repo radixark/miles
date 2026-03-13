@@ -12,7 +12,7 @@ from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 if TYPE_CHECKING:
     from miles.utils.ft.controller.state_machines.restart.models import (
         MonitoringIterationProgressConfig,
-        MonitoringSustainedAliveConfig,
+        MonitoringRunningAfterDelayConfig,
     )
 
 
@@ -33,7 +33,7 @@ class SubsystemConfig:
 
     restart_mode: RestartMode = RestartMode.SUBSYSTEM
     detectors: list[BaseFaultDetector] = field(default_factory=list)
-    monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig = field(
+    monitoring_config: MonitoringIterationProgressConfig | MonitoringRunningAfterDelayConfig = field(
         default_factory=_default_monitoring_config
     )
 

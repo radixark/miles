@@ -19,7 +19,7 @@ from miles.utils.ft.controller.state_machines.main import (
 from miles.utils.ft.controller.state_machines.main.models import MainState
 from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringIterationProgressConfig,
-    MonitoringSustainedAliveConfig,
+    MonitoringRunningAfterDelayConfig,
 )
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig, SubsystemHub, SubsystemRuntime, SubsystemSpec, TrainingRankRoster
@@ -169,7 +169,7 @@ def _build_rollout_subsystem_specs(
             config=SubsystemConfig(
                 restart_mode=RestartMode.SUBSYSTEM,
                 detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id, **rollout_det_kwargs),
-                monitoring_config=MonitoringSustainedAliveConfig(alive_duration_seconds=rollout_alive_dur),
+                monitoring_config=MonitoringRunningAfterDelayConfig(alive_duration_seconds=rollout_alive_dur),
             ),
             runtime=SubsystemRuntime(
                 actuator=RayRolloutActuator(

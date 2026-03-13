@@ -11,7 +11,7 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     EvictingSt,
     MonitoringIterationProgressConfig,
     MonitoringProgressSt,
-    MonitoringSustainedAliveConfig,
+    MonitoringRunningAfterDelayConfig,
     RestartDoneSt,
     RestartFailedSt,
     RestartState,
@@ -89,17 +89,17 @@ class TestMonitoringConfigValidation:
         with pytest.raises(ValidationError):
             MonitoringIterationProgressConfig(timeout_seconds=-1)
 
-    def test_sustained_alive_negative_duration_rejected(self) -> None:
+    def test_running_after_delay_negative_duration_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            MonitoringSustainedAliveConfig(alive_duration_seconds=-1)
+            MonitoringRunningAfterDelayConfig(alive_duration_seconds=-1)
 
-    def test_sustained_alive_zero_duration_allowed(self) -> None:
-        cfg = MonitoringSustainedAliveConfig(alive_duration_seconds=0)
+    def test_running_after_delay_zero_duration_allowed(self) -> None:
+        cfg = MonitoringRunningAfterDelayConfig(alive_duration_seconds=0)
         assert cfg.alive_duration_seconds == 0
 
-    def test_sustained_alive_negative_timeout_rejected(self) -> None:
+    def test_running_after_delay_negative_timeout_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            MonitoringSustainedAliveConfig(timeout_seconds=-1)
+            MonitoringRunningAfterDelayConfig(timeout_seconds=-1)
 
 
 class TestRestartStateFrozen:

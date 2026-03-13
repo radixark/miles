@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
 from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, SubsystemRuntime, SubsystemSpec
 
 
@@ -29,21 +29,21 @@ class TestMonitoringIterationProgressConfig:
             MonitoringIterationProgressConfig(unknown_field=42)  # type: ignore[call-arg]
 
     def test_alive_duration_rejected(self) -> None:
-        """alive_duration_seconds belongs to MonitoringSustainedAliveConfig, not here."""
+        """alive_duration_seconds belongs to MonitoringRunningAfterDelayConfig only."""
         with pytest.raises(ValidationError):
             MonitoringIterationProgressConfig(alive_duration_seconds=180)  # type: ignore[call-arg]
 
 
-class TestMonitoringSustainedAliveConfig:
+class TestMonitoringRunningAfterDelayConfig:
     def test_defaults(self) -> None:
-        config = MonitoringSustainedAliveConfig()
+        config = MonitoringRunningAfterDelayConfig()
 
-        assert config.mode == "sustained_alive"
+        assert config.mode == "running_after_delay"
         assert config.alive_duration_seconds == 180
         assert config.timeout_seconds == 600
 
     def test_custom_values(self) -> None:
-        config = MonitoringSustainedAliveConfig(
+        config = MonitoringRunningAfterDelayConfig(
             alive_duration_seconds=300,
             timeout_seconds=900,
         )
@@ -53,12 +53,12 @@ class TestMonitoringSustainedAliveConfig:
 
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            MonitoringSustainedAliveConfig(unknown_field=42)  # type: ignore[call-arg]
+            MonitoringRunningAfterDelayConfig(unknown_field=42)  # type: ignore[call-arg]
 
     def test_success_iterations_rejected(self) -> None:
         """success_iterations belongs to MonitoringIterationProgressConfig, not here."""
         with pytest.raises(ValidationError):
-            MonitoringSustainedAliveConfig(success_iterations=10)  # type: ignore[call-arg]
+            MonitoringRunningAfterDelayConfig(success_iterations=10)  # type: ignore[call-arg]
 
 
 class TestSubsystemSpec:

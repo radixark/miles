@@ -16,7 +16,7 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
 from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemHub
 from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
 from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
@@ -271,7 +271,7 @@ class TestSubsystemSpecsIncludeRollout:
         rollout = specs["rollout_ep72"]
         assert isinstance(rollout.runtime.actuator, RayRolloutActuator)
         assert rollout.config.restart_mode == RestartMode.SUBSYSTEM
-        assert isinstance(rollout.config.monitoring_config, MonitoringSustainedAliveConfig)
+        assert isinstance(rollout.config.monitoring_config, MonitoringRunningAfterDelayConfig)
         assert len(rollout.config.detectors) > 0
 
 
@@ -298,14 +298,14 @@ class TestStatusReportsRollout:
 class TestFullLevel1RecoveryCycle:
     @pytest.mark.anyio
     async def test_rollout_completes_full_recovery_and_returns_to_detecting_anomaly(self) -> None:
-        """Detect -> RealtimeChecks -> Evict -> Stop+Start -> Monitor(sustained_alive) -> Done."""
+        """Detect -> RealtimeChecks -> Evict -> Stop+Start -> Monitor(running_after_delay) -> Done."""
         harness = _make_test_controller_with_rollout(
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller
 
         rollout_spec = controller._subsystem_specs["rollout_ep72"]
-        rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_spec.config.monitoring_config = MonitoringRunningAfterDelayConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -343,7 +343,7 @@ class TestLevel1FailureEscalation:
         controller = harness.controller
 
         rollout_spec = controller._subsystem_specs["rollout_ep72"]
-        rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_spec.config.monitoring_config = MonitoringRunningAfterDelayConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )
@@ -403,7 +403,7 @@ class TestColocatedHardwareFault:
         harness.subsystem_hub.training_rank_roster.rank_placement[1] = "train-node-1"
 
         rollout_spec = controller._subsystem_specs["rollout_ep72"]
-        rollout_spec.config.monitoring_config = MonitoringSustainedAliveConfig(
+        rollout_spec.config.monitoring_config = MonitoringRunningAfterDelayConfig(
             alive_duration_seconds=0,
             timeout_seconds=60,
         )

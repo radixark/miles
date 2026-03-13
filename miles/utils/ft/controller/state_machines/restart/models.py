@@ -21,16 +21,16 @@ class MonitoringIterationProgressConfig(FtBaseModel):
     timeout_seconds: int = Field(default=600, ge=0)
 
 
-class MonitoringSustainedAliveConfig(FtBaseModel):
-    """Rollout mode: confirm recovery after get_status() == RUNNING for N seconds."""
+class MonitoringRunningAfterDelayConfig(FtBaseModel):
+    """Rollout mode: confirm recovery after N seconds if get_status() == RUNNING at that point."""
 
-    mode: Literal["sustained_alive"] = "sustained_alive"
+    mode: Literal["running_after_delay"] = "running_after_delay"
     alive_duration_seconds: int = Field(default=180, ge=0)
     timeout_seconds: int = Field(default=600, ge=0)
 
 
 MonitoringConfig = Annotated[
-    Union[MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig],
+    Union[MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig],
     Field(discriminator="mode"),
 ]
 
@@ -91,7 +91,7 @@ class RestartContext(FtBaseModel):
     node_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     actuator: SubsystemActuatorProtocol
-    monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig
+    monitoring_config: MonitoringIterationProgressConfig | MonitoringRunningAfterDelayConfig
     is_main_job_restart: bool
     pending_timeout_seconds: int = Field(default=300, ge=0)
     restart_lock: asyncio.Lock | None = None

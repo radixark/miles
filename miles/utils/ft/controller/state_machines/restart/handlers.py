@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.controller.state_machines.restart.models import (
@@ -145,8 +145,8 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
         state: MonitoringProgressSt,
         ctx: RestartContext,
     ) -> RestartState | None:
-        if isinstance(ctx.monitoring_config, MonitoringSustainedAliveConfig):
-            return await self._step_sustained_alive(state=state, ctx=ctx)
+        if isinstance(ctx.monitoring_config, MonitoringRunningAfterDelayConfig):
+            return await self._step_running_after_delay(state=state, ctx=ctx)
         return await self._step_iteration_progress(state=state, ctx=ctx)
 
     async def _step_iteration_progress(
@@ -182,13 +182,13 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
 
         return None
 
-    async def _step_sustained_alive(
+    async def _step_running_after_delay(
         self,
         *,
         state: MonitoringProgressSt,
         ctx: RestartContext,
     ) -> RestartState | None:
-        assert isinstance(ctx.monitoring_config, MonitoringSustainedAliveConfig)
+        assert isinstance(ctx.monitoring_config, MonitoringRunningAfterDelayConfig)
         config = ctx.monitoring_config
 
         status = await ctx.actuator.get_status()
@@ -196,19 +196,19 @@ class MonitoringProgressHandler(StateHandler[MonitoringProgressSt, RestartContex
         elapsed = (now - state.start_time).total_seconds()
 
         if status == JobStatus.FAILED:
-            logger.warning("sustained_alive_failed")
+            logger.warning("running_after_delay_failed")
             return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         if status == JobStatus.RUNNING and elapsed >= config.alive_duration_seconds:
             logger.info(
-                "sustained_alive_success elapsed=%.0f threshold=%d",
+                "running_after_delay_success elapsed=%.0f threshold=%d",
                 elapsed,
                 config.alive_duration_seconds,
             )
             return RestartDoneSt(bad_node_ids=state.bad_node_ids)
 
         if elapsed > config.timeout_seconds:
-            logger.warning("sustained_alive_timeout elapsed=%.0f", elapsed)
+            logger.warning("running_after_delay_timeout elapsed=%.0f", elapsed)
             return RestartFailedSt(bad_node_ids=state.bad_node_ids)
 
         return None

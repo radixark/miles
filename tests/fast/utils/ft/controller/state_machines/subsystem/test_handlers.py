@@ -30,7 +30,7 @@ from miles.utils.ft.controller.state_machines.recovery import (
     RealtimeChecksSt,
     RecoveryDoneSt,
 )
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringSustainedAliveConfig
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
@@ -61,7 +61,7 @@ def _make_subsystem_context(
     on_recovery_duration: object | None = None,
     notifier: FakeNotifier | None = None,
     max_simultaneous_bad_nodes: int = 3,
-    monitoring_config: MonitoringIterationProgressConfig | MonitoringSustainedAliveConfig | None = None,
+    monitoring_config: MonitoringIterationProgressConfig | MonitoringRunningAfterDelayConfig | None = None,
     metric_store: MetricStore | None = None,
 ) -> SubsystemContext:
     return SubsystemContext(
