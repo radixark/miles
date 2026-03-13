@@ -52,6 +52,12 @@ def _override_gcs_host(gcs_address: str, preferred_host: str | None) -> str:
     return f"{preferred_host}:{port}"
 
 
+def _normalize_local_ray_node_ip(node_ip: str, head_ip: str) -> str:
+    if node_ip.startswith("127."):
+        return node_ip
+    return head_ip
+
+
 def _connect_to_started_ray_cluster(
     start_stdout: str,
     preferred_host: str | None = None,
@@ -295,7 +301,10 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
     for node in ray.nodes():
         if not node.get("Alive", False):
             continue
-        node_ip = node["NodeManagerAddress"]
+        node_ip = _normalize_local_ray_node_ip(
+            node_ip=node["NodeManagerAddress"],
+            head_ip=head_ip,
+        )
         ray_node_id = node["NodeID"]
         is_head = node_ip == head_ip
         node_infos.append(RayNodeInfo(

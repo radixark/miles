@@ -98,3 +98,17 @@ def test_dashboard_args_enable_dashboard_with_ephemeral_ports() -> None:
         "--dashboard-port=0",
         "--dashboard-agent-listen-port=0",
     ]
+
+
+def test_normalize_local_ray_node_ip_preserves_loopback_aliases() -> None:
+    assert integration_conftest._normalize_local_ray_node_ip(
+        node_ip="127.0.0.4",
+        head_ip="127.0.0.1",
+    ) == "127.0.0.4"
+
+
+def test_normalize_local_ray_node_ip_rewrites_head_host_address_to_loopback() -> None:
+    assert integration_conftest._normalize_local_ray_node_ip(
+        node_ip="10.3.4.5",
+        head_ip="127.0.0.1",
+    ) == "127.0.0.1"
