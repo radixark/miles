@@ -41,6 +41,11 @@ class SlidingWindowCounter:
         return self.count >= self._threshold
 
     @property
+    def has_been_notified(self) -> bool:
+        """Whether ``should_notify`` has fired at least once since the last reset."""
+        return self._notified
+
+    @property
     def should_notify(self) -> bool:
         """True once when threshold is first reached; resets after window clears."""
         if self.threshold_reached and not self._notified:

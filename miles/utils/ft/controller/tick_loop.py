@@ -131,7 +131,7 @@ class TickLoop:
                 continue
             coverage = self._node_agent_coverage_checker.check(
                 subsystem_name=name,
-                subsystem_node_ids=set(active_node_ids),
+                subsystem_node_ids=active_node_ids,
                 registered_agent_node_ids=registered,
             )
             if coverage.persistently_uncovered_node_ids:

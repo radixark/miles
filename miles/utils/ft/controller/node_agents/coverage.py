@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -52,8 +53,8 @@ class NodeAgentCoverageChecker:
     def check(
         self,
         subsystem_name: str,
-        subsystem_node_ids: set[str],
-        registered_agent_node_ids: set[str],
+        subsystem_node_ids: AbstractSet[str],
+        registered_agent_node_ids: AbstractSet[str],
     ) -> CoverageResult:
         result = CoverageResult(subsystem_name=subsystem_name)
         uncovered = subsystem_node_ids - registered_agent_node_ids
@@ -62,7 +63,7 @@ class NodeAgentCoverageChecker:
         for node_id in covered:
             key = _SubsystemNodeKey(subsystem_name=subsystem_name, node_id=node_id)
             counter = self._counters.pop(key, None)
-            if counter is not None and counter._notified:
+            if counter is not None and counter.has_been_notified:
                 logger.info("Node agent coverage restored: %s/%s", subsystem_name, node_id)
                 result.newly_restored_node_ids.append(node_id)
 
@@ -84,5 +85,12 @@ class NodeAgentCoverageChecker:
                     counter.summary(),
                 )
                 result.persistently_uncovered_node_ids.append(node_id)
+
+        stale_keys = [
+            k for k in self._counters
+            if k.subsystem_name == subsystem_name and k.node_id not in subsystem_node_ids
+        ]
+        for k in stale_keys:
+            del self._counters[k]
 
         return result
