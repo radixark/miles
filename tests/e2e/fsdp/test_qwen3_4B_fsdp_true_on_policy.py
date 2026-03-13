@@ -1,5 +1,10 @@
 import os
+
+from tests.ci.ci_register import register_cuda_ci
+
 import miles.utils.external_utils.command_utils as U
+
+register_cuda_ci(est_time=600, suite="stage-c-fsdp-8-gpu", num_gpus=8)
 
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
