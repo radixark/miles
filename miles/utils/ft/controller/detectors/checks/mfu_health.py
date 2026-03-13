@@ -1,6 +1,13 @@
+import math
 from dataclasses import dataclass
 
 from miles.utils.ft.controller.types import TrainingMetricStoreProtocol
+
+
+def _assert_all_finite(values: list[float], context: str) -> None:
+    bad = [v for v in values if not math.isfinite(v)]
+    if bad:
+        raise ValueError(f"non-finite MFU values in {context}: {bad}")
 
 
 @dataclass(frozen=True)
@@ -22,11 +29,13 @@ def check_mfu_health(
     """Check whether MFU is declining relative to a baseline.
 
     Returns None when there is insufficient data or no valid baseline.
+    Raises ValueError if non-finite values (NaN/Inf) are encountered.
     """
     recent = mini_wandb.query_last_n_steps("mfu", last_n=consecutive_steps)
     if len(recent) < consecutive_steps:
         return None
 
+    _assert_all_finite([sv.value for sv in recent], context="recent window")
     avg_mfu = sum(sv.value for sv in recent) / len(recent)
 
     computed_baseline = _compute_baseline(
@@ -55,6 +64,7 @@ def _compute_baseline(
     consecutive_steps: int,
 ) -> float:
     if explicit_baseline is not None:
+        _assert_all_finite([explicit_baseline], context="explicit baseline")
         return explicit_baseline
 
     total_needed = baseline_steps + consecutive_steps
@@ -64,4 +74,5 @@ def _compute_baseline(
     if not baseline_data:
         return 0.0
 
+    _assert_all_finite([sv.value for sv in baseline_data], context="baseline window")
     return sum(sv.value for sv in baseline_data) / len(baseline_data)
