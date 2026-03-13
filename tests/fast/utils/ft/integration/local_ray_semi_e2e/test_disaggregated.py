@@ -51,6 +51,8 @@ async def test_simultaneous_training_and_rollout_crash(
     status = await testbed.get_status()
     assert status.subsystem_states.get("training") == "DetectingAnomalySt"
     assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
+    rollout_actor_id_before = await testbed.get_sglang_cell_actor_id("default")
+    assert rollout_actor_id_before is not None
 
     # Step 3: simultaneously crash training AND kill sglang cell
     await asyncio.gather(
@@ -58,23 +60,29 @@ async def test_simultaneous_training_and_rollout_crash(
         testbed.kill_sglang_cell("default"),
     )
 
-    # Step 4: wait for rollout subsystem to enter recovery
-    await testbed.wait_for_subsystem_state(
-        name="rollout_default",
-        state="RecoveringSt",
-        timeout=RECOVERY_TIMEOUT,
-    )
-
-    # Step 5: wait for training subsystem to enter recovery (main SM goes to RECOVERY mode)
+    # Step 4: wait for training subsystem to enter recovery (main SM goes to RECOVERY mode)
     await testbed.wait_for_mode(
         mode=ControllerMode.RECOVERY,
         timeout=RECOVERY_TIMEOUT,
     )
 
-    # Step 6: wait for both subsystems to fully recover back to DetectingAnomaly
-    status = await testbed.wait_for_all_subsystems_detecting(
-        timeout=LONG_RECOVERY_TIMEOUT,
-    )
+    # Step 5: wait for rollout engine to be recreated and both subsystems to recover
+    deadline = asyncio.get_running_loop().time() + LONG_RECOVERY_TIMEOUT
+    status = await testbed.get_status()
+    rollout_actor_id_after = rollout_actor_id_before
+    while asyncio.get_running_loop().time() < deadline:
+        status = await testbed.wait_for_all_subsystems_detecting(
+            timeout=min(5.0, deadline - asyncio.get_running_loop().time()),
+        )
+        rollout_actor_id_after = await testbed.get_sglang_cell_actor_id("default")
+        if rollout_actor_id_after is not None and rollout_actor_id_after != rollout_actor_id_before:
+            break
+    else:
+        raise TimeoutError(
+            "Rollout engine was not recreated after simultaneous training and rollout crash"
+        )
+
+    assert rollout_actor_id_after != rollout_actor_id_before
     assert status.subsystem_states.get("training") == "DetectingAnomalySt", (
         f"Training not recovered: {status.subsystem_states}"
     )
@@ -82,6 +90,6 @@ async def test_simultaneous_training_and_rollout_crash(
         f"Rollout not recovered: {status.subsystem_states}"
     )
 
-    # Step 7: verify controller is back to MONITORING (no active recovery)
+    # Step 6: verify controller is back to MONITORING (no active recovery)
     assert status.mode == ControllerMode.MONITORING
     assert status.recovery_in_progress is False

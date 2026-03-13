@@ -94,3 +94,9 @@ class TestbedRolloutManager:
         engine = self._engines.get(cell_id)
         if engine is not None:
             ray.kill(engine, no_restart=True)
+
+    def get_engine_actor_id(self, cell_id: str) -> str | None:
+        engine = self._engines.get(cell_id)
+        if engine is None:
+            return None
+        return engine._actor_id.hex()

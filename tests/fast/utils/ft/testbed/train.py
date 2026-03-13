@@ -323,6 +323,11 @@ class MilesTestbed:
             raise RuntimeError("No rollout manager configured")
         await self._rollout_manager.kill_engine.remote(cell_id)
 
+    async def get_sglang_cell_actor_id(self, cell_id: str) -> str | None:
+        if self._rollout_manager is None:
+            raise RuntimeError("No rollout manager configured")
+        return await self._rollout_manager.get_engine_actor_id.remote(cell_id)
+
     async def inject_collector_metrics(
         self,
         node_id: str,
