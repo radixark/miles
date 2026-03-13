@@ -43,7 +43,8 @@ class TestbedRolloutManager:
         from miles.utils.ft.factories.rollout_agent import build_rollout_agent
 
         build_rollout_agent(
-            ray.get_runtime_context().current_actor,
+            cell_ids=self._cell_ids,
+            get_engines=lambda cid: [self._engines[cid]] if cid in self._engines else [],
             ft_id=self._ft_id,
             check_interval=1.0,
         )

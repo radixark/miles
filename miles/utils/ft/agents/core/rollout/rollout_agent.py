@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from miles.utils.ft.adapters.types import EngineHealthChecker
 from miles.utils.ft.agents.core.rollout.health_checker import CellEntry, RolloutHealthChecker
@@ -12,19 +13,20 @@ logger = logging.getLogger(__name__)
 class FtRolloutAgent:
     def __init__(
         self,
-        rollout_manager: object,
         *,
+        cell_ids: list[str],
+        get_engines: Callable[[str], list[object]],
         health_checker: EngineHealthChecker,
         check_interval: float = 10.0,
     ) -> None:
         self._metrics_exporter = RolloutMetricsExporter()
         self._health_checker = RolloutHealthChecker(
-            # TODO: will have many cells
             cells=[
                 CellEntry(
-                    cell_id="default",
-                    get_engines=lambda: list(rollout_manager.all_rollout_engines),  # type: ignore[attr-defined]
-                ),
+                    cell_id=cid,
+                    get_engines=lambda _c=cid: get_engines(_c),
+                )
+                for cid in cell_ids
             ],
             engine_health_fn=health_checker,
             report_fn=self._metrics_exporter.update,

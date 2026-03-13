@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import ray
 
@@ -19,15 +20,21 @@ _REGISTER_RETRY_DELAY = 2.0
 
 
 def build_rollout_agent(
-    rollout_manager: object,
     *,
+    cell_ids: list[str],
+    get_engines: Callable[[str], list[object]],
+    health_checker: Callable[[object], object] | None = None,
     check_interval: float = 30.0,
     ft_id: str = "",
     cell_node_ids: dict[str, list[str]] | None = None,
 ) -> FtRolloutAgent:
+    if health_checker is None:
+        health_checker = lambda engine: engine.health_generate.remote()  # type: ignore[attr-defined]
+
     agent = FtRolloutAgent(
-        rollout_manager,
-        health_checker=lambda engine: engine.health_generate.remote(),
+        cell_ids=cell_ids,
+        get_engines=get_engines,
+        health_checker=health_checker,
         check_interval=check_interval,
     )
     _register_with_controller(
