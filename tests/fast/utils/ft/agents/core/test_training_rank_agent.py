@@ -77,10 +77,8 @@ class TestFtTrainingRankAgentRegisterRank:
 
     def test_register_training_rank_skipped_without_run_id(self) -> None:
         agent = FtTrainingRankAgent(rank=0, world_size=4)
-        try:
-            assert agent._run_id == ""
-        finally:
-            agent.shutdown()
+        assert agent._run_id == ""
+        assert agent._metric_exporter is None
 
     def test_register_training_rank_skipped_when_no_client(self) -> None:
         with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}):
@@ -133,9 +131,26 @@ class TestFtTrainingRankAgentFaultTolerance:
                 agent.shutdown()
 
     def test_step_delegates_to_metric_exporter(self) -> None:
-        agent = FtTrainingRankAgent(rank=0, world_size=4)
+        with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}):
+            agent = FtTrainingRankAgent(rank=0, world_size=4)
         try:
             agent.step()
+            assert agent._metric_exporter is not None
             assert agent._metric_exporter._heartbeat_counter == 1
         finally:
             agent.shutdown()
+
+    def test_agent_passes_run_id_to_exporter(self) -> None:
+        """FtTrainingRankAgent must forward its run_id to the exporter so
+        that run-scoped metrics carry ft_run_id."""
+        with _registered_agent() as (agent, _mock_client):
+            assert agent._metric_exporter is not None
+
+    def test_no_run_id_disables_metric_exporter(self) -> None:
+        """Without run_id, metric exporter is disabled to avoid emitting
+        metrics without ft_run_id label."""
+        agent = FtTrainingRankAgent(rank=0, world_size=4)
+        assert agent._metric_exporter is None
+        agent.step()
+        agent.set_phase("training")
+        agent.shutdown()

@@ -29,7 +29,7 @@ def _parse_gauge(text: str, metric_name: str, labels: dict[str, str]) -> float:
 
 @pytest.fixture()
 def metric_exporter() -> Iterator[TrainingRankExporter]:
-    exporter = TrainingRankExporter(rank=0, node_id="test-node")
+    exporter = TrainingRankExporter(rank=0, node_id="test-node", run_id="test-run-1")
     yield exporter
     exporter.shutdown()
 
@@ -61,6 +61,33 @@ class TestTrainingRankExporterExporter:
         assert "miles_ft_agent_heartbeat" in text
         assert "miles_ft_training_phase" in text
         assert 'rank="0"' in text
+
+    @pytest.mark.anyio
+    async def test_run_scoped_metrics_carry_ft_run_id_label(self, metric_exporter: TrainingRankExporter) -> None:
+        """Run-scoped rank metrics (heartbeat, phase) must always carry
+        ft_run_id so that controller queries can isolate the current run.
+        Without this label, stale data from a previous run could pollute
+        hang-detection decisions after a run switch."""
+        address = metric_exporter.get_exporter_address()
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{address}/metrics")
+
+        text = response.text
+        assert 'ft_run_id="test-run-1"' in text
+
+        heartbeat = _parse_gauge(text, "miles_ft_agent_heartbeat", {"rank": "0", "ft_run_id": "test-run-1"})
+        assert heartbeat == 0.0
+
+        phase = _parse_gauge(text, "miles_ft_training_phase", {"rank": "0", "ft_run_id": "test-run-1"})
+        assert phase == 0.0
+
+
+class TestTrainingRankExporterRunIdValidation:
+    def test_empty_run_id_raises_value_error(self) -> None:
+        """Allowing metrics without ft_run_id would let stale data from
+        previous runs contaminate current-run queries."""
+        with pytest.raises(ValueError, match="run_id must not be empty"):
+            TrainingRankExporter(rank=0, node_id="test-node", run_id="")
 
 
 class TestTrainingRankExporterStep:

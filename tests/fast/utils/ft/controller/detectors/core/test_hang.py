@@ -344,3 +344,116 @@ class TestHangDetectorValidation:
     def test_invalid_parameter_rejected(self, kwargs: dict, match: str) -> None:
         with pytest.raises(ValueError, match=match):
             HangDetectorConfig(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Run isolation: ft_run_id label filtering
+# ---------------------------------------------------------------------------
+
+
+class TestHangDetectorRunIsolation:
+    """Verify that HangDetector only considers metrics belonging to the
+    current run when active_run_id is set on DetectorContext.
+
+    Before ft_run_id filtering was added, stale heartbeat/phase data from
+    a previous run could remain in the metric store after a run switch and
+    pollute hang-detection decisions for the new run."""
+
+    def test_phase_query_only_sees_current_run(self) -> None:
+        """Same rank=0, different ft_run_id: detector must only read the
+        current run's phase metric."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # Old run: phase = checkpoint_saving (would use 30min timeout)
+        inject_training_phase(store, phase=2.0, rank="0", ft_run_id="old-run")
+
+        # Current run: phase = training (uses 10min timeout)
+        inject_training_phase(store, phase=1.0, rank="0", ft_run_id="current-run")
+
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="current-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="current-run")
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="current-run",
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert "training" in decision.reason
+
+    def test_heartbeat_query_only_sees_current_run(self) -> None:
+        """Old run's stalled heartbeat must not trigger recovery when the
+        current run's heartbeat is progressing."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # Old run: stalled heartbeat
+        inject_heartbeat(store, value=50.0, timestamp=now - timedelta(minutes=5), ft_run_id="old-run")
+        inject_heartbeat(store, value=50.0, timestamp=now - timedelta(minutes=1), ft_run_id="old-run")
+
+        # Current run: progressing heartbeat
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="current-run")
+        inject_heartbeat(store, value=200.0, timestamp=now - timedelta(minutes=1), ft_run_id="current-run")
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="current-run",
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+
+    def test_late_scrape_from_old_run_does_not_affect_current_run(self) -> None:
+        """After a run switch, a late-arriving scrape from the old run is
+        stored with the old ft_run_id. The detector must ignore it."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # Current run: progressing
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="run-2")
+        inject_heartbeat(store, value=200.0, timestamp=now - timedelta(minutes=1), ft_run_id="run-2")
+
+        # Late scrape from old run arrives *after* the current run's data
+        inject_heartbeat(store, value=42.0, timestamp=now - timedelta(seconds=30), ft_run_id="run-1")
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="run-2",
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+
+    def test_no_run_id_in_context_queries_all_runs_for_backwards_compat(self) -> None:
+        """When active_run_id is None (e.g. older controller code path),
+        the detector must still work by querying without ft_run_id filter."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id=None,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY

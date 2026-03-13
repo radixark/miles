@@ -20,24 +20,28 @@ class TrainingRankExporter:
     lifecycle and is agnostic to controller communication.
     """
 
-    def __init__(self, rank: int, node_id: str) -> None:
+    def __init__(self, rank: int, node_id: str, run_id: str) -> None:
+        if not run_id:
+            raise ValueError("run_id must not be empty for TrainingRankExporter")
+
         self._exporter = PrometheusExporter()
 
         labels: dict[str, str] = {
             "rank": str(rank),
             "node_id": node_id,
+            "ft_run_id": run_id,
         }
 
         heartbeat_gauge = Gauge(
             mn.AGENT_HEARTBEAT,
             "Agent heartbeat counter (monotonically increasing)",
-            labelnames=["rank", "node_id"],
+            labelnames=["rank", "node_id", "ft_run_id"],
             registry=self._exporter.registry,
         )
         phase_gauge = Gauge(
             mn.TRAINING_PHASE,
             "Current training phase (0=idle, 1=training, 2=checkpoint_saving)",
-            labelnames=["rank", "node_id"],
+            labelnames=["rank", "node_id", "ft_run_id"],
             registry=self._exporter.registry,
         )
 

@@ -5,6 +5,7 @@ from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.detectors.training_metric_filters import build_training_metric_filters
 from miles.utils.ft.controller.metrics.mini_prometheus.query import AmbiguousSeriesError
 from miles.utils.ft.utils.metric_names import (
     AGENT_HEARTBEAT,
@@ -51,13 +52,19 @@ class HangDetector(BaseFaultDetector):
         if ctx.job_status != JobStatus.RUNNING:
             return Decision.no_fault(reason="job not running, skipping hang check")
 
-        phase = self._get_current_phase(ctx.metric_store.time_series_store)
+        label_filters = build_training_metric_filters(rank="0", run_id=ctx.active_run_id)
+
+        phase = self._get_current_phase(ctx.metric_store.time_series_store, label_filters=label_filters)
         timeout_attr = _PHASE_TIMEOUT_ATTR.get(phase)
         if timeout_attr is None:
             return Decision.no_fault(reason=f"unknown training phase {phase}, skipping hang check")
         timeout_minutes: int = getattr(self._config, timeout_attr)
 
-        heartbeat_changes = self._get_heartbeat_changes(ctx.metric_store.time_series_store, window_minutes=timeout_minutes)
+        heartbeat_changes = self._get_heartbeat_changes(
+            ctx.metric_store.time_series_store,
+            window_minutes=timeout_minutes,
+            label_filters=label_filters,
+        )
         if heartbeat_changes is None:
             return Decision.no_fault(reason="no heartbeat data available")
 
@@ -71,9 +78,14 @@ class HangDetector(BaseFaultDetector):
 
         return Decision.no_fault(reason="heartbeat progressing normally")
 
-    def _get_current_phase(self, metric_store: TimeSeriesQueryProtocol) -> float:
+    def _get_current_phase(
+        self,
+        metric_store: TimeSeriesQueryProtocol,
+        *,
+        label_filters: dict[str, str],
+    ) -> float:
         try:
-            df = metric_store.query_single_latest(TRAINING_PHASE, label_filters={"rank": "0"})
+            df = metric_store.query_single_latest(TRAINING_PHASE, label_filters=label_filters)
         except AmbiguousSeriesError:
             logger.warning(
                 "ambiguous_training_phase_series defaulting to PHASE_TRAINING",
@@ -90,13 +102,15 @@ class HangDetector(BaseFaultDetector):
         self,
         metric_store: TimeSeriesQueryProtocol,
         window_minutes: int,
+        *,
+        label_filters: dict[str, str],
     ) -> float | None:
         window = timedelta(minutes=window_minutes)
 
         df = metric_store.changes(
             AGENT_HEARTBEAT,
             window=window,
-            label_filters={"rank": "0"},
+            label_filters=label_filters,
         )
         if df is None or df.is_empty():
             return None
@@ -106,7 +120,7 @@ class HangDetector(BaseFaultDetector):
             count_df = metric_store.count_over_time(
                 AGENT_HEARTBEAT,
                 window=window,
-                label_filters={"rank": "0"},
+                label_filters=label_filters,
             )
             if count_df is not None and not count_df.is_empty():
                 min_count = count_df["value"].min()

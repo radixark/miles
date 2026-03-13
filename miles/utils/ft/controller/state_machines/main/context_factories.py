@@ -71,6 +71,7 @@ def _build_detector_context(
         metric_store=context.shared.metric_store,
         active_node_ids=active_node_ids,
         job_status=context.job_status,
+        active_run_id=context.shared.metric_store.mini_wandb.active_run_id,
     )
 
 

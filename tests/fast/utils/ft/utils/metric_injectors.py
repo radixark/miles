@@ -84,6 +84,7 @@ def make_detector_context(
     mini_wandb: MiniWandb | None = None,
     active_node_ids: frozenset[str] | set[str] | None = None,
     job_status: JobStatus = JobStatus.RUNNING,
+    active_run_id: str | None = None,
 ) -> DetectorContext:
     return DetectorContext(
         metric_store=MetricStore(
@@ -92,6 +93,7 @@ def make_detector_context(
         ),
         active_node_ids=frozenset(active_node_ids) if active_node_ids is not None else frozenset({"node-0"}),
         job_status=job_status,
+        active_run_id=active_run_id,
     )
 
 
@@ -210,10 +212,14 @@ def inject_heartbeat(
     value: float,
     rank: str = "0",
     timestamp: datetime | None = None,
+    ft_run_id: str = "",
 ) -> None:
+    labels: dict[str, str] = {"rank": rank}
+    if ft_run_id:
+        labels["ft_run_id"] = ft_run_id
     store.ingest_samples(
         target_id=f"rank-{rank}",
-        samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": rank}, value=value)],
+        samples=[GaugeSample(name=AGENT_HEARTBEAT, labels=labels, value=value)],
         timestamp=timestamp,
     )
 
@@ -223,10 +229,14 @@ def inject_training_phase(
     phase: float,
     rank: str = "0",
     timestamp: datetime | None = None,
+    ft_run_id: str = "",
 ) -> None:
+    labels: dict[str, str] = {"rank": rank}
+    if ft_run_id:
+        labels["ft_run_id"] = ft_run_id
     store.ingest_samples(
         target_id=f"rank-{rank}",
-        samples=[GaugeSample(name=TRAINING_PHASE, labels={"rank": rank}, value=phase)],
+        samples=[GaugeSample(name=TRAINING_PHASE, labels=labels, value=phase)],
         timestamp=timestamp,
     )
 

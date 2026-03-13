@@ -40,7 +40,13 @@ class FtTrainingRankAgent:
         self._run_id: str = get_training_run_id()
         self._node_id: str = node_id or socket.gethostname()
 
-        self._metric_exporter = TrainingRankExporter(rank=rank, node_id=self._node_id)
+        if not self._run_id:
+            logger.warning("No MILES_FT_TRAINING_RUN_ID set, disabling rank metric exporter")
+            self._metric_exporter: TrainingRankExporter | None = None
+        else:
+            self._metric_exporter = TrainingRankExporter(
+                rank=rank, node_id=self._node_id, run_id=self._run_id,
+            )
 
         self._register_training_rank()
 
@@ -67,19 +73,24 @@ class FtTrainingRankAgent:
     # ------------------------------------------------------------------
 
     def get_exporter_address(self) -> str:
+        if self._metric_exporter is None:
+            return ""
         return self._metric_exporter.get_exporter_address()
 
     def set_phase(
         self,
         phase: Literal["idle", "training", "checkpoint_saving"],
     ) -> None:
-        self._metric_exporter.set_phase(phase)
+        if self._metric_exporter is not None:
+            self._metric_exporter.set_phase(phase)
 
     def step(self) -> None:
-        self._metric_exporter.step()
+        if self._metric_exporter is not None:
+            self._metric_exporter.step()
 
     def shutdown(self) -> None:
-        self._metric_exporter.shutdown()
+        if self._metric_exporter is not None:
+            self._metric_exporter.shutdown()
 
     # ------------------------------------------------------------------
     # Internal: controller communication

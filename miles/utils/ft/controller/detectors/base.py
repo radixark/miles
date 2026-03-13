@@ -20,6 +20,7 @@ class DetectorContext:
     metric_store: MetricStore
     active_node_ids: frozenset[str] = field(default_factory=frozenset)
     job_status: JobStatus | None = None
+    active_run_id: str | None = None
 
 
 class BaseFaultDetector(ABC):

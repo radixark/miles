@@ -36,6 +36,10 @@ class MiniWandb(TrainingMetricStoreProtocol):
         self._runs: dict[str, deque[_StepRecord]] = {}
         self._last_step: dict[str, int] = {}
 
+    @property
+    def active_run_id(self) -> str | None:
+        return self._active_run_id
+
     def set_active_run_id(self, run_id: str) -> None:
         self._active_run_id = run_id
 
