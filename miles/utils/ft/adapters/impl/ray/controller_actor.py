@@ -88,6 +88,9 @@ class _FtControllerActorCls:
     def add_scrape_target(self, target_id: str, address: str) -> None:
         self._ctrl.add_scrape_target(target_id=target_id, address=address)
 
+    def is_ready(self) -> bool:
+        return self._ctrl.is_ready()
+
     def get_status(self) -> object:
         return self._ctrl.get_status()
 

@@ -118,6 +118,9 @@ class FtController:
         self._scrape_target_manager.remove_scrape_target(target_id=node_id)
         logger.info("agent_unregistered node_id=%s", node_id)
 
+    def is_ready(self) -> bool:
+        return self._tick_loop.tick_count > 0
+
     async def submit_initial_job(self) -> str:
         run_id = await self._main_job.start()
         self._activate_run(run_id)

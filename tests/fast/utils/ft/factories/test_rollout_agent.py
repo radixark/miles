@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import miles.utils.ft.factories.rollout_agent as rollout_agent_mod
-from miles.utils.ft.factories.rollout_agent import _register_with_controller
+from miles.utils.ft.factories.rollout_agent import _register_with_controller, _wait_for_controller_ready
 
 
 class TestFactoryNamingConsistency:
@@ -24,6 +24,43 @@ class TestFactoryNamingConsistency:
         )
 
 
+class TestWaitForControllerReady:
+    def test_waits_until_controller_reports_ready(self) -> None:
+        """Previously, registration could race against controller initialization
+        because there was no readiness check. The rollout manager would try to
+        register before the controller finished its startup."""
+        call_count = 0
+
+        def _is_ready_remote():
+            nonlocal call_count
+            call_count += 1
+            ref = MagicMock()
+            return ref
+
+        controller = MagicMock()
+        controller.is_ready.remote = _is_ready_remote
+
+        with patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray:
+            mock_ray.get.side_effect = [False, False, True]
+            with patch("miles.utils.ft.factories.rollout_agent.time") as mock_time:
+                mock_time.monotonic.side_effect = [0.0, 0.0, 1.0, 2.0, 3.0]
+                mock_time.sleep = MagicMock()
+                _wait_for_controller_ready(controller)
+
+        assert call_count == 3
+
+    def test_raises_timeout_if_never_ready(self) -> None:
+        controller = MagicMock()
+
+        with patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray:
+            mock_ray.get.return_value = False
+            with patch("miles.utils.ft.factories.rollout_agent.time") as mock_time:
+                mock_time.monotonic.side_effect = [0.0] + [200.0] * 10
+                mock_time.sleep = MagicMock()
+                with pytest.raises(TimeoutError, match="not ready"):
+                    _wait_for_controller_ready(controller)
+
+
 class TestRegisterWithController:
     def test_successful_registration(self) -> None:
         """Happy path: registration completes without error."""
@@ -33,7 +70,10 @@ class TestRegisterWithController:
         mock_controller = MagicMock()
         mock_controller.register_rollout.remote.return_value = "ref"
 
-        with patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray:
+        with (
+            patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.rollout_agent._wait_for_controller_ready"),
+        ):
             mock_ray.get_actor.return_value = mock_controller
             mock_ray.get_runtime_context.return_value.current_actor = MagicMock()
             mock_ray.get.return_value = None
@@ -64,7 +104,10 @@ class TestRegisterWithController:
         mock_controller = MagicMock()
         mock_controller.register_rollout.remote.return_value = "ref"
 
-        with patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray:
+        with (
+            patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.rollout_agent._wait_for_controller_ready"),
+        ):
             mock_ray.get_actor.return_value = mock_controller
             mock_ray.get_runtime_context.return_value.current_actor = MagicMock()
             mock_ray.get.side_effect = RuntimeError("persistent ray error")
@@ -87,7 +130,10 @@ class TestRegisterWithController:
                 raise RuntimeError("transient ray error")
             return None
 
-        with patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray:
+        with (
+            patch("miles.utils.ft.factories.rollout_agent.ray") as mock_ray,
+            patch("miles.utils.ft.factories.rollout_agent._wait_for_controller_ready"),
+        ):
             mock_ray.get_actor.return_value = mock_controller
             mock_ray.get_runtime_context.return_value.current_actor = MagicMock()
             mock_ray.get.side_effect = _flaky_get

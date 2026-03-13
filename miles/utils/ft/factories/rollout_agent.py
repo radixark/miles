@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 import ray
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 _REGISTER_MAX_ATTEMPTS = 3
 _REGISTER_RETRY_DELAY = 2.0
+_READY_POLL_INTERVAL = 2.0
+_READY_TIMEOUT = 120.0
 
 
 def build_rollout_agent(
@@ -44,6 +47,22 @@ def build_rollout_agent(
     return agent
 
 
+def _wait_for_controller_ready(controller: object) -> None:
+    deadline = time.monotonic() + _READY_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            ready = ray.get(controller.is_ready.remote(), timeout=10)  # type: ignore[union-attr]
+            if ready:
+                logger.info("controller_ready confirmed")
+                return
+        except Exception:
+            logger.debug("controller not ready yet, retrying", exc_info=True)
+        time.sleep(_READY_POLL_INTERVAL)
+    raise TimeoutError(
+        f"controller not ready after {_READY_TIMEOUT}s"
+    )
+
+
 def _register_with_controller(
     *,
     agent: FtRolloutAgent,
@@ -51,6 +70,7 @@ def _register_with_controller(
     cell_node_ids: dict[str, list[str]] | None = None,
 ) -> None:
     controller = ray.get_actor(ft_controller_actor_name(ft_id))
+    _wait_for_controller_ready(controller)
     self_handle = ray.get_runtime_context().current_actor
 
     def _do_register() -> None:
