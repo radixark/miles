@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from miles.utils.ft.utils.env import get_exception_inject_path, get_training_run_id
+from miles.utils.ft.utils.env import (
+    build_exception_inject_flag_path,
+    get_exception_inject_dir,
+    get_exception_inject_path,
+    get_training_run_id,
+)
 from miles.utils.ft.utils.graceful_degrade import FaultInjectionError, graceful_degrade
 
 if TYPE_CHECKING:
@@ -24,11 +30,12 @@ class FtTrackingAgent:
         self,
         run_id: str | None = None,
         controller_client: ControllerClientProtocol | None = None,
+        rank: int | None = None,
     ) -> None:
         self._run_id = run_id or get_training_run_id()
         self._controller_client = controller_client
 
-        self._exception_inject_path = get_exception_inject_path()
+        self._exception_inject_path = _resolve_inject_path(rank=rank)
 
     @graceful_degrade()
     def log(self, *, metrics: dict[str, float], step: int) -> None:
@@ -50,3 +57,11 @@ class FtTrackingAgent:
         if self._exception_inject_path.exists():
             self._exception_inject_path.unlink(missing_ok=True)
             raise FaultInjectionError(f"Fault injection triggered via {self._exception_inject_path}")
+
+
+def _resolve_inject_path(*, rank: int | None) -> Path | None:
+    inject_dir = get_exception_inject_dir()
+    if inject_dir is not None and rank is not None:
+        return build_exception_inject_flag_path(inject_dir, rank=rank)
+
+    return get_exception_inject_path()

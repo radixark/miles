@@ -149,6 +149,23 @@ class FaultInjectorActor:
         if path not in self._exception_flag_paths:
             self._exception_flag_paths.append(path)
 
+    def broadcast_exception_flags(self, inject_dir: str, ranks: list[int]) -> None:
+        """Write per-rank exception flags so every target rank independently
+        consumes its own flag file, avoiding the single-path race where
+        only the first process to check would consume the injection."""
+        from miles.utils.ft.utils.env import build_exception_inject_flag_path
+
+        dir_path = Path(inject_dir)
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        for rank in ranks:
+            flag = build_exception_inject_flag_path(dir_path, rank=rank)
+            logger.info("broadcast_exception_flag rank=%d path=%s", rank, flag)
+            flag.touch()
+            str_flag = str(flag)
+            if str_flag not in self._exception_flag_paths:
+                self._exception_flag_paths.append(str_flag)
+
     def remove_exception_flag(self, path: str) -> None:
         logger.info("remove_exception_flag path=%s", path)
         _remove_if_exists(path)

@@ -183,6 +183,40 @@ class TestGpuStressOperations:
         assert 999 not in actor._stress_pids
 
 
+class TestBroadcastExceptionFlags:
+    """Tests for the broadcast_exception_flags method that writes per-rank
+    flag files. Before this feature, all processes shared a single flag file,
+    causing only the first checker to consume the injection."""
+
+    def test_broadcast_creates_per_rank_flag_files(self, tmp_path: Path) -> None:
+        actor = _make_actor()
+        inject_dir = str(tmp_path / "ft_exc")
+
+        actor.broadcast_exception_flags(inject_dir=inject_dir, ranks=[0, 1, 2])
+
+        for rank in [0, 1, 2]:
+            assert (Path(inject_dir) / f"exception.rank-{rank}").exists()
+
+    def test_broadcast_tracks_flags_for_cleanup(self, tmp_path: Path) -> None:
+        actor = _make_actor()
+        inject_dir = str(tmp_path / "ft_exc")
+
+        actor.broadcast_exception_flags(inject_dir=inject_dir, ranks=[0, 1])
+
+        assert len(actor._exception_flag_paths) == 2
+        actor.cleanup_all()
+        assert actor._exception_flag_paths == []
+
+    def test_broadcast_creates_directory_if_missing(self, tmp_path: Path) -> None:
+        actor = _make_actor()
+        inject_dir = str(tmp_path / "nested" / "ft_exc")
+
+        actor.broadcast_exception_flags(inject_dir=inject_dir, ranks=[0])
+
+        assert Path(inject_dir).is_dir()
+        assert (Path(inject_dir) / "exception.rank-0").exists()
+
+
 class TestTriggerGpuXid:
     def test_nonzero_exit_code_raises(self) -> None:
         """trigger_gpu_xid previously only logged on failure, letting the caller

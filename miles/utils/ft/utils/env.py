@@ -23,3 +23,12 @@ def get_training_run_id() -> str:
 def get_exception_inject_path() -> Path | None:
     raw = os.environ.get("MILES_FT_EXCEPTION_INJECT_PATH", "")
     return Path(raw) if raw else None
+
+
+def get_exception_inject_dir() -> Path | None:
+    raw = os.environ.get("MILES_FT_EXCEPTION_INJECT_DIR", "")
+    return Path(raw) if raw else None
+
+
+def build_exception_inject_flag_path(inject_dir: Path, *, rank: int) -> Path:
+    return inject_dir / f"exception.rank-{rank}"
