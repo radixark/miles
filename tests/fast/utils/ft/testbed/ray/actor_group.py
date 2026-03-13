@@ -136,11 +136,15 @@ class TestbedRayTrainGroup:
         return workers
 
     async def kill_all(self) -> None:
-        """Kill all training workers.
+        """Kill all training workers and clear the store.
 
-        Does NOT clear the store — dead handles remain so that
-        ``all_alive()`` correctly detects failure via ping.  The store
-        is overwritten by the next ``spawn_actors`` call.
+        Clearing the store ensures ``all_alive()`` returns False instantly
+        (0 workers) instead of pinging dead actors (2s timeout each),
+        which would block the controller's tick loop.
+
+        The caller (``TestbedMainJob``) returns ``PENDING`` while a new
+        spawn is in progress, preventing the controller from treating
+        the empty store as a failed restart.
         """
         workers = await self._get_workers()
         logger.info("kill_all: killing %d workers", len(workers))
@@ -153,7 +157,8 @@ class TestbedRayTrainGroup:
             except Exception:
                 logger.info("kill_all: worker already dead", exc_info=True)
 
-        logger.info("kill_all: killed %d/%d workers", killed, len(workers))
+        await self._store.clear.remote()
+        logger.info("kill_all: killed %d/%d workers, store cleared", killed, len(workers))
 
     async def kill_on_node(self, node_id: str) -> None:
         workers = await self._get_workers_on_node(node_id)
