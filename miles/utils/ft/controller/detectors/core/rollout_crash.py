@@ -45,6 +45,16 @@ class RolloutCrashDetector(BaseFaultDetector):
         )
 
         if df.is_empty():
+            if ctx.active_node_ids:
+                return Decision(
+                    action=ActionType.NOTIFY_HUMAN,
+                    reason=(
+                        f"rollout_{self._cell_id}: rollout_cell_alive metric missing "
+                        f"but cell has {len(ctx.active_node_ids)} active node(s)"
+                    ),
+                    trigger=TriggerType.TELEMETRY_BLIND,
+                    notify_deduplicator_id=f"metric_blind:RolloutCrashDetector:{self._cell_id}",
+                )
             return Decision.no_fault(
                 reason=f"rollout_{self._cell_id}: no rollout_cell_alive metric yet"
             )

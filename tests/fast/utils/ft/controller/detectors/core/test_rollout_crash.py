@@ -71,12 +71,30 @@ class TestRolloutCrashDetector:
         assert decision.bad_node_ids == []
         assert "dead for 60s" in decision.reason
 
-    def test_no_metric_yet_returns_no_fault(self) -> None:
+    def test_no_metric_with_active_nodes_returns_telemetry_blind(self) -> None:
+        """When active nodes exist for a rollout cell but rollout_cell_alive
+        metric is missing, previously returned no_fault, treating monitoring
+        blindness as healthy. Now returns TELEMETRY_BLIND so humans investigate."""
         store = make_fake_metric_store()
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
         ctx = make_detector_context(
             metric_store=store,
             active_node_ids={"node-0"},
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.trigger == TriggerType.TELEMETRY_BLIND
+        assert "rollout_cell_alive metric missing" in decision.reason
+
+    def test_no_metric_without_active_nodes_returns_no_fault(self) -> None:
+        """No active nodes and no metric → cell may not be running yet."""
+        store = make_fake_metric_store()
+        detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids=set(),
         )
 
         decision = detector.evaluate(ctx)
@@ -237,6 +255,42 @@ class TestRolloutCrashDetector:
         assert decision_0.action == ActionType.ENTER_RECOVERY
         assert decision_1.action == ActionType.NONE
         assert "cell alive" in decision_1.reason
+
+
+class TestRolloutCrashTelemetryBlind:
+    """Verify that missing rollout_cell_alive metric is reported as
+    TELEMETRY_BLIND when the cell has active nodes, rather than
+    silently returning no_fault. Previously, the detector treated
+    'no data' the same as 'healthy', masking metric pipeline failures."""
+
+    def test_metric_exists_and_healthy_returns_no_fault(self) -> None:
+        """With metric data present and cell alive, detector returns no_fault."""
+        store = make_fake_metric_store()
+        inject_rollout_cell_alive(store, cell_id="0", alive=True)
+        detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0"},
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+        assert "cell alive" in decision.reason
+
+    def test_deduplicator_id_includes_cell_id(self) -> None:
+        """Telemetry blind notification should carry a dedup ID scoped to cell."""
+        store = make_fake_metric_store()
+        detector = RolloutCrashDetector(cell_id="my-cell", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0"},
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert "my-cell" in decision.notify_deduplicator_id
 
 
 class TestRolloutCrashMultipleSeriesAggregation:
