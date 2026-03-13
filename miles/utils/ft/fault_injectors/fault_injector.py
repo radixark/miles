@@ -210,9 +210,11 @@ def deploy_fault_injector(
         soft=False,
     )
     name_prefix = f"fault_injector_{ft_id}_" if ft_id else "fault_injector_"
+    actor_name = f"{name_prefix}{node_id}"
+    logger.info("fault_injector: deploying to node_id=%s, actor_name=%s", node_id, actor_name)
     actor = FaultInjectorActor.options(  # type: ignore[attr-defined]
         scheduling_strategy=scheduling_strategy,
-        name=f"{name_prefix}{node_id}",
+        name=actor_name,
     ).remote()
     return actor
 
@@ -242,7 +244,7 @@ def _file_lock(lock_path: Path) -> Iterator[None]:
 def _compile_to_temp_then_replace(source: Path, target: Path) -> None:
     tmp_path = Path(f"{target}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        logger.info("Compiling %s -> %s (via %s)", source, target, tmp_path)
+        logger.info("fault_injector: compiling %s -> %s (via %s)", source, target, tmp_path)
         subprocess.run(
             ["nvcc", "-o", str(tmp_path), str(source)],
             check=True,
@@ -251,7 +253,9 @@ def _compile_to_temp_then_replace(source: Path, target: Path) -> None:
             timeout=120,
         )
         os.replace(str(tmp_path), str(target))
+        logger.info("fault_injector: compilation complete target=%s", target)
     except Exception:
+        logger.error("fault_injector: compilation failed source=%s", source, exc_info=True)
         tmp_path.unlink(missing_ok=True)
         raise
 
@@ -259,6 +263,7 @@ def _compile_to_temp_then_replace(source: Path, target: Path) -> None:
 def _ensure_trigger_xid_binary() -> None:
     with _file_lock(_TRIGGER_XID_LOCK):
         if _TRIGGER_XID_BINARY.exists() and os.access(_TRIGGER_XID_BINARY, os.X_OK):
+            logger.debug("fault_injector: trigger_xid binary already exists at %s", _TRIGGER_XID_BINARY)
             return
         _compile_to_temp_then_replace(source=_TRIGGER_XID_SOURCE, target=_TRIGGER_XID_BINARY)
 
