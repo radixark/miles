@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from miles.utils.ft.adapters.types import NotifierProtocol
+    from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol
 
 
 @dataclass
@@ -43,6 +44,7 @@ class TestbedConfig:
     max_simultaneous_bad_nodes: int | None = None
     recovery_timeout_seconds: int | None = None
     notifier_override: NotifierProtocol | None = None
+    diagnostic_orchestrator_override: DiagnosticOrchestratorProtocol | None = None
 
     def build_runtime_config(self) -> ControllerRuntimeConfig:
         kwargs: dict[str, Any] = {"tick_interval": self.tick_interval}

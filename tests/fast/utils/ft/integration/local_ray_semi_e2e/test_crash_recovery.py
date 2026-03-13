@@ -23,6 +23,7 @@ from tests.fast.utils.ft.integration.conftest import (
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
 from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
+from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -167,12 +168,19 @@ async def test_simultaneous_nan_and_crash(
 async def test_restart_fails_escalates_to_diagnostics(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """Restart completes but job FAILED during MonitoringProgress -> StopTimeDiagnostics."""
+    """Restart completes but job FAILED during MonitoringProgress -> StopTimeDiagnostics.
+
+    Uses a DelayedDiagnosticOrchestrator so that StopTimeDiagnosticsSt is
+    observable across multiple ticks (the default instant orchestrator would
+    converge through the state in a single tick).
+    """
+    diag_orchestrator = DelayedDiagnosticOrchestrator(delay_seconds=5.0)
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=[TrainingCrashDetector()],
         step_interval=_SLOW_STEP,
         recovery_cooldown=SlidingWindowThrottle(window_minutes=1.0, max_count=5),
+        diagnostic_orchestrator_override=diag_orchestrator,
     )
 
     # Step 1: crash -> enters recovery, wait for MonitoringProgress (durable phase)
@@ -185,15 +193,17 @@ async def test_restart_fails_escalates_to_diagnostics(
     # Step 2: crash again during monitoring (restart fails)
     await testbed.crash_training()
 
-    # Step 3: poll for StopTimeDiagnostics phase
+    # Step 3: poll for StopTimeDiagnostics phase (visible because diagnostics are slow)
     deadline = time.monotonic() + RECOVERY_TIMEOUT
     while time.monotonic() < deadline:
         status = await testbed.get_status()
         if status.recovery is not None and status.recovery.phase == "StopTimeDiagnosticsSt":
             break
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
     else:
         raise TimeoutError(f"StopTimeDiagnostics not observed within {RECOVERY_TIMEOUT}s")
+
+    assert diag_orchestrator.call_count > 0, "Diagnostic orchestrator should have been called"
 
 
 # ------------------------------------------------------------------

@@ -88,6 +88,30 @@ class FakeDiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
         return self._result
 
 
+class DelayedDiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
+    """Orchestrator that delays before returning, making StopTimeDiagnosticsSt observable."""
+
+    def __init__(
+        self,
+        delay_seconds: float = 2.0,
+        result: DiagnosticPipelineResult | None = None,
+    ) -> None:
+        self._delay_seconds = delay_seconds
+        self._result = result or DiagnosticPipelineResult(
+            bad_node_ids=[],
+            reason="delayed diagnostic — all passed",
+        )
+        self.call_count: int = 0
+
+    async def run_diagnostic_pipeline(
+        self,
+        pre_executors: object = None,
+    ) -> DiagnosticPipelineResult:
+        self.call_count += 1
+        await asyncio.sleep(self._delay_seconds)
+        return self._result
+
+
 class HangingDiagnosticOrchestrator(DiagnosticOrchestratorProtocol):
     """Orchestrator whose run_diagnostic_pipeline never returns (simulates hang)."""
 

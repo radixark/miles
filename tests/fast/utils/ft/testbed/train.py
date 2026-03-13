@@ -139,7 +139,7 @@ class MilesTestbed:
             node_manager_override=node_manager,
             notifier_override=resolved_notifier,
             detectors_override=detectors,
-            diagnostic_orchestrator_override=FakeDiagnosticOrchestrator(),
+            diagnostic_orchestrator_override=config.diagnostic_orchestrator_override or FakeDiagnosticOrchestrator(),
             start_exporter=True,
         )
 
