@@ -15,7 +15,7 @@ from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_st
 from miles.utils.ft.adapters.types import ClusterExecutorProtocol, JobStatus
 from miles.utils.ft.controller.diagnostics.executors import (
     GpuClusterExecutor,
-    PairwiseClusterExecutor,
+    NeighborNcclClusterExecutor,
     PerNodeClusterExecutor,
 )
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
@@ -24,7 +24,7 @@ from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnostic
 
 _TYPE_TO_EXECUTOR: dict[str, ClusterExecutorProtocol] = {
     "gpu": GpuClusterExecutor(),
-    "nccl_pairwise": PairwiseClusterExecutor(diagnostic_type="nccl_pairwise"),
+    "nccl_pairwise": NeighborNcclClusterExecutor(diagnostic_type="nccl_pairwise"),
 }
 
 

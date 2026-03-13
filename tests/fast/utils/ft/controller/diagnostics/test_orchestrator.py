@@ -10,7 +10,7 @@ from miles.utils.ft.agents.diagnostics.base import BaseNodeExecutor
 from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.controller.diagnostics.executors import (
     GpuClusterExecutor,
-    PairwiseClusterExecutor,
+    NeighborNcclClusterExecutor,
     PerNodeClusterExecutor,
 )
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
@@ -231,7 +231,7 @@ class TestDiagnosticOrchestratorErrorHandling:
 
 
 class TestDiagnosticOrchestratorInterMachine:
-    """Tests for the inter-machine diagnostic step with cross-comparison."""
+    """Tests for the inter-machine diagnostic step with neighbor ring topology."""
 
     @pytest.mark.anyio
     async def test_inter_machine_all_pass(self) -> None:
@@ -244,7 +244,7 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         orchestrator = DiagnosticOrchestrator(
             node_agents=node_agents,
-            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
+            pipeline=[NeighborNcclClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
@@ -260,16 +260,15 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         orchestrator = DiagnosticOrchestrator(
             node_agents=node_agents,
-            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
+            pipeline=[NeighborNcclClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
 
         assert "node-0" in decision.bad_node_ids
 
     @pytest.mark.anyio
-    async def test_inter_machine_cannot_localize_all_fail_odd_nodes(self) -> None:
-        """With 3 nodes all-fail under two-round pairing, node-1 appears in
-        both rounds and accumulates the highest failure count."""
+    async def test_inter_machine_all_fail_odd_nodes_returns_all(self) -> None:
+        """With 3 nodes all-fail, all ring edges fail → return all nodes as suspects."""
         node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False},
@@ -279,16 +278,14 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         orchestrator = DiagnosticOrchestrator(
             node_agents=node_agents,
-            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
+            pipeline=[NeighborNcclClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
-        assert decision.bad_node_ids == ["node-1"]
+        assert sorted(decision.bad_node_ids) == ["node-0", "node-1", "node-2"]
 
     @pytest.mark.anyio
-    async def test_inter_machine_two_nodes_pair_fails_treated_as_executor_failure(self) -> None:
-        """Two nodes both fail — pairwise cannot localize. Previously returned [],
-        misinterpreted as 'no fault'. Now raises PairwiseInconclusiveError,
-        caught by the orchestrator as executor failure."""
+    async def test_inter_machine_two_nodes_both_fail_returns_both(self) -> None:
+        """Two nodes both fail → single ring edge fails → return both (inconclusive)."""
         node_agents = make_fake_agents(
             {
                 "node-0": {"nccl_pairwise": False},
@@ -297,69 +294,50 @@ class TestDiagnosticOrchestratorInterMachine:
         )
         orchestrator = DiagnosticOrchestrator(
             node_agents=node_agents,
-            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
+            pipeline=[NeighborNcclClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
-        assert decision.bad_node_ids == []
-        assert "failed" in decision.reason
-        assert "all diagnostics passed" not in decision.reason
-
-    @pytest.mark.anyio
-    async def test_inter_machine_all_fail_continues_to_next_executor(self) -> None:
-        """When inter-machine inconclusive (PairwiseInconclusiveError), orchestrator
-        catches it and continues to the next executor (gpu)."""
-        node_agents = make_fake_agents(
-            {
-                "node-0": {"nccl_pairwise": False, "gpu": False},
-                "node-1": {"nccl_pairwise": False, "gpu": True},
-            }
-        )
-        orchestrator = DiagnosticOrchestrator(
-            node_agents=node_agents,
-            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise"), GpuClusterExecutor()],
-        )
-        decision = await orchestrator.run_diagnostic_pipeline()
-        assert "node-0" in decision.bad_node_ids
+        assert sorted(decision.bad_node_ids) == ["node-0", "node-1"]
 
     @pytest.mark.anyio
     async def test_inter_machine_single_node_skipped(self) -> None:
         node_agents = make_fake_agents({"node-0": {"nccl_pairwise": True}})
         orchestrator = DiagnosticOrchestrator(
             node_agents=node_agents,
-            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
+            pipeline=[NeighborNcclClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
         assert decision.bad_node_ids == []
 
-    def test_inter_machine_pairing_is_two_round(self) -> None:
-        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+    def test_ring_topology_generates_correct_edges(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.neighbor_nccl import _build_ring_edges
 
-        node_ids = ["node-0", "node-1", "node-2", "node-3"]
-        r1, r2 = _generate_round_pairs(node_ids)
-        assert r1 == [("node-0", "node-1"), ("node-2", "node-3")]
-        assert r2 == [("node-1", "node-2"), ("node-3", "node-0")]
+        edges = _build_ring_edges(["node-0", "node-1", "node-2", "node-3"])
+        assert len(edges) == 4
+        assert set(edges) == {
+            ("node-0", "node-1"),
+            ("node-1", "node-2"),
+            ("node-2", "node-3"),
+            ("node-0", "node-3"),
+        }
 
-    # P2 item 19: degenerate pairing cases
-    def test_pairing_exactly_two_nodes(self) -> None:
-        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+    def test_ring_topology_two_nodes(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.neighbor_nccl import _build_ring_edges
 
-        r1, r2 = _generate_round_pairs(["node-0", "node-1"])
-        assert r1 == [("node-0", "node-1")]
-        assert r2 == [("node-1", "node-0")]
+        edges = _build_ring_edges(["node-0", "node-1"])
+        assert edges == [("node-0", "node-1")]
 
-    def test_pairing_exactly_one_node(self) -> None:
-        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+    def test_ring_topology_one_node(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.neighbor_nccl import _build_ring_edges
 
-        r1, r2 = _generate_round_pairs(["node-0"])
-        assert r1 == []
-        assert r2 == []
+        edges = _build_ring_edges(["node-0"])
+        assert edges == []
 
-    def test_pairing_three_nodes_odd(self) -> None:
-        from miles.utils.ft.controller.diagnostics.executors.pairwise import _generate_round_pairs
+    def test_ring_topology_three_nodes(self) -> None:
+        from miles.utils.ft.controller.diagnostics.executors.neighbor_nccl import _build_ring_edges
 
-        r1, r2 = _generate_round_pairs(["node-0", "node-1", "node-2"])
-        assert r1 == [("node-0", "node-1")]
-        assert r2 == [("node-1", "node-2")]
+        edges = _build_ring_edges(["node-0", "node-1", "node-2"])
+        assert len(edges) == 3
 
     def test_inter_machine_port_assignment(self) -> None:
         from miles.utils.ft.agents.diagnostics.executors.nccl import DEFAULT_NCCL_MASTER_PORT
@@ -393,7 +371,7 @@ class TestDiagnosticOrchestratorInterMachine:
         node_agents = {**good_agents, "node-1": _RaisingInterMachineAgent()}  # type: ignore[dict-item]
         orchestrator = DiagnosticOrchestrator(
             node_agents=node_agents,
-            pipeline=[PairwiseClusterExecutor(diagnostic_type="nccl_pairwise")],
+            pipeline=[NeighborNcclClusterExecutor(diagnostic_type="nccl_pairwise")],
         )
         decision = await orchestrator.run_diagnostic_pipeline()
 
