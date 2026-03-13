@@ -31,6 +31,7 @@ def check_disk_fault(
     if bad.is_empty():
         return []
 
+    logger.info("detector_check: disk space low on %d node(s)", bad.height)
     return [
         NodeFault(
             node_id=row["node_id"],
@@ -129,6 +130,7 @@ def check_all_nic_faults(
 def check_majority_nic_down(metric_store: TimeSeriesQueryProtocol) -> list[NodeFault]:
     df = metric_store.query_latest(NODE_NETWORK_UP)
     if df is None or df.is_empty():
+        logger.debug("detector_check: check_majority_nic_down no data")
         return []
 
     stats = (

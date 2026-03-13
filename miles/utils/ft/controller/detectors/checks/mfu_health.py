@@ -1,7 +1,10 @@
+import logging
 import math
 from dataclasses import dataclass
 
 from miles.utils.ft.controller.types import TrainingMetricStoreProtocol
+
+logger = logging.getLogger(__name__)
 
 
 def _assert_all_finite(values: list[float], context: str) -> None:
@@ -33,6 +36,7 @@ def check_mfu_health(
     """
     recent = mini_wandb.query_last_n_steps("mfu", last_n=consecutive_steps)
     if len(recent) < consecutive_steps:
+        logger.debug("detector_check: check_mfu_health insufficient data: got=%d, need=%d", len(recent), consecutive_steps)
         return None
 
     _assert_all_finite([sv.value for sv in recent], context="recent window")
@@ -45,9 +49,17 @@ def check_mfu_health(
         consecutive_steps=consecutive_steps,
     )
     if computed_baseline <= 0:
+        logger.debug("detector_check: check_mfu_health baseline=%.4f (<=0), no result", computed_baseline)
         return None
 
     thresh = computed_baseline * threshold_ratio
+    logger.debug(
+        "detector_check: check_mfu_health avg_mfu=%.4f, baseline=%.4f, threshold=%.4f, declining=%s",
+        avg_mfu,
+        computed_baseline,
+        thresh,
+        avg_mfu < thresh,
+    )
     return MfuHealthStatus(
         avg_mfu=avg_mfu,
         baseline=computed_baseline,
