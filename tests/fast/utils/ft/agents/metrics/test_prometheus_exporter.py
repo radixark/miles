@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterator
 
 import pytest
@@ -159,3 +160,53 @@ class TestLifecycle:
     def test_double_shutdown_does_not_raise(self, exporter: PrometheusExporter) -> None:
         exporter.shutdown()
         exporter.shutdown()
+
+
+class TestThreadSafety:
+    """Verify that the RLock protects concurrent access from the HTTP
+    server scrape thread and metric collection threads.
+
+    Before this lock was added, the background HTTP server thread could
+    scrape the registry while the main thread was lazily registering a
+    new metric via _get_or_create(), causing intermittent errors or
+    incomplete metric views."""
+
+    def test_concurrent_updates_do_not_raise(self) -> None:
+        exporter = PrometheusExporter()
+        errors: list[Exception] = []
+
+        def update_worker(metric_suffix: str, iterations: int) -> None:
+            try:
+                for i in range(iterations):
+                    exporter.update_metrics([
+                        GaugeSample(
+                            name=f"test_metric_{metric_suffix}",
+                            labels={"idx": str(i % 5)},
+                            value=float(i),
+                        ),
+                    ])
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=update_worker, args=(f"t{t}", 50))
+            for t in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        exporter.shutdown()
+        assert errors == []
+
+    def test_repeated_updates_do_not_duplicate_metric_registration(self, exporter: PrometheusExporter) -> None:
+        """Multiple update_metrics calls for the same metric name must
+        reuse the cached Gauge, not create duplicates."""
+        for _ in range(10):
+            exporter.update_metrics([
+                GaugeSample(name="stable_gauge", labels={"node": "n0"}, value=1.0),
+            ])
+
+        assert len(exporter._gauges) == 1
+        assert _scrape_value(exporter.registry, "stable_gauge", {"node": "n0"}) == 1.0

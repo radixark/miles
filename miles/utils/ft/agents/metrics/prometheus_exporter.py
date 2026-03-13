@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TypeVar
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
@@ -19,12 +20,18 @@ class PrometheusExporter:
 
     Used by both FtNodeAgent (dynamic metrics from collectors) and
     FtTrainingRankAgent (pre-defined heartbeat gauges).
+
+    The HTTP server runs in a background thread and may scrape the registry
+    concurrently with collector tasks calling update_metrics(). A lock
+    serializes all mutations to the gauge/counter caches and the registry
+    so that the scrape thread never observes a partially-registered metric.
     """
 
     def __init__(self) -> None:
         self._registry = CollectorRegistry()
         self._gauges: dict[_MetricKey, Gauge] = {}
         self._counters: dict[_MetricKey, Counter] = {}
+        self._lock = threading.RLock()
 
         httpd, _thread = start_http_server(port=0, registry=self._registry)
         self._httpd = httpd
@@ -39,22 +46,24 @@ class PrometheusExporter:
         return f"http://{ip}:{self.port}"
 
     def shutdown(self) -> None:
-        self._httpd.shutdown()
-        self._httpd.server_close()
+        with self._lock:
+            self._httpd.shutdown()
+            self._httpd.server_close()
 
     def update_metrics(self, metrics: list[GaugeSample | CounterSample]) -> None:
-        for sample in metrics:
-            match sample:
-                case GaugeSample():
-                    self._resolve_child(self._gauges, Gauge, sample).set(sample.value)
-                case CounterSample() if sample.delta > 0:
-                    self._resolve_child(self._counters, Counter, sample).inc(sample.delta)
-                case CounterSample():
-                    logger.debug(
-                        "counter_delta_non_positive name=%s delta=%s",
-                        sample.name,
-                        sample.delta,
-                    )
+        with self._lock:
+            for sample in metrics:
+                match sample:
+                    case GaugeSample():
+                        self._resolve_child(self._gauges, Gauge, sample).set(sample.value)
+                    case CounterSample() if sample.delta > 0:
+                        self._resolve_child(self._counters, Counter, sample).inc(sample.delta)
+                    case CounterSample():
+                        logger.debug(
+                            "counter_delta_non_positive name=%s delta=%s",
+                            sample.name,
+                            sample.delta,
+                        )
 
     def _resolve_child(
         self,
