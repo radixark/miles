@@ -105,7 +105,7 @@ class FtController:
         if exporter_address:
             self.add_scrape_target(target_id=node_id, address=exporter_address)
         logger.info(
-            "agent_registered node_id=%s exporter=%s metadata_keys=%s",
+            "controller: agent registered node_id=%s, exporter=%s, metadata_keys=%s",
             node_id,
             exporter_address,
             sorted(node_metadata) if node_metadata else "(none)",
@@ -114,32 +114,35 @@ class FtController:
     def unregister_node_agent(self, node_id: str) -> None:
         self._node_agent_registry.unregister(node_id)
         self._scrape_target_manager.remove_scrape_target(target_id=node_id)
-        logger.info("agent_unregistered node_id=%s", node_id)
+        logger.info("controller: agent unregistered node_id=%s", node_id)
 
     def is_ready(self) -> bool:
         return self._tick_loop.tick_count > 0
 
     async def submit_initial_job(self) -> str:
+        logger.info("controller: submitting initial job")
         run_id = await self._main_job.start()
+        logger.info("controller: initial job submitted, run_id=%s", run_id)
         self._activate_run(run_id)
         return run_id
 
     async def run(self) -> None:
-        logger.info("controller_start tick_interval=%s", self._runtime_config.tick_interval)
+        logger.info("controller: start tick_interval=%s", self._runtime_config.tick_interval)
         scrape_handle = await start_metric_store_task(self._metric_store.time_series_store)
         try:
             while not self._shutting_down:
                 if scrape_handle.is_unhealthy:
+                    logger.error("controller: metric store unhealthy, aborting: %s", scrape_handle.format_health_error())
                     raise RuntimeError(scrape_handle.format_health_error())
                 await self._tick()
                 if not self._shutting_down:
                     await asyncio.sleep(self._runtime_config.tick_interval)
         finally:
             await self._stop_services(scrape_handle)
-        logger.info("controller_stopped")
+        logger.info("controller: stopped")
 
     async def shutdown(self) -> None:
-        logger.info("controller_shutdown_requested")
+        logger.info("controller: shutdown requested")
         self._shutting_down = True
 
     def get_status(self) -> ControllerStatus:
@@ -162,9 +165,10 @@ class FtController:
             scrape_target_manager=self._scrape_target_manager,
         )
         if old_roster is not None:
+            logger.info("controller: cleaning up old roster for run_id=%s", old_roster.run_id)
             old_roster.cleanup()
         self._metric_store.mini_wandb.set_active_run_id(run_id)
-        logger.info("run_activated run_id=%s", run_id)
+        logger.info("controller: run_activated run_id=%s", run_id)
 
     def _build_tick_deps(self) -> TickDeps:
         return TickDeps(
@@ -190,10 +194,12 @@ class FtController:
         await self._tick_loop.tick(self._build_tick_deps())
 
     async def _stop_services(self, scrape_handle: MetricStoreTaskHandle) -> None:
+        logger.info("controller: stopping services")
         await stop_metric_store_task(self._metric_store.time_series_store, scrape_handle)
         self._controller_exporter.stop()
         if self._notifier is not None:
             try:
                 await self._notifier.aclose()
             except Exception:
-                logger.warning("notifier_aclose_failed", exc_info=True)
+                logger.warning("controller: notifier aclose failed", exc_info=True)
+        logger.info("controller: services stopped")
