@@ -108,6 +108,9 @@ class FtTrainingRankAgent:
             logger.warning("Cannot register rank: no controller client provided")
             return
 
+        if self._metric_exporter is not None:
+            self._metric_exporter.wait_until_ready()
+
         def _do_register() -> None:
             self._controller_client.register_training_rank(  # type: ignore[union-attr]
                 run_id=self._run_id,

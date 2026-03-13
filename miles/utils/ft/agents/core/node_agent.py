@@ -55,6 +55,9 @@ class FtNodeAgent(NodeAgentProtocol):
     def get_exporter_address(self) -> str:
         return self._exporter.get_address()
 
+    def wait_for_exporter_ready(self, timeout_seconds: float = 5.0) -> None:
+        self._exporter.wait_until_ready(timeout_seconds=timeout_seconds)
+
     async def start(self) -> None:
         await self._collection_loop.start()
 

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+import urllib.error
+import urllib.request
 from typing import TypeVar
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, start_http_server
@@ -44,6 +47,25 @@ class PrometheusExporter:
     def get_address(self) -> str:
         _hostname, ip = get_host_info()
         return f"http://{ip}:{self.port}"
+
+    def wait_until_ready(
+        self,
+        timeout_seconds: float = 5.0,
+        poll_interval_seconds: float = 0.05,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        metrics_url = f"{self.get_address()}/metrics"
+        last_exception: Exception | None = None
+
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(metrics_url, timeout=poll_interval_seconds):
+                    return
+            except Exception as exc:
+                last_exception = exc
+                time.sleep(poll_interval_seconds)
+
+        raise RuntimeError(f"Prometheus exporter did not become ready: {metrics_url}") from last_exception
 
     def shutdown(self) -> None:
         with self._lock:

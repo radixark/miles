@@ -42,6 +42,7 @@ class _FtNodeAgentActorCls:
 
     async def start(self) -> None:
         await self._agent.start()
+        self._agent.wait_for_exporter_ready()
         self._register_with_controller()
 
     async def stop(self) -> None:

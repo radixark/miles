@@ -18,6 +18,23 @@ def _make_fake_agent() -> MagicMock:
 
 
 class TestRegistrationFailurePropagates:
+    @pytest.mark.anyio
+    async def test_start_waits_for_exporter_before_registering(self) -> None:
+        fake_agent = _make_fake_agent()
+
+        actor = _FtNodeAgentActorCls(
+            builder=lambda **kw: fake_agent,
+            node_id="node-0",
+            ft_id="test",
+        )
+
+        with patch.object(actor, "_register_with_controller") as register_mock:
+            await actor.start()
+
+        fake_agent.start.assert_awaited_once()
+        fake_agent.wait_for_exporter_ready.assert_called_once_with()
+        register_mock.assert_called_once_with()
+
     def test_register_failure_raises_instead_of_silent_success(self) -> None:
         """Registration failure must propagate as an exception from
         _register_with_controller, not be silently swallowed.

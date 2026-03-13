@@ -32,6 +32,21 @@ def _registered_agent(
 
 
 class TestFtTrainingRankAgentRegisterRank:
+    def test_register_training_rank_waits_for_exporter_readiness(self) -> None:
+        mock_client = MagicMock()
+
+        with patch.dict("os.environ", {"MILES_FT_TRAINING_RUN_ID": "test-run-1"}), patch(
+            "miles.utils.ft.agents.core.training_rank_agent.TrainingRankExporter"
+        ) as exporter_cls:
+            exporter = exporter_cls.return_value
+            agent = FtTrainingRankAgent(rank=0, world_size=4, controller_client=mock_client)
+
+        try:
+            exporter.wait_until_ready.assert_called_once_with()
+            mock_client.register_training_rank.assert_called_once()
+        finally:
+            agent.shutdown()
+
     def test_register_training_rank_calls_controller(self) -> None:
         with _registered_agent() as (agent, mock_client):
             mock_client.register_training_rank.assert_called_once()
