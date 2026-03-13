@@ -6,6 +6,7 @@ and the agent assembly logic is independently testable.
 
 from __future__ import annotations
 
+import logging
 import socket
 from collections.abc import Sequence
 from datetime import datetime
@@ -32,8 +33,25 @@ from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import In
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.types import ActionType, MetricStore
 
-DEFAULT_NUM_GPUS: int = 8
+logger = logging.getLogger(__name__)
+
+FALLBACK_NUM_GPUS: int = 8
 DEFAULT_COLLECT_INTERVAL_SECONDS: float = 10.0
+
+
+def detect_gpu_count() -> int:
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        count = pynvml.nvmlDeviceGetCount()
+        pynvml.nvmlShutdown()
+        if count > 0:
+            logger.info("detected_gpu_count=%d via pynvml", count)
+            return count
+    except Exception:
+        logger.debug("pynvml GPU detection failed, using fallback", exc_info=True)
+    logger.info("using fallback_gpu_count=%d", FALLBACK_NUM_GPUS)
+    return FALLBACK_NUM_GPUS
 
 
 def _detector_to_evaluator(detector: BaseFaultDetector) -> SampleEvaluator:
@@ -64,7 +82,7 @@ def build_default_collectors() -> list[BaseCollector]:
 
 
 def build_all_diagnostics(
-    num_gpus: int = DEFAULT_NUM_GPUS,
+    num_gpus: int | None = None,
     disk_mounts: list[Path] | None = None,
     xid_since: datetime | None = None,
 ) -> list[NodeExecutorProtocol]:
@@ -73,14 +91,15 @@ def build_all_diagnostics(
     Registers every diagnostic type the system supports.  Callers choose
     which subset to actually run (e.g. local CLI excludes nccl_pairwise).
     """
+    resolved_num_gpus = num_gpus if num_gpus is not None else detect_gpu_count()
     return [
         StackTraceNodeExecutor(),
         GpuNodeExecutor(),
-        NcclNodeExecutor(diagnostic_type="nccl_simple", expected_bandwidth_gbps=350.0, num_gpus=num_gpus),
+        NcclNodeExecutor(diagnostic_type="nccl_simple", expected_bandwidth_gbps=350.0, num_gpus=resolved_num_gpus),
         NcclNodeExecutor(
             diagnostic_type="nccl_pairwise",
             expected_bandwidth_gbps=40.0,
-            num_gpus=num_gpus,
+            num_gpus=resolved_num_gpus,
             nccl_test_binary="all_gather_perf",
         ),
         CollectorBasedNodeExecutor(
@@ -103,7 +122,7 @@ def build_all_diagnostics(
 
 def build_node_agent(
     node_id: str = "",
-    num_gpus: int = DEFAULT_NUM_GPUS,
+    num_gpus: int | None = None,
     collect_interval_seconds: float = DEFAULT_COLLECT_INTERVAL_SECONDS,
     collectors_override: list[BaseCollector] | None = None,
     diagnostics_override: list[NodeExecutorProtocol] | None = None,

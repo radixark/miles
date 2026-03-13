@@ -13,7 +13,13 @@ from miles.utils.ft.agents.diagnostics.executors.collector_based import Collecto
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.nccl import NcclNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import StackTraceNodeExecutor
-from miles.utils.ft.factories.node_agent import build_all_diagnostics, build_default_collectors, build_node_agent
+from miles.utils.ft.factories.node_agent import (
+    FALLBACK_NUM_GPUS,
+    build_all_diagnostics,
+    build_default_collectors,
+    build_node_agent,
+    detect_gpu_count,
+)
 
 
 class TestBuildAllDiagnostics:
@@ -54,6 +60,28 @@ class TestBuildAllDiagnostics:
         for d in diagnostics:
             assert hasattr(d, "diagnostic_type")
             assert hasattr(d, "run")
+
+
+class TestDetectGpuCount:
+    def test_returns_pynvml_count_when_available(self) -> None:
+        """Previously, GPU count was hardcoded to 8. On machines with a
+        different number of GPUs, NCCL tests would fail or use wrong topology."""
+        with patch("miles.utils.ft.factories.node_agent.pynvml") as mock_pynvml:
+            mock_pynvml.nvmlDeviceGetCount.return_value = 4
+            assert detect_gpu_count() == 4
+            mock_pynvml.nvmlInit.assert_called_once()
+            mock_pynvml.nvmlShutdown.assert_called_once()
+
+    def test_returns_fallback_when_pynvml_fails(self) -> None:
+        with patch("miles.utils.ft.factories.node_agent.pynvml", side_effect=ImportError):
+            assert detect_gpu_count() == FALLBACK_NUM_GPUS
+
+    def test_build_all_diagnostics_auto_detects_when_num_gpus_none(self) -> None:
+        with patch("miles.utils.ft.factories.node_agent.detect_gpu_count", return_value=2):
+            diagnostics = build_all_diagnostics()
+            nccl_simple = diagnostics[2]
+            assert isinstance(nccl_simple, NcclNodeExecutor)
+            assert nccl_simple._num_gpus == 2
 
 
 class TestBuildDefaultCollectors:
