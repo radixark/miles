@@ -280,12 +280,16 @@ async def test_critical_fault_during_recovery_merges_bad_nodes(
 async def test_different_fault_types_share_throttle(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """Crash recovery then NaN injection shares the same cooldown window; NaN is throttled."""
+    """Crash recovery then NaN injection shares the same cooldown window; NaN is throttled.
+
+    is_throttled() is checked before record(), so max_count=1 allows exactly
+    1 recovery before the next fault is throttled.
+    """
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=build_detector_chain(),
         scrape_interval_seconds=0.5,
-        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=2),
+        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=1),
     )
 
     # Step 1: verify training is stable
