@@ -191,4 +191,5 @@ local/
 glm/
 _examples_synced/
 .env
-.DS_Store.claude/
+.DS_Store
+.claude/
