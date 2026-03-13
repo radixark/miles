@@ -45,16 +45,16 @@ _SLOW_STEP = 2.0
 async def test_third_crash_throttled(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """3 crashes with max_count=3 -> third is throttled (stays in MONITORING).
+    """3 crashes with max_count=2 -> third is throttled (stays in MONITORING).
 
-    record() is called before is_throttled(), so max_count=3 allows 2 recoveries.
+    is_throttled() is checked before record(), so max_count=2 allows 2 recoveries.
     """
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=[TrainingCrashDetector()],
         recovery_cooldown=SlidingWindowThrottle(
             window_minutes=60,
-            max_count=3,
+            max_count=2,
         ),
     )
 
@@ -322,14 +322,14 @@ async def test_sequential_recovery_no_state_drift(
 async def test_cooldown_boundary_exact_count(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """max_count=2 allows 1 recovery; the second crash is throttled.
+    """max_count=1 allows 1 recovery; the second crash is throttled.
 
-    record() is called before is_throttled(), so max_count=2 allows 1 recovery.
+    is_throttled() is checked before record(), so max_count=1 allows 1 recovery.
     """
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=[TrainingCrashDetector()],
-        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=2),
+        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=1),
     )
 
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
@@ -392,7 +392,7 @@ async def test_throttle_notification(
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=[TrainingCrashDetector()],
-        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=2),
+        recovery_cooldown=SlidingWindowThrottle(window_minutes=60, max_count=1),
     )
 
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
@@ -473,7 +473,7 @@ async def test_cooldown_expiry_allows_recovery(
         detectors=[TrainingCrashDetector()],
         recovery_cooldown=SlidingWindowThrottle(
             window_minutes=window_seconds / 60.0,
-            max_count=2,
+            max_count=1,
         ),
     )
 
