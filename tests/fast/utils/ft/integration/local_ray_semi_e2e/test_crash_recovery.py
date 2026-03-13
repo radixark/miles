@@ -455,17 +455,25 @@ async def test_recovery_timeout_escalates(
     await asyncio.sleep(3)
     await testbed.crash_training()
 
-    # Step 2: wait for NotifyHumans due to overall recovery timeout
-    deadline = time.monotonic() + RECOVERY_TIMEOUT
-    while time.monotonic() < deadline:
-        status = await testbed.get_status()
-        if status.recovery is not None and status.recovery.phase == "NotifyHumansSt":
-            break
-        await asyncio.sleep(0.5)
-    else:
-        raise TimeoutError(
-            f"Recovery overall timeout did not escalate to NotifyHumans within {RECOVERY_TIMEOUT}s"
-        )
+    # Step 2: NotifyHumansSt is transient, so wait for recovery to settle back
+    # to MONITORING and verify the timeout path via notifier output.
+    await testbed.wait_for_mode(
+        mode=ControllerMode.MONITORING,
+        timeout=RECOVERY_TIMEOUT,
+    )
+
+    recovery_alerts = [
+        (title, content, severity)
+        for title, content, severity in testbed.notifications
+        if title == "Recovery Alert"
+    ]
+    assert recovery_alerts, "Expected recovery timeout to trigger a recovery alert"
+    assert any(
+        "recovery_timeout_exceeded" in content
+        for _title, content, _severity in recovery_alerts
+    ), (
+        "Expected at least one recovery alert to mention recovery_timeout_exceeded"
+    )
 
 
 # ------------------------------------------------------------------
