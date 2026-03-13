@@ -33,11 +33,13 @@ class GpuNodeExecutor(BaseNodeExecutor):
         node_id: str,
         timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
     ) -> DiagnosticResult:
+        logger.info("diagnostics: running GPU check: node_id=%s, timeout=%d", node_id, timeout_seconds)
         proc_result = await self._run_check_subprocess(
             node_id=node_id,
             timeout_seconds=timeout_seconds,
         )
         if isinstance(proc_result, DiagnosticResult):
+            logger.debug("diagnostics: GPU check subprocess returned early failure: node_id=%s", node_id)
             return proc_result
 
         stdout_bytes, stderr_bytes, returncode = proc_result
@@ -45,7 +47,7 @@ class GpuNodeExecutor(BaseNodeExecutor):
         if returncode != 0:
             stderr_text = stderr_bytes.decode(errors="replace").strip()
             logger.warning(
-                "gpu_check_process_failed node_id=%s returncode=%d stderr=%s",
+                "diagnostics: GPU check process failed: node_id=%s, returncode=%d, stderr=%s",
                 node_id,
                 returncode,
                 stderr_text[:500],
@@ -57,8 +59,10 @@ class GpuNodeExecutor(BaseNodeExecutor):
             node_id=node_id,
         )
         if isinstance(gpu_results, DiagnosticResult):
+            logger.debug("diagnostics: GPU check parse returned failure: node_id=%s", node_id)
             return gpu_results
 
+        logger.debug("diagnostics: GPU check parsed results: node_id=%s, num_gpus=%d", node_id, len(gpu_results))
         return self._collect_results(gpu_results=gpu_results, node_id=node_id)
 
     async def _run_check_subprocess(
@@ -71,6 +75,7 @@ class GpuNodeExecutor(BaseNodeExecutor):
             "-m",
             "miles.utils.ft.agents.diagnostics.utils.gpu_check_script",
         ]
+        logger.info("diagnostics: launching GPU check subprocess: node_id=%s, cmd=%s", node_id, cmd)
         try:
             return await run_subprocess_with_timeout(
                 cmd=cmd,
@@ -78,13 +83,13 @@ class GpuNodeExecutor(BaseNodeExecutor):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "gpu_check_timeout node_id=%s timeout=%d",
+                "diagnostics: GPU check subprocess timed out: node_id=%s, timeout=%d",
                 node_id,
                 timeout_seconds,
             )
             return self._fail(node_id, "gpu check timed out")
         except OSError:
-            logger.warning("gpu_check_launch_failed node_id=%s", node_id, exc_info=True)
+            logger.warning("diagnostics: GPU check subprocess failed to launch: node_id=%s", node_id, exc_info=True)
             return self._fail(node_id, "gpu check process failed to launch")
 
     def _parse_gpu_results(
@@ -98,7 +103,7 @@ class GpuNodeExecutor(BaseNodeExecutor):
             return [GpuCheckResult(**item) for item in raw]
         except (json.JSONDecodeError, TypeError):
             logger.warning(
-                "gpu_check_invalid_json node_id=%s output=%s",
+                "diagnostics: GPU check invalid JSON output: node_id=%s, output=%s",
                 node_id,
                 stdout_text[:200],
             )
@@ -110,7 +115,7 @@ class GpuNodeExecutor(BaseNodeExecutor):
         node_id: str,
     ) -> DiagnosticResult:
         if not gpu_results:
-            logger.warning("gpu_check_empty_results node_id=%s", node_id)
+            logger.warning("diagnostics: GPU check returned no results: node_id=%s", node_id)
             return self._fail(node_id, "gpu check returned no results")
 
         failed_gpus: list[str] = []
@@ -133,8 +138,9 @@ class GpuNodeExecutor(BaseNodeExecutor):
         if failed_gpus:
             all_details = "; ".join(failed_gpus)
             logger.info(
-                "gpu_check_failures node_id=%s failures=%s",
+                "diagnostics: GPU check failures: node_id=%s, num_failed=%d, details=%s",
                 node_id,
+                len(failed_gpus),
                 all_details,
             )
             return self._fail(node_id, all_details, metadata=metadata)

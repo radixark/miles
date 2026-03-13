@@ -25,6 +25,10 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
     ) -> None:
         self._node_id = node_id
         self._diagnostics: dict[str, NodeExecutorProtocol] = {d.diagnostic_type: d for d in (diagnostics or [])}
+        logger.info(
+            "diagnostics: dispatcher initialized: node_id=%s, registered_types=%s",
+            node_id, sorted(self._diagnostics.keys()),
+        )
 
     @property
     def available_types(self) -> list[str]:
@@ -45,13 +49,21 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
     ) -> DiagnosticResult:
         diagnostic = self._diagnostics.get(diagnostic_type)
         if diagnostic is None:
+            logger.error(
+                "diagnostics: unknown diagnostic type: node_id=%s, type=%s, registered=%s",
+                self._node_id, diagnostic_type, sorted(self._diagnostics.keys()),
+            )
             raise UnknownDiagnosticError(
                 f"node {self._node_id}: unknown diagnostic type '{diagnostic_type}', "
                 f"registered types: {sorted(self._diagnostics.keys())}"
             )
 
+        logger.info(
+            "diagnostics: dispatching diagnostic: node_id=%s, type=%s, timeout=%d",
+            self._node_id, diagnostic_type, timeout_seconds,
+        )
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 diagnostic.run(
                     node_id=self._node_id,
                     timeout_seconds=timeout_seconds,
@@ -59,9 +71,14 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
                 ),
                 timeout=timeout_seconds + 5,
             )
+            logger.info(
+                "diagnostics: diagnostic complete: node_id=%s, type=%s, passed=%s",
+                self._node_id, diagnostic_type, result.passed,
+            )
+            return result
         except asyncio.TimeoutError:
             logger.warning(
-                "diagnostic_timeout type=%s node_id=%s timeout=%d",
+                "diagnostics: diagnostic timed out: type=%s, node_id=%s, timeout=%d",
                 diagnostic_type,
                 self._node_id,
                 timeout_seconds,
@@ -72,8 +89,8 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
                 details=f"diagnostic timed out after {timeout_seconds}s",
             )
         except Exception:
-            logger.warning(
-                "diagnostic_error type=%s node_id=%s",
+            logger.error(
+                "diagnostics: diagnostic raised exception: type=%s, node_id=%s",
                 diagnostic_type,
                 self._node_id,
                 exc_info=True,

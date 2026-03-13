@@ -84,7 +84,7 @@ def _parse_json_avg_bus_bandwidth(json_path: Path) -> float | None:
         return float(data["average_bus_bandwidth"]["bandwidth"])
     except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         logger.warning(
-            "nccl_json_parse_failed path=%s",
+            "diagnostics: NCCL JSON parse failed: path=%s",
             json_path,
             exc_info=True,
         )
@@ -116,6 +116,7 @@ async def run_nccl_test(
 
     cmd = cmd + ["-J", str(json_output_path)]
 
+    logger.info("diagnostics: running NCCL test: node=%s, cmd=%s, timeout=%d", node_id, cmd, timeout_seconds)
     try:
         try:
             stdout_bytes, stderr_bytes, returncode = await run_subprocess_with_timeout(
@@ -125,16 +126,15 @@ async def run_nccl_test(
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "%s_timeout node=%s timeout=%s",
+                "diagnostics: NCCL test timed out: prefix=%s, node=%s, timeout=%s",
                 log_prefix,
                 node_id,
                 timeout_seconds,
-                exc_info=True,
             )
             return fail(details=f"timed out after {timeout_seconds}s")
         except OSError:
             logger.warning(
-                "%s_exec_failed node=%s binary=%s",
+                "diagnostics: NCCL test exec failed: prefix=%s, node=%s, binary=%s",
                 log_prefix,
                 node_id,
                 cmd[0],
@@ -178,7 +178,7 @@ def _interpret_nccl_output(
 
     if returncode != 0:
         logger.warning(
-            "%s_nonzero_exit node=%s rc=%s stderr=%s",
+            "diagnostics: NCCL test nonzero exit: prefix=%s, node=%s, returncode=%s, stderr=%s",
             log_prefix,
             node_id,
             returncode,
@@ -189,13 +189,17 @@ def _interpret_nccl_output(
     bandwidth: float | None = None
     if json_output_path is not None:
         bandwidth = _parse_json_avg_bus_bandwidth(json_output_path)
+        if bandwidth is not None:
+            logger.debug("diagnostics: NCCL bandwidth parsed from JSON: node=%s, bandwidth=%.2f", node_id, bandwidth)
 
     if bandwidth is None:
         bandwidth = parse_avg_bus_bandwidth(stdout)
+        if bandwidth is not None:
+            logger.debug("diagnostics: NCCL bandwidth parsed from text output: node=%s, bandwidth=%.2f", node_id, bandwidth)
 
     if bandwidth is None:
         logger.warning(
-            "%s_parse_failure node=%s output_len=%d",
+            "diagnostics: NCCL bandwidth parse failed: prefix=%s, node=%s, output_len=%d",
             log_prefix,
             node_id,
             len(stdout),
@@ -209,7 +213,7 @@ def _interpret_nccl_output(
         details = f"bandwidth {bandwidth:.2f} GB/s < threshold {expected_bandwidth_gbps:.2f} GB/s"
 
     logger.info(
-        "%s_result node=%s bandwidth=%.2f threshold=%.2f passed=%s",
+        "diagnostics: NCCL test result: prefix=%s, node=%s, bandwidth=%.2f, threshold=%.2f, passed=%s",
         log_prefix,
         node_id,
         bandwidth,

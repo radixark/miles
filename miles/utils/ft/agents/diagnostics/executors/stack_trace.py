@@ -44,7 +44,10 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
         pids: list[int] | None = None,
     ) -> DiagnosticResult:
         if not pids:
+            logger.warning("diagnostics: stack trace called with no PIDs: node_id=%s", node_id)
             return self._fail(node_id, "no PIDs provided")
+
+        logger.info("diagnostics: collecting stack traces: node_id=%s, num_pids=%d, timeout=%d", node_id, len(pids), timeout_seconds)
 
         async def _collect_one(pid: int) -> tuple[list[PySpyThread], bool]:
             try:
@@ -52,7 +55,7 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
                 return threads, True
             except Exception:
                 logger.warning(
-                    "stack_trace_dump_failed pid=%d node=%s",
+                    "diagnostics: stack trace dump failed: pid=%d, node=%s",
                     pid,
                     node_id,
                     exc_info=True,
@@ -68,6 +71,10 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
             if not success:
                 failures += 1
 
+        logger.info(
+            "diagnostics: stack trace collection complete: node_id=%s, total_threads=%d, failures=%d, total_pids=%d",
+            node_id, len(all_threads), failures, len(pids),
+        )
         return DiagnosticResult(
             diagnostic_type=self.diagnostic_type,
             node_id=node_id,
@@ -77,12 +84,15 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
         )
 
     async def _dump_pid(self, pid: int, timeout_seconds: int) -> list[PySpyThread]:
+        logger.debug("diagnostics: running py-spy dump: pid=%d, timeout=%d", pid, timeout_seconds)
         stdout, stderr, returncode = await run_subprocess_with_timeout(
             cmd=["py-spy", "dump", "--json", "--pid", str(pid)],
             timeout_seconds=timeout_seconds,
         )
         if returncode != 0:
+            logger.warning("diagnostics: py-spy dump failed: pid=%d, returncode=%d", pid, returncode)
             raise RuntimeError(f"py-spy failed: {stderr.decode()}")
 
         raw = json.loads(stdout.decode())
+        logger.debug("diagnostics: py-spy dump complete: pid=%d, num_threads=%d", pid, len(raw))
         return [PySpyThread.model_validate(t) for t in raw]
