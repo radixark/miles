@@ -14,7 +14,7 @@ class TestFtControllerConfig:
         config = FtControllerConfig(rollout_num_cells=0)
         assert config.platform == "stub"
         assert config.metric_store_backend == "mini"
-        assert config.tick_interval == 30.0
+        assert config.tick_interval == 10.0
 
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -91,7 +91,7 @@ class TestToRuntimeConfig:
     def test_to_runtime_config_defaults(self) -> None:
         config = FtControllerConfig(rollout_num_cells=0)
         rc = config.to_runtime_config()
-        assert rc.tick_interval == 30.0
+        assert rc.tick_interval == 10.0
         assert rc.registration_grace_ticks == 5
         assert rc.recovery_timeout_seconds == 3600
 

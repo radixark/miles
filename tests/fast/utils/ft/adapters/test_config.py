@@ -15,7 +15,7 @@ class TestFtControllerConfig:
 
         assert config.ft_id == ""
         assert config.platform == "stub"
-        assert config.tick_interval == 30.0
+        assert config.tick_interval == 10.0
         assert config.metric_store_backend == "mini"
         assert isinstance(config.detector_config, DetectorChainConfig)
 

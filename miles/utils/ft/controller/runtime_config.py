@@ -15,7 +15,7 @@ class ControllerRuntimeConfig(FtBaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    tick_interval: float = 30.0
+    tick_interval: float = 10.0
     recovery_cooldown_window_minutes: float = 30.0
     recovery_cooldown_max_count: int = 3
     registration_grace_ticks: int = 5

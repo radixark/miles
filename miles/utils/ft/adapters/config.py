@@ -21,7 +21,7 @@ class FtControllerConfig(FtBaseModel):
     metric_store_backend: Literal["mini", "prometheus"] = "mini"
     prometheus_url: str = "http://prometheus:9090"
     controller_exporter_port: int = 0
-    tick_interval: float = 30.0
+    tick_interval: float = 10.0
     scrape_interval_seconds: float = 10.0
     mini_prometheus_retention_minutes: float = 60.0
     notify_webhook_url: str = ""
