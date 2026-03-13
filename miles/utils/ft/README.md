@@ -46,3 +46,7 @@ TODO: this will be outdated, to be updated
   - `integration/in_process`: In-process integration tests
   - `integration/local_ray`: Integration tests based on local Ray
 - `tests/e2e/ft/`: Realistic multi-node end-to-end tests
+
+## Acknowledgements
+
+TODO: papers websites etc
