@@ -25,6 +25,12 @@ RECOVERY_TIMEOUT = 60.0 * _TIMEOUT_SCALE
 LONG_RECOVERY_TIMEOUT = 120.0 * _TIMEOUT_SCALE
 
 
+def _ray_start_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER"] = "1"
+    return env
+
+
 def _connect_to_started_ray_cluster(start_stdout: str) -> tuple[Any, str]:
     match = re.search(r"--address='([^']+)'", start_stdout)
     if match:
@@ -73,6 +79,7 @@ def _init_local_ray() -> str:
         ],
         check=True,
         capture_output=True,
+        env=_ray_start_env(),
         text=True,
     )
 
@@ -209,6 +216,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
         ],
         check=True,
         capture_output=True,
+        env=_ray_start_env(),
         text=True,
     )
 
@@ -227,6 +235,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
             ],
             check=True,
             capture_output=True,
+            env=_ray_start_env(),
             text=True,
         )
 
