@@ -20,7 +20,9 @@ def _force_recovery_complete(harness) -> None:
 
 class TestRecoveryCooldown:
     @pytest.mark.anyio
-    async def test_third_crash_recovery_escalates_to_notify_human(self) -> None:
+    async def test_fourth_crash_recovery_escalates_to_notify_human(self) -> None:
+        """With record() after is_throttled(), max_count=3 allows exactly 3
+        recoveries before the 4th attempt is throttled."""
         detector = AlwaysEnterRecoveryDetector(reason="training crashed")
         harness = make_test_controller(detectors=[detector])
 
@@ -34,7 +36,12 @@ class TestRecoveryCooldown:
         assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         _force_recovery_complete(harness)
 
-        # Step 3: third attempt throttled
+        # Step 3: third recovery (still allowed; record happens after throttle check)
+        await harness.controller._tick()
+        assert isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
+        _force_recovery_complete(harness)
+
+        # Step 4: fourth attempt throttled
         await harness.controller._tick()
         assert not isinstance(get_training_subsystem_state(harness.controller), RecoveringSt)
         assert harness.notifier is not None
@@ -45,10 +52,12 @@ class TestRecoveryCooldown:
 
     @pytest.mark.anyio
     async def test_all_triggers_counted_globally(self) -> None:
-        """After 2 crashes, a HANG trigger also counts toward the global cooldown."""
+        """After 3 recoveries (max_count=3), a HANG trigger is throttled."""
         crash_detector = AlwaysEnterRecoveryDetector(reason="crash")
         harness = make_test_controller(detectors=[crash_detector])
 
+        await harness.controller._tick()
+        _force_recovery_complete(harness)
         await harness.controller._tick()
         _force_recovery_complete(harness)
         await harness.controller._tick()
@@ -64,6 +73,7 @@ class TestRecoveryCooldown:
 
     @pytest.mark.anyio
     async def test_recovery_within_cooldown_window_counted(self) -> None:
+        """With max_count=2, the 3rd attempt is throttled (2 allowed)."""
         detector = AlwaysEnterRecoveryDetector(reason="crash")
         harness = make_test_controller(
             detectors=[detector],
@@ -73,6 +83,9 @@ class TestRecoveryCooldown:
                 recovery_cooldown_max_count=2,
             ),
         )
+
+        await harness.controller._tick()
+        _force_recovery_complete(harness)
 
         await harness.controller._tick()
         _force_recovery_complete(harness)
