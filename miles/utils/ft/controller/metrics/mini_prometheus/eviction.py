@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from miles.utils.ft.controller.metrics.mini_prometheus.query import SeriesKey
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore
@@ -21,6 +24,7 @@ class RetentionEvictor:
         now = datetime.now(timezone.utc)
         evict_interval = self._retention / 10
         if self._last_eviction_time is not None and now - self._last_eviction_time < evict_interval:
+            logger.debug("mini_prom: eviction skipped, interval not elapsed")
             return
         self._last_eviction_time = now
         self._evict_expired()
@@ -44,3 +48,6 @@ class RetentionEvictor:
                 index_set.discard(key)
                 if not index_set:
                     del self._store._name_index[metric_name]
+
+        if empty_keys:
+            logger.debug("mini_prom: evicted %d expired series", len(empty_keys))
