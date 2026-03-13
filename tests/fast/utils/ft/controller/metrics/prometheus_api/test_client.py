@@ -767,13 +767,19 @@ class TestLifecycle:
         in the lifecycle while-True loop. It should unblock when stop() is called."""
         import asyncio
 
-        client = PrometheusClient(url="http://fake:9090")
+        client = PrometheusClient(
+            url="http://fake:9090",
+            health_probe_interval_seconds=60.0,
+        )
         started = asyncio.Event()
         finished = asyncio.Event()
 
+        _ready_response = _make_response({"status": "success"})
+
         async def _run_start() -> None:
             started.set()
-            await client.start()
+            with patch.object(httpx.Client, "get", return_value=_ready_response):
+                await client.start()
             finished.set()
 
         task = asyncio.create_task(_run_start())
@@ -784,6 +790,76 @@ class TestLifecycle:
         await client.stop()
         await asyncio.sleep(0.05)
         assert finished.is_set(), "start() did not unblock after stop()"
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+class TestHealthProbe:
+    """PrometheusClient.start() previously just awaited stop_event.wait()
+    without any health checking. The lifecycle restart in lifecycle.py is
+    designed to catch start() raising, but with empty start() it never
+    fired — so a Prometheus that went down stayed silently unmonitored."""
+
+    @pytest.mark.asyncio
+    async def test_health_probe_raises_after_consecutive_failures(self) -> None:
+        import asyncio
+
+        client = PrometheusClient(
+            url="http://fake:9090",
+            health_probe_interval_seconds=0.01,
+            health_probe_failure_threshold=2,
+        )
+
+        error_response = httpx.Response(
+            status_code=503,
+            request=httpx.Request("GET", "http://fake:9090/-/ready"),
+        )
+
+        with patch.object(httpx.Client, "get", return_value=error_response):
+            with pytest.raises(httpx.HTTPStatusError):
+                await asyncio.wait_for(client.start(), timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_health_probe_recovers_from_transient_failure(self) -> None:
+        import asyncio
+
+        client = PrometheusClient(
+            url="http://fake:9090",
+            health_probe_interval_seconds=0.01,
+            health_probe_failure_threshold=3,
+        )
+
+        call_count = 0
+        ok_response = _make_response({"status": "success"})
+        error_response = httpx.Response(
+            status_code=503,
+            request=httpx.Request("GET", "http://fake:9090/-/ready"),
+        )
+
+        def _side_effect(*args: Any, **kwargs: Any) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                return error_response
+            return ok_response
+
+        started = asyncio.Event()
+
+        async def _run() -> None:
+            started.set()
+            with patch.object(httpx.Client, "get", side_effect=_side_effect):
+                await client.start()
+
+        task = asyncio.create_task(_run())
+        await started.wait()
+        await asyncio.sleep(0.1)
+
+        assert call_count >= 2
+        await client.stop()
+        await asyncio.sleep(0.05)
         task.cancel()
         try:
             await task

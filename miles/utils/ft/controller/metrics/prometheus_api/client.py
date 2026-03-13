@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RANGE_QUERY_STEP_SECONDS: int = 15
 _FETCH_MAX_RETRIES: int = 2
 _FETCH_RETRY_DELAY_SECONDS: float = 0.5
+_DEFAULT_HEALTH_PROBE_INTERVAL_SECONDS: float = 15.0
+_DEFAULT_HEALTH_PROBE_FAILURE_THRESHOLD: int = 3
 
 
 class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
@@ -39,11 +41,15 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         url: str,
         timeout: float = 10.0,
         range_query_step_seconds: int = _DEFAULT_RANGE_QUERY_STEP_SECONDS,
+        health_probe_interval_seconds: float = _DEFAULT_HEALTH_PROBE_INTERVAL_SECONDS,
+        health_probe_failure_threshold: int = _DEFAULT_HEALTH_PROBE_FAILURE_THRESHOLD,
     ) -> None:
         self._url = url.rstrip("/")
         self._client = httpx.Client(timeout=timeout)
         self._range_query_step_seconds = range_query_step_seconds
         self._stop_event: asyncio.Event | None = None
+        self._health_probe_interval = health_probe_interval_seconds
+        self._health_probe_failure_threshold = health_probe_failure_threshold
 
     # -------------------------------------------------------------------
     # TimeSeriesStoreProtocol implementation (sync)
@@ -87,7 +93,36 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
 
     async def start(self) -> None:
         self._stop_event = asyncio.Event()
-        await self._stop_event.wait()
+        consecutive_failures = 0
+
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.to_thread(self._health_probe)
+                if consecutive_failures > 0:
+                    logger.info("prometheus_health_probe_recovered after %d failures", consecutive_failures)
+                consecutive_failures = 0
+            except Exception:
+                consecutive_failures += 1
+                logger.warning(
+                    "prometheus_health_probe_failed consecutive=%d",
+                    consecutive_failures,
+                    exc_info=True,
+                )
+                if consecutive_failures >= self._health_probe_failure_threshold:
+                    raise
+
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self._health_probe_interval,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    def _health_probe(self) -> None:
+        response = self._client.get(f"{self._url}/-/ready")
+        response.raise_for_status()
 
     async def stop(self) -> None:
         if self._stop_event is not None:

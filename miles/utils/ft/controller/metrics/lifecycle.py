@@ -52,7 +52,7 @@ async def start_metric_store_task(store: TimeSeriesStoreLifecycle) -> MetricStor
                 handle.last_exception = exc
                 handle.last_failure_at = time.monotonic()
                 logger.error(
-                    "scrape_loop_crashed restart=%d/%d, restarting in %.0fs",
+                    "metric_store_crashed restart=%d/%d, restarting in %.0fs",
                     restarts,
                     _MAX_SCRAPE_RESTARTS,
                     _SCRAPE_RESTART_DELAY_SECONDS,
@@ -61,11 +61,11 @@ async def start_metric_store_task(store: TimeSeriesStoreLifecycle) -> MetricStor
                 await asyncio.sleep(_SCRAPE_RESTART_DELAY_SECONDS)
 
         handle.restart_exhausted = True
-        logger.error("scrape_loop_exhausted_restarts max=%d", _MAX_SCRAPE_RESTARTS)
+        logger.error("metric_store_exhausted_restarts max=%d", _MAX_SCRAPE_RESTARTS)
 
     task = asyncio.create_task(_run())
     handle.task = task
-    logger.info("scrape_loop_started")
+    logger.info("metric_store_started")
     return handle
 
 
@@ -81,4 +81,4 @@ async def stop_metric_store_task(
             await handle.task
         except asyncio.CancelledError:
             pass
-    logger.info("scrape_loop_stopped")
+    logger.info("metric_store_stopped")
