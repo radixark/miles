@@ -113,11 +113,11 @@ class NeighborNcclClusterExecutor(ClusterExecutorProtocol):
         sorted_ids = sorted(node_agents.keys())
 
         if len(sorted_ids) < 2:
-            logger.info("neighbor_nccl_skip — fewer than 2 nodes")
+            logger.info("diagnostics: neighbor nccl skipped, fewer than 2 nodes")
             return []
 
         edges = _build_ring_edges(sorted_ids)
-        logger.info("neighbor_nccl_start edges=%s", edges)
+        logger.info("diagnostics: neighbor nccl start edges=%d, nodes=%d", len(edges), len(sorted_ids))
 
         tasks = []
         for edge_index, (node_a, node_b) in enumerate(edges):
@@ -154,7 +154,7 @@ class NeighborNcclClusterExecutor(ClusterExecutorProtocol):
 
         if agent_a is None or agent_b is None:
             logger.warning(
-                "neighbor_nccl_edge_skip_no_agent a=%s(%s) b=%s(%s)",
+                "diagnostics: neighbor nccl edge skip, missing agent a=%s(%s), b=%s(%s)",
                 node_a,
                 "ok" if agent_a else "missing",
                 node_b,
@@ -183,7 +183,7 @@ class NeighborNcclClusterExecutor(ClusterExecutorProtocol):
             passed = result_a.passed and result_b.passed
         except asyncio.TimeoutError:
             logger.warning(
-                "neighbor_nccl_edge_rpc_timeout a=%s b=%s timeout=%d",
+                "diagnostics: neighbor nccl edge timeout a=%s, b=%s, timeout=%d",
                 node_a,
                 node_b,
                 timeout_seconds,
@@ -191,7 +191,7 @@ class NeighborNcclClusterExecutor(ClusterExecutorProtocol):
             passed = False
         except Exception:
             logger.warning(
-                "neighbor_nccl_edge_failed a=%s b=%s",
+                "diagnostics: neighbor nccl edge failed a=%s, b=%s",
                 node_a,
                 node_b,
                 exc_info=True,
@@ -199,7 +199,7 @@ class NeighborNcclClusterExecutor(ClusterExecutorProtocol):
             passed = False
 
         logger.info(
-            "neighbor_nccl_edge_result a=%s b=%s passed=%s",
+            "diagnostics: neighbor nccl edge result a=%s, b=%s, passed=%s",
             node_a,
             node_b,
             passed,

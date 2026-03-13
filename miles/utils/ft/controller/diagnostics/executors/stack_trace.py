@@ -25,9 +25,14 @@ class StackTraceClusterExecutor(ClusterExecutorProtocol):
         node_agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
     ) -> list[str]:
+        logger.info("diagnostics: stack trace execute node_count=%d, timeout=%d", len(node_agents), timeout_seconds)
         suspects = await collect_stack_trace_suspects(
             node_agents=node_agents,
             rank_pids_provider=self._rank_pids_provider,
             default_timeout_seconds=timeout_seconds,
         )
+        if suspects:
+            logger.info("diagnostics: stack trace found suspects=%s", suspects)
+        else:
+            logger.debug("diagnostics: stack trace found no suspects")
         return suspects if suspects else []
