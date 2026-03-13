@@ -96,16 +96,19 @@ class ControllerExporter:
         return f"http://localhost:{self._port}"
 
     def start(self) -> None:
+        logger.info("metrics: starting controller exporter on port=%d", self._port)
         self._httpd, _thread = start_http_server(port=self._port, registry=self._registry)
         self._port = self._httpd.server_port
-        logger.info("controller_exporter_started port=%d", self._port)
+        logger.info("metrics: controller exporter started on port=%d", self._port)
 
     def stop(self) -> None:
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
             self._httpd = None
-            logger.info("controller_exporter_stopped")
+            logger.info("metrics: controller exporter stopped")
+        else:
+            logger.debug("metrics: exporter stop no-op, already stopped")
 
     def update_mode(self, *, is_recovery: bool, subsystem: str = "training") -> None:
         self._mode.labels(subsystem=subsystem).set(1 if is_recovery else 0)

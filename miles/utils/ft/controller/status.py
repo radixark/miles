@@ -48,7 +48,7 @@ def _safe_iteration(value: float | None) -> int | None:
     if value is None:
         return None
     if not math.isfinite(value):
-        logger.warning("non_finite_iteration_value value=%s", value)
+        logger.warning("status: non-finite iteration value=%s", value)
         return None
     return int(value)
 
@@ -86,10 +86,18 @@ def build_controller_status(
             recoveries = {}
             subsystem_states = {}
 
-    return ControllerStatus(
+    status = ControllerStatus(
         tick_count=tick_count,
         active_run_id=training_rank_roster.run_id if training_rank_roster is not None else None,
         latest_iteration=latest_iteration,
         subsystem_states=subsystem_states,
         recoveries=recoveries,
     )
+    logger.debug(
+        "status: built mode=%s, tick=%d, subsystems=%d, recoveries=%d",
+        status.mode.value,
+        tick_count,
+        len(subsystem_states),
+        len(recoveries),
+    )
+    return status
