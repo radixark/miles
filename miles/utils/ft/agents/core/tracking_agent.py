@@ -37,22 +37,30 @@ class FtTrackingAgent:
         self._controller_client = controller_client
 
         self._exception_inject_path = _resolve_inject_path(rank=rank)
+        logger.info(
+            "tracking_agent: initialized: rank=%d, run_id=%s, has_controller=%s",
+            rank, self._run_id, controller_client is not None,
+        )
 
     @graceful_degrade()
     def log(self, *, metrics: dict[str, float], step: int) -> None:
         self._check_exception_injection()
 
         if self._controller_client is not None:
+            logger.debug("tracking_agent: logging step: run_id=%s, step=%d, num_metrics=%d", self._run_id, step, len(metrics))
             self._controller_client.log_step(
                 run_id=self._run_id,
                 step=step,
                 metrics=metrics,
             )
+        else:
+            logger.debug("tracking_agent: no controller client, skipping log: step=%d", step)
 
     def _check_exception_injection(self) -> None:
         if self._exception_inject_path is None:
             return
         if self._exception_inject_path.exists():
+            logger.warning("tracking_agent: fault injection triggered: path=%s", self._exception_inject_path)
             self._exception_inject_path.unlink(missing_ok=True)
             raise FaultInjectionError(f"Fault injection triggered via {self._exception_inject_path}")
 

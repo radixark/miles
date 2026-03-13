@@ -46,6 +46,10 @@ class FtTrainingRankAgent:
             run_id=self._run_id,
         )
 
+        logger.info(
+            "training_rank_agent: initializing: rank=%d, world_size=%d, node_id=%s, run_id=%s",
+            rank, world_size, self._node_id, self._run_id,
+        )
         self._register_training_rank()
 
     # ------------------------------------------------------------------
@@ -63,6 +67,7 @@ class FtTrainingRankAgent:
         node_id: str | None = None,
     ) -> FtTrainingRankAgent | None:
         if not enabled:
+            logger.debug("training_rank_agent: creation skipped, not enabled: rank=%d", rank)
             return None
         return cls(rank=rank, world_size=world_size, controller_client=controller_client, node_id=node_id)
 
@@ -77,12 +82,14 @@ class FtTrainingRankAgent:
         self,
         phase: Literal["idle", "training", "checkpoint_saving"],
     ) -> None:
+        logger.debug("training_rank_agent: phase transition: rank=%d, phase=%s", self._rank, phase)
         self._metric_exporter.set_phase(phase)
 
     def step(self) -> None:
         self._metric_exporter.step()
 
     def shutdown(self) -> None:
+        logger.info("training_rank_agent: shutting down: rank=%d", self._rank)
         self._metric_exporter.shutdown()
 
     # ------------------------------------------------------------------
@@ -94,7 +101,7 @@ class FtTrainingRankAgent:
 
     def _register_training_rank(self) -> None:
         if self._controller_client is None:
-            logger.warning("Cannot register rank: no controller client provided")
+            logger.warning("training_rank_agent: cannot register rank, no controller client: rank=%d", self._rank)
             return
 
         self._metric_exporter.wait_until_ready()
@@ -117,10 +124,10 @@ class FtTrainingRankAgent:
             max_backoff=self._REGISTER_RETRY_DELAY,
         )
         if result.ok:
-            logger.info("Rank %d registered successfully", self._rank)
+            logger.info("training_rank_agent: rank registered successfully: rank=%d, run_id=%s", self._rank, self._run_id)
         else:
             logger.warning(
-                "Rank %d registration failed after %d retries: %s",
+                "training_rank_agent: rank registration failed: rank=%d, max_retries=%d, error=%s",
                 self._rank,
                 self._REGISTER_MAX_ATTEMPTS,
                 result.exception,

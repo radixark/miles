@@ -41,6 +41,10 @@ class FtNodeAgent(NodeAgentProtocol):
             collectors=prepared_collectors,
             exporter=self._exporter,
         )
+        logger.info(
+            "node_agent: initialized: node_id=%s, num_collectors=%d, num_diagnostics=%d, collect_interval_override=%s",
+            node_id, len(prepared_collectors), len(diagnostics or []), collect_interval_seconds,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -50,6 +54,7 @@ class FtNodeAgent(NodeAgentProtocol):
     def metadata(self) -> dict[str, str]:
         if self._metadata_provider is not None:
             return self._metadata_provider.get_metadata()
+        logger.debug("node_agent: no metadata provider, returning empty metadata: node_id=%s", self._node_id)
         return {}
 
     def get_exporter_address(self) -> str:
@@ -59,11 +64,14 @@ class FtNodeAgent(NodeAgentProtocol):
         self._exporter.wait_until_ready(timeout_seconds=timeout_seconds)
 
     async def start(self) -> None:
+        logger.info("node_agent: starting: node_id=%s", self._node_id)
         await self._collection_loop.start()
 
     async def stop(self) -> None:
+        logger.info("node_agent: stopping: node_id=%s", self._node_id)
         await self._collection_loop.stop()
         self._exporter.shutdown()
+        logger.info("node_agent: stopped: node_id=%s", self._node_id)
 
     async def run_diagnostic(
         self,
@@ -71,8 +79,17 @@ class FtNodeAgent(NodeAgentProtocol):
         timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
-        return await self._dispatcher.run_diagnostic(
+        logger.info(
+            "node_agent: running diagnostic: node_id=%s, type=%s, timeout=%d",
+            self._node_id, diagnostic_type, timeout_seconds,
+        )
+        result = await self._dispatcher.run_diagnostic(
             diagnostic_type=diagnostic_type,
             timeout_seconds=timeout_seconds,
             **kwargs,
         )
+        logger.info(
+            "node_agent: diagnostic complete: node_id=%s, type=%s, passed=%s",
+            self._node_id, diagnostic_type, result.passed,
+        )
+        return result
