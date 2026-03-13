@@ -17,13 +17,7 @@ async def advance_subsystems(
     restart_stepper: StateMachineStepper,
     on_convergence_failure: Callable[[], None] | None,
 ) -> AsyncGenerator[NormalSt, None]:
-    """Step every subsystem to convergence, yielding each intermediate state.
-
-    If any subsystem produces a pending MAIN_JOB restart request after
-    convergence, subsequent subsystems are skipped so that
-    trigger_main_job_restart() in the caller can handle the request
-    without unnecessary side effects from later subsystems.
-    """
+    """Step every subsystem to convergence, yielding each intermediate state."""
     curr_state = state
 
     for name in sorted(curr_state.subsystems):
@@ -43,5 +37,6 @@ async def advance_subsystems(
             curr_state = NormalSt(subsystems={**curr_state.subsystems, name: new_sub_state})
             yield curr_state
 
+        # Skip remaining subsystems — trigger_main_job_restart() will discard their work anyway
         if has_pending_main_job_restart(curr_state.subsystems):
             return
