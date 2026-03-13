@@ -35,13 +35,14 @@ class StackTraceAggregator:
         self._max_frames = max_frames
 
     def aggregate(self, traces: dict[str, list[PySpyThread]]) -> AggregationResult:
+        logger.debug("diagnostics: aggregating stack traces nodes=%d", len(traces))
         if len(traces) <= 1:
             result = AggregationResult(
                 suspect_node_ids=[],
                 fingerprint_groups={},
                 raw_traces=traces,
             )
-            logger.info("stack_trace_aggregation result=%s", result.model_dump_json())
+            logger.info("diagnostics: stack trace aggregation skipped, single node or empty")
             return result
 
         fp_to_nodes: dict[str, list[str]] = {}
@@ -50,7 +51,7 @@ class StackTraceAggregator:
             fp = self._extract_fingerprint(threads)
             if not fp:
                 empty_fingerprint_nodes.append(node_id)
-                logger.warning("stack_trace_empty_fingerprint node=%s", node_id)
+                logger.warning("diagnostics: stack trace empty fingerprint node=%s", node_id)
                 continue
             fp_to_nodes.setdefault(fp, []).append(node_id)
 
@@ -71,7 +72,11 @@ class StackTraceAggregator:
             fingerprint_groups=fp_to_nodes,
             raw_traces=traces,
         )
-        logger.info("stack_trace_aggregation result=%s", result.model_dump_json())
+        logger.info(
+            "diagnostics: stack trace aggregation done suspects=%s, fingerprint_groups=%d",
+            result.suspect_node_ids,
+            len(fp_to_nodes),
+        )
         return result
 
     def _extract_fingerprint(self, threads: list[PySpyThread]) -> str:

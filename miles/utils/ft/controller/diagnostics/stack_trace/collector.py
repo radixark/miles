@@ -28,7 +28,7 @@ async def collect_stack_trace_suspects(
         except Exception:
             suspect_from_failures.append(node_id)
             logger.warning(
-                "rank_pids_provider_failed node=%s",
+                "diagnostics: rank_pids_provider failed node=%s",
                 node_id,
                 exc_info=True,
             )
@@ -36,7 +36,7 @@ async def collect_stack_trace_suspects(
 
         if not rank_pids:
             suspect_from_failures.append(node_id)
-            logger.warning("stack_trace_no_pids node=%s", node_id)
+            logger.warning("diagnostics: stack trace no PIDs for node=%s", node_id)
             return
 
         result = await call_agent_diagnostic(
@@ -53,7 +53,7 @@ async def collect_stack_trace_suspects(
             except (json.JSONDecodeError, Exception) as exc:
                 suspect_from_failures.append(node_id)
                 logger.warning(
-                    "stack_trace_parse_failed node=%s: %s",
+                    "diagnostics: stack trace parse failed node=%s, error=%s",
                     node_id,
                     exc,
                     exc_info=True,
@@ -61,13 +61,13 @@ async def collect_stack_trace_suspects(
                 return
             if not threads:
                 suspect_from_failures.append(node_id)
-                logger.warning("stack_trace_empty_threads node=%s", node_id)
+                logger.warning("diagnostics: stack trace empty threads node=%s", node_id)
                 return
             traces[node_id] = threads
         else:
             suspect_from_failures.append(node_id)
             logger.info(
-                "stack_trace_collection_failed node=%s details=%s",
+                "diagnostics: stack trace collection failed node=%s, details=%s",
                 node_id,
                 result.details,
             )
@@ -79,16 +79,16 @@ async def collect_stack_trace_suspects(
         aggregation_result = StackTraceAggregator().aggregate(traces=traces)
         aggregation_suspects = aggregation_result.suspect_node_ids
     except StackTraceTieError:
-        logger.warning("stack_trace_aggregation_tie traces_collected=%d", len(traces), exc_info=True)
+        logger.warning("diagnostics: stack trace aggregation tie traces_collected=%d", len(traces), exc_info=True)
         if suspect_from_failures:
-            logger.info("aggregation_tie_suppressed: returning %d failure suspects", len(suspect_from_failures))
+            logger.info("diagnostics: aggregation tie suppressed, returning %d failure suspects", len(suspect_from_failures))
         else:
             raise
 
     all_suspects = sorted(set(suspect_from_failures) | set(aggregation_suspects))
 
     logger.info(
-        "collect_stack_trace_suspects_done traces_collected=%d suspect_from_failures=%s suspect_from_aggregation=%s",
+        "diagnostics: stack trace collection done traces=%d, failure_suspects=%s, aggregation_suspects=%s",
         len(traces),
         suspect_from_failures,
         aggregation_suspects,
