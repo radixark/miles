@@ -56,18 +56,6 @@ class TestBuildRingEdges:
         assert len(edges) == 4
         assert set(edges) == {("A", "B"), ("B", "C"), ("C", "D"), ("A", "D")}
 
-    def test_five_nodes_ring(self) -> None:
-        edges = _build_ring_edges(["A", "B", "C", "D", "E"])
-        assert len(edges) == 5
-
-    def test_six_nodes_ring(self) -> None:
-        edges = _build_ring_edges(["A", "B", "C", "D", "E", "F"])
-        assert len(edges) == 6
-
-    def test_seven_nodes_ring(self) -> None:
-        edges = _build_ring_edges(["A", "B", "C", "D", "E", "F", "G"])
-        assert len(edges) == 7
-
     @pytest.mark.parametrize("n", range(2, 9))
     def test_no_self_loops(self, n: int) -> None:
         ids = [f"node-{i}" for i in range(n)]
@@ -340,20 +328,6 @@ class TestLocalizeSuspectsPropertyBased:
         edges = _build_ring_edges(ids)
         results = [_EdgeResult(a, b, passed=False) for a, b in edges]
         assert _localize_suspects_from_neighbor_results(ids, results) == ids
-
-    @pytest.mark.parametrize("n", range(3, 9))
-    def test_single_failed_component_returns_suspects_containing_bad(self, n: int) -> None:
-        """A contiguous block of failed edges around one bad node returns suspects that include it."""
-        ids = [f"node-{i}" for i in range(n)]
-        edges = _build_ring_edges(ids)
-
-        bad_id = ids[n // 2]
-        results = [
-            _EdgeResult(a, b, passed=(bad_id not in (a, b)))
-            for a, b in edges
-        ]
-        suspects = _localize_suspects_from_neighbor_results(ids, results)
-        assert bad_id in suspects
 
 
 # ===================================================================

@@ -29,7 +29,7 @@ class _EdgeResult(NamedTuple):
 def _build_ring_edges(sorted_ids: list[str]) -> list[tuple[str, str]]:
     """Build undirected ring-topology edges from sorted node IDs.
 
-    Each node connects to its left and right neighbors in a ring.
+    Each node connects to its right neighbor ``(i, i+1) % n`` in a ring.
     Edges are deduplicated and represented as ``(min_id, max_id)`` tuples.
     For 2 nodes, produces a single edge.  For N >= 3, produces N edges
     forming a complete ring.
@@ -41,14 +41,11 @@ def _build_ring_edges(sorted_ids: list[str]) -> list[tuple[str, str]]:
     seen: set[tuple[str, str]] = set()
     edges: list[tuple[str, str]] = []
     for i in range(n):
-        left = (i - 1) % n
-        right = (i + 1) % n
-        for neighbor_idx in (left, right):
-            a, b = sorted_ids[i], sorted_ids[neighbor_idx]
-            edge = (min(a, b), max(a, b))
-            if edge not in seen:
-                seen.add(edge)
-                edges.append(edge)
+        a, b = sorted_ids[i], sorted_ids[(i + 1) % n]
+        edge = (min(a, b), max(a, b))
+        if edge not in seen:
+            seen.add(edge)
+            edges.append(edge)
 
     return edges
 
@@ -70,43 +67,24 @@ def _localize_suspects_from_neighbor_results(
     if not edge_results:
         return []
 
-    degree: dict[str, int] = {nid: 0 for nid in sorted_ids}
-    incident_fail: dict[str, int] = {nid: 0 for nid in sorted_ids}
-    incident_pass: dict[str, int] = {nid: 0 for nid in sorted_ids}
+    nodes_with_pass: set[str] = set()
+    nodes_with_fail: set[str] = set()
 
     for er in edge_results:
-        degree[er.node_a] += 1
-        degree[er.node_b] += 1
         if er.passed:
-            incident_pass[er.node_a] += 1
-            incident_pass[er.node_b] += 1
+            nodes_with_pass.update((er.node_a, er.node_b))
         else:
-            incident_fail[er.node_a] += 1
-            incident_fail[er.node_b] += 1
+            nodes_with_fail.update((er.node_a, er.node_b))
 
-    has_any_failure = any(not er.passed for er in edge_results)
-    if not has_any_failure:
+    if not nodes_with_fail:
         return []
-
-    all_edges_failed = all(not er.passed for er in edge_results)
-    if all_edges_failed:
+    if not nodes_with_pass:
         return sorted_ids[:]
 
-    suspects: set[str] = set()
-    for nid in sorted_ids:
-        if degree[nid] == 0:
-            continue
-        if incident_fail[nid] == 0:
-            continue
-
-        if incident_fail[nid] == degree[nid]:
-            suspects.add(nid)
+    suspects = nodes_with_fail - nodes_with_pass
 
     if not suspects:
-        for er in edge_results:
-            if not er.passed:
-                suspects.add(er.node_a)
-                suspects.add(er.node_b)
+        suspects = nodes_with_fail
 
     return sorted(suspects)
 
