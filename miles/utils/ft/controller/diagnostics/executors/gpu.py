@@ -24,6 +24,7 @@ class GpuClusterExecutor(ClusterExecutorProtocol):
         node_agents: dict[str, NodeAgentProtocol],
         timeout_seconds: int,
     ) -> list[str]:
+        logger.info("diagnostics: gpu execute node_count=%d, timeout=%d", len(node_agents), timeout_seconds)
         results = await gather_diagnostic_results(
             diagnostic_type=_GPU_DIAGNOSTIC_TYPE,
             node_agents=node_agents,
@@ -39,8 +40,10 @@ class GpuClusterExecutor(ClusterExecutorProtocol):
         passed_results = {nid: r for nid, r in results.items() if nid not in bad_set}
         hash_outliers = _find_gpu_hash_outlier_nodes(passed_results)
         if hash_outliers:
+            logger.info("diagnostics: gpu hash outliers found nodes=%s", hash_outliers)
             bad_node_ids.extend(hash_outliers)
 
+        logger.info("diagnostics: gpu execute done bad_nodes=%s", bad_node_ids)
         return bad_node_ids
 
 
@@ -61,6 +64,7 @@ def _find_gpu_hash_outlier_nodes(
             node_gpu_hashes[node_id] = result.metadata["compute_hashes"]
 
     if len(node_gpu_hashes) < 2:
+        logger.debug("diagnostics: gpu hash comparison skipped, fewer than 2 nodes with hashes")
         return []
 
     all_gpu_indices: set[str] = set()
@@ -85,8 +89,7 @@ def _find_gpu_hash_outlier_nodes(
 
         if majority_count <= total / 2:
             logger.warning(
-                "gpu_hash_no_majority gpu_idx=%s hash_distribution=%s — "
-                "possible non-determinism, skipping this GPU index",
+                "diagnostics: gpu hash no majority gpu_idx=%s, distribution=%s, skipping",
                 gpu_idx,
                 {h[:12]: len(n) for h, n in hash_to_nodes.items()},
             )
@@ -95,7 +98,7 @@ def _find_gpu_hash_outlier_nodes(
         for h, nodes in hash_to_nodes.items():
             if h != majority_hash:
                 logger.info(
-                    "gpu_hash_outlier gpu_idx=%s nodes=%s " "outlier_hash=%s majority_hash=%s (%d/%d nodes agree)",
+                    "diagnostics: gpu hash outlier gpu_idx=%s, nodes=%s, outlier_hash=%s, majority_hash=%s (%d/%d agree)",
                     gpu_idx,
                     nodes,
                     h[:12],

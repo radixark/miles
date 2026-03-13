@@ -30,7 +30,7 @@ async def call_agent_diagnostic(
 
     except asyncio.TimeoutError:
         logger.warning(
-            "diagnostic_agent_rpc_timeout node=%s type=%s timeout=%d",
+            "diagnostics: agent RPC timeout node=%s, type=%s, timeout=%d",
             node_id,
             diagnostic_type,
             timeout_seconds,
@@ -43,8 +43,7 @@ async def call_agent_diagnostic(
 
     except UnknownDiagnosticError:
         logger.error(
-            "diagnostic_type_not_registered node=%s type=%s — "
-            "this is a pipeline configuration error, treating as fail",
+            "diagnostics: type not registered node=%s, type=%s, treating as fail (config error)",
             node_id,
             diagnostic_type,
             exc_info=True,
@@ -57,7 +56,7 @@ async def call_agent_diagnostic(
 
     except Exception:
         logger.warning(
-            "diagnostic_agent_call_failed node=%s type=%s",
+            "diagnostics: agent call failed node=%s, type=%s",
             node_id,
             diagnostic_type,
             exc_info=True,
@@ -77,7 +76,7 @@ async def gather_diagnostic_results(
     """Run one diagnostic on all agents in parallel and return the raw results."""
     node_ids = list(node_agents.keys())
     logger.info(
-        "diagnostic_step_start type=%s nodes=%s",
+        "diagnostics: step start type=%s, nodes=%s",
         diagnostic_type,
         node_ids,
     )
@@ -107,7 +106,7 @@ def partition_results(
         if not result.passed:
             bad_node_ids.append(node_id)
             logger.info(
-                "diagnostic_node_failed type=%s node=%s details=%s",
+                "diagnostics: node failed type=%s, node=%s, details=%s",
                 diagnostic_type,
                 node_id,
                 result.details,
