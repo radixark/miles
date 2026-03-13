@@ -181,12 +181,12 @@ async def test_monitoring_success_iterations_zero(
 # ------------------------------------------------------------------
 
 
-async def test_monitoring_timeout_zero(
+async def test_monitoring_timeout_min_positive(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """monitoring_timeout_seconds=0, step_interval=999 -> immediate StopTimeDiagnostics.
+    """monitoring_timeout_seconds=1, step_interval=999 -> near-immediate StopTimeDiagnostics.
 
-    MonitoringProgress times out immediately because timeout is 0 and workers
+    MonitoringProgress times out almost immediately because timeout is 1s and workers
     never advance (step_interval=999s).
 
     Uses initial_stable_iterations=0 because step_interval=999 prevents
@@ -197,7 +197,7 @@ async def test_monitoring_timeout_zero(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=[TrainingCrashDetector()],
         step_interval=999.0,
-        monitoring_timeout_seconds=0,
+        monitoring_timeout_seconds=1,
         monitoring_success_iterations=999,
         initial_stable_iterations=0,
         diagnostic_orchestrator_override=DelayedDiagnosticOrchestrator(delay_seconds=5.0),
@@ -207,7 +207,7 @@ async def test_monitoring_timeout_zero(
     await asyncio.sleep(3)
     await testbed.crash_training()
 
-    # Step 2: MonitoringProgress should time out immediately -> StopTimeDiagnostics
+    # Step 2: MonitoringProgress should time out almost immediately -> StopTimeDiagnostics
     deadline = time.monotonic() + RECOVERY_TIMEOUT
     while time.monotonic() < deadline:
         status = await testbed.get_status()
@@ -216,5 +216,5 @@ async def test_monitoring_timeout_zero(
         await asyncio.sleep(0.5)
     else:
         raise TimeoutError(
-            f"monitoring_timeout_seconds=0 did not trigger StopTimeDiagnostics within {RECOVERY_TIMEOUT}s"
+            f"monitoring_timeout_seconds=1 did not trigger StopTimeDiagnostics within {RECOVERY_TIMEOUT}s"
         )
