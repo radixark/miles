@@ -457,8 +457,8 @@ async def test_recovery_timeout_escalates(
 
     # Step 2: NotifyHumansSt is transient, so wait for recovery to settle back
     # to MONITORING and verify the timeout path via notifier output.
-    await testbed.wait_for_mode(
-        mode=ControllerMode.MONITORING,
+    await testbed.wait_for_mode_transition(
+        target_mode=ControllerMode.MONITORING,
         timeout=RECOVERY_TIMEOUT,
     )
 
