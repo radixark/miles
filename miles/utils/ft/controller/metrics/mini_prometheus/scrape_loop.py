@@ -12,11 +12,21 @@ from miles.utils.ft.agents.types import GaugeSample
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_MAX_CONSECUTIVE_FAILURES = 30
+
+
 class ScrapeLoop:
-    def __init__(self, store: _IngestTarget, scrape_interval_seconds: float) -> None:
+    def __init__(
+        self,
+        store: _IngestTarget,
+        scrape_interval_seconds: float,
+        max_consecutive_failures: int = _DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    ) -> None:
         self._store = store
         self._scrape_interval_seconds = scrape_interval_seconds
+        self._max_consecutive_failures = max_consecutive_failures
         self._targets: dict[str, str] = {}
+        self._consecutive_failures: dict[str, int] = {}
         self._running = False
         self._client: httpx.AsyncClient | None = None
 
@@ -25,6 +35,7 @@ class ScrapeLoop:
 
     def remove_target(self, target_id: str) -> None:
         self._targets.pop(target_id, None)
+        self._consecutive_failures.pop(target_id, None)
 
     @property
     def targets(self) -> dict[str, str]:
@@ -36,6 +47,7 @@ class ScrapeLoop:
             return
 
         client = self._ensure_client()
+        failed_targets: list[tuple[str, int]] = []
 
         async def _scrape_target(target_id: str, address: str) -> None:
             try:
@@ -43,15 +55,28 @@ class ScrapeLoop:
                 response.raise_for_status()
                 samples = parse_prometheus_text(response.text)
                 self._store.ingest_samples(target_id=target_id, samples=samples)
+                self._consecutive_failures.pop(target_id, None)
             except Exception:
+                count = self._consecutive_failures.get(target_id, 0) + 1
+                self._consecutive_failures[target_id] = count
                 logger.warning(
-                    "Failed to scrape target %s at %s",
+                    "Failed to scrape target %s at %s (consecutive_failures=%d)",
                     target_id,
                     address,
+                    count,
                     exc_info=True,
                 )
+                if count >= self._max_consecutive_failures:
+                    failed_targets.append((target_id, count))
 
         await asyncio.gather(*(_scrape_target(target_id, address) for target_id, address in targets))
+
+        if failed_targets:
+            details = ", ".join(f"{tid}({count})" for tid, count in failed_targets)
+            raise RuntimeError(
+                f"Scrape targets exceeded max consecutive failures "
+                f"({self._max_consecutive_failures}): {details}"
+            )
 
     async def start(self) -> None:
         self._running = True

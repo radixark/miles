@@ -201,3 +201,90 @@ class TestParsePrometheusText:
 
     def test_empty_input_returns_empty(self) -> None:
         assert parse_prometheus_text("") == []
+
+
+# ===================================================================
+# Consecutive failure tracking
+# ===================================================================
+
+
+class TestConsecutiveFailures:
+    """Previously scrape_once() swallowed all per-target failures as warnings
+    without limit, so a target could fail indefinitely while the scrape loop
+    appeared healthy. Now consecutive failures are counted per target and
+    exceeding the threshold raises RuntimeError."""
+
+    @pytest.mark.anyio
+    async def test_raises_after_max_consecutive_failures(self) -> None:
+        server = await _start_failing_server()
+        try:
+            store = _FakeStore()
+            loop = ScrapeLoop(
+                store=store,
+                scrape_interval_seconds=0.01,
+                max_consecutive_failures=3,
+            )
+            loop.add_target("bad", f"http://127.0.0.1:{server.port}")
+
+            await loop.scrape_once()
+            await loop.scrape_once()
+
+            with pytest.raises(RuntimeError, match="max consecutive failures"):
+                await loop.scrape_once()
+        finally:
+            await _stop_server(server)
+
+    @pytest.mark.anyio
+    async def test_remove_target_clears_failure_counter(self) -> None:
+        store = _FakeStore()
+        loop = ScrapeLoop(
+            store=store,
+            scrape_interval_seconds=0.01,
+            max_consecutive_failures=5,
+        )
+        loop.add_target("t1", "http://localhost:1")
+        loop._consecutive_failures["t1"] = 3
+
+        loop.remove_target("t1")
+
+        assert "t1" not in loop._consecutive_failures
+
+    @pytest.mark.anyio
+    async def test_below_threshold_does_not_raise(self) -> None:
+        server = await _start_failing_server()
+        try:
+            store = _FakeStore()
+            loop = ScrapeLoop(
+                store=store,
+                scrape_interval_seconds=0.01,
+                max_consecutive_failures=10,
+            )
+            loop.add_target("bad", f"http://127.0.0.1:{server.port}")
+
+            for _ in range(9):
+                await loop.scrape_once()
+        finally:
+            await _stop_server(server)
+
+
+class _FailingServerHandle:
+    def __init__(self, server: asyncio.AbstractServer, port: int) -> None:
+        self.server = server
+        self.port = port
+
+
+async def _start_failing_server() -> _FailingServerHandle:
+    async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(_handler, host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    return _FailingServerHandle(server=server, port=port)
+
+
+async def _stop_server(handle: _FailingServerHandle) -> None:
+    handle.server.close()
+    await handle.server.wait_closed()

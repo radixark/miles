@@ -7,7 +7,13 @@ from typing import NamedTuple
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
-from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task, stop_metric_store_task
+from miles.utils.ft.controller.metrics.lifecycle import (
+    MetricStoreTaskHandle,
+    format_metric_store_health_error,
+    is_metric_store_unhealthy,
+    start_metric_store_task,
+    stop_metric_store_task,
+)
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState
@@ -114,14 +120,15 @@ class FtController:
 
     async def run(self) -> None:
         logger.info("controller_start tick_interval=%s", self._runtime_config.tick_interval)
-        scrape_task = await start_metric_store_task(self._metric_store.time_series_store)
+        scrape_handle = await start_metric_store_task(self._metric_store.time_series_store)
         try:
             while not self._shutting_down:
+                self._check_metric_store_health(scrape_handle)
                 await self._tick()
                 if not self._shutting_down:
                     await asyncio.sleep(self._runtime_config.tick_interval)
         finally:
-            await self._stop_services(scrape_task)
+            await self._stop_services(scrape_handle)
         logger.info("controller_stopped")
 
     async def shutdown(self) -> None:
@@ -174,8 +181,13 @@ class FtController:
     async def _tick(self) -> None:
         await self._tick_loop.tick(self._build_tick_deps())
 
-    async def _stop_services(self, scrape_task: asyncio.Task[None]) -> None:
-        await stop_metric_store_task(self._metric_store.time_series_store, scrape_task)
+    @staticmethod
+    def _check_metric_store_health(handle: MetricStoreTaskHandle) -> None:
+        if is_metric_store_unhealthy(handle):
+            raise RuntimeError(format_metric_store_health_error(handle))
+
+    async def _stop_services(self, scrape_handle: MetricStoreTaskHandle) -> None:
+        await stop_metric_store_task(self._metric_store.time_series_store, scrape_handle)
         self._controller_exporter.stop()
         if self._notifier is not None:
             try:
