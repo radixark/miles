@@ -9,6 +9,7 @@ import time
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -22,6 +23,23 @@ _TIMEOUT_SCALE = float(os.environ.get("FT_TEST_TIMEOUT_SCALE", "1.0"))
 FAST_TIMEOUT = 30.0 * _TIMEOUT_SCALE
 RECOVERY_TIMEOUT = 60.0 * _TIMEOUT_SCALE
 LONG_RECOVERY_TIMEOUT = 120.0 * _TIMEOUT_SCALE
+
+
+def _connect_to_started_ray_cluster(start_stdout: str) -> tuple[Any, str]:
+    match = re.search(r"--address='([^']+)'", start_stdout)
+    if match:
+        gcs_address = match.group(1)
+        return ray.init(address=gcs_address), gcs_address
+
+    ctx = ray.init(address="auto")
+    address_info = getattr(ctx, "address_info", {})
+    gcs_address = address_info.get("gcs_address") or address_info.get("address")
+    if not gcs_address:
+        raise RuntimeError(
+            "Could not resolve GCS address from ray start output or ray.init(address='auto'):\n"
+            f"{start_stdout}"
+        )
+    return ctx, gcs_address
 
 
 def _init_local_ray() -> str:
@@ -58,12 +76,7 @@ def _init_local_ray() -> str:
         text=True,
     )
 
-    match = re.search(r"--address='([^']+)'", result.stdout)
-    if not match:
-        raise RuntimeError(f"Could not parse GCS address from ray start output:\n{result.stdout}")
-    gcs_address = match.group(1)
-
-    ctx = ray.init(address=gcs_address)
+    ctx, _ = _connect_to_started_ray_cluster(start_stdout=result.stdout)
     url = f"http://{ctx.dashboard_url}"
     _wait_for_dashboard_agent(url)
     return url
@@ -199,10 +212,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
         text=True,
     )
 
-    match = re.search(r"--address='([^']+)'", result.stdout)
-    if not match:
-        raise RuntimeError(f"Could not parse GCS address from ray start output:\n{result.stdout}")
-    gcs_address = match.group(1)
+    ctx, gcs_address = _connect_to_started_ray_cluster(start_stdout=result.stdout)
 
     for i in range(1, num_nodes):
         node_ip = f"127.0.0.{i + 1}"
@@ -219,8 +229,6 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
             capture_output=True,
             text=True,
         )
-
-    ctx = ray.init(address=gcs_address)
 
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
