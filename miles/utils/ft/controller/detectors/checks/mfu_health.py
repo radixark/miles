@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 
 from miles.utils.ft.controller.types import TrainingMetricStoreProtocol
@@ -10,7 +9,6 @@ class MfuHealthStatus:
     baseline: float
     threshold: float
     is_declining: bool
-    telemetry_valid: bool = True
 
 
 def check_mfu_health(
@@ -24,24 +22,12 @@ def check_mfu_health(
     """Check whether MFU is declining relative to a baseline.
 
     Returns None when there is insufficient data or no valid baseline.
-    Returns MfuHealthStatus with telemetry_valid=False when non-finite
-    values (NaN/Inf) are present in either the recent or baseline window.
     """
     recent = mini_wandb.query_last_n_steps("mfu", last_n=consecutive_steps)
     if len(recent) < consecutive_steps:
         return None
 
-    recent_finite = [sv for sv in recent if math.isfinite(sv.value)]
-    if len(recent_finite) < len(recent):
-        return MfuHealthStatus(
-            avg_mfu=float("nan"),
-            baseline=0.0,
-            threshold=0.0,
-            is_declining=False,
-            telemetry_valid=False,
-        )
-
-    avg_mfu = sum(sv.value for sv in recent_finite) / len(recent_finite)
+    avg_mfu = sum(sv.value for sv in recent) / len(recent)
 
     computed_baseline = _compute_baseline(
         mini_wandb,
@@ -49,14 +35,6 @@ def check_mfu_health(
         baseline_steps=baseline_steps,
         consecutive_steps=consecutive_steps,
     )
-    if computed_baseline is None:
-        return MfuHealthStatus(
-            avg_mfu=avg_mfu,
-            baseline=0.0,
-            threshold=0.0,
-            is_declining=False,
-            telemetry_valid=False,
-        )
     if computed_baseline <= 0:
         return None
 
@@ -75,11 +53,8 @@ def _compute_baseline(
     explicit_baseline: float | None,
     baseline_steps: int,
     consecutive_steps: int,
-) -> float | None:
-    """Compute MFU baseline. Returns None if non-finite values are present."""
+) -> float:
     if explicit_baseline is not None:
-        if not math.isfinite(explicit_baseline):
-            return None
         return explicit_baseline
 
     total_needed = baseline_steps + consecutive_steps
@@ -89,8 +64,4 @@ def _compute_baseline(
     if not baseline_data:
         return 0.0
 
-    finite_values = [sv for sv in baseline_data if math.isfinite(sv.value)]
-    if len(finite_values) < len(baseline_data):
-        return None
-
-    return sum(sv.value for sv in finite_values) / len(finite_values)
+    return sum(sv.value for sv in baseline_data) / len(baseline_data)

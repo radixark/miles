@@ -192,65 +192,6 @@ class TestThermalThrottlingDetector:
         assert "100" in decision.reason
 
 
-class TestThermalThrottlingWithNonFiniteMfu:
-    """When MFU data contained NaN, the thermal throttling detector would
-    get mfu.is_declining=False (NaN < threshold is always False), and
-    incorrectly report "temperature outlier but MFU is healthy"."""
-
-    def test_temperature_outlier_with_nan_mfu_returns_telemetry_blind(self) -> None:
-        store = make_fake_metric_store()
-        for i in range(8):
-            inject_gpu_temperature(store, node_id="node-0", gpu=str(i), celsius=60.0)
-            inject_gpu_temperature(store, node_id="node-1", gpu=str(i), celsius=105.0)
-
-        wandb = make_fake_mini_wandb(steps={i: {"mfu": float("nan")} for i in range(1, 11)})
-        detector = ThermalThrottlingDetector(
-            config=ThermalThrottlingDetectorConfig(
-                temperature_delta_threshold=20.0,
-                mfu_baseline=0.5,
-                mfu_consecutive_steps=10,
-            )
-        )
-
-        decision = detector.evaluate(
-            make_detector_context(
-                metric_store=store,
-                mini_wandb=wandb,
-                active_node_ids=_ACTIVE_NODE_IDS,
-            )
-        )
-
-        assert decision.action == ActionType.NOTIFY_HUMAN
-        assert "invalid" in decision.reason.lower()
-        assert decision.trigger == TriggerType.TELEMETRY_BLIND
-
-    def test_temperature_outlier_with_nan_mfu_does_not_report_healthy(self) -> None:
-        """The key regression: NaN MFU must never be interpreted as 'MFU is healthy'."""
-        store = make_fake_metric_store()
-        for i in range(8):
-            inject_gpu_temperature(store, node_id="node-0", gpu=str(i), celsius=60.0)
-            inject_gpu_temperature(store, node_id="node-1", gpu=str(i), celsius=105.0)
-
-        wandb = make_fake_mini_wandb(steps={i: {"mfu": float("nan")} for i in range(1, 11)})
-        detector = ThermalThrottlingDetector(
-            config=ThermalThrottlingDetectorConfig(
-                temperature_delta_threshold=20.0,
-                mfu_baseline=0.5,
-                mfu_consecutive_steps=10,
-            )
-        )
-
-        decision = detector.evaluate(
-            make_detector_context(
-                metric_store=store,
-                mini_wandb=wandb,
-                active_node_ids=_ACTIVE_NODE_IDS,
-            )
-        )
-
-        assert "MFU is healthy" not in decision.reason
-
-
 class TestThermalThrottlingDetectorValidation:
     @pytest.mark.parametrize(
         "kwargs,match",
