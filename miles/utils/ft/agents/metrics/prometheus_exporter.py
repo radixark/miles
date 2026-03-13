@@ -23,17 +23,17 @@ class PrometheusExporter:
 
     Used by both FtNodeAgent (dynamic metrics from collectors) and
     FtTrainingRankAgent (pre-defined heartbeat gauges).
-
-    The HTTP server runs in a background thread and may scrape the registry
-    concurrently with collector tasks calling update_metrics(). A lock
-    serializes all mutations to the gauge/counter caches and the registry
-    so that the scrape thread never observes a partially-registered metric.
     """
 
     def __init__(self) -> None:
         self._registry = CollectorRegistry()
         self._gauges: dict[_MetricKey, Gauge] = {}
         self._counters: dict[_MetricKey, Counter] = {}
+
+        # The HTTP server runs in a background thread and may scrape the registry
+        # concurrently with collector tasks calling update_metrics(). A lock
+        # serializes all mutations to the gauge/counter caches and the registry
+        # so that the scrape thread never observes a partially-registered metric.
         self._lock = threading.RLock()
 
         httpd, _thread = start_http_server(port=0, registry=self._registry)
