@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,8 @@ import typer
 from miles.utils.ft.agents.diagnostics.dispatcher import NodeDiagnosticDispatcher
 from miles.utils.ft.cli.diagnostics.output import exit_with_results, print_results, validate_check_names
 from miles.utils.ft.factories.node_agent import build_all_diagnostics
+
+logger = logging.getLogger(__name__)
 
 _LOCAL_EXCLUDED = {"nccl_pairwise"}
 
@@ -39,6 +42,12 @@ def local(
     selected = checks or local_defaults
     validate_check_names(selected, available=dispatcher.available_types)
 
+    logger.info("cli: local diagnostics node_id=%s, checks=%s, timeout=%d", node_id, selected, timeout)
     results = asyncio.run(dispatcher.run_selected(selected, timeout_seconds=timeout))
+    logger.info(
+        "cli: local diagnostics complete passed=%d, failed=%d",
+        sum(1 for r in results if r.passed),
+        sum(1 for r in results if not r.passed),
+    )
     print_results(results, json_output=json_output, node_id=node_id)
     exit_with_results(results)

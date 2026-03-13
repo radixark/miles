@@ -27,10 +27,12 @@ def cluster(
     from miles.utils.ft.adapters.impl.ray.node_discovery import get_alive_gpu_nodes
     from miles.utils.ft.controller.diagnostics.executors import build_all_cluster_executors
 
+    logger.info("cli: cluster diagnostics ray_address=%s", ray_address)
     ray.init(address=ray_address)
 
     try:
         nodes = get_alive_gpu_nodes()
+        logger.info("cli: cluster diagnostics discovered gpu_nodes=%d", len(nodes))
         registry = build_all_cluster_executors()
 
         selected = checks or list(registry.keys())
@@ -54,6 +56,7 @@ async def _run_cluster_checks(
     checks: list[str],
     timeout: int,
 ) -> list[DiagnosticResult]:
+    logger.info("cli: running cluster checks=%s, node_count=%d, timeout=%d", checks, len(node_agents), timeout)
     all_results: list[DiagnosticResult] = []
     for name in checks:
         try:
@@ -96,9 +99,11 @@ async def _managed_agents(
     import ray
 
     node_agents = _deploy_agents(nodes)
+    logger.info("cli: deployed diagnostic agents count=%d", len(node_agents))
     try:
         yield node_agents
     finally:
+        logger.info("cli: cleaning up diagnostic agents count=%d", len(node_agents))
         for actor in node_agents.values():
             ray.kill(actor)
 

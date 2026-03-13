@@ -107,6 +107,7 @@ def launch(
     ft_id = ft_id or uuid4().hex[:8]
 
     detector_config = _parse_detector_config(detector_config_json) if detector_config_json else DetectorChainConfig()
+    logger.debug("cli: detector_config source=%s", "json" if detector_config_json else "default")
 
     config = FtControllerConfig(
         ft_id=ft_id,
@@ -159,5 +160,9 @@ def launch(
 def _parse_detector_config(raw: str) -> DetectorChainConfig:
     """Parse detector config from a JSON string or @filepath reference."""
     if raw.startswith("@"):
-        raw = Path(raw[1:]).read_text()
+        filepath = raw[1:]
+        logger.info("cli: loading detector config from file=%s", filepath)
+        raw = Path(filepath).read_text()
+    else:
+        logger.debug("cli: parsing inline detector config json_len=%d", len(raw))
     return DetectorChainConfig.model_validate_json(raw)
