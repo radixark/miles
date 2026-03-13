@@ -114,7 +114,10 @@ class SGLangEngine(RayActor):
         self.worker_type = worker_type
         self.base_gpu_id = base_gpu_id
 
-    def init(self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None):
+    def init(
+        self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None,
+        skip_router_registration=False,
+    ):
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
 
@@ -153,7 +156,7 @@ class SGLangEngine(RayActor):
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
         else:
-            self._init_normal(server_args_dict)
+            self._init_normal(server_args_dict, skip_router_registration=skip_router_registration)
 
     def _init_external(self, expect_server_args, external_engine_need_check_fields):
         logger.info(f"Use external SGLang engine (rank={self.rank}, expect_server_args={expect_server_args})")
@@ -179,10 +182,16 @@ class SGLangEngine(RayActor):
         actual_server_args = _get_actual_server_args()
         _sanity_check_server_args(actual_server_args, expect_server_args)
 
-    def _init_normal(self, server_args_dict):
+    def _init_normal(self, server_args_dict, skip_router_registration=False):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
+        self._disaggregation_bootstrap_port = server_args_dict.get("disaggregation_bootstrap_port")
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
+        if not skip_router_registration:
+            self.register_to_router()
+
+    def register_to_router(self):
+        """Register this engine with the router. Separated so warming engines can defer registration."""
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
                 assert (
@@ -196,8 +205,8 @@ class SGLangEngine(RayActor):
                     "url": f"http://{self.server_host}:{self.server_port}",
                     "worker_type": self.worker_type,
                 }
-                if self.worker_type == "prefill":
-                    payload["bootstrap_port"] = server_args_dict["disaggregation_bootstrap_port"]
+                if self.worker_type == "prefill" and self._disaggregation_bootstrap_port is not None:
+                    payload["bootstrap_port"] = self._disaggregation_bootstrap_port
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/workers",
                     json=payload,

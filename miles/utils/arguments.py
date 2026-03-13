@@ -495,6 +495,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
+            parser.add_argument(
+                "--rollout-max-kill-ratio-per-round",
+                type=float,
+                default=0.5,
+                help="Anti-cascade: maximum fraction of total engines that can be killed in a single health check round. "
+                "Prevents transient failures (e.g. network blip) from causing mass kills. Range: (0, 1].",
+            )
             return parser
 
         # data
