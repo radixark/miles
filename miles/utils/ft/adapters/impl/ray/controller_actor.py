@@ -95,10 +95,14 @@ class _FtControllerActorCls:
         self,
         rollout_manager_handle: object,
         metrics_address: str = "",
+        cell_node_ids: dict[str, list[str]] | None = None,
     ) -> None:
         self._subsystem_hub.set_rollout_handle(rollout_manager_handle)
         if metrics_address:
             self._ctrl.add_scrape_target("rollout-ft-agent", metrics_address)
+        if cell_node_ids:
+            for cell_id, node_ids in cell_node_ids.items():
+                self._subsystem_hub.set_rollout_node_ids(cell_id, node_ids)
 
     def set_rollout_node_ids(self, cell_id: str, node_ids: Iterable[str]) -> None:
         self._subsystem_hub.set_rollout_node_ids(cell_id, node_ids)

@@ -23,18 +23,28 @@ def build_rollout_agent(
     *,
     check_interval: float = 30.0,
     ft_id: str = "",
+    cell_node_ids: dict[str, list[str]] | None = None,
 ) -> FtRolloutAgent:
     agent = FtRolloutAgent(
         rollout_manager,
         health_checker=lambda engine: engine.health_generate.remote(),
         check_interval=check_interval,
     )
-    _register_with_controller(agent=agent, ft_id=ft_id or get_ft_id())
+    _register_with_controller(
+        agent=agent,
+        ft_id=ft_id or get_ft_id(),
+        cell_node_ids=cell_node_ids,
+    )
     return agent
 
 
 @graceful_degrade(msg="Failed to register rollout agent with controller")
-def _register_with_controller(*, agent: FtRolloutAgent, ft_id: str) -> None:
+def _register_with_controller(
+    *,
+    agent: FtRolloutAgent,
+    ft_id: str,
+    cell_node_ids: dict[str, list[str]] | None = None,
+) -> None:
     controller = ray.get_actor(ft_controller_actor_name(ft_id))
     self_handle = ray.get_runtime_context().current_actor
 
@@ -43,6 +53,7 @@ def _register_with_controller(*, agent: FtRolloutAgent, ft_id: str) -> None:
             controller.register_rollout.remote(
                 rollout_manager_handle=self_handle,
                 metrics_address=agent.address,
+                cell_node_ids=cell_node_ids,
             ),
             timeout=REGISTER_TIMEOUT_SECONDS,
         )
@@ -56,7 +67,8 @@ def _register_with_controller(*, agent: FtRolloutAgent, ft_id: str) -> None:
     )
     if result.ok:
         logger.info(
-            "rollout_agent_registered ft_id=%s metrics_address=%s",
+            "rollout_agent_registered ft_id=%s metrics_address=%s cell_node_ids=%s",
             ft_id,
             agent.address,
+            {k: sorted(v) for k, v in cell_node_ids.items()} if cell_node_ids else "(none)",
         )

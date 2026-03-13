@@ -74,3 +74,16 @@ class TestRolloutNodeIds:
         mutable.add("node-injected")
 
         assert hub.get_rollout_node_ids("cell-0") == frozenset({"node-0"})
+
+    def test_rollout_node_ids_empty_means_detectors_wont_run(self) -> None:
+        """Without set_rollout_node_ids, get_rollout_node_ids returns empty,
+        which causes build_subsystem_context to set should_run_detectors=False.
+        Previously register_rollout() never called set_rollout_node_ids,
+        so rollout detectors were permanently disabled."""
+        hub = SubsystemHub(training_rank_roster_box=Box(None))
+
+        hub.set_rollout_handle(object())
+        assert hub.get_rollout_node_ids("cell-0") == frozenset()
+
+        hub.set_rollout_node_ids("cell-0", ["node-a", "node-b"])
+        assert hub.get_rollout_node_ids("cell-0") == frozenset({"node-a", "node-b"})
