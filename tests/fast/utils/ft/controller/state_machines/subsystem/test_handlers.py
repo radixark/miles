@@ -834,6 +834,81 @@ class TestInvalidDetectorDecision:
                              )
 
 
+class TestNotifyHumanDeduplication:
+    """NOTIFY_HUMAN decisions were previously sent every tick as long as the
+    condition persisted. This caused alert storms: telemetry blindness,
+    missing heartbeat, etc. would fire once per tick indefinitely."""
+
+    @pytest.mark.asyncio
+    async def test_same_dedup_id_only_notifies_once(self) -> None:
+        notifier = FakeNotifier()
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="heartbeat missing",
+                trigger=TriggerType.TELEMETRY_BLIND,
+                notify_deduplicator_id="hang:no_heartbeat:run=abc",
+            )
+        )
+        stepper = _make_stepper()
+        ctx = _make_subsystem_context(detectors=[detector], notifier=notifier)
+
+        # Tick 1: should notify
+        await _step_last(stepper, DetectingAnomalySt(), ctx)
+        assert len(notifier.calls) == 1
+
+        # Tick 2: same dedup id, should NOT notify again
+        await _step_last(stepper, DetectingAnomalySt(), ctx)
+        assert len(notifier.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_different_dedup_ids_both_notify(self) -> None:
+        notifier = FakeNotifier()
+        detector_a = FixedDecisionDetector(
+            Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="problem A",
+                trigger=TriggerType.TELEMETRY_BLIND,
+                notify_deduplicator_id="problem_a",
+            )
+        )
+        detector_b = FixedDecisionDetector(
+            Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="problem B",
+                trigger=TriggerType.MISC,
+                notify_deduplicator_id="problem_b",
+            )
+        )
+        stepper = _make_stepper()
+
+        ctx_a = _make_subsystem_context(detectors=[detector_a], notifier=notifier)
+        await _step_last(stepper, DetectingAnomalySt(), ctx_a)
+        assert len(notifier.calls) == 1
+
+        ctx_b = _make_subsystem_context(detectors=[detector_b], notifier=notifier)
+        await _step_last(stepper, DetectingAnomalySt(), ctx_b)
+        assert len(notifier.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_dedup_id_always_notifies(self) -> None:
+        """Legacy NOTIFY_HUMAN decisions without dedup_id still fire every tick."""
+        notifier = FakeNotifier()
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="legacy notify",
+                trigger=TriggerType.MISC,
+            )
+        )
+        stepper = _make_stepper()
+        ctx = _make_subsystem_context(detectors=[detector], notifier=notifier)
+
+        await _step_last(stepper, DetectingAnomalySt(), ctx)
+        await _step_last(stepper, DetectingAnomalySt(), ctx)
+        assert len(notifier.calls) == 2
+
+
 class TestStateMachineIntegration:
     @pytest.mark.asyncio
     async def test_full_detecting_to_recovering_to_detecting(self) -> None:

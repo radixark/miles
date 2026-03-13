@@ -70,6 +70,7 @@ class ThermalThrottlingDetector(BaseFaultDetector):
                     "but MFU telemetry invalid (non-finite values)"
                 ),
                 trigger=TriggerType.TELEMETRY_BLIND,
+                notify_deduplicator_id="thermal_throttling:mfu_telemetry_invalid",
             )
         if mfu is None or not mfu.is_declining:
             return Decision.no_fault(

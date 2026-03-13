@@ -77,7 +77,13 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             return None
 
         if decision.action == ActionType.NOTIFY_HUMAN:
-            await handle_notify_human(decision=decision, notifier=ctx.notifier)
+            dedup = ctx.notify_deduplicator
+            if dedup.should_notify(decision.notify_deduplicator_id):
+                await handle_notify_human(decision=decision, notifier=ctx.notifier)
+            if decision.notify_deduplicator_id is not None:
+                dedup.sync_active_ids(
+                    dedup.active_ids | {decision.notify_deduplicator_id}
+                )
             return None
 
         if len(decision.bad_node_ids) > ctx.max_simultaneous_bad_nodes:

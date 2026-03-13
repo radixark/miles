@@ -83,4 +83,5 @@ def check_metric_blind(
         action=ActionType.NOTIFY_HUMAN,
         reason=f"{detector_name}: core metric {metric_name} missing for active nodes",
         trigger=TriggerType.TELEMETRY_BLIND,
+        notify_deduplicator_id=f"metric_blind:{detector_name}:{metric_name}",
     )

@@ -96,6 +96,7 @@ class Decision(FtBaseModel):
     bad_node_ids: list[str] = Field(default_factory=list)
     reason: str
     trigger: TriggerType | None = None
+    notify_deduplicator_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_trigger(self) -> Decision:

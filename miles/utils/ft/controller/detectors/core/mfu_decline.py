@@ -41,6 +41,7 @@ class MfuDeclineDetector(BaseFaultDetector):
                 action=ActionType.NOTIFY_HUMAN,
                 reason="MFU telemetry invalid: non-finite values detected in MFU data",
                 trigger=TriggerType.TELEMETRY_BLIND,
+                notify_deduplicator_id="mfu_decline:telemetry_invalid",
             )
 
         if cfg.mfu_absolute_minimum > 0 and mfu.avg_mfu < cfg.mfu_absolute_minimum:

@@ -57,6 +57,7 @@ class HangDetector(BaseFaultDetector):
                 action=ActionType.NOTIFY_HUMAN,
                 reason="active_run_id not established, run-scoped metric queries unreliable",
                 trigger=TriggerType.TELEMETRY_BLIND,
+                notify_deduplicator_id="hang:active_run_id_missing",
             )
 
         label_filters = build_training_metric_filters(rank="0", run_id=ctx.active_run_id)
@@ -78,6 +79,7 @@ class HangDetector(BaseFaultDetector):
                 action=ActionType.NOTIFY_HUMAN,
                 reason="no heartbeat data from rank-0 agent after grace period",
                 trigger=TriggerType.TELEMETRY_BLIND,
+                notify_deduplicator_id=f"hang:no_heartbeat:run={ctx.active_run_id}",
             )
 
         if heartbeat_changes is None:

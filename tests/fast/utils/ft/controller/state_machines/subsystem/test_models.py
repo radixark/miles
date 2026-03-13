@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, SubsystemState, RecoveringSt
+from miles.utils.ft.controller.state_machines.subsystem.models import (
+    DetectingAnomalySt,
+    NotifyDeduplicator,
+    SubsystemState,
+    RecoveringSt,
+)
 from miles.utils.ft.controller.state_machines.recovery.models import RealtimeChecksSt
 from miles.utils.ft.controller.types import TriggerType
 
@@ -76,3 +81,32 @@ class TestImmutableDefaults:
         state = EvictingSt(bad_node_ids=["a"])
         assert isinstance(state.bad_node_ids, tuple)
         assert state.bad_node_ids == ("a",)
+
+
+class TestNotifyDeduplicator:
+    def test_first_occurrence_allows_notify(self) -> None:
+        dedup = NotifyDeduplicator()
+        assert dedup.should_notify("hang:no_heartbeat") is True
+
+    def test_repeated_occurrence_suppressed_after_sync(self) -> None:
+        dedup = NotifyDeduplicator()
+        dedup.sync_active_ids({"hang:no_heartbeat"})
+        assert dedup.should_notify("hang:no_heartbeat") is False
+
+    def test_different_id_still_allows_notify(self) -> None:
+        dedup = NotifyDeduplicator()
+        dedup.sync_active_ids({"hang:no_heartbeat"})
+        assert dedup.should_notify("metric_blind:gpu") is True
+
+    def test_cleared_id_allows_notify_again(self) -> None:
+        """When a problem disappears (ID removed from active set),
+        re-occurrence should trigger a new notification."""
+        dedup = NotifyDeduplicator()
+        dedup.sync_active_ids({"hang:no_heartbeat"})
+        dedup.sync_active_ids(set())
+        assert dedup.should_notify("hang:no_heartbeat") is True
+
+    def test_none_dedup_id_always_allows(self) -> None:
+        dedup = NotifyDeduplicator()
+        dedup.sync_active_ids({"some_other"})
+        assert dedup.should_notify(None) is True
