@@ -32,6 +32,7 @@ def _make_manager_with_mock_api(
 
     mock_core_v1 = AsyncMock()
     manager._ensure_client = AsyncMock(return_value=mock_core_v1)
+    manager._ensure_client_unlocked = AsyncMock(return_value=mock_core_v1)
     manager._affinity_validated = True
     return manager, mock_core_v1
 
