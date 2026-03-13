@@ -132,10 +132,12 @@ class TestNotifyDeduplicator:
         because we check against the *previous* batch's active IDs, not
         the current batch being built."""
         dedup = NotifyDeduplicator()
-        result = dedup.check_batch([
-            _decision_with_dedup_id("hang:no_heartbeat"),
-            _decision_with_dedup_id("hang:no_heartbeat"),
-        ])
+        result = dedup.check_batch(
+            [
+                _decision_with_dedup_id("hang:no_heartbeat"),
+                _decision_with_dedup_id("hang:no_heartbeat"),
+            ]
+        )
         assert len(result) == 2
 
     def test_mixed_none_and_non_none_in_batch(self) -> None:
@@ -143,11 +145,13 @@ class TestNotifyDeduplicator:
         passes, non-None passes if new."""
         dedup = NotifyDeduplicator()
         dedup.check_batch([_decision_with_dedup_id("hang:no_heartbeat")])
-        result = dedup.check_batch([
-            _decision_with_dedup_id(None),
-            _decision_with_dedup_id("hang:no_heartbeat"),
-            _decision_with_dedup_id("metric_blind:gpu"),
-        ])
+        result = dedup.check_batch(
+            [
+                _decision_with_dedup_id(None),
+                _decision_with_dedup_id("hang:no_heartbeat"),
+                _decision_with_dedup_id("metric_blind:gpu"),
+            ]
+        )
         assert len(result) == 2
         dedup_ids = [d.notify_deduplicator_id for d in result]
         assert None in dedup_ids
@@ -155,10 +159,12 @@ class TestNotifyDeduplicator:
 
     def test_active_ids_reflects_latest_batch(self) -> None:
         dedup = NotifyDeduplicator()
-        dedup.check_batch([
-            _decision_with_dedup_id("a"),
-            _decision_with_dedup_id("b"),
-        ])
+        dedup.check_batch(
+            [
+                _decision_with_dedup_id("a"),
+                _decision_with_dedup_id("b"),
+            ]
+        )
         assert dedup.active_ids == frozenset({"a", "b"})
 
         dedup.check_batch([_decision_with_dedup_id("b")])

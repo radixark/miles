@@ -426,6 +426,7 @@ class TestInitLockPreventsDuplicateWork:
         mock_pod = _make_mock_pod_with_affinity()
 
         affinity_call_count = 0
+
         async def _counting_list(**kwargs: object) -> SimpleNamespace:
             nonlocal affinity_call_count
             if "affinity_check" not in str(kwargs):
