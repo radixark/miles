@@ -24,11 +24,16 @@ logger = logging.getLogger(__name__)
 
 class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]):
     async def step(self, state: DetectingAnomalySt, ctx: SubsystemContext) -> SubsystemState | None:
+        logger.debug("subsystem_sm: DetectingAnomalyHandler.step tick=%d", ctx.tick_count)
         decision = await self._get_actionable_decision(ctx=ctx)
         if decision is None:
             return None
 
         if ctx.cooldown.is_throttled():
+            logger.warning(
+                "subsystem_sm: recovery cooldown throttled for trigger=%s, skipping",
+                decision.trigger,
+            )
             await handle_notify_human(
                 decision=Decision(
                     action=ActionType.NOTIFY_HUMAN,
@@ -42,6 +47,12 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             return None
 
         ctx.cooldown.record()
+        logger.info(
+            "subsystem_sm: state transition: old=DetectingAnomalySt, new=RecoveringSt, "
+            "trigger=%s, bad_nodes=%s",
+            decision.trigger,
+            decision.bad_node_ids,
+        )
         return RecoveringSt(
             recovery=RealtimeChecksSt(pre_identified_bad_nodes=decision.bad_node_ids),
             trigger=decision.trigger,
@@ -52,6 +63,7 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
     async def _get_actionable_decision(self, *, ctx: SubsystemContext) -> Decision | None:
         """Run all detectors, handle NOTIFY_HUMAN as side effects, return merged ENTER_RECOVERY or None."""
         if not ctx.should_run_detectors or ctx.detector_context is None:
+            logger.debug("subsystem_sm: _get_actionable_decision: detectors not running this tick")
             return None
 
         tracker = ctx.detector_crash_tracker
@@ -73,9 +85,15 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
         # Step 2: Return merged ENTER_RECOVERY or None
         decision = result.recovery_decision
         if decision is None:
+            logger.debug("subsystem_sm: no recovery decision after detector run")
             return None
 
         if len(decision.bad_node_ids) > ctx.max_simultaneous_bad_nodes:
+            logger.warning(
+                "subsystem_sm: too_many_simultaneous_bad_nodes: count=%d, max=%d, abandoning recovery",
+                len(decision.bad_node_ids),
+                ctx.max_simultaneous_bad_nodes,
+            )
             await handle_notify_human(
                 decision=Decision(
                     action=ActionType.NOTIFY_HUMAN,
@@ -106,6 +124,11 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
 
 class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
     async def step(self, state: RecoveringSt, ctx: SubsystemContext) -> SubsystemState | None:
+        logger.debug(
+            "subsystem_sm: RecoveringHandler.step trigger=%s, recovery_phase=%s",
+            state.trigger,
+            type(state.recovery).__name__,
+        )
         ret = await self._check_new_bad_nodes(state=state, ctx=ctx)
         if ret is not None:
             return ret
@@ -123,6 +146,11 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             crash_tracker=ctx.detector_crash_tracker,
         )
         if len(new_bad_nodes) > ctx.max_simultaneous_bad_nodes:
+            logger.warning(
+                "subsystem_sm: too_many_new_bad_nodes during recovery: count=%d, max=%d",
+                len(new_bad_nodes),
+                ctx.max_simultaneous_bad_nodes,
+            )
             known_bad = set(state.known_bad_node_ids)
             all_bad = tuple(sorted(known_bad | new_bad_nodes))
             return RecoveringSt(
@@ -145,6 +173,11 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             # may be based on incomplete information. Re-entering RealtimeChecks
             # ensures the full set goes through the evict→restart→monitor pipeline.
             all_bad = tuple(sorted(known_bad | new_bad_nodes))
+            logger.info(
+                "subsystem_sm: new bad nodes discovered during recovery: new=%s, all=%s, restarting recovery",
+                sorted(truly_new),
+                all_bad,
+            )
             return RecoveringSt(
                 recovery=RealtimeChecksSt(pre_identified_bad_nodes=all_bad),
                 trigger=state.trigger,
@@ -168,9 +201,13 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             new_recovery = _new_recovery
 
         if new_recovery is None:
+            logger.debug("subsystem_sm: _advance_recovery: recovery stepper returned None, no transition")
             return None
         if isinstance(new_recovery, RecoveryDoneSt):
             self._report_recovery_duration(state=state, ctx=ctx)
+            logger.info(
+                "subsystem_sm: state transition: old=RecoveringSt, new=DetectingAnomalySt, trigger=recovery_done"
+            )
             return DetectingAnomalySt()
         return RecoveringSt(
             recovery=new_recovery,

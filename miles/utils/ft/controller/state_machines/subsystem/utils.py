@@ -83,6 +83,12 @@ def run_detectors(
             notify_decisions.append(decision)
 
     merged_recovery = _merge_recovery_decisions(recovery_decisions)
+    logger.debug(
+        "subsystem_sm: run_detectors: recovery_decisions=%d, notify_decisions=%d, merged_has_recovery=%s",
+        len(recovery_decisions),
+        len(notify_decisions),
+        merged_recovery is not None,
+    )
     return DetectorResult(
         recovery_decision=merged_recovery,
         notify_decisions=notify_decisions,
@@ -95,11 +101,14 @@ def collect_evictable_bad_nodes(
     crash_tracker: SlidingWindowCounter | None = None,
 ) -> set[str]:
     if tick_detector_context is None:
+        logger.debug("subsystem_sm: collect_evictable_bad_nodes: no detector context, returning empty")
         return set()
     bad_nodes: set[str] = set()
     for decision in _run_detectors_raw(detectors=detectors, ctx=tick_detector_context, crash_tracker=crash_tracker):
         if decision.action == ActionType.ENTER_RECOVERY and decision.bad_node_ids:
             bad_nodes.update(decision.bad_node_ids)
+    if bad_nodes:
+        logger.debug("subsystem_sm: collect_evictable_bad_nodes found=%s", sorted(bad_nodes))
     return bad_nodes
 
 

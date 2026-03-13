@@ -19,8 +19,10 @@ async def safe_notify(
     severity: str = "critical",
 ) -> None:
     if notifier is None:
+        logger.debug("safe_notify: notifier is None, skipping title=%s", title)
         return
 
+    logger.debug("safe_notify: sending title=%s, severity=%s", title, severity)
     result = await retry_async(
         func=lambda: notifier.send(title=title, content=content, severity=severity),
         description=f"safe_notify({title})",

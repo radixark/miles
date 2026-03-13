@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
 
@@ -15,6 +16,8 @@ from miles.utils.ft.controller.state_machines.restart.models import (
 from miles.utils.ft.controller.types import Decision, MetricStore, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
+
+logger = logging.getLogger(__name__)
 
 
 class SubsystemState(FtBaseModel):
@@ -61,6 +64,12 @@ class NotifyDeduplicator:
                 new_active.add(dedup_id)
 
         self._active_ids = new_active
+        if to_notify:
+            logger.debug(
+                "subsystem_sm: NotifyDeduplicator: passing through %d of %d decisions",
+                len(to_notify),
+                len(decisions),
+            )
         return to_notify
 
     @property
