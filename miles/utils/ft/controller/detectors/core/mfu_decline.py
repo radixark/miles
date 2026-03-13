@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 from pydantic import ConfigDict, Field
@@ -6,6 +7,8 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector, Detector
 from miles.utils.ft.controller.detectors.checks.mfu_health import check_mfu_health
 from miles.utils.ft.controller.types import ActionType, Decision, TrainingMetricStoreProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class MfuDeclineDetectorConfig(FtBaseModel):
@@ -49,9 +52,15 @@ class MfuDeclineDetector(BaseFaultDetector):
         # ByteRobust (arxiv 2509.16293 Sec.5) uses stack trace aggregation to
         # localize faulty machines on MFU decline; for simplicity we notify human.
         decline_summary = f"{mfu.avg_mfu:.4f} < {mfu.threshold:.4f}"
+        logger.debug("detector: MfuDeclineDetector decline detected: %s", decline_summary)
 
         elapsed_minutes = self._compute_decline_duration_minutes(ctx.metric_store.mini_wandb, mfu.threshold)
         if elapsed_minutes >= cfg.decline_timeout_minutes:
+            logger.warning(
+                "detector: MfuDeclineDetector decline persisted for %.1fmin (timeout=%.1f), notifying",
+                elapsed_minutes,
+                cfg.decline_timeout_minutes,
+            )
             return Decision(
                 action=ActionType.NOTIFY_HUMAN,
                 reason=f"MFU decline ({decline_summary}) persisted for {elapsed_minutes:.1f}min without identifiable cause",

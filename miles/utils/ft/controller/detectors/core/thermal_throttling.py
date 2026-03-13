@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 
 import polars as pl
@@ -8,6 +9,8 @@ from miles.utils.ft.controller.detectors.checks.mfu_health import check_mfu_heal
 from miles.utils.ft.controller.types import ActionType, Decision, TimeSeriesQueryProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.metric_names import DCGM_FI_DEV_GPU_TEMP
+
+logger = logging.getLogger(__name__)
 
 
 class ThermalThrottlingDetectorConfig(FtBaseModel):
@@ -54,6 +57,10 @@ class ThermalThrottlingDetector(BaseFaultDetector):
         if not result.node_ids:
             return Decision.no_fault(reason="no temperature outlier")
 
+        logger.debug(
+            "detector: ThermalThrottlingDetector temperature outliers on nodes=%s, checking MFU",
+            result.node_ids,
+        )
         cfg = self._config
         mfu = check_mfu_health(
             ctx.metric_store.mini_wandb,
@@ -63,11 +70,21 @@ class ThermalThrottlingDetector(BaseFaultDetector):
             baseline_steps=cfg.mfu_baseline_steps,
         )
         if mfu is None or not mfu.is_declining:
+            logger.debug(
+                "detector: ThermalThrottlingDetector temp outlier on nodes=%s but MFU healthy, no action",
+                result.node_ids,
+            )
             return Decision.no_fault(
                 reason=f"temperature outlier on {result.node_ids} but MFU is healthy",
             )
 
         gpu_detail = ", ".join(f"{o.node_id}:gpu{o.gpu}={o.temperature:.0f}°C" for o in result.gpu_outliers)
+        logger.info(
+            "detector: ThermalThrottlingDetector confirmed thermal throttling: nodes=%s, mfu=%.4f < threshold=%.4f",
+            result.node_ids,
+            mfu.avg_mfu,
+            mfu.threshold,
+        )
         return Decision(
             action=ActionType.ENTER_RECOVERY,
             bad_node_ids=result.node_ids,
