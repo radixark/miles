@@ -63,6 +63,8 @@ class HangDetector(BaseFaultDetector):
         label_filters = build_training_metric_filters(rank="0", run_id=ctx.active_run_id)
 
         phase = self._get_current_phase(ctx.metric_store.time_series_store, label_filters=label_filters)
+        if phase is None:
+            return Decision.no_fault(reason="phase unknown, skipping hang check")
         timeout_attr = _PHASE_TIMEOUT_ATTR.get(phase)
         if timeout_attr is None:
             return Decision.no_fault(reason=f"unknown training phase {phase}, skipping hang check")
@@ -100,18 +102,18 @@ class HangDetector(BaseFaultDetector):
         metric_store: TimeSeriesQueryProtocol,
         *,
         label_filters: dict[str, str],
-    ) -> float:
+    ) -> float | None:
         try:
             df = metric_store.query_single_latest(TRAINING_PHASE, label_filters=label_filters)
         except AmbiguousSeriesError:
             logger.warning(
-                "ambiguous_training_phase_series defaulting to PHASE_TRAINING",
+                "ambiguous_training_phase_series: phase unknown, skipping hang check",
                 exc_info=True,
             )
-            return PHASE_TRAINING
+            return None
 
         if df.is_empty():
-            return PHASE_TRAINING
+            return None
 
         return df.row(0, named=True)["value"]
 
