@@ -83,16 +83,8 @@ def _ensure_ray_actor_on_node(
             "Actor %s was created by another rank concurrently, skipping",
             name,
         )
-    except Exception:
-        logger.warning(
-            "Failed to create actor %s on node %s",
-            name,
-            node_id,
-            exc_info=True,
-        )
 
 
-@graceful_degrade(msg="Failed to ensure node agent on current node")
 def ensure_node_agent(ft_id: str = "") -> None:
     resolved_ft_id = ft_id or get_ft_id()
     node_id = ray.get_runtime_context().get_node_id()

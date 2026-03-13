@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,10 +50,9 @@ class TestEnsureRayActorOnNode:
             handle.start.remote.assert_called_once()
             mock_ray.get.assert_called_once_with(handle.start.remote.return_value)
 
-    def test_start_method_result_is_awaited_via_ray_get(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Previously the start_method ObjectRef was fire-and-forget — if start()
-        raised, the error was silently lost. Now ray.get() blocks until the
-        actor's start() completes, and a failure is logged as a warning."""
+    def test_start_method_failure_propagates(self) -> None:
+        """Previously start() failures were silently swallowed. Now they
+        propagate so the caller knows the node agent failed to start."""
         with (
             patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
             patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
@@ -63,18 +61,14 @@ class TestEnsureRayActorOnNode:
             actor_cls = MagicMock()
             handle = MagicMock()
             actor_cls.options.return_value.remote.return_value = handle
-            start_ref = handle.start.remote.return_value
             mock_ray.get.side_effect = RuntimeError("start failed")
 
-            with caplog.at_level(logging.WARNING):
+            with pytest.raises(RuntimeError, match="start failed"):
                 _ensure_ray_actor_on_node(
                     actor_cls=actor_cls,
                     name="test_actor",
                     node_id="node-1",
                 )
-
-            mock_ray.get.assert_called_once_with(start_ref)
-            assert "Failed to create actor" in caplog.text
 
     def test_concurrent_creation_race_logs_info(self, caplog: pytest.LogCaptureFixture) -> None:
         """When another rank creates the actor concurrently, logs info and does not raise."""
@@ -95,8 +89,10 @@ class TestEnsureRayActorOnNode:
 
             assert "created by another rank concurrently" in caplog.text
 
-    def test_unexpected_exception_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Non-ValueError exceptions are logged as warnings with exc_info."""
+    def test_unexpected_exception_propagates(self) -> None:
+        """Non-ValueError exceptions propagate instead of being silently swallowed.
+        Previously the except-Exception branch just logged a warning and returned,
+        which caused the entire node's FT to silently fail."""
         with (
             patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
             patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
@@ -105,15 +101,12 @@ class TestEnsureRayActorOnNode:
             actor_cls = MagicMock()
             actor_cls.options.return_value.remote.side_effect = RuntimeError("boom")
 
-            with caplog.at_level(logging.WARNING):
+            with pytest.raises(RuntimeError, match="boom"):
                 _ensure_ray_actor_on_node(
                     actor_cls=actor_cls,
                     name="test_actor",
                     node_id="node-1",
                 )
-
-            assert "Failed to create actor" in caplog.text
-            assert "boom" in caplog.text
 
     def test_custom_start_method(self) -> None:
         """Respects a custom start_method parameter."""
@@ -179,15 +172,16 @@ class TestEnsureNodeAgent:
     @patch("miles.utils.ft.factories.embedded_agent._ensure_ray_actor_on_node")
     @patch("miles.utils.ft.factories.embedded_agent.ray")
     @patch("miles.utils.ft.factories.embedded_agent.get_ft_id", return_value="job-42")
-    def test_graceful_degrade_on_exception(
+    def test_exception_propagates_instead_of_silent_degrade(
         self,
         mock_get_ft_id: MagicMock,
         mock_ray: MagicMock,
         mock_ensure: MagicMock,
     ) -> None:
-        """ensure_node_agent is wrapped with @graceful_degrade, so exceptions return None."""
+        """Previously ensure_node_agent was wrapped with @graceful_degrade,
+        silently swallowing failures. Now exceptions propagate so callers
+        know FT is not actually active on this node."""
         mock_ray.get_runtime_context.side_effect = RuntimeError("no ray")
 
-        result = ensure_node_agent()
-
-        assert result is None
+        with pytest.raises(RuntimeError, match="no ray"):
+            ensure_node_agent()
