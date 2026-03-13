@@ -80,13 +80,13 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
             await handle_notify_human(decision=decision, notifier=ctx.notifier)
             return None
 
-        if len(decision.bad_node_ids) >= ctx.max_simultaneous_bad_nodes:
+        if len(decision.bad_node_ids) > ctx.max_simultaneous_bad_nodes:
             await handle_notify_human(
                 decision=Decision(
                     action=ActionType.NOTIFY_HUMAN,
                     reason=(
                         f"too_many_simultaneous_bad_nodes "
-                        f"({len(decision.bad_node_ids)} >= {ctx.max_simultaneous_bad_nodes}), "
+                        f"({len(decision.bad_node_ids)} > {ctx.max_simultaneous_bad_nodes}), "
                         f"likely false positive"
                     ),
                     trigger=decision.trigger,
@@ -118,7 +118,7 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             tick_detector_context=ctx.detector_context,
             crash_tracker=ctx.detector_crash_tracker,
         )
-        if len(new_bad_nodes) >= ctx.max_simultaneous_bad_nodes:
+        if len(new_bad_nodes) > ctx.max_simultaneous_bad_nodes:
             known_bad = set(state.known_bad_node_ids)
             all_bad = tuple(sorted(known_bad | new_bad_nodes))
             return RecoveringSt(

@@ -571,8 +571,35 @@ class TestRecovering:
 class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_too_many_bad_nodes_triggers_notify_human(self) -> None:
-        """Detector reports >= threshold bad nodes -> NOTIFY_HUMAN, no recovery."""
+        """Detector reports more bad nodes than threshold -> NOTIFY_HUMAN, no recovery."""
         notifier = FakeNotifier()
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["node-1", "node-2", "node-3", "node-4"],
+                reason="four nodes bad",
+                trigger=TriggerType.HARDWARE,
+            )
+        )
+        stepper = _make_stepper()
+        result = await _step_last(stepper,
+                                  DetectingAnomalySt(),
+                                  _make_subsystem_context(
+                detectors=[detector],
+                notifier=notifier,
+                max_simultaneous_bad_nodes=3,
+                rank_placement={0: "node-1", 1: "node-2", 2: "node-3", 3: "node-4"},
+            ),
+                                  )
+        assert result is None
+        assert len(notifier.calls) == 1
+        assert "likely false positive" in notifier.calls[0][1]
+
+    @pytest.mark.asyncio
+    async def test_exactly_at_threshold_still_allows_recovery(self) -> None:
+        """Previously, exactly threshold bad nodes was treated as 'too many'
+        due to >= comparison. The threshold means 'max allowed', so exactly
+        that count should still enter recovery."""
         detector = FixedDecisionDetector(
             Decision(
                 action=ActionType.ENTER_RECOVERY,
@@ -586,14 +613,13 @@ class TestBadNodeCountSafeguard:
                                   DetectingAnomalySt(),
                                   _make_subsystem_context(
                 detectors=[detector],
-                notifier=notifier,
                 max_simultaneous_bad_nodes=3,
                 rank_placement={0: "node-1", 1: "node-2", 2: "node-3"},
             ),
                                   )
-        assert result is None
-        assert len(notifier.calls) == 1
-        assert "likely false positive" in notifier.calls[0][1]
+        assert isinstance(result, RecoveringSt)
+        assert isinstance(result.recovery, RealtimeChecksSt)
+        assert set(result.recovery.pre_identified_bad_nodes) == {"node-1", "node-2", "node-3"}
 
     @pytest.mark.asyncio
     async def test_bad_nodes_below_threshold_enters_recovery(self) -> None:
@@ -621,17 +647,16 @@ class TestBadNodeCountSafeguard:
 
     @pytest.mark.asyncio
     async def test_too_many_dynamic_bad_nodes_transitions_to_notify_humans(self) -> None:
-        """M-4: Detectors report >= threshold new bad nodes during recovery ->
-        transition to NotifyHumansSt instead of inline notification (previously
-        notify_too_many_bad_nodes fired every tick with no state change)."""
+        """Detectors report more than threshold new bad nodes during recovery ->
+        transition to NotifyHumansSt instead of inline notification."""
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
             Decision(
                 action=ActionType.ENTER_RECOVERY,
-                bad_node_ids=["node-a", "node-b", "node-c"],
-                reason="three critical faults",
+                bad_node_ids=["node-a", "node-b", "node-c", "node-d"],
+                reason="four critical faults",
                 trigger=TriggerType.HARDWARE,
             )
         )
@@ -651,7 +676,7 @@ class TestBadNodeCountSafeguard:
                 detectors=[detector],
                 recovery_stepper=_mock_stepper_yielding(None),
                 max_simultaneous_bad_nodes=3,
-                rank_placement={0: "node-old", 1: "node-a", 2: "node-b", 3: "node-c"},
+                rank_placement={0: "node-old", 1: "node-a", 2: "node-b", 3: "node-c", 4: "node-d"},
             ),
         )
         assert isinstance(result, RecoveringSt)
@@ -740,19 +765,17 @@ class TestBadNodeCountSafeguard:
 
     @pytest.mark.asyncio
     async def test_too_many_bad_nodes_includes_merged_set_in_notify_humans(self) -> None:
-        """Previously when too many new bad nodes triggered NotifyHumansSt,
-        the newly discovered bad nodes were lost — known_bad_node_ids stayed
-        at the old value and NotifyHumansSt had no bad node info. Now the
-        merged set (known + new) is stored in both NotifyHumansSt.bad_node_ids
-        and RecoveringSt.known_bad_node_ids."""
+        """When too many new bad nodes trigger NotifyHumansSt, the merged set
+        (known + new) is stored in both NotifyHumansSt.bad_node_ids and
+        RecoveringSt.known_bad_node_ids."""
         from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
             Decision(
                 action=ActionType.ENTER_RECOVERY,
-                bad_node_ids=["node-a", "node-b", "node-c"],
-                reason="three critical faults",
+                bad_node_ids=["node-a", "node-b", "node-c", "node-d"],
+                reason="four critical faults",
                 trigger=TriggerType.HARDWARE,
             )
         )
@@ -773,14 +796,14 @@ class TestBadNodeCountSafeguard:
                 detectors=[detector],
                 recovery_stepper=_mock_stepper_yielding(None),
                 max_simultaneous_bad_nodes=3,
-                rank_placement={0: "node-old", 1: "node-a", 2: "node-b", 3: "node-c"},
+                rank_placement={0: "node-old", 1: "node-a", 2: "node-b", 3: "node-c", 4: "node-d"},
             ),
         )
         assert isinstance(result, RecoveringSt)
         assert isinstance(result.recovery, NotifyHumansSt)
 
         # Step 1: NotifyHumansSt carries the merged bad node set
-        expected_all = {"node-a", "node-b", "node-c", "node-old"}
+        expected_all = {"node-a", "node-b", "node-c", "node-d", "node-old"}
         assert set(result.recovery.bad_node_ids) == expected_all
 
         # Step 2: known_bad_node_ids on RecoveringSt is also updated
