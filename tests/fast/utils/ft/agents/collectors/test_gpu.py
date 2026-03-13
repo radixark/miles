@@ -52,13 +52,15 @@ class TestGpuCollector:
         available = [m for m in gpu0_metrics if m.name == "miles_ft_gpu_available"]
         assert available[0].value == 1.0
 
-    async def test_nvml_init_failure_returns_empty(self) -> None:
+    async def test_nvml_init_failure_raises_on_collect(self) -> None:
+        """Previously, pynvml unavailability silently returned empty metrics,
+        masking the failure as healthy. Now it raises so the collection loop
+        tracks it as a failure via consecutive_failures."""
         mock = MagicMock()
         mock.nvmlInit.side_effect = RuntimeError("NVML not available")
         with _patched_gpu_collector(mock_pynvml=mock) as (collector, _):
-            result = await collector.collect()
-
-        assert result.metrics == []
+            with pytest.raises(RuntimeError, match="pynvml unavailable"):
+                await collector.collect()
 
     async def test_row_remap_pending_value(self) -> None:
         with _patched_gpu_collector(device_count=1, remap_info=(0, 0, 3, 1)) as (collector, _):

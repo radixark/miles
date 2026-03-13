@@ -33,13 +33,12 @@ class GpuCollector(BaseCollector):
     def _collect_sync(self) -> list[GaugeSample]:
         pynvml = self._pynvml
         if pynvml is None:
-            return []
+            raise RuntimeError("pynvml unavailable — cannot collect GPU metrics")
 
         try:
             device_count = pynvml.nvmlDeviceGetCount()
         except Exception:
-            logger.warning("nvmlDeviceGetCount failed", exc_info=True)
-            return []
+            raise RuntimeError("nvmlDeviceGetCount failed") from None
 
         samples: list[GaugeSample] = []
         for index in range(device_count):
