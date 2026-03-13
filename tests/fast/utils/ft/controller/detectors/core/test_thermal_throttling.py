@@ -79,6 +79,8 @@ class TestThermalThrottlingDetector:
         assert decision.trigger == TriggerType.HARDWARE
         assert "node-1" in decision.bad_node_ids
         assert "thermal throttling" in decision.reason
+        # Per-GPU detail should be included in the reason
+        assert "gpu" in decision.reason
 
     def test_temperature_outlier_but_mfu_healthy_no_action(self) -> None:
         """Temperature outlier alone does not trigger recovery without MFU decline."""
@@ -155,8 +157,10 @@ class TestThermalThrottlingDetector:
 
     def test_single_gpu_overheat_detected(self) -> None:
         """A single GPU overheating on a node is detected even when the other
-        GPUs on that node are at normal temperature (regression test for
-        node-level mean masking individual GPU outliers)."""
+        GPUs on that node are at normal temperature. Per-GPU detection
+        compares each GPU individually to the cluster average, so a single
+        100°C GPU among seven 65°C GPUs is caught (previously, a node-level
+        mean would mask the outlier)."""
         store = make_fake_metric_store()
         for i in range(8):
             inject_gpu_temperature(store, node_id="node-0", gpu=str(i), celsius=65.0)
@@ -183,6 +187,9 @@ class TestThermalThrottlingDetector:
 
         assert decision.action == ActionType.ENTER_RECOVERY
         assert "node-1" in decision.bad_node_ids
+        # Per-GPU detail identifies the specific hot GPU
+        assert "gpu0" in decision.reason
+        assert "100" in decision.reason
 
 
 class TestThermalThrottlingDetectorValidation:
