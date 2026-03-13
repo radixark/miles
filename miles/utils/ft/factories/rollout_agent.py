@@ -10,7 +10,6 @@ import ray
 from miles.utils.ft.adapters.types import REGISTER_TIMEOUT_SECONDS, ft_controller_actor_name
 from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
 from miles.utils.ft.utils.env import get_ft_id
-from miles.utils.ft.utils.graceful_degrade import graceful_degrade
 from miles.utils.ft.utils.retry import retry_sync
 
 logger = logging.getLogger(__name__)
@@ -45,7 +44,6 @@ def build_rollout_agent(
     return agent
 
 
-@graceful_degrade(msg="Failed to register rollout agent with controller")
 def _register_with_controller(
     *,
     agent: FtRolloutAgent,
@@ -72,10 +70,13 @@ def _register_with_controller(
         backoff_base=_REGISTER_RETRY_DELAY,
         max_backoff=_REGISTER_RETRY_DELAY,
     )
-    if result.ok:
-        logger.info(
-            "rollout_agent_registered ft_id=%s metrics_address=%s cell_node_ids=%s",
-            ft_id,
-            agent.address,
-            {k: sorted(v) for k, v in cell_node_ids.items()} if cell_node_ids else "(none)",
+    if not result.ok:
+        raise RuntimeError(
+            f"rollout agent registration failed after {_REGISTER_MAX_ATTEMPTS} attempts"
         )
+    logger.info(
+        "rollout_agent_registered ft_id=%s metrics_address=%s cell_node_ids=%s",
+        ft_id,
+        agent.address,
+        {k: sorted(v) for k, v in cell_node_ids.items()} if cell_node_ids else "(none)",
+    )
