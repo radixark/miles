@@ -26,6 +26,7 @@ async def stop_and_submit(
     executed under the lock, preventing concurrent restart attempts from
     interleaving and causing double-submit or ghost jobs.
     """
+    logger.debug("restart_sm: stop_and_submit called, has_lock=%s", restart_lock is not None)
     if restart_lock is not None:
         async with restart_lock:
             return await _stop_and_submit_locked(job=job, on_new_run=on_new_run)
@@ -64,6 +65,7 @@ async def _stop_and_submit_locked(
 
     if on_new_run is not None:
         on_new_run(run_id)
+    logger.info("restart_sm: stop_and_submit succeeded, new run_id=%s", run_id)
     return True
 
 
@@ -73,7 +75,11 @@ async def retry_mark_node_bad(
     reason: str,
     node_metadata: dict[str, str] | None = None,
 ) -> RetryResult[None]:
-    return await retry_async(
+    logger.debug("restart_sm: retry_mark_node_bad node_id=%s, reason=%s", node_id, reason)
+    result = await retry_async(
         lambda: node_manager.mark_node_bad(node_id, reason=reason, node_metadata=node_metadata),
         description=f"mark_node_bad({node_id})",
     )
+    if not result.ok:
+        logger.warning("restart_sm: mark_node_bad failed for node=%s after retries", node_id)
+    return result
