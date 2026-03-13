@@ -34,6 +34,7 @@ class StubDiagnostic(BaseNodeExecutor):
         self,
         node_id: str,
         timeout_seconds: int = 120,
+        **kwargs: object,
     ) -> DiagnosticResult:
         return DiagnosticResult(
             diagnostic_type=self.diagnostic_type,
@@ -55,6 +56,7 @@ class SlowDiagnostic(BaseNodeExecutor):
         self,
         node_id: str,
         timeout_seconds: int = 120,
+        **kwargs: object,
     ) -> DiagnosticResult:
         await asyncio.sleep(self._sleep_seconds)
         return DiagnosticResult(

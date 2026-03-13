@@ -455,6 +455,22 @@ class TestFtNodeAgentKwargsPassthrough:
         assert received_kwargs["master_addr"] == "10.0.0.1"
         assert received_kwargs["master_port"] == 29500
 
+    @pytest.mark.anyio
+    async def test_stub_diagnostic_accepts_nccl_kwargs(self, make_node_agent: MakeNodeAgent) -> None:
+        """Bare StubDiagnostic should tolerate NCCL kwargs used by the production dispatcher."""
+        agent = make_node_agent(
+            node_id="test-stub-kwargs",
+            diagnostics=[StubDiagnostic(passed=True)],
+        )
+
+        result = await agent.run_diagnostic(
+            "stub",
+            master_addr="10.0.0.1",
+            master_port=29500,
+        )
+
+        assert result.passed is True
+
 
 class TestFtNodeAgentDiagnosticException:
     @pytest.mark.anyio
