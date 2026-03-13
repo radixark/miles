@@ -7,7 +7,6 @@ from miles.utils.ft.controller.detectors.core.collector_health import CollectorH
 from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.controller.detectors.core.loss_spike import LossSpikeDetector, LossSpikeDetectorConfig
 from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
@@ -27,7 +26,6 @@ class DetectorChainConfig(FtBaseModel):
     network: NetworkAlertDetectorConfig = Field(default_factory=NetworkAlertDetectorConfig)
     thermal: ThermalThrottlingDetectorConfig = Field(default_factory=ThermalThrottlingDetectorConfig)
     mfu: MfuDeclineDetectorConfig = Field(default_factory=MfuDeclineDetectorConfig)
-    loss_spike: LossSpikeDetectorConfig = Field(default_factory=LossSpikeDetectorConfig)
 
 
 def build_shared_hw_detectors(
@@ -47,18 +45,15 @@ def build_shared_hw_detectors(
 def build_training_detectors(
     config: DetectorChainConfig | None = None,
 ) -> list[BaseFaultDetector]:
-    """Training-specific: network, crash, hang, nan_loss, loss_spike, mfu_decline."""
+    """Training-specific: network, crash, hang, nan_loss, mfu_decline."""
     cfg = config or DetectorChainConfig()
-    detectors: list[BaseFaultDetector] = [
+    return [
         NetworkAlertDetector(config=cfg.network),
         TrainingCrashDetector(),
         HangDetector(config=cfg.hang),
         NanLossDetector(),
+        MfuDeclineDetector(config=cfg.mfu),
     ]
-    if cfg.loss_spike.enabled:
-        detectors.append(LossSpikeDetector(config=cfg.loss_spike))
-    detectors.append(MfuDeclineDetector(config=cfg.mfu))
-    return detectors
 
 
 def build_rollout_detectors(
