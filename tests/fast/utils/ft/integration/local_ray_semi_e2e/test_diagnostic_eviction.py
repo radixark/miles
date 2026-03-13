@@ -268,14 +268,12 @@ async def test_eviction_escalation_to_notify_humans(
 
     deadline = time.monotonic() + RECOVERY_TIMEOUT
     while time.monotonic() < deadline:
-        status = await testbed.get_status()
-        if status.recovery is not None and status.recovery.phase == "EvictingSt":
+        if testbed.node_manager.was_ever_marked_bad("node-0"):
             break
         await asyncio.sleep(0.5)
     else:
-        recovery_phase = status.recovery.phase if status.recovery else None
         raise TimeoutError(
-            f"EvictingSt not observed within {RECOVERY_TIMEOUT}s: phase={recovery_phase}"
+            f"node-0 was not marked bad within {RECOVERY_TIMEOUT}s during eviction flow"
         )
 
     await testbed.wait_for_recovery_phase(
