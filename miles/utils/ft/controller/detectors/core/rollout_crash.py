@@ -42,8 +42,10 @@ class RolloutCrashDetector(BaseFaultDetector):
                 reason=f"rollout_{self._cell_id}: no rollout_cell_alive metric yet"
             )
 
-        alive_value = df["value"][0]
-        if alive_value > 0:
+        # When multiple series match (e.g. old+new exporter coexist during
+        # restarts), treat the cell as unhealthy if ANY series reports dead.
+        # Only consider the cell alive when ALL matching series agree.
+        if (df["value"] > 0).all():
             return Decision.no_fault(
                 reason=f"rollout_{self._cell_id}: cell alive"
             )

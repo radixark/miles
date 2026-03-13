@@ -1,9 +1,11 @@
+import logging
 from datetime import timedelta
 
 from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
+from miles.utils.ft.controller.metrics.mini_prometheus.query import AmbiguousSeriesError
 from miles.utils.ft.utils.metric_names import (
     AGENT_HEARTBEAT,
     PHASE_CHECKPOINT_SAVING,
@@ -12,6 +14,8 @@ from miles.utils.ft.utils.metric_names import (
 )
 from miles.utils.ft.controller.types import ActionType, Decision, TimeSeriesQueryProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class HangDetectorConfig(FtBaseModel):
@@ -68,8 +72,16 @@ class HangDetector(BaseFaultDetector):
         return Decision.no_fault(reason="heartbeat progressing normally")
 
     def _get_current_phase(self, metric_store: TimeSeriesQueryProtocol) -> float:
-        df = metric_store.query_latest(TRAINING_PHASE, label_filters={"rank": "0"})
-        if df is None or df.is_empty():
+        try:
+            df = metric_store.query_single_latest(TRAINING_PHASE, label_filters={"rank": "0"})
+        except AmbiguousSeriesError:
+            logger.warning(
+                "ambiguous_training_phase_series defaulting to PHASE_TRAINING",
+                exc_info=True,
+            )
+            return PHASE_TRAINING
+
+        if df.is_empty():
             return PHASE_TRAINING
 
         return df.row(0, named=True)["value"]

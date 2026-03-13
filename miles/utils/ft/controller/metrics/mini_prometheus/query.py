@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 SeriesKey = tuple[str, frozenset[tuple[str, str]]]
 
@@ -25,9 +28,51 @@ class TimeSeriesSample:
     value: float
 
 
+class AmbiguousSeriesError(Exception):
+    """Raised when query_single_latest matches more than one series."""
+
+    def __init__(self, metric_name: str, label_filters: dict[str, str] | None, matched_count: int) -> None:
+        self.metric_name = metric_name
+        self.label_filters = label_filters
+        self.matched_count = matched_count
+        super().__init__(
+            f"query_single_latest matched {matched_count} series "
+            f"for metric={metric_name!r} label_filters={label_filters!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public query functions (typed API — no PromQL parsing)
 # ---------------------------------------------------------------------------
+
+
+def query_single_latest(
+    series: dict[SeriesKey, deque[TimeSeriesSample]],
+    label_maps: dict[SeriesKey, dict[str, str]],
+    name_index: dict[str, set[SeriesKey]],
+    metric_name: str,
+    label_filters: dict[str, str] | None = None,
+) -> pl.DataFrame:
+    """Like query_latest, but enforces that at most one series matches.
+
+    Returns EMPTY_INSTANT if zero series match.
+    Raises AmbiguousSeriesError if more than one series matches.
+    """
+    df = _instant_query(
+        series,
+        label_maps,
+        name_index,
+        metric_name,
+        label_filters,
+        value_fn=lambda samples: samples[-1].value,
+    )
+    if len(df) > 1:
+        raise AmbiguousSeriesError(
+            metric_name=metric_name,
+            label_filters=label_filters,
+            matched_count=len(df),
+        )
+    return df
 
 
 def query_latest(

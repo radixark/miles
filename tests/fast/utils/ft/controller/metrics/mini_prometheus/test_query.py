@@ -11,12 +11,14 @@ import pytest
 from miles.utils.ft.controller.metrics.mini_prometheus.query import (
     EMPTY_INSTANT,
     EMPTY_RANGE,
+    AmbiguousSeriesError,
     SeriesKey,
     TimeSeriesSample,
     _compute_aggregate,
     _labels_match,
     query_latest,
     query_range,
+    query_single_latest,
     range_aggregate,
 )
 
@@ -84,6 +86,56 @@ class TestLabelsMatch:
 
     def test_missing_key(self) -> None:
         assert not _labels_match({"a": "1"}, {"b": "1"})
+
+
+# ===================================================================
+# query_single_latest
+# ===================================================================
+
+
+class TestQuerySingleLatest:
+    def test_returns_single_match(self) -> None:
+        key = _key("m", node="n1")
+        series, lm, ni = _build_series([(key, [(-1, 42.0)])])
+
+        df = query_single_latest(series, lm, ni, metric_name="m")
+
+        assert len(df) == 1
+        assert df["value"][0] == 42.0
+
+    def test_returns_empty_when_no_match(self) -> None:
+        series, lm, ni = _build_series([])
+
+        df = query_single_latest(series, lm, ni, metric_name="nonexistent")
+
+        assert df.shape == EMPTY_INSTANT.shape
+
+    def test_raises_ambiguous_when_multiple_series_match(self) -> None:
+        """Previously callers used query_latest()[0] which silently picked
+        an arbitrary series from a nondeterministic set iteration order.
+        query_single_latest raises AmbiguousSeriesError instead."""
+        k1 = _key("m", node="n1")
+        k2 = _key("m", node="n2")
+        series, lm, ni = _build_series([
+            (k1, [(-1, 10.0)]),
+            (k2, [(-1, 20.0)]),
+        ])
+
+        with pytest.raises(AmbiguousSeriesError, match="matched 2 series"):
+            query_single_latest(series, lm, ni, metric_name="m")
+
+    def test_label_filter_narrows_to_single(self) -> None:
+        k1 = _key("m", node="n1")
+        k2 = _key("m", node="n2")
+        series, lm, ni = _build_series([
+            (k1, [(-1, 10.0)]),
+            (k2, [(-1, 20.0)]),
+        ])
+
+        df = query_single_latest(series, lm, ni, metric_name="m", label_filters={"node": "n2"})
+
+        assert len(df) == 1
+        assert df["value"][0] == 20.0
 
 
 # ===================================================================

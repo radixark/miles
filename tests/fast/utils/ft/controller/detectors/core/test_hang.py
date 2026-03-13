@@ -12,7 +12,7 @@ from tests.fast.utils.ft.utils import (
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT
+from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT, TRAINING_PHASE
 from miles.utils.ft.controller.types import ActionType
 
 
@@ -252,6 +252,40 @@ class TestHangDetectorSingleSampleFalsePositive:
         decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.ENTER_RECOVERY
+
+
+class TestHangDetectorAmbiguousPhaseSeries:
+    def test_ambiguous_phase_defaults_to_training(self) -> None:
+        """When multiple TRAINING_PHASE series exist for rank=0 (e.g. stale
+        + current exporters coexist), _get_current_phase used to pick
+        row(0) nondeterministically. Now uses query_single_latest which
+        raises AmbiguousSeriesError; the detector catches it and defaults
+        to PHASE_TRAINING instead of using an arbitrary value."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # Two phase series for rank=0 from different nodes
+        inject_training_phase(store, phase=1.0, rank="0", timestamp=now - timedelta(seconds=5))
+        store.ingest_samples(
+            target_id="node-stale",
+            samples=[GaugeSample(name=TRAINING_PHASE, labels={"rank": "0"}, value=2.0)],
+            timestamp=now - timedelta(seconds=3),
+        )
+
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+        # Defaults to training phase timeout, heartbeat stalled → recovery
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert "training" in decision.reason
 
 
 class TestHangDetectorMultipleRank0Series:

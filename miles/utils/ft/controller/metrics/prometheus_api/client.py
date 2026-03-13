@@ -15,6 +15,7 @@ from miles.utils.ft.controller.metrics.prometheus_api.response_parser import (
     parse_instant_response,
     parse_range_response,
 )
+from miles.utils.ft.controller.metrics.mini_prometheus.query import AmbiguousSeriesError
 from miles.utils.ft.controller.types import TimeSeriesStoreProtocol
 from miles.utils.ft.utils.retry import retry_sync
 
@@ -47,6 +48,20 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
     # -------------------------------------------------------------------
     # TimeSeriesStoreProtocol implementation (sync)
     # -------------------------------------------------------------------
+
+    def query_single_latest(
+        self,
+        metric_name: str,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        df = self.query_latest(metric_name=metric_name, label_filters=label_filters)
+        if len(df) > 1:
+            raise AmbiguousSeriesError(
+                metric_name=metric_name,
+                label_filters=label_filters,
+                matched_count=len(df),
+            )
+        return df
 
     def query_latest(
         self,

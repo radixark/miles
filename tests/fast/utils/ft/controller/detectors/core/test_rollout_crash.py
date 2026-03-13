@@ -6,8 +6,10 @@ from tests.fast.utils.ft.utils import (
     make_fake_metric_store,
 )
 
+from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
 from miles.utils.ft.controller.types import ActionType, TriggerType
+from miles.utils.ft.utils.metric_names import ROLLOUT_CELL_ALIVE
 
 
 class TestRolloutCrashDetector:
@@ -213,3 +215,63 @@ class TestRolloutCrashDetector:
         assert decision_0.action == ActionType.ENTER_RECOVERY
         assert decision_1.action == ActionType.NONE
         assert "cell alive" in decision_1.reason
+
+
+class TestRolloutCrashMultipleSeriesAggregation:
+    def test_any_dead_series_treated_as_unhealthy(self) -> None:
+        """When multiple series match the same cell_id (e.g. old + new exporter
+        coexist during restarts), the detector previously used df['value'][0]
+        which nondeterministically picked one series. Now it explicitly
+        aggregates: if ANY series reports dead, the cell is treated as
+        unhealthy."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        # Series A (exporter-old): alive=1
+        store.ingest_samples(
+            target_id="exporter-old",
+            samples=[GaugeSample(name=ROLLOUT_CELL_ALIVE, labels={"cell_id": "0"}, value=1.0)],
+            timestamp=now,
+        )
+        # Series B (exporter-new): alive=0
+        store.ingest_samples(
+            target_id="exporter-new",
+            samples=[GaugeSample(name=ROLLOUT_CELL_ALIVE, labels={"cell_id": "0"}, value=0.0)],
+            timestamp=now,
+        )
+
+        detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0"},
+        )
+
+        decision = detector.evaluate(ctx)
+        # Should NOT report "cell alive" — at least one series is dead
+        assert "cell alive" not in decision.reason
+
+    def test_all_series_alive_reports_healthy(self) -> None:
+        """When all matching series report alive, the cell is healthy."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+
+        store.ingest_samples(
+            target_id="exporter-old",
+            samples=[GaugeSample(name=ROLLOUT_CELL_ALIVE, labels={"cell_id": "0"}, value=1.0)],
+            timestamp=now,
+        )
+        store.ingest_samples(
+            target_id="exporter-new",
+            samples=[GaugeSample(name=ROLLOUT_CELL_ALIVE, labels={"cell_id": "0"}, value=1.0)],
+            timestamp=now,
+        )
+
+        detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0"},
+        )
+
+        decision = detector.evaluate(ctx)
+        assert decision.action == ActionType.NONE
+        assert "cell alive" in decision.reason

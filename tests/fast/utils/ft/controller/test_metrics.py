@@ -63,6 +63,13 @@ class TestMiniWandbProtocolCompliance:
 class _QueryOnlyStore(TimeSeriesQueryProtocol):
     """Minimal implementation satisfying only TimeSeriesQueryProtocol."""
 
+    def query_single_latest(
+        self,
+        metric_name: str,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
+        return pl.DataFrame()
+
     def query_latest(
         self,
         metric_name: str,

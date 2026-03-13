@@ -160,6 +160,13 @@ class DiagnosticOrchestratorProtocol(ABC):
 
 class TimeSeriesQueryProtocol(ABC):
     @abstractmethod
+    def query_single_latest(
+        self,
+        metric_name: str,
+        label_filters: dict[str, str] | None = None,
+    ) -> pl.DataFrame: ...
+
+    @abstractmethod
     def query_latest(
         self,
         metric_name: str,
