@@ -28,12 +28,21 @@ async def poll_until(
     *probe* may be sync or async — if the return value is awaitable it is
     automatically awaited.
 
+    At least one probe is always executed, even when *timeout* is zero.
+    This prevents a race where the operation has already completed but the
+    remaining time budget is exhausted.
+
     Every *log_every* polls an info-level progress message is emitted.
     """
+    if timeout < 0:
+        raise ValueError(f"timeout must be >= 0, got {timeout}")
+    if poll_interval <= 0:
+        raise ValueError(f"poll_interval must be > 0, got {poll_interval}")
+
     deadline = time.monotonic() + timeout
     poll_count = 0
 
-    while time.monotonic() < deadline:
+    while True:
         result = probe()
         if inspect.isawaitable(result):
             result = await result
@@ -41,6 +50,9 @@ async def poll_until(
         poll_count += 1
         if predicate(result):
             return result  # type: ignore[return-value]
+
+        if time.monotonic() >= deadline:
+            break
 
         if log_every > 0 and poll_count % log_every == 0:
             elapsed = timeout - (deadline - time.monotonic())
