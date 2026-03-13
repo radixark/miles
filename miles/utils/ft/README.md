@@ -47,6 +47,23 @@ TODO: this will be outdated, to be updated
   - `integration/local_ray`: Integration tests based on local Ray
 - `tests/e2e/ft/`: Realistic multi-node end-to-end tests
 
+### Remote local-Ray testing notes
+
+For `miles` development, FT tests should be executed remotely. For local-Ray based FT tests that start their own Ray cluster inside the container, prefer:
+
+```bash
+msc exec --no-ray --flavor miles_default --server ac-h200-n04 \
+  'cd miles && /usr/bin/python3 -m pytest --confcutdir=tests/fast/utils/ft tests/fast/utils/ft/integration/...'
+```
+
+Why `--no-ray` matters:
+
+- These tests already create a local Ray cluster inside the container.
+- `msc exec` with Ray mode enabled performs a host-level cleanup using `pkill -9 -f session_`.
+- On shared servers this cleanup may fail because unrelated root-owned Ray processes exist, causing the test run to fail before pytest starts.
+
+The local multi-node Ray fixture in [`tests/fast/utils/ft/integration/conftest.py`](/Users/tom/Main/research/workspaces/ws_main/miles/tests/fast/utils/ft/integration/conftest.py) should keep the dashboard disabled (`--include-dashboard=false`). On the remote environment used for FT testing, enabling the Ray dashboard in the multi-node fixture was not reliable and could fail during `ray start` before the testbed even launched.
+
 ## Acknowledgements
 
 TODO: papers websites etc
