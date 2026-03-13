@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 
 logger = logging.getLogger(__name__)
+
+
+class _SubsystemNodeKey(NamedTuple):
+    subsystem_name: str
+    node_id: str
 
 
 @dataclass
@@ -23,7 +29,7 @@ class NodeAgentCoverageChecker:
     """Tracks node agent coverage over a sliding window and warns on sustained gaps.
 
     Each call to ``check()`` records whether each subsystem node has a
-    registered agent. Counters are keyed by ``(subsystem_name, node_id)``
+    registered agent. Counters are keyed by ``_SubsystemNodeKey``
     so the same physical node tracked in different subsystems has independent
     coverage state.
 
@@ -41,7 +47,7 @@ class NodeAgentCoverageChecker:
     ) -> None:
         self._window_seconds = window_seconds
         self._threshold = threshold
-        self._counters: dict[tuple[str, str], SlidingWindowCounter] = {}
+        self._counters: dict[_SubsystemNodeKey, SlidingWindowCounter] = {}
 
     def check(
         self,
@@ -54,14 +60,14 @@ class NodeAgentCoverageChecker:
         covered = subsystem_node_ids & registered_agent_node_ids
 
         for node_id in covered:
-            key = (subsystem_name, node_id)
+            key = _SubsystemNodeKey(subsystem_name=subsystem_name, node_id=node_id)
             counter = self._counters.pop(key, None)
             if counter is not None and counter._notified:
                 logger.info("Node agent coverage restored: %s/%s", subsystem_name, node_id)
                 result.newly_restored_node_ids.append(node_id)
 
         for node_id in uncovered:
-            key = (subsystem_name, node_id)
+            key = _SubsystemNodeKey(subsystem_name=subsystem_name, node_id=node_id)
             if key not in self._counters:
                 self._counters[key] = SlidingWindowCounter(
                     window_seconds=self._window_seconds,
