@@ -94,6 +94,9 @@ class TickLoop:
             context = self._build_controller_context(job_status=job_status, deps=deps)
             await self.state_machine.step(context)
 
+            # Known limitation: convergence-limit hits are currently treated as a
+            # soft signal only. We notify after repeated events, but we do not
+            # fail the tick or mark controller/exporter health as degraded yet.
             if self._convergence_failure_tracker.should_notify:
                 logger.error(
                     "convergence_persistently_failing: %s",
