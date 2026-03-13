@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class ControllerRuntimeConfig(FtBaseModel):

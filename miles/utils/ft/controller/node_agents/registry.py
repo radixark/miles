@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from miles.utils.ft.adapters.types import NodeAgentProtocol
+
+logger = logging.getLogger(__name__)
 
 
 class NodeAgentRegistry:
@@ -26,6 +30,12 @@ class NodeAgentRegistry:
         self._agents[node_id] = agent
         if metadata:
             self._metadata[node_id] = metadata
+        logger.info(
+            "node_agents: registered node_id=%s, metadata_keys=%s, total_agents=%d",
+            node_id,
+            sorted(metadata) if metadata else "(none)",
+            len(self._agents),
+        )
 
     def get(self, node_id: str) -> NodeAgentProtocol | None:
         return self._agents.get(node_id)
@@ -37,12 +47,19 @@ class NodeAgentRegistry:
         return set(self._agents.keys())
 
     def unregister(self, node_id: str) -> None:
+        was_present = node_id in self._agents
         self._agents.pop(node_id, None)
         self._metadata.pop(node_id, None)
+        if was_present:
+            logger.info("node_agents: unregistered node_id=%s, remaining=%d", node_id, len(self._agents))
+        else:
+            logger.debug("node_agents: unregister no-op, node_id=%s not found", node_id)
 
     def clear(self) -> None:
+        count = len(self._agents)
         self._agents.clear()
         self._metadata.clear()
+        logger.info("node_agents: cleared all agents, removed=%d", count)
 
     def get_metadata(self, node_id: str) -> dict[str, str] | None:
         return self._metadata.get(node_id)

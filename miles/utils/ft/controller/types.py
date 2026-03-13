@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from pydantic import Field, computed_field, model_validator
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from miles.utils.ft.adapters.types import ClusterExecutorProtocol
@@ -124,10 +127,16 @@ class Decision(FtBaseModel):
         trigger: TriggerType,
     ) -> Decision:
         if not faults:
+            logger.debug("controller: from_node_faults no faults, reason=%s", fallback_reason)
             return cls(action=ActionType.NONE, reason=fallback_reason)
 
         non_ephemeral = [f for f in faults if not f.ephemeral]
         if not non_ephemeral:
+            logger.debug(
+                "controller: from_node_faults all %d faults ephemeral, reason=%s",
+                len(faults),
+                fallback_reason,
+            )
             return cls(action=ActionType.NONE, reason=f"ephemeral only: {fallback_reason}")
 
         ephemeral = [f for f in faults if f.ephemeral]
