@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
 import ray
 
 from miles.utils.ft.adapters.impl.ray.node_agent_proxy import RayNodeAgentProxy
+
+logger = logging.getLogger(__name__)
 
 
 class _FtControllerActorCls:
@@ -26,18 +29,22 @@ class _FtControllerActorCls:
         config: Any = None,
         **kwargs: object,
     ) -> None:
+        logger.info("ray: _FtControllerActorCls.__init__ config_type=%s", type(config).__name__)
         bundle = builder(config=config, **kwargs)
         self._ctrl = bundle.controller
         self._subsystem_hub = bundle.subsystem_hub
 
     async def run(self) -> None:
+        logger.info("ray: controller actor run started")
         await self._ctrl.run()
 
     async def submit_and_run(self) -> None:
+        logger.info("ray: controller actor submit_and_run started")
         await self._ctrl.submit_initial_job()
         await self._ctrl.run()
 
     async def shutdown(self) -> None:
+        logger.info("ray: controller actor shutdown")
         await self._ctrl.shutdown()
 
     async def log_step(
@@ -46,6 +53,7 @@ class _FtControllerActorCls:
         step: int,
         metrics: dict[str, float],
     ) -> None:
+        logger.debug("ray: log_step run_id=%s, step=%d, metrics_count=%d", run_id, step, len(metrics))
         self._ctrl.metric_store.mini_wandb.log_step(
             run_id=run_id,
             step=step,
@@ -61,6 +69,10 @@ class _FtControllerActorCls:
         exporter_address: str,
         pid: int,
     ) -> None:
+        logger.info(
+            "ray: register_training_rank run_id=%s, rank=%d, world_size=%d, node_id=%s, pid=%d",
+            run_id, rank, world_size, node_id, pid,
+        )
         self._subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id,
             rank=rank,
@@ -77,6 +89,10 @@ class _FtControllerActorCls:
         exporter_address: str = "",
         node_metadata: dict[str, str] | None = None,
     ) -> None:
+        logger.info(
+            "ray: register_node_agent node_id=%s, exporter_address=%s, metadata_keys=%s",
+            node_id, exporter_address, sorted(node_metadata.keys()) if node_metadata else [],
+        )
         proxy = RayNodeAgentProxy(agent)
         self._ctrl.register_node_agent(
             node_id=node_id,
@@ -86,6 +102,7 @@ class _FtControllerActorCls:
         )
 
     def add_scrape_target(self, target_id: str, address: str) -> None:
+        logger.info("ray: add_scrape_target target_id=%s, address=%s", target_id, address)
         self._ctrl.add_scrape_target(target_id=target_id, address=address)
 
     def is_ready(self) -> bool:
@@ -100,6 +117,11 @@ class _FtControllerActorCls:
         metrics_address: str = "",
         cell_node_ids: dict[str, list[str]] | None = None,
     ) -> None:
+        logger.info(
+            "ray: register_rollout metrics_address=%s, cell_ids=%s",
+            metrics_address or "(none)",
+            sorted(cell_node_ids.keys()) if cell_node_ids else [],
+        )
         self._subsystem_hub.set_rollout_handle(rollout_manager_handle)
         if metrics_address:
             self._ctrl.add_scrape_target("rollout-ft-agent", metrics_address)
@@ -108,6 +130,7 @@ class _FtControllerActorCls:
                 self._subsystem_hub.set_rollout_node_ids(cell_id, node_ids)
 
     def set_rollout_node_ids(self, cell_id: str, node_ids: Iterable[str]) -> None:
+        logger.debug("ray: set_rollout_node_ids cell_id=%s", cell_id)
         self._subsystem_hub.set_rollout_node_ids(cell_id, node_ids)
 
 

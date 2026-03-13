@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from miles.utils.ft.adapters.types import AgentMetadataProvider
+
+logger = logging.getLogger(__name__)
 
 
 class K8sMetadataProvider(AgentMetadataProvider):
@@ -17,6 +20,7 @@ class K8sMetadataProvider(AgentMetadataProvider):
         if not pod_name:
             raise RuntimeError("K8S_POD_NAME env var not set. " "Configure Kubernetes Downward API in pod spec.")
 
+        logger.info("k8s: get_metadata k8s_node_name=%s, k8s_pod_name=%s", node_name, pod_name)
         return {
             "k8s_node_name": node_name,
             "k8s_pod_name": pod_name,

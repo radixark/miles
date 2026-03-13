@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator
 
 from miles.utils.ft.controller.detectors.chain import DetectorChainConfig
 from miles.utils.ft.utils.base_model import FtBaseModel
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
@@ -97,6 +100,14 @@ class FtControllerConfig(FtBaseModel):
     def to_runtime_config(self) -> ControllerRuntimeConfig:
         from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 
+        logger.debug(
+            "ray: to_runtime_config tick_interval=%s, recovery_cooldown_window_minutes=%s, "
+            "recovery_cooldown_max_count=%s, registration_grace_ticks=%s",
+            self.tick_interval,
+            self.recovery_cooldown_window_minutes,
+            self.recovery_cooldown_max_count,
+            self.registration_grace_ticks,
+        )
         return ControllerRuntimeConfig(
             tick_interval=self.tick_interval,
             recovery_cooldown_window_minutes=self.recovery_cooldown_window_minutes,

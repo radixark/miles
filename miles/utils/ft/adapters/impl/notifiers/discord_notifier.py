@@ -1,6 +1,9 @@
+import logging
 from typing import Any
 
 from miles.utils.ft.adapters.impl.notifiers.webhook_notifier import BaseWebhookNotifier
+
+logger = logging.getLogger(__name__)
 
 _SEVERITY_COLOR = {
     "critical": 0xE74C3C,
@@ -14,6 +17,7 @@ class DiscordWebhookNotifier(BaseWebhookNotifier):
 
     def _build_payload(self, title: str, content: str, severity: str) -> dict[str, Any]:
         color = _SEVERITY_COLOR.get(severity, 0x95A5A6)
+        logger.debug("notifier: building discord payload title=%s, severity=%s", title, severity)
         return {
             "embeds": [
                 {
