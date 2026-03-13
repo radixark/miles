@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
+from miles.utils.ft.controller.detectors.core.collector_health import CollectorHealthDetector
 from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
@@ -32,13 +33,14 @@ class DetectorChainConfig(FtBaseModel):
 def build_shared_hw_detectors(
     config: DetectorChainConfig | None = None,
 ) -> list[BaseFaultDetector]:
-    """GPU, NIC, disk, thermal — shared by all subsystems."""
+    """GPU, NIC, disk, thermal, collector health — shared by all subsystems."""
     cfg = config or DetectorChainConfig()
     return [
         GpuFaultDetector(),
         NicMajorityDownDetector(),
         DiskSpaceLowDetector(),
         ThermalThrottlingDetector(config=cfg.thermal),
+        CollectorHealthDetector(),
     ]
 
 
