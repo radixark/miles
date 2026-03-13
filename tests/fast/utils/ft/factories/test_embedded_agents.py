@@ -51,10 +51,10 @@ class TestEnsureRayActorOnNode:
             handle.start.remote.assert_called_once()
             mock_ray.get.assert_called_once_with(handle.start.remote.return_value)
 
-    def test_start_method_result_is_awaited_via_ray_get(self) -> None:
+    def test_start_method_result_is_awaited_via_ray_get(self, caplog: pytest.LogCaptureFixture) -> None:
         """Previously the start_method ObjectRef was fire-and-forget — if start()
         raised, the error was silently lost. Now ray.get() blocks until the
-        actor's start() completes, surfacing any errors."""
+        actor's start() completes, and a failure is logged as a warning."""
         with (
             patch("miles.utils.ft.factories.embedded_agent.ray") as mock_ray,
             patch("miles.utils.ft.factories.embedded_agent.NodeAffinitySchedulingStrategy"),
@@ -66,7 +66,7 @@ class TestEnsureRayActorOnNode:
             start_ref = handle.start.remote.return_value
             mock_ray.get.side_effect = RuntimeError("start failed")
 
-            with pytest.raises(RuntimeError, match="start failed"):
+            with caplog.at_level(logging.WARNING):
                 _ensure_ray_actor_on_node(
                     actor_cls=actor_cls,
                     name="test_actor",
@@ -74,6 +74,7 @@ class TestEnsureRayActorOnNode:
                 )
 
             mock_ray.get.assert_called_once_with(start_ref)
+            assert "Failed to create actor" in caplog.text
 
     def test_concurrent_creation_race_logs_info(self, caplog: pytest.LogCaptureFixture) -> None:
         """When another rank creates the actor concurrently, logs info and does not raise."""
