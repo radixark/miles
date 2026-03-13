@@ -46,11 +46,14 @@ class SubsystemHub:
 
     def set_rollout_handle(self, handle: object) -> None:
         self._rollout_manager_handle = handle
-        logger.info("rollout_handle_set")
+        logger.info("subsystem_hub: rollout handle set")
 
     def set_rollout_node_ids(self, cell_id: str, node_ids: Iterable[str]) -> None:
         self._rollout_node_ids[cell_id] = frozenset(node_ids)
-        logger.info("rollout_node_ids_set cell_id=%s nodes=%s", cell_id, sorted(node_ids))
+        logger.info("subsystem_hub: rollout node IDs set cell_id=%s, nodes=%s", cell_id, sorted(node_ids))
 
     def get_rollout_node_ids(self, cell_id: str) -> frozenset[str]:
-        return self._rollout_node_ids.get(cell_id, frozenset())
+        result = self._rollout_node_ids.get(cell_id, frozenset())
+        if not result:
+            logger.debug("subsystem_hub: no rollout node IDs for cell_id=%s", cell_id)
+        return result
