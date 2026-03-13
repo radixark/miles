@@ -36,8 +36,10 @@ class MetricCollectionLoop:
 
     async def start(self) -> None:
         if self._stopped or self._tasks:
+            logger.debug("metrics: collection loop start skipped: node_id=%s, stopped=%s, num_tasks=%d", self._node_id, self._stopped, len(self._tasks))
             return
 
+        logger.info("metrics: collection loop starting: node_id=%s, num_collectors=%d", self._node_id, len(self._collectors))
         loop = asyncio.get_running_loop()
         for collector in self._collectors:
             task = loop.create_task(self._run_single_collector(collector))
@@ -45,9 +47,11 @@ class MetricCollectionLoop:
 
     async def stop(self) -> None:
         if self._stopped:
+            logger.debug("metrics: collection loop already stopped: node_id=%s", self._node_id)
             return
         self._stopped = True
 
+        logger.info("metrics: collection loop stopping: node_id=%s, num_tasks=%d", self._node_id, len(self._tasks))
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -58,11 +62,12 @@ class MetricCollectionLoop:
                 await collector.close()
             except Exception:
                 logger.warning(
-                    "Collector %s.close() failed on node %s",
+                    "metrics: collector close failed: collector=%s, node_id=%s",
                     type(collector).__name__,
                     self._node_id,
                     exc_info=True,
                 )
+        logger.info("metrics: collection loop stopped: node_id=%s", self._node_id)
 
     async def _run_single_collector(self, collector: BaseCollector) -> None:
         collector_name = type(collector).__name__
@@ -75,10 +80,14 @@ class MetricCollectionLoop:
                 self._exporter.update_metrics(labeled)
                 consecutive_failures = 0
                 self._last_success_timestamps[collector_name] = time.time()
+                logger.debug(
+                    "metrics: collector cycle success: collector=%s, node_id=%s, num_metrics=%d",
+                    collector_name, self._node_id, len(result.metrics),
+                )
             except Exception:
                 consecutive_failures += 1
                 logger.warning(
-                    "Collector %s failed on node %s (consecutive_failures=%d)",
+                    "metrics: collector cycle failed: collector=%s, node_id=%s, consecutive_failures=%d",
                     collector_name,
                     self._node_id,
                     consecutive_failures,

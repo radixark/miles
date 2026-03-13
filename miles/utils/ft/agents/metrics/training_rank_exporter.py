@@ -22,6 +22,7 @@ class TrainingRankExporter:
 
     def __init__(self, rank: int, node_id: str, run_id: str) -> None:
         if not run_id:
+            logger.error("metrics: TrainingRankExporter requires non-empty run_id: rank=%d, node_id=%s", rank, node_id)
             raise ValueError("run_id must not be empty for TrainingRankExporter")
 
         self._exporter = PrometheusExporter()
@@ -51,6 +52,10 @@ class TrainingRankExporter:
 
         self._heartbeat_child.set(0)
         self._phase_child.set(mn.PHASE_TO_NUMERIC["idle"])
+        logger.info(
+            "metrics: training rank exporter initialized: rank=%d, node_id=%s, run_id=%s, address=%s",
+            rank, node_id, run_id, self._exporter.get_address(),
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -75,6 +80,7 @@ class TrainingRankExporter:
         self._bump_heartbeat()
 
     def shutdown(self) -> None:
+        logger.info("metrics: training rank exporter shutting down")
         self._exporter.shutdown()
 
     # ------------------------------------------------------------------

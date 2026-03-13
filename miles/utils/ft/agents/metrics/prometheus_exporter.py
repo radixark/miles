@@ -39,6 +39,7 @@ class PrometheusExporter:
         httpd, _thread = start_http_server(port=0, registry=self._registry)
         self._httpd = httpd
         self.port: int = httpd.server_port
+        logger.info("metrics: prometheus exporter started: port=%d", self.port)
 
     @property
     def registry(self) -> CollectorRegistry:
@@ -65,9 +66,11 @@ class PrometheusExporter:
                 last_exception = exc
                 time.sleep(poll_interval_seconds)
 
+        logger.error("metrics: prometheus exporter not ready after timeout: url=%s, timeout=%s", metrics_url, timeout_seconds)
         raise RuntimeError(f"Prometheus exporter did not become ready: {metrics_url}") from last_exception
 
     def shutdown(self) -> None:
+        logger.info("metrics: prometheus exporter shutting down: port=%d", self.port)
         with self._lock:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -82,7 +85,7 @@ class PrometheusExporter:
                         self._resolve_child(self._counters, Counter, sample).inc(sample.delta)
                     case CounterSample():
                         logger.debug(
-                            "counter_delta_non_positive name=%s delta=%s",
+                            "metrics: counter delta non-positive, skipping: name=%s, delta=%s",
                             sample.name,
                             sample.delta,
                         )
