@@ -97,8 +97,10 @@ class TestSubmitAndStatus:
             entrypoint="python -c \"import os; print(os.environ['MILES_FT_TRAINING_RUN_ID'])\"",
         )
         run_id = await job.start()
+        assert job.job_id is not None
+        job_id = job.job_id
 
         await poll_until_terminal(job)
 
-        logs = await asyncio.to_thread(job_client.get_job_logs, job.job_id)
+        logs = await asyncio.to_thread(job_client.get_job_logs, job_id)
         assert run_id in logs
