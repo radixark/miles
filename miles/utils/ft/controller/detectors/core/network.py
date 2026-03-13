@@ -3,8 +3,8 @@ from datetime import timedelta
 from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext, check_metric_blind
-from miles.utils.ft.controller.detectors.checks.hardware import check_nic_down_in_window, check_nic_persistent_down
-from miles.utils.ft.controller.types import Decision, NodeFault, TriggerType
+from miles.utils.ft.controller.detectors.checks.hardware import check_all_nic_faults
+from miles.utils.ft.controller.types import Decision, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
 
@@ -41,23 +41,14 @@ class NetworkAlertDetector(BaseFaultDetector):
         if blind is not None:
             return blind
 
-        flap_faults = check_nic_down_in_window(
+        faults = check_all_nic_faults(
             ctx.metric_store.time_series_store,
             window=self._alert_window,
-            threshold=self._alert_threshold,
+            flap_threshold=self._alert_threshold,
         )
-        persistent_faults = check_nic_persistent_down(
-            ctx.metric_store.time_series_store,
-            window=self._alert_window,
-        )
-
-        by_node: dict[str, NodeFault] = {}
-        for fault in flap_faults + persistent_faults:
-            by_node.setdefault(fault.node_id, fault)
-        merged = list(by_node.values())
 
         return Decision.from_node_faults(
-            merged,
+            faults,
             fallback_reason="NIC alerts below threshold",
             trigger=TriggerType.NETWORK,
         )

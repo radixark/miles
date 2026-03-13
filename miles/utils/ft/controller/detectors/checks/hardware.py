@@ -40,23 +40,22 @@ def check_disk_fault(
     ]
 
 
-def check_nic_down_in_window(
+def _query_nic_timeseries(
     metric_store: TimeSeriesQueryProtocol,
     window: timedelta,
-    threshold: int,
-) -> list[NodeFault]:
-    """Count NIC up→down transitions per node over *window*; fault nodes at or above *threshold*.
-
-    Counts state transitions (up→down), not raw down-sample counts.
-    This decouples the threshold from the scrape interval.
-    """
+) -> pl.DataFrame | None:
     df = metric_store.query_range(NODE_NETWORK_UP, window=window)
     if df is None or df.is_empty():
-        return []
+        return None
+    return df.sort("timestamp")
 
-    # Sort chronologically so shift(1) gives the temporally previous sample
-    df = df.sort("timestamp")
 
+def _analyze_nic_flap_transitions(
+    df: pl.DataFrame,
+    threshold: int,
+    window: timedelta,
+) -> list[NodeFault]:
+    """Detect NIC flapping: count up→down transitions per node, fault at or above *threshold*."""
     # Detect up→down transitions per (node_id, device).
     # A transition = previous sample was up (>0) and current sample is down (==0).
     # This counts flap events, NOT the number of samples where value==0.
@@ -79,26 +78,13 @@ def check_nic_down_in_window(
     ]
 
 
-def check_nic_persistent_down(
-    metric_store: TimeSeriesQueryProtocol,
-    window: timedelta,
-) -> list[NodeFault]:
+def _analyze_nic_persistent_down(df: pl.DataFrame) -> list[NodeFault]:
     """Detect NICs that crashed permanently: went down and never recovered.
 
-    A permanent NIC crash produces only a single down event (no flapping),
-    so it cannot be caught by `check_nic_down_in_window` which counts
-    up→down transitions.  This function catches NICs whose latest sample
-    within the window is down (value==0) and that had at least one prior
-    up sample (value>0) — confirming a transition from working to broken.
+    Catches NICs whose latest sample is down (value==0) and that had at least
+    one prior up sample (value>0) — confirming a transition from working to broken.
     """
-    df = metric_store.query_range(NODE_NETWORK_UP, window=window)
-    if df is None or df.is_empty():
-        return []
-
-    df = df.sort("timestamp")
-
     per_device = df.group_by("node_id", "device").agg(
-        first_value=pl.col("value").first(),
         last_value=pl.col("value").last(),
         had_up=(pl.col("value") > 0).any(),
         sample_count=pl.len(),
@@ -113,15 +99,49 @@ def check_nic_persistent_down(
     if persistent_down.is_empty():
         return []
 
-    node_faults: dict[str, NodeFault] = {}
-    for row in persistent_down.iter_rows(named=True):
-        nid = row["node_id"]
-        if nid not in node_faults:
-            node_faults[nid] = NodeFault(
-                node_id=nid,
-                reason=f"NIC {row['device']} persistently down on {nid}",
-            )
-    return list(node_faults.values())
+    node_devices = persistent_down.group_by("node_id").agg(devices=pl.col("device"))
+    return [
+        NodeFault(
+            node_id=row["node_id"],
+            reason=f"NIC(s) {', '.join(sorted(row['devices']))} persistently down on {row['node_id']}",
+        )
+        for row in node_devices.iter_rows(named=True)
+    ]
+
+
+def check_nic_down_in_window(
+    metric_store: TimeSeriesQueryProtocol,
+    window: timedelta,
+    threshold: int,
+) -> list[NodeFault]:
+    """Count NIC up→down transitions per node over *window*; fault nodes at or above *threshold*.
+
+    Counts state transitions (up→down), not raw down-sample counts.
+    This decouples the threshold from the scrape interval.
+    """
+    df = _query_nic_timeseries(metric_store, window)
+    if df is None:
+        return []
+    return _analyze_nic_flap_transitions(df, threshold=threshold, window=window)
+
+
+def check_all_nic_faults(
+    metric_store: TimeSeriesQueryProtocol,
+    window: timedelta,
+    flap_threshold: int,
+) -> list[NodeFault]:
+    """Detect both flapping and persistently-down NICs with a single metric query."""
+    df = _query_nic_timeseries(metric_store, window)
+    if df is None:
+        return []
+
+    flap = _analyze_nic_flap_transitions(df, threshold=flap_threshold, window=window)
+    persistent = _analyze_nic_persistent_down(df)
+
+    by_node: dict[str, NodeFault] = {}
+    for fault in flap + persistent:
+        by_node.setdefault(fault.node_id, fault)
+    return list(by_node.values())
 
 
 def check_majority_nic_down(metric_store: TimeSeriesQueryProtocol) -> list[NodeFault]:
