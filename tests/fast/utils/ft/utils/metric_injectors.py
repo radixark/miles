@@ -90,7 +90,7 @@ def make_detector_context(
             time_series_store=metric_store or make_fake_metric_store(),
             mini_wandb=mini_wandb or make_fake_mini_wandb(),
         ),
-        active_node_ids=frozenset(active_node_ids) if active_node_ids is not None else frozenset(),
+        active_node_ids=frozenset(active_node_ids) if active_node_ids is not None else frozenset({"node-0"}),
         job_status=job_status,
     )
 
