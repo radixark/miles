@@ -45,6 +45,12 @@ class RealtimeChecksHandler(StateHandler[RealtimeChecksSt, RecoveryContext]):
             )
 
         logger.info("realtime_checks_clean trigger=%s", ctx.trigger)
+        # Accepted product decision: when recovery is entered without
+        # pre-identified bad nodes, we intentionally try a direct restart
+        # first and only fall back to stop-time diagnostics if that restart
+        # fails. This includes crash-like triggers; future audits should treat
+        # the "restart before diagnostics" ordering as a non-goal unless
+        # product requirements change.
         return EvictingAndRestartingSt.direct_restart()
 
 
