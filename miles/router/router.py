@@ -166,16 +166,19 @@ class MilesRouter:
             self._finish_url(worker_url)
 
     def _build_proxy_response(self, result: dict) -> Response:
-        """Build HTTP response from proxy result."""
-        content = result["response_body"]
-        status_code = result["status_code"]
-        headers = result["headers"]
-        content_type = headers.get("content-type", "")
-        try:
-            data = json.loads(content)
-            return JSONResponse(content=data, status_code=status_code, headers=headers)
-        except Exception:
-            return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
+        """Build HTTP response from proxy result.
+
+        Pass through the upstream body as-is to preserve Content-Length
+        consistency.  Re-serialising via JSONResponse would change the
+        byte-level representation (orjson vs stdlib json) while keeping
+        the original Content-Length header, causing h11 to raise
+        "Too much data for declared Content-Length".
+        """
+        content: bytes = result["response_body"]
+        status_code: int = result["status_code"]
+        headers: dict[str, str] = result["headers"]
+        content_type: str = headers.get("content-type", "application/json")
+        return Response(content=content, status_code=status_code, media_type=content_type)
 
     async def add_worker(self, request: Request):
         """Add a new worker to the router.

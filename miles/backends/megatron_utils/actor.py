@@ -60,6 +60,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
+        if args.dumper_enable:
+            from sglang.srt.debug_utils.dumper import dumper
+
+            dumper.apply_source_patches()
+
         self._is_main_rank = is_megatron_main_rank()
 
         if self._is_main_rank:
@@ -177,6 +182,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
+
         destroy_process_groups()
 
         torch_memory_saver.pause()
