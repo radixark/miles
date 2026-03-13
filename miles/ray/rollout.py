@@ -551,15 +551,64 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             args=args, num_engines=num_engines, rollout_engines=rollout_engines
         )
 
-    # TODO: don't ray.get here to overlap train actor init with rollout engine init.
-    # somehow if we don't sync here, the --debug-rollout-only mode will crash.
-    init_handles = [engine.init.remote(**(addr_and_ports[rank])) for rank, engine in rollout_engines]
-    ray.get(init_handles)
+    # Use seed loading if loading from file, and rdma registration available.
+    engine_nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
+    use_seed_loading = (
+        getattr(args, "sglang_load_format", None) != "dummy"
+        and getattr(args, "sglang_remote_instance_weight_loader_start_seed_via_transfer_engine", False)
+        and len(rollout_engines) > engine_nnodes
+    )
+
+    if use_seed_loading:
+        # Group Ray actors by logical engine using their ranks.
+        engine_groups = {}  # logical_engine_id -> [(rank, engine), ...]
+        for rank, engine in rollout_engines:
+            logical_engine_id = rank // engine_nnodes
+            engine_groups.setdefault(logical_engine_id, []).append((rank, engine))
+
+        # The seed engine is the one with the lowest logical_engine_id
+        sorted_engine_ids = sorted(engine_groups.keys())
+        seed_engine_id = sorted_engine_ids[0]
+        seed_group = engine_groups[seed_engine_id]
+
+        assert (
+            len(seed_group) == engine_nnodes
+        ), f"Seed loading: seed engine group {seed_engine_id} has {len(seed_group)} "
+
+        # Step 1: Init ALL nodes of the seed engine together.
+        seed_head_rank = seed_group[0][0]
+        logger.info(
+            f"Seed loading: initializing seed engine {seed_engine_id} "
+            f"(ranks {[r for r, _ in seed_group]}) with {engine_nnodes} node(s) "
+            f"— loads from disk"
+        )
+        seed_handles = [engine.init.remote(**addr_and_ports[rank]) for rank, engine in seed_group]
+        ray.get(seed_handles)
+
+        # Step 2: Init all follower engines with remote_instance pointing to seed.
+        seed_host = addr_and_ports[seed_head_rank]["host"]
+        seed_port = addr_and_ports[seed_head_rank]["port"]
+        follower_handles = []
+        for eid in sorted_engine_ids[1:]:
+            group = engine_groups[eid]
+            for rank, engine in group:
+                addr_and_ports[rank]["seed_instance_ip"] = seed_host
+                addr_and_ports[rank]["seed_instance_service_port"] = seed_port
+                logger.info(f"Seed loading: actor {rank} will load from seed at {seed_host}:{seed_port}")
+                follower_handles.append(engine.init.remote(**addr_and_ports[rank]))
+
+        ray.get(follower_handles)
+    else:
+        # TODO: don't ray.get here to overlap train actor init with rollout engine init.
+        # somehow if we don't sync here, the --debug-rollout-only mode will crash.
+        init_handles = [engine.init.remote(**(addr_and_ports[rank])) for rank, engine in rollout_engines]
+        ray.get(init_handles)
 
     return num_new_engines
 
 
 def _allocate_rollout_engine_addr_and_ports_external(args, rollout_engines):
+    # TODO: add bonus address setting for rdma weight transfer
     addr_and_ports = []
     for rank, _ in rollout_engines:
         addr = args.rollout_external_engine_addrs[rank]
@@ -585,6 +634,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
     num_engines_per_node = max(
         1, min(args.num_gpus_per_node, args.rollout_num_gpus) // args.rollout_num_gpus_per_engine
     )
+    nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     addr_and_ports = [{} for _ in range(num_engines)]
 
     # Calculate prefill limit to identify prefill engines
@@ -594,13 +644,8 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
         prefill_limit = args.prefill_num_servers * args.rollout_num_gpus_per_engine // num_gpu_per_engine
 
     visited_nodes = set()
+    all_server_node_hosts = {}  # {server_id: {node_rank: address}}, server_id = rank // num_engines_per_node
     for rank, engine in rollout_engines:
-        if rank // num_engines_per_node in visited_nodes:
-            continue
-        visited_nodes.add(rank // num_engines_per_node)
-        # TODO: currently when restarting engines, we will set port for all engines on this node starting with this rank.
-        # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
-        num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
 
         def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
@@ -626,6 +671,24 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
 
         get_addr, get_port = get_addr_and_ports(engine)
 
+        # Collect node_rank and address for multi-node engine scenarios
+        if nnodes > 1:
+            server_id = rank // nnodes
+            all_server_node_hosts[server_id] = all_server_node_hosts.get(server_id, {})
+            node_rank = rank % nnodes
+            assert (
+                node_rank not in all_server_node_hosts[server_id]
+            ), f"Duplicate node rank {node_rank} for server {server_id}"
+            all_server_node_hosts[server_id][node_rank] = get_addr()
+
+        engine_id = rank // num_engines_per_node
+        if engine_id in visited_nodes:
+            continue
+        visited_nodes.add(engine_id)
+        # TODO: currently when restarting engines, we will set port for all engines on this node starting with this rank.
+        # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
+        num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
+
         for i in range(num_engines_on_this_node):
             current_rank = rank + i
             addr_and_ports[current_rank]["host"] = get_addr()
@@ -645,6 +708,14 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
         else:
             for i in range(num_engines_on_this_node):
                 addr_and_ports[rank + i]["dist_init_addr"] = f"{get_addr()}:{get_port(30 + args.sglang_dp_size)}"
+
+    # Inject node_hosts for multi-node engines
+    if nnodes > 1:
+        for server_id, node_hosts in all_server_node_hosts.items():
+            for node_rank in range(nnodes):
+                rank = server_id * nnodes + node_rank
+                if rank < num_engines:
+                    addr_and_ports[rank]["node_hosts"] = node_hosts
 
     for i, _ in rollout_engines:
         for key in ["port", "nccl_port", "dist_init_addr"]:
