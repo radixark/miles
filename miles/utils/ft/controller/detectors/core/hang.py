@@ -24,8 +24,9 @@ class HangDetectorConfig(FtBaseModel):
 
     training_timeout_minutes: int = 10
     checkpoint_saving_timeout_minutes: int = 30
+    startup_timeout_minutes: int = 15
 
-    @field_validator("training_timeout_minutes", "checkpoint_saving_timeout_minutes")
+    @field_validator("training_timeout_minutes", "checkpoint_saving_timeout_minutes", "startup_timeout_minutes")
     @classmethod
     def _must_be_at_least_one(cls, value: int) -> int:
         if value < 1:
@@ -61,6 +62,7 @@ class HangDetector(BaseFaultDetector):
             )
 
         label_filters = build_training_metric_filters(rank="0", run_id=ctx.active_run_id)
+        within_startup = ctx.seconds_since_run_start < self._config.startup_timeout_minutes * 60
 
         phase = self._get_current_phase(ctx.metric_store.time_series_store, label_filters=label_filters)
         if phase is None:
@@ -77,6 +79,8 @@ class HangDetector(BaseFaultDetector):
         )
 
         if not has_any_data:
+            if within_startup:
+                return Decision.no_fault(reason="within startup grace period, ignoring missing heartbeat")
             return Decision(
                 action=ActionType.NOTIFY_HUMAN,
                 reason="no heartbeat data from rank-0 agent after grace period",
@@ -88,6 +92,8 @@ class HangDetector(BaseFaultDetector):
             return Decision.no_fault(reason="heartbeat data insufficient for hang judgment")
 
         if heartbeat_changes == 0:
+            if within_startup:
+                return Decision.no_fault(reason="within startup grace period, ignoring stalled heartbeat")
             phase_label = _PHASE_LABEL[phase]
             return Decision(
                 action=ActionType.ENTER_RECOVERY,

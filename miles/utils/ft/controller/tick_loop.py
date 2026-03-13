@@ -65,6 +65,7 @@ class TickLoop:
         self.state_machine = state_machine
         self.tick_count: int = 0
         self._run_start_tick: int = 0
+        self._run_start_time: float = time.monotonic()
         self._registration_grace_ticks = registration_grace_ticks
 
         self._restart_lock = asyncio.Lock()
@@ -146,6 +147,7 @@ class TickLoop:
 
     def _handle_main_job_new_run(self, run_id: str, deps: TickDeps) -> None:
         self._run_start_tick = self.tick_count
+        self._run_start_time = time.monotonic()
         deps.on_main_job_new_run(run_id)
 
     @staticmethod
@@ -186,6 +188,7 @@ class TickLoop:
             run_start_tick=self._run_start_tick,
             job_status=job_status,
             node_metadata=deps.node_agent_registry.all_metadata,
+            seconds_since_run_start=time.monotonic() - self._run_start_time,
             on_node_evicted=self._make_on_node_evicted(deps),
         )
 

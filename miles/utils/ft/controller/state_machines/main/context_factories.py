@@ -72,6 +72,7 @@ def _build_detector_context(
         active_node_ids=active_node_ids,
         job_status=context.job_status,
         active_run_id=context.shared.metric_store.mini_wandb.active_run_id,
+        seconds_since_run_start=context.seconds_since_run_start,
     )
 
 

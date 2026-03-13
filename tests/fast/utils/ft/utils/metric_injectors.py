@@ -85,6 +85,7 @@ def make_detector_context(
     active_node_ids: frozenset[str] | set[str] | None = None,
     job_status: JobStatus = JobStatus.RUNNING,
     active_run_id: str | None = None,
+    seconds_since_run_start: float = 99999.0,
 ) -> DetectorContext:
     return DetectorContext(
         metric_store=MetricStore(
@@ -94,6 +95,7 @@ def make_detector_context(
         active_node_ids=frozenset(active_node_ids) if active_node_ids is not None else frozenset({"node-0"}),
         job_status=job_status,
         active_run_id=active_run_id,
+        seconds_since_run_start=seconds_since_run_start,
     )
 
 

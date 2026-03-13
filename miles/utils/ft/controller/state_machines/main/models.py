@@ -42,4 +42,6 @@ class MainContext(FtBaseModel):
     # Node metadata (refreshed each tick from NodeAgentRegistry)
     node_metadata: dict[str, dict[str, str]]
 
+    seconds_since_run_start: float = 0.0
+
     on_node_evicted: Callable[[str], None] | None = None

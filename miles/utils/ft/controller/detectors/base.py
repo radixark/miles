@@ -21,6 +21,7 @@ class DetectorContext:
     active_node_ids: frozenset[str] = field(default_factory=frozenset)
     job_status: JobStatus | None = None
     active_run_id: str | None = None
+    seconds_since_run_start: float = 0.0
 
 
 class BaseFaultDetector(ABC):

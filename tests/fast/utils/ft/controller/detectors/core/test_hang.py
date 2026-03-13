@@ -551,6 +551,93 @@ class TestHangDetectorPhaseUnknownSkipsCheck:
         assert decision.trigger == TriggerType.HANG
 
 
+class TestHangDetectorStartupPatience:
+    """Verify that HangDetector suppresses faults during the startup grace
+    period (seconds_since_run_start < startup_timeout_minutes * 60)."""
+
+    def test_startup_no_heartbeat_returns_no_fault(self) -> None:
+        """During startup, missing heartbeat data should be tolerated."""
+        store = make_fake_metric_store()
+        inject_training_phase(store, phase=1.0, ft_run_id="run-1")
+
+        detector = HangDetector(config=HangDetectorConfig(startup_timeout_minutes=15))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="run-1",
+            seconds_since_run_start=30.0,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+        assert "startup" in decision.reason
+
+    def test_startup_heartbeat_stalled_returns_no_fault(self) -> None:
+        """During startup, stalled heartbeat should be tolerated."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_training_phase(store, phase=1.0, ft_run_id="run-1")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="run-1")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="run-1")
+
+        detector = HangDetector(config=HangDetectorConfig(startup_timeout_minutes=15))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="run-1",
+            seconds_since_run_start=30.0,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+        assert "startup" in decision.reason
+
+    def test_past_startup_no_heartbeat_returns_notify_human(self) -> None:
+        """After startup period, missing heartbeat should trigger NOTIFY_HUMAN."""
+        store = make_fake_metric_store()
+        inject_training_phase(store, phase=1.0, ft_run_id="run-1")
+
+        detector = HangDetector(config=HangDetectorConfig(startup_timeout_minutes=15))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="run-1",
+            seconds_since_run_start=1000.0,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.trigger == TriggerType.TELEMETRY_BLIND
+
+    def test_past_startup_heartbeat_stalled_returns_recovery(self) -> None:
+        """After startup period, stalled heartbeat should trigger ENTER_RECOVERY."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_training_phase(store, phase=1.0, ft_run_id="run-1")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="run-1")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="run-1")
+
+        detector = HangDetector(config=HangDetectorConfig(startup_timeout_minutes=15))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="run-1",
+            seconds_since_run_start=1000.0,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.trigger == TriggerType.HANG
+
+
 class TestHangDetectorValidation:
     @pytest.mark.parametrize(
         "kwargs,match",
@@ -559,6 +646,8 @@ class TestHangDetectorValidation:
             (dict(training_timeout_minutes=-5), "must be >= 1"),
             (dict(checkpoint_saving_timeout_minutes=0), "must be >= 1"),
             (dict(checkpoint_saving_timeout_minutes=-10), "must be >= 1"),
+            (dict(startup_timeout_minutes=0), "must be >= 1"),
+            (dict(startup_timeout_minutes=-1), "must be >= 1"),
         ],
     )
     def test_invalid_parameter_rejected(self, kwargs: dict, match: str) -> None:
