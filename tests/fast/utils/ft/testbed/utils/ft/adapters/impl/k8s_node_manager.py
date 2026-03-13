@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import ray
+from tests.fast.utils.ft.utils.training_simulator import NodeManagerStateActor
 
 from miles.utils.ft.adapters.types import NodeManagerProtocol
-from tests.fast.utils.ft.utils.training_simulator import NodeManagerStateActor
 
 
 class TestbedNodeManager(NodeManagerProtocol):

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from miles.utils.ft.controller.node_agents import CoverageResult, NodeAgentCoverageChecker
+from miles.utils.ft.controller.node_agents import NodeAgentCoverageChecker
 
 
 class TestNodeAgentCoverageChecker:
@@ -108,7 +108,9 @@ class TestCoverageResultStructured:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=3)
 
         for _ in range(2):
-            result = checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+            result = checker.check(
+                subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set()
+            )
             assert result.persistently_uncovered_node_ids == []
 
         result = checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
@@ -117,7 +119,9 @@ class TestCoverageResultStructured:
     def test_returns_empty_when_all_covered(self) -> None:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
 
-        result = checker.check(subsystem_name="training", subsystem_node_ids={"n1", "n2"}, registered_agent_node_ids={"n1", "n2"})
+        result = checker.check(
+            subsystem_name="training", subsystem_node_ids={"n1", "n2"}, registered_agent_node_ids={"n1", "n2"}
+        )
 
         assert result.persistently_uncovered_node_ids == []
         assert result.newly_restored_node_ids == []
@@ -145,7 +149,9 @@ class TestCoverageResultStructured:
     def test_result_carries_subsystem_name(self) -> None:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
 
-        result = checker.check(subsystem_name="rollout_default", subsystem_node_ids=set(), registered_agent_node_ids=set())
+        result = checker.check(
+            subsystem_name="rollout_default", subsystem_node_ids=set(), registered_agent_node_ids=set()
+        )
 
         assert result.subsystem_name == "rollout_default"
 
@@ -165,7 +171,9 @@ class TestCoveragePerSubsystem:
         r_train = checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
         # Rollout: node n1 uncovered for only 1 tick → does not trigger yet
-        r_rollout = checker.check(subsystem_name="rollout_default", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        r_rollout = checker.check(
+            subsystem_name="rollout_default", subsystem_node_ids={"n1"}, registered_agent_node_ids=set()
+        )
 
         assert r_train.persistently_uncovered_node_ids == ["n1"]
         assert r_train.subsystem_name == "training"
@@ -178,7 +186,9 @@ class TestCoveragePerSubsystem:
         checker = NodeAgentCoverageChecker(window_seconds=600, threshold=2)
 
         checker.check(subsystem_name="rollout_0", subsystem_node_ids={"r1", "r2"}, registered_agent_node_ids=set())
-        result = checker.check(subsystem_name="rollout_0", subsystem_node_ids={"r1", "r2"}, registered_agent_node_ids=set())
+        result = checker.check(
+            subsystem_name="rollout_0", subsystem_node_ids={"r1", "r2"}, registered_agent_node_ids=set()
+        )
 
         assert sorted(result.persistently_uncovered_node_ids) == ["r1", "r2"]
         assert result.subsystem_name == "rollout_0"
@@ -202,7 +212,9 @@ class TestCoveragePerSubsystem:
         checker.check(subsystem_name="rollout_0", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
         r_train = checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids={"n1"})
-        r_rollout = checker.check(subsystem_name="rollout_0", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
+        r_rollout = checker.check(
+            subsystem_name="rollout_0", subsystem_node_ids={"n1"}, registered_agent_node_ids=set()
+        )
 
         assert r_train.persistently_uncovered_node_ids == []
         assert r_rollout.persistently_uncovered_node_ids == ["n1"]

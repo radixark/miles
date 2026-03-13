@@ -10,17 +10,17 @@ from typing import Any
 
 import pytest
 import ray
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, RECOVERY_TIMEOUT, RayNodeInfo
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
+from tests.fast.utils.ft.testbed.config import TestbedConfig, TestbedNodeConfig
+from tests.fast.utils.ft.testbed.train import MilesTestbed
+from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.metric_names import GPU_AVAILABLE
-from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, RECOVERY_TIMEOUT, RayNodeInfo
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
-from tests.fast.utils.ft.testbed.config import TestbedConfig, TestbedNodeConfig
-from tests.fast.utils.ft.testbed.train import MilesTestbed
-from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 
 logger = logging.getLogger(__name__)
 
@@ -259,9 +259,7 @@ async def test_recovery_phase_monotonicity(
     for s in snapshots:
         if s.mode == ControllerMode.RECOVERY:
             saw_recovery = True
-            assert not saw_monitoring_after_recovery, (
-                "Mode went back to RECOVERY after returning to MONITORING"
-            )
+            assert not saw_monitoring_after_recovery, "Mode went back to RECOVERY after returning to MONITORING"
         elif s.mode == ControllerMode.MONITORING and saw_recovery:
             saw_monitoring_after_recovery = True
 

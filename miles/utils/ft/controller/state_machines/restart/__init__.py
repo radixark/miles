@@ -1,13 +1,15 @@
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb as _MiniWandb
 from miles.utils.ft.controller.state_machines.restart.handlers import (
     EvictingHandler,
-    MonitoringProgressHandler,
     ExternalRestartingMainJobHandler,
+    MonitoringProgressHandler,
     StoppingAndRestartingHandler,
     iteration_progress,
 )
 from miles.utils.ft.controller.state_machines.restart.models import (
     EvictingSt,
     ExternalExecutionResult,
+    ExternalRestartingMainJobSt,
     MonitoringConfig,
     MonitoringIterationProgressConfig,
     MonitoringProgressSt,
@@ -15,13 +17,10 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     RestartContext,
     RestartDoneSt,
     RestartFailedSt,
-    ExternalRestartingMainJobSt,
     RestartState,
     StoppingAndRestartingSt,
 )
 from miles.utils.ft.utils.state_machine import StateMachineStepper
-
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb as _MiniWandb
 
 RestartContext.model_rebuild(_types_namespace={"MiniWandb": _MiniWandb})
 

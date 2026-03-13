@@ -11,7 +11,6 @@ Required environment variables:
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import os
 import signal
@@ -24,9 +23,9 @@ from uuid import uuid4
 import pytest
 import ray
 from ray.job_submission import JobSubmissionClient
-from miles.utils.external_utils.command_utils import get_bool_env_var
 from tests.e2e.ft.utils import clear_all_bad_node_markers
 
+from miles.utils.external_utils.command_utils import get_bool_env_var
 from miles.utils.ft.adapters.impl.k8s_node_manager import K8sNodeManager
 from miles.utils.ft.adapters.impl.ray.main_job import stop_all_active_jobs
 from miles.utils.ft.adapters.types import ft_controller_actor_name
@@ -102,8 +101,7 @@ def ray_cluster(ray_address: str) -> Generator[None, None, None]:
     nodes = ray.nodes()
     alive_nodes = [n for n in nodes if n.get("Alive")]
     assert len(alive_nodes) == _EXPECTED_CLUSTER_NODES, (
-        f"FT E2E tests require exactly {_EXPECTED_CLUSTER_NODES} cluster nodes, "
-        f"got {len(alive_nodes)}"
+        f"FT E2E tests require exactly {_EXPECTED_CLUSTER_NODES} cluster nodes, " f"got {len(alive_nodes)}"
     )
 
     gpu_node_list = [n for n in alive_nodes if n.get("Resources", {}).get("GPU", 0) > 0]
@@ -568,30 +566,16 @@ class E2eFaultTestAdapter:
     async def get_status(self) -> ControllerStatus:
         return get_status(self._handle)
 
-    async def wait_for_training_stable(
-        self, *, n_iterations: int, timeout: float
-    ) -> None:
-        await wait_for_training_stable(
-            self._handle, n_iterations=n_iterations, timeout=timeout
-        )
+    async def wait_for_training_stable(self, *, n_iterations: int, timeout: float) -> None:
+        await wait_for_training_stable(self._handle, n_iterations=n_iterations, timeout=timeout)
 
-    async def wait_for_mode_transition(
-        self, *, target_mode: ControllerMode, timeout: float
-    ) -> ControllerStatus:
-        return await wait_for_mode_transition(
-            self._handle, target_mode=target_mode, timeout=timeout
-        )
+    async def wait_for_mode_transition(self, *, target_mode: ControllerMode, timeout: float) -> ControllerStatus:
+        return await wait_for_mode_transition(self._handle, target_mode=target_mode, timeout=timeout)
 
-    async def wait_for_subsystem_state(
-        self, *, name: str, state: str, timeout: float
-    ) -> ControllerStatus:
-        return await wait_for_subsystem_state(
-            self._handle, subsystem_name=name, target_state=state, timeout=timeout
-        )
+    async def wait_for_subsystem_state(self, *, name: str, state: str, timeout: float) -> ControllerStatus:
+        return await wait_for_subsystem_state(self._handle, subsystem_name=name, target_state=state, timeout=timeout)
 
-    async def wait_for_recovery_phase(
-        self, *, phase: str, timeout: float
-    ) -> ControllerStatus:
+    async def wait_for_recovery_phase(self, *, phase: str, timeout: float) -> ControllerStatus:
         return await poll_until(
             probe=lambda: get_status(self._handle),
             predicate=lambda s: s.recovery is not None and phase in s.recovery.phase,
@@ -600,12 +584,8 @@ class E2eFaultTestAdapter:
             description=f"recovery_phase({phase})",
         )
 
-    async def wait_for_all_subsystems_detecting(
-        self, *, timeout: float
-    ) -> ControllerStatus:
-        return await wait_for_all_subsystems_detecting(
-            self._handle, timeout=timeout
-        )
+    async def wait_for_all_subsystems_detecting(self, *, timeout: float) -> ControllerStatus:
+        return await wait_for_all_subsystems_detecting(self._handle, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

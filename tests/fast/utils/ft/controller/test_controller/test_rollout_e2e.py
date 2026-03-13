@@ -10,23 +10,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
-from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.detectors.chain import build_shared_hw_detectors
-from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
-from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
-from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
-from miles.utils.ft.controller.state_machines.main.models import NormalSt
-from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringRunningAfterDelayConfig
-from miles.utils.ft.agents.types import DiagnosticPipelineResult
-from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from tests.fast.utils.ft.conftest import FakeDiagnosticOrchestrator
 from tests.fast.utils.ft.controller.test_controller.test_integration import (
     _FakeRemoteMethod,
+    _make_test_controller_with_rollout,
     _OneShotDecisionDetector,
     _RolloutTestHarness,
-    _make_test_controller_with_rollout,
 )
 from tests.fast.utils.ft.utils.metric_injectors import (
     inject_critical_xid,
@@ -34,6 +23,17 @@ from tests.fast.utils.ft.utils.metric_injectors import (
     inject_healthy_node,
     inject_rollout_cell_alive,
 )
+
+from miles.utils.ft.adapters.types import JobStatus
+from miles.utils.ft.agents.types import DiagnosticPipelineResult
+from miles.utils.ft.controller.detectors.chain import build_shared_hw_detectors
+from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
+from miles.utils.ft.controller.state_machines.main.models import NormalSt
+from miles.utils.ft.controller.state_machines.restart.models import MonitoringRunningAfterDelayConfig
+from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
+from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 
 def _override_rollout_monitoring(harness: _RolloutTestHarness, *, cell_ids: list[str] | None = None) -> None:
@@ -183,7 +183,9 @@ class TestColocatedNodeFault:
         shared_node = "shared-node"
         harness = _make_test_controller_with_rollout(
             training_detectors=build_shared_hw_detectors(),
-            runtime_config=ControllerRuntimeConfig(tick_interval=0.01, registration_grace_ticks=0, monitoring_success_iterations=0),
+            runtime_config=ControllerRuntimeConfig(
+                tick_interval=0.01, registration_grace_ticks=0, monitoring_success_iterations=0
+            ),
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller
@@ -211,12 +213,14 @@ class TestColocatedNodeFault:
         # recovery blocks on real I/O and the convergence loop exits first.
         rollout_spec = controller._subsystem_specs["rollout_ep72"]
         rollout_spec.config.detectors = [
-            _OneShotDecisionDetector(Decision(
-                action=ActionType.ENTER_RECOVERY,
-                bad_node_ids=[shared_node],
-                reason="gpu fault on shared node",
-                trigger=TriggerType.HARDWARE,
-            ))
+            _OneShotDecisionDetector(
+                Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    bad_node_ids=[shared_node],
+                    reason="gpu fault on shared node",
+                    trigger=TriggerType.HARDWARE,
+                )
+            )
         ]
 
         # Step 3: Inject GPU XID on the shared node
@@ -234,9 +238,7 @@ class TestColocatedNodeFault:
         assert "rollout_ep72" in state.subsystems
 
         for name, sub_state in state.subsystems.items():
-            assert isinstance(sub_state, DetectingAnomalySt), (
-                f"{name} not in DetectingAnomaly after main-job restart"
-            )
+            assert isinstance(sub_state, DetectingAnomalySt), f"{name} not in DetectingAnomaly after main-job restart"
 
         assert harness.node_manager.was_ever_marked_bad(shared_node)
         assert harness.main_job._stopped
@@ -285,12 +287,14 @@ class TestMultiCellIndependentFailures:
         # Step 2: Install one-shot crash detector for ep72 only
         ep72_spec = controller._subsystem_specs["rollout_ep72"]
         ep72_spec.config.detectors = [
-            _OneShotDecisionDetector(Decision(
-                action=ActionType.ENTER_RECOVERY,
-                bad_node_ids=["rollout-ep72-0", "rollout-ep72-1"],
-                reason="rollout cell ep72 dead",
-                trigger=TriggerType.CRASH,
-            ))
+            _OneShotDecisionDetector(
+                Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    bad_node_ids=["rollout-ep72-0", "rollout-ep72-1"],
+                    reason="rollout cell ep72 dead",
+                    trigger=TriggerType.CRASH,
+                )
+            )
         ]
         stop_before = harness.rollout_manager_handle.stop_cell.call_count
 
@@ -306,12 +310,14 @@ class TestMultiCellIndependentFailures:
         # Step 4: Install one-shot crash detector for ep36 only
         ep36_spec = controller._subsystem_specs["rollout_ep36"]
         ep36_spec.config.detectors = [
-            _OneShotDecisionDetector(Decision(
-                action=ActionType.ENTER_RECOVERY,
-                bad_node_ids=["rollout-ep36-0", "rollout-ep36-1"],
-                reason="rollout cell ep36 dead",
-                trigger=TriggerType.CRASH,
-            ))
+            _OneShotDecisionDetector(
+                Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    bad_node_ids=["rollout-ep36-0", "rollout-ep36-1"],
+                    reason="rollout cell ep36 dead",
+                    trigger=TriggerType.CRASH,
+                )
+            )
         ]
         stop_before = harness.rollout_manager_handle.stop_cell.call_count
 
@@ -380,21 +386,17 @@ class TestRolloutLevel1FailureNotifyHumans:
         assert isinstance(state, NormalSt)
         assert isinstance(state.subsystems["rollout_ep72"], DetectingAnomalySt)
 
-        assert harness.rollout_manager_handle.stop_cell.call_count >= 2, (
-            f"stop_cell should be called at least twice (first L1 + final retry), got {harness.rollout_manager_handle.stop_cell.call_count}"
-        )
-        assert harness.rollout_manager_handle.start_cell.call_count >= 2, (
-            f"start_cell should be called at least twice (first L1 + final retry), got {harness.rollout_manager_handle.start_cell.call_count}"
-        )
+        assert (
+            harness.rollout_manager_handle.stop_cell.call_count >= 2
+        ), f"stop_cell should be called at least twice (first L1 + final retry), got {harness.rollout_manager_handle.stop_cell.call_count}"
+        assert (
+            harness.rollout_manager_handle.start_cell.call_count >= 2
+        ), f"start_cell should be called at least twice (first L1 + final retry), got {harness.rollout_manager_handle.start_cell.call_count}"
         assert diag_orch.call_count >= 1
 
         recovery_alerts = [
-            (title, content)
-            for title, content, _ in harness.notifier.calls
-            if title == "Recovery Alert"
+            (title, content) for title, content, _ in harness.notifier.calls if title == "Recovery Alert"
         ]
-        assert len(recovery_alerts) >= 1, (
-            f"Expected 'Recovery Alert' notification, got: {harness.notifier.calls}"
-        )
+        assert len(recovery_alerts) >= 1, f"Expected 'Recovery Alert' notification, got: {harness.notifier.calls}"
 
         assert not harness.main_job._stopped

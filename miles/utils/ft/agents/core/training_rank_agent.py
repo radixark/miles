@@ -41,7 +41,9 @@ class FtTrainingRankAgent:
         self._node_id: str = node_id or socket.gethostname()
 
         self._metric_exporter = TrainingRankExporter(
-            rank=rank, node_id=self._node_id, run_id=self._run_id,
+            rank=rank,
+            node_id=self._node_id,
+            run_id=self._run_id,
         )
 
         self._register_training_rank()

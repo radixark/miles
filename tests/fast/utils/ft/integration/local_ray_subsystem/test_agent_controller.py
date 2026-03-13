@@ -12,9 +12,9 @@ from tests.fast.utils.ft.integration.conftest import get_status, poll_for_run_id
 from tests.fast.utils.ft.utils.controller_fakes import OneShotCrashDetector
 
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
-from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.agents.core.tracking_agent import FtTrackingAgent
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.types import ControllerMode
 
 pytestmark = [

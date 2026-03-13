@@ -10,12 +10,12 @@ import httpx
 import polars as pl
 
 from miles.utils.ft.controller.metrics.aggregation_mixin import RangeAggregationMixin
+from miles.utils.ft.controller.metrics.mini_prometheus.query import AmbiguousSeriesError
 from miles.utils.ft.controller.metrics.prometheus_api.errors import PrometheusQueryError
 from miles.utils.ft.controller.metrics.prometheus_api.response_parser import (
     parse_instant_response,
     parse_range_response,
 )
-from miles.utils.ft.controller.metrics.mini_prometheus.query import AmbiguousSeriesError
 from miles.utils.ft.controller.types import TimeSeriesStoreProtocol
 from miles.utils.ft.utils.retry import retry_sync
 

@@ -11,27 +11,28 @@ from tests.fast.utils.ft.utils.controller_fakes import (
     FakeNodeManager,
     FakeNotifier,
     failing_mark_node_bad,
-    failing_stop_job,
-    failing_submit_job,
 )
 
 from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.controller.state_machines.restart import (
     EvictingSt,
     ExternalExecutionResult,
+    ExternalRestartingMainJobSt,
     MonitoringProgressSt,
     RestartContext,
     RestartDoneSt,
     RestartFailedSt,
-    ExternalRestartingMainJobSt,
     StoppingAndRestartingSt,
     create_restart_stepper,
     iteration_progress,
 )
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
+from miles.utils.ft.controller.state_machines.restart.models import (
+    MonitoringIterationProgressConfig,
+    MonitoringRunningAfterDelayConfig,
+)
+from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 
@@ -667,7 +668,6 @@ class TestTerminalStates:
         ctx = _make_context()
         result = await _step_last(stepper, RestartFailedSt(), ctx)
         assert result is None
-
 
 
 # ---------------------------------------------------------------------------

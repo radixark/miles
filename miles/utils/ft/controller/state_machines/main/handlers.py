@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-from miles.utils.ft.controller.state_machines.main.models import (
-    MainContext,
-    MainState,
-    NormalSt,
-    RestartingMainJobSt,
-)
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
 from miles.utils.ft.controller.state_machines.main.restart_coordinator import (
     build_fresh_subsystem_states,
     find_restart_requestor,
@@ -14,11 +9,10 @@ from miles.utils.ft.controller.state_machines.main.restart_coordinator import (
     update_external_execution_result,
 )
 from miles.utils.ft.controller.state_machines.main.subsystem_runner import advance_subsystems
-from miles.utils.ft.controller.state_machines.subsystem import create_subsystem_stepper
 from miles.utils.ft.controller.state_machines.recovery import create_recovery_stepper
 from miles.utils.ft.controller.state_machines.restart import create_restart_stepper
+from miles.utils.ft.controller.state_machines.subsystem import create_subsystem_stepper
 from miles.utils.ft.utils.state_machine import StateHandler
-
 
 # Re-export for backward compatibility with existing test imports
 _find_restart_requestor = find_restart_requestor
@@ -61,7 +55,5 @@ class NormalHandler(StateHandler[NormalSt, MainContext]):
 
 
 class RestartingMainJobHandler(StateHandler[RestartingMainJobSt, MainContext]):
-    async def step(
-        self, state: RestartingMainJobSt, context: MainContext
-    ) -> MainState | None:
+    async def step(self, state: RestartingMainJobSt, context: MainContext) -> MainState | None:
         return await resolve_main_job_restart(state=state, context=context)

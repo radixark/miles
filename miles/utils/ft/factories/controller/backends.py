@@ -42,10 +42,7 @@ def build_platform_components(
 
         namespace = k8s_namespace or os.environ.get("K8S_NAMESPACE", "")
         if not namespace:
-            raise RuntimeError(
-                "K8s namespace not configured. "
-                "Set --k8s-namespace or the K8S_NAMESPACE env var."
-            )
+            raise RuntimeError("K8s namespace not configured. " "Set --k8s-namespace or the K8S_NAMESPACE env var.")
 
         node_manager = K8sNodeManager(
             label_prefix=k8s_label_prefix,

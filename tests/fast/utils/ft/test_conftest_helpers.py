@@ -79,6 +79,7 @@ class TestFakeNodeManager:
         await manager.mark_node_bad(node_id="node-1", reason="test")
         assert manager.is_node_bad("node-1")
 
+
 class TestFakeMainJob:
     @pytest.mark.anyio
     async def test_status_sequence(self) -> None:

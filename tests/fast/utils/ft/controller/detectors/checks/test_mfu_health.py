@@ -115,7 +115,9 @@ class TestNonFiniteMfuRaises:
         wandb = make_fake_mini_wandb(steps={i: {"mfu": 0.5} for i in range(1, 11)})
 
         with pytest.raises(ValueError, match="non-finite.*explicit baseline"):
-            check_mfu_health(wandb, consecutive_steps=10, threshold_ratio=0.8, baseline=float("nan"), baseline_steps=50)
+            check_mfu_health(
+                wandb, consecutive_steps=10, threshold_ratio=0.8, baseline=float("nan"), baseline_steps=50
+            )
 
     def test_all_finite_values_no_error(self) -> None:
         wandb = make_fake_mini_wandb(steps={i: {"mfu": 0.5} for i in range(1, 11)})

@@ -8,23 +8,23 @@ full state machine."""
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from prometheus_client import CollectorRegistry
-from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier, make_failing_main_job
+from tests.fast.utils.ft.utils.controller_fakes import (
+    FakeMainJob,
+    FakeNodeManager,
+    FakeNotifier,
+    make_failing_main_job,
+)
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.main.models import (
-    MainContext,
-    NormalSt,
-    RestartingMainJobSt,
-)
+from miles.utils.ft.controller.state_machines.main.models import MainContext, NormalSt, RestartingMainJobSt
 from miles.utils.ft.controller.state_machines.main.restart_coordinator import (
     resolve_main_job_restart,
     trigger_main_job_restart,
@@ -36,7 +36,12 @@ from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringIterationProgressConfig,
 )
 from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, RecoveringSt
-from miles.utils.ft.controller.subsystem_hub.config import RestartMode, SubsystemConfig, SubsystemRuntime, SubsystemSpec
+from miles.utils.ft.controller.subsystem_hub.config import (
+    RestartMode,
+    SubsystemConfig,
+    SubsystemRuntime,
+    SubsystemSpec,
+)
 from miles.utils.ft.controller.types import MetricStore, SharedDeps, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
 

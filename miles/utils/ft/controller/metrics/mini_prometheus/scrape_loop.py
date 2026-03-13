@@ -74,8 +74,7 @@ class ScrapeLoop:
         if failed_targets:
             details = ", ".join(f"{tid}({count})" for tid, count in failed_targets)
             raise RuntimeError(
-                f"Scrape targets exceeded max consecutive failures "
-                f"({self._max_consecutive_failures}): {details}"
+                f"Scrape targets exceeded max consecutive failures " f"({self._max_consecutive_failures}): {details}"
             )
 
     async def start(self) -> None:

@@ -82,6 +82,7 @@ class TriggerType(str, Enum):
     _merge_detector_decisions(): when multiple ENTER_RECOVERY decisions
     arrive, the trigger with the smallest index wins.
     """
+
     HARDWARE = "hardware"
     CRASH = "crash"
     NAN_LOSS = "nan_loss"
@@ -278,12 +279,22 @@ class SharedDeps:
     """
 
     __slots__ = (
-        "main_job", "subsystem_specs", "metric_store", "notifier",
-        "node_manager", "diagnostic_orchestrator", "detector_crash_tracker",
-        "recovery_timeout_seconds", "max_simultaneous_bad_nodes",
-        "on_main_job_new_run", "rank_pids_provider", "controller_exporter",
-        "on_recovery_duration", "registration_grace_ticks",
-        "on_convergence_failure", "restart_lock",
+        "main_job",
+        "subsystem_specs",
+        "metric_store",
+        "notifier",
+        "node_manager",
+        "diagnostic_orchestrator",
+        "detector_crash_tracker",
+        "recovery_timeout_seconds",
+        "max_simultaneous_bad_nodes",
+        "on_main_job_new_run",
+        "rank_pids_provider",
+        "controller_exporter",
+        "on_recovery_duration",
+        "registration_grace_ticks",
+        "on_convergence_failure",
+        "restart_lock",
     )
 
     def __init__(

@@ -8,11 +8,11 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
+from tests.fast.utils.ft.integration.conftest import RayNodeInfo
+from tests.fast.utils.ft.testbed.config import TestbedConfig
+from tests.fast.utils.ft.testbed.train import MilesTestbed
 
 from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
-from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, RayNodeInfo
-from tests.fast.utils.ft.testbed.config import TestbedConfig, TestbedNodeConfig
-from tests.fast.utils.ft.testbed.train import MilesTestbed
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -59,13 +59,9 @@ async def assert_no_recovery_triggered(
 
     while time.monotonic() < deadline:
         status = await testbed.get_status()
-        assert (
-            status.mode == ControllerMode.MONITORING
-        ), f"Unexpected recovery at tick {status.tick_count}"
+        assert status.mode == ControllerMode.MONITORING, f"Unexpected recovery at tick {status.tick_count}"
         if status.tick_count >= target_ticks:
             return status
         await asyncio.sleep(0.3)
 
-    raise TimeoutError(
-        f"Controller did not reach {observation_ticks} additional ticks within {timeout}s"
-    )
+    raise TimeoutError(f"Controller did not reach {observation_ticks} additional ticks within {timeout}s")

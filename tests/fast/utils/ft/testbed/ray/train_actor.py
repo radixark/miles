@@ -9,7 +9,6 @@ import ray
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
 from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 from miles.utils.http_utils import MILES_HOST_IP_ENV
-from miles.utils.ft.utils.env import get_run_id
 
 logger = logging.getLogger(__name__)
 

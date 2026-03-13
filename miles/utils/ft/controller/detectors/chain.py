@@ -5,13 +5,13 @@ from pydantic import ConfigDict, Field
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.core.collector_health import CollectorHealthDetector
 from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
-from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
+from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.core.loss_spike import LossSpikeDetector, LossSpikeDetectorConfig
-from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
 from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
+from miles.utils.ft.controller.detectors.core.nic_majority_down import NicMajorityDownDetector
 from miles.utils.ft.controller.detectors.core.thermal_throttling import (
     ThermalThrottlingDetector,
     ThermalThrottlingDetectorConfig,

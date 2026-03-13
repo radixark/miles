@@ -444,10 +444,12 @@ class TestStateMachineGenerator:
 
 def _make_oscillating_stepper() -> StateMachineStepper[DummyState, None]:
     """A→B→A→B→... never converges."""
-    return StateMachineStepper(handler_map={
-        StateA: OscillatingAHandler,
-        StateB: OscillatingBHandler,
-    })
+    return StateMachineStepper(
+        handler_map={
+            StateA: OscillatingAHandler,
+            StateB: OscillatingBHandler,
+        }
+    )
 
 
 def _make_null_stepper() -> StateMachineStepper[DummyState, None]:
@@ -466,7 +468,9 @@ def _make_null_stepper() -> StateMachineStepper[DummyState, None]:
 class TestRunStepperToConvergenceNoTransition:
     @pytest.mark.asyncio
     async def test_handler_returns_none_yields_nothing(self) -> None:
-        results = [s async for s in run_stepper_to_convergence(_make_null_stepper(), StateA(), context_factory=lambda _: None)]
+        results = [
+            s async for s in run_stepper_to_convergence(_make_null_stepper(), StateA(), context_factory=lambda _: None)
+        ]
         assert results == []
 
 
@@ -487,14 +491,18 @@ class TestRunStepperToConvergenceChain:
     async def test_starting_mid_chain_converges(self) -> None:
         """B(2)→B(3)→Terminal: start from middle of chain."""
         stepper = _make_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateB(value=2), context_factory=lambda _: None)]
+        results = [
+            s async for s in run_stepper_to_convergence(stepper, StateB(value=2), context_factory=lambda _: None)
+        ]
 
         assert results == [StateB(value=3), TerminalState()]
 
     @pytest.mark.asyncio
     async def test_starting_at_terminal_yields_nothing(self) -> None:
         stepper = _make_stepper(terminal_states=frozenset({TerminalState}))
-        results = [s async for s in run_stepper_to_convergence(stepper, TerminalState(), context_factory=lambda _: None)]
+        results = [
+            s async for s in run_stepper_to_convergence(stepper, TerminalState(), context_factory=lambda _: None)
+        ]
         assert results == []
 
     @pytest.mark.asyncio
@@ -541,9 +549,7 @@ class TestRunStepperToConvergenceSameStateYield:
         assert results == []
 
     @pytest.mark.asyncio
-    async def test_same_state_yield_does_not_hit_max_iterations(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_same_state_yield_does_not_hit_max_iterations(self, caplog: pytest.LogCaptureFixture) -> None:
         """Convergence should complete immediately without hitting the cap."""
         stepper = _make_gen_stepper(SameStateGenHandler)
         with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
@@ -557,7 +563,12 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_oscillating_stops_at_max_iterations(self) -> None:
         """A→B→A→B→... should stop at max_iterations."""
         stepper = _make_oscillating_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=5)]
+        results = [
+            s
+            async for s in run_stepper_to_convergence(
+                stepper, StateA(), context_factory=lambda _: None, max_iterations=5
+            )
+        ]
 
         assert len(results) == 5
 
@@ -565,7 +576,12 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_max_iterations_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         stepper = _make_oscillating_stepper()
         with caplog.at_level(logging.WARNING, logger="miles.utils.ft.utils.state_machine"):
-            _ = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=3)]
+            _ = [
+                s
+                async for s in run_stepper_to_convergence(
+                    stepper, StateA(), context_factory=lambda _: None, max_iterations=3
+                )
+            ]
 
         assert "hit max iterations (3)" in caplog.text
 
@@ -581,7 +597,12 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_max_iterations_one_yields_single_dispatch(self) -> None:
         """max_iterations=1 allows exactly one stepper dispatch."""
         stepper = _make_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=1)]
+        results = [
+            s
+            async for s in run_stepper_to_convergence(
+                stepper, StateA(), context_factory=lambda _: None, max_iterations=1
+            )
+        ]
 
         assert len(results) == 1
         assert results[0] == StateB(value=1)
@@ -590,7 +611,12 @@ class TestRunStepperToConvergenceMaxIterations:
     async def test_oscillating_yields_alternate_states(self) -> None:
         """Verify the oscillating pattern: A→B(0)→A→B(0)→A."""
         stepper = _make_oscillating_stepper()
-        results = [s async for s in run_stepper_to_convergence(stepper, StateA(), context_factory=lambda _: None, max_iterations=4)]
+        results = [
+            s
+            async for s in run_stepper_to_convergence(
+                stepper, StateA(), context_factory=lambda _: None, max_iterations=4
+            )
+        ]
 
         types = [type(s).__name__ for s in results]
         assert types == ["StateB", "StateA", "StateB", "StateA"]
@@ -629,6 +655,7 @@ class TestToAsyncGen:
     @pytest.mark.asyncio
     async def test_async_gen_with_none_items(self) -> None:
         """None values are yielded through — filtering is the caller's responsibility."""
+
         async def gen():
             yield "a"
             yield None
@@ -672,12 +699,16 @@ class TestConvergenceFailureCallback:
         def on_failure(state: object, iterations: int) -> None:
             callback_calls.append((state, iterations))
 
-        _ = [s async for s in run_stepper_to_convergence(
-            stepper, StateA(),
-            context_factory=lambda _: None,
-            max_iterations=3,
-            on_convergence_failure=on_failure,
-        )]
+        _ = [
+            s
+            async for s in run_stepper_to_convergence(
+                stepper,
+                StateA(),
+                context_factory=lambda _: None,
+                max_iterations=3,
+                on_convergence_failure=on_failure,
+            )
+        ]
 
         assert len(callback_calls) == 1
         assert callback_calls[0][1] == 3
@@ -690,11 +721,15 @@ class TestConvergenceFailureCallback:
         def on_failure(state: object, iterations: int) -> None:
             callback_calls.append((state, iterations))
 
-        _ = [s async for s in run_stepper_to_convergence(
-            stepper, StateA(),
-            context_factory=lambda _: None,
-            on_convergence_failure=on_failure,
-        )]
+        _ = [
+            s
+            async for s in run_stepper_to_convergence(
+                stepper,
+                StateA(),
+                context_factory=lambda _: None,
+                on_convergence_failure=on_failure,
+            )
+        ]
 
         assert callback_calls == []
 
@@ -702,12 +737,16 @@ class TestConvergenceFailureCallback:
     async def test_run_stepper_no_callback_when_none(self) -> None:
         """No error when on_convergence_failure is None (default)."""
         stepper = _make_oscillating_stepper()
-        _ = [s async for s in run_stepper_to_convergence(
-            stepper, StateA(),
-            context_factory=lambda _: None,
-            max_iterations=3,
-            on_convergence_failure=None,
-        )]
+        _ = [
+            s
+            async for s in run_stepper_to_convergence(
+                stepper,
+                StateA(),
+                context_factory=lambda _: None,
+                max_iterations=3,
+                on_convergence_failure=None,
+            )
+        ]
 
     @pytest.mark.asyncio
     async def test_state_machine_calls_callback_on_max_iterations(self) -> None:
@@ -750,6 +789,7 @@ class TestConvergenceFailureCallback:
 
 class _ContextAwareState(DummyState):
     """State that carries the context value it was created with, to verify context refresh."""
+
     ctx_value: int = 0
 
 
@@ -809,7 +849,8 @@ class TestRunStepperToConvergenceContextFactory:
 
         stepper = _make_context_aware_stepper()
         results = [
-            s async for s in run_stepper_to_convergence(
+            s
+            async for s in run_stepper_to_convergence(
                 stepper,
                 _ContextAwareState(),
                 context_factory=context_factory,
@@ -832,7 +873,8 @@ class TestRunStepperToConvergenceContextFactory:
 
         stepper = _make_context_aware_stepper()
         results = [
-            s async for s in run_stepper_to_convergence(
+            s
+            async for s in run_stepper_to_convergence(
                 stepper,
                 _ContextAwareState(),
                 context_factory=context_factory,
@@ -868,10 +910,12 @@ class TestRunStepperToConvergenceContextFactory:
                 transitions.append(("recovered", context["fault_count"]))
                 return _ReplayState()
 
-        stepper: StateMachineStepper = StateMachineStepper(handler_map={
-            _ReplayState: _ReplayHandler,
-            _RecoveredState: _RecoveredHandler,
-        })
+        stepper: StateMachineStepper = StateMachineStepper(
+            handler_map={
+                _ReplayState: _ReplayHandler,
+                _RecoveredState: _RecoveredHandler,
+            }
+        )
 
         call_count = 0
 
@@ -883,7 +927,8 @@ class TestRunStepperToConvergenceContextFactory:
             return {"fault_count": 0}
 
         results = [
-            s async for s in run_stepper_to_convergence(
+            s
+            async for s in run_stepper_to_convergence(
                 stepper,
                 _ReplayState(),
                 context_factory=factory,

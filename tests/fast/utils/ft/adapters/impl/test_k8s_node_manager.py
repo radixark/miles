@@ -84,6 +84,7 @@ class TestLabelPrefix:
         assert "ft.miles.io/pfx-disabled" in body["metadata"]["labels"]
         assert "ft.miles.io/pfx-disabled-reason" in body["metadata"]["labels"]
 
+
 class TestMarkNodeBadDeletesPod:
     @pytest.mark.anyio
     async def test_mark_node_bad_deletes_worker_pod(self) -> None:

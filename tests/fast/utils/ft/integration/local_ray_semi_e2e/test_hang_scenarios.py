@@ -7,14 +7,11 @@ import logging
 from collections.abc import Callable
 
 import pytest
-
-from miles.utils.ft.controller.types import ControllerMode
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-)
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT
 from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
+
+from miles.utils.ft.controller.types import ControllerMode
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +59,7 @@ async def test_hang_detected_workers_alive_but_stalled(
     iteration_after_hang: int | None = status_after_hang.latest_iteration
     assert iteration_after_hang is not None
     assert iteration_after_hang <= iteration_before + 1, (
-        f"Iterations should be frozen after hang: before={iteration_before}, "
-        f"after={iteration_after_hang}"
+        f"Iterations should be frozen after hang: before={iteration_before}, " f"after={iteration_after_hang}"
     )
 
     # Step 5: wait for FastHangDetector to fire (3s timeout + margin) -> RECOVERY

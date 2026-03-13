@@ -3,22 +3,18 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from miles.utils.ft.controller.state_machines.recovery.models import NotifyHumansSt, RealtimeChecksSt, RecoveryDoneSt
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomalySt,
+    RecoveringSt,
     SubsystemContext,
     SubsystemState,
-    RecoveringSt,
 )
 from miles.utils.ft.controller.state_machines.subsystem.utils import (
     DetectorResult,
     collect_evictable_bad_nodes,
     handle_notify_human,
     run_detectors,
-)
-from miles.utils.ft.controller.state_machines.recovery.models import (
-    NotifyHumansSt,
-    RealtimeChecksSt,
-    RecoveryDoneSt,
 )
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.state_machine import StateHandler
@@ -187,5 +183,3 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
         if ctx.on_recovery_duration is not None:
             duration = (datetime.now(timezone.utc) - state.recovery_start_time).total_seconds()
             ctx.on_recovery_duration(duration)
-
-

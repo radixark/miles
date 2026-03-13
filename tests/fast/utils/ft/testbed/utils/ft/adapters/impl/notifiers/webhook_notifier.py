@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import ray
+from tests.fast.utils.ft.utils.training_simulator import NotifierStateActor
 
 from miles.utils.ft.adapters.types import NotifierProtocol
-from tests.fast.utils.ft.utils.training_simulator import NotifierStateActor
 
 
 class TestbedNotifier(NotifierProtocol):

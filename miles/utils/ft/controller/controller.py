@@ -7,7 +7,11 @@ from typing import NamedTuple
 
 from miles.utils.ft.adapters.types import MainJobProtocol, NodeAgentProtocol, NodeManagerProtocol, NotifierProtocol
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
-from miles.utils.ft.controller.metrics.lifecycle import MetricStoreTaskHandle, start_metric_store_task, stop_metric_store_task
+from miles.utils.ft.controller.metrics.lifecycle import (
+    MetricStoreTaskHandle,
+    start_metric_store_task,
+    stop_metric_store_task,
+)
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState

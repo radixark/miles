@@ -1,10 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from tests.fast.utils.ft.utils import (
-    inject_rollout_cell_alive,
-    make_detector_context,
-    make_fake_metric_store,
-)
+from tests.fast.utils.ft.utils import inject_rollout_cell_alive, make_detector_context, make_fake_metric_store
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.rollout_crash import RolloutCrashDetector
@@ -34,9 +30,7 @@ class TestRolloutCrashDetector:
 
         # Only 20s of data, threshold is 60s (need 80% = 48s)
         for i in range(3):
-            inject_rollout_cell_alive(
-                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=20 - i * 10)
-            )
+            inject_rollout_cell_alive(store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=20 - i * 10))
 
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
         ctx = make_detector_context(
@@ -55,9 +49,7 @@ class TestRolloutCrashDetector:
 
         # 70s of data with alive=False, threshold is 60s
         for i in range(8):
-            inject_rollout_cell_alive(
-                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
-            )
+            inject_rollout_cell_alive(store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10))
 
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
         ctx = make_detector_context(
@@ -109,9 +101,7 @@ class TestRolloutCrashDetector:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
         for i in range(8):
-            inject_rollout_cell_alive(
-                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
-            )
+            inject_rollout_cell_alive(store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10))
 
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
         ctx = make_detector_context(
@@ -167,9 +157,7 @@ class TestRolloutCrashDetector:
         now = datetime.now(timezone.utc)
 
         for i in range(8):
-            inject_rollout_cell_alive(
-                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
-            )
+            inject_rollout_cell_alive(store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10))
 
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
         ctx = make_detector_context(
@@ -190,9 +178,7 @@ class TestRolloutCrashDetector:
         # threshold=50.0 → 80% boundary = 40.0s
         # Inject 5 samples spanning exactly 40s (all dead)
         for i in range(5):
-            inject_rollout_cell_alive(
-                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=40 - i * 10)
-            )
+            inject_rollout_cell_alive(store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=40 - i * 10))
 
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=50.0)
         ctx = make_detector_context(
@@ -212,9 +198,7 @@ class TestRolloutCrashDetector:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
         for i in range(8):
-            inject_rollout_cell_alive(
-                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
-            )
+            inject_rollout_cell_alive(store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10))
 
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
         ctx = make_detector_context(
@@ -235,9 +219,7 @@ class TestRolloutCrashDetector:
 
         # Cell "0": persistently dead for 70s
         for i in range(8):
-            inject_rollout_cell_alive(
-                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
-            )
+            inject_rollout_cell_alive(store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10))
 
         # Cell "1": alive
         inject_rollout_cell_alive(store, cell_id="1", alive=True)

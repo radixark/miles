@@ -150,9 +150,7 @@ class TestLifecycleWithImmediateReturnStore:
         finally:
             mod._SCRAPE_RESTART_DELAY_SECONDS = original_delay
 
-        assert call_count < 20, (
-            f"start() called {call_count} times — suggests busy-wait loop"
-        )
+        assert call_count < 20, f"start() called {call_count} times — suggests busy-wait loop"
 
 
 class TestScrapeLoopMaxRestarts:

@@ -21,9 +21,9 @@ from tests.fast.utils.ft.utils.controller_fakes import get_training_subsystem_st
 import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.state_machines.main.models import NormalSt, RestartingMainJobSt
-from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt
 from miles.utils.ft.controller.state_machines.restart import MonitoringProgressSt
+from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 
 

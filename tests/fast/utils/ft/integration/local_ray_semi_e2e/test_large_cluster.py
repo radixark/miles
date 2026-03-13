@@ -7,15 +7,11 @@ import logging
 from collections.abc import Callable
 
 import pytest
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
+from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +48,9 @@ async def test_three_training_two_rollout_independent(
     # Step 3: verify all subsystems start in DetectingAnomaly
     status = await testbed.get_status()
     for name in ["training", "rollout_0", "rollout_1"]:
-        assert status.subsystem_states.get(name) == "DetectingAnomalySt", (
-            f"{name} not in DetectingAnomalySt before crash: {status.subsystem_states}"
-        )
+        assert (
+            status.subsystem_states.get(name) == "DetectingAnomalySt"
+        ), f"{name} not in DetectingAnomalySt before crash: {status.subsystem_states}"
 
     # Step 4: crash all training workers
     await testbed.crash_training()
@@ -68,12 +64,12 @@ async def test_three_training_two_rollout_independent(
     # Step 6: verify rollout subsystems remain in DetectingAnomaly during training recovery
     await asyncio.sleep(2.0)
     mid_recovery_status = await testbed.get_status()
-    assert mid_recovery_status.subsystem_states.get("rollout_0") == "DetectingAnomalySt", (
-        f"rollout_0 was affected by training crash: {mid_recovery_status.subsystem_states}"
-    )
-    assert mid_recovery_status.subsystem_states.get("rollout_1") == "DetectingAnomalySt", (
-        f"rollout_1 was affected by training crash: {mid_recovery_status.subsystem_states}"
-    )
+    assert (
+        mid_recovery_status.subsystem_states.get("rollout_0") == "DetectingAnomalySt"
+    ), f"rollout_0 was affected by training crash: {mid_recovery_status.subsystem_states}"
+    assert (
+        mid_recovery_status.subsystem_states.get("rollout_1") == "DetectingAnomalySt"
+    ), f"rollout_1 was affected by training crash: {mid_recovery_status.subsystem_states}"
 
     # Step 7: wait for recovery to complete -> back to MONITORING
     final_status = await testbed.wait_for_mode_transition(
@@ -88,6 +84,6 @@ async def test_three_training_two_rollout_independent(
     # Step 9: verify all subsystems back to DetectingAnomaly
     status = await testbed.wait_for_all_subsystems_detecting(timeout=FAST_TIMEOUT)
     for name in ["training", "rollout_0", "rollout_1"]:
-        assert status.subsystem_states.get(name) == "DetectingAnomalySt", (
-            f"{name} not in DetectingAnomalySt after recovery: {status.subsystem_states}"
-        )
+        assert (
+            status.subsystem_states.get(name) == "DetectingAnomalySt"
+        ), f"{name} not in DetectingAnomalySt after recovery: {status.subsystem_states}"

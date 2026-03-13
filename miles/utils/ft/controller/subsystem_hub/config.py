@@ -43,7 +43,9 @@ class SubsystemRuntime:
     """Runtime dependencies — stateful objects and closures."""
 
     actuator: SubsystemActuatorProtocol
-    cooldown: SlidingWindowThrottle = field(default_factory=lambda: SlidingWindowThrottle(window_minutes=30.0, max_count=3))
+    cooldown: SlidingWindowThrottle = field(
+        default_factory=lambda: SlidingWindowThrottle(window_minutes=30.0, max_count=3)
+    )
     get_active_node_ids: Callable[[], frozenset[str]] = field(default_factory=lambda: lambda: frozenset())
 
 

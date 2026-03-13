@@ -35,7 +35,8 @@ class FtRolloutAgent:
 
         logger.info(
             "ft_rollout_agent_started address=%s cells=%s",
-            self.address, self._health_checker.cell_ids,
+            self.address,
+            self._health_checker.cell_ids,
         )
 
     @property

@@ -77,7 +77,6 @@ class TestNetworkAlertDetector:
 
         assert decision.action == ActionType.NONE
 
-
     def test_permanent_nic_crash_detected(self) -> None:
         """A NIC that goes down once and stays down (permanent crash) was
         previously missed because only up→down flap transitions were counted.

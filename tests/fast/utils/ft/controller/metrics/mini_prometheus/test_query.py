@@ -116,10 +116,12 @@ class TestQuerySingleLatest:
         query_single_latest raises AmbiguousSeriesError instead."""
         k1 = _key("m", node="n1")
         k2 = _key("m", node="n2")
-        series, lm, ni = _build_series([
-            (k1, [(-1, 10.0)]),
-            (k2, [(-1, 20.0)]),
-        ])
+        series, lm, ni = _build_series(
+            [
+                (k1, [(-1, 10.0)]),
+                (k2, [(-1, 20.0)]),
+            ]
+        )
 
         with pytest.raises(AmbiguousSeriesError, match="matched 2 series"):
             query_single_latest(series, lm, ni, metric_name="m")
@@ -127,10 +129,12 @@ class TestQuerySingleLatest:
     def test_label_filter_narrows_to_single(self) -> None:
         k1 = _key("m", node="n1")
         k2 = _key("m", node="n2")
-        series, lm, ni = _build_series([
-            (k1, [(-1, 10.0)]),
-            (k2, [(-1, 20.0)]),
-        ])
+        series, lm, ni = _build_series(
+            [
+                (k1, [(-1, 10.0)]),
+                (k2, [(-1, 20.0)]),
+            ]
+        )
 
         df = query_single_latest(series, lm, ni, metric_name="m", label_filters={"node": "n2"})
 

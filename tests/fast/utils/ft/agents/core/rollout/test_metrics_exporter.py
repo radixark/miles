@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
+
+from miles.utils.ft.agents.core.rollout.metrics_exporter import RolloutMetricsExporter
 
 
 class TestUpdate:

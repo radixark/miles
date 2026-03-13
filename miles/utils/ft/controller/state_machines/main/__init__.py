@@ -1,13 +1,5 @@
-from miles.utils.ft.controller.state_machines.main.handlers import (
-    NormalHandler,
-    RestartingMainJobHandler,
-)
-from miles.utils.ft.controller.state_machines.main.models import (
-    MainContext,
-    MainState,
-    NormalSt,
-    RestartingMainJobSt,
-)
+from miles.utils.ft.controller.state_machines.main.handlers import NormalHandler, RestartingMainJobHandler
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 MainContext.model_rebuild()

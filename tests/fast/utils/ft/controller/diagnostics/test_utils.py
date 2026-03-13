@@ -93,7 +93,9 @@ class TestGatherDiagnosticResults:
                 node_id="n1",
             ),
         }
-        results = await gather_diagnostic_results(diagnostic_type=_DIAG_TYPE, node_agents=node_agents, timeout_seconds=10)
+        results = await gather_diagnostic_results(
+            diagnostic_type=_DIAG_TYPE, node_agents=node_agents, timeout_seconds=10
+        )
         assert set(results.keys()) == {"n0", "n1"}
         assert results["n0"].passed
         assert not results["n1"].passed

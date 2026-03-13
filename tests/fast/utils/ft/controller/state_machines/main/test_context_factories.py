@@ -1,10 +1,12 @@
 """Unit tests for context_factories.py (P0 item 5)."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
+from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
+from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
@@ -16,12 +18,9 @@ from miles.utils.ft.controller.state_machines.main.context_factories import (
 )
 from miles.utils.ft.controller.state_machines.main.models import MainContext
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
-from miles.utils.ft.controller.subsystem_hub.config import RestartMode, SubsystemConfig, SubsystemRuntime, SubsystemSpec
+from miles.utils.ft.controller.subsystem_hub.config import SubsystemConfig, SubsystemRuntime, SubsystemSpec
 from miles.utils.ft.controller.types import MetricStore, SharedDeps, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
-
-from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
-from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 
 def _make_main_context(
@@ -143,12 +142,16 @@ class TestBuildSubsystemContext:
         )
 
         result_a = build_subsystem_context(
-            spec=spec_a, context=ctx,
-            recovery_stepper=AsyncMock(), restart_stepper=AsyncMock(),
+            spec=spec_a,
+            context=ctx,
+            recovery_stepper=AsyncMock(),
+            restart_stepper=AsyncMock(),
         )
         result_b = build_subsystem_context(
-            spec=spec_b, context=ctx,
-            recovery_stepper=AsyncMock(), restart_stepper=AsyncMock(),
+            spec=spec_b,
+            context=ctx,
+            recovery_stepper=AsyncMock(),
+            restart_stepper=AsyncMock(),
         )
 
         assert result_a.cooldown is cooldown_a

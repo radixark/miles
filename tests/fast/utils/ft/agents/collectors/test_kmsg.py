@@ -512,8 +512,8 @@ class TestCreateReaderFallback:
 
     def test_create_reader_falls_back_to_dmesg_on_oserror(self) -> None:
         """When /dev/kmsg fails to open, _create_reader() returns DmesgSubprocessReader."""
-        from miles.utils.ft.agents.collectors.kmsg import _create_reader
         from miles.utils.ft.agents.collectors.kernel_log_reader import DmesgSubprocessReader
+        from miles.utils.ft.agents.collectors.kmsg import _create_reader
 
         reader = _create_reader(Path("/nonexistent/path/kmsg"))
         assert isinstance(reader, DmesgSubprocessReader)

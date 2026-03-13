@@ -8,8 +8,8 @@ from tests.fast.utils.ft.conftest import FakeNodeAgent, HangingNodeAgent
 from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.controller.diagnostics.executors.neighbor_nccl import (
     NeighborNcclClusterExecutor,
-    _EdgeResult,
     _build_ring_edges,
+    _EdgeResult,
     _localize_suspects_from_neighbor_results,
 )
 
@@ -83,6 +83,7 @@ class TestBuildRingEdges:
         ids = [f"node-{i}" for i in range(n)]
         edges = _build_ring_edges(ids)
         from collections import Counter
+
         counter: Counter[str] = Counter()
         for a, b in edges:
             counter[a] += 1
@@ -93,6 +94,7 @@ class TestBuildRingEdges:
     def test_two_nodes_each_has_degree_one(self) -> None:
         edges = _build_ring_edges(["A", "B"])
         from collections import Counter
+
         counter: Counter[str] = Counter()
         for a, b in edges:
             counter[a] += 1
@@ -202,9 +204,7 @@ class TestLocalizeSuspectsLargerRings:
             _EdgeResult("D", "E", passed=True),
             _EdgeResult("A", "E", passed=True),
         ]
-        suspects = _localize_suspects_from_neighbor_results(
-            ["A", "B", "C", "D", "E"], results
-        )
+        suspects = _localize_suspects_from_neighbor_results(["A", "B", "C", "D", "E"], results)
         assert suspects == ["C"]
 
     def test_five_nodes_adjacent_double_bad(self) -> None:
@@ -219,9 +219,7 @@ class TestLocalizeSuspectsLargerRings:
             _EdgeResult("D", "E", passed=True),
             _EdgeResult("A", "E", passed=True),
         ]
-        suspects = _localize_suspects_from_neighbor_results(
-            ["A", "B", "C", "D", "E"], results
-        )
+        suspects = _localize_suspects_from_neighbor_results(["A", "B", "C", "D", "E"], results)
         assert suspects == ["B", "C"]
 
     def test_five_nodes_non_adjacent_double_bad(self) -> None:
@@ -237,9 +235,7 @@ class TestLocalizeSuspectsLargerRings:
             _EdgeResult("D", "E", passed=True),
             _EdgeResult("A", "E", passed=False),
         ]
-        suspects = _localize_suspects_from_neighbor_results(
-            ["A", "B", "C", "D", "E"], results
-        )
+        suspects = _localize_suspects_from_neighbor_results(["A", "B", "C", "D", "E"], results)
         # A and C are truly bad; B is over-evicted (acceptable)
         assert "A" in suspects
         assert "C" in suspects
@@ -253,9 +249,7 @@ class TestLocalizeSuspectsLargerRings:
             _EdgeResult("E", "F", passed=True),
             _EdgeResult("A", "F", passed=True),
         ]
-        suspects = _localize_suspects_from_neighbor_results(
-            ["A", "B", "C", "D", "E", "F"], results
-        )
+        suspects = _localize_suspects_from_neighbor_results(["A", "B", "C", "D", "E", "F"], results)
         assert suspects == ["D"]
 
     def test_seven_nodes_single_bad(self) -> None:
@@ -268,9 +262,7 @@ class TestLocalizeSuspectsLargerRings:
             _EdgeResult("F", "G", passed=True),
             _EdgeResult("A", "G", passed=True),
         ]
-        suspects = _localize_suspects_from_neighbor_results(
-            ["A", "B", "C", "D", "E", "F", "G"], results
-        )
+        suspects = _localize_suspects_from_neighbor_results(["A", "B", "C", "D", "E", "F", "G"], results)
         assert suspects == ["E"]
 
 
@@ -291,9 +283,7 @@ class TestLocalizeSuspectsPropertyBased:
                 results.append(_EdgeResult(a, b, passed=passed))
 
             suspects = _localize_suspects_from_neighbor_results(ids, results)
-            assert bad_id in suspects, (
-                f"n={n}, bad={bad_id}: suspects={suspects} does not contain bad node"
-            )
+            assert bad_id in suspects, f"n={n}, bad={bad_id}: suspects={suspects} does not contain bad node"
 
     @pytest.mark.parametrize("n", range(3, 9))
     def test_node_id_ordering_does_not_change_suspect_set(self, n: int) -> None:
@@ -306,10 +296,7 @@ class TestLocalizeSuspectsPropertyBased:
         edges_rev = _build_ring_edges(ids_reverse)
 
         def make_results(edges: list[tuple[str, str]]) -> list[_EdgeResult]:
-            return [
-                _EdgeResult(a, b, passed=(bad_id not in (a, b)))
-                for a, b in edges
-            ]
+            return [_EdgeResult(a, b, passed=(bad_id not in (a, b))) for a, b in edges]
 
         suspects_fwd = set(_localize_suspects_from_neighbor_results(ids_forward, make_results(edges_fwd)))
         suspects_rev = set(_localize_suspects_from_neighbor_results(ids_reverse, make_results(edges_rev)))

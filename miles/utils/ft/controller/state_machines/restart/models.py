@@ -4,11 +4,16 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
-from miles.utils.ft.adapters.types import MainJobProtocol, NodeManagerProtocol, NotifierProtocol, SubsystemActuatorProtocol
+from miles.utils.ft.adapters.types import (
+    MainJobProtocol,
+    NodeManagerProtocol,
+    NotifierProtocol,
+    SubsystemActuatorProtocol,
+)
 from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.utils.base_model import FtBaseModel
 
@@ -30,7 +35,7 @@ class MonitoringRunningAfterDelayConfig(FtBaseModel):
 
 
 MonitoringConfig = Annotated[
-    Union[MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig],
+    MonitoringIterationProgressConfig | MonitoringRunningAfterDelayConfig,
     Field(discriminator="mode"),
 ]
 

@@ -11,20 +11,23 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter, NullControllerExporter
 from miles.utils.ft.controller.node_agents import NodeAgentRegistry
 from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
-from miles.utils.ft.controller.state_machines.main import (
-    MainContext,
-    NormalSt,
-    create_main_stepper,
-)
+from miles.utils.ft.controller.state_machines.main import MainContext, NormalSt, create_main_stepper
 from miles.utils.ft.controller.state_machines.main.models import MainState
 from miles.utils.ft.controller.state_machines.restart.models import (
     MonitoringIterationProgressConfig,
     MonitoringRunningAfterDelayConfig,
 )
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
-from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemConfig, SubsystemHub, SubsystemRuntime, SubsystemSpec, TrainingRankRoster
+from miles.utils.ft.controller.subsystem_hub import (
+    RestartMode,
+    SubsystemConfig,
+    SubsystemHub,
+    SubsystemRuntime,
+    SubsystemSpec,
+    TrainingRankRoster,
+)
 from miles.utils.ft.controller.tick_loop import TickLoop
-from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore, NullScrapeTargetManager, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import DiagnosticOrchestratorProtocol, MetricStore, ScrapeTargetManagerProtocol
 from miles.utils.ft.utils.box import Box
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine
@@ -135,7 +138,9 @@ def assemble_ft_controller(
         node_manager=node_manager,
         diagnostic_orchestrator=resolved_orchestrator,
         subsystem_specs=subsystem_specs,
-        rank_pids_provider=lambda node_id: (r.get_rank_pids_for_node(node_id) if (r := training_rank_roster_box.value) is not None else {}),
+        rank_pids_provider=lambda node_id: (
+            r.get_rank_pids_for_node(node_id) if (r := training_rank_roster_box.value) is not None else {}
+        ),
         training_rank_roster_box=training_rank_roster_box,
         on_recovery_duration=duration_cb,
         scrape_target_manager=scrape_target_manager,
@@ -158,13 +163,15 @@ def _build_rollout_subsystem_specs(
     from miles.utils.ft.adapters.impl.ray.rollout_actuator import RayRolloutActuator
     from miles.utils.ft.controller.detectors.chain import build_rollout_detectors, build_shared_hw_detectors
 
-    rollout_alive_dur = rollout_monitoring_alive_duration_seconds if rollout_monitoring_alive_duration_seconds is not None else 180
+    rollout_alive_dur = (
+        rollout_monitoring_alive_duration_seconds if rollout_monitoring_alive_duration_seconds is not None else 180
+    )
     rollout_det_kwargs: dict[str, float] = {}
     if rollout_alive_threshold_seconds is not None:
         rollout_det_kwargs["alive_threshold_seconds"] = rollout_alive_threshold_seconds
 
     specs: dict[str, SubsystemSpec] = {}
-    for cell_id in (rollout_cell_ids or []):
+    for cell_id in rollout_cell_ids or []:
         name = f"rollout_{cell_id}"
         _cid = cell_id  # capture for closure
         specs[name] = SubsystemSpec(

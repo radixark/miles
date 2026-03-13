@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 import ray
+from tests.fast.utils.ft.utils.training_simulator import CollectorStateActor
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.types import GaugeSample, MetricSample
@@ -14,7 +15,6 @@ from miles.utils.ft.utils.metric_names import (
     NODE_NETWORK_UP,
     XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
 )
-from tests.fast.utils.ft.utils.training_simulator import CollectorStateActor
 
 logger = logging.getLogger(__name__)
 
@@ -69,5 +69,7 @@ class TestbedCollector(BaseCollector):
             GaugeSample(name=XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL, labels=labels, value=0.0),
             GaugeSample(name=NODE_NETWORK_UP, labels={**labels, "device": "eth0"}, value=1.0),
             GaugeSample(name=NODE_NETWORK_UP, labels={**labels, "device": "eth1"}, value=1.0),
-            GaugeSample(name=NODE_FILESYSTEM_AVAIL_BYTES, labels={**labels, "mountpoint": "/"}, value=500_000_000_000.0),
+            GaugeSample(
+                name=NODE_FILESYSTEM_AVAIL_BYTES, labels={**labels, "mountpoint": "/"}, value=500_000_000_000.0
+            ),
         ]

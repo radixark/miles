@@ -9,18 +9,14 @@ from collections.abc import Callable
 
 import pytest
 import ray
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
+from tests.fast.utils.ft.testbed.config import TestbedNodeConfig
+from tests.fast.utils.ft.testbed.train import MilesTestbed
+from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.testbed.config import TestbedNodeConfig
-from tests.fast.utils.ft.testbed.train import MilesTestbed
-from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +69,7 @@ async def test_multi_rank_registration_and_targeted_eviction(
             break
         await asyncio.sleep(0.5)
     else:
-        raise TimeoutError(
-            f"StopTimeDiagnosticsSt not observed within {RECOVERY_TIMEOUT}s"
-        )
+        raise TimeoutError(f"StopTimeDiagnosticsSt not observed within {RECOVERY_TIMEOUT}s")
 
 
 # ------------------------------------------------------------------
@@ -101,9 +95,9 @@ async def test_parallel_rank_registration(
     # Step 2: verify status has an active run_id and iteration > 0
     status = await testbed.get_status()
     assert status.active_run_id is not None, "Expected active_run_id to be set"
-    assert status.latest_iteration is not None and status.latest_iteration > 0, (
-        f"Expected iteration > 0, got {status.latest_iteration}"
-    )
+    assert (
+        status.latest_iteration is not None and status.latest_iteration > 0
+    ), f"Expected iteration > 0, got {status.latest_iteration}"
 
 
 # ------------------------------------------------------------------
@@ -137,9 +131,9 @@ async def test_detectors_suppressed_during_grace_period(
     grace_observation_end = time.monotonic() + 3.0
     while time.monotonic() < grace_observation_end:
         status = await testbed.get_status()
-        assert status.mode == ControllerMode.MONITORING, (
-            f"Recovery triggered during grace period at tick {status.tick_count}"
-        )
+        assert (
+            status.mode == ControllerMode.MONITORING
+        ), f"Recovery triggered during grace period at tick {status.tick_count}"
         await asyncio.sleep(0.3)
 
     # Step 3: after grace period ends (~5s), detector fires → recovery starts

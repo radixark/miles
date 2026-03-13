@@ -96,6 +96,7 @@ class RolloutManager:
         self._full_ft_mode = {"rollout", "train"} <= set(getattr(self.args, "ft_components", frozenset()))
         if self._full_ft_mode:
             from miles.utils.ft.factories.rollout_agent import build_rollout_agent
+
             self._ft_agent = build_rollout_agent(self)
         elif "rollout" in self.args.ft_components:
             self._health_monitor = RolloutHealthMonitor(self, args)
@@ -231,7 +232,9 @@ class RolloutManager:
             if self.args.offload_rollout and dead_indices:
                 new_engines = [self.all_rollout_engines[i] for i in dead_indices]
                 ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
-                ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
+                ray.get(
+                    [engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines]
+                )
 
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 

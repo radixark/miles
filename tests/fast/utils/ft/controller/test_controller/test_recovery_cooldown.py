@@ -13,6 +13,7 @@ def _force_recovery_complete(harness) -> None:
     """Force the machine back to DetectingAnomaly and re-register a rank
     so that detectors will fire on the next tick."""
     from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_state
+
     set_training_subsystem_state(harness.controller, DetectingAnomalySt())
     harness.controller._activate_run("recovery-done")
     harness.subsystem_hub.training_rank_roster.rank_placement[0] = "node-0"

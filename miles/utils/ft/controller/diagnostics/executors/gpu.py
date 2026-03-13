@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 
 from miles.utils.ft.adapters.types import ClusterExecutorProtocol, NodeAgentProtocol
-from miles.utils.ft.utils.diagnostic_types import DiagnosticResult
 from miles.utils.ft.controller.diagnostics.utils import gather_diagnostic_results, partition_results
+from miles.utils.ft.utils.diagnostic_types import DiagnosticResult
 
 logger = logging.getLogger(__name__)
 

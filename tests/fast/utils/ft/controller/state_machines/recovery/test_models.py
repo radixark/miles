@@ -88,8 +88,6 @@ class TestRecoveryStateToInt:
         assert values == list(range(1, len(values) + 1))
 
     def test_all_concrete_recovery_states_are_covered(self) -> None:
-        concrete_subclasses = {
-            cls for cls in RecoveryState.__subclasses__()
-        }
+        concrete_subclasses = {cls for cls in RecoveryState.__subclasses__()}
         mapped_classes = set(RECOVERY_STATE_TO_INT.keys())
         assert mapped_classes == concrete_subclasses

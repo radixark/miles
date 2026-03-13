@@ -7,23 +7,12 @@ from datetime import datetime, timezone
 import pytest
 
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
-from miles.utils.ft.controller.state_machines.main.restart_coordinator import (
-    has_pending_main_job_restart,
-)
+from miles.utils.ft.controller.state_machines.main.restart_coordinator import has_pending_main_job_restart
 from miles.utils.ft.controller.state_machines.main.subsystem_runner import advance_subsystems
-from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomalySt,
-    RecoveringSt,
-)
-from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestartingSt,
-    StopTimeDiagnosticsSt,
-)
-from miles.utils.ft.controller.state_machines.restart.models import (
-    ExternalRestartingMainJobSt,
-)
+from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+from miles.utils.ft.controller.state_machines.restart.models import ExternalRestartingMainJobSt
+from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.types import TriggerType
-
 
 # ---------------------------------------------------------------------------
 # has_pending_main_job_restart
@@ -86,10 +75,12 @@ class TestAdvanceSubsystemsEarlyStop:
         # Subsystem "a_requestor" already has a pending MAIN_JOB restart.
         # Subsystem "b_later" should NOT be stepped.
         requestor_state = _make_requestor_state()
-        state = NormalSt(subsystems={
-            "a_requestor": requestor_state,
-            "b_later": DetectingAnomalySt(),
-        })
+        state = NormalSt(
+            subsystems={
+                "a_requestor": requestor_state,
+                "b_later": DetectingAnomalySt(),
+            }
+        )
 
         # The subsystem stepper records which subsystems are stepped.
         # For a_requestor: already in ExternalRestartingMainJobSt, no transition.
@@ -115,7 +106,6 @@ class TestAdvanceSubsystemsEarlyStop:
 
         # Patch context_factories.build_subsystem_context and run_stepper_to_convergence
         import miles.utils.ft.controller.state_machines.main.subsystem_runner as runner_mod
-        from miles.utils.ft.utils.state_machine import StateMachineStepper
 
         original_build_ctx = runner_mod.build_subsystem_context
         original_run_convergence = runner_mod.run_stepper_to_convergence
@@ -158,10 +148,12 @@ class TestAdvanceSubsystemsEarlyStop:
     async def test_no_early_stop_when_no_restart_pending(self) -> None:
         """When no subsystem has a pending MAIN_JOB restart, all subsystems
         are stepped normally."""
-        state = NormalSt(subsystems={
-            "a_first": DetectingAnomalySt(),
-            "b_second": DetectingAnomalySt(),
-        })
+        state = NormalSt(
+            subsystems={
+                "a_first": DetectingAnomalySt(),
+                "b_second": DetectingAnomalySt(),
+            }
+        )
 
         from unittest.mock import MagicMock
 

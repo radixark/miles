@@ -104,26 +104,18 @@ class TestUpdateCounter:
 
 
 class TestCounterNonPositiveDeltaLogged:
-    def test_zero_delta_logs_debug(
-        self, exporter: PrometheusExporter, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_zero_delta_logs_debug(self, exporter: PrometheusExporter, caplog: pytest.LogCaptureFixture) -> None:
         """Previously non-positive counter deltas were silently dropped.
         Now they emit a debug log for observability."""
         with caplog.at_level(logging.DEBUG, logger="miles.utils.ft.agents.metrics.prometheus_exporter"):
-            exporter.update_metrics(
-                [CounterSample(name="event_total", labels={}, delta=0.0)]
-            )
+            exporter.update_metrics([CounterSample(name="event_total", labels={}, delta=0.0)])
 
         assert "counter_delta_non_positive" in caplog.text
         assert "event_total" in caplog.text
 
-    def test_negative_delta_logs_debug(
-        self, exporter: PrometheusExporter, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_negative_delta_logs_debug(self, exporter: PrometheusExporter, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.DEBUG, logger="miles.utils.ft.agents.metrics.prometheus_exporter"):
-            exporter.update_metrics(
-                [CounterSample(name="err_total", labels={}, delta=-1.0)]
-            )
+            exporter.update_metrics([CounterSample(name="err_total", labels={}, delta=-1.0)])
 
         assert "counter_delta_non_positive" in caplog.text
 
@@ -178,20 +170,19 @@ class TestThreadSafety:
         def update_worker(metric_suffix: str, iterations: int) -> None:
             try:
                 for i in range(iterations):
-                    exporter.update_metrics([
-                        GaugeSample(
-                            name=f"test_metric_{metric_suffix}",
-                            labels={"idx": str(i % 5)},
-                            value=float(i),
-                        ),
-                    ])
+                    exporter.update_metrics(
+                        [
+                            GaugeSample(
+                                name=f"test_metric_{metric_suffix}",
+                                labels={"idx": str(i % 5)},
+                                value=float(i),
+                            ),
+                        ]
+                    )
             except Exception as exc:
                 errors.append(exc)
 
-        threads = [
-            threading.Thread(target=update_worker, args=(f"t{t}", 50))
-            for t in range(4)
-        ]
+        threads = [threading.Thread(target=update_worker, args=(f"t{t}", 50)) for t in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -204,9 +195,11 @@ class TestThreadSafety:
         """Multiple update_metrics calls for the same metric name must
         reuse the cached Gauge, not create duplicates."""
         for _ in range(10):
-            exporter.update_metrics([
-                GaugeSample(name="stable_gauge", labels={"node": "n0"}, value=1.0),
-            ])
+            exporter.update_metrics(
+                [
+                    GaugeSample(name="stable_gauge", labels={"node": "n0"}, value=1.0),
+                ]
+            )
 
         assert len(exporter._gauges) == 1
         assert _scrape_value(exporter.registry, "stable_gauge", {"node": "n0"}) == 1.0

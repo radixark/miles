@@ -1,7 +1,4 @@
-from miles.utils.ft.controller.detectors.training_metric_filters import (
-    FT_RUN_ID_LABEL,
-    build_training_metric_filters,
-)
+from miles.utils.ft.controller.detectors.training_metric_filters import FT_RUN_ID_LABEL, build_training_metric_filters
 
 
 class TestBuildTrainingMetricFilters:
@@ -19,6 +16,8 @@ class TestBuildTrainingMetricFilters:
 
     def test_passes_through_extra_labels(self) -> None:
         filters = build_training_metric_filters(
-            rank="1", run_id="run-abc", node_id="node-0",
+            rank="1",
+            run_id="run-abc",
+            node_id="node-0",
         )
         assert filters == {"rank": "1", FT_RUN_ID_LABEL: "run-abc", "node_id": "node-0"}

@@ -1,5 +1,9 @@
 import pytest
-from tests.fast.utils.ft.utils.metric_injectors import inject_healthy_node, make_detector_context, make_fake_metric_store
+from tests.fast.utils.ft.utils.metric_injectors import (
+    inject_healthy_node,
+    make_detector_context,
+    make_fake_metric_store,
+)
 
 from miles.utils.ft.controller.detectors.base import (
     BaseFaultDetector,

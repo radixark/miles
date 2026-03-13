@@ -4,14 +4,10 @@ import logging
 import math
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
+from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, RecoveryDoneSt, RecoveryState
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
-from miles.utils.ft.controller.state_machines.recovery import (
-    EvictingAndRestartingSt,
-    RecoveryDoneSt,
-    RecoveryState,
-)
+from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
 from miles.utils.ft.controller.types import ControllerStatus, RecoveryInfo
 from miles.utils.ft.utils.state_machine import StateMachine
 

@@ -39,9 +39,7 @@ class RolloutHealthChecker:
         self._check_interval = check_interval
         self._paused = False
 
-        self._cells: dict[str, CellEntry] = {
-            entry.cell_id: entry for entry in cells
-        }
+        self._cells: dict[str, CellEntry] = {entry.cell_id: entry for entry in cells}
 
         # Accepted product decision: rollout-agent construction is only
         # supported from an already-running event loop. We intentionally do
@@ -75,9 +73,7 @@ class RolloutHealthChecker:
     async def _loop(self) -> None:
         while True:
             if not self._paused:
-                await asyncio.gather(
-                    *(self._check_one_cell(entry) for entry in self._cells.values())
-                )
+                await asyncio.gather(*(self._check_one_cell(entry) for entry in self._cells.values()))
             await asyncio.sleep(self._check_interval)
 
     async def _check_one_cell(self, entry: CellEntry) -> None:
@@ -91,7 +87,9 @@ class RolloutHealthChecker:
             )
         except Exception:
             logger.warning(
-                "health_check_failed cell_id=%s", entry.cell_id, exc_info=True,
+                "health_check_failed cell_id=%s",
+                entry.cell_id,
+                exc_info=True,
             )
         self._report_fn(cell_id=entry.cell_id, is_healthy=is_healthy)
 

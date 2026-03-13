@@ -14,7 +14,7 @@ from pathlib import Path
 
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
-from miles.utils.ft.agents.types import GaugeSample, CounterSample, MetricSample, SampleEvaluator
+from miles.utils.ft.agents.types import CounterSample, GaugeSample, MetricSample
 
 
 class _FakeCollector(BaseCollector):
@@ -32,6 +32,7 @@ class _SlowCollector(BaseCollector):
 
     def _collect_sync(self) -> list[MetricSample]:
         import time
+
         time.sleep(10)
         return []
 
@@ -151,10 +152,10 @@ class TestCollectorBasedHasNoControllerImports:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    assert "controller" not in alias.name, (
-                        f"collector_based.py still imports from controller: {alias.name}"
-                    )
+                    assert (
+                        "controller" not in alias.name
+                    ), f"collector_based.py still imports from controller: {alias.name}"
             elif isinstance(node, ast.ImportFrom) and node.module:
-                assert "controller" not in node.module, (
-                    f"collector_based.py still imports from controller: {node.module}"
-                )
+                assert (
+                    "controller" not in node.module
+                ), f"collector_based.py still imports from controller: {node.module}"

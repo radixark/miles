@@ -19,8 +19,8 @@ from miles.utils.ft.controller.detectors.chain import DetectorChainConfig, build
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector, MfuDeclineDetectorConfig
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
-from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT, NODE_NETWORK_UP
 from miles.utils.ft.controller.types import ActionType
+from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT, NODE_NETWORK_UP
 
 _ACTIVE_NODE_IDS: set[str] = {"node-0", "node-1"}
 

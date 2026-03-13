@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from miles.utils.ft.controller.types import ControllerStatus
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.protocol import FaultTestProtocol
 
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.protocol import (
-    FaultTestProtocol,
-)
+from miles.utils.ft.controller.types import ControllerStatus
 
 
 async def scenario_rollout_repeated_crash(
@@ -38,9 +36,7 @@ async def scenario_rollout_repeated_crash(
         await start_killing_fn()
 
         # Step 2: wait for subsystem to enter recovery
-        await env.wait_for_subsystem_state(
-            name=target_subsystem, state="RecoveringSt", timeout=detection_timeout
-        )
+        await env.wait_for_subsystem_state(name=target_subsystem, state="RecoveringSt", timeout=detection_timeout)
 
         # Step 3: wait for node eviction (L1 retries exhaust -> escalate)
         deadline = asyncio.get_event_loop().time() + eviction_timeout
@@ -50,9 +46,7 @@ async def scenario_rollout_repeated_crash(
             await asyncio.sleep(eviction_poll_interval)
         else:
             evicted = await check_eviction_fn()
-            assert evicted, (
-                f"Node not evicted after {eviction_timeout}s of repeated rollout crashes"
-            )
+            assert evicted, f"Node not evicted after {eviction_timeout}s of repeated rollout crashes"
 
     finally:
         # Step 4: stop background killing
@@ -64,8 +58,8 @@ async def scenario_rollout_repeated_crash(
     )
 
     # Step 6: verify subsystem recovered
-    assert status.subsystem_states[target_subsystem] == "DetectingAnomalySt", (
-        f"{target_subsystem} not in DetectingAnomalySt: {status.subsystem_states[target_subsystem]}"
-    )
+    assert (
+        status.subsystem_states[target_subsystem] == "DetectingAnomalySt"
+    ), f"{target_subsystem} not in DetectingAnomalySt: {status.subsystem_states[target_subsystem]}"
 
     return status

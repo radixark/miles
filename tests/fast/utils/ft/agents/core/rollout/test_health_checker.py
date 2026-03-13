@@ -4,12 +4,7 @@ import asyncio
 
 import pytest
 
-from miles.utils.ft.agents.core.rollout.health_checker import (
-    CellEntry,
-    RolloutHealthChecker,
-    _probe_cell,
-)
-
+from miles.utils.ft.agents.core.rollout.health_checker import CellEntry, RolloutHealthChecker, _probe_cell
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,10 +47,7 @@ def _make_checker(
 ) -> tuple[RolloutHealthChecker, _ReportCollector]:
     collector = _ReportCollector()
     checker = RolloutHealthChecker(
-        cells=[
-            CellEntry(cell_id=cid, get_engines=lambda es=es: es)
-            for cid, es in engines_by_cell.items()
-        ],
+        cells=[CellEntry(cell_id=cid, get_engines=lambda es=es: es) for cid, es in engines_by_cell.items()],
         engine_health_fn=_engine_health_fn,
         report_fn=collector,
         check_interval=check_interval,
@@ -390,10 +382,12 @@ class TestNoneEngineIntegration:
 class TestMultiCell:
     @pytest.mark.anyio
     async def test_independent_cell_results(self) -> None:
-        checker, collector = _make_checker({
-            "a0": [_MockEngine(True)],
-            "a1": [_MockEngine(False)],
-        })
+        checker, collector = _make_checker(
+            {
+                "a0": [_MockEngine(True)],
+                "a1": [_MockEngine(False)],
+            }
+        )
 
         try:
             await asyncio.sleep(0.15)

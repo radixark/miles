@@ -1,11 +1,10 @@
 """Unit tests for cli/diagnostics/local.py (P0 item 6)."""
+
 from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-import typer
 
 from miles.utils.ft.cli.diagnostics.local import _LOCAL_EXCLUDED, local
 
@@ -18,12 +17,15 @@ class TestLocalExcludedSet:
 class TestDiskMountsParsing:
     def test_single_mount(self) -> None:
         """disk_mounts="/" → [Path("/")]"""
-        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, \
-             patch("miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher") as mock_dispatcher, \
-             patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, \
-             patch("miles.utils.ft.cli.diagnostics.local.validate_check_names"), \
-             patch("miles.utils.ft.cli.diagnostics.local.print_results"), \
-             patch("miles.utils.ft.cli.diagnostics.local.exit_with_results"):
+        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, patch(
+            "miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher"
+        ) as mock_dispatcher, patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, patch(
+            "miles.utils.ft.cli.diagnostics.local.validate_check_names"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.print_results"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.exit_with_results"
+        ):
 
             mock_socket.gethostname.return_value = "node-0"
             mock_build.return_value = {}
@@ -32,7 +34,6 @@ class TestDiskMountsParsing:
             dispatcher_instance.run_selected = MagicMock()
             mock_dispatcher.return_value = dispatcher_instance
 
-            import asyncio
             with patch("miles.utils.ft.cli.diagnostics.local.asyncio") as mock_asyncio:
                 mock_asyncio.run.return_value = []
                 local(disk_mounts="/")
@@ -42,12 +43,15 @@ class TestDiskMountsParsing:
 
     def test_comma_separated_mounts(self) -> None:
         """disk_mounts="/data,/scratch" → [Path("/data"), Path("/scratch")]"""
-        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, \
-             patch("miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher") as mock_dispatcher, \
-             patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, \
-             patch("miles.utils.ft.cli.diagnostics.local.validate_check_names"), \
-             patch("miles.utils.ft.cli.diagnostics.local.print_results"), \
-             patch("miles.utils.ft.cli.diagnostics.local.exit_with_results"):
+        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, patch(
+            "miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher"
+        ) as mock_dispatcher, patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, patch(
+            "miles.utils.ft.cli.diagnostics.local.validate_check_names"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.print_results"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.exit_with_results"
+        ):
 
             mock_socket.gethostname.return_value = "node-0"
             mock_build.return_value = {}
@@ -69,12 +73,15 @@ class TestDiskMountsEmptyStringFiltering:
         """Previously disk_mounts="/data," produced [Path("/data"), Path(".")],
         because "".split(",") yields "" which Path() converts to ".". Now
         empty segments are filtered out."""
-        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, \
-             patch("miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher") as mock_dispatcher, \
-             patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, \
-             patch("miles.utils.ft.cli.diagnostics.local.validate_check_names"), \
-             patch("miles.utils.ft.cli.diagnostics.local.print_results"), \
-             patch("miles.utils.ft.cli.diagnostics.local.exit_with_results"):
+        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, patch(
+            "miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher"
+        ) as mock_dispatcher, patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, patch(
+            "miles.utils.ft.cli.diagnostics.local.validate_check_names"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.print_results"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.exit_with_results"
+        ):
 
             mock_socket.gethostname.return_value = "node-0"
             mock_build.return_value = {}
@@ -91,12 +98,15 @@ class TestDiskMountsEmptyStringFiltering:
             assert call_kwargs["disk_mounts"] == [Path("/data")]
 
     def test_empty_string_produces_empty_list(self) -> None:
-        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, \
-             patch("miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher") as mock_dispatcher, \
-             patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, \
-             patch("miles.utils.ft.cli.diagnostics.local.validate_check_names"), \
-             patch("miles.utils.ft.cli.diagnostics.local.print_results"), \
-             patch("miles.utils.ft.cli.diagnostics.local.exit_with_results"):
+        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, patch(
+            "miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher"
+        ) as mock_dispatcher, patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, patch(
+            "miles.utils.ft.cli.diagnostics.local.validate_check_names"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.print_results"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.exit_with_results"
+        ):
 
             mock_socket.gethostname.return_value = "node-0"
             mock_build.return_value = {}
@@ -115,12 +125,15 @@ class TestDiskMountsEmptyStringFiltering:
 
 class TestLocalDefaultsExcludeNcclPairwise:
     def test_nccl_pairwise_not_in_defaults(self) -> None:
-        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, \
-             patch("miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher") as mock_dispatcher, \
-             patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, \
-             patch("miles.utils.ft.cli.diagnostics.local.validate_check_names") as mock_validate, \
-             patch("miles.utils.ft.cli.diagnostics.local.print_results"), \
-             patch("miles.utils.ft.cli.diagnostics.local.exit_with_results"):
+        with patch("miles.utils.ft.cli.diagnostics.local.build_all_diagnostics") as mock_build, patch(
+            "miles.utils.ft.cli.diagnostics.local.NodeDiagnosticDispatcher"
+        ) as mock_dispatcher, patch("miles.utils.ft.cli.diagnostics.local.socket") as mock_socket, patch(
+            "miles.utils.ft.cli.diagnostics.local.validate_check_names"
+        ) as mock_validate, patch(
+            "miles.utils.ft.cli.diagnostics.local.print_results"
+        ), patch(
+            "miles.utils.ft.cli.diagnostics.local.exit_with_results"
+        ):
 
             mock_socket.gethostname.return_value = "node-0"
             mock_build.return_value = {}

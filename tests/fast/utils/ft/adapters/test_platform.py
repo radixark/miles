@@ -32,7 +32,9 @@ class TestNodeManagerProtocol:
             def __init__(self) -> None:
                 self._bad: dict[str, str] = {}
 
-            async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
+            async def mark_node_bad(
+                self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None
+            ) -> None:
                 self._bad[node_id] = reason
 
         instance: NodeManagerProtocol = _Impl()

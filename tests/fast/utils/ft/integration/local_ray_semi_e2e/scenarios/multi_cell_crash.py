@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from miles.utils.ft.controller.types import ControllerStatus
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.protocol import FaultTestProtocol
 
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.protocol import (
-    FaultTestProtocol,
-)
+from miles.utils.ft.controller.types import ControllerStatus
 
 
 async def scenario_multi_cell_crash(
@@ -33,9 +31,7 @@ async def scenario_multi_cell_crash(
         stagger_delay: Seconds between successive crash injections.
     """
     if stable_iterations > 0:
-        await env.wait_for_training_stable(
-            n_iterations=stable_iterations, timeout=stable_timeout
-        )
+        await env.wait_for_training_stable(n_iterations=stable_iterations, timeout=stable_timeout)
 
     # Step 1: crash cells with stagger delay
     for i, crash_fn in enumerate(crash_fns):
@@ -49,8 +45,6 @@ async def scenario_multi_cell_crash(
     # Step 3: verify all subsystems recovered
     assert all(
         state == "DetectingAnomalySt" for state in status.subsystem_states.values()
-    ), (
-        f"Not all subsystems in DetectingAnomalySt: {status.subsystem_states}"
-    )
+    ), f"Not all subsystems in DetectingAnomalySt: {status.subsystem_states}"
 
     return status

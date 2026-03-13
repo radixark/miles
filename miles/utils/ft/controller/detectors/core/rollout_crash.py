@@ -4,8 +4,8 @@ import logging
 from datetime import timedelta
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
-from miles.utils.ft.utils.metric_names import ROLLOUT_CELL_ALIVE
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
+from miles.utils.ft.utils.metric_names import ROLLOUT_CELL_ALIVE
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +48,13 @@ class RolloutCrashDetector(BaseFaultDetector):
                     trigger=TriggerType.TELEMETRY_BLIND,
                     notify_deduplicator_id=f"metric_blind:RolloutCrashDetector:{self._cell_id}",
                 )
-            return Decision.no_fault(
-                reason=f"rollout_{self._cell_id}: no rollout_cell_alive metric yet"
-            )
+            return Decision.no_fault(reason=f"rollout_{self._cell_id}: no rollout_cell_alive metric yet")
 
         # When multiple series match (e.g. old+new exporter coexist during
         # restarts), treat the cell as unhealthy if ANY series reports dead.
         # Only consider the cell alive when ALL matching series agree.
         if (df["value"] > 0).all():
-            return Decision.no_fault(
-                reason=f"rollout_{self._cell_id}: cell alive"
-            )
+            return Decision.no_fault(reason=f"rollout_{self._cell_id}: cell alive")
 
         window = timedelta(seconds=self._threshold)
         range_df = ctx.metric_store.time_series_store.query_range(
@@ -68,9 +64,7 @@ class RolloutCrashDetector(BaseFaultDetector):
         )
 
         if range_df.is_empty():
-            return Decision.no_fault(
-                reason=f"rollout_{self._cell_id}: no range data"
-            )
+            return Decision.no_fault(reason=f"rollout_{self._cell_id}: no range data")
 
         time_span = (range_df["timestamp"].max() - range_df["timestamp"].min()).total_seconds()
         if time_span < self._threshold * 0.8:
@@ -80,9 +74,7 @@ class RolloutCrashDetector(BaseFaultDetector):
 
         all_dead = (range_df["value"] == 0).all()
         if not all_dead:
-            return Decision.no_fault(
-                reason=f"rollout_{self._cell_id}: cell intermittently dead, waiting"
-            )
+            return Decision.no_fault(reason=f"rollout_{self._cell_id}: cell intermittently dead, waiting")
 
         logger.warning(
             "rollout_crash_detected cell_id=%s threshold=%.0f",

@@ -1,4 +1,5 @@
 """Unit tests for NodeAgentRegistry (P0 item 3)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

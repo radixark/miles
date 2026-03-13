@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
 
 import pytest
 from tests.fast.utils.ft.utils.controller_fakes import (
@@ -17,21 +16,23 @@ from tests.fast.utils.ft.utils.metric_injectors import make_detector_context
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.types import MetricStore
-from miles.utils.ft.controller.state_machines.subsystem import (
-    DetectingAnomalySt,
-    SubsystemContext,
-    RecoveringSt,
-    create_subsystem_stepper,
-)
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestartingSt,
     NotifyHumansSt,
     RealtimeChecksSt,
     RecoveryDoneSt,
 )
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
-from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
+from miles.utils.ft.controller.state_machines.restart.models import (
+    MonitoringIterationProgressConfig,
+    MonitoringRunningAfterDelayConfig,
+)
+from miles.utils.ft.controller.state_machines.subsystem import (
+    DetectingAnomalySt,
+    RecoveringSt,
+    SubsystemContext,
+    create_subsystem_stepper,
+)
+from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter, SlidingWindowThrottle
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
@@ -73,11 +74,7 @@ def _make_subsystem_context(
             if detector_context is not None
             else (
                 make_detector_context(
-                    active_node_ids=(
-                        set(rank_placement.values())
-                        if rank_placement is not None
-                        else {"node-0"}
-                    ),
+                    active_node_ids=(set(rank_placement.values()) if rank_placement is not None else {"node-0"}),
                 )
                 if should_run_detectors
                 else None
@@ -92,7 +89,8 @@ def _make_subsystem_context(
         on_recovery_duration=on_recovery_duration,
         max_simultaneous_bad_nodes=max_simultaneous_bad_nodes,
         monitoring_config=monitoring_config or MonitoringIterationProgressConfig(),
-        metric_store=metric_store or MetricStore(
+        metric_store=metric_store
+        or MetricStore(
             time_series_store=MiniPrometheus(config=MiniPrometheusConfig()),
             mini_wandb=MiniWandb(),
         ),
@@ -108,25 +106,30 @@ async def _step_last(stepper, state, ctx):
 
 def _mock_stepper_yielding(value: object):
     """Create a fake stepper (async generator) that yields a single value, or nothing if None."""
+
     async def _stepper(state: object, ctx: object):
         _stepper.call_count += 1
         if value is not None:
             yield value
+
     _stepper.call_count = 0
     return _stepper
 
 
 def _mock_stepper_raising(exc: BaseException):
     """Create a fake stepper (async generator) that raises an exception."""
+
     async def _stepper(state: object, ctx: object):
         raise exc
         yield  # unreachable but makes this an async generator
+
     return _stepper
 
 
 def _mock_stepper_sequence(effects: list):
     """Create a fake stepper that yields/raises from a sequence of effects (one per call)."""
     idx = [0]
+
     async def _stepper(state: object, ctx: object):
         i = min(idx[0], len(effects) - 1)
         idx[0] += 1
@@ -135,6 +138,7 @@ def _mock_stepper_sequence(effects: list):
             raise effect
         if effect is not None:
             yield effect
+
     return _stepper
 
 
@@ -153,19 +157,21 @@ class TestDetectingAnomaly:
     @pytest.mark.asyncio
     async def test_none_decision_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(detectors=[AlwaysNoneDetector()]),
-                                  )
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(detectors=[AlwaysNoneDetector()]),
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_enter_recovery_transitions_to_recovering(self) -> None:
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
-                                  )
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
+        )
         assert isinstance(result, RecoveringSt)
         assert isinstance(result.recovery, RealtimeChecksSt)
         assert result.trigger == TriggerType.CRASH.value
@@ -181,10 +187,11 @@ class TestDetectingAnomaly:
             )
         )
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(detectors=[detector], notifier=notifier),
-                                  )
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(detectors=[detector], notifier=notifier),
+        )
         assert result is None
         assert len(notifier.calls) == 1
 
@@ -195,14 +202,15 @@ class TestDetectingAnomaly:
         cooldown.record()
 
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[AlwaysEnterRecoveryDetector()],
                 cooldown=cooldown,
                 notifier=notifier,
             ),
-                                  )
+        )
         assert result is None
         assert len(notifier.calls) == 1
 
@@ -239,13 +247,14 @@ class TestDetectingAnomaly:
     @pytest.mark.asyncio
     async def test_skip_detectors_returns_none(self) -> None:
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[AlwaysEnterRecoveryDetector()],
                 should_run_detectors=False,
             ),
-                                  )
+        )
         assert result is None
 
 
@@ -334,13 +343,14 @@ class TestTemplateMethodFiltering:
             )
         )
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[detector],
                 rank_placement={0: "node-0"},
             ),
-                                  )
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -355,13 +365,14 @@ class TestTemplateMethodFiltering:
             )
         )
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[detector],
                 rank_placement={0: "node-0"},
             ),
-                                  )
+        )
         assert isinstance(result, RecoveringSt)
         assert isinstance(result.recovery, RealtimeChecksSt)
         assert result.recovery.pre_identified_bad_nodes == ("node-0",)
@@ -370,10 +381,11 @@ class TestTemplateMethodFiltering:
     async def test_detector_without_bad_node_ids_still_triggers_recovery(self) -> None:
         """Detector returning ENTER_RECOVERY with empty bad_node_ids is not affected by filtering."""
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
-                                  )
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(detectors=[AlwaysEnterRecoveryDetector()]),
+        )
         assert isinstance(result, RecoveringSt)
 
     @pytest.mark.asyncio
@@ -389,13 +401,14 @@ class TestTemplateMethodFiltering:
         )
         active_detector = AlwaysEnterRecoveryDetector(reason="active fault")
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[inactive_detector, active_detector],
                 rank_placement={0: "node-0"},
             ),
-                                  )
+        )
         assert isinstance(result, RecoveringSt)
 
 
@@ -413,7 +426,8 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=_mock_stepper_yielding(RecoveryDoneSt()),
@@ -424,7 +438,7 @@ class TestRecovering:
 
     @pytest.mark.asyncio
     async def test_recovery_in_progress_stays_recovering(self) -> None:
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import StoppingAndRestartingSt
 
         new_recovery = EvictingAndRestartingSt(
@@ -437,7 +451,8 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=_mock_stepper_yielding(new_recovery),
@@ -455,7 +470,8 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=_mock_stepper_yielding(None),
@@ -478,7 +494,8 @@ class TestRecovering:
             recovery_start_time=datetime.now(timezone.utc),
         )
         with pytest.raises(RuntimeError, match="boom"):
-            await _step_last(stepper,
+            await _step_last(
+                stepper,
                 state,
                 _make_subsystem_context(
                     recovery_stepper=_mock_stepper_raising(RuntimeError("boom")),
@@ -495,7 +512,8 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 recovery_stepper=_mock_stepper_yielding(RecoveryDoneSt()),
@@ -510,7 +528,7 @@ class TestRecovering:
     @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_resets_recovery(self) -> None:
         """Detector finds new bad nodes during recovery -> restart recovery with merged bad_node_ids."""
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
@@ -532,7 +550,8 @@ class TestRecovering:
             recovery_start_time=datetime.now(timezone.utc),
             known_bad_node_ids=["node-old"],
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -550,7 +569,7 @@ class TestRecovering:
         RealtimeChecksSt with the merged set. This is intentional: partial
         eviction may be based on incomplete fault information, so re-entering
         RealtimeChecks ensures the full set goes through the pipeline."""
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
@@ -572,7 +591,8 @@ class TestRecovering:
             recovery_start_time=datetime.now(timezone.utc),
             known_bad_node_ids=["node-old"],
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -591,7 +611,7 @@ class TestRecovering:
         cascading failures could extend recovery indefinitely. Now the
         original recovery_start_time is preserved.
         """
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
@@ -613,7 +633,8 @@ class TestRecovering:
             trigger=TriggerType.CRASH.value,
             recovery_start_time=original_start,
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -649,15 +670,16 @@ class TestBadNodeCountSafeguard:
             )
         )
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[detector],
                 notifier=notifier,
                 max_simultaneous_bad_nodes=3,
                 rank_placement={0: "node-1", 1: "node-2", 2: "node-3", 3: "node-4"},
             ),
-                                  )
+        )
         assert result is None
         assert len(notifier.calls) == 1
         assert "likely false positive" in notifier.calls[0][1]
@@ -676,14 +698,15 @@ class TestBadNodeCountSafeguard:
             )
         )
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[detector],
                 max_simultaneous_bad_nodes=3,
                 rank_placement={0: "node-1", 1: "node-2", 2: "node-3"},
             ),
-                                  )
+        )
         assert isinstance(result, RecoveringSt)
         assert isinstance(result.recovery, RealtimeChecksSt)
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-1", "node-2", "node-3"}
@@ -700,14 +723,15 @@ class TestBadNodeCountSafeguard:
             )
         )
         stepper = _make_stepper()
-        result = await _step_last(stepper,
-                                  DetectingAnomalySt(),
-                                  _make_subsystem_context(
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
                 detectors=[detector],
                 max_simultaneous_bad_nodes=3,
                 rank_placement={0: "node-1", 1: "node-2"},
             ),
-                                  )
+        )
         assert isinstance(result, RecoveringSt)
         assert isinstance(result.recovery, RealtimeChecksSt)
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-1", "node-2"}
@@ -716,7 +740,7 @@ class TestBadNodeCountSafeguard:
     async def test_too_many_dynamic_bad_nodes_transitions_to_notify_humans(self) -> None:
         """Detectors report more than threshold new bad nodes during recovery ->
         transition to NotifyHumansSt instead of inline notification."""
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
@@ -737,7 +761,8 @@ class TestBadNodeCountSafeguard:
             trigger=TriggerType.CRASH,
             recovery_start_time=datetime.now(timezone.utc),
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -753,7 +778,7 @@ class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_already_known_bad_nodes_do_not_restart_recovery(self) -> None:
         """Detector re-reports nodes already being handled -> no recovery restart."""
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         recovery_stepper = _mock_stepper_yielding(None)
@@ -777,7 +802,8 @@ class TestBadNodeCountSafeguard:
             recovery_start_time=datetime.now(timezone.utc),
             known_bad_node_ids=["node-old"],
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -792,7 +818,7 @@ class TestBadNodeCountSafeguard:
     @pytest.mark.asyncio
     async def test_dynamic_bad_nodes_below_threshold_continues_recovery(self) -> None:
         """One new bad node during recovery (with 2 existing) -> normal merge, continues."""
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         recovery_stepper = _mock_stepper_yielding(None)
@@ -816,7 +842,8 @@ class TestBadNodeCountSafeguard:
             recovery_start_time=datetime.now(timezone.utc),
             known_bad_node_ids=["node-old-1", "node-old-2"],
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -835,7 +862,7 @@ class TestBadNodeCountSafeguard:
         """When too many new bad nodes trigger NotifyHumansSt, the merged set
         (known + new) is stored in both NotifyHumansSt.bad_node_ids and
         RecoveringSt.known_bad_node_ids."""
-        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
         from miles.utils.ft.controller.state_machines.restart import EvictingSt
 
         detector = FixedDecisionDetector(
@@ -857,7 +884,8 @@ class TestBadNodeCountSafeguard:
             recovery_start_time=datetime.now(timezone.utc),
             known_bad_node_ids=("node-old",),
         )
-        result = await _step_last(stepper,
+        result = await _step_last(
+            stepper,
             state,
             _make_subsystem_context(
                 detectors=[detector],
@@ -895,10 +923,11 @@ class TestInvalidDetectorDecision:
         detector = FixedDecisionDetector(malformed_decision)
         stepper = _make_stepper()
         with pytest.raises(ValueError, match="has no trigger"):
-            await _step_last(stepper,
-                             DetectingAnomalySt(),
-                             _make_subsystem_context(detectors=[detector]),
-                             )
+            await _step_last(
+                stepper,
+                DetectingAnomalySt(),
+                _make_subsystem_context(detectors=[detector]),
+            )
 
 
 class TestNotifyHumanDeduplication:
@@ -990,5 +1019,3 @@ class TestStateMachineIntegration:
         await machine.step(ctx)
         assert isinstance(machine.state, DetectingAnomalySt)
         assert len(machine.state_history) >= 2
-
-

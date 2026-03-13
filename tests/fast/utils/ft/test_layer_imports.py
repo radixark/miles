@@ -45,9 +45,9 @@ class TestMetricNamesLivesInUtils:
                 continue
             imports = _collect_imports(py_file)
             for imp in imports:
-                assert "controller.metrics.metric_names" not in imp, (
-                    f"{py_file.name} still imports metric_names from controller"
-                )
+                assert (
+                    "controller.metrics.metric_names" not in imp
+                ), f"{py_file.name} still imports metric_names from controller"
 
 
 class TestGpuConstantsLiveInUtils:
@@ -62,9 +62,7 @@ class TestGpuConstantsLiveInUtils:
         kmsg_path = _FT_ROOT / "agents" / "collectors" / "kmsg.py"
         imports = _collect_imports(kmsg_path)
         for imp in imports:
-            assert "xid_catalog" not in imp, (
-                "kmsg.py still imports from xid_catalog directly"
-            )
+            assert "xid_catalog" not in imp, "kmsg.py still imports from xid_catalog directly"
 
 
 class TestDiagnosticTypesLiveInUtils:
@@ -81,9 +79,7 @@ class TestDiagnosticTypesLiveInUtils:
         types_path = _FT_ROOT / "controller" / "types.py"
         imports = _collect_imports(types_path)
         for imp in imports:
-            assert ".agents.types" not in imp, (
-                "controller/types.py still imports from agents.types"
-            )
+            assert ".agents.types" not in imp, "controller/types.py still imports from agents.types"
 
     def test_adapters_types_does_not_import_from_agents(self) -> None:
         """adapters/types.py used to import DiagnosticResult from agents/types.py,
@@ -92,6 +88,4 @@ class TestDiagnosticTypesLiveInUtils:
         types_path = _FT_ROOT / "adapters" / "types.py"
         imports = _collect_imports(types_path)
         for imp in imports:
-            assert ".agents.types" not in imp, (
-                "adapters/types.py still imports from agents.types"
-            )
+            assert ".agents.types" not in imp, "adapters/types.py still imports from agents.types"

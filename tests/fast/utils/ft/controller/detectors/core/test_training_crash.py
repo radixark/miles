@@ -1,9 +1,5 @@
 import pytest
-from tests.fast.utils.ft.utils import (
-    make_detector_context,
-    make_fake_metric_store,
-    make_fake_mini_wandb,
-)
+from tests.fast.utils.ft.utils import make_detector_context, make_fake_metric_store, make_fake_mini_wandb
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
@@ -18,7 +14,6 @@ class TestTrainingCrashDetector:
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=status,
         )
 
@@ -30,9 +25,7 @@ class TestTrainingCrashDetector:
         store = make_fake_metric_store()
         wandb = make_fake_mini_wandb(steps={1: {"loss": 2.5}})
         detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
-        )
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED)
 
         decision = detector.evaluate(ctx)
 
@@ -44,9 +37,7 @@ class TestTrainingCrashDetector:
         store = make_fake_metric_store()
         wandb = make_fake_mini_wandb(steps={1: {"loss": bad_loss}})
         detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
-        )
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED)
 
         decision = detector.evaluate(ctx)
 
@@ -57,9 +48,7 @@ class TestTrainingCrashDetector:
         store = make_fake_metric_store()
         wandb = make_fake_mini_wandb()
         detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
-        )
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED)
 
         decision = detector.evaluate(ctx)
 
@@ -80,9 +69,7 @@ class TestDetermineTrigger:
         store = make_fake_metric_store()
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})
         detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
-        )
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED)
 
         decision = detector.evaluate(ctx)
 
@@ -93,9 +80,7 @@ class TestDetermineTrigger:
         store = make_fake_metric_store()
         wandb = make_fake_mini_wandb(steps={1: {"loss": 2.5}})
         detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED
-        )
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, job_status=JobStatus.FAILED)
 
         decision = detector.evaluate(ctx)
 
@@ -106,9 +91,7 @@ class TestDetermineTrigger:
         store = make_fake_metric_store()
         wandb = make_fake_mini_wandb(steps={1: {"loss": float("nan")}})
         detector = TrainingCrashDetector()
-        ctx = make_detector_context(
-            metric_store=store, mini_wandb=wandb, job_status=JobStatus.RUNNING
-        )
+        ctx = make_detector_context(metric_store=store, mini_wandb=wandb, job_status=JobStatus.RUNNING)
 
         decision = detector.evaluate(ctx)
 

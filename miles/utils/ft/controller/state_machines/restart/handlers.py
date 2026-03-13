@@ -5,24 +5,21 @@ import math
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.controller.state_machines.restart.models import (
     EvictingSt,
     ExternalExecutionResult,
+    ExternalRestartingMainJobSt,
+    MonitoringIterationProgressConfig,
     MonitoringProgressSt,
+    MonitoringRunningAfterDelayConfig,
     RestartContext,
     RestartDoneSt,
     RestartFailedSt,
-    ExternalRestartingMainJobSt,
     RestartState,
     StoppingAndRestartingSt,
 )
-from miles.utils.ft.controller.state_machines.restart.utils import (
-    retry_mark_node_bad,
-    stop_and_submit,
-)
+from miles.utils.ft.controller.state_machines.restart.utils import retry_mark_node_bad, stop_and_submit
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.utils.state_machine import StateHandler
 

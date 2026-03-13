@@ -4,23 +4,14 @@ import logging
 from datetime import datetime, timezone
 
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.state_machines.main.models import (
-    MainContext,
-    MainState,
-    NormalSt,
-    RestartingMainJobSt,
-)
-from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomalySt,
-    RecoveringSt,
-    SubsystemState,
-)
+from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
 from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestartingSt
 from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
     ExternalRestartingMainJobSt,
 )
 from miles.utils.ft.controller.state_machines.restart.utils import stop_and_submit
+from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, RecoveringSt, SubsystemState
 from miles.utils.ft.controller.state_machines.utils import safe_notify
 from miles.utils.ft.controller.subsystem_hub import SubsystemSpec
 
@@ -38,9 +29,7 @@ def has_pending_main_job_restart(subsystems: dict[str, SubsystemState]) -> bool:
     for sub_state in subsystems.values():
         match sub_state:
             case RecoveringSt(
-                recovery=EvictingAndRestartingSt(
-                    restart=ExternalRestartingMainJobSt(external_execution_result=None)
-                )
+                recovery=EvictingAndRestartingSt(restart=ExternalRestartingMainJobSt(external_execution_result=None))
             ):
                 return True
     return False
@@ -59,9 +48,7 @@ def find_restart_requestor(subsystems: dict[str, SubsystemState]) -> str | None:
     for name, sub_state in subsystems.items():
         match sub_state:
             case RecoveringSt(
-                recovery=EvictingAndRestartingSt(
-                    restart=ExternalRestartingMainJobSt(external_execution_result=None)
-                )
+                recovery=EvictingAndRestartingSt(restart=ExternalRestartingMainJobSt(external_execution_result=None))
             ):
                 if requestor is None:
                     requestor = name
@@ -87,15 +74,15 @@ def update_external_execution_result(
     """Deep-update the ExternalRestartingMainJobSt.external_execution_result in a frozen state tree."""
     match frozen_state:
         case RecoveringSt(
-            recovery=EvictingAndRestartingSt(
-                restart=ExternalRestartingMainJobSt() as restart
-            ) as recovery
+            recovery=EvictingAndRestartingSt(restart=ExternalRestartingMainJobSt() as restart) as recovery
         ):
-            return frozen_state.model_copy(update={"recovery":
-                                                       recovery.model_copy(update={"restart":
-                                                                                       restart.model_copy(update={"external_execution_result": result})
-                                                                                   })
-                                                   })
+            return frozen_state.model_copy(
+                update={
+                    "recovery": recovery.model_copy(
+                        update={"restart": restart.model_copy(update={"external_execution_result": result})}
+                    )
+                }
+            )
         case _:
             raise AssertionError(f"Unexpected state for update_external_execution_result: {frozen_state}")
 
@@ -147,7 +134,8 @@ async def trigger_main_job_restart(
             content=f"stop_and_submit failed for requestor {requestor}",
         )
         updated_requestor = update_external_execution_result(
-            frozen_state, ExternalExecutionResult.FAILED,
+            frozen_state,
+            ExternalExecutionResult.FAILED,
         )
         return NormalSt(subsystems={**state.subsystems, requestor: updated_requestor})
 

@@ -1,8 +1,10 @@
 """Unit tests for RayControllerClient (P1 item 11)."""
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
 

@@ -8,16 +8,12 @@ from collections.abc import Callable
 
 import pytest
 import ray
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
+from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 from miles.utils.ft.adapters.types import ft_node_agent_actor_name
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 pytestmark = [
     pytest.mark.local_ray,
@@ -272,9 +268,7 @@ async def test_eviction_escalation_to_notify_humans(
             break
         await asyncio.sleep(0.5)
     else:
-        raise TimeoutError(
-            f"node-0 was not marked bad within {RECOVERY_TIMEOUT}s during eviction flow"
-        )
+        raise TimeoutError(f"node-0 was not marked bad within {RECOVERY_TIMEOUT}s during eviction flow")
 
     await testbed.wait_for_recovery_phase(
         phase="MonitoringProgressSt",
@@ -337,9 +331,7 @@ async def test_all_diagnostics_pass_escalates_to_notify(
     assert not testbed.node_manager.was_ever_marked_bad("node-1")
 
     # Step 5: notifier should have received a notification (proves NotifyHumans path)
-    assert len(testbed.notifications) > 0, (
-        "Notifier should have received notification for all-pass diagnostics"
-    )
+    assert len(testbed.notifications) > 0, "Notifier should have received notification for all-pass diagnostics"
 
 
 # ------------------------------------------------------------------

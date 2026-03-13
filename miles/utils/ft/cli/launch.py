@@ -48,12 +48,8 @@ def launch(
         str, typer.Option(help="Webhook URL for notifications (empty = no webhook notifications)")
     ] = "",
     notify_platform: Annotated[str, typer.Option(help="Notification platform: 'lark', 'slack', or 'discord'")] = "",
-    notify_timeout_seconds: Annotated[
-        float, typer.Option(help="Webhook notification HTTP timeout in seconds")
-    ] = 10.0,
-    notify_max_retries: Annotated[
-        int, typer.Option(help="Webhook notification max retry count")
-    ] = 3,
+    notify_timeout_seconds: Annotated[float, typer.Option(help="Webhook notification HTTP timeout in seconds")] = 10.0,
+    notify_max_retries: Annotated[int, typer.Option(help="Webhook notification max retry count")] = 3,
     notify_initial_backoff_seconds: Annotated[
         float, typer.Option(help="Webhook notification initial backoff in seconds")
     ] = 1.0,
@@ -70,33 +66,21 @@ def launch(
     recovery_cooldown_max_count: Annotated[
         int, typer.Option(help="Max recoveries allowed within cooldown window")
     ] = 3,
-    registration_grace_ticks: Annotated[
-        int, typer.Option(help="Grace ticks before requiring node registration")
-    ] = 5,
-    max_simultaneous_bad_nodes: Annotated[
-        int, typer.Option(help="Max simultaneous bad nodes before aborting")
-    ] = 3,
+    registration_grace_ticks: Annotated[int, typer.Option(help="Grace ticks before requiring node registration")] = 5,
+    max_simultaneous_bad_nodes: Annotated[int, typer.Option(help="Max simultaneous bad nodes before aborting")] = 3,
     monitoring_success_iterations: Annotated[
         int, typer.Option(help="Consecutive healthy iterations to confirm recovery")
     ] = 10,
-    monitoring_timeout_seconds: Annotated[
-        int, typer.Option(help="Timeout for post-recovery monitoring phase")
-    ] = 600,
-    recovery_timeout_seconds: Annotated[
-        int, typer.Option(help="Timeout for the entire recovery process")
-    ] = 3600,
+    monitoring_timeout_seconds: Annotated[int, typer.Option(help="Timeout for post-recovery monitoring phase")] = 600,
+    recovery_timeout_seconds: Annotated[int, typer.Option(help="Timeout for the entire recovery process")] = 3600,
     rollout_alive_threshold_seconds: Annotated[
         float | None, typer.Option(help="Rollout alive threshold in seconds (None = default)")
     ] = None,
     rollout_monitoring_alive_duration_seconds: Annotated[
         float | None, typer.Option(help="Rollout monitoring alive duration in seconds (None = default)")
     ] = None,
-    ray_job_poll_interval_seconds: Annotated[
-        float, typer.Option(help="RayMainJob poll interval in seconds")
-    ] = 5.0,
-    ray_submit_timeout_seconds: Annotated[
-        float, typer.Option(help="RayMainJob submit RPC timeout in seconds")
-    ] = 60.0,
+    ray_job_poll_interval_seconds: Annotated[float, typer.Option(help="RayMainJob poll interval in seconds")] = 5.0,
+    ray_submit_timeout_seconds: Annotated[float, typer.Option(help="RayMainJob submit RPC timeout in seconds")] = 60.0,
     ray_get_status_timeout_seconds: Annotated[
         float, typer.Option(help="RayMainJob get_status RPC timeout in seconds")
     ] = 30.0,

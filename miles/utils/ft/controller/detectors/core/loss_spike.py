@@ -43,8 +43,7 @@ class LossSpikeDetector(BaseFaultDetector):
             return Decision.no_fault(reason="no metric spike detected")
 
         details = "; ".join(
-            f"{s.metric_name} {s.ratio:.1f}x ({s.current_avg:.4f} vs baseline {s.baseline_avg:.4f})"
-            for s in spikes
+            f"{s.metric_name} {s.ratio:.1f}x ({s.current_avg:.4f} vs baseline {s.baseline_avg:.4f})" for s in spikes
         )
         return Decision(
             action=ActionType.ENTER_RECOVERY,

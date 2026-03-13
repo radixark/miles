@@ -272,9 +272,7 @@ class TestDeclineDurationClamp:
         always True, so the detector silently stopped alerting. Now
         clamped to max(0, ...)."""
         now = datetime.now(timezone.utc)
-        future_entries: list[tuple[float, datetime]] = [
-            (0.3, now + timedelta(minutes=5 + i)) for i in range(10)
-        ]
+        future_entries: list[tuple[float, datetime]] = [(0.3, now + timedelta(minutes=5 + i)) for i in range(10)]
         wandb = _make_wandb_with_timed_mfu(future_entries)
 
         detector = MfuDeclineDetector(

@@ -12,8 +12,8 @@ from tests.fast.utils.ft.utils import (
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
-from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT, TRAINING_PHASE
 from miles.utils.ft.controller.types import ActionType, TriggerType
+from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT, TRAINING_PHASE
 
 
 class TestHangDetector:
@@ -481,10 +481,12 @@ class TestHangDetectorPhaseUnknownSkipsCheck:
         inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=15))
         inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
 
-        detector = HangDetector(config=HangDetectorConfig(
-            training_timeout_minutes=10,
-            checkpoint_saving_timeout_minutes=30,
-        ))
+        detector = HangDetector(
+            config=HangDetectorConfig(
+                training_timeout_minutes=10,
+                checkpoint_saving_timeout_minutes=30,
+            )
+        )
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
@@ -513,10 +515,12 @@ class TestHangDetectorPhaseUnknownSkipsCheck:
         inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=15))
         inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
 
-        detector = HangDetector(config=HangDetectorConfig(
-            training_timeout_minutes=10,
-            checkpoint_saving_timeout_minutes=30,
-        ))
+        detector = HangDetector(
+            config=HangDetectorConfig(
+                training_timeout_minutes=10,
+                checkpoint_saving_timeout_minutes=30,
+            )
+        )
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),

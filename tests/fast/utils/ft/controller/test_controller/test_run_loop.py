@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from miles.utils.ft.controller.metrics.lifecycle import MetricStoreTaskHandle
 

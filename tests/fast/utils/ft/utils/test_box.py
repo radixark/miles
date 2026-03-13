@@ -1,4 +1,5 @@
 """Unit tests for Box[T] (P0 item 9)."""
+
 from __future__ import annotations
 
 from miles.utils.ft.utils.box import Box

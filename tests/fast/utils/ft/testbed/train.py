@@ -8,18 +8,6 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import ray
-
-from miles.utils.ft.adapters.config import FtControllerConfig
-from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
-from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
-from miles.utils.ft.adapters.types import ft_controller_actor_name, ft_node_agent_actor_name
-from miles.utils.ft.agents.types import GaugeSample
-from miles.utils.ft.controller.detectors.chain import build_detector_chain
-from miles.utils.http_utils import MILES_HOST_IP_ENV
-from miles.utils.ft.utils.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
-from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
-from miles.utils.ft.factories.controller.from_config import build_ft_controller
-from miles.utils.ft.factories.node_agent import build_node_agent
 from tests.fast.utils.ft.testbed.config import TestbedConfig
 from tests.fast.utils.ft.testbed.ray.actor_group import TestbedRayTrainGroup
 from tests.fast.utils.ft.testbed.ray.rollout import TestbedRolloutManager
@@ -28,6 +16,18 @@ from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.notifiers.webhook_notifi
 from tests.fast.utils.ft.testbed.utils.ft.adapters.impl.ray.main_job import TestbedMainJob
 from tests.fast.utils.ft.testbed.utils.ft.agents.collectors.collector import TestbedCollector
 from tests.fast.utils.ft.utils.diagnostic_fakes import StubDiagnostic
+
+from miles.utils.ft.adapters.config import FtControllerConfig
+from miles.utils.ft.adapters.impl.ray.controller_actor import FtControllerActor
+from miles.utils.ft.adapters.impl.ray.node_agent_actor import FtNodeAgentActor
+from miles.utils.ft.adapters.types import ft_controller_actor_name, ft_node_agent_actor_name
+from miles.utils.ft.agents.types import GaugeSample
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.types import ControllerMode, ControllerStatus
+from miles.utils.ft.factories.controller.from_config import build_ft_controller
+from miles.utils.ft.factories.node_agent import build_node_agent
+from miles.utils.ft.utils.metric_names import XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 
 if TYPE_CHECKING:
     from tests.fast.utils.ft.integration.conftest import RayNodeInfo
@@ -42,6 +42,7 @@ def _actor_runtime_env(host_ip: str) -> dict[str, dict[str, str]]:
 @dataclass
 class _NodeMapping:
     """Maps logical node IDs to Ray node IDs."""
+
     training: dict[str, str]
     rollout: dict[str, str]
     spare: dict[str, str]
@@ -310,13 +311,15 @@ class MilesTestbed:
         if state is None:
             raise KeyError(f"No collector state for node {node_id}")
         labels = {"node_id": node_id}
-        await state.set_metrics.remote([
-            GaugeSample(
-                name=XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
-                labels=labels,
-                value=count,
-            ),
-        ])
+        await state.set_metrics.remote(
+            [
+                GaugeSample(
+                    name=XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
+                    labels=labels,
+                    value=count,
+                ),
+            ]
+        )
 
     async def kill_sglang_cell(self, cell_id: str) -> None:
         if self._rollout_manager is None:
@@ -389,9 +392,7 @@ class MilesTestbed:
                 logger.debug("wait_for_training_stable: status check failed", exc_info=True)
             await asyncio.sleep(0.3)
 
-        raise TimeoutError(
-            f"Training not stable after {timeout}s (baseline={baseline})"
-        )
+        raise TimeoutError(f"Training not stable after {timeout}s (baseline={baseline})")
 
     async def wait_for_subsystem_state(
         self,
@@ -479,7 +480,9 @@ class MilesTestbed:
                 if status.mode != last_logged_mode:
                     logger.info(
                         "wait_for_mode_transition: phase=return current=%s target=%s subsystems=%s",
-                        status.mode, target_mode, status.subsystem_states,
+                        status.mode,
+                        target_mode,
+                        status.subsystem_states,
                     )
                     last_logged_mode = status.mode
                 if status.mode == target_mode:
@@ -550,11 +553,10 @@ class MilesTestbed:
     def node_agents(self) -> dict[str, str]:
         """node_id → actor_name mapping for direct actor access."""
         from miles.utils.ft.adapters.types import ft_node_agent_actor_name
+
         return {
             node_config.node_id: ft_node_agent_actor_name(self._ft_id, node_config.node_id)
-            for node_config in (
-                list(self._config.training_nodes) + list(self._config.rollout_nodes)
-            )
+            for node_config in (list(self._config.training_nodes) + list(self._config.rollout_nodes))
         }
 
 
@@ -564,15 +566,9 @@ def _build_node_mapping(
 ) -> _NodeMapping:
     """Assign logical node IDs to Ray nodes."""
     available = list(ray_nodes)
-    needed = (
-        len(config.training_nodes)
-        + len(config.rollout_nodes)
-        + len(config.spare_nodes)
-    )
+    needed = len(config.training_nodes) + len(config.rollout_nodes) + len(config.spare_nodes)
     if len(available) < needed:
-        raise ValueError(
-            f"Need {needed} Ray nodes but only {len(available)} available"
-        )
+        raise ValueError(f"Need {needed} Ray nodes but only {len(available)} available")
 
     idx = 0
     training_map: dict[str, str] = {}

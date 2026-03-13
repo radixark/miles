@@ -8,6 +8,9 @@ import time
 from collections.abc import Callable
 
 import pytest
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
+from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.thermal_throttling import (
@@ -17,12 +20,6 @@ from miles.utils.ft.controller.detectors.core.thermal_throttling import (
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.metric_names import DCGM_FI_DEV_GPU_TEMP
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
-from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 logger = logging.getLogger(__name__)
 

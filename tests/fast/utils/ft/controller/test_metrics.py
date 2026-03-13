@@ -14,10 +14,10 @@ from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
 from miles.utils.ft.controller.types import (
     MetricStore,
+    ScrapeTargetManagerProtocol,
     TimeSeriesQueryProtocol,
     TimeSeriesStoreLifecycle,
     TimeSeriesStoreProtocol,
-    ScrapeTargetManagerProtocol,
     TrainingMetricStoreProtocol,
 )
 

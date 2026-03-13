@@ -1,11 +1,7 @@
 import pytest
-
 from tests.fast.utils.ft.utils import make_detector_context, make_fake_mini_wandb
 
-from miles.utils.ft.controller.detectors.core.loss_spike import (
-    LossSpikeDetector,
-    LossSpikeDetectorConfig,
-)
+from miles.utils.ft.controller.detectors.core.loss_spike import LossSpikeDetector, LossSpikeDetectorConfig
 from miles.utils.ft.controller.types import ActionType, TriggerType
 
 

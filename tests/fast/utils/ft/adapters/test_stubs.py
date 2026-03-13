@@ -20,6 +20,7 @@ class TestStubNodeManager:
         manager = StubNodeManager()
         await manager.mark_node_bad(node_id="node-1", reason="gpu failure")
 
+
 class TestStubMainJob:
     async def test_submit_returns_unique_run_id(self) -> None:
         job = StubMainJob()

@@ -24,7 +24,7 @@ from miles.utils.ft.agents.diagnostics.executors.collector_based import Collecto
 from miles.utils.ft.agents.diagnostics.executors.gpu import GpuNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.nccl import NcclNodeExecutor
 from miles.utils.ft.agents.diagnostics.executors.stack_trace import StackTraceNodeExecutor
-from miles.utils.ft.agents.types import GaugeSample, CounterSample, SampleEvaluator
+from miles.utils.ft.agents.types import CounterSample, GaugeSample, SampleEvaluator
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.core.disk_space import DiskSpaceLowDetector
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
@@ -42,6 +42,7 @@ DEFAULT_COLLECT_INTERVAL_SECONDS: float = 10.0
 def detect_gpu_count() -> int:
     try:
         import pynvml
+
         pynvml.nvmlInit()
         count = pynvml.nvmlDeviceGetCount()
         pynvml.nvmlShutdown()

@@ -40,6 +40,7 @@ class TestCollectIntervalValidation:
         (interval * 2) negative, causing asyncio.wait_for to raise
         ValueError. Now rejected at class definition time."""
         with pytest.raises(ValueError, match="collect_interval must be >= 0"):
+
             class _BadCollector(BaseCollector):
                 collect_interval: float = -1.0
 

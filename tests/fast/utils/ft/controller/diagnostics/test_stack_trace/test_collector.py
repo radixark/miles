@@ -168,18 +168,28 @@ class TestCollectStackTraceTieHandling:
         """node-a fails collection, node-b and node-c produce different traces
         of equal size (tie). The collector should return node-a as suspect
         instead of re-raising StackTraceTieError."""
-        threads_b = json.dumps([
-            PySpyThread(
-                id=1, name="MainThread", active=True, owns_gil=False,
-                frames=[{"name": "func_b", "filename": "b.py", "line": 1}],
-            ).model_dump()
-        ])
-        threads_c = json.dumps([
-            PySpyThread(
-                id=1, name="MainThread", active=True, owns_gil=False,
-                frames=[{"name": "func_c", "filename": "c.py", "line": 1}],
-            ).model_dump()
-        ])
+        threads_b = json.dumps(
+            [
+                PySpyThread(
+                    id=1,
+                    name="MainThread",
+                    active=True,
+                    owns_gil=False,
+                    frames=[{"name": "func_b", "filename": "b.py", "line": 1}],
+                ).model_dump()
+            ]
+        )
+        threads_c = json.dumps(
+            [
+                PySpyThread(
+                    id=1,
+                    name="MainThread",
+                    active=True,
+                    owns_gil=False,
+                    frames=[{"name": "func_c", "filename": "c.py", "line": 1}],
+                ).model_dump()
+            ]
+        )
 
         node_agents = {
             "node-a": _make_agent_with_trace("node-a", passed=False, details="py-spy failed"),
@@ -200,18 +210,28 @@ class TestCollectStackTraceTieHandling:
     def test_pure_tie_no_failure_suspects_still_raises(self) -> None:
         """When there are no failure suspects and aggregation ties, the exception
         should still propagate to signal the need for human intervention."""
-        threads_b = json.dumps([
-            PySpyThread(
-                id=1, name="MainThread", active=True, owns_gil=False,
-                frames=[{"name": "func_b", "filename": "b.py", "line": 1}],
-            ).model_dump()
-        ])
-        threads_c = json.dumps([
-            PySpyThread(
-                id=1, name="MainThread", active=True, owns_gil=False,
-                frames=[{"name": "func_c", "filename": "c.py", "line": 1}],
-            ).model_dump()
-        ])
+        threads_b = json.dumps(
+            [
+                PySpyThread(
+                    id=1,
+                    name="MainThread",
+                    active=True,
+                    owns_gil=False,
+                    frames=[{"name": "func_b", "filename": "b.py", "line": 1}],
+                ).model_dump()
+            ]
+        )
+        threads_c = json.dumps(
+            [
+                PySpyThread(
+                    id=1,
+                    name="MainThread",
+                    active=True,
+                    owns_gil=False,
+                    frames=[{"name": "func_c", "filename": "c.py", "line": 1}],
+                ).model_dump()
+            ]
+        )
 
         node_agents = {
             "node-b": _make_agent_with_trace("node-b", details=threads_b),

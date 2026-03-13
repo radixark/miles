@@ -8,6 +8,9 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.agents.types import CounterSample, GaugeSample
 from miles.utils.ft.controller.detectors.base import DetectorContext
 from miles.utils.ft.controller.metrics.exporter import ControllerExporter
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.types import MetricStore
 from miles.utils.ft.utils.metric_names import (
     AGENT_HEARTBEAT,
     DCGM_FI_DEV_GPU_TEMP,
@@ -19,9 +22,6 @@ from miles.utils.ft.utils.metric_names import (
     TRAINING_PHASE,
     XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
 )
-from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.types import MetricStore
 
 
 def get_sample_value(

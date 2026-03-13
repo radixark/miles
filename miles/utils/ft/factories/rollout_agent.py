@@ -58,9 +58,7 @@ def _wait_for_controller_ready(controller: object) -> None:
         except Exception:
             logger.debug("controller not ready yet, retrying", exc_info=True)
         time.sleep(_READY_POLL_INTERVAL)
-    raise TimeoutError(
-        f"controller not ready after {_READY_TIMEOUT}s"
-    )
+    raise TimeoutError(f"controller not ready after {_READY_TIMEOUT}s")
 
 
 def _register_with_controller(
@@ -91,9 +89,7 @@ def _register_with_controller(
         max_backoff=_REGISTER_RETRY_DELAY,
     )
     if not result.ok:
-        raise RuntimeError(
-            f"rollout agent registration failed after {_REGISTER_MAX_ATTEMPTS} attempts"
-        )
+        raise RuntimeError(f"rollout agent registration failed after {_REGISTER_MAX_ATTEMPTS} attempts")
     logger.info(
         "rollout_agent_registered ft_id=%s metrics_address=%s cell_node_ids=%s",
         ft_id,

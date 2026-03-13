@@ -7,7 +7,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from miles.utils.ft.agents.types import CounterSample, GaugeSample
-from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore, OutOfOrderSampleError
+from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import (
+    InMemoryMetricStore,
+    OutOfOrderSampleError,
+)
 
 
 def _ts(seconds: int) -> datetime:
@@ -281,9 +284,7 @@ class TestQueryIterationSafetyAgainstConcurrentMutation:
 
         from miles.utils.ft.controller.metrics.mini_prometheus.query import _iter_matching
 
-        for _labels, samples in _iter_matching(
-            store._series, store._label_maps, store._name_index, "m", None
-        ):
+        for _labels, samples in _iter_matching(store._series, store._label_maps, store._name_index, "m", None):
             key = list(store._series.keys())[0]
             original = store._series[key]
             assert samples is not original

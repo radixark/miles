@@ -7,10 +7,7 @@ from datetime import datetime
 from tests.fast.utils.ft.utils.metric_injectors import make_fake_mini_wandb
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
-from miles.utils.ft.controller.types import NullScrapeTargetManager
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
-from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, SubsystemState, RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery.models import (
     EvictingAndRestartingSt,
     NotifyHumansSt,
@@ -19,8 +16,10 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     StopTimeDiagnosticsSt,
 )
 from miles.utils.ft.controller.state_machines.restart.models import EvictingSt, StoppingAndRestartingSt
+from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, RecoveringSt, SubsystemState
 from miles.utils.ft.controller.status import _safe_iteration, build_controller_status, recovery_phase_name
-from miles.utils.ft.controller.types import ControllerMode
+from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
+from miles.utils.ft.controller.types import ControllerMode, NullScrapeTargetManager
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
 
@@ -318,10 +317,12 @@ class TestBuildControllerStatus:
             recovery_start_time=_now(),
             known_bad_node_ids=["node-b"],
         )
-        controller_state = NormalSt(subsystems={
-            "training": training_state,
-            "rollout_0": rollout_state,
-        })
+        controller_state = NormalSt(
+            subsystems={
+                "training": training_state,
+                "rollout_0": rollout_state,
+            }
+        )
         sm: StateMachine[MainState, MainContext] = StateMachine(
             initial_state=controller_state,
             stepper=StateMachineStepper(handler_map={}),

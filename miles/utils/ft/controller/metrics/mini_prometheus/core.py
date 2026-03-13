@@ -7,7 +7,7 @@ from miles.utils.ft.agents.types import MetricSample
 from miles.utils.ft.controller.metrics.mini_prometheus.eviction import RetentionEvictor
 from miles.utils.ft.controller.metrics.mini_prometheus.in_memory_store import InMemoryMetricStore
 from miles.utils.ft.controller.metrics.mini_prometheus.scrape_loop import ScrapeLoop
-from miles.utils.ft.controller.types import TimeSeriesStoreProtocol, ScrapeTargetManagerProtocol
+from miles.utils.ft.controller.types import ScrapeTargetManagerProtocol, TimeSeriesStoreProtocol
 
 
 @dataclass

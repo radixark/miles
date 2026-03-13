@@ -6,11 +6,17 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier, make_failing_main_job
+from tests.fast.utils.ft.utils.controller_fakes import (
+    FakeMainJob,
+    FakeNodeManager,
+    FakeNotifier,
+    make_failing_main_job,
+)
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.controller.metrics.exporter import NullControllerExporter
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main import (
     MainContext,
@@ -18,21 +24,15 @@ from miles.utils.ft.controller.state_machines.main import (
     RestartingMainJobSt,
     create_main_stepper,
 )
-from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomalySt,
-    RecoveringSt,
-    SubsystemState,
-)
 from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestartingSt, StopTimeDiagnosticsSt
 from miles.utils.ft.controller.state_machines.restart.models import (
     ExternalExecutionResult,
     ExternalRestartingMainJobSt,
 )
+from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, RecoveringSt, SubsystemState
 from miles.utils.ft.controller.subsystem_hub import SubsystemConfig, SubsystemRuntime, SubsystemSpec
-from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import MetricStore, SharedDeps, TriggerType
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -66,7 +66,8 @@ def _make_controller_context(
 ) -> MainContext:
     shared = SharedDeps(
         main_job=main_job or FakeMainJob(),
-        subsystem_specs=subsystem_specs or {
+        subsystem_specs=subsystem_specs
+        or {
             "training": _make_subsystem_spec(),
         },
         metric_store=MetricStore(
@@ -414,9 +415,11 @@ class TestSubsystemKeysSyncAssert:
         state.subsystems keys. If they diverge, a KeyError would occur
         deep in the handler. An explicit assert catches this early."""
         stepper = create_main_stepper()
-        state = NormalSt(subsystems={
-            "training": DetectingAnomalySt(),
-        })
+        state = NormalSt(
+            subsystems={
+                "training": DetectingAnomalySt(),
+            }
+        )
         context = _make_controller_context(
             subsystem_specs={
                 "training": _make_subsystem_spec(),
@@ -439,6 +442,7 @@ class TestSubsystemSteppingOrder:
         to build_subsystem_context in what order.
         """
         from unittest.mock import patch
+
         import miles.utils.ft.controller.state_machines.main.subsystem_runner as runner_mod
 
         call_order: list[str] = []
@@ -538,4 +542,5 @@ class TestMainJobRestartStopFailure:
         # Simulating next tick: _find_restart_requestor should not find a
         # requestor since external_execution_result is now FAILED
         from miles.utils.ft.controller.state_machines.main.handlers import _find_restart_requestor
+
         assert _find_restart_requestor(result.subsystems) is None

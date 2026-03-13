@@ -9,34 +9,20 @@ FaultInjectionProtocol) so the same scenario runs against both MilesTestbed
 (semi-E2E) and real Ray clusters (E2E).
 """
 
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.hang import (
-    scenario_hang_detection_and_recovery,
-)
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.multi_cell_crash import (
-    scenario_multi_cell_crash,
-)
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.no_false_positive import (
-    scenario_no_false_positive,
-)
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.hang import scenario_hang_detection_and_recovery
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.multi_cell_crash import scenario_multi_cell_crash
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.no_false_positive import scenario_no_false_positive
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.protocol import (
     FaultInjectionProtocol,
     FaultTestProtocol,
 )
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.repeated_crash import (
-    scenario_repeated_crash,
-)
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.rollout_crash import (
-    scenario_rollout_crash,
-)
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.rollout_gpu_xid import (
-    scenario_rollout_gpu_xid,
-)
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.repeated_crash import scenario_repeated_crash
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.rollout_crash import scenario_rollout_crash
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.rollout_gpu_xid import scenario_rollout_gpu_xid
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.rollout_repeated_crash import (
     scenario_rollout_repeated_crash,
 )
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.transient_crash import (
-    scenario_transient_crash,
-)
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios.transient_crash import scenario_transient_crash
 
 __all__ = [
     "FaultInjectionProtocol",

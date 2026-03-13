@@ -22,6 +22,9 @@ from miles.utils.ft.controller.detectors.checks.hardware import (
     check_nic_down_in_window,
 )
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
+from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
+from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
+from miles.utils.ft.controller.types import ActionType, MetricStore
 from miles.utils.ft.utils.metric_names import (
     AGENT_HEARTBEAT,
     NODE_FILESYSTEM_AVAIL_BYTES,
@@ -29,9 +32,6 @@ from miles.utils.ft.utils.metric_names import (
     PHASE_TRAINING,
     TRAINING_PHASE,
 )
-from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.metrics.prometheus_api.client import PrometheusClient
-from miles.utils.ft.controller.types import ActionType, MetricStore
 
 
 def _make_response(json_data: dict[str, Any]) -> httpx.Response:

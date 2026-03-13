@@ -15,14 +15,7 @@ import logging
 from collections.abc import Callable
 
 import pytest
-
-from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
-from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
     FaultInjectionProtocol,
     FaultTestProtocol,
@@ -37,6 +30,9 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
 from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
+
+from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
+from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +250,6 @@ async def test_rollout_gpu_xid(
     )
 
     # Step: verify node was marked bad (hardware fault -> eviction)
-    assert testbed.node_manager.was_ever_marked_bad("rollout-0"), (
-        "Rollout node rollout-0 was NOT evicted despite GPU XID"
-    )
+    assert testbed.node_manager.was_ever_marked_bad(
+        "rollout-0"
+    ), "Rollout node rollout-0 was NOT evicted despite GPU XID"

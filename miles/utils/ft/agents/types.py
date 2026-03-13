@@ -8,11 +8,7 @@ from typing import Annotated, Literal, Protocol
 from pydantic import Field
 
 from miles.utils.ft.utils.base_model import FtBaseModel
-from miles.utils.ft.utils.diagnostic_types import (
-    DiagnosticPipelineResult,
-    DiagnosticResult,
-    UnknownDiagnosticError,
-)
+from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineResult, DiagnosticResult, UnknownDiagnosticError
 
 __all__ = [
     "CounterSample",

@@ -124,8 +124,7 @@ class K8sNodeManager(NodeManagerProtocol):
 
         if non_compliant_pods:
             raise RuntimeError(
-                f"worker pods missing nodeAffinity NotIn rule for {self._label_key}: "
-                f"{non_compliant_pods}"
+                f"worker pods missing nodeAffinity NotIn rule for {self._label_key}: " f"{non_compliant_pods}"
             )
 
         logger.info(
@@ -264,9 +263,7 @@ def _pod_has_required_notin_affinity(pod: object, *, label_key: str) -> bool:
 
     node_affinity = getattr(affinity, "node_affinity", None)
     required = (
-        getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None)
-        if node_affinity
-        else None
+        getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None) if node_affinity else None
     )
     terms = getattr(required, "node_selector_terms", None) if required else None
 

@@ -8,6 +8,11 @@ import time
 from collections.abc import Callable
 
 import pytest
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
+from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
+from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
+from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
@@ -15,15 +20,6 @@ from miles.utils.ft.controller.detectors.core.training_crash import TrainingCras
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.metric_names import GPU_AVAILABLE
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
-from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
-from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
-from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -280,9 +276,7 @@ async def test_fault_during_monitoring_progress(
 
     status = await testbed.get_status()
     recovery_phase = status.recovery.phase if status.recovery else None
-    assert (
-        status.mode == ControllerMode.MONITORING
-    ), f"Did not converge: mode={status.mode}, phase={recovery_phase}"
+    assert status.mode == ControllerMode.MONITORING, f"Did not converge: mode={status.mode}, phase={recovery_phase}"
 
 
 # ------------------------------------------------------------------
@@ -463,17 +457,12 @@ async def test_recovery_timeout_escalates(
     )
 
     recovery_alerts = [
-        (title, content, severity)
-        for title, content, severity in testbed.notifications
-        if title == "Recovery Alert"
+        (title, content, severity) for title, content, severity in testbed.notifications if title == "Recovery Alert"
     ]
     assert recovery_alerts, "Expected recovery timeout to trigger a recovery alert"
     assert any(
-        "recovery_timeout_exceeded" in content
-        for _title, content, _severity in recovery_alerts
-    ), (
-        "Expected at least one recovery alert to mention recovery_timeout_exceeded"
-    )
+        "recovery_timeout_exceeded" in content for _title, content, _severity in recovery_alerts
+    ), "Expected at least one recovery alert to mention recovery_timeout_exceeded"
 
 
 # ------------------------------------------------------------------
@@ -552,9 +541,7 @@ async def test_too_many_bad_nodes_false_positive(
 ) -> None:
     """When >= max_simultaneous_bad_nodes report faults, no recovery is triggered."""
     testbed = await make_testbed(
-        training_nodes=[
-            TestbedNodeConfig(node_id=f"n-{i}", num_ranks=2) for i in range(4)
-        ],
+        training_nodes=[TestbedNodeConfig(node_id=f"n-{i}", num_ranks=2) for i in range(4)],
         detectors=build_detector_chain(),
         scrape_interval_seconds=0.5,
         tick_interval=1.0,

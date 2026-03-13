@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from miles.utils.ft.controller.state_machines.recovery.models import RealtimeChecksSt
 from miles.utils.ft.controller.state_machines.subsystem.models import (
     DetectingAnomalySt,
     NotifyDeduplicator,
-    SubsystemState,
     RecoveringSt,
+    SubsystemState,
 )
-from miles.utils.ft.controller.state_machines.recovery.models import RealtimeChecksSt
 from miles.utils.ft.controller.types import Decision, TriggerType
 
 
@@ -85,6 +85,7 @@ class TestImmutableDefaults:
 
 def _decision_with_dedup_id(dedup_id: str | None) -> Decision:
     from miles.utils.ft.controller.types import ActionType, TriggerType
+
     return Decision(
         action=ActionType.NOTIFY_HUMAN,
         reason="test",

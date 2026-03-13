@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
 
 import pytest
 from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNodeManager, FakeNotifier
-
 from tests.fast.utils.ft.utils.diagnostic_fakes import FakeDiagnosticOrchestrator
 
 from miles.utils.ft.adapters.types import JobStatus, SubsystemActuatorProtocol
 from miles.utils.ft.agents.types import DiagnosticPipelineResult
-from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineStatus
+from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestartingSt,
@@ -33,8 +31,8 @@ from miles.utils.ft.controller.state_machines.restart import (
     create_restart_stepper,
 )
 from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig
-from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, MiniPrometheusConfig
 from miles.utils.ft.controller.types import MetricStore, TriggerType
+from miles.utils.ft.utils.diagnostic_types import DiagnosticPipelineStatus
 from miles.utils.ft.utils.state_machine import StateMachineStepper
 
 # ---------------------------------------------------------------------------
@@ -152,9 +150,11 @@ async def _step_last(stepper, state, ctx):
 
 def _mock_stepper_yielding(value: object):
     """Create a fake stepper (async generator) that yields a single value, or nothing if None."""
+
     async def _stepper(state: object, ctx: object):
         if value is not None:
             yield value
+
     return _stepper
 
 
@@ -257,7 +257,6 @@ class TestEvictingAndRestarting:
         assert result is None
 
 
-
 # ---------------------------------------------------------------------------
 # StopTimeDiagnostics
 # ---------------------------------------------------------------------------
@@ -355,7 +354,6 @@ class TestTerminal:
         stepper = _make_stepper()
         result = await _step(stepper, RecoveryDoneSt())
         assert result is None
-
 
 
 # ---------------------------------------------------------------------------
@@ -657,4 +655,5 @@ class TestDefaultTimeout:
         Increased to 3600 (1 hour).
         """
         from miles.utils.ft.controller.state_machines.recovery import RECOVERY_TIMEOUT_SECONDS
+
         assert RECOVERY_TIMEOUT_SECONDS == 3600

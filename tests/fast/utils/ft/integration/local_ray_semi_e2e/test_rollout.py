@@ -8,16 +8,11 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
-
-from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-    RayNodeInfo,
-)
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT, RayNodeInfo
 from tests.fast.utils.ft.testbed.config import TestbedConfig, TestbedNodeConfig
 from tests.fast.utils.ft.testbed.train import MilesTestbed
+
+from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +78,7 @@ async def test_rollout_crash_does_not_affect_training(
     await asyncio.sleep(2.0)
     current_status = await testbed.get_status()
     current = current_status.latest_iteration or 0
-    assert current > baseline, (
-        f"Training stalled during rollout recovery: baseline={baseline} current={current}"
-    )
+    assert current > baseline, f"Training stalled during rollout recovery: baseline={baseline} current={current}"
 
     # Step 7: wait for rollout recovery to complete
     await testbed.wait_for_subsystem_state(
@@ -119,9 +112,9 @@ async def test_no_recovery_when_all_cells_healthy(
 
     # Step 4: verify all subsystems remain in DetectingAnomaly
     status = await testbed.get_status()
-    assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt", (
-        f"Unexpected rollout state: {status.subsystem_states}"
-    )
+    assert (
+        status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
+    ), f"Unexpected rollout state: {status.subsystem_states}"
     assert status.subsystem_states.get("training") == "DetectingAnomalySt"
 
 

@@ -6,7 +6,7 @@ from tests.fast.utils.ft.conftest import get_sample_value, make_test_exporter
 
 import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
-from miles.utils.ft.controller.metrics.exporter import ControllerExporter, _JOB_STATUS_TO_NUMERIC
+from miles.utils.ft.controller.metrics.exporter import _JOB_STATUS_TO_NUMERIC, ControllerExporter
 
 
 class TestControllerExporterGauges:
@@ -239,5 +239,3 @@ class TestJobStatusMappingCompleteness:
     def test_unknown_status_raises_key_error(self) -> None:
         with pytest.raises(KeyError):
             _JOB_STATUS_TO_NUMERIC["bogus"]  # type: ignore[index]
-
-

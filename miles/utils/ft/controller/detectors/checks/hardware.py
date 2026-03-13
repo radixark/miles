@@ -11,8 +11,8 @@ from datetime import timedelta
 
 import polars as pl
 
+from miles.utils.ft.controller.types import NodeFault, TimeSeriesQueryProtocol
 from miles.utils.ft.utils.metric_names import NODE_FILESYSTEM_AVAIL_BYTES, NODE_NETWORK_UP
-from miles.utils.ft.controller.types import TimeSeriesQueryProtocol, NodeFault
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +91,7 @@ def _analyze_nic_persistent_down(df: pl.DataFrame) -> list[NodeFault]:
     )
 
     persistent_down = per_device.filter(
-        (pl.col("last_value") == 0.0)
-        & (pl.col("had_up"))
-        & (pl.col("sample_count") >= 2)
+        (pl.col("last_value") == 0.0) & (pl.col("had_up")) & (pl.col("sample_count") >= 2)
     )
 
     if persistent_down.is_empty():

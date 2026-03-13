@@ -347,7 +347,6 @@ class TestPartialResortSnapshots:
 
         assert _partial_resort_snapshots(old, new_forward) == _partial_resort_snapshots(old, new_reversed)
 
-
     def test_shuffled_old_snapshots_preserves_surviving_positions(self) -> None:
         """Old snapshots in non-sorted order (post previous partial-resort). Surviving bundles keep positions."""
         old = [

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from miles.utils.http_utils import MILES_HOST_IP_ENV
 from tests.fast.utils.ft.integration.conftest import RayNodeInfo
 from tests.fast.utils.ft.testbed.train import _actor_runtime_env, _ray_node_ip_for_id
+
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 
 
 def test_actor_runtime_env_sets_miles_host_ip() -> None:

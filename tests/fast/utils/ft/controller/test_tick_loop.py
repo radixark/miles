@@ -5,11 +5,13 @@ notifier, node_manager, etc.) duplicating what FtController already held.
 Now TickLoop is a pure execution engine with only tick-specific state,
 and shared deps come via TickDeps on each tick() call.
 """
+
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNotifier
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.exporter import NullControllerExporter
@@ -17,14 +19,12 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, Mi
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.node_agents.registry import NodeAgentRegistry
 from miles.utils.ft.controller.state_machines.main.models import MainState, NormalSt
-from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery.models import RECOVERY_STATE_TO_INT, RealtimeChecksSt
+from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.tick_loop import TickDeps, TickLoop
 from miles.utils.ft.controller.types import MetricStore, TriggerType
 from miles.utils.ft.utils.box import Box
 from miles.utils.ft.utils.sliding_window import SlidingWindowCounter
-
-from tests.fast.utils.ft.utils.controller_fakes import FakeMainJob, FakeNotifier
 
 pytestmark = pytest.mark.anyio
 
@@ -122,10 +122,12 @@ class TestUpdateExporterMetrics:
 
         sm = MagicMock()
         sm.step = AsyncMock()
-        sm.state = NormalSt(subsystems={
-            "training": subsystem_state,
-            "networking": DetectingAnomalySt(),
-        })
+        sm.state = NormalSt(
+            subsystems={
+                "training": subsystem_state,
+                "networking": DetectingAnomalySt(),
+            }
+        )
 
         loop = _make_tick_loop(state_machine=sm)
         deps = _make_tick_deps()
@@ -165,14 +167,16 @@ class TestCollectSubsystemModes:
         from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt
 
         sm = MagicMock()
-        sm.state = NormalSt(subsystems={
-            "training": RecoveringSt(
-                recovery=RealtimeChecksSt(),
-                trigger=TriggerType.CRASH,
-                recovery_start_time=datetime.now(timezone.utc),
-            ),
-            "networking": DetectingAnomalySt(),
-        })
+        sm.state = NormalSt(
+            subsystems={
+                "training": RecoveringSt(
+                    recovery=RealtimeChecksSt(),
+                    trigger=TriggerType.CRASH,
+                    recovery_start_time=datetime.now(timezone.utc),
+                ),
+                "networking": DetectingAnomalySt(),
+            }
+        )
 
         loop = _make_tick_loop(state_machine=sm)
         deps = _make_tick_deps()
@@ -188,10 +192,12 @@ class TestCollectSubsystemModes:
         sm.state = MagicMock(spec=MainState)
 
         loop = _make_tick_loop(state_machine=sm)
-        deps = _make_tick_deps(subsystem_specs={
-            "training": MagicMock(),
-            "networking": MagicMock(),
-        })
+        deps = _make_tick_deps(
+            subsystem_specs={
+                "training": MagicMock(),
+                "networking": MagicMock(),
+            }
+        )
 
         result = loop._collect_subsystem_modes(deps)
 
@@ -212,7 +218,13 @@ class TestRecoveryStateToIntCompleteness:
             StopTimeDiagnosticsSt,
         )
 
-        expected_types = [RealtimeChecksSt, EvictingAndRestartingSt, StopTimeDiagnosticsSt, NotifyHumansSt, RecoveryDoneSt]
+        expected_types = [
+            RealtimeChecksSt,
+            EvictingAndRestartingSt,
+            StopTimeDiagnosticsSt,
+            NotifyHumansSt,
+            RecoveryDoneSt,
+        ]
         for state_type in expected_types:
             assert state_type in RECOVERY_STATE_TO_INT, f"{state_type.__name__} missing from mapping"
 
@@ -239,10 +251,12 @@ class TestCollectSubsystemModesRestartingMainJob:
         )
 
         loop = _make_tick_loop(state_machine=sm)
-        deps = _make_tick_deps(subsystem_specs={
-            "training": MagicMock(),
-            "rollout_0": MagicMock(),
-        })
+        deps = _make_tick_deps(
+            subsystem_specs={
+                "training": MagicMock(),
+                "rollout_0": MagicMock(),
+            }
+        )
 
         result = loop._collect_subsystem_modes(deps)
 

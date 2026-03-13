@@ -4,8 +4,9 @@ import asyncio
 import logging
 from uuid import uuid4
 
-from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol
 from tests.fast.utils.ft.testbed.ray.actor_group import TestbedRayTrainGroup
+
+from miles.utils.ft.adapters.types import JobStatus, MainJobProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,7 @@ class TestbedMainJob(MainJobProtocol):
     async def start(self) -> str:
         run_id = uuid4().hex[:8]
         logger.info("TestbedMainJob.start: run_id=%s", run_id)
-        self._spawn_task = asyncio.create_task(
-            self._spawn_with_error_log(run_id=run_id)
-        )
+        self._spawn_task = asyncio.create_task(self._spawn_with_error_log(run_id=run_id))
         return run_id
 
     async def _spawn_with_error_log(self, run_id: str) -> None:

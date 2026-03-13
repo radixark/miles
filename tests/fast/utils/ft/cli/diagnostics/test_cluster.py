@@ -1,11 +1,11 @@
 """Unit tests for cli/diagnostics/cluster.py — _run_cluster_checks (P0 item 7)."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from miles.utils.ft.agents.types import DiagnosticResult
 from miles.utils.ft.cli.diagnostics.cluster import _run_cluster_checks
 
 pytestmark = pytest.mark.anyio

@@ -1,4 +1,5 @@
 """Unit tests for SubsystemHub (P0 item 2)."""
+
 from __future__ import annotations
 
 import pytest

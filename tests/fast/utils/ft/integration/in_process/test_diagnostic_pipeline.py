@@ -19,8 +19,8 @@ from miles.utils.ft.controller.diagnostics.executors import (
     PerNodeClusterExecutor,
 )
 from miles.utils.ft.controller.diagnostics.orchestrator import DiagnosticOrchestrator
-from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import StopTimeDiagnosticsSt
+from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 
 _TYPE_TO_EXECUTOR: dict[str, ClusterExecutorProtocol] = {
     "gpu": GpuClusterExecutor(),
@@ -45,11 +45,14 @@ def _make_diagnostic_test_env(
     for node_id, agent in node_agents.items():
         harness.controller.register_node_agent(node_id, agent)
 
-    set_training_subsystem_state(harness.controller, RecoveringSt(
-        recovery=StopTimeDiagnosticsSt(),
-        trigger="crash",
-        recovery_start_time=datetime.now(timezone.utc),
-    ))
+    set_training_subsystem_state(
+        harness.controller,
+        RecoveringSt(
+            recovery=StopTimeDiagnosticsSt(),
+            trigger="crash",
+            recovery_start_time=datetime.now(timezone.utc),
+        ),
+    )
     return harness
 
 

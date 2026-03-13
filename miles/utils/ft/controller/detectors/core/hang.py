@@ -7,14 +7,9 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.detectors.training_metric_filters import build_training_metric_filters
 from miles.utils.ft.controller.metrics.mini_prometheus.query import AmbiguousSeriesError
-from miles.utils.ft.utils.metric_names import (
-    AGENT_HEARTBEAT,
-    PHASE_CHECKPOINT_SAVING,
-    PHASE_TRAINING,
-    TRAINING_PHASE,
-)
 from miles.utils.ft.controller.types import ActionType, Decision, TimeSeriesQueryProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
+from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT, PHASE_CHECKPOINT_SAVING, PHASE_TRAINING, TRAINING_PHASE
 
 logger = logging.getLogger(__name__)
 

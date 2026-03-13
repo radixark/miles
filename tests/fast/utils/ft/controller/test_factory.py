@@ -63,9 +63,7 @@ class TestBuildFtControllerStateMachineParams:
             recovery_timeout_seconds=7200,
         )
 
-        with patch(
-            "miles.utils.ft.factories.controller.from_config.assemble_ft_controller"
-        ) as mock_assemble:
+        with patch("miles.utils.ft.factories.controller.from_config.assemble_ft_controller") as mock_assemble:
             mock_assemble.return_value = MagicMock()
             build_ft_controller(
                 config=config,

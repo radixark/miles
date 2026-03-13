@@ -8,22 +8,16 @@ import time
 from collections.abc import Callable
 
 import pytest
-
-from miles.utils.ft.agents.types import GaugeSample
-from miles.utils.ft.controller.detectors.chain import build_detector_chain
-from miles.utils.ft.controller.detectors.core.network import (
-    NetworkAlertDetector,
-    NetworkAlertDetectorConfig,
-)
-from miles.utils.ft.controller.types import ControllerMode
-from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-)
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT
 from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
 from tests.fast.utils.ft.testbed.config import TestbedNodeConfig
 from tests.fast.utils.ft.testbed.train import MilesTestbed
+
+from miles.utils.ft.agents.types import GaugeSample
+from miles.utils.ft.controller.detectors.chain import build_detector_chain
+from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector, NetworkAlertDetectorConfig
+from miles.utils.ft.controller.types import ControllerMode
+from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
 
 logger = logging.getLogger(__name__)
 
@@ -266,9 +260,7 @@ async def test_ephemeral_nic_no_eviction(
             break
         await asyncio.sleep(0.3)
     else:
-        raise TimeoutError(
-            f"Recovery did not complete within {LONG_RECOVERY_TIMEOUT}s"
-        )
+        raise TimeoutError(f"Recovery did not complete within {LONG_RECOVERY_TIMEOUT}s")
 
     assert not evicting_observed, "EvictingSt should not occur for ephemeral NIC fault"
 

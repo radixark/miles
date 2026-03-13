@@ -5,9 +5,9 @@ from pydantic import ConfigDict, Field
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext, check_metric_blind
 from miles.utils.ft.controller.detectors.checks.mfu_health import check_mfu_health
-from miles.utils.ft.utils.metric_names import DCGM_FI_DEV_GPU_TEMP
 from miles.utils.ft.controller.types import ActionType, Decision, TimeSeriesQueryProtocol, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
+from miles.utils.ft.utils.metric_names import DCGM_FI_DEV_GPU_TEMP
 
 
 class ThermalThrottlingDetectorConfig(FtBaseModel):
@@ -67,17 +67,11 @@ class ThermalThrottlingDetector(BaseFaultDetector):
                 reason=f"temperature outlier on {result.node_ids} but MFU is healthy",
             )
 
-        gpu_detail = ", ".join(
-            f"{o.node_id}:gpu{o.gpu}={o.temperature:.0f}°C"
-            for o in result.gpu_outliers
-        )
+        gpu_detail = ", ".join(f"{o.node_id}:gpu{o.gpu}={o.temperature:.0f}°C" for o in result.gpu_outliers)
         return Decision(
             action=ActionType.ENTER_RECOVERY,
             bad_node_ids=result.node_ids,
-            reason=(
-                f"thermal throttling [{gpu_detail}]: "
-                f"MFU decline ({mfu.avg_mfu:.4f} < {mfu.threshold:.4f})"
-            ),
+            reason=(f"thermal throttling [{gpu_detail}]: " f"MFU decline ({mfu.avg_mfu:.4f} < {mfu.threshold:.4f})"),
             trigger=TriggerType.HARDWARE,
         )
 

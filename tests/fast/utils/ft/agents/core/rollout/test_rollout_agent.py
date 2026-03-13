@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
 
 import pytest
-
-from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
 from tests.fast.utils.ft.agents.core.rollout.conftest import MockEngine
 from tests.fast.utils.ft.utils.metric_injectors import get_sample_value
+
+from miles.utils.ft.agents.core.rollout.rollout_agent import FtRolloutAgent
 
 
 async def _mock_health_checker(engine: object) -> None:
@@ -21,12 +20,15 @@ def _make_agent(
     cell_id: str = "default",
 ) -> tuple[FtRolloutAgent, list[MockEngine]]:
     engines = [MockEngine(a) for a in engine_alive]
-    return FtRolloutAgent(
-        cell_ids=[cell_id],
-        get_engines=lambda _cid: engines,
-        health_checker=_mock_health_checker,
-        check_interval=check_interval,
-    ), engines
+    return (
+        FtRolloutAgent(
+            cell_ids=[cell_id],
+            get_engines=lambda _cid: engines,
+            health_checker=_mock_health_checker,
+            check_interval=check_interval,
+        ),
+        engines,
+    )
 
 
 def _make_multi_cell_agent(
@@ -34,15 +36,17 @@ def _make_multi_cell_agent(
     check_interval: float = 0.05,
 ) -> tuple[FtRolloutAgent, dict[str, list[MockEngine]]]:
     engines_map: dict[str, list[MockEngine]] = {
-        cid: [MockEngine(a) for a in alive_flags]
-        for cid, alive_flags in cells.items()
+        cid: [MockEngine(a) for a in alive_flags] for cid, alive_flags in cells.items()
     }
-    return FtRolloutAgent(
-        cell_ids=list(cells.keys()),
-        get_engines=lambda cid: engines_map[cid],
-        health_checker=_mock_health_checker,
-        check_interval=check_interval,
-    ), engines_map
+    return (
+        FtRolloutAgent(
+            cell_ids=list(cells.keys()),
+            get_engines=lambda cid: engines_map[cid],
+            health_checker=_mock_health_checker,
+            check_interval=check_interval,
+        ),
+        engines_map,
+    )
 
 
 class TestIntegration:

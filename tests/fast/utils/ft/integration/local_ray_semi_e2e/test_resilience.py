@@ -8,20 +8,15 @@ from collections.abc import AsyncIterator, Callable
 
 import pytest
 import ray
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT, RayNodeInfo
+from tests.fast.utils.ft.testbed.config import TestbedNodeConfig
+from tests.fast.utils.ft.testbed.train import MilesTestbed
+from tests.fast.utils.ft.utils.controller_fakes import CrashingDetector
 
 from miles.utils.ft.adapters.types import NotifierProtocol, ft_controller_actor_name
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-    RayNodeInfo,
-)
-from tests.fast.utils.ft.testbed.config import TestbedNodeConfig
-from tests.fast.utils.ft.testbed.train import MilesTestbed
-from tests.fast.utils.ft.utils.controller_fakes import CrashingDetector
 
 logger = logging.getLogger(__name__)
 

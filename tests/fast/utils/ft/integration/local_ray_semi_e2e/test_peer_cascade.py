@@ -6,14 +6,11 @@ import logging
 from collections.abc import Callable
 
 import pytest
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, RECOVERY_TIMEOUT
+from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 logger = logging.getLogger(__name__)
 

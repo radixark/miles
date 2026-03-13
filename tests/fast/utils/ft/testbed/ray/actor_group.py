@@ -82,7 +82,9 @@ class TestbedRayTrainGroup:
         self._store: ray.actor.ActorHandle = _WorkerHandleStore.remote()
         logger.info(
             "TestbedRayTrainGroup created: ft_id=%s store_actor_id=%s nodes=%d",
-            ft_id, self._store._actor_id.hex(), len(training_nodes),
+            ft_id,
+            self._store._actor_id.hex(),
+            len(training_nodes),
         )
 
     async def _get_workers(self) -> list[ray.actor.ActorHandle]:
@@ -123,7 +125,8 @@ class TestbedRayTrainGroup:
         await self._store.set_workers.remote(workers, dict(node_to_workers))
         logger.info(
             "spawn_actors: store updated with %d workers for run_id=%s",
-            len(workers), run_id,
+            len(workers),
+            run_id,
         )
 
         for worker in workers:
@@ -209,7 +212,8 @@ class TestbedRayTrainGroup:
             except Exception:
                 logger.info(
                     "all_alive: worker %d/%d ping failed → not all alive",
-                    i, len(workers),
+                    i,
+                    len(workers),
                 )
                 return False
         return True

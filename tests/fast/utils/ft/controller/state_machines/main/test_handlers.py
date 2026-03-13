@@ -13,20 +13,14 @@ from miles.utils.ft.controller.state_machines.main.restart_coordinator import (
     find_restart_requestor,
     update_external_execution_result,
 )
-from miles.utils.ft.controller.state_machines.subsystem.models import (
-    DetectingAnomalySt,
-    RecoveringSt,
-)
-from miles.utils.ft.controller.state_machines.recovery.models import (
-    EvictingAndRestartingSt,
-    StopTimeDiagnosticsSt,
-)
+from miles.utils.ft.controller.state_machines.recovery.models import EvictingAndRestartingSt, StopTimeDiagnosticsSt
 from miles.utils.ft.controller.state_machines.restart.models import (
     EvictingSt,
     ExternalExecutionResult,
     ExternalRestartingMainJobSt,
     StoppingAndRestartingSt,
 )
+from miles.utils.ft.controller.state_machines.subsystem.models import DetectingAnomalySt, RecoveringSt
 from miles.utils.ft.controller.types import TriggerType
 
 _COORDINATOR_LOGGER = "miles.utils.ft.controller.state_machines.main.restart_coordinator"

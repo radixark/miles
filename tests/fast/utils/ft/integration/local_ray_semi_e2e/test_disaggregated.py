@@ -7,15 +7,11 @@ import logging
 from collections.abc import Callable
 
 import pytest
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
+from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -78,17 +74,15 @@ async def test_simultaneous_training_and_rollout_crash(
         if rollout_actor_id_after is not None and rollout_actor_id_after != rollout_actor_id_before:
             break
     else:
-        raise TimeoutError(
-            "Rollout engine was not recreated after simultaneous training and rollout crash"
-        )
+        raise TimeoutError("Rollout engine was not recreated after simultaneous training and rollout crash")
 
     assert rollout_actor_id_after != rollout_actor_id_before
-    assert status.subsystem_states.get("training") == "DetectingAnomalySt", (
-        f"Training not recovered: {status.subsystem_states}"
-    )
-    assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt", (
-        f"Rollout not recovered: {status.subsystem_states}"
-    )
+    assert (
+        status.subsystem_states.get("training") == "DetectingAnomalySt"
+    ), f"Training not recovered: {status.subsystem_states}"
+    assert (
+        status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
+    ), f"Rollout not recovered: {status.subsystem_states}"
 
     # Step 6: verify controller is back to MONITORING (no active recovery)
     assert status.mode == ControllerMode.MONITORING

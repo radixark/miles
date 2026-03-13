@@ -20,13 +20,17 @@ from tests.fast.utils.ft.utils.controller_fakes import set_training_subsystem_st
 import miles.utils.ft.utils.metric_names as mn
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.metrics.lifecycle import start_metric_store_task
-from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
-from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
-from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
-from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, NotifyHumansSt, StopTimeDiagnosticsSt
+from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
+from miles.utils.ft.controller.state_machines.recovery import (
+    EvictingAndRestartingSt,
+    NotifyHumansSt,
+    StopTimeDiagnosticsSt,
+)
 from miles.utils.ft.controller.state_machines.restart import EvictingSt
+from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.types import ControllerMode, MetricStore
+from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
 
 
 class TestTrainingJobStatusExporter:
@@ -143,15 +147,18 @@ class TestGetStatus:
 
     def test_bad_nodes_confirmed_when_evicting(self) -> None:
         harness = make_test_controller()
-        set_training_subsystem_state(harness.controller, RecoveringSt(
-            recovery=EvictingAndRestartingSt(
-                restart=EvictingSt(bad_node_ids=["node-0"]),
-                failed_next_state=StopTimeDiagnosticsSt(),
+        set_training_subsystem_state(
+            harness.controller,
+            RecoveringSt(
+                recovery=EvictingAndRestartingSt(
+                    restart=EvictingSt(bad_node_ids=["node-0"]),
+                    failed_next_state=StopTimeDiagnosticsSt(),
+                ),
+                trigger="crash",
+                recovery_start_time=datetime.now(timezone.utc),
+                known_bad_node_ids=["node-0"],
             ),
-            trigger="crash",
-            recovery_start_time=datetime.now(timezone.utc),
-            known_bad_node_ids=["node-0"],
-        ))
+        )
         status = harness.controller.get_status()
         assert status.recovery_in_progress is True
         assert status.recovery is not None
@@ -162,22 +169,28 @@ class TestGetStatus:
         """NotifyHumansSt can be reached without confirming bad nodes (e.g.
         diagnostic pipeline found no fault). Only RecoveryDoneSt confirms."""
         harness = make_test_controller()
-        set_training_subsystem_state(harness.controller, RecoveringSt(
-            recovery=NotifyHumansSt(state_before="Test"),
-            trigger="crash",
-            recovery_start_time=datetime.now(timezone.utc),
-        ))
+        set_training_subsystem_state(
+            harness.controller,
+            RecoveringSt(
+                recovery=NotifyHumansSt(state_before="Test"),
+                trigger="crash",
+                recovery_start_time=datetime.now(timezone.utc),
+            ),
+        )
         status = harness.controller.get_status()
         assert status.recovery is not None
         assert status.recovery.bad_nodes_confirmed is False
 
     def test_bad_nodes_not_confirmed_during_diagnostics(self) -> None:
         harness = make_test_controller()
-        set_training_subsystem_state(harness.controller, RecoveringSt(
-            recovery=StopTimeDiagnosticsSt(),
-            trigger="crash",
-            recovery_start_time=datetime.now(timezone.utc),
-        ))
+        set_training_subsystem_state(
+            harness.controller,
+            RecoveringSt(
+                recovery=StopTimeDiagnosticsSt(),
+                trigger="crash",
+                recovery_start_time=datetime.now(timezone.utc),
+            ),
+        )
         status = harness.controller.get_status()
         assert status.recovery is not None
         assert status.recovery.bad_nodes_confirmed is False

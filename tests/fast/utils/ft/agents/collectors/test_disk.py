@@ -51,9 +51,7 @@ class TestDiscoverDiskMountsRootFallback:
         left the disk collector with no root mount to monitor."""
         proc_mounts = tmp_path / "mounts"
         proc_mounts.write_text(
-            "overlay / overlay rw,relatime 0 0\n"
-            "proc /proc proc rw,nosuid 0 0\n"
-            "tmpfs /tmp tmpfs rw 0 0\n"
+            "overlay / overlay rw,relatime 0 0\n" "proc /proc proc rw,nosuid 0 0\n" "tmpfs /tmp tmpfs rw 0 0\n"
         )
         mounts = discover_disk_mounts(proc_mounts=proc_mounts)
         mount_strs = [str(m) for m in mounts]

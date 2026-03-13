@@ -78,8 +78,7 @@ def _connect_to_started_ray_cluster(
     gcs_address = address_info.get("gcs_address") or address_info.get("address")
     if not gcs_address:
         raise RuntimeError(
-            "Could not resolve GCS address from ray start output or ray.init(address='auto'):\n"
-            f"{start_stdout}"
+            "Could not resolve GCS address from ray start output or ray.init(address='auto'):\n" f"{start_stdout}"
         )
     gcs_address = _override_gcs_host(gcs_address, preferred_host=preferred_host)
     return ctx, gcs_address
@@ -252,7 +251,9 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
     head_ip = "127.0.0.1"
     result = subprocess.run(
         [
-            "ray", "start", "--head",
+            "ray",
+            "start",
+            "--head",
             "--port=0",
             f"--node-ip-address={head_ip}",
             "--num-cpus=8",
@@ -273,7 +274,8 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
         node_ip = f"127.0.0.{i + 1}"
         subprocess.run(
             [
-                "ray", "start",
+                "ray",
+                "start",
                 f"--address={gcs_address}",
                 f"--node-ip-address={node_ip}",
                 "--num-cpus=8",
@@ -296,9 +298,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
         time.sleep(1.0)
     else:
         alive_count = len([n for n in ray.nodes() if n.get("Alive", False)])
-        raise RuntimeError(
-            f"Expected {num_nodes} alive Ray nodes, got {alive_count}"
-        )
+        raise RuntimeError(f"Expected {num_nodes} alive Ray nodes, got {alive_count}")
 
     node_infos: list[RayNodeInfo] = []
     for node in ray.nodes():
@@ -310,15 +310,18 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
         )
         ray_node_id = node["NodeID"]
         is_head = node_ip == head_ip
-        node_infos.append(RayNodeInfo(
-            node_ip=node_ip,
-            ray_node_id=ray_node_id,
-            is_head=is_head,
-        ))
+        node_infos.append(
+            RayNodeInfo(
+                node_ip=node_ip,
+                ray_node_id=ray_node_id,
+                is_head=is_head,
+            )
+        )
 
     logger.info(
         "Multi-node Ray cluster started: %d nodes, temp_dir=%s",
-        len(node_infos), temp_dir,
+        len(node_infos),
+        temp_dir,
     )
     return node_infos
 

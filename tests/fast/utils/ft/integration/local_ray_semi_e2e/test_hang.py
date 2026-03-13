@@ -8,17 +8,13 @@ import time
 from collections.abc import Callable
 
 import pytest
-
-from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
-from miles.utils.ft.controller.types import ControllerMode
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, RECOVERY_TIMEOUT
 from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
 from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
+
+from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.types import ControllerMode
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +127,7 @@ async def test_monitoring_progress_timeout(
             break
         await asyncio.sleep(0.5)
     else:
-        raise TimeoutError(
-            f"MonitoringProgress did not timeout to StopTimeDiagnostics within {RECOVERY_TIMEOUT}s"
-        )
+        raise TimeoutError(f"MonitoringProgress did not timeout to StopTimeDiagnostics within {RECOVERY_TIMEOUT}s")
 
 
 # ------------------------------------------------------------------

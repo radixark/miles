@@ -4,6 +4,7 @@ Previously there was no mechanism to detect when a node agent's collectors
 were persistently failing, causing the controller to operate blind on those
 nodes — relying on stale or absent metrics without any warning.
 """
+
 from __future__ import annotations
 
 from tests.fast.utils.ft.utils import make_detector_context, make_fake_metric_store
@@ -43,20 +44,24 @@ class TestCollectorHealthDetector:
         store = make_fake_metric_store()
         _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=0)
         detector = CollectorHealthDetector()
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0"},
+            )
+        )
         assert decision.action == ActionType.NONE
 
     def test_critical_collector_over_threshold_triggers_notify(self) -> None:
         store = make_fake_metric_store()
         _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=15)
         detector = CollectorHealthDetector(failure_threshold=10)
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0"},
+            )
+        )
         assert decision.action == ActionType.NOTIFY_HUMAN
         assert decision.trigger == TriggerType.TELEMETRY_BLIND
         assert "node-0" in decision.reason
@@ -65,30 +70,36 @@ class TestCollectorHealthDetector:
         store = make_fake_metric_store()
         _inject_collector_failures(store, node_id="node-0", collector="KmsgCollector", failures=100)
         detector = CollectorHealthDetector(failure_threshold=10)
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0"},
+            )
+        )
         assert decision.action == ActionType.NONE
 
     def test_inactive_node_ignored(self) -> None:
         store = make_fake_metric_store()
         _inject_collector_failures(store, node_id="node-1", collector="GpuCollector", failures=20)
         detector = CollectorHealthDetector(failure_threshold=10)
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0"},
+            )
+        )
         assert decision.action == ActionType.NONE
 
     def test_below_threshold_no_fault(self) -> None:
         store = make_fake_metric_store()
         _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=9)
         detector = CollectorHealthDetector(failure_threshold=10)
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0"},
+            )
+        )
         assert decision.action == ActionType.NONE
 
     def test_exact_threshold_triggers(self) -> None:
@@ -96,10 +107,12 @@ class TestCollectorHealthDetector:
         store = make_fake_metric_store()
         _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=10)
         detector = CollectorHealthDetector(failure_threshold=10)
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0"},
+            )
+        )
         assert decision.action == ActionType.NOTIFY_HUMAN
 
     def test_multiple_nodes_blind(self) -> None:
@@ -108,10 +121,12 @@ class TestCollectorHealthDetector:
         _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=15)
         _inject_collector_failures(store, node_id="node-1", collector="NetworkCollector", failures=20)
         detector = CollectorHealthDetector(failure_threshold=10)
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0", "node-1"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0", "node-1"},
+            )
+        )
         assert decision.action == ActionType.NOTIFY_HUMAN
         assert set(decision.bad_node_ids) == {"node-0", "node-1"}
         assert "node-0/GpuCollector" in decision.reason
@@ -124,10 +139,12 @@ class TestCollectorHealthDetector:
         _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=12)
         _inject_collector_failures(store, node_id="node-0", collector="DiskCollector", failures=11)
         detector = CollectorHealthDetector(failure_threshold=10)
-        decision = detector.evaluate(make_detector_context(
-            metric_store=store,
-            active_node_ids={"node-0"},
-        ))
+        decision = detector.evaluate(
+            make_detector_context(
+                metric_store=store,
+                active_node_ids={"node-0"},
+            )
+        )
         assert decision.action == ActionType.NOTIFY_HUMAN
         assert decision.bad_node_ids.count("node-0") == 1
         assert "GpuCollector" in decision.reason

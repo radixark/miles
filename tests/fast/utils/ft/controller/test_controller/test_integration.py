@@ -6,6 +6,13 @@ from typing import NamedTuple
 
 import pytest
 from prometheus_client import CollectorRegistry
+from tests.fast.utils.ft.conftest import (
+    FakeDiagnosticOrchestrator,
+    FakeMainJob,
+    FakeNodeManager,
+    FakeNotifier,
+    FixedDecisionDetector,
+)
 
 from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.controller.controller import FtController
@@ -15,20 +22,14 @@ from miles.utils.ft.controller.metrics.mini_prometheus import MiniPrometheus, Mi
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.runtime_config import ControllerRuntimeConfig
 from miles.utils.ft.controller.state_machines.main.models import NormalSt
+from miles.utils.ft.controller.state_machines.restart.models import (
+    MonitoringIterationProgressConfig,
+    MonitoringRunningAfterDelayConfig,
+)
 from miles.utils.ft.controller.state_machines.subsystem import DetectingAnomalySt, RecoveringSt
-from miles.utils.ft.controller.state_machines.restart.models import MonitoringIterationProgressConfig, MonitoringRunningAfterDelayConfig
 from miles.utils.ft.controller.subsystem_hub import RestartMode, SubsystemHub
 from miles.utils.ft.controller.types import ActionType, Decision, MetricStore, TriggerType
 from miles.utils.ft.factories.controller.wiring import assemble_ft_controller
-
-from tests.fast.utils.ft.conftest import (
-    FakeDiagnosticOrchestrator,
-    FakeMainJob,
-    FakeNodeManager,
-    FakeNotifier,
-    FixedDecisionDetector,
-)
-
 
 # ---------------------------------------------------------------------------
 # Rollout fakes
@@ -210,9 +211,9 @@ class TestNormalOperationWithRollout:
         assert isinstance(state, NormalSt)
 
         for name, sub_state in state.subsystems.items():
-            assert isinstance(sub_state, DetectingAnomalySt), (
-                f"Expected DetectingAnomaly for {name}, got {type(sub_state).__name__}"
-            )
+            assert isinstance(
+                sub_state, DetectingAnomalySt
+            ), f"Expected DetectingAnomaly for {name}, got {type(sub_state).__name__}"
 
 
 class TestRolloutCrashRecovery:
@@ -238,9 +239,7 @@ class TestRolloutCrashRecovery:
         state = controller._state_machine.state
         assert isinstance(state, NormalSt)
         rollout_state = state.subsystems["rollout_ep72"]
-        assert isinstance(rollout_state, RecoveringSt), (
-            f"Expected Recovering, got {type(rollout_state).__name__}"
-        )
+        assert isinstance(rollout_state, RecoveringSt), f"Expected Recovering, got {type(rollout_state).__name__}"
 
 
 class TestSubsystemSpecsIncludeRollout:
@@ -369,13 +368,9 @@ class TestLevel1FailureEscalation:
         assert harness.node_manager.was_ever_marked_bad("rollout-node-ep72-0")
 
         recovery_alerts = [
-            (title, content)
-            for title, content, _ in harness.notifier.calls
-            if title == "Recovery Alert"
+            (title, content) for title, content, _ in harness.notifier.calls if title == "Recovery Alert"
         ]
-        assert len(recovery_alerts) >= 1, (
-            f"Expected 'Recovery Alert' notification, got: {harness.notifier.calls}"
-        )
+        assert len(recovery_alerts) >= 1, f"Expected 'Recovery Alert' notification, got: {harness.notifier.calls}"
 
 
 class TestColocatedHardwareFault:
@@ -394,7 +389,9 @@ class TestColocatedHardwareFault:
 
         harness = _make_test_controller_with_rollout(
             training_detectors=[training_detector],
-            runtime_config=ControllerRuntimeConfig(tick_interval=0.01, registration_grace_ticks=0, monitoring_success_iterations=0),
+            runtime_config=ControllerRuntimeConfig(
+                tick_interval=0.01, registration_grace_ticks=0, monitoring_success_iterations=0
+            ),
             diagnostic_orchestrator=FakeDiagnosticOrchestrator(),
         )
         controller = harness.controller

@@ -17,13 +17,12 @@ from collections.abc import Callable
 import pytest
 import ray
 from tests.e2e.ft.conftest import (
+    MULTI_CELL,
+    ROLLOUT_FOCUSED,
+    TRAINING_FOCUSED,
     E2eFaultInjector,
     E2eFaultTestAdapter,
     FaultInjectorFactory,
-    MULTI_CELL,
-    ROLLOUT_FOCUSED,
-    RolloutTarget,
-    TRAINING_FOCUSED,
     discover_rollout_target,
     find_all_rollout_nodes,
     get_status,
@@ -147,9 +146,9 @@ async def test_no_false_positive_during_normal_training(
 
     assert status.subsystem_states, "Expected non-empty subsystem_states"
     for name, state in status.subsystem_states.items():
-        assert state == "DetectingAnomalySt", (
-            f"Subsystem {name} in unexpected state {state}, expected DetectingAnomalySt"
-        )
+        assert (
+            state == "DetectingAnomalySt"
+        ), f"Subsystem {name} in unexpected state {state}, expected DetectingAnomalySt"
 
 
 # ------------------------------------------------------------------
@@ -189,8 +188,7 @@ async def test_rollout_engine_crash_restarts_without_eviction(
 
     bad_nodes = set(await k8s_node_manager.get_bad_nodes())
     assert target.node_id not in bad_nodes, (
-        f"Rollout node {target.node_id} was evicted despite software-only crash. "
-        f"bad_nodes={bad_nodes}"
+        f"Rollout node {target.node_id} was evicted despite software-only crash. " f"bad_nodes={bad_nodes}"
     )
 
     await wait_for_training_stable(handle=ft_controller_handle, n_iterations=3, timeout=120.0)
@@ -231,8 +229,7 @@ async def test_rollout_gpu_xid_evicts_node(
 
     bad_nodes = set(await k8s_node_manager.get_bad_nodes())
     assert target.node_id in bad_nodes, (
-        f"Rollout node {target.node_id} was NOT evicted despite GPU XID. "
-        f"bad_nodes={bad_nodes}"
+        f"Rollout node {target.node_id} was NOT evicted despite GPU XID. " f"bad_nodes={bad_nodes}"
     )
 
 
@@ -253,20 +250,20 @@ async def test_multi_cell_independent_crash_recovery(
 
     status = get_status(ft_controller_handle)
     rollout_subsystems = sorted(n for n in status.subsystem_states if n.startswith("rollout_"))
-    assert len(rollout_subsystems) >= 3, (
-        f"Expected at least 3 rollout subsystems, got {len(rollout_subsystems)}: {rollout_subsystems}"
-    )
+    assert (
+        len(rollout_subsystems) >= 3
+    ), f"Expected at least 3 rollout subsystems, got {len(rollout_subsystems)}: {rollout_subsystems}"
 
     rollout_nodes = find_all_rollout_nodes(fault_injector)
-    assert len(rollout_nodes) >= 3, (
-        f"Expected at least 3 rollout nodes, got {len(rollout_nodes)}"
-    )
+    assert len(rollout_nodes) >= 3, f"Expected at least 3 rollout nodes, got {len(rollout_nodes)}"
 
     node_0_id, injector_0 = rollout_nodes[0]
     node_1_id, injector_1 = rollout_nodes[1]
     logger.info(
         "rollout_nodes: node_0=%s node_1=%s node_2=%s",
-        node_0_id, node_1_id, rollout_nodes[2][0],
+        node_0_id,
+        node_1_id,
+        rollout_nodes[2][0],
     )
 
     async def _crash_node(injector: ray.actor.ActorHandle, node_id: str) -> None:
@@ -333,6 +330,6 @@ async def test_rollout_repeated_crash_escalates_to_eviction(
     )
 
     status = get_status(ft_controller_handle)
-    assert status.subsystem_states.get("training") == "DetectingAnomalySt", (
-        f"Training subsystem affected: {status.subsystem_states.get('training')}"
-    )
+    assert (
+        status.subsystem_states.get("training") == "DetectingAnomalySt"
+    ), f"Training subsystem affected: {status.subsystem_states.get('training')}"

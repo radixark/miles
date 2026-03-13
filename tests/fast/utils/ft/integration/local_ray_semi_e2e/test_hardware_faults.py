@@ -8,6 +8,9 @@ import time
 from collections.abc import Callable
 
 import pytest
+from tests.fast.utils.ft.integration.conftest import FAST_TIMEOUT, LONG_RECOVERY_TIMEOUT, RECOVERY_TIMEOUT
+from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
+from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.chain import build_detector_chain
@@ -21,13 +24,6 @@ from miles.utils.ft.utils.metric_names import (
     XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL,
 )
 from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
-from tests.fast.utils.ft.integration.conftest import (
-    FAST_TIMEOUT,
-    LONG_RECOVERY_TIMEOUT,
-    RECOVERY_TIMEOUT,
-)
-from tests.fast.utils.ft.integration.local_ray_semi_e2e.conftest import assert_no_recovery_triggered
-from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -167,9 +163,7 @@ async def test_too_many_dynamic_bad_nodes_during_recovery_aborts(
 ) -> None:
     """4 nodes, crash enters RECOVERY, GPU_AVAILABLE=0 on 3 nodes aborts recovery to MONITORING."""
     testbed = await make_testbed(
-        training_nodes=[
-            TestbedNodeConfig(node_id=f"n-{i}", num_ranks=2) for i in range(4)
-        ],
+        training_nodes=[TestbedNodeConfig(node_id=f"n-{i}", num_ranks=2) for i in range(4)],
         detectors=build_detector_chain(),
         scrape_interval_seconds=0.5,
         max_simultaneous_bad_nodes=3,
