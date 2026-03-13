@@ -37,9 +37,18 @@ class BaseFaultDetector(ABC):
     ``active_node_ids``, so individual detectors do not need to handle this.
     """
 
+    def _should_filter_by_active_nodes(self) -> bool:
+        """Whether evaluate() gates on active_node_ids.
+
+        Most detectors need this (hardware faults are meaningless without
+        a known training placement). Override to return False for detectors
+        that operate independently of node placement (e.g. cell-level checks).
+        """
+        return True
+
     def evaluate(self, ctx: DetectorContext) -> Decision:
         decision = self._evaluate_raw(ctx)
-        if not ctx.active_node_ids:
+        if self._should_filter_by_active_nodes() and not ctx.active_node_ids:
             if decision.bad_node_ids:
                 logger.info("detector_skipped_no_active_nodes detector=%s", type(self).__name__)
             return Decision.no_fault(reason=f"no active nodes ({type(self).__name__})")

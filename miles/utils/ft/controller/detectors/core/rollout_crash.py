@@ -28,15 +28,8 @@ class RolloutCrashDetector(BaseFaultDetector):
         self._cell_id = cell_id
         self._threshold = alive_threshold_seconds
 
-    def evaluate(self, ctx: DetectorContext) -> Decision:
-        """Override base evaluate() to skip active_node_ids gating.
-
-        Rollout crash detection is a cell-level software health check
-        that only queries rollout_cell_alive{cell_id=X} and always
-        returns bad_node_ids=[]. It should not be silenced when
-        cell_node_ids mapping is missing or stale.
-        """
-        return self._evaluate_raw(ctx)
+    def _should_filter_by_active_nodes(self) -> bool:
+        return False
 
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision:
         df = ctx.metric_store.time_series_store.query_latest(
