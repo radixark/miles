@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,8 @@ from miles.utils.ft.adapters.impl.ray.node_agent_actor import _FtNodeAgentActorC
 
 def _make_fake_agent() -> MagicMock:
     agent = MagicMock()
+    agent.start = AsyncMock()
+    agent.stop = AsyncMock()
     agent._node_id = "node-0"
     agent.get_exporter_address.return_value = "http://localhost:9100"
     agent.metadata = {"k8s_node_name": "k8s-node-0"}
