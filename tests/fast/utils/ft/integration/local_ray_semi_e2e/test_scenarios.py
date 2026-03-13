@@ -36,6 +36,7 @@ from tests.fast.utils.ft.integration.local_ray_semi_e2e.scenarios import (
 )
 from tests.fast.utils.ft.testbed import MilesTestbed, TestbedNodeConfig
 from tests.fast.utils.ft.utils.controller_fakes import FastHangDetector
+from tests.fast.utils.ft.utils.diagnostic_fakes import DelayedDiagnosticOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ async def test_repeated_crash(
         detectors=[TrainingCrashDetector()],
         step_interval=2.0,
         recovery_cooldown=SlidingWindowThrottle(window_minutes=1.0, max_count=5),
+        diagnostic_orchestrator_override=DelayedDiagnosticOrchestrator(delay_seconds=5.0),
     )
 
     await scenario_repeated_crash(
