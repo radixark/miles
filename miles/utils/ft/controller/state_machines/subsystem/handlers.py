@@ -48,8 +48,7 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
 
         ctx.cooldown.record()
         logger.info(
-            "subsystem_sm: state transition: old=DetectingAnomalySt, new=RecoveringSt, "
-            "trigger=%s, bad_nodes=%s",
+            "subsystem_sm: state transition: old=DetectingAnomalySt, new=RecoveringSt, " "trigger=%s, bad_nodes=%s",
             decision.trigger,
             decision.bad_node_ids,
         )

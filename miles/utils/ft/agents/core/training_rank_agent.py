@@ -48,7 +48,10 @@ class FtTrainingRankAgent:
 
         logger.info(
             "training_rank_agent: initializing: rank=%d, world_size=%d, node_id=%s, run_id=%s",
-            rank, world_size, self._node_id, self._run_id,
+            rank,
+            world_size,
+            self._node_id,
+            self._run_id,
         )
         self._register_training_rank()
 
@@ -124,7 +127,9 @@ class FtTrainingRankAgent:
             max_backoff=self._REGISTER_RETRY_DELAY,
         )
         if result.ok:
-            logger.info("training_rank_agent: rank registered successfully: rank=%d, run_id=%s", self._rank, self._run_id)
+            logger.info(
+                "training_rank_agent: rank registered successfully: rank=%d, run_id=%s", self._rank, self._run_id
+            )
         else:
             logger.warning(
                 "training_rank_agent: rank registration failed: rank=%d, max_retries=%d, error=%s",

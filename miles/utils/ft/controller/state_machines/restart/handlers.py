@@ -60,7 +60,9 @@ class EvictingHandler(StateHandler[EvictingSt, RestartContext]):
                 node_metadata=metadata,
             )
             if not result.ok:
-                logger.warning("restart_sm: mark_node_bad failed for node=%s, transitioning to RestartFailedSt", node_id)
+                logger.warning(
+                    "restart_sm: mark_node_bad failed for node=%s, transitioning to RestartFailedSt", node_id
+                )
                 return RestartFailedSt(bad_node_ids=state.bad_node_ids)
             if ctx.on_node_evicted is not None:
                 ctx.on_node_evicted(node_id)

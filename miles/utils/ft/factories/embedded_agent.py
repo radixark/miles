@@ -51,7 +51,9 @@ def build_training_rank_agent(
     resolved_ft_id = ft_id or get_ft_id()
     logger.info(
         "wiring: build_training_rank_agent rank=%d, world_size=%d, ft_id=%s",
-        rank, world_size, resolved_ft_id,
+        rank,
+        world_size,
+        resolved_ft_id,
     )
     client = RayControllerClient(ft_id=resolved_ft_id)
     return FtTrainingRankAgent(rank=rank, world_size=world_size, controller_client=client, node_id=node_id)

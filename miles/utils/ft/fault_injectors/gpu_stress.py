@@ -38,7 +38,9 @@ def _stress_loop(duration: float, matrix_size: int = _DEFAULT_MATRIX_SIZE) -> No
 
     logger.info(
         "fault_injector: gpu_stress starting device_count=%d, matrix_size=%d, duration=%s",
-        device_count, matrix_size, duration,
+        device_count,
+        matrix_size,
+        duration,
     )
     tensors = []
     for i in range(device_count):

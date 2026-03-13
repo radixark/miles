@@ -32,7 +32,9 @@ def build_rollout_agent(
 ) -> FtRolloutAgent:
     logger.info(
         "wiring: build_rollout_agent cell_ids=%s, check_interval=%s, ft_id=%s",
-        cell_ids, check_interval, ft_id or "(auto)",
+        cell_ids,
+        check_interval,
+        ft_id or "(auto)",
     )
     if health_checker is None:
 

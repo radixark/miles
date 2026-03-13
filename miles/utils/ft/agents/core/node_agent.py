@@ -43,7 +43,10 @@ class FtNodeAgent(NodeAgentProtocol):
         )
         logger.info(
             "node_agent: initialized: node_id=%s, num_collectors=%d, num_diagnostics=%d, collect_interval_override=%s",
-            node_id, len(prepared_collectors), len(diagnostics or []), collect_interval_seconds,
+            node_id,
+            len(prepared_collectors),
+            len(diagnostics or []),
+            collect_interval_seconds,
         )
 
     # ------------------------------------------------------------------
@@ -81,7 +84,9 @@ class FtNodeAgent(NodeAgentProtocol):
     ) -> DiagnosticResult:
         logger.info(
             "node_agent: running diagnostic: node_id=%s, type=%s, timeout=%d",
-            self._node_id, diagnostic_type, timeout_seconds,
+            self._node_id,
+            diagnostic_type,
+            timeout_seconds,
         )
         result = await self._dispatcher.run_diagnostic(
             diagnostic_type=diagnostic_type,
@@ -90,6 +95,8 @@ class FtNodeAgent(NodeAgentProtocol):
         )
         logger.info(
             "node_agent: diagnostic complete: node_id=%s, type=%s, passed=%s",
-            self._node_id, diagnostic_type, result.passed,
+            self._node_id,
+            diagnostic_type,
+            result.passed,
         )
         return result

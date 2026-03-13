@@ -36,7 +36,9 @@ class KmsgFileReader:
 
     def read_new_lines(self) -> list[str]:
         if self._fd is None or self._closing.is_set():
-            logger.debug("collector: kmsg read skipped, fd=%s closing=%s", self._fd is not None, self._closing.is_set())
+            logger.debug(
+                "collector: kmsg read skipped, fd=%s closing=%s", self._fd is not None, self._closing.is_set()
+            )
             return []
 
         lines: list[str] = []

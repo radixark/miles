@@ -66,7 +66,9 @@ class PrometheusExporter:
                 last_exception = exc
                 time.sleep(poll_interval_seconds)
 
-        logger.error("metrics: prometheus exporter not ready after timeout: url=%s, timeout=%s", metrics_url, timeout_seconds)
+        logger.error(
+            "metrics: prometheus exporter not ready after timeout: url=%s, timeout=%s", metrics_url, timeout_seconds
+        )
         raise RuntimeError(f"Prometheus exporter did not become ready: {metrics_url}") from last_exception
 
     def shutdown(self) -> None:

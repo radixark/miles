@@ -41,7 +41,9 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "ray: rollout_actuator_stop timed out cell_id=%s, timeout=%d", self._cell_id, timeout_seconds,
+                "ray: rollout_actuator_stop timed out cell_id=%s, timeout=%d",
+                self._cell_id,
+                timeout_seconds,
             )
             raise TimeoutError(
                 f"rollout actuator stop timed out after {timeout_seconds}s for cell_id={self._cell_id}"

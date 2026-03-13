@@ -47,7 +47,12 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
             logger.warning("diagnostics: stack trace called with no PIDs: node_id=%s", node_id)
             return self._fail(node_id, "no PIDs provided")
 
-        logger.info("diagnostics: collecting stack traces: node_id=%s, num_pids=%d, timeout=%d", node_id, len(pids), timeout_seconds)
+        logger.info(
+            "diagnostics: collecting stack traces: node_id=%s, num_pids=%d, timeout=%d",
+            node_id,
+            len(pids),
+            timeout_seconds,
+        )
 
         async def _collect_one(pid: int) -> tuple[list[PySpyThread], bool]:
             try:
@@ -73,7 +78,10 @@ class StackTraceNodeExecutor(BaseNodeExecutor):
 
         logger.info(
             "diagnostics: stack trace collection complete: node_id=%s, total_threads=%d, failures=%d, total_pids=%d",
-            node_id, len(all_threads), failures, len(pids),
+            node_id,
+            len(all_threads),
+            failures,
+            len(pids),
         )
         return DiagnosticResult(
             diagnostic_type=self.diagnostic_type,

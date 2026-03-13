@@ -81,7 +81,9 @@ async def collect_stack_trace_suspects(
     except StackTraceTieError:
         logger.warning("diagnostics: stack trace aggregation tie traces_collected=%d", len(traces), exc_info=True)
         if suspect_from_failures:
-            logger.info("diagnostics: aggregation tie suppressed, returning %d failure suspects", len(suspect_from_failures))
+            logger.info(
+                "diagnostics: aggregation tie suppressed, returning %d failure suspects", len(suspect_from_failures)
+            )
         else:
             raise
 

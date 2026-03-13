@@ -21,7 +21,9 @@ class GpuCollector(BaseCollector):
             self._pynvml = pynvml
             logger.info("collector: pynvml initialized successfully")
         except Exception:
-            logger.warning("collector: pynvml unavailable, GpuCollector will report all GPUs as unavailable", exc_info=True)
+            logger.warning(
+                "collector: pynvml unavailable, GpuCollector will report all GPUs as unavailable", exc_info=True
+            )
 
     async def close(self) -> None:
         if self._pynvml is not None:

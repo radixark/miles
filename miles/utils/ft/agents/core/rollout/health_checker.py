@@ -43,7 +43,10 @@ class RolloutHealthChecker:
 
         logger.info(
             "rollout: health checker initialized: num_cells=%d, cell_ids=%s, check_interval=%s, timeout=%s",
-            len(self._cells), list(self._cells.keys()), check_interval, timeout,
+            len(self._cells),
+            list(self._cells.keys()),
+            check_interval,
+            timeout,
         )
 
         # Accepted product decision: rollout-agent construction is only

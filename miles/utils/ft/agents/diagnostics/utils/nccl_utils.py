@@ -195,7 +195,9 @@ def _interpret_nccl_output(
     if bandwidth is None:
         bandwidth = parse_avg_bus_bandwidth(stdout)
         if bandwidth is not None:
-            logger.debug("diagnostics: NCCL bandwidth parsed from text output: node=%s, bandwidth=%.2f", node_id, bandwidth)
+            logger.debug(
+                "diagnostics: NCCL bandwidth parsed from text output: node=%s, bandwidth=%.2f", node_id, bandwidth
+            )
 
     if bandwidth is None:
         logger.warning(

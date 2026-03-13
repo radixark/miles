@@ -138,7 +138,10 @@ def build_node_agent(
     )
     logger.info(
         "wiring: build_node_agent node_id=%s, collectors=%d, diagnostics=%d, interval=%ss",
-        resolved_node_id, len(collectors), len(diagnostics), collect_interval_seconds,
+        resolved_node_id,
+        len(collectors),
+        len(diagnostics),
+        collect_interval_seconds,
     )
     return FtNodeAgent(
         node_id=resolved_node_id,

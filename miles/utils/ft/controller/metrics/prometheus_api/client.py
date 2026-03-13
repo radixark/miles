@@ -98,7 +98,9 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         return self._range_query_raw(promql, window)
 
     async def start(self) -> None:
-        logger.info("prom_api: starting health probe loop url=%s, interval=%.1fs", self._url, self._health_probe_interval)
+        logger.info(
+            "prom_api: starting health probe loop url=%s, interval=%.1fs", self._url, self._health_probe_interval
+        )
         self._stop_event = asyncio.Event()
         consecutive_failures = 0
 

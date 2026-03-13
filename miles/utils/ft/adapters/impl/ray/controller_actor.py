@@ -71,7 +71,11 @@ class _FtControllerActorCls:
     ) -> None:
         logger.info(
             "ray: register_training_rank run_id=%s, rank=%d, world_size=%d, node_id=%s, pid=%d",
-            run_id, rank, world_size, node_id, pid,
+            run_id,
+            rank,
+            world_size,
+            node_id,
+            pid,
         )
         self._subsystem_hub.training_rank_roster.register_training_rank(
             run_id=run_id,
@@ -91,7 +95,9 @@ class _FtControllerActorCls:
     ) -> None:
         logger.info(
             "ray: register_node_agent node_id=%s, exporter_address=%s, metadata_keys=%s",
-            node_id, exporter_address, sorted(node_metadata.keys()) if node_metadata else [],
+            node_id,
+            exporter_address,
+            sorted(node_metadata.keys()) if node_metadata else [],
         )
         proxy = RayNodeAgentProxy(agent)
         self._ctrl.register_node_agent(

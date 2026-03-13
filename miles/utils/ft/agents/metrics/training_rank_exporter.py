@@ -54,7 +54,10 @@ class TrainingRankExporter:
         self._phase_child.set(mn.PHASE_TO_NUMERIC["idle"])
         logger.info(
             "metrics: training rank exporter initialized: rank=%d, node_id=%s, run_id=%s, address=%s",
-            rank, node_id, run_id, self._exporter.get_address(),
+            rank,
+            node_id,
+            run_id,
+            self._exporter.get_address(),
         )
 
     # ------------------------------------------------------------------

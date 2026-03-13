@@ -32,7 +32,9 @@ class CollectorBasedNodeExecutor(BaseNodeExecutor):
     ) -> DiagnosticResult:
         logger.info(
             "diagnostics: running collector-based diagnostic: type=%s, node=%s, timeout=%s",
-            self.diagnostic_type, node_id, timeout_seconds,
+            self.diagnostic_type,
+            node_id,
+            timeout_seconds,
         )
         try:
             output = await asyncio.wait_for(
@@ -42,20 +44,27 @@ class CollectorBasedNodeExecutor(BaseNodeExecutor):
         except asyncio.TimeoutError:
             logger.warning(
                 "diagnostics: collector timed out: type=%s, node=%s, timeout=%s",
-                self.diagnostic_type, node_id, timeout_seconds,
+                self.diagnostic_type,
+                node_id,
+                timeout_seconds,
             )
             return self._fail(node_id, f"collector timed out after {timeout_seconds}s")
         except Exception:
             logger.error(
                 "diagnostics: collector raised exception: type=%s, node=%s",
-                self.diagnostic_type, node_id, exc_info=True,
+                self.diagnostic_type,
+                node_id,
+                exc_info=True,
             )
             raise
 
         passed, reason = self._evaluator(node_id, output.metrics)
         logger.debug(
             "diagnostics: evaluator result: type=%s, node=%s, passed=%s, reason=%s",
-            self.diagnostic_type, node_id, passed, reason,
+            self.diagnostic_type,
+            node_id,
+            passed,
+            reason,
         )
 
         if not passed:

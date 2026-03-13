@@ -39,7 +39,9 @@ class FtTrackingAgent:
         self._exception_inject_path = _resolve_inject_path(rank=rank)
         logger.info(
             "tracking_agent: initialized: rank=%d, run_id=%s, has_controller=%s",
-            rank, self._run_id, controller_client is not None,
+            rank,
+            self._run_id,
+            controller_client is not None,
         )
 
     @graceful_degrade()
@@ -47,7 +49,9 @@ class FtTrackingAgent:
         self._check_exception_injection()
 
         if self._controller_client is not None:
-            logger.debug("tracking_agent: logging step: run_id=%s, step=%d, num_metrics=%d", self._run_id, step, len(metrics))
+            logger.debug(
+                "tracking_agent: logging step: run_id=%s, step=%d, num_metrics=%d", self._run_id, step, len(metrics)
+            )
             self._controller_client.log_step(
                 run_id=self._run_id,
                 step=step,

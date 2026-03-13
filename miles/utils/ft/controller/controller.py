@@ -132,7 +132,9 @@ class FtController:
         try:
             while not self._shutting_down:
                 if scrape_handle.is_unhealthy:
-                    logger.error("controller: metric store unhealthy, aborting: %s", scrape_handle.format_health_error())
+                    logger.error(
+                        "controller: metric store unhealthy, aborting: %s", scrape_handle.format_health_error()
+                    )
                     raise RuntimeError(scrape_handle.format_health_error())
                 await self._tick()
                 if not self._shutting_down:

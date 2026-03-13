@@ -36,7 +36,9 @@ def check_mfu_health(
     """
     recent = mini_wandb.query_last_n_steps("mfu", last_n=consecutive_steps)
     if len(recent) < consecutive_steps:
-        logger.debug("detector_check: check_mfu_health insufficient data: got=%d, need=%d", len(recent), consecutive_steps)
+        logger.debug(
+            "detector_check: check_mfu_health insufficient data: got=%d, need=%d", len(recent), consecutive_steps
+        )
         return None
 
     _assert_all_finite([sv.value for sv in recent], context="recent window")

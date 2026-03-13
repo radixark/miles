@@ -53,7 +53,11 @@ class RayControllerClient(ControllerClientProtocol):
 
         logger.info(
             "ray: register_training_rank run_id=%s, rank=%d, world_size=%d, node_id=%s, pid=%d",
-            run_id, rank, world_size, node_id, pid,
+            run_id,
+            rank,
+            world_size,
+            node_id,
+            pid,
         )
         ray.get(
             controller.register_training_rank.remote(

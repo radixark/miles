@@ -27,7 +27,8 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
         self._diagnostics: dict[str, NodeExecutorProtocol] = {d.diagnostic_type: d for d in (diagnostics or [])}
         logger.info(
             "diagnostics: dispatcher initialized: node_id=%s, registered_types=%s",
-            node_id, sorted(self._diagnostics.keys()),
+            node_id,
+            sorted(self._diagnostics.keys()),
         )
 
     @property
@@ -51,7 +52,9 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
         if diagnostic is None:
             logger.error(
                 "diagnostics: unknown diagnostic type: node_id=%s, type=%s, registered=%s",
-                self._node_id, diagnostic_type, sorted(self._diagnostics.keys()),
+                self._node_id,
+                diagnostic_type,
+                sorted(self._diagnostics.keys()),
             )
             raise UnknownDiagnosticError(
                 f"node {self._node_id}: unknown diagnostic type '{diagnostic_type}', "
@@ -60,7 +63,9 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
 
         logger.info(
             "diagnostics: dispatching diagnostic: node_id=%s, type=%s, timeout=%d",
-            self._node_id, diagnostic_type, timeout_seconds,
+            self._node_id,
+            diagnostic_type,
+            timeout_seconds,
         )
         try:
             result = await asyncio.wait_for(
@@ -73,7 +78,9 @@ class NodeDiagnosticDispatcher(NodeAgentProtocol):
             )
             logger.info(
                 "diagnostics: diagnostic complete: node_id=%s, type=%s, passed=%s",
-                self._node_id, diagnostic_type, result.passed,
+                self._node_id,
+                diagnostic_type,
+                result.passed,
             )
             return result
         except asyncio.TimeoutError:

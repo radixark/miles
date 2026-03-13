@@ -32,10 +32,7 @@ def _check_gpu_lost(metric_store: TimeSeriesQueryProtocol) -> list[NodeFault]:
 
     node_ids = bad["node_id"].unique().to_list()
     logger.info("detector_check: GPU lost on nodes=%s", node_ids)
-    return [
-        NodeFault(node_id=node_id, reason=f"GPU unavailable on {node_id}")
-        for node_id in node_ids
-    ]
+    return [NodeFault(node_id=node_id, reason=f"GPU unavailable on {node_id}") for node_id in node_ids]
 
 
 def _check_non_auto_recoverable_xid(

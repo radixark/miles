@@ -47,7 +47,11 @@ class NcclNodeExecutor(BaseNodeExecutor):
     ) -> DiagnosticResult:
         logger.info(
             "diagnostics: running NCCL diagnostic: type=%s, node=%s, binary=%s, num_gpus=%s, master_addr=%s",
-            self.diagnostic_type, node_id, self._nccl_test_binary, self._num_gpus, master_addr,
+            self.diagnostic_type,
+            node_id,
+            self._nccl_test_binary,
+            self._num_gpus,
+            master_addr,
         )
 
         env: dict[str, str] | None = None
@@ -58,7 +62,8 @@ class NcclNodeExecutor(BaseNodeExecutor):
             env["MASTER_PORT"] = str(master_port if master_port is not None else DEFAULT_NCCL_MASTER_PORT)
             logger.debug(
                 "diagnostics: NCCL env override: MASTER_ADDR=%s, MASTER_PORT=%s",
-                env.get("MASTER_ADDR"), env.get("MASTER_PORT"),
+                env.get("MASTER_ADDR"),
+                env.get("MASTER_PORT"),
             )
 
         return await run_nccl_test(

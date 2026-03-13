@@ -87,8 +87,7 @@ class NodeAgentCoverageChecker:
                 result.persistently_uncovered_node_ids.append(node_id)
 
         stale_keys = [
-            k for k in self._counters
-            if k.subsystem_name == subsystem_name and k.node_id not in subsystem_node_ids
+            k for k in self._counters if k.subsystem_name == subsystem_name and k.node_id not in subsystem_node_ids
         ]
         for k in stale_keys:
             del self._counters[k]

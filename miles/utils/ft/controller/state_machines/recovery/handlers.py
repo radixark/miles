@@ -160,7 +160,5 @@ class NotifyHumansHandler(StateHandler[NotifyHumansSt, RecoveryContext]):
         )
         logger.warning("recovery_notify reason=%s", message)
         await safe_notify(ctx.notifier, title="Recovery Alert", content=message)
-        logger.info(
-            "recovery_sm: state transition: old=NotifyHumansSt, new=RecoveryDoneSt, trigger=human_notified"
-        )
+        logger.info("recovery_sm: state transition: old=NotifyHumansSt, new=RecoveryDoneSt, trigger=human_notified")
         return RecoveryDoneSt()

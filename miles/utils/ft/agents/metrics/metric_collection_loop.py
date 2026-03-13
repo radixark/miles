@@ -36,10 +36,17 @@ class MetricCollectionLoop:
 
     async def start(self) -> None:
         if self._stopped or self._tasks:
-            logger.debug("metrics: collection loop start skipped: node_id=%s, stopped=%s, num_tasks=%d", self._node_id, self._stopped, len(self._tasks))
+            logger.debug(
+                "metrics: collection loop start skipped: node_id=%s, stopped=%s, num_tasks=%d",
+                self._node_id,
+                self._stopped,
+                len(self._tasks),
+            )
             return
 
-        logger.info("metrics: collection loop starting: node_id=%s, num_collectors=%d", self._node_id, len(self._collectors))
+        logger.info(
+            "metrics: collection loop starting: node_id=%s, num_collectors=%d", self._node_id, len(self._collectors)
+        )
         loop = asyncio.get_running_loop()
         for collector in self._collectors:
             task = loop.create_task(self._run_single_collector(collector))
@@ -82,7 +89,9 @@ class MetricCollectionLoop:
                 self._last_success_timestamps[collector_name] = time.time()
                 logger.debug(
                     "metrics: collector cycle success: collector=%s, node_id=%s, num_metrics=%d",
-                    collector_name, self._node_id, len(result.metrics),
+                    collector_name,
+                    self._node_id,
+                    len(result.metrics),
                 )
             except Exception:
                 consecutive_failures += 1

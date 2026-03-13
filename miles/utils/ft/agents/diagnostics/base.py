@@ -43,7 +43,9 @@ class BaseNodeExecutor(NodeExecutorProtocol):
         details: str,
         metadata: dict[str, Any] | None = None,
     ) -> DiagnosticResult:
-        logger.info("diagnostics: diagnostic failed: type=%s, node=%s, details=%s", self.diagnostic_type, node_id, details)
+        logger.info(
+            "diagnostics: diagnostic failed: type=%s, node=%s, details=%s", self.diagnostic_type, node_id, details
+        )
         return DiagnosticResult.fail_result(
             diagnostic_type=self.diagnostic_type,
             node_id=node_id,
@@ -57,7 +59,9 @@ class BaseNodeExecutor(NodeExecutorProtocol):
         details: str,
         metadata: dict[str, Any] | None = None,
     ) -> DiagnosticResult:
-        logger.info("diagnostics: diagnostic passed: type=%s, node=%s, details=%s", self.diagnostic_type, node_id, details)
+        logger.info(
+            "diagnostics: diagnostic passed: type=%s, node=%s, details=%s", self.diagnostic_type, node_id, details
+        )
         return DiagnosticResult.pass_result(
             diagnostic_type=self.diagnostic_type,
             node_id=node_id,

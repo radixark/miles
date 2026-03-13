@@ -89,7 +89,12 @@ def main() -> None:
                     handle=handle,
                     model_and_input=model_and_input,
                 )
-                logger.debug("diagnostics: gpu check result: gpu=%s, nvml_passed=%s, details=%s", i, result.nvml_passed, result.details)
+                logger.debug(
+                    "diagnostics: gpu check result: gpu=%s, nvml_passed=%s, details=%s",
+                    i,
+                    result.nvml_passed,
+                    result.details,
+                )
             except Exception as exc:
                 msg = f"check failed: {exc}"
                 logger.error("diagnostics: gpu check failed: gpu=%s", i, exc_info=True)

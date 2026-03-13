@@ -50,7 +50,8 @@ def build_platform_components(
 
         logger.info(
             "wiring: build_platform_components platform=k8s-ray, namespace=%s, ray_address=%s",
-            namespace, ray_address,
+            namespace,
+            ray_address,
         )
         node_manager = K8sNodeManager(
             label_prefix=k8s_label_prefix,
@@ -80,7 +81,8 @@ def build_metric_store(
     if config.metric_store_backend == "mini":
         logger.info(
             "wiring: build_metric_store backend=mini, scrape_interval=%ss, retention=%smin",
-            config.scrape_interval_seconds, config.mini_prometheus_retention_minutes,
+            config.scrape_interval_seconds,
+            config.mini_prometheus_retention_minutes,
         )
         mini_prom = MiniPrometheus(
             config=MiniPrometheusConfig(
