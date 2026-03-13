@@ -52,6 +52,28 @@ To connect to this Ray cluster:
     assert calls == ["auto"]
 
 
+def test_connect_to_started_ray_cluster_overrides_host_for_loopback_clusters(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    fake_context = SimpleNamespace(address_info={})
+
+    def _fake_init(address: str) -> object:
+        calls.append(address)
+        return fake_context
+
+    monkeypatch.setattr(integration_conftest.ray, "init", _fake_init)
+
+    context, gcs_address = integration_conftest._connect_to_started_ray_cluster(
+        start_stdout="To connect: ray.init(address='ignore') --address='10.3.4.5:6379'",
+        preferred_host="127.0.0.1",
+    )
+
+    assert context is fake_context
+    assert gcs_address == "127.0.0.1:6379"
+    assert calls == ["127.0.0.1:6379"]
+
+
 def test_worker_port_range_args_allocates_non_overlapping_blocks() -> None:
     assert integration_conftest._worker_port_range_args(node_index=0) == [
         "--min-worker-port=20000",

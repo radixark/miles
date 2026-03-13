@@ -42,10 +42,23 @@ def _worker_port_range_args(node_index: int) -> list[str]:
     ]
 
 
-def _connect_to_started_ray_cluster(start_stdout: str) -> tuple[Any, str]:
+def _override_gcs_host(gcs_address: str, preferred_host: str | None) -> str:
+    if preferred_host is None:
+        return gcs_address
+
+    host, sep, port = gcs_address.rpartition(":")
+    if not sep or not host:
+        return gcs_address
+    return f"{preferred_host}:{port}"
+
+
+def _connect_to_started_ray_cluster(
+    start_stdout: str,
+    preferred_host: str | None = None,
+) -> tuple[Any, str]:
     match = re.search(r"--address='([^']+)'", start_stdout)
     if match:
-        gcs_address = match.group(1)
+        gcs_address = _override_gcs_host(match.group(1), preferred_host=preferred_host)
         return ray.init(address=gcs_address), gcs_address
 
     ctx = ray.init(address="auto")
@@ -56,6 +69,7 @@ def _connect_to_started_ray_cluster(start_stdout: str) -> tuple[Any, str]:
             "Could not resolve GCS address from ray start output or ray.init(address='auto'):\n"
             f"{start_stdout}"
         )
+    gcs_address = _override_gcs_host(gcs_address, preferred_host=preferred_host)
     return ctx, gcs_address
 
 
@@ -241,7 +255,10 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
         text=True,
     )
 
-    ctx, gcs_address = _connect_to_started_ray_cluster(start_stdout=result.stdout)
+    ctx, gcs_address = _connect_to_started_ray_cluster(
+        start_stdout=result.stdout,
+        preferred_host=head_ip,
+    )
 
     for i in range(1, num_nodes):
         node_ip = f"127.0.0.{i + 1}"
