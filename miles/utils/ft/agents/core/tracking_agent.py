@@ -28,9 +28,10 @@ class FtTrackingAgent:
 
     def __init__(
         self,
+        *,
+        rank: int,
         run_id: str | None = None,
         controller_client: ControllerClientProtocol | None = None,
-        rank: int | None = None,
     ) -> None:
         self._run_id = run_id or get_run_id()
         self._controller_client = controller_client
@@ -56,9 +57,9 @@ class FtTrackingAgent:
             raise FaultInjectionError(f"Fault injection triggered via {self._exception_inject_path}")
 
 
-def _resolve_inject_path(*, rank: int | None) -> Path | None:
+def _resolve_inject_path(*, rank: int) -> Path | None:
     inject_dir = get_exception_inject_dir()
-    if inject_dir is not None and rank is not None:
+    if inject_dir is not None:
         return build_exception_inject_flag_path(inject_dir, rank=rank)
 
     return get_exception_inject_path()

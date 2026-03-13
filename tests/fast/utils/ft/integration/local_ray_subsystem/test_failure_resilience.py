@@ -35,7 +35,7 @@ class TestAgentSurvivesControllerDeath:
         monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
-        tracking = FtTrackingAgent(run_id=run_id, controller_client=client)
+        tracking = FtTrackingAgent(rank=0, run_id=run_id, controller_client=client)
         tracking.log(metrics={"loss": 0.5}, step=1)
 
         ray.kill(handle, no_restart=True)
@@ -110,7 +110,7 @@ class TestAgentCreatedWithoutController:
         monkeypatch.setenv("MILES_FT_RUN_ID", "no-ctrl-track")
 
         client = RayControllerClient(ft_id="nonexistent_ft_999")
-        tracking = FtTrackingAgent(run_id="no-ctrl-track", controller_client=client)
+        tracking = FtTrackingAgent(rank=0, run_id="no-ctrl-track", controller_client=client)
         tracking.log(metrics={"loss": 0.5}, step=1)
 
 

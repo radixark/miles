@@ -95,7 +95,7 @@ class TestTrackingAgentLogStep:
         monkeypatch.setenv("MILES_FT_RUN_ID", run_id)
 
         client = RayControllerClient(ft_id="")
-        tracking = FtTrackingAgent(run_id=run_id, controller_client=client)
+        tracking = FtTrackingAgent(rank=0, run_id=run_id, controller_client=client)
         tracking.log(metrics={"loss": 0.5, "iteration": 10}, step=10)
 
         time.sleep(0.5)
@@ -111,7 +111,7 @@ class TestTrackingAgentLogStep:
         monkeypatch.setenv("MILES_FT_RUN_ID", "")
 
         client = RayControllerClient(ft_id="")
-        tracking = FtTrackingAgent(run_id="", controller_client=client)
+        tracking = FtTrackingAgent(rank=0, run_id="", controller_client=client)
         tracking.log(metrics={"loss": 0.5}, step=1)
 
         status = get_status(controller_actor)

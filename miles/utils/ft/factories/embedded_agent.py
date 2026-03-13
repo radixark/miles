@@ -26,11 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 def build_tracking_agent(
+    *,
+    rank: int,
     run_id: str | None = None,
     ft_id: str = "",
 ) -> FtTrackingAgent:
     client = RayControllerClient(ft_id=ft_id or get_ft_id())
-    return FtTrackingAgent(run_id=run_id, controller_client=client)
+    return FtTrackingAgent(rank=rank, run_id=run_id, controller_client=client)
 
 
 @graceful_degrade()

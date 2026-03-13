@@ -12,7 +12,7 @@ from miles.utils.ft.utils.graceful_degrade import FaultInjectionError
 class TestFtTrackingAgentLog:
     def test_log_pushes_metrics_to_controller(self) -> None:
         mock_client = MagicMock()
-        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
+        agent = FtTrackingAgent(rank=0, run_id="test-run-1", controller_client=mock_client)
         agent.log(metrics={"loss": 2.5, "grad_norm": 1.1}, step=10)
 
         mock_client.log_step.assert_called_once_with(
@@ -23,7 +23,7 @@ class TestFtTrackingAgentLog:
 
     def test_log_multiple_calls_accumulate(self) -> None:
         mock_client = MagicMock()
-        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
+        agent = FtTrackingAgent(rank=0, run_id="test-run-1", controller_client=mock_client)
         agent.log(metrics={"loss": 2.5}, step=1)
         agent.log(metrics={"loss": 1.8}, step=2)
 
@@ -31,7 +31,7 @@ class TestFtTrackingAgentLog:
 
     def test_log_without_run_id_is_noop(self) -> None:
         mock_client = MagicMock()
-        agent = FtTrackingAgent(run_id="", controller_client=mock_client)
+        agent = FtTrackingAgent(rank=0, run_id="", controller_client=mock_client)
 
         agent.log(metrics={"loss": 2.5}, step=10)
 
@@ -39,23 +39,23 @@ class TestFtTrackingAgentLog:
 
     def test_log_reads_run_id_from_env(self) -> None:
         with patch.dict("os.environ", {"MILES_FT_RUN_ID": "env-run-1"}):
-            agent = FtTrackingAgent()
+            agent = FtTrackingAgent(rank=0)
             assert agent._run_id == "env-run-1"
 
     def test_log_explicit_run_id_overrides_env(self) -> None:
         with patch.dict("os.environ", {"MILES_FT_RUN_ID": "env-run-1"}):
-            agent = FtTrackingAgent(run_id="explicit-run")
+            agent = FtTrackingAgent(rank=0, run_id="explicit-run")
             assert agent._run_id == "explicit-run"
 
     def test_log_exception_does_not_propagate(self) -> None:
         mock_client = MagicMock()
         mock_client.log_step.side_effect = RuntimeError("boom")
 
-        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
+        agent = FtTrackingAgent(rank=0, run_id="test-run-1", controller_client=mock_client)
         agent.log(metrics={"loss": 2.5}, step=10)
 
     def test_log_without_client_is_noop(self) -> None:
-        agent = FtTrackingAgent(run_id="test-run-1")
+        agent = FtTrackingAgent(rank=0, run_id="test-run-1")
         agent.log(metrics={"loss": 2.5}, step=10)
 
 
@@ -66,7 +66,7 @@ class TestTrackingUtilsIntegration:
         from miles.utils import tracking_utils
 
         mock_client = MagicMock()
-        agent = FtTrackingAgent(run_id="test-run-1", controller_client=mock_client)
+        agent = FtTrackingAgent(rank=0, run_id="test-run-1", controller_client=mock_client)
         tracking_utils.set_ft_tracking_agent(agent)
         try:
             args = MagicMock()
@@ -110,7 +110,7 @@ class TestCheckExceptionInjection:
 
         env = {"MILES_FT_EXCEPTION_INJECT_PATH": str(trigger_file)}
         with patch.dict("os.environ", env, clear=False):
-            agent = FtTrackingAgent(run_id="r1", controller_client=MagicMock())
+            agent = FtTrackingAgent(rank=0, run_id="r1", controller_client=MagicMock())
             with pytest.raises(FaultInjectionError):
                 agent.log(metrics={"loss": 1.0}, step=1)
 
@@ -120,7 +120,7 @@ class TestCheckExceptionInjection:
 
         env = {"MILES_FT_EXCEPTION_INJECT_PATH": str(trigger_file)}
         with patch.dict("os.environ", env, clear=False):
-            agent = FtTrackingAgent(run_id="r1", controller_client=MagicMock())
+            agent = FtTrackingAgent(rank=0, run_id="r1", controller_client=MagicMock())
             with pytest.raises(FaultInjectionError):
                 agent.log(metrics={"loss": 1.0}, step=1)
 
@@ -132,7 +132,7 @@ class TestCheckExceptionInjection:
         env = {"MILES_FT_EXCEPTION_INJECT_PATH": str(trigger_file)}
         with patch.dict("os.environ", env, clear=False):
             mock_client = MagicMock()
-            agent = FtTrackingAgent(run_id="r1", controller_client=mock_client)
+            agent = FtTrackingAgent(rank=0, run_id="r1", controller_client=mock_client)
             agent.log(metrics={"loss": 1.0}, step=1)
 
         mock_client.log_step.assert_called_once()
@@ -146,7 +146,7 @@ class TestCheckExceptionInjection:
             os.environ.pop("MILES_FT_EXCEPTION_INJECT_DIR", None)
 
             mock_client = MagicMock()
-            agent = FtTrackingAgent(run_id="r1", controller_client=mock_client)
+            agent = FtTrackingAgent(rank=0, run_id="r1", controller_client=mock_client)
             agent.log(metrics={"loss": 1.0}, step=1)
 
         mock_client.log_step.assert_called_once()
@@ -169,7 +169,7 @@ class TestPerRankExceptionInjection:
 
         env = {"MILES_FT_EXCEPTION_INJECT_DIR": str(inject_dir)}
         with patch.dict("os.environ", env, clear=False):
-            agent = FtTrackingAgent(run_id="r1", controller_client=MagicMock(), rank=3)
+            agent = FtTrackingAgent(rank=3, run_id="r1", controller_client=MagicMock())
             with pytest.raises(FaultInjectionError, match="exception.rank-3"):
                 agent.log(metrics={"loss": 1.0}, step=1)
 
@@ -181,8 +181,8 @@ class TestPerRankExceptionInjection:
 
         env = {"MILES_FT_EXCEPTION_INJECT_DIR": str(inject_dir)}
         with patch.dict("os.environ", env, clear=False):
-            agent_0 = FtTrackingAgent(run_id="r1", rank=0)
-            agent_1 = FtTrackingAgent(run_id="r1", rank=1)
+            agent_0 = FtTrackingAgent(rank=0, run_id="r1")
+            agent_1 = FtTrackingAgent(rank=1, run_id="r1")
 
         assert agent_0._exception_inject_path != agent_1._exception_inject_path
         assert "rank-0" in str(agent_0._exception_inject_path)
@@ -204,7 +204,7 @@ class TestPerRankExceptionInjection:
 
         with patch.dict("os.environ", env, clear=False):
             for rank in [0, 1, 2]:
-                agent = FtTrackingAgent(run_id="r1", controller_client=MagicMock(), rank=rank)
+                agent = FtTrackingAgent(rank=rank, run_id="r1", controller_client=MagicMock())
                 try:
                     agent.log(metrics={"loss": 1.0}, step=1)
                 except FaultInjectionError:
@@ -212,10 +212,10 @@ class TestPerRankExceptionInjection:
 
         assert triggered_ranks == [0, 1, 2]
 
-    def test_dir_env_takes_precedence_over_path_env_when_rank_provided(self, tmp_path: Path) -> None:
+    def test_dir_env_takes_precedence_over_path_env(self, tmp_path: Path) -> None:
         """When both MILES_FT_EXCEPTION_INJECT_DIR and
-        MILES_FT_EXCEPTION_INJECT_PATH are set and rank is provided,
-        the dir-based per-rank path should be used."""
+        MILES_FT_EXCEPTION_INJECT_PATH are set, the dir-based per-rank
+        path should be used."""
         inject_dir = tmp_path / "ft_exc"
         inject_dir.mkdir()
         old_path = tmp_path / "old_flag"
@@ -229,19 +229,8 @@ class TestPerRankExceptionInjection:
             "MILES_FT_EXCEPTION_INJECT_PATH": str(old_path),
         }
         with patch.dict("os.environ", env, clear=False):
-            agent = FtTrackingAgent(run_id="r1", controller_client=MagicMock(), rank=0)
+            agent = FtTrackingAgent(rank=0, run_id="r1", controller_client=MagicMock())
             with pytest.raises(FaultInjectionError, match="exception.rank-0"):
                 agent.log(metrics={"loss": 1.0}, step=1)
 
         assert old_path.exists()
-
-    def test_falls_back_to_legacy_path_when_no_rank(self, tmp_path: Path) -> None:
-        """When rank is not provided, falls back to the legacy single-path."""
-        trigger_file = tmp_path / "inject_fault"
-        trigger_file.touch()
-
-        env = {"MILES_FT_EXCEPTION_INJECT_PATH": str(trigger_file)}
-        with patch.dict("os.environ", env, clear=False):
-            agent = FtTrackingAgent(run_id="r1", controller_client=MagicMock())
-            with pytest.raises(FaultInjectionError):
-                agent.log(metrics={"loss": 1.0}, step=1)
