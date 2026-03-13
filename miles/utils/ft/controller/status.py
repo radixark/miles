@@ -9,7 +9,6 @@ from miles.utils.ft.controller.state_machines.main.models import MainContext, Ma
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.state_machines.recovery import (
     EvictingAndRestartingSt,
-    NotifyHumansSt,
     RecoveryDoneSt,
     RecoveryState,
 )
@@ -26,12 +25,7 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
 
 
 def _classify_recovery(state: RecoveringSt) -> RecoveryInfo:
-    raw_bad_ids = (
-        state.recovery.bad_node_ids
-        if isinstance(state.recovery, NotifyHumansSt) and state.recovery.bad_node_ids
-        else state.known_bad_node_ids
-    )
-    bad_nodes = sorted(raw_bad_ids)
+    bad_nodes = sorted(state.known_bad_node_ids)
 
     match state.recovery:
         case RecoveryDoneSt():
