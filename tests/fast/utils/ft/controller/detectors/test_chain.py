@@ -9,6 +9,7 @@ from miles.utils.ft.controller.detectors.base import BaseFaultDetector
 from miles.utils.ft.controller.detectors.chain import DetectorChainConfig, build_detector_chain
 from miles.utils.ft.controller.detectors.core.gpu_fault import GpuFaultDetector
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
+from miles.utils.ft.controller.detectors.core.loss_spike import LossSpikeDetector
 from miles.utils.ft.controller.detectors.core.mfu_decline import MfuDeclineDetector
 from miles.utils.ft.controller.detectors.core.nan_loss import NanLossDetector
 from miles.utils.ft.controller.detectors.core.network import NetworkAlertDetector
@@ -37,7 +38,7 @@ class TestBuildDetectorChain:
     def test_default_chain_returns_expected_count(self) -> None:
         chain = build_detector_chain()
 
-        assert len(chain) == 9
+        assert len(chain) == 10
 
     def test_all_detectors_are_base_fault_detector(self) -> None:
         chain = build_detector_chain()
@@ -58,6 +59,7 @@ class TestBuildDetectorChain:
         assert NicMajorityDownDetector in types
         assert HangDetector in types
         assert NanLossDetector in types
+        assert LossSpikeDetector in types
         assert NetworkAlertDetector in types
         assert TrainingCrashDetector in types
         assert MfuDeclineDetector in types
@@ -75,4 +77,4 @@ class TestBuildDetectorChain:
     def test_none_config_uses_defaults(self) -> None:
         chain = build_detector_chain(config=None)
 
-        assert len(chain) == 9
+        assert len(chain) == 10
