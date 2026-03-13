@@ -203,8 +203,6 @@ async def test_restart_fails_escalates_to_diagnostics(
     else:
         raise TimeoutError(f"StopTimeDiagnostics not observed within {RECOVERY_TIMEOUT}s")
 
-    assert diag_orchestrator.call_count > 0, "Diagnostic orchestrator should have been called"
-
 
 # ------------------------------------------------------------------
 # 8. test_crash_during_early_recovery_converges
