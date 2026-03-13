@@ -102,6 +102,7 @@ def assemble_ft_controller(
         rollout_cell_ids=rollout_cell_ids,
         rollout_alive_threshold_seconds=runtime_config.rollout_alive_threshold_seconds,
         rollout_monitoring_alive_duration_seconds=runtime_config.rollout_monitoring_alive_duration_seconds,
+        monitoring_timeout_seconds=runtime_config.monitoring_timeout_seconds,
         subsystem_hub=subsystem_hub,
         make_cooldown=_make_cooldown,
     )
@@ -149,6 +150,7 @@ def _build_rollout_subsystem_specs(
     rollout_cell_ids: list[str] | None,
     rollout_alive_threshold_seconds: float | None,
     rollout_monitoring_alive_duration_seconds: float | None,
+    monitoring_timeout_seconds: int,
     subsystem_hub: SubsystemHub,
     make_cooldown: Callable[[], SlidingWindowThrottle],
 ) -> dict[str, SubsystemSpec]:
@@ -169,7 +171,10 @@ def _build_rollout_subsystem_specs(
             config=SubsystemConfig(
                 restart_mode=RestartMode.SUBSYSTEM,
                 detectors=build_shared_hw_detectors() + build_rollout_detectors(cell_id=cell_id, **rollout_det_kwargs),
-                monitoring_config=MonitoringRunningAfterDelayConfig(alive_duration_seconds=rollout_alive_dur),
+                monitoring_config=MonitoringRunningAfterDelayConfig(
+                    alive_duration_seconds=rollout_alive_dur,
+                    timeout_seconds=monitoring_timeout_seconds,
+                ),
             ),
             runtime=SubsystemRuntime(
                 actuator=RayRolloutActuator(

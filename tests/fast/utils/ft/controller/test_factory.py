@@ -86,6 +86,48 @@ class TestBuildFtControllerStateMachineParams:
         assert runtime_config.recovery_timeout_seconds == 7200
 
 
+class TestRolloutMonitoringTimeoutWiring:
+    """Rollout subsystem previously did not receive monitoring_timeout_seconds
+    from the global config. Its MonitoringRunningAfterDelayConfig always used
+    the default 600s regardless of what the user configured."""
+
+    def test_rollout_monitoring_uses_global_timeout(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=2,
+            monitoring_timeout_seconds=1800,
+        )
+        bundle = build_ft_controller(
+            config=config,
+            start_exporter=False,
+            node_manager_override=StubNodeManager(),
+            main_job_override=StubMainJob(),
+        )
+
+        from miles.utils.ft.controller.state_machines.restart.models import MonitoringRunningAfterDelayConfig
+
+        for name, spec in bundle.controller._subsystem_specs.items():
+            if name.startswith("rollout_"):
+                assert isinstance(spec.config.monitoring_config, MonitoringRunningAfterDelayConfig)
+                assert spec.config.monitoring_config.timeout_seconds == 1800
+
+    def test_training_and_rollout_share_same_timeout(self) -> None:
+        config = FtControllerConfig(
+            rollout_num_cells=1,
+            monitoring_timeout_seconds=900,
+        )
+        bundle = build_ft_controller(
+            config=config,
+            start_exporter=False,
+            node_manager_override=StubNodeManager(),
+            main_job_override=StubMainJob(),
+        )
+
+        specs = bundle.controller._subsystem_specs
+        training_timeout = specs["training"].config.monitoring_config.timeout_seconds
+        rollout_timeout = specs["rollout_0"].config.monitoring_config.timeout_seconds
+        assert training_timeout == rollout_timeout == 900
+
+
 class TestBuildFtControllerRetention:
     """MiniPrometheus retention was hardcoded and not wired from config."""
 
