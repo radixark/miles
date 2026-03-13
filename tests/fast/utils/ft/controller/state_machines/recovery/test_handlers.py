@@ -165,12 +165,20 @@ def _mock_stepper_yielding(value: object):
 
 class TestRealtimeChecks:
     @pytest.mark.asyncio
-    async def test_no_pre_identified_goes_to_direct_restart(self) -> None:
+    async def test_no_pre_identified_non_crash_goes_to_direct_restart(self) -> None:
         stepper = _make_stepper()
-        result = await _step(stepper, RealtimeChecksSt())
+        result = await _step(stepper, RealtimeChecksSt(), trigger=TriggerType.HANG)
         assert isinstance(result, EvictingAndRestartingSt)
         assert isinstance(result.restart, StoppingAndRestartingSt)
         assert isinstance(result.failed_next_state, StopTimeDiagnosticsSt)
+
+    @pytest.mark.asyncio
+    async def test_crash_trigger_routes_to_diagnostics(self) -> None:
+        """Previously, training crashes triggered a blind restart without
+        running diagnostics first, potentially restarting on a faulty node."""
+        stepper = _make_stepper()
+        result = await _step(stepper, RealtimeChecksSt(), trigger=TriggerType.CRASH)
+        assert isinstance(result, StopTimeDiagnosticsSt)
 
     @pytest.mark.asyncio
     async def test_pre_identified_bad_nodes_go_to_evicting(self) -> None:
@@ -410,7 +418,7 @@ class TestGlobalTimeout:
 class TestFullRecoveryFlow:
     @pytest.mark.asyncio
     async def test_no_fault_direct_restart_success(self) -> None:
-        """RealtimeChecks (no faults) -> EvictingAndRestarting -> RestartDone -> RecoveryDone."""
+        """RealtimeChecks (no faults, non-crash) -> EvictingAndRestarting -> RestartDone -> RecoveryDone."""
         main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
         mini_wandb = MiniWandb()
         mini_wandb.set_active_run_id("r")
@@ -422,6 +430,7 @@ class TestFullRecoveryFlow:
         )
         stepper = _make_stepper()
         ctx = _make_ctx(
+            trigger=TriggerType.HANG,
             restart_stepper=restart_stepper,
             restart_context=restart_ctx,
         )
@@ -519,6 +528,7 @@ class TestFullRecoveryFlow:
         )
         stepper = _make_stepper()
         ctx = _make_ctx(
+            trigger=TriggerType.HANG,
             restart_stepper=restart_stepper,
             restart_context=restart_ctx,
             diagnostic_orchestrator=diag,
@@ -567,6 +577,64 @@ class TestFullRecoveryFlow:
         assert isinstance(state.restart, MonitoringProgressSt)
 
         # Step 8: monitoring success
+        mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 200})
+        state = await _step_last(stepper, state, ctx)
+        assert isinstance(state, RecoveryDoneSt)
+
+    @pytest.mark.asyncio
+    async def test_crash_trigger_diagnoses_then_evicts_and_restarts(self) -> None:
+        """Previously, training crashes triggered a blind restart without diagnostics.
+        Now CRASH trigger routes to StopTimeDiagnosticsSt first, which can identify
+        bad nodes before restart."""
+        main_job = FakeMainJob(status_sequence=[JobStatus.RUNNING])
+        mini_wandb = MiniWandb()
+        mini_wandb.set_active_run_id("r")
+        mini_wandb.log_step(run_id="r", step=1, metrics={"iteration": 100})
+        node_manager = FakeNodeManager()
+
+        restart_stepper, restart_ctx = _make_restart_stepper_and_context(
+            main_job=main_job,
+            mini_wandb=mini_wandb,
+            node_manager=node_manager,
+        )
+        diag = FakeDiagnosticOrchestrator(
+            result=DiagnosticPipelineResult(bad_node_ids=["node-B"], reason="gpu fail"),
+        )
+        stepper = _make_stepper()
+        ctx = _make_ctx(
+            trigger=TriggerType.CRASH,
+            restart_stepper=restart_stepper,
+            restart_context=restart_ctx,
+            diagnostic_orchestrator=diag,
+        )
+
+        # Step 1: CRASH trigger -> StopTimeDiagnosticsSt (not direct restart)
+        state = await _step_last(stepper, RealtimeChecksSt(), ctx)
+        assert isinstance(state, StopTimeDiagnosticsSt)
+
+        # Step 2: diagnostics find bad nodes -> EvictingAndRestarting
+        state = await _step_last(stepper, state, ctx)
+        assert isinstance(state, EvictingAndRestartingSt)
+        assert state.restart.bad_node_ids == ("node-B",)
+        assert isinstance(state.failed_next_state, NotifyHumansSt)
+
+        # Step 3: evict
+        state = await _step_last(stepper, state, ctx)
+        assert isinstance(state, EvictingAndRestartingSt)
+        assert isinstance(state.restart, StoppingAndRestartingSt)
+        assert node_manager.is_node_bad("node-B")
+
+        # Step 4: submit
+        state = await _step_last(stepper, state, ctx)
+        assert isinstance(state, EvictingAndRestartingSt)
+        assert state.restart.submitted
+
+        # Step 5: poll -> MonitoringProgress
+        state = await _step_last(stepper, state, ctx)
+        assert isinstance(state, EvictingAndRestartingSt)
+        assert isinstance(state.restart, MonitoringProgressSt)
+
+        # Step 6: monitoring success
         mini_wandb.log_step(run_id="r", step=2, metrics={"iteration": 200})
         state = await _step_last(stepper, state, ctx)
         assert isinstance(state, RecoveryDoneSt)
