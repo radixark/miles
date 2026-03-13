@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+import ray
+
 from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
@@ -29,7 +31,12 @@ def convert_checkpoint(
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
     megatron_path: str = "/root/Megatron-LM",
+    master_addr: str | None = None,
+    nnodes: int = 1,
+    node_rank: int = 0,
+    decoder_last_pipeline_num_layers: int | None = None,
 ):
+
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
@@ -41,8 +48,17 @@ def convert_checkpoint(
 
     multinode_args = ""
     if multinode:
+        if master_addr is None:
+            # This variable can be provided via:
+            # `export SLURM_JOB_HOSTNAMES=$(scontrol show hostnames "$SLURM_JOB_NODELIST")`
+            print(f"{os.environ.get('SLURM_JOB_HOSTNAMES')=} {os.environ.get('SLURM_NODEID')=}")
+            job_hostnames = os.environ["SLURM_JOB_HOSTNAMES"].strip().split("\n")
+            master_addr = job_hostnames[0]
+            nnodes = len(job_hostnames)
+            node_rank = int(os.environ["SLURM_NODEID"])
+
         multinode_args = (
-            "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
+            f"--master-addr {master_addr} " f"--master-port 23456 " f"--nnodes={nnodes} " f"--node-rank {node_rank} "
         )
 
     if multinode:
@@ -103,6 +119,9 @@ def execute_train(
     extra_env_vars=None,
     config: ExecuteTrainConfig | None = None,
     megatron_path: str = "/root/Megatron-LM",
+    multinode: bool = False,
+    is_head_node: bool = True,
+    num_gpus: int | None = None,
 ):
     if extra_env_vars is None:
         extra_env_vars = {}
@@ -115,30 +134,49 @@ def execute_train(
 
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
-
-    exec_command(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if external_ray else 'ray stop --force; '}"
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # cannot be run in CI, o/w kill the parent script
-        # TODO: do we really need this kill? (or can we instead kill miles)
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "sleep 3; "
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "pkill -9 redis; "
-        "true; "
-    )
+    if is_head_node:
+        # only execute on head node
+        exec_command(
+            "pkill -9 sglang; "
+            "sleep 3; "
+            f"{'' if external_ray else 'ray stop --force; '}"
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # cannot be run in CI, o/w kill the parent script
+            # TODO: do we really need this kill? (or can we instead kill miles)
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "sleep 3; "
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "pkill -9 redis; "
+            "true; "
+        )
 
     if not external_ray:
-        exec_command(
-            # will prevent ray from buffering stdout/stderr
-            f"export PYTHONBUFFERED=16 && "
-            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
-        )
+        if is_head_node:
+            exec_command(
+                # will prevent ray from buffering stdout/stderr
+                f"export PYTHONBUFFERED=16 && "
+                f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
+            )
+        else:
+            exec_command(
+                # will prevent ray from buffering stdout/stderr
+                f"export PYTHONBUFFERED=16 && "
+                f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node}"
+            )
+        # Check available GPUs in Ray cluster
+        if num_gpus is not None:
+            ray.init(address="auto", ignore_reinit_error=True)
+            available_gpus = ray.available_resources().get("GPU", 0)
+            while available_gpus < num_gpus:
+                print(f"Ray cluster available GPUs: {available_gpus}, waiting for {num_gpus}...")
+                time.sleep(3)
+                available_gpus = ray.available_resources().get("GPU", 0)
+            print(f"Ray cluster available GPUs: {available_gpus}")
+            assert available_gpus == num_gpus, f"Expected {num_gpus} GPUs, got {available_gpus}"
+            ray.shutdown()
 
     if (f := before_ray_job_submit) is not None:
         f()
@@ -155,7 +193,11 @@ def execute_train(
                         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                     }
                 ),
-                "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                # NOTE: if it's the multi-node case and `NCCL_NVLS_ENABLE=1`,
+                # there're errors like `transport/nvls.cc:284 NCCL WARN Failed to bind NVLink SHARP (NVLS) Multicast memory of size 2097152 : CUDA error 2 'out of memory'`
+                # ref in sglang: https://github.com/sgl-project/sglang/blob/973116e6bb2262885ca0ffd0b683a8dc825979f2/test/srt/test_load_weights_from_remote_instance.py#L98
+                # TODO: decide whether to disable `NCCL_NVLS` when using rdma weight transferring
+                "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())) if not multinode else "0",
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
@@ -181,15 +223,16 @@ def execute_train(
             if megatron_model_type is not None
             else ""
         )
-        exec_command(
-            f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
-            f"{cmd_megatron_model_source}"
-            f'ray job submit --address="http://127.0.0.1:8265" '
-            f"--runtime-env-json='{runtime_env_json}' "
-            f"-- python3 {train_script} "
-            f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
-            f"{train_args}"
-        )
+        if is_head_node:  # only submit jobs from head node
+            exec_command(
+                f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
+                f"{cmd_megatron_model_source}"
+                f'ray job submit --address="http://127.0.0.1:8265" '
+                f"--runtime-env-json='{runtime_env_json}' "
+                f"-- python3 {train_script} "
+                f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
+                f"{train_args}"
+            )
 
 
 def _parse_extra_env_vars(text: str):

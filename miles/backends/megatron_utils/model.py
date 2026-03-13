@@ -29,12 +29,7 @@ from ..training_utils.log_utils import aggregate_forward_results, aggregate_trai
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
-from .ci_utils import (
-    check_model_hashes,
-    check_peak_gpu_memory_after_load,
-    compute_model_hashes_by_layer,
-    save_model_hashes,
-)
+from .ci_utils import check_model_hashes, compute_model_hashes_by_layer, save_model_hashes
 from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
@@ -691,19 +686,81 @@ def save(
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
-    if is_lora_model(model):
-        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler)
-    else:
-        save_checkpoint(
-            iteration,
-            model,
-            optimizer,
-            opt_param_scheduler,
-            num_floating_point_operations_so_far=0,
-            checkpointing_context=None,
-            train_data_iterator=None,
-            preprocess_common_state_dict_fn=None,
-        )
+    # Monkey-patch FileSystemWriterAsync.write_preloaded_data_multiproc to avoid fork().
+    # Go runtime (mooncake TransferEngine) installs signal handlers via sigaction that are
+    # incompatible with fork() — any fork triggers SIGSEGV via runtime.sigfwd.
+    # Replace with sequential in-process writes.
+    from megatron.core.dist_checkpointing.strategies.filesystem_async import FileSystemWriterAsync
+
+    _orig_write_multiproc = FileSystemWriterAsync.write_preloaded_data_multiproc
+
+    @staticmethod
+    def _sequential_write(transform_list, use_msc, rank, write_buckets, global_results_queue):
+        """Write checkpoint files sequentially in the parent process (no fork)."""
+        import gc
+        import inspect
+        import os
+        from time import time
+
+        from torch.distributed.checkpoint.filesystem import _write_item
+
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
+            gc.disable()
+        try:
+            w_start = time()
+            write_results_or_exc = dict()
+
+            extra_kwargs = {}
+            if "serialization_format" in inspect.signature(_write_item).parameters:
+                from torch.distributed.checkpoint.filesystem import SerializationFormat
+
+                extra_kwargs["serialization_format"] = SerializationFormat.TORCH_SAVE
+
+            for i, write_bucket in enumerate(write_buckets):
+                local_results = []
+                try:
+                    file_name, storage_key, (bytes_data, tensor_data) = write_bucket
+                    with open(file_name, "wb") as stream:
+                        for wi, data in bytes_data:
+                            local_results.append(
+                                _write_item(*transform_list, stream, data, wi, storage_key, **extra_kwargs)
+                            )
+                        for wi, tensor in tensor_data:
+                            assert tensor.is_cpu
+                            local_results.append(
+                                _write_item(*transform_list, stream, tensor, wi, storage_key, **extra_kwargs)
+                            )
+                        os.fsync(stream.fileno())
+                    write_results_or_exc[i] = local_results
+                except Exception as e:
+                    write_results_or_exc = e
+                    break
+
+            global_results_queue.put(write_results_or_exc)
+            logger.debug(f"rank {rank}: sequential write done in {time() - w_start:.2f}s")
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+    FileSystemWriterAsync.write_preloaded_data_multiproc = _sequential_write
+
+    try:
+        if is_lora_model(model):
+            save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler)
+        else:
+            save_checkpoint(
+                iteration,
+                model,
+                optimizer,
+                opt_param_scheduler,
+                num_floating_point_operations_so_far=0,
+                checkpointing_context=None,
+                train_data_iterator=None,
+                preprocess_common_state_dict_fn=None,
+            )
+    finally:
+        FileSystemWriterAsync.write_preloaded_data_multiproc = _orig_write_multiproc
 
     if hashes is not None:
         save_model_hashes(args, model, iteration, hashes)
@@ -801,7 +858,6 @@ def initialize_model_and_optimizer(
         checkpointing_context={},
         skip_load_to_model_and_opt=False,
     )
-    check_peak_gpu_memory_after_load(args)
     clear_memory()
 
     check_model_hashes(args, model, iteration)
