@@ -13,7 +13,7 @@ from miles.utils.ft.adapters.types import JobStatus
 def _make_job(
     entrypoint: str = "python train.py",
     runtime_env: dict[str, Any] | None = None,
-    poll_interval_seconds: float = 0,
+    poll_interval_seconds: float = 0.01,
     ft_id: str = "test",
     k8s_label_prefix: str = "",
 ) -> tuple[RayMainJob, MagicMock]:
@@ -83,7 +83,7 @@ class TestSubmitJob:
 
     @pytest.mark.anyio
     async def test_submit_succeeds_after_previous_job_stopped(self) -> None:
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.01)
         mock_client.submit_job.side_effect = ["job-1", "job-2"]
         mock_client.get_job_status.return_value = "STOPPED"
 
