@@ -139,7 +139,7 @@ class TestSubmitJob:
 class TestStopJob:
     @pytest.mark.anyio
     async def test_stop_polls_until_stopped(self) -> None:
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.001)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
 
@@ -156,7 +156,7 @@ class TestStopJob:
 
     @pytest.mark.anyio
     async def test_stop_raises_timeout_error(self) -> None:
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.001)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
 
@@ -180,7 +180,7 @@ class TestStopJob:
 
     @pytest.mark.anyio
     async def test_stop_completes_when_job_fails(self) -> None:
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.001)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
 
@@ -193,7 +193,7 @@ class TestStopJob:
 
     @pytest.mark.anyio
     async def test_stop_completes_when_job_succeeds(self) -> None:
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.001)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
 
@@ -214,7 +214,7 @@ class TestStopJob:
     @pytest.mark.anyio
     async def test_get_status_returns_stopped_after_successful_stop(self) -> None:
         """After stop_job, get_job_status returns STOPPED without calling Ray."""
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.001)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
 
@@ -228,7 +228,7 @@ class TestStopJob:
 
     @pytest.mark.anyio
     async def test_job_id_cleared_after_stop(self) -> None:
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.001)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
         assert job.job_id == "job-1"
@@ -306,7 +306,7 @@ class TestStopJob:
         mock_client = MagicMock()
         mock_client.get_job_status.side_effect = ["RUNNING", "RUNNING", "STOPPED"]
 
-        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0)
+        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0.001)
 
         mock_client.stop_job.assert_called_once_with("job-1")
         assert mock_client.get_job_status.call_count == 3
@@ -330,7 +330,7 @@ class TestStopJob:
             mock_poll_time.monotonic = advancing_monotonic
 
             with pytest.raises(TimeoutError, match="stop_job"):
-                await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=5, poll_interval=0)
+                await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=5, poll_interval=0.001)
 
     @pytest.mark.anyio
     async def test_raises_immediately_when_stop_rpc_exhausts_timeout_budget(self) -> None:
@@ -342,14 +342,14 @@ class TestStopJob:
             mock_time.monotonic = lambda: next(timestamps)
 
             with pytest.raises(TimeoutError, match="no time left for polling"):
-                await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0)
+                await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0.001)
 
     @pytest.mark.anyio
     async def test_accepts_failed_as_terminal(self) -> None:
         mock_client = MagicMock()
         mock_client.get_job_status.return_value = "FAILED"
 
-        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0)
+        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0.001)
 
         mock_client.stop_job.assert_called_once_with("job-1")
 
@@ -358,7 +358,7 @@ class TestStopJob:
         mock_client = MagicMock()
         mock_client.get_job_status.return_value = "SUCCEEDED"
 
-        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0)
+        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=10, poll_interval=0.001)
 
         mock_client.stop_job.assert_called_once_with("job-1")
 
@@ -371,7 +371,7 @@ class TestStopJob:
         mock_client = MagicMock()
         mock_client.get_job_status.return_value = "STOPPED"
 
-        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=5, poll_interval=0)
+        await _stop_job(client=mock_client, job_id="job-1", timeout_seconds=5, poll_interval=0.001)
 
         mock_client.stop_job.assert_called_once_with("job-1")
 
@@ -505,7 +505,7 @@ class TestStateLockSerialization:
         then returns STOPPED (because _job_id was cleared)."""
         import threading
 
-        job, mock_client = _make_job(poll_interval_seconds=0)
+        job, mock_client = _make_job(poll_interval_seconds=0.001)
         mock_client.submit_job.return_value = "job-1"
         await job.start()
 
