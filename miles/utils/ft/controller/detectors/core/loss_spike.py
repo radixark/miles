@@ -11,10 +11,14 @@ class LossSpikeDetectorConfig(FtBaseModel):
 
     Detected spikes trigger ENTER_RECOVERY (same path as NaN loss) to
     pause training and run stop-time diagnostics.
+
+    Disabled by default: in RL scenarios loss values stay near zero,
+    so spike detection is not meaningful.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    enabled: bool = False
     spike_threshold: float = Field(default=5.0, gt=1.0)
     recent_steps: int = Field(default=5, ge=1)
     baseline_steps: int = Field(default=50, ge=1)

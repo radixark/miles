@@ -162,7 +162,7 @@ class TestDetectorChainIntegration:
             "TrainingCrashDetector",
             "HangDetector",
             "NanLossDetector",
-            "LossSpikeDetector",
+            # LossSpikeDetector disabled by default (RL loss near zero)
             "MfuDeclineDetector",
         ]
 

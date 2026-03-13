@@ -49,14 +49,16 @@ def build_training_detectors(
 ) -> list[BaseFaultDetector]:
     """Training-specific: network, crash, hang, nan_loss, loss_spike, mfu_decline."""
     cfg = config or DetectorChainConfig()
-    return [
+    detectors: list[BaseFaultDetector] = [
         NetworkAlertDetector(config=cfg.network),
         TrainingCrashDetector(),
         HangDetector(config=cfg.hang),
         NanLossDetector(),
-        LossSpikeDetector(config=cfg.loss_spike),
-        MfuDeclineDetector(config=cfg.mfu),
     ]
+    if cfg.loss_spike.enabled:
+        detectors.append(LossSpikeDetector(config=cfg.loss_spike))
+    detectors.append(MfuDeclineDetector(config=cfg.mfu))
+    return detectors
 
 
 def build_rollout_detectors(
