@@ -78,6 +78,11 @@ class PrometheusClient(RangeAggregationMixin, TimeSeriesStoreProtocol):
         label_filters: dict[str, str] | None = None,
     ) -> pl.DataFrame:
         promql = _build_selector(metric_name, label_filters)
+        # TODO: This returns Prometheus query_range output sampled at a fixed
+        # evaluation step, not the raw scrape samples returned by
+        # MiniPrometheus query_range(). Some current detectors still assume
+        # raw-sample semantics here (edge counting / span inference), and we
+        # are intentionally not reconciling that backend mismatch for now.
         return self._range_query_raw(promql, window)
 
     async def start(self) -> None:
