@@ -233,6 +233,7 @@ class MilesTestbed:
         return testbed
 
     async def shutdown(self) -> None:
+        logger.info("MilesTestbed.shutdown: ft_id=%s", self._ft_id)
         try:
             ray.get(self._controller.shutdown.remote(), timeout=10)
         except Exception:
@@ -265,9 +266,11 @@ class MilesTestbed:
     # ------------------------------------------------------------------
 
     async def kill_training_on_node(self, node_id: str) -> None:
+        logger.info("MilesTestbed.kill_training_on_node: node_id=%s", node_id)
         await self._train_group.kill_on_node(node_id)
 
     async def crash_training(self) -> None:
+        logger.info("MilesTestbed.crash_training: injecting fault")
         await self._train_group.kill_all()
 
     async def inject_gpu_xid(self, node_id: str, count: float = 1.0) -> None:
@@ -299,15 +302,19 @@ class MilesTestbed:
         await state.set_metrics.remote(metrics)
 
     async def inject_hang(self) -> None:
+        logger.info("MilesTestbed.inject_hang")
         await self._train_group.set_hung(hung=True)
 
     async def clear_hang(self) -> None:
+        logger.info("MilesTestbed.clear_hang")
         await self._train_group.set_hung(hung=False)
 
     async def inject_nan_loss(self) -> None:
+        logger.info("MilesTestbed.inject_nan_loss")
         await self._train_group.set_custom_log_metrics({"loss": float("nan")})
 
     async def clear_nan_loss(self) -> None:
+        logger.info("MilesTestbed.clear_nan_loss")
         await self._train_group.set_custom_log_metrics({})
 
     async def inject_custom_metrics(self, metrics: dict[str, float]) -> None:

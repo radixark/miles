@@ -56,6 +56,14 @@ class TestbedRayTrainGroup:
     so that both the controller process (which creates workers via
     ``spawn_actors``) and the test process (which injects faults via
     ``kill_all``, ``set_hung``, etc.) operate on the same set of handles.
+
+    **Important**: ``kill_all`` intentionally does NOT clear the store.
+    Dead worker handles remain so that ``all_alive()`` can detect them as
+    dead via ping failure. When ``spawn_actors`` is called again during
+    recovery, ``set_workers`` replaces the store contents with new live
+    handles.  Clearing eagerly would create a window where ``get_status()``
+    returns FAILED (0 workers) before new workers are ready, causing the
+    controller to misinterpret a pending restart as a failed one.
     """
 
     def __init__(
@@ -70,6 +78,10 @@ class TestbedRayTrainGroup:
         self._ft_id = ft_id
         self._step_interval = step_interval
         self._store: ray.actor.ActorHandle = _WorkerHandleStore.remote()
+        logger.info(
+            "TestbedRayTrainGroup created: ft_id=%s store_actor_id=%s nodes=%d",
+            ft_id, self._store._actor_id.hex(), len(training_nodes),
+        )
 
     async def _get_workers(self) -> list[ray.actor.ActorHandle]:
         return await self._store.get_all.remote()
@@ -78,6 +90,7 @@ class TestbedRayTrainGroup:
         return await self._store.get_by_node.remote(node_id)
 
     async def spawn_actors(self, run_id: str) -> list[ray.actor.ActorHandle]:
+        logger.info("spawn_actors: starting run_id=%s ft_id=%s", run_id, self._ft_id)
         workers: list[ray.actor.ActorHandle] = []
         node_to_workers: dict[str, list[ray.actor.ActorHandle]] = defaultdict(list)
         global_rank = 0
@@ -105,6 +118,10 @@ class TestbedRayTrainGroup:
                 global_rank += 1
 
         await self._store.set_workers.remote(workers, dict(node_to_workers))
+        logger.info(
+            "spawn_actors: store updated with %d workers for run_id=%s",
+            len(workers), run_id,
+        )
 
         for worker in workers:
             await worker.set_peers.remote([h for h in workers if h is not worker])
@@ -115,24 +132,42 @@ class TestbedRayTrainGroup:
         for worker in workers:
             worker.begin_loop.remote()
 
+        logger.info("spawn_actors: all %d workers started for run_id=%s", len(workers), run_id)
         return workers
 
     async def kill_all(self) -> None:
+        """Kill all training workers.
+
+        Does NOT clear the store — dead handles remain so that
+        ``all_alive()`` correctly detects failure via ping.  The store
+        is overwritten by the next ``spawn_actors`` call.
+        """
         workers = await self._get_workers()
+        logger.info("kill_all: killing %d workers", len(workers))
+
+        killed = 0
         for worker in workers:
             try:
                 ray.kill(worker, no_restart=True)
+                killed += 1
             except Exception:
-                logger.debug("kill_all: failed to kill worker", exc_info=True)
-        await self._store.clear.remote()
+                logger.info("kill_all: worker already dead", exc_info=True)
+
+        logger.info("kill_all: killed %d/%d workers", killed, len(workers))
 
     async def kill_on_node(self, node_id: str) -> None:
         workers = await self._get_workers_on_node(node_id)
+        logger.info("kill_on_node: killing %d workers on node %s", len(workers), node_id)
+
+        killed = 0
         for worker in workers:
             try:
                 ray.kill(worker, no_restart=True)
+                killed += 1
             except Exception:
-                logger.debug("kill_on_node: failed to kill worker on %s", node_id, exc_info=True)
+                logger.info("kill_on_node: worker already dead on %s", node_id, exc_info=True)
+
+        logger.info("kill_on_node: killed %d/%d on node %s", killed, len(workers), node_id)
 
     @property
     def all_workers(self) -> list[ray.actor.ActorHandle]:
@@ -140,21 +175,33 @@ class TestbedRayTrainGroup:
 
     async def set_hung(self, hung: bool) -> None:
         workers = await self._get_workers()
+        logger.info("set_hung: hung=%s workers=%d", hung, len(workers))
         for worker in workers:
-            await worker.set_hung.remote(hung)
+            try:
+                await worker.set_hung.remote(hung)
+            except Exception:
+                logger.info("set_hung: worker unreachable (dead?)", exc_info=True)
 
     async def set_custom_log_metrics(self, metrics: dict[str, float]) -> None:
         workers = await self._get_workers()
         for worker in workers:
-            await worker.set_custom_log_metrics.remote(metrics)
+            try:
+                await worker.set_custom_log_metrics.remote(metrics)
+            except Exception:
+                logger.info("set_custom_log_metrics: worker unreachable (dead?)", exc_info=True)
 
     async def all_alive(self) -> bool:
         workers = await self._get_workers()
         if not workers:
             return False
-        for worker in workers:
+
+        for i, worker in enumerate(workers):
             try:
                 await asyncio.wait_for(worker.ping.remote(), timeout=2.0)
             except Exception:
+                logger.info(
+                    "all_alive: worker %d/%d ping failed → not all alive",
+                    i, len(workers),
+                )
                 return False
         return True
