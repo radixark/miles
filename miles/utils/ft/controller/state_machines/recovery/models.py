@@ -57,6 +57,7 @@ class StopTimeDiagnosticsSt(RecoveryState):
 class NotifyHumansSt(RecoveryState):
     state_before: str
     reason: str = ""
+    bad_node_ids: tuple[str, ...] = ()
 
 
 class RecoveryDoneSt(RecoveryState):

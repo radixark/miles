@@ -356,3 +356,52 @@ class TestBuildControllerStatus:
 
         assert "rollout_0" in status.recoveries
         assert status.recoveries["rollout_0"].phase == "RestartingMainJobSt"
+
+    def test_notify_humans_bad_node_ids_used_in_status(self) -> None:
+        """Previously when _check_new_bad_nodes upgraded to NotifyHumansSt,
+        the newly discovered bad nodes were lost because NotifyHumansSt
+        had no bad_node_ids field. Now the merged set stored in
+        NotifyHumansSt.bad_node_ids is used by the status export."""
+        state = RecoveringSt(
+            recovery=NotifyHumansSt(
+                state_before="EvictingAndRestartingSt",
+                reason="too_many_simultaneous_bad_nodes",
+                bad_node_ids=("node-a", "node-b", "node-old"),
+            ),
+            trigger="crash",
+            recovery_start_time=_now(),
+            known_bad_node_ids=["node-old"],
+        )
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(state),
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+
+        assert status.recovery is not None
+        # Step 1: bad_nodes comes from NotifyHumansSt.bad_node_ids (merged set),
+        # not from RecoveringSt.known_bad_node_ids (which has only the old nodes)
+        assert status.recovery.bad_nodes == ["node-a", "node-b", "node-old"]
+
+    def test_notify_humans_empty_bad_node_ids_falls_back_to_known(self) -> None:
+        """When NotifyHumansSt.bad_node_ids is empty (e.g. diagnostics_clean),
+        fall back to RecoveringSt.known_bad_node_ids."""
+        state = RecoveringSt(
+            recovery=NotifyHumansSt(
+                state_before="StopTimeDiagnosticsSt",
+                reason="diagnostics_clean_no_bad_nodes",
+            ),
+            trigger="crash",
+            recovery_start_time=_now(),
+            known_bad_node_ids=["node-x"],
+        )
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(state),
+            mini_wandb=MiniWandb(),
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+
+        assert status.recovery is not None
+        assert status.recovery.bad_nodes == ["node-x"]

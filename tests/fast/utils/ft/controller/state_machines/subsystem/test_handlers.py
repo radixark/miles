@@ -738,6 +738,54 @@ class TestBadNodeCountSafeguard:
         assert set(result.recovery.pre_identified_bad_nodes) == {"node-old-1", "node-old-2", "node-new"}
         assert set(result.known_bad_node_ids) == {"node-old-1", "node-old-2", "node-new"}
 
+    @pytest.mark.asyncio
+    async def test_too_many_bad_nodes_includes_merged_set_in_notify_humans(self) -> None:
+        """Previously when too many new bad nodes triggered NotifyHumansSt,
+        the newly discovered bad nodes were lost — known_bad_node_ids stayed
+        at the old value and NotifyHumansSt had no bad node info. Now the
+        merged set (known + new) is stored in both NotifyHumansSt.bad_node_ids
+        and RecoveringSt.known_bad_node_ids."""
+        from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, StopTimeDiagnosticsSt
+        from miles.utils.ft.controller.state_machines.restart import EvictingSt
+
+        detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=["node-a", "node-b", "node-c"],
+                reason="three critical faults",
+                trigger=TriggerType.HARDWARE,
+            )
+        )
+
+        stepper = _make_stepper()
+        state = RecoveringSt(
+            recovery=EvictingAndRestartingSt(
+                restart=EvictingSt(bad_node_ids=["node-old"]),
+                failed_next_state=StopTimeDiagnosticsSt(),
+            ),
+            trigger=TriggerType.CRASH,
+            recovery_start_time=datetime.now(timezone.utc),
+            known_bad_node_ids=("node-old",),
+        )
+        result = await _step_last(stepper,
+            state,
+            _make_subsystem_context(
+                detectors=[detector],
+                recovery_stepper=_mock_stepper_yielding(None),
+                max_simultaneous_bad_nodes=3,
+                rank_placement={0: "node-old", 1: "node-a", 2: "node-b", 3: "node-c"},
+            ),
+        )
+        assert isinstance(result, RecoveringSt)
+        assert isinstance(result.recovery, NotifyHumansSt)
+
+        # Step 1: NotifyHumansSt carries the merged bad node set
+        expected_all = {"node-a", "node-b", "node-c", "node-old"}
+        assert set(result.recovery.bad_node_ids) == expected_all
+
+        # Step 2: known_bad_node_ids on RecoveringSt is also updated
+        assert set(result.known_bad_node_ids) == expected_all
+
 
 # ---------------------------------------------------------------------------
 # StateMachine integration

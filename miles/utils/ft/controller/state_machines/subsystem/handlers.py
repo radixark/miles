@@ -119,14 +119,17 @@ class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):
             crash_tracker=ctx.detector_crash_tracker,
         )
         if len(new_bad_nodes) >= ctx.max_simultaneous_bad_nodes:
+            known_bad = set(state.known_bad_node_ids)
+            all_bad = tuple(sorted(known_bad | new_bad_nodes))
             return RecoveringSt(
                 recovery=NotifyHumansSt(
                     state_before=type(state.recovery).__name__,
                     reason="too_many_simultaneous_bad_nodes",
+                    bad_node_ids=all_bad,
                 ),
                 trigger=state.trigger,
                 recovery_start_time=state.recovery_start_time,
-                known_bad_node_ids=state.known_bad_node_ids,
+                known_bad_node_ids=all_bad,
             )
 
         known_bad = set(state.known_bad_node_ids)
