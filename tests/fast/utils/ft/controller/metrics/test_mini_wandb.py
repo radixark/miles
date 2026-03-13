@@ -244,6 +244,51 @@ class TestMiniWandbStepMonotonicity:
         assert result[0] == (10, 1.0)
 
 
+class TestNonFiniteMetricSanitization:
+    """Previously MiniWandb.log_step() accepted any float value including NaN
+    and Inf without validation. Non-finite values in the 'iteration' metric
+    would crash build_controller_status() when it called int(iteration_val)."""
+
+    def test_nan_metric_is_dropped(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(
+            run_id="run-1",
+            step=1,
+            metrics={"iteration": float("nan"), "loss": 0.5},
+        )
+        assert wandb.latest("iteration") is None
+        assert wandb.latest("loss") == 0.5
+
+    def test_inf_metric_is_dropped(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(
+            run_id="run-1",
+            step=1,
+            metrics={"iteration": float("inf"), "loss": 0.5},
+        )
+        assert wandb.latest("iteration") is None
+        assert wandb.latest("loss") == 0.5
+
+    def test_negative_inf_is_dropped(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(
+            run_id="run-1",
+            step=1,
+            metrics={"iteration": float("-inf")},
+        )
+        assert wandb.latest("iteration") is None
+
+    def test_finite_values_pass_through(self) -> None:
+        wandb = MiniWandb(active_run_id="run-1")
+        wandb.log_step(
+            run_id="run-1",
+            step=1,
+            metrics={"iteration": 42.0, "loss": 0.01},
+        )
+        assert wandb.latest("iteration") == 42.0
+        assert wandb.latest("loss") == 0.01
+
+
 class TestMiniWandbActiveDataReturnsSnapshot:
     """_active_data() used to return the original deque reference.
     When log_step's _evict did popleft while a query method was iterating the

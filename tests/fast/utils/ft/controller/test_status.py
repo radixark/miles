@@ -19,7 +19,7 @@ from miles.utils.ft.controller.state_machines.recovery.models import (
     StopTimeDiagnosticsSt,
 )
 from miles.utils.ft.controller.state_machines.restart.models import EvictingSt, StoppingAndRestartingSt
-from miles.utils.ft.controller.status import build_controller_status, recovery_phase_name
+from miles.utils.ft.controller.status import _safe_iteration, build_controller_status, recovery_phase_name
 from miles.utils.ft.controller.types import ControllerMode
 from miles.utils.ft.utils.state_machine import StateMachine, StateMachineStepper
 
@@ -75,6 +75,28 @@ def _make_controller_sm(
         initial_state=controller_state,
         stepper=StateMachineStepper(handler_map={}),
     )
+
+
+class TestSafeIteration:
+    """Previously int(iteration_val) was called without checking isfinite(),
+    so NaN or Inf would crash the status API."""
+
+    def test_none_returns_none(self) -> None:
+        assert _safe_iteration(None) is None
+
+    def test_finite_returns_int(self) -> None:
+        assert _safe_iteration(42.0) == 42
+        assert _safe_iteration(0.0) == 0
+        assert _safe_iteration(-1.0) == -1
+
+    def test_nan_returns_none(self) -> None:
+        assert _safe_iteration(float("nan")) is None
+
+    def test_inf_returns_none(self) -> None:
+        assert _safe_iteration(float("inf")) is None
+
+    def test_negative_inf_returns_none(self) -> None:
+        assert _safe_iteration(float("-inf")) is None
 
 
 class TestBuildControllerStatus:
@@ -405,6 +427,29 @@ class TestBuildControllerStatus:
 
         assert status.recovery is not None
         assert status.recovery.bad_nodes == ["node-x"]
+
+    def test_nan_iteration_returns_none(self) -> None:
+        """Previously int(float('nan')) would raise ValueError, crashing
+        the status API. Now non-finite values are safely converted to None."""
+        wandb = make_fake_mini_wandb(steps={10: {"iteration": float("nan")}})
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
+            mini_wandb=wandb,
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+        assert status.latest_iteration is None
+
+    def test_inf_iteration_returns_none(self) -> None:
+        """int(float('inf')) raises OverflowError — guard against it."""
+        wandb = make_fake_mini_wandb(steps={10: {"iteration": float("inf")}})
+        status = build_controller_status(
+            controller_state_machine=_make_controller_sm(DetectingAnomalySt()),
+            mini_wandb=wandb,
+            training_rank_roster=TrainingRankRoster(run_id="unused", scrape_target_manager=NullScrapeTargetManager()),
+            tick_count=0,
+        )
+        assert status.latest_iteration is None
 
     def test_restarting_main_job_shows_frozen_recovery_phase_and_bad_nodes(self) -> None:
         """Previously RestartingMainJobSt exported phase='RestartingMainJobSt'

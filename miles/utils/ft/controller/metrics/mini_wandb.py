@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -69,10 +70,12 @@ class MiniWandb(TrainingMetricStoreProtocol):
 
         self._last_step[run_id] = step
 
+        sanitized = _sanitize_metrics(metrics)
+
         record = _StepRecord(
             step=step,
             receive_time=receive_time or datetime.now(timezone.utc),
-            metrics=metrics,
+            metrics=sanitized,
         )
 
         data = self._runs.setdefault(run_id, deque())
@@ -150,6 +153,16 @@ class MiniWandb(TrainingMetricStoreProtocol):
         if not data:
             del self._runs[run_id]
             self._last_step.pop(run_id, None)
+
+
+def _sanitize_metrics(metrics: dict[str, float]) -> dict[str, float]:
+    sanitized: dict[str, float] = {}
+    for key, value in metrics.items():
+        if not math.isfinite(value):
+            logger.warning("non_finite_metric_dropped key=%s value=%s", key, value)
+            continue
+        sanitized[key] = value
+    return sanitized
 
 
 @dataclass

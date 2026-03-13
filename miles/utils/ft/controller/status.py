@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import math
+
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
@@ -12,6 +15,8 @@ from miles.utils.ft.controller.state_machines.recovery import (
 )
 from miles.utils.ft.controller.types import ControllerStatus, RecoveryInfo
 from miles.utils.ft.utils.state_machine import StateMachine
+
+logger = logging.getLogger(__name__)
 
 
 def recovery_phase_name(recovery: RecoveryState) -> str:
@@ -47,6 +52,15 @@ def _collect_recoveries(subsystems: dict[str, object]) -> dict[str, RecoveryInfo
     return recoveries
 
 
+def _safe_iteration(value: float | None) -> int | None:
+    if value is None:
+        return None
+    if not math.isfinite(value):
+        logger.warning("non_finite_iteration_value value=%s", value)
+        return None
+    return int(value)
+
+
 def build_controller_status(
     *,
     controller_state_machine: StateMachine[MainState, MainContext],
@@ -56,7 +70,7 @@ def build_controller_status(
 ) -> ControllerStatus:
     controller_state = controller_state_machine.state
     iteration_val = mini_wandb.latest(metric_name="iteration")
-    latest_iteration = int(iteration_val) if iteration_val is not None else None
+    latest_iteration = _safe_iteration(iteration_val)
 
     match controller_state:
         case RestartingMainJobSt():
