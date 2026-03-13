@@ -238,7 +238,7 @@ class MilesTestbed:
         except Exception:
             logger.debug("shutdown: controller shutdown failed", exc_info=True)
 
-        self._train_group.kill_all()
+        await self._train_group.kill_all()
 
         for name in self._cleanup_names:
             try:
@@ -265,10 +265,10 @@ class MilesTestbed:
     # ------------------------------------------------------------------
 
     async def kill_training_on_node(self, node_id: str) -> None:
-        self._train_group.kill_on_node(node_id)
+        await self._train_group.kill_on_node(node_id)
 
     async def crash_training(self) -> None:
-        self._train_group.kill_all()
+        await self._train_group.kill_all()
 
     async def inject_gpu_xid(self, node_id: str, count: float = 1.0) -> None:
         state = self._collector_states.get(node_id)

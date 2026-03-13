@@ -37,7 +37,7 @@ class TestbedMainJob(MainJobProtocol):
             logger.error("spawn_actors failed", exc_info=True)
 
     async def stop(self, timeout_seconds: int = 300) -> None:
-        self._train_group.kill_all()
+        await self._train_group.kill_all()
 
     async def get_status(self) -> JobStatus:
         if await self._train_group.all_alive():

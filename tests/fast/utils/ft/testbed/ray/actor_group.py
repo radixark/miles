@@ -71,11 +71,11 @@ class TestbedRayTrainGroup:
         self._step_interval = step_interval
         self._store: ray.actor.ActorHandle = _WorkerHandleStore.remote()
 
-    def _get_workers(self) -> list[ray.actor.ActorHandle]:
-        return ray.get(self._store.get_all.remote())
+    async def _get_workers(self) -> list[ray.actor.ActorHandle]:
+        return await self._store.get_all.remote()
 
-    def _get_workers_on_node(self, node_id: str) -> list[ray.actor.ActorHandle]:
-        return ray.get(self._store.get_by_node.remote(node_id))
+    async def _get_workers_on_node(self, node_id: str) -> list[ray.actor.ActorHandle]:
+        return await self._store.get_by_node.remote(node_id)
 
     async def spawn_actors(self, run_id: str) -> list[ray.actor.ActorHandle]:
         workers: list[ray.actor.ActorHandle] = []
@@ -104,7 +104,7 @@ class TestbedRayTrainGroup:
                 node_to_workers[node_config.node_id].append(worker)
                 global_rank += 1
 
-        ray.get(self._store.set_workers.remote(workers, dict(node_to_workers)))
+        await self._store.set_workers.remote(workers, dict(node_to_workers))
 
         for worker in workers:
             await worker.set_peers.remote([h for h in workers if h is not worker])
@@ -117,17 +117,17 @@ class TestbedRayTrainGroup:
 
         return workers
 
-    def kill_all(self) -> None:
-        workers = self._get_workers()
+    async def kill_all(self) -> None:
+        workers = await self._get_workers()
         for worker in workers:
             try:
                 ray.kill(worker, no_restart=True)
             except Exception:
                 logger.debug("kill_all: failed to kill worker", exc_info=True)
-        ray.get(self._store.clear.remote())
+        await self._store.clear.remote()
 
-    def kill_on_node(self, node_id: str) -> None:
-        workers = self._get_workers_on_node(node_id)
+    async def kill_on_node(self, node_id: str) -> None:
+        workers = await self._get_workers_on_node(node_id)
         for worker in workers:
             try:
                 ray.kill(worker, no_restart=True)
@@ -136,20 +136,20 @@ class TestbedRayTrainGroup:
 
     @property
     def all_workers(self) -> list[ray.actor.ActorHandle]:
-        return self._get_workers()
+        return ray.get(self._store.get_all.remote())
 
     async def set_hung(self, hung: bool) -> None:
-        workers = self._get_workers()
+        workers = await self._get_workers()
         for worker in workers:
             await worker.set_hung.remote(hung)
 
     async def set_custom_log_metrics(self, metrics: dict[str, float]) -> None:
-        workers = self._get_workers()
+        workers = await self._get_workers()
         for worker in workers:
             await worker.set_custom_log_metrics.remote(metrics)
 
     async def all_alive(self) -> bool:
-        workers = self._get_workers()
+        workers = await self._get_workers()
         if not workers:
             return False
         for worker in workers:
