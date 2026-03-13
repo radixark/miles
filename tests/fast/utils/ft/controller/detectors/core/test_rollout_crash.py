@@ -84,9 +84,31 @@ class TestRolloutCrashDetector:
         assert decision.action == ActionType.NONE
         assert "no rollout_cell_alive metric yet" in decision.reason
 
-    def test_no_active_nodes_returns_no_fault(self) -> None:
+    def test_no_active_nodes_still_detects_crash(self) -> None:
+        """Rollout crash is a cell-level software check. It used to be gated by
+        active_node_ids, which meant missing or stale cell_node_ids mapping
+        would silence the detector entirely even when rollout_cell_alive=0."""
         store = make_fake_metric_store()
-        inject_rollout_cell_alive(store, cell_id="0", alive=False)
+        now = datetime.now(timezone.utc)
+        for i in range(8):
+            inject_rollout_cell_alive(
+                store, cell_id="0", alive=False, timestamp=now - timedelta(seconds=70 - i * 10)
+            )
+
+        detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
+        ctx = make_detector_context(
+            metric_store=store,
+            active_node_ids=set(),
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.bad_node_ids == []
+
+    def test_no_active_nodes_alive_cell_still_healthy(self) -> None:
+        store = make_fake_metric_store()
+        inject_rollout_cell_alive(store, cell_id="0", alive=True)
         detector = RolloutCrashDetector(cell_id="0", alive_threshold_seconds=60.0)
         ctx = make_detector_context(
             metric_store=store,
@@ -96,7 +118,7 @@ class TestRolloutCrashDetector:
         decision = detector.evaluate(ctx)
 
         assert decision.action == ActionType.NONE
-        assert "no active nodes" in decision.reason
+        assert "cell alive" in decision.reason
 
     def test_intermittent_dead_returns_no_fault(self) -> None:
         """Cell flips between alive and dead within the window -- not a persistent crash."""
