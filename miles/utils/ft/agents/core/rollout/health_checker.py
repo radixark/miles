@@ -43,6 +43,11 @@ class RolloutHealthChecker:
             entry.cell_id: entry for entry in cells
         }
 
+        # Accepted product decision: rollout-agent construction is only
+        # supported from an already-running event loop. We intentionally do
+        # not offer a sync-safe/lazy-start variant for callers outside async
+        # contexts; future audits should treat that as a non-goal unless
+        # product requirements change.
         self._task = asyncio.create_task(self._loop())
 
     @property
