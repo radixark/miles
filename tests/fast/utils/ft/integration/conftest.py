@@ -23,6 +23,23 @@ _TIMEOUT_SCALE = float(os.environ.get("FT_TEST_TIMEOUT_SCALE", "1.0"))
 FAST_TIMEOUT = 30.0 * _TIMEOUT_SCALE
 RECOVERY_TIMEOUT = 60.0 * _TIMEOUT_SCALE
 LONG_RECOVERY_TIMEOUT = 120.0 * _TIMEOUT_SCALE
+_WORKER_PORT_BLOCK_SIZE = 100
+_WORKER_PORT_BASE = 20000
+
+
+def _ray_start_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER"] = "1"
+    return env
+
+
+def _worker_port_range_args(node_index: int) -> list[str]:
+    start_port = _WORKER_PORT_BASE + node_index * _WORKER_PORT_BLOCK_SIZE
+    end_port = start_port + _WORKER_PORT_BLOCK_SIZE - 1
+    return [
+        f"--min-worker-port={start_port}",
+        f"--max-worker-port={end_port}",
+    ]
 
 
 def _connect_to_started_ray_cluster(start_stdout: str) -> tuple[Any, str]:
@@ -73,6 +90,7 @@ def _init_local_ray() -> str:
         ],
         check=True,
         capture_output=True,
+        env=_ray_start_env(),
         text=True,
     )
 
@@ -205,10 +223,12 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
             "--dashboard-host=127.0.0.1",
             "--dashboard-port=0",
             "--dashboard-agent-listen-port=0",
+            *_worker_port_range_args(node_index=0),
             f"--temp-dir={temp_dir}",
         ],
         check=True,
         capture_output=True,
+        env=_ray_start_env(),
         text=True,
     )
 
@@ -223,10 +243,12 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
                 f"--node-ip-address={node_ip}",
                 "--num-cpus=8",
                 "--num-gpus=0",
+                *_worker_port_range_args(node_index=i),
                 f"--temp-dir={temp_dir}",
             ],
             check=True,
             capture_output=True,
+            env=_ray_start_env(),
             text=True,
         )
 

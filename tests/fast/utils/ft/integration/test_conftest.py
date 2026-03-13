@@ -50,3 +50,14 @@ To connect to this Ray cluster:
     assert context is fake_context
     assert gcs_address == "127.0.0.1:54321"
     assert calls == ["auto"]
+
+
+def test_worker_port_range_args_allocates_non_overlapping_blocks() -> None:
+    assert integration_conftest._worker_port_range_args(node_index=0) == [
+        "--min-worker-port=20000",
+        "--max-worker-port=20099",
+    ]
+    assert integration_conftest._worker_port_range_args(node_index=3) == [
+        "--min-worker-port=20300",
+        "--max-worker-port=20399",
+    ]
