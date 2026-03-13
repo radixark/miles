@@ -32,10 +32,16 @@ class ScrapeLoop:
 
     def add_target(self, target_id: str, address: str) -> None:
         self._targets[target_id] = address
+        logger.info("mini_prom: scrape target added target_id=%s, address=%s", target_id, address)
 
     def remove_target(self, target_id: str) -> None:
+        was_present = target_id in self._targets
         self._targets.pop(target_id, None)
         self._consecutive_failures.pop(target_id, None)
+        if was_present:
+            logger.info("mini_prom: scrape target removed target_id=%s", target_id)
+        else:
+            logger.debug("mini_prom: remove_target no-op target_id=%s not found", target_id)
 
     @property
     def targets(self) -> dict[str, str]:
@@ -44,6 +50,7 @@ class ScrapeLoop:
     async def scrape_once(self) -> None:
         targets = list(self._targets.items())
         if not targets:
+            logger.debug("mini_prom: scrape_once skipped, no targets")
             return
 
         client = self._ensure_client()
@@ -60,7 +67,7 @@ class ScrapeLoop:
                 count = self._consecutive_failures.get(target_id, 0) + 1
                 self._consecutive_failures[target_id] = count
                 logger.warning(
-                    "Failed to scrape target %s at %s (consecutive_failures=%d)",
+                    "mini_prom: scrape failed target=%s, address=%s, consecutive_failures=%d",
                     target_id,
                     address,
                     count,
@@ -78,6 +85,7 @@ class ScrapeLoop:
             )
 
     async def start(self) -> None:
+        logger.info("mini_prom: scrape loop starting, interval=%.1fs", self._scrape_interval_seconds)
         self._running = True
         try:
             while self._running:
@@ -87,6 +95,7 @@ class ScrapeLoop:
             await self._close_client()
 
     async def stop(self) -> None:
+        logger.info("mini_prom: scrape loop stopping")
         self._running = False
 
     async def _close_client(self) -> None:

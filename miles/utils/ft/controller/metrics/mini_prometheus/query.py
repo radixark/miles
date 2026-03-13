@@ -67,6 +67,12 @@ def query_single_latest(
         value_fn=lambda samples: samples[-1].value,
     )
     if len(df) > 1:
+        logger.error(
+            "mini_prom: query_single_latest ambiguous metric=%s, filters=%s, matched=%d",
+            metric_name,
+            label_filters,
+            len(df),
+        )
         raise AmbiguousSeriesError(
             metric_name=metric_name,
             label_filters=label_filters,
