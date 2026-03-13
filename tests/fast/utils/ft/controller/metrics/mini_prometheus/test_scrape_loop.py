@@ -135,6 +135,7 @@ class TestStop:
     async def test_start_loop_cleans_up_client_after_stop(self) -> None:
         """start() closes the client in its finally block after the loop exits."""
         loop = ScrapeLoop(store=_FakeStore(), scrape_interval_seconds=0.01)
+        loop.add_target("t1", "http://127.0.0.1:1/metrics")
         start_task = asyncio.create_task(loop.start())
 
         await asyncio.sleep(0.03)
