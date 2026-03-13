@@ -33,11 +33,10 @@ if TYPE_CHECKING:
     from tests.fast.utils.ft.integration.conftest import RayNodeInfo
 
 logger = logging.getLogger(__name__)
-_TESTBED_EXPORTER_HOST = "127.0.0.1"
 
 
-def _actor_runtime_env() -> dict[str, dict[str, str]]:
-    return {"env_vars": {MILES_HOST_IP_ENV: _TESTBED_EXPORTER_HOST}}
+def _actor_runtime_env(host_ip: str) -> dict[str, dict[str, str]]:
+    return {"env_vars": {MILES_HOST_IP_ENV: host_ip}}
 
 
 @dataclass
@@ -121,6 +120,13 @@ class MilesTestbed:
         train_group = TestbedRayTrainGroup(
             training_nodes=config.training_nodes,
             node_mapping=node_mapping.training,
+            node_ip_mapping={
+                node_config.node_id: _ray_node_ip_for_id(
+                    ray_nodes=ray_nodes,
+                    ray_node_id=node_mapping.training[node_config.node_id],
+                )
+                for node_config in config.training_nodes
+            },
             ft_id=ft_id,
             step_interval=config.step_interval,
         )
@@ -179,7 +185,12 @@ class MilesTestbed:
                     node_id=ray_node_id,
                     soft=False,
                 ),
-                runtime_env=_actor_runtime_env(),
+                runtime_env=_actor_runtime_env(
+                    host_ip=_ray_node_ip_for_id(
+                        ray_nodes=ray_nodes,
+                        ray_node_id=ray_node_id,
+                    )
+                ),
             ).remote(
                 builder=build_node_agent,
                 node_id=node_id,
@@ -211,6 +222,13 @@ class MilesTestbed:
                 ft_id=ft_id,
                 cell_ids=rollout_cell_ids,
                 rollout_node_mapping=rollout_node_mapping,
+                rollout_node_ip_mapping={
+                    cell_id: _ray_node_ip_for_id(
+                        ray_nodes=ray_nodes,
+                        ray_node_id=rollout_node_mapping[cell_id],
+                    )
+                    for cell_id in rollout_cell_ids
+                },
             )
             cleanup_handles.append(rollout_manager)
 
@@ -571,6 +589,14 @@ def _build_node_mapping(
         rollout=rollout_map,
         spare=spare_map,
     )
+
+
+def _ray_node_ip_for_id(ray_nodes: list[RayNodeInfo], ray_node_id: str) -> str:
+    for ray_node in ray_nodes:
+        if ray_node.ray_node_id == ray_node_id:
+            return ray_node.node_ip
+
+    raise KeyError(f"Unknown Ray node id: {ray_node_id}")
 
 
 def _rollout_num_cells_to_ids(num_cells: int) -> list[str]:

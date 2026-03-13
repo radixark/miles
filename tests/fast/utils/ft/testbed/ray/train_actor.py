@@ -30,6 +30,7 @@ class TestbedTrainRayActor:
         rank: int,
         world_size: int,
         node_id: str,
+        host_ip: str,
         run_id: str,
         step_interval: float,
     ) -> None:
@@ -37,6 +38,7 @@ class TestbedTrainRayActor:
         self._rank = rank
         self._world_size = world_size
         self._node_id = node_id
+        self._host_ip = host_ip
         self._run_id = run_id
         self._step_interval = step_interval
         self._peers: list[ray.actor.ActorHandle] = []
@@ -65,7 +67,7 @@ class TestbedTrainRayActor:
         """
         os.environ["MILES_FT_ID"] = self._ft_id
         os.environ["MILES_FT_TRAINING_RUN_ID"] = self._run_id
-        os.environ[MILES_HOST_IP_ENV] = "127.0.0.1"
+        os.environ[MILES_HOST_IP_ENV] = self._host_ip
 
         self._controller_client = RayControllerClient(ft_id=self._ft_id)
         self._agent = FtTrainingRankAgent(
@@ -127,3 +129,6 @@ class TestbedTrainRayActor:
 
     def get_iteration(self) -> int:
         return self._iteration
+
+    def get_host_ip(self) -> str:
+        return self._host_ip

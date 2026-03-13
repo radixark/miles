@@ -70,11 +70,13 @@ class TestbedRayTrainGroup:
         self,
         training_nodes: list[TestbedNodeConfig],
         node_mapping: dict[str, str],
+        node_ip_mapping: dict[str, str],
         ft_id: str,
         step_interval: float,
     ) -> None:
         self._training_nodes = training_nodes
         self._node_mapping = node_mapping
+        self._node_ip_mapping = node_ip_mapping
         self._ft_id = ft_id
         self._step_interval = step_interval
         self._store: ray.actor.ActorHandle = _WorkerHandleStore.remote()
@@ -110,6 +112,7 @@ class TestbedRayTrainGroup:
                     rank=global_rank,
                     world_size=world_size,
                     node_id=node_config.node_id,
+                    host_ip=self._node_ip_mapping[node_config.node_id],
                     run_id=run_id,
                     step_interval=self._step_interval,
                 )

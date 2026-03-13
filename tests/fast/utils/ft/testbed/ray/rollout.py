@@ -27,10 +27,12 @@ class TestbedRolloutManager:
         ft_id: str,
         cell_ids: list[str],
         rollout_node_mapping: dict[str, str],
+        rollout_node_ip_mapping: dict[str, str],
     ) -> None:
         self._ft_id = ft_id
         self._cell_ids = cell_ids
         self._rollout_node_mapping = rollout_node_mapping
+        self._rollout_node_ip_mapping = rollout_node_ip_mapping
         self._engines: dict[str, ray.actor.ActorHandle] = {}
         self.all_rollout_engines: list[ray.actor.ActorHandle] = []
 
@@ -44,7 +46,8 @@ class TestbedRolloutManager:
         """
         from miles.utils.ft.factories.rollout_agent import build_rollout_agent
 
-        os.environ[MILES_HOST_IP_ENV] = "127.0.0.1"
+        if self._cell_ids:
+            os.environ[MILES_HOST_IP_ENV] = self._rollout_node_ip_mapping[self._cell_ids[0]]
         build_rollout_agent(
             cell_ids=self._cell_ids,
             get_engines=lambda cid: [self._engines[cid]] if cid in self._engines else [],
