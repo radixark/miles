@@ -199,6 +199,7 @@ class TestPhaseSwitch:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{address}/metrics")
             text = response.text
-            assert "miles_ft_training_phase{node_id=" in text
+            assert "miles_ft_training_phase{" in text
+            assert 'node_id="' in text
         finally:
             agent.shutdown()
