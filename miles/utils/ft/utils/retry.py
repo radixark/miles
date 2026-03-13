@@ -49,6 +49,7 @@ async def retry_async(
     if max_retries < 1:
         raise ValueError(f"max_retries must be >= 1, got {max_retries}")
 
+    logger.debug("retry: retry_async starting description=%s, max_retries=%d", description, max_retries)
     _sleep = sleep_fn or asyncio.sleep
     last_exc: Exception | None = None
 
@@ -118,6 +119,7 @@ def retry_sync(
     if max_retries < 1:
         raise ValueError(f"max_retries must be >= 1, got {max_retries}")
 
+    logger.debug("retry: retry_sync starting description=%s, max_retries=%d", description, max_retries)
     last_exc: Exception | None = None
 
     for attempt in range(max_retries):

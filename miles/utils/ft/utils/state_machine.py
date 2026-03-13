@@ -68,11 +68,13 @@ class StateMachineStepper(Generic[StateT, ContextT]):
 
     async def __call__(self, state: StateT, context: ContextT) -> AsyncGenerator[StateT, None]:
         if type(state) in self._terminal_states:
+            logger.debug("state_machine: stepper skipping terminal state=%s", type(state).__name__)
             return
 
         if self._pre_dispatch is not None:
             result = await self._pre_dispatch(state, context)
             if result is not None:
+                logger.debug("state_machine: pre_dispatch produced state=%s", type(result).__name__)
                 yield result
                 return
 

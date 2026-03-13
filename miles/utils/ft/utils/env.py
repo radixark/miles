@@ -8,18 +8,25 @@ set after import time.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 
 def get_ft_id() -> str:
-    return os.environ.get("MILES_FT_ID", "")
+    value = os.environ.get("MILES_FT_ID", "")
+    logger.debug("env: get_ft_id=%s", value or "(empty)")
+    return value
 
 
 def get_run_id() -> str:
     value = os.environ.get("MILES_FT_RUN_ID", "")
     if not value:
+        logger.error("env: MILES_FT_RUN_ID not set")
         raise RuntimeError("MILES_FT_RUN_ID environment variable is required but not set")
+    logger.debug("env: get_run_id=%s", value)
     return value
 
 

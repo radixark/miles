@@ -39,6 +39,10 @@ async def poll_until(
     if poll_interval <= 0:
         raise ValueError(f"poll_interval must be > 0, got {poll_interval}")
 
+    logger.debug(
+        "polling: poll_until starting description=%s, timeout=%s, poll_interval=%s",
+        description, timeout, poll_interval,
+    )
     deadline = time.monotonic() + timeout
     poll_count = 0
 
@@ -65,4 +69,5 @@ async def poll_until(
 
         await asyncio.sleep(poll_interval)
 
+    logger.warning("polling: poll_until timed out description=%s, timeout=%ss, poll_count=%d", description, timeout, poll_count)
     raise TimeoutError(f"{description} not met within {timeout}s")

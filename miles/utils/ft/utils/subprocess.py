@@ -20,6 +20,7 @@ async def run_subprocess_with_timeout(
 
     Raises ``OSError`` if the binary cannot be executed at all.
     """
+    logger.info("subprocess: running cmd=%s, timeout=%d", cmd[0], timeout_seconds)
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -33,12 +34,14 @@ async def run_subprocess_with_timeout(
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError:
+        logger.warning("subprocess: timed out cmd=%s, timeout=%d, pid=%s", cmd[0], timeout_seconds, process.pid)
         try:
             process.kill()
             await process.wait()
         except Exception:
-            logger.warning("subprocess_kill_failed cmd=%s", cmd[0], exc_info=True)
+            logger.warning("subprocess: kill_failed cmd=%s", cmd[0], exc_info=True)
         raise
 
     assert process.returncode is not None
+    logger.info("subprocess: completed cmd=%s, returncode=%d", cmd[0], process.returncode)
     return stdout_bytes, stderr_bytes, process.returncode
