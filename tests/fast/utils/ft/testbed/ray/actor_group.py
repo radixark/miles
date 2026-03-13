@@ -13,11 +13,49 @@ from tests.fast.utils.ft.testbed.ray.train_actor import TestbedTrainRayActor
 logger = logging.getLogger(__name__)
 
 
+@ray.remote
+class _WorkerHandleStore:
+    """Shared Ray actor that stores training worker handles.
+
+    Both the test process and the controller actor process reference the
+    same ``_WorkerHandleStore`` instance, so worker handles created inside
+    the controller (by ``spawn_actors``) are visible to the test side for
+    fault injection (``kill_all``, ``set_hung``, etc.).
+    """
+
+    def __init__(self) -> None:
+        self._workers: list[ray.actor.ActorHandle] = []
+        self._node_to_workers: dict[str, list[ray.actor.ActorHandle]] = {}
+
+    def set_workers(
+        self,
+        workers: list[ray.actor.ActorHandle],
+        node_to_workers: dict[str, list[ray.actor.ActorHandle]],
+    ) -> None:
+        self._workers = workers
+        self._node_to_workers = dict(node_to_workers)
+
+    def get_all(self) -> list[ray.actor.ActorHandle]:
+        return list(self._workers)
+
+    def get_by_node(self, node_id: str) -> list[ray.actor.ActorHandle]:
+        return list(self._node_to_workers.get(node_id, []))
+
+    def clear(self) -> None:
+        self._workers = []
+        self._node_to_workers = {}
+
+
 class TestbedRayTrainGroup:
     """Manages a group of TestbedTrainRayActor instances across Ray nodes.
 
     Uses NodeAffinitySchedulingStrategy to pin actors to specific Ray
     nodes, simulating multi-node training topology.
+
+    Worker handles are stored in a shared ``_WorkerHandleStore`` Ray actor
+    so that both the controller process (which creates workers via
+    ``spawn_actors``) and the test process (which injects faults via
+    ``kill_all``, ``set_hung``, etc.) operate on the same set of handles.
     """
 
     def __init__(
@@ -31,11 +69,17 @@ class TestbedRayTrainGroup:
         self._node_mapping = node_mapping
         self._ft_id = ft_id
         self._step_interval = step_interval
-        self._workers: list[ray.actor.ActorHandle] = []
-        self._node_to_workers: dict[str, list[ray.actor.ActorHandle]] = defaultdict(list)
+        self._store: ray.actor.ActorHandle = _WorkerHandleStore.remote()
+
+    def _get_workers(self) -> list[ray.actor.ActorHandle]:
+        return ray.get(self._store.get_all.remote())
+
+    def _get_workers_on_node(self, node_id: str) -> list[ray.actor.ActorHandle]:
+        return ray.get(self._store.get_by_node.remote(node_id))
 
     async def spawn_actors(self, run_id: str) -> list[ray.actor.ActorHandle]:
         workers: list[ray.actor.ActorHandle] = []
+        node_to_workers: dict[str, list[ray.actor.ActorHandle]] = defaultdict(list)
         global_rank = 0
         world_size = sum(n.num_ranks for n in self._training_nodes)
 
@@ -57,10 +101,10 @@ class TestbedRayTrainGroup:
                     step_interval=self._step_interval,
                 )
                 workers.append(worker)
-                self._node_to_workers[node_config.node_id].append(worker)
+                node_to_workers[node_config.node_id].append(worker)
                 global_rank += 1
 
-        self._workers = workers
+        ray.get(self._store.set_workers.remote(workers, dict(node_to_workers)))
 
         for worker in workers:
             await worker.set_peers.remote([h for h in workers if h is not worker])
@@ -74,16 +118,16 @@ class TestbedRayTrainGroup:
         return workers
 
     def kill_all(self) -> None:
-        for worker in self._workers:
+        workers = self._get_workers()
+        for worker in workers:
             try:
                 ray.kill(worker, no_restart=True)
             except Exception:
                 logger.debug("kill_all: failed to kill worker", exc_info=True)
-        self._workers.clear()
-        self._node_to_workers.clear()
+        ray.get(self._store.clear.remote())
 
     def kill_on_node(self, node_id: str) -> None:
-        workers = self._node_to_workers.get(node_id, [])
+        workers = self._get_workers_on_node(node_id)
         for worker in workers:
             try:
                 ray.kill(worker, no_restart=True)
@@ -92,20 +136,23 @@ class TestbedRayTrainGroup:
 
     @property
     def all_workers(self) -> list[ray.actor.ActorHandle]:
-        return list(self._workers)
+        return self._get_workers()
 
     async def set_hung(self, hung: bool) -> None:
-        for worker in self._workers:
+        workers = self._get_workers()
+        for worker in workers:
             await worker.set_hung.remote(hung)
 
     async def set_custom_log_metrics(self, metrics: dict[str, float]) -> None:
-        for worker in self._workers:
+        workers = self._get_workers()
+        for worker in workers:
             await worker.set_custom_log_metrics.remote(metrics)
 
     async def all_alive(self) -> bool:
-        if not self._workers:
+        workers = self._get_workers()
+        if not workers:
             return False
-        for worker in self._workers:
+        for worker in workers:
             try:
                 await asyncio.wait_for(worker.ping.remote(), timeout=2.0)
             except Exception:

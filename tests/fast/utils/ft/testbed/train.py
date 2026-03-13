@@ -119,6 +119,7 @@ class MilesTestbed:
             ft_id=ft_id,
             step_interval=config.step_interval,
         )
+        cleanup_handles.append(train_group._store)
         main_job = TestbedMainJob(train_group=train_group)
 
         # Step 5: Create FtControllerActor with real build_ft_controller
