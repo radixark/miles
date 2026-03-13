@@ -40,9 +40,15 @@ class RayRolloutActuator(SubsystemActuatorProtocol):
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
+            logger.warning(
+                "ray: rollout_actuator_stop timed out cell_id=%s, timeout=%d", self._cell_id, timeout_seconds,
+            )
             raise TimeoutError(
                 f"rollout actuator stop timed out after {timeout_seconds}s for cell_id={self._cell_id}"
             ) from None
 
     async def get_status(self) -> JobStatus:
-        return await self._get_handle().get_cell_status.remote(self._cell_id)  # type: ignore[attr-defined]
+        logger.debug("ray: rollout_actuator_get_status cell_id=%s", self._cell_id)
+        status = await self._get_handle().get_cell_status.remote(self._cell_id)  # type: ignore[attr-defined]
+        logger.debug("ray: rollout_actuator_get_status cell_id=%s, status=%s", self._cell_id, status)
+        return status

@@ -48,8 +48,13 @@ class RayControllerClient(ControllerClientProtocol):
     ) -> None:
         controller = self._get_handle()
         if controller is None:
+            logger.error("ray: register_training_rank failed, controller not available")
             raise RuntimeError("controller not available")
 
+        logger.info(
+            "ray: register_training_rank run_id=%s, rank=%d, world_size=%d, node_id=%s, pid=%d",
+            run_id, rank, world_size, node_id, pid,
+        )
         ray.get(
             controller.register_training_rank.remote(
                 run_id=run_id,
@@ -70,6 +75,7 @@ class RayControllerClient(ControllerClientProtocol):
     ) -> None:
         controller = self._get_handle()
         if controller is None:
+            logger.debug("ray: log_step skipped, controller handle not available")
             return
 
         controller.log_step.remote(

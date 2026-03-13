@@ -38,6 +38,7 @@ async def stop_all_active_jobs(
     all_jobs = await asyncio.to_thread(client.list_jobs)
     active = [j for j in all_jobs if _parse_ray_status(j.status) not in _TERMINAL_STATUSES]
     if not active:
+        logger.debug("ray: stop_all_active_jobs no active jobs found")
         return 0
 
     stopped = 0
@@ -104,6 +105,7 @@ class RayMainJob(MainJobProtocol):
 
     async def _start_locked(self) -> str:
         if self._job_id is not None:
+            logger.error("ray: cannot submit, previous job still tracked job_id=%s", self._job_id)
             raise RuntimeError(f"Cannot submit: previous job {self._job_id} still tracked. " "Call stop_job() first.")
 
         run_id = uuid4().hex[:8]
@@ -137,9 +139,10 @@ class RayMainJob(MainJobProtocol):
 
     async def _stop_locked(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
         if self._job_id is None:
-            logger.warning("stop_job called with no active job")
+            logger.warning("ray: stop_job called with no active job")
             return
 
+        logger.info("ray: stop_job starting job_id=%s, timeout=%d", self._job_id, timeout_seconds)
         try:
             await _stop_job(
                 client=self._client,
@@ -149,6 +152,7 @@ class RayMainJob(MainJobProtocol):
             )
             self._job_id = None
         except Exception:
+            logger.error("ray: stop_job failed job_id=%s, reconciling", self._job_id, exc_info=True)
             self._reconcile_after_stop_failure()
             raise
 
@@ -182,6 +186,7 @@ class RayMainJob(MainJobProtocol):
 
     async def _get_status_locked(self) -> JobStatus:
         if self._job_id is None:
+            logger.debug("ray: get_status returning STOPPED, no active job")
             return JobStatus.STOPPED
 
         start = time.monotonic()

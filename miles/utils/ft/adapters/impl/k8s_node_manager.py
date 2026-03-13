@@ -54,10 +54,12 @@ class K8sNodeManager(NodeManagerProtocol):
         self._init_lock = asyncio.Lock()
 
     async def mark_node_bad(self, node_id: str, reason: str, node_metadata: dict[str, str] | None = None) -> None:
+        logger.info("k8s: mark_node_bad starting node_id=%s, reason=%s", node_id, reason)
         await self._ensure_ray_cluster_name()
 
         async with self._init_lock:
             if not self._affinity_validated:
+                logger.info("k8s: running first-time worker node affinity validation")
                 await self.assert_worker_node_affinity()
                 self._affinity_validated = True
 
@@ -88,6 +90,7 @@ class K8sNodeManager(NodeManagerProtocol):
             )
 
     async def aclose(self) -> None:
+        logger.debug("k8s: closing K8sNodeManager API client")
         async with self._init_lock:
             if self._api_client is not None:
                 await self._api_client.close()
@@ -219,8 +222,10 @@ class K8sNodeManager(NodeManagerProtocol):
         if self._api_client is None:
             try:
                 k8s_config.load_incluster_config()
+                logger.debug("k8s: loaded in-cluster config")
             except k8s_config.ConfigException:
                 await k8s_config.load_kube_config()
+                logger.debug("k8s: loaded kube config from file")
 
             self._api_client = ApiClient()
 

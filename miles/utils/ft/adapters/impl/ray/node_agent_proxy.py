@@ -27,6 +27,7 @@ class RayNodeAgentProxy(NodeAgentProtocol):
         timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
+        logger.debug("ray: proxy run_diagnostic type=%s, timeout=%d", diagnostic_type, timeout_seconds)
         return await self._handle.run_diagnostic.remote(
             diagnostic_type=diagnostic_type,
             timeout_seconds=timeout_seconds,

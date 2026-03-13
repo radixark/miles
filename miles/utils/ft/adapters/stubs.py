@@ -32,13 +32,14 @@ class StubMainJob(MainJobProtocol):
 
     async def start(self) -> str:
         run_id = uuid4().hex[:8]
-        logger.info("stub_submit_job run_id=%s", run_id)
+        logger.info("ray: stub_submit_job run_id=%s", run_id)
         return run_id
 
     async def stop(self, timeout_seconds: int = STOP_TRAINING_TIMEOUT_SECONDS) -> None:
-        logger.info("stub_stop_job timeout_seconds=%d", timeout_seconds)
+        logger.info("ray: stub_stop_job timeout_seconds=%d", timeout_seconds)
 
     async def get_status(self) -> JobStatus:
+        logger.debug("ray: stub_get_status returning RUNNING")
         return JobStatus.RUNNING
 
 

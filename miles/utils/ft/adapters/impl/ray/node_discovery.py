@@ -22,10 +22,13 @@ def assert_cpu_only_nodes_exist() -> None:
     Raises ``RuntimeError`` immediately if no such node exists, so callers
     fail fast instead of hanging on an unsatisfiable scheduling request.
     """
+    logger.debug("ray: checking for cpu_only nodes")
     for node in ray.nodes():
         if node.get("Alive") and node.get("Resources", {}).get(CPU_ONLY_RESOURCE, 0) > 0:
+            logger.debug("ray: found cpu_only node node_id=%s", node.get("NodeID", "unknown"))
             return
 
+    logger.error("ray: no alive cpu_only node found")
     raise RuntimeError(
         f"No alive Ray node has the '{CPU_ONLY_RESOURCE}' custom resource. "
         "Ensure at least one non-GPU node (e.g. the head node) is started with "
@@ -46,6 +49,7 @@ def get_alive_gpu_nodes(
         allowed = set(node_ids)
         nodes = [n for n in nodes if n["NodeID"] in allowed]
 
+    logger.info("ray: get_alive_gpu_nodes found=%d, filter=%s", len(nodes), node_ids is not None)
     return nodes
 
 

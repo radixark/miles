@@ -38,14 +38,18 @@ class _FtNodeAgentActorCls:
         **kwargs: object,
     ) -> None:
         self._ft_id = ft_id
+        logger.info("ray: node agent actor init node_id=%s, ft_id=%s", node_id, ft_id)
         self._agent = builder(node_id=node_id, **kwargs)
 
     async def start(self) -> None:
+        logger.info("ray: node agent actor start")
         await self._agent.start()
         self._agent.wait_for_exporter_ready()
         self._register_with_controller()
+        logger.info("ray: node agent actor started and registered")
 
     async def stop(self) -> None:
+        logger.info("ray: node agent actor stop")
         await self._agent.stop()
 
     async def run_diagnostic(
@@ -54,6 +58,7 @@ class _FtNodeAgentActorCls:
         timeout_seconds: int = DIAGNOSTIC_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> DiagnosticResult:
+        logger.debug("ray: run_diagnostic type=%s, timeout=%d", diagnostic_type, timeout_seconds)
         return await self._agent.run_diagnostic(
             diagnostic_type=diagnostic_type,
             timeout_seconds=timeout_seconds,
@@ -61,7 +66,9 @@ class _FtNodeAgentActorCls:
         )
 
     def get_exporter_address(self) -> str:
-        return self._agent.get_exporter_address()
+        address = self._agent.get_exporter_address()
+        logger.debug("ray: get_exporter_address=%s", address)
+        return address
 
     def _register_with_controller(self) -> None:
         node_id = self._agent._node_id

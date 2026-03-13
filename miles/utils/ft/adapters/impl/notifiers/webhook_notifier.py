@@ -29,10 +29,11 @@ class BaseWebhookNotifier(NotifierProtocol):
         self._initial_backoff_seconds = initial_backoff_seconds
 
     async def aclose(self) -> None:
+        logger.debug("notifier: closing webhook client")
         await self._client.aclose()
 
     async def send(self, title: str, content: str, severity: str) -> None:
-        logger.info(f"webhook send: {title=} {content=} {severity=}")
+        logger.info("notifier: webhook send title=%s, severity=%s, content_len=%d", title, severity, len(content))
         payload = self._build_payload(title=title, content=content, severity=severity)
 
         async def _post() -> None:

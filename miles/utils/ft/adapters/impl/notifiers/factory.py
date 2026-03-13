@@ -28,6 +28,10 @@ def build_notifier(
 
     if webhook_url:
         cls = _get_notifier_class(notify_platform)
+        logger.info(
+            "notifier: building webhook notifier platform=%s, timeout=%s, max_retries=%d",
+            notify_platform, notify_timeout_seconds, notify_max_retries,
+        )
         return cls(
             webhook_url=webhook_url,
             timeout_seconds=notify_timeout_seconds,
@@ -36,6 +40,7 @@ def build_notifier(
         )
 
     if platform == "stub":
+        logger.debug("notifier: using StubNotifier for platform=stub")
         return StubNotifier()
 
     logger.warning(
