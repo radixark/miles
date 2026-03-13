@@ -12,6 +12,8 @@ import asyncio
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from miles.utils.ft.agents.collectors.base import BaseCollector
 from miles.utils.ft.agents.diagnostics.executors.collector_based import CollectorBasedNodeExecutor
 from miles.utils.ft.agents.types import CounterSample, GaugeSample, MetricSample

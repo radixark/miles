@@ -881,7 +881,7 @@ class TestRunStepperToConvergenceContextFactory:
             )
         ]
 
-        assert any(isinstance(s, _ContextAwareTerminal) for s in results)
+        assert any(isinstance(s, _ContextAwareTerminal) for s in _results)
 
     @pytest.mark.asyncio
     async def test_context_factory_prevents_stale_context_replay(self) -> None:
@@ -926,14 +926,12 @@ class TestRunStepperToConvergenceContextFactory:
                 return {"fault_count": 1}
             return {"fault_count": 0}
 
-        results = [
-            s
-            async for s in run_stepper_to_convergence(
-                stepper,
-                _ReplayState(),
-                context_factory=factory,
-            )
-        ]
+        async for _state in run_stepper_to_convergence(
+            stepper,
+            _ReplayState(),
+            context_factory=factory,
+        ):
+            pass
 
         replay_triggers = [t for t in transitions if t[0] == "replay" and t[1] > 0]
         assert len(replay_triggers) == 1, (
