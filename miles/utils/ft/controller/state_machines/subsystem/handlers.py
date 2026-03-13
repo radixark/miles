@@ -10,6 +10,7 @@ from miles.utils.ft.controller.state_machines.subsystem.models import (
     RecoveringSt,
 )
 from miles.utils.ft.controller.state_machines.subsystem.utils import (
+    DetectorResult,
     collect_evictable_bad_nodes,
     handle_notify_human,
     run_detectors,
@@ -53,15 +54,12 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
         )
 
     async def _get_actionable_decision(self, *, ctx: SubsystemContext) -> Decision | None:
-        """Run detectors and return a validated ENTER_RECOVERY decision, or None.
-
-        Handles NONE, NOTIFY_HUMAN, and too-many-bad-nodes cases internally.
-        """
+        """Run all detectors, handle NOTIFY_HUMAN as side effects, return merged ENTER_RECOVERY or None."""
         if not ctx.should_run_detectors or ctx.detector_context is None:
             return None
 
         tracker = ctx.detector_crash_tracker
-        decision = run_detectors(detectors=ctx.detectors, ctx=ctx.detector_context, crash_tracker=tracker)
+        result = run_detectors(detectors=ctx.detectors, ctx=ctx.detector_context, crash_tracker=tracker)
 
         if tracker.should_notify:
             await handle_notify_human(
@@ -73,17 +71,12 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
                 notifier=ctx.notifier,
             )
 
-        if decision.action == ActionType.NONE:
-            return None
+        # Step 1: Handle NOTIFY_HUMAN decisions as side effects with dedup
+        await self._handle_notify_decisions(result=result, ctx=ctx)
 
-        if decision.action == ActionType.NOTIFY_HUMAN:
-            dedup = ctx.notify_deduplicator
-            if dedup.should_notify(decision.notify_deduplicator_id):
-                await handle_notify_human(decision=decision, notifier=ctx.notifier)
-            if decision.notify_deduplicator_id is not None:
-                dedup.sync_active_ids(
-                    dedup.active_ids | {decision.notify_deduplicator_id}
-                )
+        # Step 2: Return merged ENTER_RECOVERY or None
+        decision = result.recovery_decision
+        if decision is None:
             return None
 
         if len(decision.bad_node_ids) > ctx.max_simultaneous_bad_nodes:
@@ -104,6 +97,25 @@ class DetectingAnomalyHandler(StateHandler[DetectingAnomalySt, SubsystemContext]
         if decision.trigger is None:
             raise ValueError(f"Decision with action={decision.action} has no trigger")
         return decision
+
+    async def _handle_notify_decisions(
+        self,
+        *,
+        result: DetectorResult,
+        ctx: SubsystemContext,
+    ) -> None:
+        """Send each NOTIFY_HUMAN decision through dedup and notify."""
+        dedup = ctx.notify_deduplicator
+        current_dedup_ids: set[str] = set()
+
+        for notify_decision in result.notify_decisions:
+            dedup_id = notify_decision.notify_deduplicator_id
+            if dedup.should_notify(dedup_id):
+                await handle_notify_human(decision=notify_decision, notifier=ctx.notifier)
+            if dedup_id is not None:
+                current_dedup_ids.add(dedup_id)
+
+        dedup.sync_active_ids(current_dedup_ids)
 
 
 class RecoveringHandler(StateHandler[RecoveringSt, SubsystemContext]):

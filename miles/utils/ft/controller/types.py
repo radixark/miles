@@ -76,10 +76,16 @@ class ActionType(str, Enum):
 
 
 class TriggerType(str, Enum):
-    HANG = "hang"
-    NAN_LOSS = "nan_loss"
-    CRASH = "crash"
+    """Fault trigger types, ordered by priority (highest first).
+
+    The enum member order doubles as the merge priority for
+    _merge_detector_decisions(): when multiple ENTER_RECOVERY decisions
+    arrive, the trigger with the smallest index wins.
+    """
     HARDWARE = "hardware"
+    CRASH = "crash"
+    NAN_LOSS = "nan_loss"
+    HANG = "hang"
     NETWORK = "network"
     TELEMETRY_BLIND = "telemetry_blind"
     MISC = "misc"

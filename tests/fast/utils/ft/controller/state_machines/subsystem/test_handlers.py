@@ -254,6 +254,73 @@ class TestDetectingAnomaly:
 # ---------------------------------------------------------------------------
 
 
+class TestNotifyHumanDoesNotBlockRecovery:
+    """The first-hit detector strategy previously returned the first non-NONE
+    decision. When NOTIFY_HUMAN came before ENTER_RECOVERY in the chain,
+    the system would only send a notification and skip recovery entirely."""
+
+    @pytest.mark.asyncio
+    async def test_notify_followed_by_recovery_still_enters_recovery(self) -> None:
+        """DiskSpaceLow=NOTIFY_HUMAN + TrainingCrash=ENTER_RECOVERY:
+        previously only the NOTIFY_HUMAN fired."""
+        notifier = FakeNotifier()
+        notify_detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="disk space low",
+                trigger=TriggerType.MISC,
+            )
+        )
+        recovery_detector = AlwaysEnterRecoveryDetector(reason="training crashed")
+
+        stepper = _make_stepper()
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
+                detectors=[notify_detector, recovery_detector],
+                notifier=notifier,
+            ),
+        )
+
+        assert isinstance(result, RecoveringSt)
+        assert len(notifier.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_telemetry_blind_followed_by_nan_loss_enters_recovery(self) -> None:
+        """HangDetector=TELEMETRY_BLIND + NanLossDetector=ENTER_RECOVERY:
+        the telemetry blind notification must not suppress the NaN recovery."""
+        notifier = FakeNotifier()
+        blind_detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="heartbeat missing",
+                trigger=TriggerType.TELEMETRY_BLIND,
+            )
+        )
+        nan_detector = FixedDecisionDetector(
+            Decision(
+                action=ActionType.ENTER_RECOVERY,
+                bad_node_ids=[],
+                reason="nan loss detected",
+                trigger=TriggerType.NAN_LOSS,
+            )
+        )
+
+        stepper = _make_stepper()
+        result = await _step_last(
+            stepper,
+            DetectingAnomalySt(),
+            _make_subsystem_context(
+                detectors=[blind_detector, nan_detector],
+                notifier=notifier,
+            ),
+        )
+
+        assert isinstance(result, RecoveringSt)
+        assert len(notifier.calls) == 1
+
+
 class TestTemplateMethodFiltering:
     @pytest.mark.asyncio
     async def test_bad_node_not_in_rank_placement_skips_recovery(self) -> None:

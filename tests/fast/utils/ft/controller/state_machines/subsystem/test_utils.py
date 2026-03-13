@@ -90,11 +90,11 @@ class TestDetectorCrashTracking:
 
 
 class TestRunDetectorsCrashHandling:
-    def test_crashing_detector_is_skipped_returns_no_fault(self) -> None:
+    def test_crashing_detector_is_skipped_returns_no_recovery(self) -> None:
         """A single crash is silently skipped — main loop continues."""
         ctx = _make_detector_context()
-        decision = run_detectors(detectors=[_CrashingDetector()], ctx=ctx)
-        assert decision.action == ActionType.NONE
+        result = run_detectors(detectors=[_CrashingDetector()], ctx=ctx)
+        assert result.recovery_decision is None
 
     def test_crash_records_in_tracker(self) -> None:
         ctx = _make_detector_context()
@@ -107,27 +107,28 @@ class TestRunDetectorsCrashHandling:
 
     def test_crash_before_recovery_still_returns_recovery(self) -> None:
         ctx = _make_detector_context()
-        decision = run_detectors(
+        result = run_detectors(
             detectors=[_CrashingDetector(), _RecoveryDetector()],
             ctx=ctx,
         )
-        assert decision.action == ActionType.ENTER_RECOVERY
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.action == ActionType.ENTER_RECOVERY
 
-    def test_all_crash_returns_no_fault(self) -> None:
+    def test_all_crash_returns_no_recovery(self) -> None:
         ctx = _make_detector_context()
-        decision = run_detectors(
+        result = run_detectors(
             detectors=[_CrashingDetector(), _CrashingDetector()],
             ctx=ctx,
         )
-        assert decision.action == ActionType.NONE
+        assert result.recovery_decision is None
 
-    def test_all_passing_returns_no_fault(self) -> None:
+    def test_all_passing_returns_no_recovery(self) -> None:
         ctx = _make_detector_context()
-        decision = run_detectors(
+        result = run_detectors(
             detectors=[_PassingDetector(), _PassingDetector()],
             ctx=ctx,
         )
-        assert decision.action == ActionType.NONE
+        assert result.recovery_decision is None
 
 
 class TestHandleNotifyHuman:
@@ -185,6 +186,123 @@ class _RecoveryDetectorWithNodes(BaseFaultDetector):
             reason="found bad nodes",
             trigger=TriggerType.HARDWARE,
         )
+
+
+class TestDetectorDecisionMerge:
+    """run_detectors() previously returned the first non-NONE decision.
+    A NOTIFY_HUMAN decision earlier in the chain would block a later
+    ENTER_RECOVERY, preventing automatic recovery."""
+
+    def test_notify_human_does_not_block_enter_recovery(self) -> None:
+        """DiskSpaceLow=NOTIFY_HUMAN followed by TrainingCrash=ENTER_RECOVERY:
+        the old first-hit strategy would return NOTIFY_HUMAN only."""
+        ctx = _make_detector_context()
+        result = run_detectors(
+            detectors=[_NotifyHumanDetector(), _RecoveryDetector()],
+            ctx=ctx,
+        )
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.action == ActionType.ENTER_RECOVERY
+        assert len(result.notify_decisions) == 1
+
+    def test_multiple_enter_recovery_merges_bad_node_ids(self) -> None:
+        ctx = DetectorContext(
+            metric_store=MagicMock(),
+            active_node_ids={"node-0", "node-1", "node-2"},
+            job_status=JobStatus.RUNNING,
+        )
+        result = run_detectors(
+            detectors=[
+                _RecoveryDetectorWithNodes(["node-0"]),
+                _RecoveryDetectorWithNodes(["node-1", "node-2"]),
+            ],
+            ctx=ctx,
+        )
+        assert result.recovery_decision is not None
+        assert set(result.recovery_decision.bad_node_ids) == {"node-0", "node-1", "node-2"}
+
+    def test_multiple_enter_recovery_selects_highest_priority_trigger(self) -> None:
+        """TriggerType enum order defines priority. HARDWARE > CRASH."""
+
+        class _HardwareDetector(BaseFaultDetector):
+            def _evaluate_raw(self, ctx_: DetectorContext) -> Decision:
+                return Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    bad_node_ids=["node-0"],
+                    reason="hardware fault",
+                    trigger=TriggerType.HARDWARE,
+                )
+
+        class _CrashDetector(BaseFaultDetector):
+            def _evaluate_raw(self, ctx_: DetectorContext) -> Decision:
+                return Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    bad_node_ids=[],
+                    reason="crash fault",
+                    trigger=TriggerType.CRASH,
+                )
+
+        ctx = _make_detector_context()
+        result = run_detectors(
+            detectors=[_CrashDetector(), _HardwareDetector()],
+            ctx=ctx,
+        )
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.trigger == TriggerType.HARDWARE
+
+    def test_multiple_notify_human_all_collected(self) -> None:
+        class _NotifyA(BaseFaultDetector):
+            def _evaluate_raw(self, ctx_: DetectorContext) -> Decision:
+                return Decision(
+                    action=ActionType.NOTIFY_HUMAN,
+                    reason="problem A",
+                    trigger=TriggerType.MISC,
+                )
+
+        class _NotifyB(BaseFaultDetector):
+            def _evaluate_raw(self, ctx_: DetectorContext) -> Decision:
+                return Decision(
+                    action=ActionType.NOTIFY_HUMAN,
+                    reason="problem B",
+                    trigger=TriggerType.TELEMETRY_BLIND,
+                )
+
+        ctx = _make_detector_context()
+        result = run_detectors(
+            detectors=[_NotifyA(), _NotifyB()],
+            ctx=ctx,
+        )
+        assert result.recovery_decision is None
+        assert len(result.notify_decisions) == 2
+
+    def test_merged_reason_is_sorted_for_stability(self) -> None:
+        class _DetA(BaseFaultDetector):
+            def _evaluate_raw(self, ctx_: DetectorContext) -> Decision:
+                return Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    reason="b_problem",
+                    trigger=TriggerType.CRASH,
+                )
+
+        class _DetB(BaseFaultDetector):
+            def _evaluate_raw(self, ctx_: DetectorContext) -> Decision:
+                return Decision(
+                    action=ActionType.ENTER_RECOVERY,
+                    reason="a_problem",
+                    trigger=TriggerType.HANG,
+                )
+
+        ctx = _make_detector_context()
+        result = run_detectors(detectors=[_DetA(), _DetB()], ctx=ctx)
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.reason == "a_problem; b_problem"
+
+    def test_single_recovery_not_modified(self) -> None:
+        ctx = _make_detector_context()
+        result = run_detectors(detectors=[_RecoveryDetector()], ctx=ctx)
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.reason == "found bad node"
+        assert result.recovery_decision.trigger == TriggerType.HARDWARE
 
 
 class TestCollectEvictableBadNodes:
