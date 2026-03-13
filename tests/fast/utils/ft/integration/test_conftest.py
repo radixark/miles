@@ -61,3 +61,18 @@ def test_worker_port_range_args_allocates_non_overlapping_blocks() -> None:
         "--min-worker-port=20300",
         "--max-worker-port=20399",
     ]
+
+
+def test_dashboard_args_disable_dashboard_for_multi_node_fixture() -> None:
+    assert integration_conftest._dashboard_args(enabled=False) == [
+        "--include-dashboard=false",
+    ]
+
+
+def test_dashboard_args_enable_dashboard_with_ephemeral_ports() -> None:
+    assert integration_conftest._dashboard_args(enabled=True) == [
+        "--include-dashboard=true",
+        "--dashboard-host=127.0.0.1",
+        "--dashboard-port=0",
+        "--dashboard-agent-listen-port=0",
+    ]

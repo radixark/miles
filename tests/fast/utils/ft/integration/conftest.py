@@ -196,6 +196,18 @@ class RayNodeInfo:
 _MULTI_NODE_COUNT = 5
 
 
+def _dashboard_args(enabled: bool) -> list[str]:
+    if enabled:
+        return [
+            "--include-dashboard=true",
+            "--dashboard-host=127.0.0.1",
+            "--dashboard-port=0",
+            "--dashboard-agent-listen-port=0",
+        ]
+
+    return ["--include-dashboard=false"]
+
+
 def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInfo]:
     """Start a multi-node Ray cluster using loopback aliases (127.0.0.x).
 
@@ -219,10 +231,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
             f"--node-ip-address={head_ip}",
             "--num-cpus=8",
             "--num-gpus=0",
-            "--include-dashboard=true",
-            "--dashboard-host=127.0.0.1",
-            "--dashboard-port=0",
-            "--dashboard-agent-listen-port=0",
+            *_dashboard_args(enabled=False),
             *_worker_port_range_args(node_index=0),
             f"--temp-dir={temp_dir}",
         ],
