@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from tests.fast.utils.ft.utils import (
     inject_gpu_unavailable,
     inject_healthy_node,
+    inject_heartbeat,
     make_detector_context,
     make_fake_metric_store,
     make_fake_mini_wandb,
@@ -26,21 +27,14 @@ _ACTIVE_NODE_IDS: set[str] = {"node-0", "node-1"}
 
 class TestDetectorChainIntegration:
     def test_all_healthy_returns_none(self) -> None:
+        run_id = "detector-chain-run"
         store = make_fake_metric_store()
         inject_healthy_node(store, node_id="node-0")
         inject_healthy_node(store, node_id="node-1")
 
         now = datetime.now(timezone.utc)
-        store.ingest_samples(
-            target_id="rank-0",
-            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=100.0)],
-            timestamp=now - timedelta(minutes=5),
-        )
-        store.ingest_samples(
-            target_id="rank-0",
-            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=110.0)],
-            timestamp=now - timedelta(minutes=1),
-        )
+        inject_heartbeat(store, value=100.0, rank="0", timestamp=now - timedelta(minutes=5), ft_run_id=run_id)
+        inject_heartbeat(store, value=110.0, rank="0", timestamp=now - timedelta(minutes=1), ft_run_id=run_id)
 
         wandb = make_fake_mini_wandb(steps={i: {"loss": 2.5, "mfu": 0.45} for i in range(1, 11)})
         ctx = make_detector_context(
@@ -48,6 +42,7 @@ class TestDetectorChainIntegration:
             mini_wandb=wandb,
             active_node_ids=_ACTIVE_NODE_IDS,
             job_status=JobStatus.RUNNING,
+            active_run_id=run_id,
         )
         chain = build_detector_chain()
 
@@ -167,6 +162,7 @@ class TestDetectorChainIntegration:
             "TrainingCrashDetector",
             "HangDetector",
             "NanLossDetector",
+            "LossSpikeDetector",
             "MfuDeclineDetector",
         ]
 
