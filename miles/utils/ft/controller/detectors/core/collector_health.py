@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+
+import polars as pl
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext
 from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
@@ -38,33 +39,25 @@ class CollectorHealthDetector(BaseFaultDetector):
         if df.is_empty():
             return Decision.no_fault(reason="no collector health data yet")
 
-        blind_nodes: list[str] = []
-        blind_details: list[str] = []
+        bad = df.filter(
+            pl.col("collector").is_in(self._critical_collectors)
+            & pl.col("node_id").is_in(ctx.active_node_ids)
+            & (pl.col("value") >= self._failure_threshold)
+        )
 
-        for row in df.iter_rows(named=True):
-            labels = row.get("labels", {})
-            if not isinstance(labels, dict):
-                continue
-
-            collector = labels.get("collector", "")
-            node_id = labels.get("node_id", "")
-            value = row.get("value", 0.0)
-
-            if collector not in self._critical_collectors:
-                continue
-            if node_id not in ctx.active_node_ids:
-                continue
-            if value >= self._failure_threshold:
-                if node_id not in blind_nodes:
-                    blind_nodes.append(node_id)
-                blind_details.append(f"{node_id}/{collector}={int(value)}")
-
-        if not blind_nodes:
+        if bad.is_empty():
             return Decision.no_fault(reason="all critical collectors healthy")
+
+        blind_details = [
+            f"{row['node_id']}/{row['collector']}={int(row['value'])}"
+            for row in bad.sort("node_id", "collector").iter_rows(named=True)
+        ]
+        blind_nodes = list(dict.fromkeys(row["node_id"] for row in bad.iter_rows(named=True)))
 
         logger.warning("telemetry_blind_nodes: %s", blind_details)
         return Decision(
             action=ActionType.NOTIFY_HUMAN,
+            bad_node_ids=blind_nodes,
             reason=f"telemetry blind: {'; '.join(blind_details)}",
             trigger=TriggerType.TELEMETRY_BLIND,
         )

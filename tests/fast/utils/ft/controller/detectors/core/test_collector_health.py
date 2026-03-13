@@ -90,3 +90,45 @@ class TestCollectorHealthDetector:
             active_node_ids={"node-0"},
         ))
         assert decision.action == ActionType.NONE
+
+    def test_exact_threshold_triggers(self) -> None:
+        """Boundary: failures == threshold should trigger (>= comparison)."""
+        store = make_fake_metric_store()
+        _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=10)
+        detector = CollectorHealthDetector(failure_threshold=10)
+        decision = detector.evaluate(make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0"},
+        ))
+        assert decision.action == ActionType.NOTIFY_HUMAN
+
+    def test_multiple_nodes_blind(self) -> None:
+        """Multiple active nodes with failing collectors are all reported."""
+        store = make_fake_metric_store()
+        _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=15)
+        _inject_collector_failures(store, node_id="node-1", collector="NetworkCollector", failures=20)
+        detector = CollectorHealthDetector(failure_threshold=10)
+        decision = detector.evaluate(make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0", "node-1"},
+        ))
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert set(decision.bad_node_ids) == {"node-0", "node-1"}
+        assert "node-0/GpuCollector" in decision.reason
+        assert "node-1/NetworkCollector" in decision.reason
+
+    def test_multiple_collectors_on_same_node(self) -> None:
+        """Multiple critical collectors failing on the same node: node appears
+        once in bad_node_ids, both collectors appear in the reason."""
+        store = make_fake_metric_store()
+        _inject_collector_failures(store, node_id="node-0", collector="GpuCollector", failures=12)
+        _inject_collector_failures(store, node_id="node-0", collector="DiskCollector", failures=11)
+        detector = CollectorHealthDetector(failure_threshold=10)
+        decision = detector.evaluate(make_detector_context(
+            metric_store=store,
+            active_node_ids={"node-0"},
+        ))
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.bad_node_ids.count("node-0") == 1
+        assert "GpuCollector" in decision.reason
+        assert "DiskCollector" in decision.reason
