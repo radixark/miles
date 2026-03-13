@@ -48,6 +48,7 @@ class BaseFaultDetector(ABC):
         return True
 
     def evaluate(self, ctx: DetectorContext) -> Decision:
+        logger.debug("detector: %s.evaluate called", type(self).__name__)
         decision = self._evaluate_raw(ctx)
         if self._should_filter_by_active_nodes() and not ctx.active_node_ids:
             if decision.bad_node_ids:
@@ -66,7 +67,21 @@ class BaseFaultDetector(ABC):
                     reason=f"all bad nodes not active ({type(self).__name__})",
                 )
             if len(filtered) != len(decision.bad_node_ids):
+                logger.debug(
+                    "detector: %s filtered bad_node_ids: %d -> %d",
+                    type(self).__name__,
+                    len(decision.bad_node_ids),
+                    len(filtered),
+                )
                 decision = decision.model_copy(update={"bad_node_ids": filtered})
+        if decision.action != ActionType.NO_FAULT:
+            logger.info(
+                "detector: %s result: action=%s, trigger=%s, bad_nodes=%d",
+                type(self).__name__,
+                decision.action.value,
+                decision.trigger,
+                len(decision.bad_node_ids),
+            )
         return decision
 
     @abstractmethod
@@ -89,6 +104,7 @@ def check_metric_blind(
     if df is not None and not df.is_empty():
         return None
 
+    logger.warning("detector: %s metric_blind: metric=%s missing for active nodes", detector_name, metric_name)
     return Decision(
         action=ActionType.NOTIFY_HUMAN,
         reason=f"{detector_name}: core metric {metric_name} missing for active nodes",
