@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import logging
 import os
@@ -7,6 +8,7 @@ import signal
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -226,31 +228,39 @@ _TRIGGER_XID_BINARY = Path("/tmp/trigger_xid")
 _TRIGGER_XID_LOCK = Path("/tmp/trigger_xid.lock")
 
 
-def _ensure_trigger_xid_binary() -> None:
-    lock_fd = os.open(str(_TRIGGER_XID_LOCK), os.O_CREAT | os.O_RDWR, 0o644)
+@contextlib.contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-
-        if _TRIGGER_XID_BINARY.exists() and os.access(_TRIGGER_XID_BINARY, os.X_OK):
-            return
-
-        tmp_path = Path(f"/tmp/trigger_xid.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
-        try:
-            logger.info("Compiling %s -> %s (via %s)", _TRIGGER_XID_SOURCE, _TRIGGER_XID_BINARY, tmp_path)
-            subprocess.run(
-                ["nvcc", "-o", str(tmp_path), str(_TRIGGER_XID_SOURCE)],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            os.replace(str(tmp_path), str(_TRIGGER_XID_BINARY))
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            raise
+        yield
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
+
+
+def _compile_to_temp_then_replace(source: Path, target: Path) -> None:
+    tmp_path = Path(f"{target}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        logger.info("Compiling %s -> %s (via %s)", source, target, tmp_path)
+        subprocess.run(
+            ["nvcc", "-o", str(tmp_path), str(source)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _ensure_trigger_xid_binary() -> None:
+    with _file_lock(_TRIGGER_XID_LOCK):
+        if _TRIGGER_XID_BINARY.exists() and os.access(_TRIGGER_XID_BINARY, os.X_OK):
+            return
+        _compile_to_temp_then_replace(source=_TRIGGER_XID_SOURCE, target=_TRIGGER_XID_BINARY)
 
 
 def _kill_if_exists(pid: int) -> None:
