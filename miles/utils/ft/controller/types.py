@@ -81,6 +81,7 @@ class TriggerType(str, Enum):
     CRASH = "crash"
     HARDWARE = "hardware"
     NETWORK = "network"
+    TELEMETRY_BLIND = "telemetry_blind"
     MISC = "misc"
 
 

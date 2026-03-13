@@ -13,7 +13,7 @@ from miles.utils.ft.adapters.types import JobStatus
 from miles.utils.ft.agents.types import GaugeSample
 from miles.utils.ft.controller.detectors.core.hang import HangDetector, HangDetectorConfig
 from miles.utils.ft.utils.metric_names import AGENT_HEARTBEAT, TRAINING_PHASE
-from miles.utils.ft.controller.types import ActionType
+from miles.utils.ft.controller.types import ActionType, TriggerType
 
 
 class TestHangDetector:
@@ -143,19 +143,23 @@ class TestHangDetector:
 
         assert decision.action == ActionType.NONE
 
-    def test_no_iteration_data(self) -> None:
+    def test_no_iteration_data_triggers_telemetry_blind(self) -> None:
+        """Previously, empty metric store returned no_fault ("no heartbeat data
+        available"), treating monitoring blindness as healthy. Now returns
+        NOTIFY_HUMAN with TELEMETRY_BLIND trigger so humans investigate the
+        monitoring pipeline."""
         store = make_fake_metric_store()
         detector = HangDetector()
         ctx = make_detector_context(
             metric_store=store,
             mini_wandb=make_fake_mini_wandb(),
-
             job_status=JobStatus.RUNNING,
         )
 
         decision = detector.evaluate(ctx)
 
-        assert decision.action == ActionType.NONE
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.trigger == TriggerType.TELEMETRY_BLIND
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +168,10 @@ class TestHangDetector:
 
 
 class TestGetCurrentPhaseEdgeCases:
-    def test_no_metric_data_returns_noop(self) -> None:
-        """_get_current_phase() returns PHASE_TRAINING (default) when no data → short-circuit."""
+    def test_no_metric_data_triggers_telemetry_blind(self) -> None:
+        """_get_current_phase() returns PHASE_TRAINING (default) when no data.
+        Previously the detector returned no_fault, but with empty metric store
+        the heartbeat check now correctly returns TELEMETRY_BLIND."""
         store = make_fake_metric_store()
         detector = HangDetector()
         ctx = make_detector_context(
@@ -175,7 +181,8 @@ class TestGetCurrentPhaseEdgeCases:
         )
 
         decision = detector.evaluate(ctx)
-        assert decision.action == ActionType.NONE
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.trigger == TriggerType.TELEMETRY_BLIND
 
     def test_heartbeat_exists_but_phase_missing(self) -> None:
         """Heartbeat metric exists but phase metric missing → defaults to training phase."""
@@ -329,6 +336,121 @@ class TestHangDetectorMultipleRank0Series:
 
         decision = detector.evaluate(ctx)
         assert decision.action == ActionType.ENTER_RECOVERY
+
+
+# ---------------------------------------------------------------------------
+# Telemetry blind: "no data" vs "insufficient data" distinction
+# ---------------------------------------------------------------------------
+
+
+class TestHangDetectorTelemetryBlind:
+    """Verify that HangDetector distinguishes "completely no heartbeat data"
+    (TELEMETRY_BLIND → NOTIFY_HUMAN) from "data exists but insufficient"
+    (no_fault, wait for more samples).
+
+    Previously, both cases returned no_fault with reason "no heartbeat data
+    available", treating monitoring blindness as healthy. This masked scenarios
+    where the rank-0 agent never started, the metric scrape pipeline broke,
+    or the run_id didn't match."""
+
+    def test_empty_store_returns_telemetry_blind(self) -> None:
+        """Metric store has zero heartbeat data after grace period →
+        NOTIFY_HUMAN with TELEMETRY_BLIND. Previously returned no_fault."""
+        store = make_fake_metric_store()
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="run-1",
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.trigger == TriggerType.TELEMETRY_BLIND
+        assert "rank-0" in decision.reason
+
+    def test_single_sample_returns_insufficient_not_blind(self) -> None:
+        """One heartbeat sample exists (data is arriving) but changes() is 0
+        because there's only 1 point. This is "insufficient data", not
+        "telemetry blind". Previously both returned no_fault with the same
+        reason string — now they are distinguished."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+        assert "insufficient" in decision.reason
+
+    def test_two_samples_progressing_returns_healthy(self) -> None:
+        """Two heartbeat samples with different values → healthy."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        inject_heartbeat(store, value=200.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NONE
+        assert "progressing" in decision.reason
+
+    def test_two_samples_stalled_returns_hang(self) -> None:
+        """Two heartbeat samples with same value → ENTER_RECOVERY with HANG trigger."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.ENTER_RECOVERY
+        assert decision.trigger == TriggerType.HANG
+
+    def test_run_id_mismatch_returns_telemetry_blind(self) -> None:
+        """Heartbeat data exists for run-1 but context has active_run_id=run-2.
+        Label filter excludes all data → TELEMETRY_BLIND. Previously returned
+        no_fault, hiding the run_id mismatch."""
+        store = make_fake_metric_store()
+        now = datetime.now(timezone.utc)
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="run-1")
+        inject_heartbeat(store, value=200.0, timestamp=now - timedelta(minutes=1), ft_run_id="run-1")
+
+        detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
+        ctx = make_detector_context(
+            metric_store=store,
+            mini_wandb=make_fake_mini_wandb(),
+            job_status=JobStatus.RUNNING,
+            active_run_id="run-2",
+        )
+
+        decision = detector.evaluate(ctx)
+
+        assert decision.action == ActionType.NOTIFY_HUMAN
+        assert decision.trigger == TriggerType.TELEMETRY_BLIND
 
 
 class TestHangDetectorValidation:

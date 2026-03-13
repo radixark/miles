@@ -60,13 +60,21 @@ class HangDetector(BaseFaultDetector):
             return Decision.no_fault(reason=f"unknown training phase {phase}, skipping hang check")
         timeout_minutes: int = getattr(self._config, timeout_attr)
 
-        heartbeat_changes = self._get_heartbeat_changes(
+        has_any_data, heartbeat_changes = self._get_heartbeat_changes(
             ctx.metric_store.time_series_store,
             window_minutes=timeout_minutes,
             label_filters=label_filters,
         )
+
+        if not has_any_data:
+            return Decision(
+                action=ActionType.NOTIFY_HUMAN,
+                reason="no heartbeat data from rank-0 agent after grace period",
+                trigger=TriggerType.TELEMETRY_BLIND,
+            )
+
         if heartbeat_changes is None:
-            return Decision.no_fault(reason="no heartbeat data available")
+            return Decision.no_fault(reason="heartbeat data insufficient for hang judgment")
 
         if heartbeat_changes == 0:
             phase_label = _PHASE_LABEL[phase]
@@ -104,7 +112,7 @@ class HangDetector(BaseFaultDetector):
         window_minutes: int,
         *,
         label_filters: dict[str, str],
-    ) -> float | None:
+    ) -> tuple[bool, float | None]:
         window = timedelta(minutes=window_minutes)
 
         df = metric_store.changes(
@@ -113,7 +121,7 @@ class HangDetector(BaseFaultDetector):
             label_filters=label_filters,
         )
         if df is None or df.is_empty():
-            return None
+            return (False, None)
 
         min_changes = df["value"].min()
         if min_changes == 0:
@@ -125,6 +133,6 @@ class HangDetector(BaseFaultDetector):
             if count_df is not None and not count_df.is_empty():
                 min_count = count_df["value"].min()
                 if min_count < 2:
-                    return None
+                    return (True, None)
 
-        return min_changes
+        return (True, min_changes)
