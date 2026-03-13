@@ -48,8 +48,7 @@ class RayControllerClient(ControllerClientProtocol):
     ) -> None:
         controller = self._get_handle()
         if controller is None:
-            logger.warning("Cannot register rank: controller not available")
-            return
+            raise RuntimeError("controller not available")
 
         ray.get(
             controller.register_training_rank.remote(

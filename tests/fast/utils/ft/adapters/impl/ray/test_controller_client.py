@@ -1,6 +1,7 @@
 """Unit tests for RayControllerClient (P1 item 11)."""
 from __future__ import annotations
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 from miles.utils.ft.adapters.impl.ray.controller_client import RayControllerClient
@@ -31,19 +32,20 @@ class TestGetHandleCaching:
 
 
 class TestRegisterTrainingRank:
-    def test_skips_when_controller_not_available(self) -> None:
+    def test_raises_when_controller_not_available(self) -> None:
         with patch("miles.utils.ft.adapters.impl.ray.controller_client.ray") as mock_ray:
             mock_ray.get_actor.side_effect = ValueError("not found")
 
             client = RayControllerClient(ft_id="test")
-            client.register_training_rank(
-                run_id="run-1",
-                rank=0,
-                world_size=8,
-                node_id="node-0",
-                exporter_address="http://localhost:9000",
-                pid=1234,
-            )
+            with pytest.raises(RuntimeError, match="controller not available"):
+                client.register_training_rank(
+                    run_id="run-1",
+                    rank=0,
+                    world_size=8,
+                    node_id="node-0",
+                    exporter_address="http://localhost:9000",
+                    pid=1234,
+                )
 
         mock_ray.get.assert_not_called()
 
