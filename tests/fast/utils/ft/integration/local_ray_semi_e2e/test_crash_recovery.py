@@ -434,7 +434,12 @@ async def test_throttle_notification(
 async def test_recovery_timeout_escalates(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """recovery_timeout_seconds fires when MonitoringProgress stalls -> NotifyHumans."""
+    """recovery_timeout_seconds fires when MonitoringProgress stalls -> NotifyHumans.
+
+    Uses initial_stable_iterations=0 because step_interval=999 prevents
+    the default stability check from completing. A brief sleep ensures
+    workers are spawned before crashing.
+    """
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         detectors=[TrainingCrashDetector()],
@@ -442,9 +447,12 @@ async def test_recovery_timeout_escalates(
         recovery_timeout_seconds=3,
         monitoring_timeout_seconds=999,
         monitoring_success_iterations=999,
+        initial_stable_iterations=0,
     )
 
-    # Step 1: crash -> recovery starts, reaches MonitoringProgress but never succeeds
+    # Step 1: brief wait for initial workers to spawn and register,
+    # then crash -> recovery starts, reaches MonitoringProgress but never succeeds
+    await asyncio.sleep(3)
     await testbed.crash_training()
 
     # Step 2: wait for NotifyHumans due to overall recovery timeout

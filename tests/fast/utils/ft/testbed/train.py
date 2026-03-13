@@ -229,7 +229,11 @@ class MilesTestbed:
             cleanup_handles=cleanup_handles,
             cleanup_names=cleanup_names,
         )
-        await testbed.wait_for_training_stable(n_iterations=2, timeout=30.0)
+        if config.initial_stable_iterations > 0:
+            await testbed.wait_for_training_stable(
+                n_iterations=config.initial_stable_iterations,
+                timeout=30.0,
+            )
         return testbed
 
     async def shutdown(self) -> None:

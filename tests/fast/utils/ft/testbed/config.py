@@ -45,6 +45,7 @@ class TestbedConfig:
     recovery_timeout_seconds: int | None = None
     notifier_override: NotifierProtocol | None = None
     diagnostic_orchestrator_override: DiagnosticOrchestratorProtocol | None = None
+    initial_stable_iterations: int = 2
 
     def build_runtime_config(self) -> ControllerRuntimeConfig:
         kwargs: dict[str, Any] = {"tick_interval": self.tick_interval}
