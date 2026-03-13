@@ -87,18 +87,26 @@ class TickLoop:
             roster = deps.training_rank_roster_box.value
             if roster is not None:
                 roster.warn_if_incomplete()
+
+            registered = deps.node_agent_registry.registered_node_ids()
+            for name, spec in deps.subsystem_specs.items():
+                active_node_ids = spec.runtime.get_active_node_ids()
+                if not active_node_ids:
+                    continue
                 coverage = self._node_agent_coverage_checker.check(
-                    subsystem_node_ids=set(roster.rank_placement.values()),
-                    registered_agent_node_ids=deps.node_agent_registry.registered_node_ids(),
+                    subsystem_name=name,
+                    subsystem_node_ids=set(active_node_ids),
+                    registered_agent_node_ids=registered,
                 )
                 if coverage.persistently_uncovered_node_ids:
                     node_list = ", ".join(sorted(coverage.persistently_uncovered_node_ids))
                     await safe_notify(
                         deps.notifier,
-                        title="Node agent coverage gap (training)",
+                        title=f"Node agent coverage gap ({name})",
                         content=f"Nodes running without node agent: {node_list}",
                         severity="warning",
                     )
+
             job_status = await deps.main_job.get_status()
 
             context = self._build_controller_context(job_status=job_status, deps=deps)
