@@ -115,6 +115,7 @@ pkill -9 sglang 2>/dev/null || true
 sleep 3
 ray stop --force 2>/dev/null || true
 pkill -9 ray 2>/dev/null || true
+pkill -9 python 2>/dev/null || true
 sleep 3
 
 # ── Start Ray ────────────────────────────────────────────────────────
