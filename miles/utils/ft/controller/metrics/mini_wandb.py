@@ -158,10 +158,13 @@ class MiniWandb(TrainingMetricStoreProtocol):
 
 
 def _sanitize_metrics(metrics: dict[str, float]) -> dict[str, float]:
+    sanitized: dict[str, float] = {}
     for key, value in metrics.items():
         if not math.isfinite(value):
-            logger.warning("mini_wandb: non-finite metric observed key=%s, value=%s", key, value)
-    return metrics
+            logger.warning("mini_wandb: dropping non-finite metric key=%s, value=%s", key, value)
+            continue
+        sanitized[key] = value
+    return sanitized
 
 
 @dataclass

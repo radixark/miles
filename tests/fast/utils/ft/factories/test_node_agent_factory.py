@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import ModuleType
+from unittest.mock import MagicMock, patch
 
 from miles.utils.ft.adapters.stubs import NullMetadataProvider
 from miles.utils.ft.agents.collectors.disk import DiskCollector
@@ -66,14 +68,15 @@ class TestDetectGpuCount:
     def test_returns_pynvml_count_when_available(self) -> None:
         """Previously, GPU count was hardcoded to 8. On machines with a
         different number of GPUs, NCCL tests would fail or use wrong topology."""
-        with patch("miles.utils.ft.factories.node_agent.pynvml") as mock_pynvml:
-            mock_pynvml.nvmlDeviceGetCount.return_value = 4
+        mock_pynvml = MagicMock()
+        mock_pynvml.nvmlDeviceGetCount.return_value = 4
+        with patch.dict(sys.modules, {"pynvml": mock_pynvml}):
             assert detect_gpu_count() == 4
             mock_pynvml.nvmlInit.assert_called_once()
             mock_pynvml.nvmlShutdown.assert_called_once()
 
     def test_returns_fallback_when_pynvml_fails(self) -> None:
-        with patch("miles.utils.ft.factories.node_agent.pynvml", side_effect=ImportError):
+        with patch.dict(sys.modules, {"pynvml": None}):
             assert detect_gpu_count() == FALLBACK_NUM_GPUS
 
     def test_build_all_diagnostics_auto_detects_when_num_gpus_none(self) -> None:
