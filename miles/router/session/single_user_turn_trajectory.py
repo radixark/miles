@@ -14,6 +14,18 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
 
 
+def _normalize_value(value: Any) -> Any:
+    """Normalize falsy sentinels that produce identical Jinja2 output.
+
+    None, "" and [] are all falsy in Jinja2 and render the same way,
+    but client libraries may interchange them (e.g. content: null vs ""
+    for tool-call-only responses, or tool_calls: null vs []).
+    """
+    if value is None or value == "" or value == []:
+        return None
+    return value
+
+
 def _message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     """Compare only the fields that affect chat-template tokenization.
 
@@ -23,7 +35,7 @@ def _message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     templates actually read: role, content, reasoning_content, tool_calls.
     """
     for key in _TEMPLATE_RELEVANT_KEYS:
-        if stored.get(key) != new.get(key):
+        if _normalize_value(stored.get(key)) != _normalize_value(new.get(key)):
             return False
     return True
 
@@ -50,15 +62,15 @@ class SingleUserTurnTrajectory(BaseModel):
 class SingleUserTurnTrajectoryManager:
     """Trajectory manager for single-user-turn sessions.
 
-    Assumes a conversation with exactly one user message, optionally preceded
-    by system messages, followed by multi-turn tool-call steps
-    (assistant → tool → assistant → tool → …).  Additional system messages
-    may be injected mid-conversation (e.g. retry prompts).
+    Assumes a conversation where no user message appears after the first
+    assistant message.  The typical sequence is:
+    [system?, user?, assistant, tool, assistant, tool, …]
+    with optional system messages injected mid-conversation (e.g. retry
+    prompts).
 
-    The chat template rendering after the last user message must satisfy the
-    append-only invariant: each new request's messages are a strict extension
-    of the previous request's messages, with only tool/system messages
-    appended. This allows reusing pretokenized_token_ids across turns.
+    Each new request's messages must be a strict append-only extension of
+    the previous request's messages (only tool/system messages appended).
+    This allows reusing pretokenized_token_ids across turns.
     """
 
     def __init__(self, args, tokenizer: Any, *, tito_tokenizer=None):
@@ -133,7 +145,7 @@ class SingleUserTurnTrajectoryManager:
 
         Eligibility requires:
         1. The session has prior turns (token_ids is non-empty).
-        2. The prompt contains exactly one user message.
+        2. No user message appears after the first assistant message.
         3. The new messages are append-only relative to stored messages —
            only tool or system messages have been appended after the
            previous assistant message.
@@ -141,7 +153,18 @@ class SingleUserTurnTrajectoryManager:
         with self._lock:
             session = self.sessions.get(session_id)
             if session is None:
-                raise ValueError("session not found, register it first")
+                previews = [
+                    f"[{i}] role={m.get('role')}, content={(m.get('content') or '')[:100]!r}"
+                    for i, m in enumerate(request_messages)
+                ]
+                raise ValueError(
+                    f"session not found: session_id={session_id}, "
+                    f"num_messages={len(request_messages)}\n"
+                    + "\n".join(previews)
+                    + "\nThis usually means a stale agent environment from a previous "
+                    "training run is still sending requests after the router restarted. "
+                    "Ensure all agent containers are fully stopped before restarting training."
+                )
 
             if not session.token_ids:
                 # empty trajectory, no pretokenized input available
