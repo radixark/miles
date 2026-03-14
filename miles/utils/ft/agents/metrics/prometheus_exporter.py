@@ -115,11 +115,29 @@ class PrometheusExporter:
             return metric
 
         name = sample.name.removesuffix("_total") if metric_cls is Counter else sample.name
-        metric = metric_cls(
-            name,
-            f"FT node metric: {sample.name}",
-            labelnames=sorted(label_keys),
-            registry=self._registry,
-        )
+        try:
+            metric = metric_cls(
+                name,
+                f"FT node metric: {sample.name}",
+                labelnames=sorted(label_keys),
+                registry=self._registry,
+            )
+        except ValueError:
+            # Label set changed for this metric name (e.g. collector config
+            # change or test injection with extra labels). Unregister the old
+            # metric and re-register with the new label set.
+            for old_key, old_metric in list(cache.items()):
+                if old_key[0] == sample.name:
+                    try:
+                        self._registry.unregister(old_metric)
+                    except Exception:
+                        logger.debug("metrics: failed to unregister old metric %s", sample.name, exc_info=True)
+                    del cache[old_key]
+            metric = metric_cls(
+                name,
+                f"FT node metric: {sample.name}",
+                labelnames=sorted(label_keys),
+                registry=self._registry,
+            )
         cache[key] = metric
         return metric

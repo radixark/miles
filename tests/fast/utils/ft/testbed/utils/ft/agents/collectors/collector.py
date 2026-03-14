@@ -62,8 +62,9 @@ class TestbedCollector(BaseCollector):
 
     def _build_baseline_metrics(self) -> list[GaugeSample]:
         labels = {"node_id": self._node_id}
+        gpu_labels = {**labels, "gpu": "0"}
         return [
-            GaugeSample(name=GPU_AVAILABLE, labels=labels, value=1.0),
+            GaugeSample(name=GPU_AVAILABLE, labels=gpu_labels, value=1.0),
             GaugeSample(name=DCGM_FI_DEV_GPU_TEMP, labels=labels, value=45.0),
             GaugeSample(name=DCGM_FI_DEV_GPU_UTIL, labels=labels, value=0.0),
             GaugeSample(name=XID_NON_AUTO_RECOVERABLE_COUNT_TOTAL, labels=labels, value=0.0),
