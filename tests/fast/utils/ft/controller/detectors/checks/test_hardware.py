@@ -357,7 +357,7 @@ class TestCheckAllNicFaults:
         assert "persistently down" in faults[0].reason
 
     def test_both_flap_and_persistent_deduped_by_node(self) -> None:
-        """Same node triggers both flap and persistent: only one fault returned."""
+        """Same node triggers both flap and persistent: persistent fault wins."""
         store = make_fake_metric_store()
         inject_nic_up(store, node_id="node-0", device="ib0")
         inject_nic_down(store, node_id="node-0", device="ib0")
@@ -368,7 +368,7 @@ class TestCheckAllNicFaults:
 
         assert len(faults) == 1
         assert faults[0].node_id == "node-0"
-        assert "went down" in faults[0].reason
+        assert "persistently down" in faults[0].reason
 
     def test_different_nodes_different_fault_types(self) -> None:
         """node-0: flap only (ends up), node-1: persistent only (below threshold)."""
