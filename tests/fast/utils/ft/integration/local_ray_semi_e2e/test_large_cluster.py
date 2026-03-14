@@ -72,8 +72,8 @@ async def test_three_training_two_rollout_independent(
     ), f"rollout_1 was affected by training crash: {mid_recovery_status.subsystem_states}"
 
     # Step 7: wait for recovery to complete -> back to MONITORING
-    final_status = await testbed.wait_for_mode_transition(
-        target_mode=ControllerMode.MONITORING,
+    final_status = await testbed.wait_for_mode(
+        mode=ControllerMode.MONITORING,
         timeout=LONG_RECOVERY_TIMEOUT,
     )
     assert final_status.mode == ControllerMode.MONITORING
