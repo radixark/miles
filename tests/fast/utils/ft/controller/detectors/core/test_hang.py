@@ -37,8 +37,9 @@ class TestHangDetector:
     def test_iteration_stalled(self) -> None:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        inject_training_phase(store, phase=1.0, ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="test-run")
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
             metric_store=store,
@@ -56,10 +57,10 @@ class TestHangDetector:
     def test_checkpoint_saving_stalled(self) -> None:
         """Checkpoint saving: iteration stalled within lookback window → hang detected."""
         store = make_fake_metric_store()
-        inject_training_phase(store, phase=2.0)
+        inject_training_phase(store, phase=2.0, ft_run_id="test-run")
         now = datetime.now(timezone.utc)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="test-run")
         detector = HangDetector(
             config=HangDetectorConfig(
                 training_timeout_minutes=10,
@@ -106,10 +107,10 @@ class TestHangDetector:
     def test_checkpoint_saving_hang(self) -> None:
         """Checkpoint saving: iteration stalled for entire 30min window."""
         store = make_fake_metric_store()
-        inject_training_phase(store, phase=2.0)
+        inject_training_phase(store, phase=2.0, ft_run_id="test-run")
         now = datetime.now(timezone.utc)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=25))
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=10))
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=25), ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=10), ft_run_id="test-run")
         detector = HangDetector(
             config=HangDetectorConfig(
                 training_timeout_minutes=10,
@@ -252,8 +253,9 @@ class TestHangDetectorSingleSampleFalsePositive:
         """With 2+ samples showing the same value, hang should be detected."""
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        inject_training_phase(store, phase=1.0, ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="test-run")
 
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
@@ -310,27 +312,29 @@ class TestHangDetectorMultipleRank0Series:
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
 
+        inject_training_phase(store, phase=1.0, ft_run_id="test-run")
+
         # Series A (node-a): progressing
         store.ingest_samples(
             target_id="node-a",
-            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=100.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0", "ft_run_id": "test-run"}, value=100.0)],
             timestamp=now - timedelta(minutes=5),
         )
         store.ingest_samples(
             target_id="node-a",
-            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=200.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0", "ft_run_id": "test-run"}, value=200.0)],
             timestamp=now - timedelta(minutes=1),
         )
 
         # Series B (node-b): stalled — zero changes
         store.ingest_samples(
             target_id="node-b",
-            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=50.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0", "ft_run_id": "test-run"}, value=50.0)],
             timestamp=now - timedelta(minutes=5),
         )
         store.ingest_samples(
             target_id="node-b",
-            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0"}, value=50.0)],
+            samples=[GaugeSample(name=AGENT_HEARTBEAT, labels={"rank": "0", "ft_run_id": "test-run"}, value=50.0)],
             timestamp=now - timedelta(minutes=1),
         )
 
@@ -385,7 +389,8 @@ class TestHangDetectorTelemetryBlind:
         reason string — now they are distinguished."""
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        inject_training_phase(store, phase=1.0, ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="test-run")
 
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
@@ -404,8 +409,9 @@ class TestHangDetectorTelemetryBlind:
         """Two heartbeat samples with different values → healthy."""
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        inject_heartbeat(store, value=200.0, timestamp=now - timedelta(minutes=1))
+        inject_training_phase(store, phase=1.0, ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="test-run")
+        inject_heartbeat(store, value=200.0, timestamp=now - timedelta(minutes=1), ft_run_id="test-run")
 
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
@@ -424,8 +430,9 @@ class TestHangDetectorTelemetryBlind:
         """Two heartbeat samples with same value → ENTER_RECOVERY with HANG trigger."""
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        inject_training_phase(store, phase=1.0, ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="test-run")
 
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
@@ -446,6 +453,7 @@ class TestHangDetectorTelemetryBlind:
         no_fault, hiding the run_id mismatch."""
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
+        inject_training_phase(store, phase=1.0, ft_run_id="run-2")
         inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="run-1")
         inject_heartbeat(store, value=200.0, timestamp=now - timedelta(minutes=1), ft_run_id="run-1")
 
@@ -537,9 +545,9 @@ class TestHangDetectorPhaseUnknownSkipsCheck:
         """Phase known + heartbeat stalled → still triggers recovery."""
         store = make_fake_metric_store()
         now = datetime.now(timezone.utc)
-        inject_training_phase(store, phase=1.0)
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5))
-        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1))
+        inject_training_phase(store, phase=1.0, ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=5), ft_run_id="test-run")
+        inject_heartbeat(store, value=100.0, timestamp=now - timedelta(minutes=1), ft_run_id="test-run")
 
         detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=10))
         ctx = make_detector_context(
