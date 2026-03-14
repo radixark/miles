@@ -168,7 +168,8 @@ class TestRunIdClear:
 
 
 class TestControllerUnreachable:
-    def test_step_without_controller_does_not_raise(self) -> None:
+    def test_step_without_controller_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MILES_FT_RUN_ID", "integ-unreachable")
         agent = _make_agent(rank=0, world_size=4)
         try:
             agent.step()

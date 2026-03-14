@@ -116,6 +116,7 @@ class TestDetectorChainIntegration:
             mini_wandb=wandb,
             active_node_ids=_ACTIVE_NODE_IDS,
             job_status=JobStatus.RUNNING,
+            seconds_since_run_start=0.0,
         )
         chain = build_detector_chain()
 
@@ -137,6 +138,7 @@ class TestDetectorChainIntegration:
             mini_wandb=wandb,
             active_node_ids=_ACTIVE_NODE_IDS,
             job_status=JobStatus.FAILED,
+            seconds_since_run_start=0.0,
         )
         chain = build_detector_chain()
 
