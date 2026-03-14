@@ -280,6 +280,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
                 f"--node-ip-address={node_ip}",
                 "--num-cpus=8",
                 "--num-gpus=0",
+                *_dashboard_args(enabled=False),
                 *_worker_port_range_args(node_index=i),
                 f"--temp-dir={temp_dir}",
             ],

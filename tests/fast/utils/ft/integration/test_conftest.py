@@ -122,6 +122,69 @@ def test_dashboard_args_enable_dashboard_with_ephemeral_ports() -> None:
     ]
 
 
+def test_start_multi_node_ray_disables_dashboard_on_worker_nodes(
+    monkeypatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def _fake_run(
+        args: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        env: dict[str, str] | None = None,
+        text: bool | None = None,
+    ) -> SimpleNamespace:
+        del check, capture_output, env, text
+        commands.append(args)
+        return SimpleNamespace(stdout="To connect: ray.init(address='ignore') --address='10.3.4.5:6379'")
+
+    monkeypatch.setattr(integration_conftest.ray, "is_initialized", lambda: False)
+    monkeypatch.setattr(integration_conftest.ray, "shutdown", lambda: None)
+    monkeypatch.setattr(integration_conftest.subprocess, "run", _fake_run)
+    monkeypatch.setattr(integration_conftest.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(integration_conftest.Path, "exists", lambda _self: False)
+    monkeypatch.setattr(integration_conftest.shutil, "rmtree", lambda _path, ignore_errors=True: None)
+    monkeypatch.setattr(
+        integration_conftest,
+        "_connect_to_started_ray_cluster",
+        lambda start_stdout: (SimpleNamespace(), "10.3.4.5:6379"),
+    )
+    monkeypatch.setattr(
+        integration_conftest.ray,
+        "nodes",
+        lambda: [
+            {
+                "Alive": True,
+                "NodeManagerAddress": "127.0.0.1",
+                "NodeID": "head",
+            },
+            {
+                "Alive": True,
+                "NodeManagerAddress": "127.0.0.2",
+                "NodeID": "worker",
+            },
+        ],
+    )
+    monkeypatch.setattr(integration_conftest, "RayNodeInfo", SimpleNamespace)
+    monkeypatch.setattr(integration_conftest, "uuid4", lambda: SimpleNamespace(hex="deadbeef"))
+
+    nodes = integration_conftest._start_multi_node_ray(num_nodes=2)
+
+    assert len(nodes) == 2
+    assert commands[0] == ["ray", "stop", "--force"]
+    worker_start = commands[2]
+    assert worker_start[:6] == [
+        "ray",
+        "start",
+        "--address=10.3.4.5:6379",
+        "--node-ip-address=127.0.0.2",
+        "--num-cpus=8",
+        "--num-gpus=0",
+    ]
+    assert "--include-dashboard=false" in worker_start
+
+
 def test_normalize_local_ray_node_ip_preserves_loopback_aliases() -> None:
     assert (
         integration_conftest._normalize_local_ray_node_ip(
