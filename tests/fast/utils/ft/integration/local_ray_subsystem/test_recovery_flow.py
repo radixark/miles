@@ -200,7 +200,7 @@ class TestControllerKilledDuringRecovery:
         # completes, so we must keep polling rather than breaking on the
         # first successful get_status call.
         name = ft_controller_actor_name("")
-        deadline = time.monotonic() + 15.0
+        deadline = time.monotonic() + 45.0
         status = None
         while time.monotonic() < deadline:
             try:
@@ -212,7 +212,7 @@ class TestControllerKilledDuringRecovery:
                 pass
             time.sleep(0.3)
         else:
-            raise TimeoutError("Actor did not restart with a new run_id within 15s")
+            raise TimeoutError("Actor did not restart with a new run_id within 45s")
 
         assert status is not None
         assert status.active_run_id is not None

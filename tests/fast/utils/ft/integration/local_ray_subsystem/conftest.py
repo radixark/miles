@@ -29,7 +29,7 @@ def controller_actor(
     local_ray: None,
 ) -> Generator[ray.actor.ActorHandle, None, None]:
     actor_name = ft_controller_actor_name("")
-    handle = FtControllerActor.options(name=actor_name).remote(
+    handle = FtControllerActor.options(name=actor_name, max_restarts=-1).remote(
         builder=build_ft_controller,
         config=FtControllerConfig(platform="stub", tick_interval=0.05, rollout_num_cells=0),
     )
@@ -55,7 +55,7 @@ def make_controller_actor(
     ) -> ray.actor.ActorHandle:
         actor_name = ft_controller_actor_name(ft_id)
         _kill_named_actor(actor_name)
-        handle = FtControllerActor.options(name=actor_name).remote(
+        handle = FtControllerActor.options(name=actor_name, max_restarts=-1).remote(
             builder=build_ft_controller,
             config=FtControllerConfig(
                 platform="stub",
@@ -89,7 +89,7 @@ def running_controller(
     Yields (handle, run_id) where run_id is the auto-generated ID from StubMainJob.
     """
     actor_name = ft_controller_actor_name("")
-    handle = FtControllerActor.options(name=actor_name).remote(
+    handle = FtControllerActor.options(name=actor_name, max_restarts=-1).remote(
         builder=build_ft_controller,
         config=FtControllerConfig(platform="stub", tick_interval=0.05, rollout_num_cells=0),
     )
