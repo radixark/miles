@@ -76,21 +76,42 @@ class UpdateWeightFromTensor:
         self._model_update_groups = None
 
     def connect_rollout_engines(
-        self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
+        self,
+        rollout_engines: Sequence[ActorHandle],
+        rollout_engine_lock: ActorHandle,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """
         Split colocated/distributed engines. Global source rank (DP=TP=PP=0) creates NCCL
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
-        colocate_engine_nums = (
-            self.args.actor_num_nodes * self.args.actor_num_gpus_per_node // self.args.rollout_num_gpus_per_engine
-        )
+
+        if engine_gpu_counts is None:
+            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
+        if engine_gpu_offsets is None:
+            # Fallback: assume engines are densely packed (no placeholder gaps).
+            engine_gpu_offsets = []
+            offset = 0
+            for c in engine_gpu_counts:
+                engine_gpu_offsets.append(offset)
+                offset += c
+
+        # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
+        total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+        colocate_engine_nums = 0
+        for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
+            if gpu_offset + gpu_count > total_actor_gpus:
+                break
+            colocate_engine_nums += 1
+
         self.use_distribute = len(rollout_engines) > colocate_engine_nums
 
         if self.use_distribute:
             self.rollout_engines = rollout_engines[:colocate_engine_nums]
             self.distributed_rollout_engines = rollout_engines[colocate_engine_nums:]
+            distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
             self._is_distributed_src_rank = (
                 mpu.get_data_parallel_rank(with_context_parallel=True) == 0
                 and mpu.get_tensor_model_parallel_rank() == 0
@@ -102,16 +123,47 @@ class UpdateWeightFromTensor:
                     disconnect_rollout_engines_from_distributed(
                         self.args, self._group_name, self._model_update_groups, self.distributed_rollout_engines
                     )
+
                 self._model_update_groups = connect_rollout_engines_from_distributed(
-                    self.args, self._group_name, self.distributed_rollout_engines
+                    self.args,
+                    self._group_name,
+                    self.distributed_rollout_engines,
+                    engine_gpu_counts=distributed_gpu_counts,
                 )
 
-        # Here we assume the gpu id of rollout engines and train actors are the same.
+        colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
+        colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]
+
+        # Determine whether this rank is covered by any colocated engine.
+        all_colocated_ranks = set()
+        for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True):
+            all_colocated_ranks.update(range(offset, offset + count))
+        rank_has_engine = dist.get_rank() in all_colocated_ranks
+
+        # Create IPC Gloo gather groups matching actual engine layout.
+        # Re-create on first call or when engine layout changes (placeholder ranks
+        # that had a group from __init__ but no actual engine need to be reset).
+        if rank_has_engine:
+            if self._ipc_gather_group is None:
+                for i in range(colocate_engine_nums):
+                    group_ranks = list(
+                        range(colocate_gpu_offsets[i], colocate_gpu_offsets[i] + colocate_gpu_counts[i])
+                    )
+                    new_group = dist.new_group(ranks=group_ranks, backend="gloo")
+                    if dist.get_rank() in group_ranks:
+                        self._ipc_gather_group = new_group
+                        self._ipc_gather_src = colocate_gpu_offsets[i]
+        else:
+            # Ranks not covered by any engine (e.g. placeholder GPU slots)
+            self._ipc_gather_group = None
+            self._ipc_gather_src = None
+
+        # Map training ranks to colocated engine actors.
+        self._ipc_engine = None
         for i, engine in enumerate(self.rollout_engines):
-            start_rank = i * self.args.rollout_num_gpus_per_engine
-            end_rank = (i + 1) * self.args.rollout_num_gpus_per_engine
-            group_ranks = list(range(start_rank, end_rank))
-            if dist.get_rank() in group_ranks:
+            start = colocate_gpu_offsets[i]
+            end = start + colocate_gpu_counts[i]
+            if start <= dist.get_rank() < end:
                 self._ipc_engine = engine
 
     @torch.no_grad()
@@ -234,6 +286,11 @@ def _send_to_colocated_engine(
     lora_name: str | None = None,
     lora_loaded: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
+    # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
+    # gather_object is only collective among group members, so we skip entirely.
+    if ipc_gather_group is None:
+        return [], None
+
     is_lora = lora_config is not None
     long_live_tensors = []
 
