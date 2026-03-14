@@ -57,7 +57,7 @@ class TestDetectorChain:
         assert none_detector.call_count == 1
         assert bad_detector.call_count == 1
 
-    def test_short_circuit_after_non_none(self) -> None:
+    def test_all_detectors_evaluated_even_after_recovery(self) -> None:
         bad_detector = AlwaysMarkBadDetector()
         trailing_detector = AlwaysNoneDetector()
 
@@ -66,7 +66,7 @@ class TestDetectorChain:
         assert result.recovery_decision is not None
         assert result.recovery_decision.action == ActionType.ENTER_RECOVERY
         assert bad_detector.call_count == 1
-        assert trailing_detector.call_count == 0
+        assert trailing_detector.call_count == 1
 
 
 class TestDetectorExceptionIsolation:

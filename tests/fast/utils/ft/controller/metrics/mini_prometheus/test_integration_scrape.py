@@ -133,7 +133,7 @@ class TestMiniPrometheusScrapeReal:
         with caplog.at_level(logging.WARNING):
             await store.scrape_once()
 
-        assert any("Failed to scrape" in r.message for r in caplog.records)
+        assert any("scrape failed" in r.message for r in caplog.records)
 
     async def test_scrape_multiple_exporters(self) -> None:
         port1, _ = _start_exporter(metrics=[("node_metric", {"type": "a"}, 1.0)])
