@@ -9,9 +9,10 @@ import os
 
 import pytest
 
-from miles.utils.chat_template_utils import TEMPLATE_DIR, try_get_fixed_chat_template
+from miles.utils.chat_template_utils.autofix import TEMPLATE_DIR, try_get_fixed_chat_template
 
 _QWEN3_FIXED = str(TEMPLATE_DIR / "qwen3_fixed.jinja")
+_QWEN35_FIXED = str(TEMPLATE_DIR / "qwen3.5_fixed.jinja")
 _THINKING_FIXED = str(TEMPLATE_DIR / "qwen3_thinking_2507_and_next_fixed.jinja")
 
 
@@ -128,6 +129,31 @@ class TestQwen3NextMapping:
 
 
 # ---------------------------------------------------------------------------
+# Qwen3.5 → qwen3.5_fixed.jinja
+# ---------------------------------------------------------------------------
+
+
+class TestQwen35Mapping:
+    """Qwen3.5 models should map to qwen3.5_fixed.jinja."""
+
+    @pytest.mark.parametrize(
+        "checkpoint",
+        [
+            "Qwen/Qwen3.5-0.8B",
+            "Qwen/Qwen3.5-32B",
+            "/data/models/Qwen3.5-32B-sft",
+            "models/qwen3.5-0.8b-finetuned",
+            "QWEN/QWEN3.5-0.8B",
+        ],
+    )
+    def test_resolves_to_qwen35_fixed(self, checkpoint):
+        path = try_get_fixed_chat_template(checkpoint)
+        assert path is not None, f"{checkpoint} should match a fix rule"
+        assert path == _QWEN35_FIXED
+        assert os.path.isfile(path), f"Fixed template must exist: {path}"
+
+
+# ---------------------------------------------------------------------------
 # Models that should never match
 # ---------------------------------------------------------------------------
 
@@ -139,14 +165,17 @@ class TestNoMatch:
         "checkpoint",
         [
             # Other Qwen family
-            "Qwen/Qwen3.5-0.8B",
             "Qwen/Qwen2.5-72B",
-            "/data/models/Qwen3.5-32B-sft",
             # Non-Qwen
             "zai-org/GLM-5",
             "meta-llama/Llama-3.1-8B",
             "deepseek-ai/DeepSeek-V3",
             "/home/user/models/llama-3-70b",
+            # Qwen3-Coder-Next (no prefix invariant issue, no fix needed)
+            "Qwen/Qwen3-Coder-Next",
+            "Qwen/Qwen3-Coder-Next-FP8",
+            "Qwen/Qwen3-Coder-Next-Base",
+            "/data/models/Qwen3-Coder-Next",
             # Edge cases that look similar but shouldn't match
             "Qwen/Qwen3-Next-80B-A3B-Instruct",
             "some-org/not-qwen3-at-all-4B",
@@ -173,6 +202,8 @@ class TestCaseInsensitive:
             "/DATA/MODELS/QWEN3-8B",
             "QWEN/QWEN3-4B-THINKING-2507",
             "qwen/qwen3-next-80b-a3b-thinking",
+            "QWEN/QWEN3.5-0.8B",
+            "qwen/qwen3.5-32b",
         ],
     )
     def test_always_matches(self, checkpoint):
@@ -206,3 +237,7 @@ class TestRulePriority:
     def test_local_path_base_still_generic(self):
         path = try_get_fixed_chat_template("/data/train/Qwen3-32B-sft-v3")
         assert path == _QWEN3_FIXED
+
+    def test_qwen35_before_generic_qwen3(self):
+        path = try_get_fixed_chat_template("Qwen/Qwen3.5-0.8B")
+        assert path == _QWEN35_FIXED

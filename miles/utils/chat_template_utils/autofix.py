@@ -12,11 +12,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-TEMPLATE_DIR = Path(__file__).parent / "chat_templates"
+TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # (glob pattern, fixed template filename) — checked in order, first match wins.
 # Patterns are matched case-insensitively against the hf_checkpoint string.
 _FIX_RULES: list[tuple[str, str]] = [
+    ("*qwen3.5*", "qwen3.5_fixed.jinja"),
     ("*qwen3-next-*-thinking*", "qwen3_thinking_2507_and_next_fixed.jinja"),
     ("*qwen3-*b-thinking-2507*", "qwen3_thinking_2507_and_next_fixed.jinja"),
     ("*qwen3-[0-9]*", "qwen3_fixed.jinja"),
