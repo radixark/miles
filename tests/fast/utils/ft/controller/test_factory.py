@@ -131,7 +131,7 @@ class TestRolloutMonitoringTimeoutWiring:
 
         specs = bundle.controller._subsystem_specs
         training_timeout = specs["training"].config.monitoring_config.timeout_seconds
-        rollout_timeout = specs["rollout_0"].config.monitoring_config.timeout_seconds
+        rollout_timeout = specs["rollout_default"].config.monitoring_config.timeout_seconds
         assert training_timeout == rollout_timeout == 900
 
 

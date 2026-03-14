@@ -5,7 +5,12 @@ import math
 
 from miles.utils.ft.controller.metrics.mini_wandb import MiniWandb
 from miles.utils.ft.controller.state_machines.main.models import MainContext, MainState, NormalSt, RestartingMainJobSt
-from miles.utils.ft.controller.state_machines.recovery import EvictingAndRestartingSt, RecoveryDoneSt, RecoveryState
+from miles.utils.ft.controller.state_machines.recovery import (
+    EvictingAndRestartingSt,
+    NotifyHumansSt,
+    RecoveryDoneSt,
+    RecoveryState,
+)
 from miles.utils.ft.controller.state_machines.subsystem import RecoveringSt
 from miles.utils.ft.controller.subsystem_hub import TrainingRankRoster
 from miles.utils.ft.controller.types import ControllerStatus, RecoveryInfo
@@ -21,7 +26,11 @@ def recovery_phase_name(recovery: RecoveryState) -> str:
 
 
 def _classify_recovery(state: RecoveringSt) -> RecoveryInfo:
-    bad_nodes = sorted(state.known_bad_node_ids)
+    match state.recovery:
+        case NotifyHumansSt(bad_node_ids=notify_bad) if notify_bad:
+            bad_nodes = sorted(notify_bad)
+        case _:
+            bad_nodes = sorted(state.known_bad_node_ids)
 
     match state.recovery:
         case RecoveryDoneSt():

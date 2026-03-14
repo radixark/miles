@@ -106,19 +106,20 @@ class TestHangDetectorWithPrometheusClient:
     def test_hang_detected_when_heartbeat_stalled(self) -> None:
         # count_over_time must match before AGENT_HEARTBEAT so the router
         # returns a count >= 2 (enough data) instead of the heartbeat value 0.0
+        run_id = "test-run-stalled"
         router = _ResponseRouter(
             {
                 TRAINING_PHASE: _vector_json(
                     TRAINING_PHASE,
-                    [_vector_item(TRAINING_PHASE, PHASE_TRAINING, labels={"rank": "0"})],
+                    [_vector_item(TRAINING_PHASE, PHASE_TRAINING, labels={"rank": "0", "ft_run_id": run_id})],
                 ),
                 "count_over_time": _vector_json(
                     AGENT_HEARTBEAT,
-                    [_vector_item(AGENT_HEARTBEAT, 10.0, labels={"rank": "0"})],
+                    [_vector_item(AGENT_HEARTBEAT, 10.0, labels={"rank": "0", "ft_run_id": run_id})],
                 ),
                 AGENT_HEARTBEAT: _vector_json(
                     AGENT_HEARTBEAT,
-                    [_vector_item(AGENT_HEARTBEAT, 0.0, labels={"rank": "0"})],
+                    [_vector_item(AGENT_HEARTBEAT, 0.0, labels={"rank": "0", "ft_run_id": run_id})],
                 ),
             }
         )
@@ -129,6 +130,8 @@ class TestHangDetectorWithPrometheusClient:
                 metric_store=MetricStore(time_series_store=client, mini_wandb=MiniWandb()),
                 active_node_ids={"node-0"},
                 job_status=JobStatus.RUNNING,
+                active_run_id=run_id,
+                seconds_since_run_start=3600.0,
             )
 
             detector = HangDetector(config=HangDetectorConfig(training_timeout_minutes=5))
@@ -137,15 +140,16 @@ class TestHangDetectorWithPrometheusClient:
         assert decision.action == ActionType.ENTER_RECOVERY
 
     def test_no_hang_when_heartbeat_progressing(self) -> None:
+        run_id = "test-run-1"
         router = _ResponseRouter(
             {
                 TRAINING_PHASE: _vector_json(
                     TRAINING_PHASE,
-                    [_vector_item(TRAINING_PHASE, PHASE_TRAINING, labels={"rank": "0"})],
+                    [_vector_item(TRAINING_PHASE, PHASE_TRAINING, labels={"rank": "0", "ft_run_id": run_id})],
                 ),
                 AGENT_HEARTBEAT: _vector_json(
                     AGENT_HEARTBEAT,
-                    [_vector_item(AGENT_HEARTBEAT, 5.0, labels={"rank": "0"})],
+                    [_vector_item(AGENT_HEARTBEAT, 5.0, labels={"rank": "0", "ft_run_id": run_id})],
                 ),
             }
         )
@@ -156,6 +160,8 @@ class TestHangDetectorWithPrometheusClient:
                 metric_store=MetricStore(time_series_store=client, mini_wandb=MiniWandb()),
                 active_node_ids={"node-0"},
                 job_status=JobStatus.RUNNING,
+                active_run_id=run_id,
+                seconds_since_run_start=3600.0,
             )
 
             detector = HangDetector()

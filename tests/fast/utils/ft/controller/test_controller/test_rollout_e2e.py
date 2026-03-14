@@ -138,9 +138,12 @@ class TestRolloutCrashRecovery:
         _override_rollout_monitoring(harness)
 
         # Step 1: Inject healthy metrics + cell alive
+        # Use an explicit early timestamp so that later crash samples (which
+        # start at now - span_seconds) are not older than this alive sample.
+        early = datetime.now(timezone.utc) - timedelta(seconds=10)
         for node_id in ["rollout-0", "rollout-1"]:
             inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
-        inject_rollout_cell_alive(store, "ep72", alive=True)
+        inject_rollout_cell_alive(store, "ep72", alive=True, timestamp=early)
 
         for _ in range(3):
             await controller._tick()
@@ -368,9 +371,12 @@ class TestRolloutLevel1FailureNotifyHumans:
         harness.rollout_manager_handle.get_cell_status = _FakeRemoteMethod(result=JobStatus.FAILED)
 
         # Step 1: Inject healthy metrics + cell alive
+        # Use an explicit early timestamp so that later crash samples (which
+        # start at now - span_seconds) are not older than this alive sample.
+        early = datetime.now(timezone.utc) - timedelta(seconds=10)
         for node_id in ["rollout-0", "rollout-1"]:
             inject_healthy_node(store, node_id, num_gpus=8, num_nics=4)
-        inject_rollout_cell_alive(store, "ep72", alive=True)
+        inject_rollout_cell_alive(store, "ep72", alive=True, timestamp=early)
         await controller._tick()
 
         # Step 2: Inject sustained dead cell
