@@ -170,7 +170,7 @@ class TestRegisterTrainingRankHappyPath:
                 pid=20,
             )
 
-        assert "rejected_inconsistent_world_size" in caplog.text
+        assert "rejected inconsistent world_size" in caplog.text
         assert registry.expected_world_size == 4
         assert 1 not in registry.rank_placement
         assert 1 not in registry.rank_pids
@@ -297,7 +297,7 @@ class TestWarnIfIncomplete:
         with caplog.at_level("WARNING"):
             registry.warn_if_incomplete()
 
-        assert "incomplete_rank_registration" in caplog.text
+        assert "incomplete rank registration" in caplog.text
         assert "registered=2" in caplog.text
         assert "expected=4" in caplog.text
 
@@ -307,7 +307,7 @@ class TestWarnIfIncomplete:
         with caplog.at_level("WARNING"):
             registry.warn_if_incomplete()
 
-        assert "incomplete_rank_registration" not in caplog.text
+        assert "incomplete rank registration" not in caplog.text
 
     def test_no_warn_when_all_ranks_registered(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = _make_registry()
@@ -331,7 +331,7 @@ class TestWarnIfIncomplete:
         with caplog.at_level("WARNING"):
             registry.warn_if_incomplete()
 
-        assert "incomplete_rank_registration" not in caplog.text
+        assert "incomplete rank registration" not in caplog.text
 
     def test_no_warn_when_empty_roster(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = _make_registry(run_id="unused")
@@ -339,4 +339,4 @@ class TestWarnIfIncomplete:
         with caplog.at_level("WARNING"):
             registry.warn_if_incomplete()
 
-        assert "incomplete_rank_registration" not in caplog.text
+        assert "incomplete rank registration" not in caplog.text

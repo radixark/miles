@@ -16,7 +16,7 @@ class TestNodeAgentCoverageChecker:
             checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
             checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
-        assert "without node agent" not in caplog.text
+        assert "persistent coverage gap" not in caplog.text
 
     def test_warning_at_threshold(self, caplog: pytest.LogCaptureFixture) -> None:
         """Warning fires exactly when the uncovered count reaches the threshold."""
@@ -26,7 +26,7 @@ class TestNodeAgentCoverageChecker:
             for _ in range(3):
                 checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
-        assert "without node agent" in caplog.text
+        assert "persistent coverage gap" in caplog.text
         assert "n1" in caplog.text
 
     def test_no_duplicate_warning(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -37,7 +37,7 @@ class TestNodeAgentCoverageChecker:
             for _ in range(5):
                 checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
-        warning_count = caplog.text.count("without node agent")
+        warning_count = caplog.text.count("persistent coverage gap")
         assert warning_count == 1
 
     def test_coverage_restored_clears_alert(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -62,7 +62,7 @@ class TestNodeAgentCoverageChecker:
             checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
             checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
 
-        warning_count = caplog.text.count("without node agent")
+        warning_count = caplog.text.count("persistent coverage gap")
         assert warning_count == 2
 
     def test_multiple_nodes_tracked_independently(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -73,7 +73,7 @@ class TestNodeAgentCoverageChecker:
             checker.check(subsystem_name="training", subsystem_node_ids={"n1", "n2"}, registered_agent_node_ids={"n2"})
             checker.check(subsystem_name="training", subsystem_node_ids={"n1", "n2"}, registered_agent_node_ids={"n2"})
 
-        warning_lines = [r.message for r in caplog.records if "without node agent" in r.message]
+        warning_lines = [r.message for r in caplog.records if "persistent coverage gap" in r.message]
         assert len(warning_lines) == 1
         assert "n1" in warning_lines[0]
 
@@ -87,7 +87,7 @@ class TestNodeAgentCoverageChecker:
                 checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids=set())
                 checker.check(subsystem_name="training", subsystem_node_ids={"n1"}, registered_agent_node_ids={"n1"})
 
-        warning_count = caplog.text.count("without node agent")
+        warning_count = caplog.text.count("persistent coverage gap")
         assert warning_count == 3
 
     def test_node_not_in_training_set_is_ignored(self) -> None:

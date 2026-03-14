@@ -290,4 +290,4 @@ class TestScrapeLoopDefensiveBranches:
             assert task is not None
             await asyncio.sleep(0.05)
 
-        assert "scrape_loop_crashed" in caplog.text
+        assert "metric store crashed" in caplog.text
