@@ -41,8 +41,8 @@ class TestTickEmptyDetectorChain:
             mini_wandb=harness.mini_wandb,
             active_node_ids=_TEST_ACTIVE_NODE_IDS,
         )
-        decision = run_detectors(detectors=[], ctx=ctx)
-        assert decision.action == ActionType.NONE
+        result = run_detectors(detectors=[], ctx=ctx)
+        assert result.recovery_decision is None
 
 
 class TestDetectorChain:
@@ -51,8 +51,9 @@ class TestDetectorChain:
         bad_detector = AlwaysMarkBadDetector()
 
         ctx = make_detector_context(active_node_ids=_TEST_ACTIVE_NODE_IDS)
-        decision = run_detectors(detectors=[none_detector, bad_detector], ctx=ctx)
-        assert decision.action == ActionType.ENTER_RECOVERY
+        result = run_detectors(detectors=[none_detector, bad_detector], ctx=ctx)
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.action == ActionType.ENTER_RECOVERY
         assert none_detector.call_count == 1
         assert bad_detector.call_count == 1
 
@@ -61,8 +62,9 @@ class TestDetectorChain:
         trailing_detector = AlwaysNoneDetector()
 
         ctx = make_detector_context(active_node_ids=_TEST_ACTIVE_NODE_IDS)
-        decision = run_detectors(detectors=[bad_detector, trailing_detector], ctx=ctx)
-        assert decision.action == ActionType.ENTER_RECOVERY
+        result = run_detectors(detectors=[bad_detector, trailing_detector], ctx=ctx)
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.action == ActionType.ENTER_RECOVERY
         assert bad_detector.call_count == 1
         assert trailing_detector.call_count == 0
 
@@ -73,22 +75,23 @@ class TestDetectorExceptionIsolation:
         good = AlwaysMarkBadDetector()
 
         ctx = make_detector_context(active_node_ids=_TEST_ACTIVE_NODE_IDS)
-        decision = run_detectors(detectors=[crashing, good], ctx=ctx)
+        result = run_detectors(detectors=[crashing, good], ctx=ctx)
 
         assert crashing.call_count == 1
         assert good.call_count == 1
-        assert decision.action == ActionType.ENTER_RECOVERY
+        assert result.recovery_decision is not None
+        assert result.recovery_decision.action == ActionType.ENTER_RECOVERY
 
     def test_all_detectors_crash_returns_none(self) -> None:
         d1 = CrashingDetector()
         d2 = CrashingDetector()
 
         ctx = make_detector_context(active_node_ids=_TEST_ACTIVE_NODE_IDS)
-        decision = run_detectors(detectors=[d1, d2], ctx=ctx)
+        result = run_detectors(detectors=[d1, d2], ctx=ctx)
 
         assert d1.call_count == 1
         assert d2.call_count == 1
-        assert decision.action == ActionType.NONE
+        assert result.recovery_decision is None
 
     @pytest.mark.anyio
     async def test_tick_survives_exception_in_tick_inner(self) -> None:
