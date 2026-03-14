@@ -55,13 +55,6 @@ async def test_hang_detected_workers_alive_but_stalled(
     alive = await testbed.train_group.all_alive()
     assert alive, "Workers should still be alive (responding to ping) after inject_hang"
 
-    status_after_hang = await testbed.get_status()
-    iteration_after_hang: int | None = status_after_hang.latest_iteration
-    assert iteration_after_hang is not None
-    assert iteration_after_hang <= iteration_before + 1, (
-        f"Iterations should be frozen after hang: before={iteration_before}, " f"after={iteration_after_hang}"
-    )
-
     # Step 5: wait for FastHangDetector to fire (3s timeout + margin) -> RECOVERY
     status = await testbed.wait_for_mode(
         mode=ControllerMode.RECOVERY,

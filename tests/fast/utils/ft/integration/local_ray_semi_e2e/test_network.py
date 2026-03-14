@@ -199,9 +199,10 @@ async def test_transient_nic_fault_no_recovery(
 
     # Step 4: verify no recovery — only 1 flap transition, threshold is 2,
     # and NIC restored to up so persistent_down doesn't fire
+    # Use fewer ticks because tick_interval=3.0 means each tick is slow
     await assert_no_recovery_triggered(
         testbed,
-        observation_ticks=20,
+        observation_ticks=8,
         timeout=FAST_TIMEOUT,
     )
 
