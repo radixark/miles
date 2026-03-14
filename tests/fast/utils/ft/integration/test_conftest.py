@@ -122,7 +122,15 @@ def test_dashboard_args_enable_dashboard_with_ephemeral_ports() -> None:
     ]
 
 
-def test_start_multi_node_ray_disables_dashboard_on_worker_nodes(
+def test_worker_agent_port_args_use_ephemeral_ports() -> None:
+    assert integration_conftest._worker_agent_port_args() == [
+        "--dashboard-agent-listen-port=0",
+        "--dashboard-agent-grpc-port=0",
+        "--runtime-env-agent-port=0",
+    ]
+
+
+def test_start_multi_node_ray_uses_ephemeral_agent_ports_on_worker_nodes(
     monkeypatch,
 ) -> None:
     commands: list[list[str]] = []
@@ -182,7 +190,10 @@ def test_start_multi_node_ray_disables_dashboard_on_worker_nodes(
         "--num-cpus=8",
         "--num-gpus=0",
     ]
-    assert "--include-dashboard=false" in worker_start
+    assert "--include-dashboard=false" not in worker_start
+    assert "--dashboard-agent-listen-port=0" in worker_start
+    assert "--dashboard-agent-grpc-port=0" in worker_start
+    assert "--runtime-env-agent-port=0" in worker_start
 
 
 def test_normalize_local_ray_node_ip_preserves_loopback_aliases() -> None:

@@ -233,6 +233,14 @@ def _dashboard_args(enabled: bool) -> list[str]:
     return ["--include-dashboard=false"]
 
 
+def _worker_agent_port_args() -> list[str]:
+    return [
+        "--dashboard-agent-listen-port=0",
+        "--dashboard-agent-grpc-port=0",
+        "--runtime-env-agent-port=0",
+    ]
+
+
 def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInfo]:
     """Start a multi-node Ray cluster using loopback aliases (127.0.0.x).
 
@@ -280,7 +288,7 @@ def _start_multi_node_ray(num_nodes: int = _MULTI_NODE_COUNT) -> list[RayNodeInf
                 f"--node-ip-address={node_ip}",
                 "--num-cpus=8",
                 "--num-gpus=0",
-                *_dashboard_args(enabled=False),
+                *_worker_agent_port_args(),
                 *_worker_port_range_args(node_index=i),
                 f"--temp-dir={temp_dir}",
             ],
