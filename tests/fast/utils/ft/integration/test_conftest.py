@@ -130,7 +130,7 @@ def test_start_multi_node_ray_disables_dashboard_on_worker_nodes(
     def _fake_run(
         args: list[str],
         *,
-        check: bool,
+        check: bool | None = None,
         capture_output: bool,
         env: dict[str, str] | None = None,
         text: bool | None = None,
