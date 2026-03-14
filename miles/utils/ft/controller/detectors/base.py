@@ -74,7 +74,7 @@ class BaseFaultDetector(ABC):
                     len(filtered),
                 )
                 decision = decision.model_copy(update={"bad_node_ids": filtered})
-        if decision.action != ActionType.NO_FAULT:
+        if decision.action != ActionType.NONE:
             logger.info(
                 "detector: %s result: action=%s, trigger=%s, bad_nodes=%d",
                 type(self).__name__,

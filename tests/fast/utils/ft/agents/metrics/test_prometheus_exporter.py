@@ -110,14 +110,14 @@ class TestCounterNonPositiveDeltaLogged:
         with caplog.at_level(logging.DEBUG, logger="miles.utils.ft.agents.metrics.prometheus_exporter"):
             exporter.update_metrics([CounterSample(name="event_total", labels={}, delta=0.0)])
 
-        assert "counter_delta_non_positive" in caplog.text
+        assert "counter delta non-positive" in caplog.text
         assert "event_total" in caplog.text
 
     def test_negative_delta_logs_debug(self, exporter: PrometheusExporter, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.DEBUG, logger="miles.utils.ft.agents.metrics.prometheus_exporter"):
             exporter.update_metrics([CounterSample(name="err_total", labels={}, delta=-1.0)])
 
-        assert "counter_delta_non_positive" in caplog.text
+        assert "counter delta non-positive" in caplog.text
 
 
 class TestGetOrCreateCache:

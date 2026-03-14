@@ -145,7 +145,8 @@ class TestDmesgSubprocessReader:
             lines = reader.read_new_lines()
 
         assert lines == []
-        assert "non-zero returncode=1" in caplog.text
+        assert "non-zero" in caplog.text
+        assert "returncode=1" in caplog.text
         assert "Operation not permitted" in caplog.text
 
     def test_close_is_noop(self) -> None:

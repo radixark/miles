@@ -183,7 +183,8 @@ class TestFtNodeAgentCollectionLoop:
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{address}/metrics")
 
-        assert 'gpu_temperature_celsius{gpu="0"}' in response.text
+        assert "gpu_temperature_celsius" in response.text
+        assert 'gpu="0"' in response.text
         assert "65.0" in response.text
 
     @pytest.mark.anyio

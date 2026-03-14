@@ -29,13 +29,10 @@ class TestFtTrackingAgentLog:
 
         assert mock_client.log_step.call_count == 2
 
-    def test_log_without_run_id_is_noop(self) -> None:
+    def test_empty_run_id_without_env_raises(self) -> None:
         mock_client = MagicMock()
-        agent = FtTrackingAgent(rank=0, run_id="", controller_client=mock_client)
-
-        agent.log(metrics={"loss": 2.5}, step=10)
-
-        mock_client.log_step.assert_not_called()
+        with pytest.raises(RuntimeError, match="MILES_FT_RUN_ID"):
+            FtTrackingAgent(rank=0, run_id="", controller_client=mock_client)
 
     def test_log_reads_run_id_from_env(self) -> None:
         with patch.dict("os.environ", {"MILES_FT_RUN_ID": "env-run-1"}):
