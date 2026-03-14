@@ -119,7 +119,7 @@ class TestDiskCollector:
 
         assert len(samples) == 1
         assert samples[0].labels == {"mountpoint": str(good_mount)}
-        assert "Failed to statvfs" in caplog.text
+        assert "failed to statvfs" in caplog.text
 
 
 # -------------------------------------------------------------------
