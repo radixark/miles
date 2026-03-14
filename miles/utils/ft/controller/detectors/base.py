@@ -88,16 +88,27 @@ class BaseFaultDetector(ABC):
     def _evaluate_raw(self, ctx: DetectorContext) -> Decision: ...
 
 
+_METRIC_BLIND_STARTUP_GRACE_SECONDS: float = 120.0
+
+
 def check_metric_blind(
     ctx: DetectorContext,
     metric_name: str,
     *,
     detector_name: str,
+    startup_grace_seconds: float = _METRIC_BLIND_STARTUP_GRACE_SECONDS,
 ) -> Decision | None:
     """Return a TELEMETRY_BLIND decision if *metric_name* has no data for
     any active node, or ``None`` if data is present (caller should proceed
-    with normal evaluation)."""
+    with normal evaluation).
+
+    During the first *startup_grace_seconds* after run start, metric absence
+    is expected (scrapers haven't collected yet), so we suppress the alert.
+    """
     if not ctx.active_node_ids:
+        return None
+
+    if ctx.seconds_since_run_start < startup_grace_seconds:
         return None
 
     df = ctx.metric_store.time_series_store.query_latest(metric_name)

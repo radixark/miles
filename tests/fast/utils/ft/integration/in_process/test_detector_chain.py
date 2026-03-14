@@ -158,6 +158,7 @@ class TestDetectorChainIntegration:
             "NicMajorityDownDetector",
             "DiskSpaceLowDetector",
             "ThermalThrottlingDetector",
+            "CollectorHealthDetector",
             "NetworkAlertDetector",
             "TrainingCrashDetector",
             "HangDetector",
