@@ -97,9 +97,9 @@ def execute():
     # NOTE: --attn-implementation triton activates the SGLang Triton attention bridge
     # (apply_sglang_triton_attention_patch), which uses extend_attention_fwd_unified --
     # the same kernel as the SGLang inference-side Triton backend.
-    # The triton kernel is used for log-prob computation (no_grad, bitwise-aligned
-    # with inference), while the training step (loss.backward) automatically falls
-    # back to eager attention for full gradient flow through q/k/v projections.
+    # Both log-prob computation and training step use the same Triton fwd kernel,
+    # with a PyTorch backward for gradient flow through q/k/v projections.
+    # This ensures true on-policy: fwd is bitwise-identical in both stages.
     true_on_policy_args = (
         "--sglang-enable-deterministic-inference "
         "--sglang-rl-on-policy-target fsdp "
@@ -134,7 +134,7 @@ def execute():
         megatron_model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
-            "PYTHONPATH": "/data/true_on_policy/final-version/sglang/python:/data/true_on_policy/final-version/miles:/root/Megatron-LM",
+            "PYTHONPATH": "/app/sglang/python:/app/yuzhen1/miles:/root/Megatron-LM",
             "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
             "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",
         },
