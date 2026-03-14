@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Sequence
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -11,14 +12,19 @@ from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
 from ...utils.data import process_rollout_data
-from ...utils.ray_utils import Box
+from ...utils.data_transfer import DataTransferBackend
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
 from .parallel import ParallelState
 
 logger = logging.getLogger(__name__)
 
 
-def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: ParallelState) -> RolloutBatch:
+def get_rollout_data(
+    args: Namespace,
+    rollout_data_ref: Any,
+    parallel_state: ParallelState,
+    transfer_backend: DataTransferBackend,
+) -> RolloutBatch:
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
     rollout_data = process_rollout_data(
@@ -26,6 +32,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
         rollout_data_ref,
         parallel_state.dp_rank,
         parallel_state.dp_size,
+        transfer_backend=transfer_backend,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [

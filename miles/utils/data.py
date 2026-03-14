@@ -4,9 +4,9 @@ import logging
 import os
 import random
 import re
+from argparse import Namespace
 
 import numpy as np
-import ray
 
 try:
     import pyarrow.parquet as pq
@@ -15,6 +15,7 @@ except ImportError:
 
 from miles.utils.types import MultimodalTypes, Sample
 
+from .data_transfer import DataTransferBackend
 from .timer import Timer
 
 __all__ = ["Dataset"]
@@ -61,7 +62,6 @@ def read_file(path):
         raise ValueError(f"Unsupported file format: {path}. Supported formats are .jsonl and .parquet.")
 
     if row_slice is not None:
-
         logger.info("read_file path=%s applying slice row_slice=%s", path, row_slice)
         reader = itertools.islice(reader, row_slice.start, row_slice.stop, row_slice.step)
 
@@ -269,9 +269,26 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     return len(batches)
 
 
-def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
+def process_rollout_data(
+    args: Namespace,
+    rollout_data_ref: list,
+    dp_rank: int,
+    dp_size: int,
+    transfer_backend: DataTransferBackend | None,
+) -> dict:
     assert len(rollout_data_ref) == dp_size
-    rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
+    if transfer_backend is not None:
+        rollout_data = transfer_backend.get(rollout_data_ref[dp_rank])
+    else:
+        import ray
+
+        from miles.utils.ray_utils import Box
+
+        ref = rollout_data_ref[dp_rank]
+        if isinstance(ref, Box):
+            rollout_data = ray.get(ref.inner)
+        else:
+            rollout_data = ray.get(ref)
 
     partition = rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]
