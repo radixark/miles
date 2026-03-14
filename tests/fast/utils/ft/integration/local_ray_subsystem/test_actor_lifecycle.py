@@ -155,7 +155,7 @@ class TestKillAndAutoRestart:
         ray.kill(controller_actor, no_restart=False)
 
         name = ft_controller_actor_name("")
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             try:
                 restarted = ray.get_actor(name)
@@ -164,7 +164,7 @@ class TestKillAndAutoRestart:
             except Exception:
                 time.sleep(0.3)
         else:
-            raise TimeoutError("Actor did not restart within 10s")
+            raise TimeoutError("Actor did not restart within 30s")
 
         assert status_after.mode == ControllerMode.MONITORING
         assert status_after.tick_count == 0

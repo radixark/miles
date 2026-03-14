@@ -103,7 +103,7 @@ class TestTrackingAgentLogStep:
         status = get_status(handle)
         assert status.latest_iteration == 10
 
-    def test_tracking_agent_without_run_id_is_noop(
+    def test_tracking_agent_empty_run_id_without_env_raises(
         self,
         controller_actor: ray.actor.ActorHandle,
         monkeypatch: pytest.MonkeyPatch,
@@ -111,11 +111,8 @@ class TestTrackingAgentLogStep:
         monkeypatch.setenv("MILES_FT_RUN_ID", "")
 
         client = RayControllerClient(ft_id="")
-        tracking = FtTrackingAgent(rank=0, run_id="", controller_client=client)
-        tracking.log(metrics={"loss": 0.5}, step=1)
-
-        status = get_status(controller_actor)
-        assert status.latest_iteration is None
+        with pytest.raises(RuntimeError, match="MILES_FT_RUN_ID"):
+            FtTrackingAgent(rank=0, run_id="", controller_client=client)
 
 
 class TestPidCorrectness:

@@ -78,7 +78,8 @@ class TestStackTraceNodeExecutorAgainstLiveProcess:
         self,
         local_ray: None,
     ) -> None:
-        """One valid PID + one invalid PID -> passed=True (not all failed)."""
+        """One valid PID + one invalid PID -> passed=False (any failure = failed),
+        but threads from the valid PID are still collected."""
         worker = _BusyWorker.remote()
         worker.spin.remote()
         await asyncio.sleep(0.5)
@@ -90,7 +91,9 @@ class TestStackTraceNodeExecutorAgainstLiveProcess:
 
         ray.kill(worker, no_restart=True)
 
-        assert result.passed is True
+        assert result.passed is False
+        assert result.metadata is not None
+        assert result.metadata["failed_pids"] == 1
         threads = _parse_threads(result.details)
         assert len(threads) > 0
 
