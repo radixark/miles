@@ -3,7 +3,7 @@ import os
 
 import pytest
 import requests
-from tests.e2e.sglang_patch.sglang_server import start_sglang_server
+from tests.e2e.sglang.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
 
 MODEL_PATH = os.environ.get("SGLANG_E2E_MODEL_PATH", "Qwen/Qwen3-0.6B")
@@ -48,7 +48,7 @@ def test_generate_and_chat_completions_equivalence(sglang_server):
 
     # --- output token ids ---
     gen_token_ids = [t[1] for t in gen_resp["meta_info"]["output_token_logprobs"]]
-    chat_token_ids = [t["token_id"] for t in chat_choice["logprobs"]["content"]]
+    chat_token_ids = chat_choice["response_token_ids"]
     assert gen_token_ids == chat_token_ids, "output token ids mismatch"
 
     # --- output logprobs ---

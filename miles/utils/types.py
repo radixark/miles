@@ -167,6 +167,18 @@ class Sample:
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
 
+    def strip_last_output_token(self, tokenizer) -> None:
+        """Remove the last output token and all associated per-token info."""
+        self.tokens = self.tokens[:-1]
+        self.response_length -= 1
+        if self.rollout_log_probs is not None:
+            self.rollout_log_probs = self.rollout_log_probs[:-1]
+        if self.loss_mask is not None:
+            self.loss_mask = self.loss_mask[:-1]
+        self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
+        if self.rollout_routed_experts is not None:
+            self.rollout_routed_experts = self.rollout_routed_experts[:-1]
+
     def update_from_meta_info(self, args, meta_info: dict):
         """
         Update the sample with new information from meta_info returned by the rollout engine.

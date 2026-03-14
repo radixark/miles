@@ -6,7 +6,9 @@ import logging
 from argparse import Namespace
 from copy import deepcopy
 
+from miles.rollout.generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
 from miles.router.session.sessions import GetSessionResponse, SessionRecord
+from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -26,7 +28,7 @@ class OpenAIEndpointTracer:
         session_id = response["session_id"]
         return OpenAIEndpointTracer(router_url=router_url, session_id=session_id)
 
-    async def collect_records(self) -> list[SessionRecord]:
+    async def collect_records(self) -> tuple[list[SessionRecord], dict]:
         try:
             response = await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="get")
         except Exception as e:
@@ -34,27 +36,41 @@ class OpenAIEndpointTracer:
             raise
         response = GetSessionResponse.model_validate(response)
         records = response.records
+        metadata = response.metadata
 
         try:
             await post(f"{self.router_url}/sessions/{self.session_id}", {}, action="delete")
         except Exception as e:
             logger.warning(f"Failed to delete session {self.session_id} after collecting records: {e}")
 
-        return records or []
+        return records or [], metadata
 
 
-def compute_samples_from_openai_records(input_sample: Sample, records: list[SessionRecord], tokenizer) -> list[Sample]:
-    return [_compute_sample_from_openai_record(input_sample, record, tokenizer) for record in records]
+def compute_samples_from_openai_records(
+    args: Namespace, input_sample: Sample, records: list[SessionRecord], tokenizer
+) -> list[Sample]:
+    tito_tokenizer = get_tito_tokenizer(
+        tokenizer,
+        tokenizer_type=getattr(args, "tito_model", "default"),
+    )
+    return [
+        _compute_sample_from_openai_record(
+            args, input_sample, record, tokenizer, tito_tokenizer, is_last=(i == len(records) - 1)
+        )
+        for i, record in enumerate(records)
+    ]
 
 
-def _compute_sample_from_openai_record(input_sample: Sample, record: SessionRecord, tokenizer) -> Sample:
+def _compute_sample_from_openai_record(
+    args: Namespace, input_sample: Sample, record: SessionRecord, tokenizer, tito_tokenizer, *, is_last: bool
+) -> Sample:
     choice = record.response["choices"][0]
 
     if "prompt_token_ids" in choice:
         prompt_token_ids = choice["prompt_token_ids"]
 
-    output_token_ids = [item["token_id"] for item in choice["logprobs"]["content"]]
-    output_log_probs = [item["logprob"] for item in choice["logprobs"]["content"]]
+    output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
+    output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
     sample = deepcopy(input_sample)
     request_input_ids = record.request.get("input_ids")
@@ -62,11 +78,18 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
         assert (
             request_input_ids == prompt_token_ids
         ), "for prompt part, input_ids return by sglang should match with the request input_ids"
+
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
+    sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice, sample, "routed_experts")
+
+    # Strip trailing stop token for some models (e.g. GLM 4.7/5) from intermediate turns (1,2,...,N-1) so merge_samples
+    # prefix check works, but we should skip the last turn (N).
+    if not is_last and tito_tokenizer.should_strip_trailing_stop_token(output_token_ids):
+        sample.strip_last_output_token(tokenizer)
 
     # TODO unify with Sample.update_from_meta_info
     match choice["finish_reason"]:

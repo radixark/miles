@@ -212,7 +212,12 @@ def make_args(
 
 
 @contextmanager
-def with_miles_router(backend_url: str, model_name: str):
+def with_miles_router(
+    backend_url: str,
+    model_name: str,
+    *,
+    use_rollout_routing_replay: bool = False,
+):
     router_args = SimpleNamespace(
         miles_router_max_connections=10,
         miles_router_timeout=30,
@@ -220,6 +225,9 @@ def with_miles_router(backend_url: str, model_name: str):
         rollout_health_check_interval=60,
         miles_router_health_check_failure_threshold=3,
         hf_checkpoint=model_name,
+        chat_template_path=None,
+        tito_model="default",
+        use_rollout_routing_replay=use_rollout_routing_replay,
     )
     router = MilesRouter(router_args)
 
@@ -260,7 +268,11 @@ def generation_env(request, variant):
         )
 
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
-        with with_miles_router(mock_server.url, model_name) as router_port:
+        with with_miles_router(
+            mock_server.url,
+            model_name,
+            use_rollout_routing_replay=args_kwargs.get("use_rollout_routing_replay", False),
+        ) as router_port:
             _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
             other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
             args = make_args(

@@ -145,7 +145,28 @@ class MockSGLangServer:
         prompt_str = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, tools=tools
         )
-        prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
+
+        pretokenized_ids = payload.get("pretokenized_token_ids")
+        pretokenized_num = payload.get("pretokenized_num_message")
+        if pretokenized_ids is not None and pretokenized_num is not None:
+            # Simulate sglang's _apply_pretokenized_template using miles'
+            # TITOTokenizer — same codepath as real sglang.
+            from miles.utils.chat_template_utils.tito_tokenizer import get_tito_tokenizer
+
+            tito_model_type = payload.get("tito_model", "default")
+            tito_tokenizer = get_tito_tokenizer(
+                self.tokenizer,
+                tokenizer_type=tito_model_type,
+            )
+            new_messages = messages[pretokenized_num:]
+            incremental_ids = tito_tokenizer.tokenize_additional(
+                new_messages=new_messages,
+                pretokenized_token_ids=pretokenized_ids,
+                tools=tools,
+            )
+            prompt_ids = list(pretokenized_ids) + incremental_ids
+        else:
+            prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
 
         process_result = self.process_fn(prompt_str)
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
@@ -153,7 +174,6 @@ class MockSGLangServer:
         logprobs_content = [
             {
                 "token": self.tokenizer.convert_ids_to_tokens(tid),
-                "token_id": tid,
                 "logprob": -1 / 128 * i,
             }
             for i, tid in enumerate(output_ids)
@@ -180,6 +200,8 @@ class MockSGLangServer:
         else:
             message_content = process_result.text
 
+        output_token_logprobs = [(-1 / 128 * i, tid) for i, tid in enumerate(output_ids)]
+
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion",
@@ -194,8 +216,14 @@ class MockSGLangServer:
                         "tool_calls": tool_calls,
                     },
                     "logprobs": {"content": logprobs_content},
+                    "response_token_ids": list(output_ids),
                     "prompt_token_ids": prompt_ids,
                     "finish_reason": finish_reason,
+                    "meta_info": {
+                        "output_token_logprobs": output_token_logprobs,
+                        "completion_tokens": len(output_ids),
+                        **process_result.meta_info.to_dict(),
+                    },
                 }
             ],
         }
