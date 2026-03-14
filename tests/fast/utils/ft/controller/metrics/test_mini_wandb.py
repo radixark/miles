@@ -1,3 +1,5 @@
+import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -245,38 +247,44 @@ class TestMiniWandbStepMonotonicity:
 
 
 class TestNonFiniteMetricSanitization:
-    """Previously MiniWandb.log_step() accepted any float value including NaN
-    and Inf without validation. Non-finite values in the 'iteration' metric
-    would crash build_controller_status() when it called int(iteration_val)."""
+    """MiniWandb stores non-finite values (NaN/Inf) because downstream
+    detectors like NanLossDetector rely on reading them. A warning is
+    logged so operators can investigate the source."""
 
-    def test_nan_metric_is_dropped(self) -> None:
+    def test_nan_metric_is_stored_and_warned(self, caplog: pytest.LogCaptureFixture) -> None:
         wandb = MiniWandb(active_run_id="run-1")
-        wandb.log_step(
-            run_id="run-1",
-            step=1,
-            metrics={"iteration": float("nan"), "loss": 0.5},
-        )
-        assert wandb.latest("iteration") is None
+        with caplog.at_level(logging.WARNING):
+            wandb.log_step(
+                run_id="run-1",
+                step=1,
+                metrics={"iteration": float("nan"), "loss": 0.5},
+            )
+        assert math.isnan(wandb.latest("iteration"))
         assert wandb.latest("loss") == 0.5
+        assert "non-finite" in caplog.text
 
-    def test_inf_metric_is_dropped(self) -> None:
+    def test_inf_metric_is_stored_and_warned(self, caplog: pytest.LogCaptureFixture) -> None:
         wandb = MiniWandb(active_run_id="run-1")
-        wandb.log_step(
-            run_id="run-1",
-            step=1,
-            metrics={"iteration": float("inf"), "loss": 0.5},
-        )
-        assert wandb.latest("iteration") is None
+        with caplog.at_level(logging.WARNING):
+            wandb.log_step(
+                run_id="run-1",
+                step=1,
+                metrics={"iteration": float("inf"), "loss": 0.5},
+            )
+        assert wandb.latest("iteration") == float("inf")
         assert wandb.latest("loss") == 0.5
+        assert "non-finite" in caplog.text
 
-    def test_negative_inf_is_dropped(self) -> None:
+    def test_negative_inf_is_stored_and_warned(self, caplog: pytest.LogCaptureFixture) -> None:
         wandb = MiniWandb(active_run_id="run-1")
-        wandb.log_step(
-            run_id="run-1",
-            step=1,
-            metrics={"iteration": float("-inf")},
-        )
-        assert wandb.latest("iteration") is None
+        with caplog.at_level(logging.WARNING):
+            wandb.log_step(
+                run_id="run-1",
+                step=1,
+                metrics={"iteration": float("-inf")},
+            )
+        assert wandb.latest("iteration") == float("-inf")
+        assert "non-finite" in caplog.text
 
     def test_finite_values_pass_through(self) -> None:
         wandb = MiniWandb(active_run_id="run-1")
