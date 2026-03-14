@@ -460,11 +460,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         log_rollout_data(rollout_id, self.args, rollout_data, self.parallel_state)
 
-        # Stage 2: training step needs full gradient flow including through
-        # attention.  Switch to eager attention so that q/k/v projections
-        # receive proper gradients via PyTorch autograd.
-        if self._use_triton_bridge:
-            self._set_attn_implementation(self.model, "eager")
+        # Stage 2: training step now uses TritonAttnFunction (autograd wrapper)
+        # which runs the Triton fwd kernel + naive PyTorch bwd, so full gradient
+        # flow through q/k/v projections is maintained without switching to eager.
 
         with timer("actor_train"):
             data_iterator.reset()
@@ -538,9 +536,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     extra_metrics=extra_metrics,
                 )
 
-        # Restore triton attention for the next rollout's log prob computation.
-        if self._use_triton_bridge:
-            self._set_attn_implementation(self.model, "triton")
+        # No need to restore attention implementation — both stages use triton now.
 
         self.prof.step(rollout_id=rollout_id)
 
