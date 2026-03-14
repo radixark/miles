@@ -160,9 +160,9 @@ class TestStatusDuringRecovery:
 
 
 class TestControllerKilledDuringRecovery:
-    """Kill controller while recovery is in progress → restarts with fresh state (R3)."""
+    """Kill controller while recovery is in progress → actor restarts with fresh empty state."""
 
-    def test_kill_during_recovery_resets_to_monitoring(
+    def test_kill_during_recovery_restarts_actor_without_resuming_run(
         self,
         make_controller_actor: Callable[..., ray.actor.ActorHandle],
     ) -> None:
@@ -193,27 +193,24 @@ class TestControllerKilledDuringRecovery:
 
         ray.kill(handle, no_restart=False)
 
-        # After restart submit_and_run is retried (max_task_retries=-1),
-        # creating a fresh controller with a new run. Poll until the
-        # restarted actor has a new active_run_id (not None and different
-        # from the original). active_run_id is None until submit_and_run
-        # completes, so we must keep polling rather than breaking on the
-        # first successful get_status call.
+        # The actor itself restarts, but submit_and_run is not retried.
+        # The restarted actor should therefore come back in fresh
+        # monitoring state with no active run.
         name = ft_controller_actor_name("")
-        deadline = time.monotonic() + 45.0
+        deadline = time.monotonic() + 30.0
         status = None
         while time.monotonic() < deadline:
             try:
                 restarted = ray.get_actor(name)
                 status = ray.get(restarted.get_status.remote(), timeout=2)
-                if status.active_run_id is not None:
+                if status.mode == ControllerMode.MONITORING and status.active_run_id is None:
                     break
             except Exception:
                 pass
             time.sleep(0.3)
         else:
-            raise TimeoutError("Actor did not restart with a new run_id within 45s")
+            raise TimeoutError("Actor did not restart into fresh monitoring state within 30s")
 
         assert status is not None
-        assert status.active_run_id is not None
-        assert status.active_run_id != run_id
+        assert status.mode == ControllerMode.MONITORING
+        assert status.active_run_id is None
