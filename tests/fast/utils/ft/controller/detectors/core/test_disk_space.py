@@ -28,13 +28,13 @@ class TestDiskSpaceLowDetector:
 
         assert decision.action == ActionType.NONE
 
-    def test_empty_metric_store_returns_none(self) -> None:
+    def test_empty_metric_store_returns_telemetry_blind(self) -> None:
         store = make_fake_metric_store()
         detector = DiskSpaceLowDetector()
 
         decision = detector.evaluate(make_detector_context(metric_store=store))
 
-        assert decision.action == ActionType.NONE
+        assert decision.action == ActionType.NOTIFY_HUMAN
 
     def test_has_no_is_critical_attribute(self) -> None:
         assert not hasattr(DiskSpaceLowDetector, "is_critical")

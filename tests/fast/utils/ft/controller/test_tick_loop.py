@@ -73,6 +73,7 @@ def _make_tick_deps(
         registration_grace_ticks=0,
         training_rank_roster_box=Box(None),
         node_agent_registry=NodeAgentRegistry(),
+        scrape_target_manager=MagicMock(),
     )
 
 

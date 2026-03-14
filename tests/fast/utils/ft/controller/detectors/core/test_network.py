@@ -70,12 +70,12 @@ class TestNetworkAlertDetector:
 
         assert decision.action == ActionType.NONE
 
-    def test_empty_store(self) -> None:
+    def test_empty_store_returns_telemetry_blind(self) -> None:
         store = make_fake_metric_store()
         detector = NetworkAlertDetector()
         decision = detector.evaluate(make_detector_context(metric_store=store))
 
-        assert decision.action == ActionType.NONE
+        assert decision.action == ActionType.NOTIFY_HUMAN
 
     def test_permanent_nic_crash_detected(self) -> None:
         """A NIC that goes down once and stays down (permanent crash) was

@@ -39,6 +39,7 @@ class TestGpuFaultDetector:
 
     def test_non_auto_recoverable_xid_triggers_mark_bad(self) -> None:
         store = make_fake_metric_store()
+        inject_healthy_node(store, node_id="node-0")
         inject_critical_xid(store, node_id="node-0")
         detector = GpuFaultDetector()
 
@@ -70,10 +71,10 @@ class TestGpuFaultDetector:
         assert "node-0" in decision.bad_node_ids
         assert "node-1" in decision.bad_node_ids
 
-    def test_empty_metric_store(self) -> None:
+    def test_empty_metric_store_returns_telemetry_blind(self) -> None:
         store = make_fake_metric_store()
         detector = GpuFaultDetector()
 
         decision = detector.evaluate(make_detector_context(metric_store=store))
 
-        assert decision.action == ActionType.NONE
+        assert decision.action == ActionType.NOTIFY_HUMAN

@@ -49,10 +49,10 @@ class TestNicMajorityDownDetector:
 
         assert decision.action == ActionType.NONE
 
-    def test_empty_metric_store(self) -> None:
+    def test_empty_metric_store_returns_telemetry_blind(self) -> None:
         store = make_fake_metric_store()
         detector = NicMajorityDownDetector()
 
         decision = detector.evaluate(make_detector_context(metric_store=store))
 
-        assert decision.action == ActionType.NONE
+        assert decision.action == ActionType.NOTIFY_HUMAN

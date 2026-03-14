@@ -30,7 +30,7 @@ class TestThermalThrottlingDetector:
             )
         )
 
-        assert decision.action == ActionType.NONE
+        assert decision.action == ActionType.NOTIFY_HUMAN
 
     def test_uniform_temperatures_no_outlier(self) -> None:
         store = make_fake_metric_store()
