@@ -172,25 +172,33 @@ async def test_transient_nic_fault_no_recovery(
             ),
         ],
         scrape_interval_seconds=_SCRAPE_INTERVAL,
+        # Slow tick so we can inject down→up within a single detector evaluation
+        # cycle. This prevents persistent_down from firing before we restore.
+        tick_interval=3.0,
     )
 
     # Step 1: wait for baseline to be scraped
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
     await asyncio.sleep(_SCRAPE_INTERVAL * 3)
 
-    # Step 2: inject eth0 down (1 transition)
+    # Step 2: inject eth0 down (creates 1 up→down transition)
     await testbed.inject_collector_metrics(
         node_id="n-0",
         metrics=[_nic_sample("n-0", "eth0", 0.0)],
     )
 
-    # Step 3: wait for the down metric to be scraped
-    await asyncio.sleep(_SCRAPE_INTERVAL * 3)
+    # Step 3: wait for 1 scrape to record the down value, then restore up
+    # before the next detector tick. Persistent_down fires on last_value==0
+    # so restoring up prevents it from triggering.
+    await asyncio.sleep(_SCRAPE_INTERVAL * 1.5)
+    await testbed.inject_collector_metrics(
+        node_id="n-0",
+        metrics=[_nic_sample("n-0", "eth0", 1.0)],
+    )
+    await asyncio.sleep(_SCRAPE_INTERVAL * 2)
 
-    # Step 4: restore eth0 up (clears injected metrics → baseline takes over)
-    await testbed.clear_collector_metrics("n-0")
-
-    # Step 5: verify no recovery — only 1 transition, threshold is 2
+    # Step 4: verify no recovery — only 1 flap transition, threshold is 2,
+    # and NIC restored to up so persistent_down doesn't fire
     await assert_no_recovery_triggered(
         testbed,
         observation_ticks=20,
@@ -213,10 +221,9 @@ async def test_ephemeral_nic_no_eviction(
     """Ephemeral NIC down triggers recovery but completes without EvictingSt.
 
     Uses NetworkAlertDetector only (not NicMajorityDownDetector). The NIC
-    alert fires recovery. We track whether EvictingSt was ever observed
-    during the recovery flow — it should NOT be, because the detector
-    does not identify persistent bad nodes requiring eviction when the
-    fault is a transient NIC flap.
+    flap fires recovery. We restore the NIC immediately so the persistent_down
+    detector does not fire — only the flap (ephemeral) fault remains, which
+    triggers recovery with empty bad_node_ids (no eviction).
     """
     testbed = await make_testbed(
         training_nodes=[
@@ -231,25 +238,36 @@ async def test_ephemeral_nic_no_eviction(
             ),
         ],
         scrape_interval_seconds=_SCRAPE_INTERVAL,
+        # Slow tick so we can inject down→up within a single detector cycle
+        tick_interval=3.0,
     )
 
     # Step 1: wait for baseline to be scraped
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
     await asyncio.sleep(_SCRAPE_INTERVAL * 3)
 
-    # Step 2: inject NIC down → triggers recovery
+    # Step 2: inject NIC down → creates 1 up→down transition (flap)
     await testbed.inject_collector_metrics(
         node_id="n-0",
         metrics=[_nic_sample("n-0", "eth0", 0.0)],
     )
 
-    # Step 3: wait for recovery to start
+    # Step 3: wait for 1 scrape, then immediately restore NIC up.
+    # The flap detector sees the 1→0 transition. The persistent_down
+    # detector sees last_value=1 (restored) and doesn't fire.
+    await asyncio.sleep(_SCRAPE_INTERVAL * 1.5)
+    await testbed.inject_collector_metrics(
+        node_id="n-0",
+        metrics=[_nic_sample("n-0", "eth0", 1.0)],
+    )
+
+    # Step 4: wait for recovery to start (flap-only → empty bad_node_ids)
     await testbed.wait_for_mode(
         mode=ControllerMode.RECOVERY,
         timeout=FAST_TIMEOUT,
     )
 
-    # Step 4: poll recovery phases until completion, verify no EvictingSt
+    # Step 5: poll recovery phases until completion, verify no EvictingSt
     evicting_observed = False
     deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
     while time.monotonic() < deadline:

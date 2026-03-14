@@ -68,7 +68,7 @@ async def test_temperature_spike_with_mfu_decline_triggers_recovery(
         metrics=[
             GaugeSample(
                 name=DCGM_FI_DEV_GPU_TEMP,
-                labels={"node_id": "n-1"},
+                labels={"node_id": "n-1", "gpu": "0"},
                 value=90.0,
             ),
         ],
@@ -123,7 +123,7 @@ async def test_temperature_spike_without_mfu_decline_no_recovery(
         metrics=[
             GaugeSample(
                 name=DCGM_FI_DEV_GPU_TEMP,
-                labels={"node_id": "n-1"},
+                labels={"node_id": "n-1", "gpu": "0"},
                 value=90.0,
             ),
         ],

@@ -5,7 +5,7 @@ from pydantic import ConfigDict, field_validator
 
 from miles.utils.ft.controller.detectors.base import BaseFaultDetector, DetectorContext, check_metric_blind
 from miles.utils.ft.controller.detectors.checks.hardware import check_all_nic_faults
-from miles.utils.ft.controller.types import Decision, TriggerType
+from miles.utils.ft.controller.types import ActionType, Decision, TriggerType
 from miles.utils.ft.utils.base_model import FtBaseModel
 from miles.utils.ft.utils.metric_names import NODE_NETWORK_UP
 
@@ -49,14 +49,26 @@ class NetworkAlertDetector(BaseFaultDetector):
             window=self._alert_window,
             flap_threshold=self._alert_threshold,
         )
-        if faults:
-            logger.info(
-                "detector: NetworkAlertDetector found faults: nodes=%s",
-                [f.node_id for f in faults],
+        if not faults:
+            return Decision.no_fault(reason="NIC alerts below threshold")
+
+        logger.info(
+            "detector: NetworkAlertDetector found faults: nodes=%s",
+            [f.node_id for f in faults],
+        )
+
+        persistent = [f for f in faults if not f.ephemeral]
+        if persistent:
+            return Decision.from_node_faults(
+                faults,
+                fallback_reason="NIC alerts below threshold",
+                trigger=TriggerType.NETWORK,
             )
 
-        return Decision.from_node_faults(
-            faults,
-            fallback_reason="NIC alerts below threshold",
+        reasons = "; ".join(f.reason for f in faults)
+        return Decision(
+            action=ActionType.ENTER_RECOVERY,
+            bad_node_ids=[],
+            reason=reasons,
             trigger=TriggerType.NETWORK,
         )

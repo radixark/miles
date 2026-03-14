@@ -575,9 +575,12 @@ async def test_crash_plus_hardware_found_in_realtime_checks(
 async def test_max_bad_nodes_one_single_fault_is_false_positive(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """max_simultaneous_bad_nodes=1: even a single GPU fault is treated as false positive."""
+    """2 GPU faults with max_simultaneous_bad_nodes=1: treated as false positive (2 > 1)."""
     testbed = await make_testbed(
-        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
+        training_nodes=[
+            TestbedNodeConfig(node_id="n-0", num_ranks=2),
+            TestbedNodeConfig(node_id="n-1", num_ranks=2),
+        ],
         detectors=build_detector_chain(),
         scrape_interval_seconds=0.5,
         max_simultaneous_bad_nodes=1,
@@ -586,17 +589,18 @@ async def test_max_bad_nodes_one_single_fault_is_false_positive(
     # Step 1: verify training is stable
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
 
-    # Step 2: inject GPU fault on the single node
-    await testbed.inject_collector_metrics(
-        node_id="n-0",
-        metrics=[
-            GaugeSample(
-                name=GPU_AVAILABLE,
-                labels={"node_id": "n-0", "gpu": "0"},
-                value=0.0,
-            ),
-        ],
-    )
+    # Step 2: inject GPU fault on both nodes (2 > max_simultaneous_bad_nodes=1)
+    for node_id in ("n-0", "n-1"):
+        await testbed.inject_collector_metrics(
+            node_id=node_id,
+            metrics=[
+                GaugeSample(
+                    name=GPU_AVAILABLE,
+                    labels={"node_id": node_id, "gpu": "0"},
+                    value=0.0,
+                ),
+            ],
+        )
 
     # Step 3: verify no recovery triggered
     await assert_no_recovery_triggered(

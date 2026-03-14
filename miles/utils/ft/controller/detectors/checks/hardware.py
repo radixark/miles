@@ -73,6 +73,7 @@ def _analyze_nic_flap_transitions(
         NodeFault(
             node_id=row["node_id"],
             reason=f"NIC went down {row['count']} time(s) on {row['node_id']} in {window}",
+            ephemeral=True,
         )
         for row in node_counts.iter_rows(named=True)
         if row["count"] >= threshold
@@ -123,7 +124,9 @@ def check_all_nic_faults(
 
     by_node: dict[str, NodeFault] = {}
     for fault in flap + persistent:
-        by_node.setdefault(fault.node_id, fault)
+        existing = by_node.get(fault.node_id)
+        if existing is None or (existing.ephemeral and not fault.ephemeral):
+            by_node[fault.node_id] = fault
     return list(by_node.values())
 
 
