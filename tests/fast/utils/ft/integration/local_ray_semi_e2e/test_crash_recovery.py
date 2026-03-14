@@ -539,18 +539,18 @@ async def test_cooldown_expiry_allows_recovery(
 async def test_too_many_bad_nodes_false_positive(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """When >= max_simultaneous_bad_nodes report faults, no recovery is triggered."""
+    """When > max_simultaneous_bad_nodes report faults, no recovery is triggered."""
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id=f"n-{i}", num_ranks=2) for i in range(4)],
         detectors=build_detector_chain(),
         scrape_interval_seconds=0.5,
         tick_interval=1.0,
-        max_simultaneous_bad_nodes=3,
+        max_simultaneous_bad_nodes=2,
     )
 
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
 
-    # Step 1: inject GPU_AVAILABLE=0 on 3 nodes simultaneously
+    # Step 1: inject GPU_AVAILABLE=0 on 3 nodes simultaneously (> max_simultaneous_bad_nodes=2)
     for i in range(3):
         node_id = f"n-{i}"
         await testbed.inject_collector_metrics(
