@@ -62,12 +62,15 @@ async def test_hang_detected_workers_alive_but_stalled(
     )
     assert status.mode == ControllerMode.RECOVERY
 
-    # Step 6: wait for full recovery to complete -> back to MONITORING
+    # Step 6: clear the injected hang so restarted workers can make progress
+    await testbed.clear_hang()
+
+    # Step 7: wait for full recovery to complete -> back to MONITORING
     final = await testbed.wait_for_mode_transition(
         target_mode=ControllerMode.MONITORING,
         timeout=LONG_RECOVERY_TIMEOUT,
     )
     assert final.mode == ControllerMode.MONITORING
 
-    # Step 7: verify training resumes with new workers advancing iterations
+    # Step 8: verify training resumes with new workers advancing iterations
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
