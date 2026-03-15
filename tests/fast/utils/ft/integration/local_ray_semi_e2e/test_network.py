@@ -180,6 +180,7 @@ async def test_transient_nic_fault_no_recovery(
     # Step 1: wait for baseline to be scraped
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
     await asyncio.sleep(_SCRAPE_INTERVAL * 3)
+    run_id_before = (await testbed.get_status()).active_run_id
 
     # Step 2: inject eth0 down (creates 1 up→down transition)
     await testbed.inject_collector_metrics(
@@ -262,24 +263,23 @@ async def test_ephemeral_nic_no_eviction(
         metrics=[_nic_sample("n-0", "eth0", 1.0)],
     )
 
-    # Step 4: wait for recovery to start (flap-only → empty bad_node_ids)
-    await testbed.wait_for_mode(
-        mode=ControllerMode.RECOVERY,
-        timeout=FAST_TIMEOUT,
-    )
-
-    # Step 5: poll recovery phases until completion, verify no EvictingSt
+    # Step 4: poll until the flap-triggered recovery completes.
+    # The RECOVERY mode can be transient with tick_interval=3.0, so track
+    # run_id change rather than requiring the driver to observe RECOVERY.
     evicting_observed = False
     deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
     while time.monotonic() < deadline:
         status = await testbed.get_status()
         if status.recovery is not None and "EvictingSt" in status.recovery.phase:
             evicting_observed = True
-        if status.mode == ControllerMode.MONITORING:
+        if status.active_run_id != run_id_before and status.mode == ControllerMode.MONITORING:
             break
         await asyncio.sleep(0.3)
     else:
-        raise TimeoutError(f"Recovery did not complete within {LONG_RECOVERY_TIMEOUT}s")
+        raise TimeoutError(
+            f"Flap-triggered recovery did not complete within {LONG_RECOVERY_TIMEOUT}s "
+            f"(run_id_before={run_id_before}, last_status={status})"
+        )
 
     assert not evicting_observed, "EvictingSt should not occur for ephemeral NIC fault"
 
