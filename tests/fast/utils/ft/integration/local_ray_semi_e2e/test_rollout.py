@@ -54,7 +54,8 @@ async def test_rollout_crash_does_not_affect_training(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
         rollout_num_cells=1,
-        rollout_alive_threshold_seconds=2.0,
+        scrape_interval_seconds=0.3,
+        rollout_alive_threshold_seconds=1.5,
         rollout_monitoring_alive_duration_seconds=0,
     )
 
@@ -68,23 +69,25 @@ async def test_rollout_crash_does_not_affect_training(
     # Step 4: kill rollout cell
     await testbed.kill_sglang_cell("default")
 
-    # Step 5: verify training kept advancing despite rollout telemetry loss
+    # Step 5: wait for rollout to enter recovery
+    await testbed.wait_for_subsystem_state(
+        name="rollout_default",
+        state="Recovering",
+        timeout=RECOVERY_TIMEOUT,
+    )
+
+    # Step 6: verify training kept advancing during rollout recovery
     await asyncio.sleep(2.0)
     current_status = await testbed.get_status()
     current = current_status.latest_iteration or 0
-    assert current > baseline, f"Training stalled during rollout crash: baseline={baseline} current={current}"
+    assert current > baseline, f"Training stalled during rollout recovery: baseline={baseline} current={current}"
 
-    # Step 6: rollout remains in DetectingAnomaly and escalates via notification
-    status = await testbed.wait_for_subsystem_state(
+    # Step 7: wait for rollout recovery to complete
+    await testbed.wait_for_subsystem_state(
         name="rollout_default",
         state="DetectingAnomaly",
         timeout=LONG_RECOVERY_TIMEOUT,
     )
-    assert status.subsystem_states.get("training") == "DetectingAnomalySt"
-    assert any(
-        "rollout_default" in content and "rollout_cell_alive metric missing" in content
-        for _title, content, _severity in testbed.notifications
-    ), "Expected rollout telemetry-blind notification"
 
 
 # test_two_of_three_cells_crash_independently_recover removed: covered by test_scenarios::test_multi_cell_crash
