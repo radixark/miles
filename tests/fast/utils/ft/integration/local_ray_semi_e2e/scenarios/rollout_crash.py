@@ -33,17 +33,20 @@ async def scenario_rollout_crash(
     # Step 2: kill rollout engine
     await crash_fn()
 
-    # Step 3: wait for subsystem state to settle
+    # Step 3: wait for subsystem to enter recovery
+    await env.wait_for_subsystem_state(name=target_subsystem, state="RecoveringSt", timeout=detection_timeout)
+
+    # Step 4: wait for recovery to complete
     status = await env.wait_for_subsystem_state(
         name=target_subsystem, state="DetectingAnomalySt", timeout=recovery_timeout
     )
 
-    # Step 4: verify rollout subsystem remains observable
+    # Step 5: verify rollout subsystem recovered
     assert (
         status.subsystem_states[target_subsystem] == "DetectingAnomalySt"
     ), f"{target_subsystem} not in DetectingAnomalySt: {status.subsystem_states[target_subsystem]}"
 
-    # Step 5: verify training subsystem was not affected (if present)
+    # Step 6: verify training subsystem was not affected (if present)
     if "training" in status.subsystem_states:
         assert (
             status.subsystem_states["training"] == "DetectingAnomalySt"

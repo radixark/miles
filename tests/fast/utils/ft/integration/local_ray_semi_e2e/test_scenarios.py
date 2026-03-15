@@ -166,7 +166,8 @@ async def test_rollout_crash(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
         rollout_num_cells=1,
-        rollout_alive_threshold_seconds=2.0,
+        scrape_interval_seconds=0.3,
+        rollout_alive_threshold_seconds=1.5,
         rollout_monitoring_alive_duration_seconds=0,
     )
 
@@ -195,7 +196,8 @@ async def test_multi_cell_crash(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
         rollout_num_cells=3,
-        rollout_alive_threshold_seconds=2.0,
+        scrape_interval_seconds=0.3,
+        rollout_alive_threshold_seconds=1.5,
         rollout_monitoring_alive_duration_seconds=0,
     )
 
