@@ -14,6 +14,7 @@ from tests.fast.utils.ft.testbed.train import MilesTestbed
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
 from miles.utils.ft.controller.types import ControllerMode
+from miles.utils.ft.utils.sliding_window import SlidingWindowThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ async def test_two_sequential_rollout_crashes_both_recover(
         rollout_num_cells=1,
         rollout_alive_threshold_seconds=1.5,
         rollout_monitoring_alive_duration_seconds=0,
+        recovery_cooldown=SlidingWindowThrottle(window_minutes=0.1, max_count=100),
     )
 
     for _cycle in range(2):
