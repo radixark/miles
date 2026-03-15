@@ -13,6 +13,7 @@ from tests.fast.utils.ft.testbed.config import TestbedConfig, TestbedNodeConfig
 from tests.fast.utils.ft.testbed.train import MilesTestbed
 
 from miles.utils.ft.controller.detectors.core.training_crash import TrainingCrashDetector
+from miles.utils.ft.controller.types import ControllerMode
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +149,48 @@ async def test_two_sequential_rollout_crashes_both_recover(
     assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
     assert status.subsystem_states.get("training") == "DetectingAnomalySt"
     assert len(testbed.notifications) >= 2, "Expected repeated rollout crashes to emit notifications"
+
+
+async def test_rollout_kill_triggers_recovery_via_health_checker(
+    make_testbed: Callable[..., MilesTestbed],
+) -> None:
+    """Kill rollout cell → health checker detects dead engine → recovery → restart.
+
+    Verifies the full rollout crash recovery path: RolloutCrashDetector sees
+    persistent rollout_cell_alive=0 → ENTER_RECOVERY → RecoveringSt → restart →
+    DetectingAnomalySt. The health checker timeout fix (sync→async) enables
+    asyncio.wait_for to properly cancel dead-engine probes.
+    """
+    testbed = await make_testbed(
+        training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
+        rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
+        rollout_num_cells=1,
+        scrape_interval_seconds=0.5,
+        rollout_alive_threshold_seconds=2.0,
+        rollout_monitoring_alive_duration_seconds=0,
+    )
+
+    # Step 1: wait for training to stabilize
+    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
+
+    # Step 2: kill rollout cell — health checker will detect dead engine
+    await testbed.kill_sglang_cell("default")
+
+    # Step 3: wait for rollout subsystem to enter recovery
+    await testbed.wait_for_subsystem_state(
+        name="rollout_default",
+        state="Recovering",
+        timeout=RECOVERY_TIMEOUT,
+    )
+
+    # Step 4: wait for recovery to complete
+    status = await testbed.wait_for_subsystem_state(
+        name="rollout_default",
+        state="DetectingAnomaly",
+        timeout=LONG_RECOVERY_TIMEOUT,
+    )
+
+    # Step 5: verify rollout recovered and training was unaffected
+    assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
+    assert status.subsystem_states.get("training") == "DetectingAnomalySt"
+    assert status.mode == ControllerMode.MONITORING
