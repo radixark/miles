@@ -105,8 +105,15 @@ def main() -> None:
     dist.destroy_process_group()
 
 
+def _register_extra_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser = WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
+    parser.add_argument("--use-routing-replay", action="store_true", default=False)
+    parser.add_argument("--use-miles-router", action="store_true", default=False)
+    return parser
+
+
 def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
-    args: argparse.Namespace = parse_args(extra_args_provider=WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser)
+    args: argparse.Namespace = parse_args(extra_args_provider=_register_extra_args)
     script_args: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
 
     if script_args.ref_load is not None:
@@ -129,7 +136,7 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
     model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
-    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
+    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=script.run_backward)
 
     if args.load is not None:
         load_checkpoint(
