@@ -93,20 +93,16 @@ class DeepSeekV4Attention(MegatronModule):
         self.attn_sink = nn.Parameter(torch.empty(self.n_local_heads, dtype=torch.float32))
         self.attn_sink._keep_fp32 = True
 
-        self._use_te_linear_for_wq_a_wkv = os.environ.get("MEGATRON_HACK_ENABLE_SEVERAL_TE_LINEAR", "0") == "1"
-        if self._use_te_linear_for_wq_a_wkv:
-            self.wq_a = TELinear(
-                self.dim,
-                self.q_lora_rank,
-                config=config,
-                init_method=config.init_method,
-                bias=False,
-                skip_bias_add=False,
-                skip_weight_param_allocation=False,
-                parallel_mode="duplicated",
-            )
-        else:
-            self.wq_a = nn.Linear(self.dim, self.q_lora_rank, bias=False)
+        self.wq_a = TELinear(
+            self.dim,
+            self.q_lora_rank,
+            config=config,
+            init_method=config.init_method,
+            bias=False,
+            skip_bias_add=False,
+            skip_weight_param_allocation=False,
+            parallel_mode="duplicated",
+        )
         self.q_norm = RMSNorm(self.q_lora_rank, eps=self.eps)
         self.wq_b = ColumnParallelLinear(
             self.q_lora_rank,
@@ -116,19 +112,16 @@ class DeepSeekV4Attention(MegatronModule):
             bias=False,
             gather_output=False,
         )
-        if self._use_te_linear_for_wq_a_wkv:
-            self.wkv = TELinear(
-                self.dim,
-                self.head_dim,
-                config=config,
-                init_method=config.init_method,
-                bias=False,
-                skip_bias_add=False,
-                skip_weight_param_allocation=False,
-                parallel_mode="duplicated",
-            )
-        else:
-            self.wkv = nn.Linear(self.dim, self.head_dim, bias=False)
+        self.wkv = TELinear(
+            self.dim,
+            self.head_dim,
+            config=config,
+            init_method=config.init_method,
+            bias=False,
+            skip_bias_add=False,
+            skip_weight_param_allocation=False,
+            parallel_mode="duplicated",
+        )
         self.kv_norm = RMSNorm(self.head_dim, eps=self.eps)
         self.wo_a = ColumnParallelLinear(
             self.n_heads * self.head_dim // self.n_groups,
@@ -219,7 +212,7 @@ class DeepSeekV4Attention(MegatronModule):
         ratio = self.compress_ratio
         rd = self.rope_head_dim
 
-        q_after_wq_a = self.wq_a(x)[0] if self._use_te_linear_for_wq_a_wkv else self.wq_a(x)
+        q_after_wq_a = self.wq_a(x)[0]
         qr = q = self.q_norm(q_after_wq_a)
         q_after_wq_b = self.wq_b(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
@@ -227,7 +220,7 @@ class DeepSeekV4Attention(MegatronModule):
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
-        kv_after_wkv = self.wkv(x)[0] if self._use_te_linear_for_wq_a_wkv else self.wkv(x)
+        kv_after_wkv = self.wkv(x)[0]
         kv_vanilla = self.kv_norm(kv_after_wkv)
         kv_vanilla = kv_vanilla.clone()
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
