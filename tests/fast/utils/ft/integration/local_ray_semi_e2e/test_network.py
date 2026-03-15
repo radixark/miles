@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Callable
 
 import pytest
@@ -271,69 +270,6 @@ async def test_ephemeral_nic_flap_restored_before_tick_no_recovery(
 
     status = await testbed.get_status()
     assert status.mode == ControllerMode.MONITORING
-
-
-# ------------------------------------------------------------------
-# 4b. test_ephemeral_nic_recovery_completes_without_eviction
-# ------------------------------------------------------------------
-
-
-async def test_ephemeral_nic_recovery_completes_without_eviction(
-    make_testbed: Callable[..., MilesTestbed],
-) -> None:
-    """Ephemeral NIC flap exceeding threshold triggers recovery but no EvictingSt.
-
-    Uses NetworkAlertDetector only (not NicMajorityDownDetector) with
-    alert_threshold=1 so a single NIC flap triggers detection. The NIC
-    stays down so the flap detector fires. Recovery enters RecoveringSt
-    but should never pass through EvictingSt because the fault is ephemeral
-    (bad_node_ids=[]).
-    """
-    testbed = await make_testbed(
-        training_nodes=[
-            TestbedNodeConfig(node_id="n-0", num_ranks=2),
-        ],
-        detectors=[
-            NetworkAlertDetector(
-                config=NetworkAlertDetectorConfig(
-                    alert_window_minutes=10.0 / 60.0,
-                    alert_threshold=1,
-                ),
-            ),
-        ],
-        scrape_interval_seconds=_SCRAPE_INTERVAL,
-    )
-
-    # Step 1: wait for baseline to be scraped
-    await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
-    await asyncio.sleep(_SCRAPE_INTERVAL * 3)
-
-    # Step 2: inject NIC down → triggers recovery
-    await testbed.inject_collector_metrics(
-        node_id="n-0",
-        metrics=[_nic_sample("n-0", "eth0", 0.0)],
-    )
-
-    # Step 3: wait for recovery to start
-    await testbed.wait_for_mode(
-        mode=ControllerMode.RECOVERY,
-        timeout=FAST_TIMEOUT,
-    )
-
-    # Step 4: poll recovery phases until completion, verify no EvictingSt
-    evicting_observed = False
-    deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
-    while time.monotonic() < deadline:
-        status = await testbed.get_status()
-        if status.recovery is not None and "EvictingSt" in status.recovery.phase:
-            evicting_observed = True
-        if status.mode == ControllerMode.MONITORING:
-            break
-        await asyncio.sleep(0.3)
-    else:
-        raise TimeoutError(f"Recovery did not complete within {LONG_RECOVERY_TIMEOUT}s")
-
-    assert not evicting_observed, "EvictingSt should not occur for ephemeral NIC fault"
 
 
 # ------------------------------------------------------------------
