@@ -129,9 +129,9 @@ async def test_two_sequential_rollout_crashes_both_recover(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
         detectors=[TrainingCrashDetector()],
-        scrape_interval_seconds=0.5,
+        scrape_interval_seconds=0.3,
         rollout_num_cells=1,
-        rollout_alive_threshold_seconds=2.0,
+        rollout_alive_threshold_seconds=1.5,
         rollout_monitoring_alive_duration_seconds=0,
     )
 
@@ -139,8 +139,13 @@ async def test_two_sequential_rollout_crashes_both_recover(
         # Step 2: wait for stable state
         await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
 
-        # Step 3: kill rollout cell and wait for notification path to settle
+        # Step 3: kill rollout cell and wait for recovery
         await testbed.kill_sglang_cell("default")
+        await testbed.wait_for_subsystem_state(
+            name="rollout_default",
+            state="Recovering",
+            timeout=RECOVERY_TIMEOUT,
+        )
         await testbed.wait_for_subsystem_state(
             name="rollout_default",
             state="DetectingAnomaly",
