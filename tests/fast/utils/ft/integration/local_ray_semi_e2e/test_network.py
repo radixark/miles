@@ -281,12 +281,11 @@ async def test_ephemeral_nic_flap_restored_before_tick_no_recovery(
 async def test_ephemeral_nic_recovery_completes_without_eviction(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """Ephemeral NIC flap triggers recovery but no EvictingSt.
+    """Ephemeral NIC flap exceeding threshold triggers recovery but no EvictingSt.
 
     Uses NetworkAlertDetector only (not NicMajorityDownDetector) with
     alert_threshold=1 so a single NIC flap triggers detection. The NIC
-    is restored before the detector tick so only the flap (ephemeral)
-    fires — persistent_down does not. Recovery enters RecoveringSt
+    stays down so the flap detector fires. Recovery enters RecoveringSt
     but should never pass through EvictingSt because the fault is ephemeral
     (bad_node_ids=[]).
     """
@@ -303,35 +302,25 @@ async def test_ephemeral_nic_recovery_completes_without_eviction(
             ),
         ],
         scrape_interval_seconds=_SCRAPE_INTERVAL,
-        tick_interval=3.0,
     )
 
     # Step 1: wait for baseline to be scraped
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
     await asyncio.sleep(_SCRAPE_INTERVAL * 3)
 
-    # Step 2: inject NIC down → creates 1→0 flap transition
+    # Step 2: inject NIC down → triggers recovery
     await testbed.inject_collector_metrics(
         node_id="n-0",
         metrics=[_nic_sample("n-0", "eth0", 0.0)],
     )
 
-    # Step 3: wait for 1 scrape to record the transition, then restore NIC up.
-    # This ensures flap detector sees the transition but persistent_down
-    # sees last_value=1 and doesn't fire → only ephemeral faults.
-    await asyncio.sleep(_SCRAPE_INTERVAL * 1.5)
-    await testbed.inject_collector_metrics(
-        node_id="n-0",
-        metrics=[_nic_sample("n-0", "eth0", 1.0)],
-    )
-
-    # Step 4: wait for recovery to start (flap detector fires on next tick)
+    # Step 3: wait for recovery to start
     await testbed.wait_for_mode(
         mode=ControllerMode.RECOVERY,
         timeout=FAST_TIMEOUT,
     )
 
-    # Step 5: poll recovery phases until completion, verify no EvictingSt
+    # Step 4: poll recovery phases until completion, verify no EvictingSt
     evicting_observed = False
     deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
     while time.monotonic() < deadline:
