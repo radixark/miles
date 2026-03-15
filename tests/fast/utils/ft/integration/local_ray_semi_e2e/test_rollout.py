@@ -47,7 +47,7 @@ async def make_testbed(
 async def test_rollout_crash_does_not_affect_training(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """Training continues advancing iterations while rollout crash notifies humans."""
+    """Training continues advancing iterations while rollout recovers."""
     # Step 1: create testbed with training + rollout
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
@@ -67,23 +67,25 @@ async def test_rollout_crash_does_not_affect_training(
     # Step 4: kill rollout cell
     await testbed.kill_sglang_cell("default")
 
-    # Step 5: verify training kept advancing despite rollout telemetry loss
+    # Step 5: wait for rollout to enter recovery
+    await testbed.wait_for_subsystem_state(
+        name="rollout_default",
+        state="Recovering",
+        timeout=RECOVERY_TIMEOUT,
+    )
+
+    # Step 6: verify training kept advancing during rollout recovery
     await asyncio.sleep(2.0)
     current_status = await testbed.get_status()
     current = current_status.latest_iteration or 0
-    assert current > baseline, f"Training stalled during rollout crash: baseline={baseline} current={current}"
+    assert current > baseline, f"Training stalled during rollout recovery: baseline={baseline} current={current}"
 
-    # Step 6: rollout remains in DetectingAnomaly and escalates via notification
-    status = await testbed.wait_for_subsystem_state(
+    # Step 7: wait for rollout recovery to complete
+    await testbed.wait_for_subsystem_state(
         name="rollout_default",
         state="DetectingAnomaly",
         timeout=LONG_RECOVERY_TIMEOUT,
     )
-    assert status.subsystem_states.get("training") == "DetectingAnomalySt"
-    assert any(
-        "rollout_default" in content and "rollout_cell_alive metric missing" in content
-        for _title, content, _severity in testbed.notifications
-    ), "Expected rollout telemetry-blind notification"
 
 
 # test_two_of_three_cells_crash_independently_recover removed: covered by test_scenarios::test_multi_cell_crash
@@ -119,7 +121,7 @@ async def test_no_recovery_when_all_cells_healthy(
 async def test_two_sequential_rollout_crashes_both_recover(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """Repeated rollout crashes notify without perturbing training state."""
+    """Crash -> recover -> crash -> recover. No state drift."""
     # Step 1: create testbed with 1 rollout cell
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
@@ -135,8 +137,13 @@ async def test_two_sequential_rollout_crashes_both_recover(
         # Step 2: wait for stable state
         await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
 
-        # Step 3: kill rollout cell and wait for notification path to settle
+        # Step 3: kill rollout cell and wait for recovery
         await testbed.kill_sglang_cell("default")
+        await testbed.wait_for_subsystem_state(
+            name="rollout_default",
+            state="Recovering",
+            timeout=RECOVERY_TIMEOUT,
+        )
         await testbed.wait_for_subsystem_state(
             name="rollout_default",
             state="DetectingAnomaly",
@@ -147,4 +154,3 @@ async def test_two_sequential_rollout_crashes_both_recover(
     status = await testbed.get_status()
     assert status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
     assert status.subsystem_states.get("training") == "DetectingAnomalySt"
-    assert len(testbed.notifications) >= 2, "Expected repeated rollout crashes to emit notifications"
