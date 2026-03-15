@@ -247,6 +247,7 @@ async def test_ephemeral_nic_no_eviction(
     # Step 1: wait for baseline to be scraped
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
     await asyncio.sleep(_SCRAPE_INTERVAL * 3)
+    run_id_before = (await testbed.get_status()).active_run_id
 
     # Step 2: inject NIC down → creates 1 up→down transition (flap)
     await testbed.inject_collector_metrics(
