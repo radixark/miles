@@ -165,8 +165,8 @@ async def test_rollout_kill_triggers_recovery_via_health_checker(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
         rollout_nodes=[TestbedNodeConfig(node_id="rollout-0")],
         rollout_num_cells=1,
-        scrape_interval_seconds=0.5,
-        rollout_alive_threshold_seconds=2.0,
+        scrape_interval_seconds=0.3,
+        rollout_alive_threshold_seconds=1.5,
         rollout_monitoring_alive_duration_seconds=0,
     )
 
