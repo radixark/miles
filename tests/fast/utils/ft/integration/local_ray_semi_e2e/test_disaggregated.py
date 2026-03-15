@@ -84,3 +84,7 @@ async def test_simultaneous_training_and_rollout_crash(
     assert (
         status.subsystem_states.get("rollout_default") == "DetectingAnomalySt"
     ), f"Rollout not recovered: {status.subsystem_states}"
+
+    # Step 6: verify controller is back to MONITORING (no active recovery)
+    assert status.mode == ControllerMode.MONITORING
+    assert status.recovery_in_progress is False
