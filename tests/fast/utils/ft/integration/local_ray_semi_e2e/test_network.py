@@ -285,9 +285,10 @@ async def test_ephemeral_nic_recovery_completes_without_eviction(
 
     Uses NetworkAlertDetector only (not NicMajorityDownDetector) with
     alert_threshold=1 so a single NIC flap triggers detection. The NIC
-    stays down long enough for the flap detector to fire but the fault
-    is classified as ephemeral → bad_node_ids=[] → direct restart without
-    eviction.
+    is restored before the detector tick so only the flap (ephemeral)
+    fires — persistent_down does not. Recovery enters RecoveringSt
+    but should never pass through EvictingSt because the fault is ephemeral
+    (bad_node_ids=[]).
     """
     testbed = await make_testbed(
         training_nodes=[
@@ -302,51 +303,48 @@ async def test_ephemeral_nic_recovery_completes_without_eviction(
             ),
         ],
         scrape_interval_seconds=_SCRAPE_INTERVAL,
+        tick_interval=3.0,
     )
 
     # Step 1: wait for baseline to be scraped
     await testbed.wait_for_training_stable(n_iterations=3, timeout=FAST_TIMEOUT)
     await asyncio.sleep(_SCRAPE_INTERVAL * 3)
 
-    # Step 2: inject NIC down → triggers recovery
+    # Step 2: inject NIC down → creates 1→0 flap transition
     await testbed.inject_collector_metrics(
         node_id="n-0",
         metrics=[_nic_sample("n-0", "eth0", 0.0)],
     )
 
-    # Step 3: wait for recovery to start
+    # Step 3: wait for 1 scrape to record the transition, then restore NIC up.
+    # This ensures flap detector sees the transition but persistent_down
+    # sees last_value=1 and doesn't fire → only ephemeral faults.
+    await asyncio.sleep(_SCRAPE_INTERVAL * 1.5)
+    await testbed.inject_collector_metrics(
+        node_id="n-0",
+        metrics=[_nic_sample("n-0", "eth0", 1.0)],
+    )
+
+    # Step 4: wait for recovery to start (flap detector fires on next tick)
     await testbed.wait_for_mode(
         mode=ControllerMode.RECOVERY,
         timeout=FAST_TIMEOUT,
     )
 
-    # Step 4: poll recovery phases until completion, verify restart SM
-    # never enters EvictingSt (only StoppingAndRestartingSt via direct_restart).
-    # Note: recovery_phase_name() unwraps EvictingAndRestartingSt → inner restart
-    # state name, so we check for literal "EvictingSt" (the restart SM state).
+    # Step 5: poll recovery phases until completion, verify no EvictingSt
     evicting_observed = False
-    phases_seen: list[str] = []
     deadline = time.monotonic() + LONG_RECOVERY_TIMEOUT
     while time.monotonic() < deadline:
         status = await testbed.get_status()
-        if status.recovery is not None:
-            phase = status.recovery.phase
-            if phase not in phases_seen:
-                phases_seen.append(phase)
-            if phase == "EvictingSt":
-                evicting_observed = True
+        if status.recovery is not None and "EvictingSt" in status.recovery.phase:
+            evicting_observed = True
         if status.mode == ControllerMode.MONITORING:
             break
         await asyncio.sleep(0.3)
     else:
-        raise TimeoutError(
-            f"Recovery did not complete within {LONG_RECOVERY_TIMEOUT}s. "
-            f"Phases seen: {phases_seen}"
-        )
+        raise TimeoutError(f"Recovery did not complete within {LONG_RECOVERY_TIMEOUT}s")
 
-    assert not evicting_observed, (
-        f"EvictingSt should not occur for ephemeral NIC fault. Phases seen: {phases_seen}"
-    )
+    assert not evicting_observed, "EvictingSt should not occur for ephemeral NIC fault"
 
 
 # ------------------------------------------------------------------
