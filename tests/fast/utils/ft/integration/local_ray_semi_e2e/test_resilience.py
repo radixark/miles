@@ -62,7 +62,7 @@ async def make_testbed(
 async def test_log_step_after_controller_death(
     make_testbed: Callable[..., MilesTestbed],
 ) -> None:
-    """Kill controller -> workers survive and keep running."""
+    """Kill controller -> unsupported run stops instead of entering fake recovery."""
     # Step 1: create testbed with 1 training node
     testbed = await make_testbed(
         training_nodes=[TestbedNodeConfig(node_id="n-0", num_ranks=2)],
@@ -83,12 +83,12 @@ async def test_log_step_after_controller_death(
     except (ValueError, Exception):
         logger.debug("controller kill failed (expected)", exc_info=True)
 
-    # Step 4: wait a bit — workers should continue running without crashing
+    # Step 4: wait a bit for the unsupported controller-death path to surface
     await asyncio.sleep(2.0)
 
-    # Step 5: verify workers are still alive
+    # Step 5: workers should not appear healthy once the controller is gone
     alive = await testbed.train_group.all_alive()
-    assert alive, "Workers should survive controller death"
+    assert not alive, "Workers should stop once the controller is gone"
 
 
 async def test_all_pass_diagnostics_escalates_to_notify(
