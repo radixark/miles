@@ -36,17 +36,22 @@ async def scenario_hang_detection_and_recovery(
     t0 = time.monotonic()
     await injector.inject_hang()
 
-    # Step 3: wait for recovery cycle to complete
+    # Step 3: once recovery starts, clear the injected hang so restarted
+    # workers can make monitoring progress.
+    await env.wait_for_mode(mode=ControllerMode.RECOVERY, timeout=hang_timeout)
+    await injector.clear_hang()
+
+    # Step 4: wait for recovery cycle to complete
     status = await env.wait_for_mode_transition(target_mode=ControllerMode.MONITORING, timeout=recovery_timeout)
     elapsed = time.monotonic() - t0
     assert status.mode == ControllerMode.MONITORING
 
-    # Step 4: verify detection happened within the expected time budget
+    # Step 5: verify detection happened within the expected time budget
     assert (
         elapsed < max_detection_seconds
     ), f"Hang detection+recovery took {elapsed:.1f}s, exceeds {max_detection_seconds}s"
 
-    # Step 5: verify training resumes after recovery
+    # Step 6: verify training resumes after recovery
     await env.wait_for_training_stable(n_iterations=post_recovery_iterations, timeout=post_recovery_timeout)
 
     post_status = await env.get_status()
