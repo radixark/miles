@@ -33,7 +33,8 @@ from .ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from .ops.qat import fp8_simulate_qat
-from .ops.ref_model import RMSNorm, apply_rotary_emb
+from megatron.core.extensions.transformer_engine import TENorm
+from .ops.ref_model import apply_rotary_emb
 from .ops.utils import wrapped_precompute_freqs_cis
 
 
@@ -103,7 +104,7 @@ class DeepSeekV4Attention(MegatronModule):
             skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
-        self.q_norm = RMSNorm(self.q_lora_rank, eps=self.eps)
+        self.q_norm = TENorm(config_no_sp, self.q_lora_rank, eps=self.eps)
         self.wq_b = ColumnParallelLinear(
             self.q_lora_rank,
             self.n_heads * self.head_dim,
@@ -122,7 +123,7 @@ class DeepSeekV4Attention(MegatronModule):
             skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
-        self.kv_norm = RMSNorm(self.head_dim, eps=self.eps)
+        self.kv_norm = TENorm(config_no_sp, self.head_dim, eps=self.eps)
         self.wo_a = ColumnParallelLinear(
             self.n_heads * self.head_dim // self.n_groups,
             self.n_groups * self.o_lora_rank,
