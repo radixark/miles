@@ -169,14 +169,22 @@ def indexer_bwd_interface(
     padded_topk = ((padded_topk + 31) // 32) * 32
     if padded_topk != k_top:
         pad_size = padded_topk - k_top
-        topk_indices = torch.cat([
-            topk_indices,
-            torch.full((topk_indices.shape[0], pad_size), -1, device=topk_indices.device, dtype=topk_indices.dtype),
-        ], dim=1).contiguous()
-        grad_scores = torch.cat([
-            grad_scores,
-            torch.zeros((grad_scores.shape[0], pad_size), device=grad_scores.device, dtype=grad_scores.dtype),
-        ], dim=1).contiguous()
+        topk_indices = torch.cat(
+            [
+                topk_indices,
+                torch.full(
+                    (topk_indices.shape[0], pad_size), -1, device=topk_indices.device, dtype=topk_indices.dtype
+                ),
+            ],
+            dim=1,
+        ).contiguous()
+        grad_scores = torch.cat(
+            [
+                grad_scores,
+                torch.zeros((grad_scores.shape[0], pad_size), device=grad_scores.device, dtype=grad_scores.dtype),
+            ],
+            dim=1,
+        ).contiguous()
 
     tl_indexer_bwd_impl(head_num, head_dim, padded_topk)(
         index_q.contiguous(),

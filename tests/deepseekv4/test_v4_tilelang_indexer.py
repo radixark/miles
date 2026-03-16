@@ -1,5 +1,3 @@
-import itertools
-import math
 from dataclasses import dataclass
 
 import pytest
@@ -183,9 +181,7 @@ FORWARD_CONFIGS = [
     (256, 1, 8, 128, 128, 2),
 ]
 
-FORWARD_CONFIG_IDS = [
-    f"sq{sq}_b{b}_h{h}_d{d}_cr{cr}_top{tk}" for sq, b, h, d, cr, tk in FORWARD_CONFIGS
-]
+FORWARD_CONFIG_IDS = [f"sq{sq}_b{b}_h{h}_d{d}_cr{cr}_top{tk}" for sq, b, h, d, cr, tk in FORWARD_CONFIGS]
 
 
 @requires_cuda()
@@ -193,10 +189,7 @@ FORWARD_CONFIG_IDS = [
 @pytest.mark.parametrize("seqlen_q,batch,heads,dim,compress_ratio,topk", FORWARD_CONFIGS, ids=FORWARD_CONFIG_IDS)
 def test_indexer_forward_scores(seqlen_q, batch, heads, dim, compress_ratio, topk):
     """Compare tilelang forward logits against PyTorch reference."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import (
-        _make_causal_cu_seqlens,
-        batched_indexer_fwd,
-    )
+    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
     q, k, weights = make_inputs(seqlen_q, batch, heads, dim, compress_ratio)
     seqlen_kv = seqlen_q // compress_ratio
@@ -235,16 +228,12 @@ def test_indexer_forward_topk(seqlen_q, batch, heads, dim, compress_ratio, topk)
     call is internally consistent.
     """
     from miles_plugins.models.deepseek_v4.ops.tilelang_indexer import v4_lighting_indexer
-    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import (
-        _make_causal_cu_seqlens,
-        batched_indexer_fwd,
-    )
+    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
     q, k, weights = make_inputs(seqlen_q, batch, heads, dim, compress_ratio)
     seqlen_kv = seqlen_q // compress_ratio
 
     tl_score, tl_topk = v4_lighting_indexer(q, k, weights, compress_ratio, topk)
-    actual_topk = min(topk, seqlen_kv)
 
     # Verify: selected scores should be >= min of selected scores at each position
     # Get full logits from the same kernel call is not possible (autograd Function
@@ -298,9 +287,7 @@ BACKWARD_CONFIGS = [
     (256, 4, 8, 128, 4, 64),
 ]
 
-BACKWARD_CONFIG_IDS = [
-    f"sq{sq}_b{b}_h{h}_d{d}_cr{cr}_top{tk}" for sq, b, h, d, cr, tk in BACKWARD_CONFIGS
-]
+BACKWARD_CONFIG_IDS = [f"sq{sq}_b{b}_h{h}_d{d}_cr{cr}_top{tk}" for sq, b, h, d, cr, tk in BACKWARD_CONFIGS]
 
 
 def ref_indexer_backward_dense(q, k, weights, compress_ratio, topk, topk_indices):
@@ -363,9 +350,7 @@ def test_indexer_backward(seqlen_q, batch, heads, dim, compress_ratio, topk):
     loss.backward()
 
     # --- Dense fp32 reference backward using SAME topk_indices ---
-    ref_grad_q, ref_grad_w, ref_grad_k = ref_indexer_backward_dense(
-        q, k, weights, compress_ratio, topk, tl_topk
-    )
+    ref_grad_q, ref_grad_w, ref_grad_k = ref_indexer_backward_dense(q, k, weights, compress_ratio, topk, tl_topk)
 
     print(f"\n[BWD] sq={seqlen_q}, b={batch}, h={heads}, cr={compress_ratio}, topk={topk}")
 
@@ -394,10 +379,7 @@ def test_indexer_backward(seqlen_q, batch, heads, dim, compress_ratio, topk):
 @pytest.mark.parametrize("compress_ratio", [4, 128])
 def test_causal_mask_correctness(compress_ratio):
     """Verify that the tilelang kernel correctly masks future compressed groups."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import (
-        _make_causal_cu_seqlens,
-        batched_indexer_fwd,
-    )
+    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
     seqlen_q = 512
     batch = 1
@@ -431,10 +413,7 @@ def test_causal_mask_correctness(compress_ratio):
 @requires_tilelang()
 def test_large_values():
     """Test with large input values to check for overflow/underflow."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import (
-        _make_causal_cu_seqlens,
-        batched_indexer_fwd,
-    )
+    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
     seqlen_q, batch, heads, dim, compress_ratio = 256, 1, 8, 128, 4
     seqlen_kv = seqlen_q // compress_ratio
@@ -451,7 +430,7 @@ def test_large_values():
 
     valid_mask = ref_scores != float("-inf")
     diff = compute_diff(ref_scores[valid_mask], tl_scores[valid_mask])
-    print(f"\n[LARGE] large values test")
+    print("\n[LARGE] large values test")
     print_diff("logits", diff)
 
     # Larger values → larger absolute diff but rel_diff should stay reasonable
@@ -467,10 +446,7 @@ def test_large_values():
 @requires_tilelang()
 def test_zero_inputs():
     """Test that zero inputs produce zero scores."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import (
-        _make_causal_cu_seqlens,
-        batched_indexer_fwd,
-    )
+    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
     seqlen_q, batch, heads, dim, compress_ratio = 128, 1, 8, 128, 4
     seqlen_kv = seqlen_q // compress_ratio
@@ -500,10 +476,7 @@ def test_zero_inputs():
 def test_v4_real_config(seqlen_q):
     """Test with V4's actual indexer configuration: heads=64, dim=128, topk=512, cr=4."""
     from miles_plugins.models.deepseek_v4.ops.tilelang_indexer import v4_lighting_indexer
-    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import (
-        _make_causal_cu_seqlens,
-        batched_indexer_fwd,
-    )
+    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
     batch = 1
     heads = 64
@@ -556,10 +529,7 @@ def test_v4_real_config(seqlen_q):
 @requires_tilelang()
 def test_diff_summary():
     """Print a comprehensive diff summary across all configurations."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import (
-        _make_causal_cu_seqlens,
-        batched_indexer_fwd,
-    )
+    from miles_plugins.models.deepseek_v4.ops.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
     configs = [
         (128, 1, 8, 128, 4),

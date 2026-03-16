@@ -6,12 +6,8 @@ Provides both a low-level per-sample interface and a batched autograd Function.
 """
 import torch
 
-from .tilelang_indexer_bwd import batched_indexer_bwd, indexer_bwd_interface
-from .tilelang_indexer_fwd import (
-    _make_causal_cu_seqlens,
-    batched_indexer_fwd,
-    indexer_fwd_interface,
-)
+from .tilelang_indexer_bwd import batched_indexer_bwd
+from .tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
 
 def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):
@@ -44,9 +40,7 @@ class V4IndexerFunction(torch.autograd.Function):
         seqlen_q = index_q.shape[0]
         seq_len_kv = index_k.shape[0]
 
-        cu_seqlen_ks, cu_seqlen_ke = _make_causal_cu_seqlens(
-            seqlen_q, seq_len_kv, compress_ratio, index_q.device
-        )
+        cu_seqlen_ks, cu_seqlen_ke = _make_causal_cu_seqlens(seqlen_q, seq_len_kv, compress_ratio, index_q.device)
 
         # [batch, seqlen, seqlen_kv]
         logits = batched_indexer_fwd(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)
@@ -67,9 +61,7 @@ class V4IndexerFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_scores, grad_indices):
         index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk_indices = ctx.saved_tensors
-        grad_q, grad_w, grad_k = batched_indexer_bwd(
-            index_q, weights, index_k, topk_indices, grad_scores
-        )
+        grad_q, grad_w, grad_k = batched_indexer_bwd(index_q, weights, index_k, topk_indices, grad_scores)
         return grad_q, grad_k, grad_w, None, None, None
 
 
@@ -95,6 +87,4 @@ def v4_lighting_indexer(
         index_score:  [batch, seqlen, topk] fp32
         topk_indices: [batch, seqlen, topk] int32
     """
-    return V4IndexerFunction.apply(
-        index_q, index_k, weights, compress_ratio, topk, topk_indices
-    )
+    return V4IndexerFunction.apply(index_q, index_k, weights, compress_ratio, topk, topk_indices)

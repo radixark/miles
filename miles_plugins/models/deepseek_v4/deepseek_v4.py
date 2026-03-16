@@ -19,7 +19,6 @@ from megatron.core.tensor_parallel.mappings import (
 )
 from megatron.core.transformer.experimental_attention_variant.dsa import DSAIndexer, DSAIndexerSubmodules
 from megatron.core.transformer.module import MegatronModule
-from .ops.v4_indexer import V4Indexer
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
@@ -36,6 +35,7 @@ from .ops.cp_utils import (
 from .ops.qat import fp8_simulate_qat
 from .ops.ref_model import apply_rotary_emb
 from .ops.utils import wrapped_precompute_freqs_cis
+from .ops.v4_indexer import V4Indexer
 
 
 class DeepSeekV4Attention(MegatronModule):

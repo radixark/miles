@@ -1,10 +1,9 @@
-import copy
 import os
 
 import einops
 import torch
 from megatron.core import parallel_state
-from megatron.core.extensions.transformer_engine import TELinear, TENorm
+from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -41,7 +40,8 @@ class V4Indexer(MegatronModule):
 
         if pg_collection is None:
             from megatron.core.process_groups_config import ProcessGroupCollection
-            pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=['tp', 'cp'])
+
+            pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
         self.pg_collection = pg_collection
 
         self.linear_wq_b = TELinear(
@@ -79,6 +79,7 @@ class V4Indexer(MegatronModule):
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
         from miles.utils.replay_base import indexer_replay_manager
+
         indexer_replay_manager.register_to_module(self, "indexer_replay")
 
     def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
@@ -115,9 +116,9 @@ class V4Indexer(MegatronModule):
         cp_group = self.pg_collection.cp if hasattr(self.pg_collection, "cp") else None
         freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen, cp_size, cp_group, stride=1)
         q = q.clone()
-        q = einops.rearrange(q, 's b ... -> b s ...')
+        q = einops.rearrange(q, "s b ... -> b s ...")
         apply_rotary_emb(q[..., -rd:], freqs_cis)
-        q = einops.rearrange(q, 'b s ... -> s b ...')
+        q = einops.rearrange(q, "b s ... -> s b ...")
 
         q = rotate_activation(q)
         if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
@@ -126,8 +127,8 @@ class V4Indexer(MegatronModule):
         k = self.compressor(x)
 
         weights, _ = self.linear_weights_proj(x)
-        softmax_scale = self.index_head_dim ** -0.5
-        weights = weights * (self.index_n_heads ** -0.5) * softmax_scale
+        softmax_scale = self.index_head_dim**-0.5
+        weights = weights * (self.index_n_heads**-0.5) * softmax_scale
 
         if cp_size > 1 and cp_group is not None:
             k = all_gather_cp(k, dim=0, cp_group=cp_group)

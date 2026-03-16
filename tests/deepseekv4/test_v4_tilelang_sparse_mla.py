@@ -57,11 +57,20 @@ def compute_diff(baseline: torch.Tensor, target: torch.Tensor) -> DiffInfo:
     p95 = sorted_diff[min(int(n * 0.95), n - 1)].item() if n > 0 else 0.0
     p99 = sorted_diff[min(int(n * 0.99), n - 1)].item() if n > 0 else 0.0
 
-    return DiffInfo(rel_diff=rel_diff, max_abs_diff=max_abs, mean_abs_diff=mean_abs, p50_abs_diff=p50, p95_abs_diff=p95, p99_abs_diff=p99)
+    return DiffInfo(
+        rel_diff=rel_diff,
+        max_abs_diff=max_abs,
+        mean_abs_diff=mean_abs,
+        p50_abs_diff=p50,
+        p95_abs_diff=p95,
+        p99_abs_diff=p99,
+    )
 
 
 def print_diff(name: str, diff: DiffInfo):
-    print(f"  {name}: rel={diff.rel_diff:.2e}, max_abs={diff.max_abs_diff:.2e}, mean_abs={diff.mean_abs_diff:.2e}, p95={diff.p95_abs_diff:.2e}, p99={diff.p99_abs_diff:.2e}")
+    print(
+        f"  {name}: rel={diff.rel_diff:.2e}, max_abs={diff.max_abs_diff:.2e}, mean_abs={diff.mean_abs_diff:.2e}, p95={diff.p95_abs_diff:.2e}, p99={diff.p99_abs_diff:.2e}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +122,7 @@ def requires_cuda():
 def requires_tilelang():
     try:
         import tilelang  # noqa: F401
+
         return pytest.mark.skipif(False, reason="")
     except ImportError:
         return pytest.mark.skip(reason="tilelang not installed")
@@ -139,13 +149,14 @@ def make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk, device="cuda", sink_
 
     # Generate valid random topk indices (no duplicates per query, all valid)
     actual_topk = min(topk, seqlen_kv)
-    topk_idxs = torch.stack([
-        torch.stack([
-            torch.randperm(seqlen_kv, device=device)[:actual_topk]
-            for _ in range(seqlen)
-        ])
-        for _ in range(batch)
-    ]).to(torch.int32)  # [B, S, topk]
+    topk_idxs = torch.stack(
+        [
+            torch.stack([torch.randperm(seqlen_kv, device=device)[:actual_topk] for _ in range(seqlen)])
+            for _ in range(batch)
+        ]
+    ).to(
+        torch.int32
+    )  # [B, S, topk]
 
     # Pad with -1 if topk > seqlen_kv
     if topk > seqlen_kv:
@@ -242,7 +253,7 @@ def test_attn_sink_effect():
 
     # Large attn_sink should suppress all outputs toward zero (denominator dominated by sink)
     diff = compute_diff(o_zero.float(), o_large.float())
-    print(f"\n[SINK-EFFECT] output diff between sink=0 and sink=10")
+    print("\n[SINK-EFFECT] output diff between sink=0 and sink=10")
     print_diff("output", diff)
     assert diff.max_abs_diff > 1e-3, "attn_sink has no effect on output — likely not implemented"
 
@@ -364,7 +375,7 @@ def test_partial_invalid_indices():
     tl_o, _ = sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=sm_scale)
 
     diff = compute_diff(ref_o.float(), tl_o.float())
-    print(f"\n[PARTIAL-INVALID]")
+    print("\n[PARTIAL-INVALID]")
     print_diff("output", diff)
 
     assert diff.rel_diff < 1e-3, f"rel_diff too large with partial invalid: {diff.rel_diff:.2e}"
@@ -401,7 +412,9 @@ def test_diff_summary():
 
         diff = compute_diff(ref_o.float(), tl_o.float())
         label = f"b{batch}_s{seqlen}_h{heads}_d{dim}_kv{seqlen_kv}_top{topk}"
-        print(f"{label:<45} {diff.rel_diff:>10.2e} {diff.max_abs_diff:>10.2e} {diff.mean_abs_diff:>10.2e} {diff.p99_abs_diff:>10.2e}")
+        print(
+            f"{label:<45} {diff.rel_diff:>10.2e} {diff.max_abs_diff:>10.2e} {diff.mean_abs_diff:>10.2e} {diff.p99_abs_diff:>10.2e}"
+        )
 
     print("=" * 100)
 

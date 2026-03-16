@@ -80,7 +80,9 @@ def main() -> None:
         )
 
         if rank == 0 and seq_idx == 0:
-            print(f"[worker] input_ids shape={batch['input_ids'].shape}, num_sequences={len(all_token_ids)}", flush=True)
+            print(
+                f"[worker] input_ids shape={batch['input_ids'].shape}, num_sequences={len(all_token_ids)}", flush=True
+            )
 
         captured_logits: torch.Tensor | None = _run_forward_backward(
             args=args,
@@ -101,6 +103,7 @@ def main() -> None:
             else:
                 # Multi-sequence: accumulate entries, save once at end
                 from miles.utils.debug_utils.run_megatron.worker.output import _compute_logprob_entries
+
                 entries = _compute_logprob_entries(
                     logits=captured_logits,
                     labels=batch["labels"],
@@ -123,6 +126,7 @@ def main() -> None:
     # Save accumulated logprobs for multi-sequence mode
     if all_logprob_entries and script.logprob_output is not None and is_last_pp_stage:
         import torch.distributed as _dist
+
         _rank = _dist.get_rank() if _dist.is_initialized() else 0
         script.logprob_output.mkdir(parents=True, exist_ok=True)
         output_path = script.logprob_output / f"rank_{_rank}.json"

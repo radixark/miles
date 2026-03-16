@@ -2,7 +2,6 @@
 
 import dataclasses
 import json
-import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -67,20 +66,25 @@ def _load_rollout_data(rollout_path: Path) -> _RolloutData:
         response_length = sample["response_length"]
         prompt_length = len(token_ids) - response_length
         sglang_logprobs = sample["rollout_log_probs"]
-        assert len(sglang_logprobs) == response_length, (
-            f"sample {i}: rollout_log_probs length {len(sglang_logprobs)} != response_length {response_length}"
+        assert (
+            len(sglang_logprobs) == response_length
+        ), f"sample {i}: rollout_log_probs length {len(sglang_logprobs)} != response_length {response_length}"
+        results.append(
+            _RolloutSample(
+                token_ids=token_ids,
+                sglang_logprobs=sglang_logprobs,
+                prompt_length=prompt_length,
+            )
         )
-        results.append(_RolloutSample(
-            token_ids=token_ids,
-            sglang_logprobs=sglang_logprobs,
-            prompt_length=prompt_length,
-        ))
         re = sample.get("rollout_routed_experts")
         if re is not None:
             has_routing = True
         routed_experts_list.append(re)
 
-    print(f"[cli] Loaded {len(results)}/{len(samples)} samples (routing_replay={'yes' if has_routing else 'no'})", flush=True)
+    print(
+        f"[cli] Loaded {len(results)}/{len(samples)} samples (routing_replay={'yes' if has_routing else 'no'})",
+        flush=True,
+    )
     return _RolloutData(
         samples=results,
         routed_experts=routed_experts_list if has_routing else None,
@@ -113,12 +117,14 @@ def _save_sglang_logprobs_as_baseline(
         for i, lp in enumerate(sample.sglang_logprobs):
             global_position = sample.prompt_length + i - 1
             token_id = sample.token_ids[sample.prompt_length + i]
-            entries.append({
-                "global_position": global_position,
-                "token_id": token_id,
-                "logprob": float(lp),
-                "is_valid": True,
-            })
+            entries.append(
+                {
+                    "global_position": global_position,
+                    "token_id": token_id,
+                    "logprob": float(lp),
+                    "is_valid": True,
+                }
+            )
         all_entries.append(entries)
 
     payload = {
@@ -164,9 +170,7 @@ def _save_routing_replay_from_rollout(
         if re is None:
             # Pad with -1 (no routing)
             for layer_idx in range(num_layers):
-                per_layer[layer_idx].append(
-                    torch.full((padded_seq_length, topk), -1, dtype=torch.int32)
-                )
+                per_layer[layer_idx].append(torch.full((padded_seq_length, topk), -1, dtype=torch.int32))
             continue
 
         seq_len = re.shape[0]  # original seq_len (before padding)
@@ -182,9 +186,12 @@ def _save_routing_replay_from_rollout(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     from miles.utils.replay_base import routing_replay_manager
+
     save_path = output_dir / f"rank0_{routing_replay_manager.filename}"
     torch.save(per_layer, save_path)
-    print(f"[cli] Routing replay saved: {num_layers} layers, {len(routed_experts)} sequences → {save_path}", flush=True)
+    print(
+        f"[cli] Routing replay saved: {num_layers} layers, {len(routed_experts)} sequences → {save_path}", flush=True
+    )
     return output_dir
 
 
