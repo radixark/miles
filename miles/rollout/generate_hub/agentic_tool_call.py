@@ -65,7 +65,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
-    samples = compute_samples_from_openai_records(input.args, input.sample, records, input.state.tokenizer)
+    samples = compute_samples_from_openai_records(
+        input.args,
+        input.sample,
+        records,
+        input.state.tokenizer,
+        accumulated_token_ids=session_metadata.get("accumulated_token_ids"),
+    )
 
     for s in samples:
         s.metadata.update(agent_metadata or {})

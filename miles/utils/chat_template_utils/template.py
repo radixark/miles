@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+from typing import Any
 
 from huggingface_hub import hf_hub_download
 from jinja2.sandbox import ImmutableSandboxedEnvironment
@@ -144,6 +145,81 @@ def apply_chat_template_from_str(
     """Render a Jinja2 chat template string (tokenize=False equivalent)."""
     messages = _normalize_tool_arguments(messages)
     return _render_jinja(chat_template, messages, add_generation_prompt, tools, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Message comparison utilities (used by TITO tokenizer and trajectory manager)
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
+
+
+def _normalize_value(value: Any) -> Any:
+    """Normalize falsy sentinels that produce identical Jinja2 output.
+
+    None, "" and [] are all falsy in Jinja2 and render the same way,
+    but client libraries may interchange them (e.g. content: null vs ""
+    for tool-call-only responses, or tool_calls: null vs []).
+    """
+    if value is None or value == "" or value == []:
+        return None
+    return value
+
+
+def _message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
+    """Compare only the fields that affect chat-template tokenization.
+
+    External client libraries (e.g. litellm) may inject extra keys like
+    ``provider_specific_fields`` into messages.  These have no effect on
+    the Jinja2 chat template output, so we only compare the keys that
+    templates actually read: role, content, reasoning_content, tool_calls.
+    """
+    for key in _TEMPLATE_RELEVANT_KEYS:
+        if _normalize_value(stored.get(key)) != _normalize_value(new.get(key)):
+            return False
+    return True
+
+
+def assert_messages_append_only(
+    stored_messages: list[dict[str, Any]],
+    new_messages: list[dict[str, Any]],
+) -> None:
+    """Assert *new_messages* is an append-only extension of *stored_messages*.
+
+    The stored prefix must match exactly (compared by template-relevant keys),
+    and any appended messages must have role ``'tool'`` or ``'system'``.
+    """
+    if not stored_messages:
+        return
+
+    if len(new_messages) < len(stored_messages):
+        raise ValueError(f"new messages ({len(new_messages)}) are fewer than stored messages ({len(stored_messages)})")
+
+    for i, stored_msg in enumerate(stored_messages):
+        if not _message_matches(stored_msg, new_messages[i]):
+            diffs = {
+                key: {"stored": repr(stored_msg.get(key))[:200], "new": repr(new_messages[i].get(key))[:200]}
+                for key in _TEMPLATE_RELEVANT_KEYS
+                if stored_msg.get(key) != new_messages[i].get(key)
+            }
+            raise ValueError(
+                f"message mismatch at index {i} "
+                f"(role: stored={stored_msg.get('role')}, new={new_messages[i].get('role')}). "
+                f"Diffs: {diffs}"
+            )
+
+    ALLOWED_APPEND_ROLES = {"tool", "system"}
+    for j, msg in enumerate(new_messages[len(stored_messages) :]):
+        if msg.get("role") not in ALLOWED_APPEND_ROLES:
+            raise ValueError(
+                f"appended message at index {len(stored_messages) + j} "
+                f"has role={msg.get('role')!r}, allowed={ALLOWED_APPEND_ROLES}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Apply
+# ---------------------------------------------------------------------------
 
 
 def apply_chat_template(

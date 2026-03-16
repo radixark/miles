@@ -4,6 +4,7 @@ from miles.utils.chat_template_utils.autofix import TEMPLATE_DIR, try_get_fixed_
 from miles.utils.chat_template_utils.template import (
     apply_chat_template,
     apply_chat_template_from_str,
+    assert_messages_append_only,
     extract_tool_dicts,
     load_hf_chat_template,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "load_hf_chat_template",
     "apply_chat_template",
     "apply_chat_template_from_str",
+    "assert_messages_append_only",
     "extract_tool_dicts",
     "Mismatch",
     "TokenSeqComparator",

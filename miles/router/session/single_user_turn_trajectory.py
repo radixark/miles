@@ -6,38 +6,11 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from miles.router.session.session_types import SessionRecord
-from miles.utils.chat_template_utils import apply_chat_template
+from miles.utils.chat_template_utils import apply_chat_template, assert_messages_append_only
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
-
-_TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
-
-
-def _normalize_value(value: Any) -> Any:
-    """Normalize falsy sentinels that produce identical Jinja2 output.
-
-    None, "" and [] are all falsy in Jinja2 and render the same way,
-    but client libraries may interchange them (e.g. content: null vs ""
-    for tool-call-only responses, or tool_calls: null vs []).
-    """
-    if value is None or value == "" or value == []:
-        return None
-    return value
-
-
-def _message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
-    """Compare only the fields that affect chat-template tokenization.
-
-    External client libraries (e.g. litellm) may inject extra keys like
-    ``provider_specific_fields`` into messages.  These have no effect on
-    the Jinja2 chat template output, so we only compare the keys that
-    templates actually read: role, content, reasoning_content, tool_calls.
-    """
-    for key in _TEMPLATE_RELEVANT_KEYS:
-        if _normalize_value(stored.get(key)) != _normalize_value(new.get(key)):
-            return False
-    return True
 
 
 class SingleUserTurnTrajectory(BaseModel):
@@ -49,10 +22,6 @@ class SingleUserTurnTrajectory(BaseModel):
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     records: list[SessionRecord] = Field(default_factory=list)
-    # Accumulated token IDs from the latest trajectory
-    # (prompt_token_ids + completion_token_ids).
-    # Sent as pretokenized_token_ids on the next turn so SGLang can skip
-    # re-tokenizing the prefix.
     token_ids: list[int] = Field(default_factory=list)
 
     def append_session_record(self, record: SessionRecord):
@@ -60,26 +29,24 @@ class SingleUserTurnTrajectory(BaseModel):
 
 
 class SingleUserTurnTrajectoryManager:
-    """Trajectory manager for single-user-turn sessions.
+    """Lightweight session manager for single-user-turn trajectories.
 
-    Assumes a conversation where no user message appears after the first
-    assistant message.  The typical sequence is:
-    [system?, user?, assistant, tool, assistant, tool, …]
-    with optional system messages injected mid-conversation (e.g. retry
-    prompts).
+    Handles session CRUD, message-level validation (append-only, no user
+    after assistant), and token ID read/store.  All tokenization computation
+    is delegated to ``TITOTokenizer``.
 
-    Each new request's messages must be a strict append-only extension of
-    the previous request's messages (only tool/system messages appended).
-    This allows reusing pretokenized_token_ids across turns.
+    The typical message sequence is:
+    ``[system?, user?, assistant, tool, assistant, tool, …]``
+    with optional system messages injected mid-conversation.
     """
 
-    def __init__(self, args, tokenizer: Any, *, tito_tokenizer=None):
+    def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer | None = None):
         self.sessions: dict[str, SingleUserTurnTrajectory] = {}
         self.args = args
         self.tokenizer = tokenizer
         self._lock = threading.RLock()
         self._comparator = TokenSeqComparator(tokenizer) if tokenizer else None
-        self._trim_trailing_ids = (tito_tokenizer.get_trim_trailing_ids() or None) if tito_tokenizer else None
+        self._tito_tokenizer = tito_tokenizer
 
     def create_session(self) -> str:
         with self._lock:
@@ -93,6 +60,13 @@ class SingleUserTurnTrajectoryManager:
             if session is None:
                 return None
             return session.records
+
+    def get_session_token_ids(self, session_id: str) -> list[int]:
+        with self._lock:
+            session = self.sessions.get(session_id)
+            if session is None:
+                return []
+            return session.token_ids
 
     def compute_session_metadata(self, session_id: str) -> dict:
         if self._comparator is None:
@@ -113,7 +87,6 @@ class SingleUserTurnTrajectoryManager:
                 mismatches = self._comparator.compare_sequences(
                     expected_ids,
                     session.token_ids,
-                    trim_trailing_ids=self._trim_trailing_ids,
                 )
                 return {"tito_session_mismatch": [m.to_dict() for m in mismatches]}
             except Exception:
@@ -136,19 +109,15 @@ class SingleUserTurnTrajectoryManager:
             return True
 
     def try_prepare_pretokenized(
-        self, session_id: str, request_messages: list[dict[str, Any]]
+        self,
+        session_id: str,
+        request_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        """Check if we can use pretokenized token input for this request.
+        """Compute a merged prompt via ``TITOTokenizer.merge_tokens`` and
+        return it as ``input_ids`` for SGLang.
 
-        Returns a dict with pretokenized_token_ids and pretokenized_num_message
-        if the request is eligible, or None if it's not.
-
-        Eligibility requires:
-        1. The session has prior turns (token_ids is non-empty).
-        2. No user message appears after the first assistant message.
-        3. The new messages are append-only relative to stored messages —
-           only tool or system messages have been appended after the
-           previous assistant message.
+        Returns ``None`` on the first turn (no stored token_ids yet).
         """
         with self._lock:
             session = self.sessions.get(session_id)
@@ -167,15 +136,22 @@ class SingleUserTurnTrajectoryManager:
                 )
 
             if not session.token_ids:
-                # empty trajectory, no pretokenized input available
                 return None
 
             self._assert_no_user_after_assistant(request_messages)
-            self._assert_append_only(session.messages, request_messages)
+            assert_messages_append_only(session.messages, request_messages)
 
+            if self._tito_tokenizer is None:
+                return None
+
+            merged = self._tito_tokenizer.merge_tokens(
+                old_messages=session.messages,
+                new_messages=request_messages,
+                pretokenized_token_ids=session.token_ids,
+                tools=tools,
+            )
             return {
-                "pretokenized_token_ids": session.token_ids,
-                "pretokenized_num_message": len(session.messages),
+                "input_ids": merged,
             }
 
     def update_pretokenized_state(
@@ -185,23 +161,12 @@ class SingleUserTurnTrajectoryManager:
         assistant_message: dict[str, Any],
         prompt_token_ids: list[int],
         completion_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Update the session's pretokenized state after a successful response.
+        """Store raw token IDs after a successful response (no stripping).
 
-        1. **Validate prefix**: assert the previously stored token_ids are a
-           prefix of ``prompt_token_ids + completion_token_ids``, confirming
-           SGLang actually reused our pretokenized input.
-        2. **Store**: save ``prompt_token_ids + completion_token_ids`` as the
-           new token_ids for next turn's pretokenized reuse.
-
-        Args:
-            session_id: The session ID.
-            request_messages: The full message list from the request.
-            assistant_message: The assistant message from the response.
-            prompt_token_ids: Prompt token IDs from the response.
-            completion_token_ids: Output token IDs from the response.
-            tools: Tool definitions from the request (OpenAI format).
+        Validates that the previously stored token_ids are a prefix of the
+        new ``prompt_token_ids + completion_token_ids``, confirming SGLang
+        actually reused our pretokenized input.
         """
         with self._lock:
             session = self.sessions.get(session_id)
@@ -211,7 +176,6 @@ class SingleUserTurnTrajectoryManager:
             all_token_ids = prompt_token_ids + completion_token_ids
             session.messages = list(request_messages) + [assistant_message]
 
-            # Validate that SGLang reused our pretokenized prefix.
             prev = session.token_ids
             if prev:
                 assert all_token_ids[: len(prev)] == prev, (
@@ -221,7 +185,6 @@ class SingleUserTurnTrajectoryManager:
                     f"({len(all_token_ids)} tokens)"
                 )
 
-            # Store actual response tokens for next turn's pretokenized reuse.
             session.token_ids = all_token_ids
 
     @staticmethod
@@ -236,43 +199,4 @@ class SingleUserTurnTrajectoryManager:
                 raise ValueError(
                     f"invalid message structure: user message at index {i} "
                     f"appears after the first assistant message"
-                )
-
-    @staticmethod
-    def _assert_append_only(
-        stored_messages: list[dict[str, Any]],
-        new_messages: list[dict[str, Any]],
-    ) -> None:
-        """Assert new_messages is append-only vs stored_messages.
-
-        The stored prefix must match exactly, and any new messages appended
-        after the stored prefix must have role 'tool' or 'system'.
-        """
-        if not stored_messages:
-            return
-
-        if len(new_messages) < len(stored_messages):
-            raise ValueError(
-                f"new messages ({len(new_messages)}) are fewer than " f"stored messages ({len(stored_messages)})"
-            )
-
-        for i, stored_msg in enumerate(stored_messages):
-            if not _message_matches(stored_msg, new_messages[i]):
-                diffs = {
-                    key: {"stored": repr(stored_msg.get(key))[:200], "new": repr(new_messages[i].get(key))[:200]}
-                    for key in _TEMPLATE_RELEVANT_KEYS
-                    if stored_msg.get(key) != new_messages[i].get(key)
-                }
-                raise ValueError(
-                    f"message mismatch at index {i} "
-                    f"(role: stored={stored_msg.get('role')}, new={new_messages[i].get('role')}). "
-                    f"Diffs: {diffs}"
-                )
-
-        ALLOWED_APPEND_ROLES = {"tool", "system"}
-        for j, msg in enumerate(new_messages[len(stored_messages) :]):
-            if msg.get("role") not in ALLOWED_APPEND_ROLES:
-                raise ValueError(
-                    f"appended message at index {len(stored_messages) + j} "
-                    f"has role={msg.get('role')!r}, allowed={ALLOWED_APPEND_ROLES}"
                 )

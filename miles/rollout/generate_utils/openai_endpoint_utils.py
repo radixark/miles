@@ -7,12 +7,13 @@ from argparse import Namespace
 from copy import deepcopy
 
 from miles.rollout.generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
-from miles.router.session.sessions import GetSessionResponse, SessionRecord
-from miles.utils.chat_template_utils import get_tito_tokenizer
+from miles.router.session.session_types import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+
+MAX_TRIM_TOKENS = 2
 
 
 class OpenAIEndpointTracer:
@@ -47,22 +48,46 @@ class OpenAIEndpointTracer:
 
 
 def compute_samples_from_openai_records(
-    args: Namespace, input_sample: Sample, records: list[SessionRecord], tokenizer
+    args: Namespace,
+    input_sample: Sample,
+    records: list[SessionRecord],
+    tokenizer,
+    accumulated_token_ids: list[int] | None = None,
 ) -> list[Sample]:
-    tito_tokenizer = get_tito_tokenizer(
-        tokenizer,
-        tokenizer_type=getattr(args, "tito_model", "default"),
-    )
-    return [
-        _compute_sample_from_openai_record(
-            args, input_sample, record, tokenizer, tito_tokenizer, is_last=(i == len(records) - 1)
-        )
-        for i, record in enumerate(records)
-    ]
+    samples = []
+    cursor = 0
+
+    for i, record in enumerate(records):
+        is_last = i == len(records) - 1
+        prompt_ids = record.response["choices"][0]["prompt_token_ids"]
+        output_ids = [t[1] for t in record.response["choices"][0]["meta_info"]["output_token_logprobs"]]
+
+        trim_count = 0
+        if not is_last and accumulated_token_ids is not None:
+            cursor = len(prompt_ids)
+            matched = 0
+            for j in range(len(output_ids)):
+                idx = cursor + j
+                if idx < len(accumulated_token_ids) and output_ids[j] == accumulated_token_ids[idx]:
+                    matched += 1
+                else:
+                    break
+            trim_count = len(output_ids) - matched
+            assert trim_count <= MAX_TRIM_TOKENS, (
+                f"trim_count {trim_count} exceeds {MAX_TRIM_TOKENS}; "
+                f"output_ids[-3:]={output_ids[-3:]}, "
+                f"accumulated[cursor:cursor+3]={accumulated_token_ids[cursor:cursor+3]}"
+            )
+            cursor += matched
+
+        sample = _compute_sample_from_openai_record(args, input_sample, record, tokenizer, trim_count)
+        samples.append(sample)
+
+    return samples
 
 
 def _compute_sample_from_openai_record(
-    args: Namespace, input_sample: Sample, record: SessionRecord, tokenizer, tito_tokenizer, *, is_last: bool
+    args: Namespace, input_sample: Sample, record: SessionRecord, tokenizer, trim_count: int = 0
 ) -> Sample:
     choice = record.response["choices"][0]
 
@@ -86,10 +111,8 @@ def _compute_sample_from_openai_record(
     sample.loss_mask = [1] * len(output_token_ids)
     sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice, sample, "routed_experts")
 
-    # Strip trailing stop token for some models (e.g. GLM 4.7/5) from intermediate turns (1,2,...,N-1) so merge_samples
-    # prefix check works, but we should skip the last turn (N).
-    if not is_last and tito_tokenizer.should_strip_trailing_stop_token(output_token_ids):
-        sample.strip_last_output_token(tokenizer)
+    if trim_count > 0:
+        sample.strip_last_output_tokens(trim_count, tokenizer)
 
     # TODO unify with Sample.update_from_meta_info
     match choice["finish_reason"]:

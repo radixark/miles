@@ -146,25 +146,9 @@ class MockSGLangServer:
             messages, tokenize=False, add_generation_prompt=True, tools=tools
         )
 
-        pretokenized_ids = payload.get("pretokenized_token_ids")
-        pretokenized_num = payload.get("pretokenized_num_message")
-        if pretokenized_ids is not None and pretokenized_num is not None:
-            # Simulate sglang's _apply_pretokenized_template using miles'
-            # TITOTokenizer — same codepath as real sglang.
-            from miles.utils.chat_template_utils.tito_tokenizer import get_tito_tokenizer
-
-            tito_model_type = payload.get("tito_model", "default")
-            tito_tokenizer = get_tito_tokenizer(
-                self.tokenizer,
-                tokenizer_type=tito_model_type,
-            )
-            new_messages = messages[pretokenized_num:]
-            incremental_ids = tito_tokenizer.tokenize_additional(
-                new_messages=new_messages,
-                pretokenized_token_ids=pretokenized_ids,
-                tools=tools,
-            )
-            prompt_ids = list(pretokenized_ids) + incremental_ids
+        input_ids = payload.get("input_ids")
+        if input_ids is not None:
+            prompt_ids = list(input_ids)
         else:
             prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
 
