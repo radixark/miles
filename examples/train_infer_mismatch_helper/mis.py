@@ -337,19 +337,29 @@ def compute_mis_weights_with_cp(
     # Lazy import to avoid importing Megatron dependencies when only `compute_mis_weights` is used.
     from miles.backends.training_utils.cp_utils import all_gather_with_cp, slice_log_prob_with_cp
 
+    qkv_format = args.qkv_format
+    max_seq_lens = kwargs.get("max_seq_lens", None)
+    if qkv_format == "bshd":
+        assert max_seq_lens is not None, "max_seq_lens is required when qkv_format is bshd"
+
     # Gather cp slice from other cp ranks
-    full_rollout_log_probs = [
-        all_gather_with_cp(log_prob, total_length, response_length, parallel_state)
-        for log_prob, total_length, response_length in zip(
-            rollout_log_probs, total_lengths, response_lengths, strict=False
-        )
-    ]
-    full_old_log_probs = [
-        all_gather_with_cp(old_log_prob, total_length, response_length, parallel_state)
-        for old_log_prob, total_length, response_length in zip(
-            train_log_probs, total_lengths, response_lengths, strict=False
-        )
-    ]
+    def gather_log_probs(log_probs):
+        return [
+            all_gather_with_cp(
+                log_prob,
+                total_length,
+                response_length,
+                parallel_state,
+                qkv_format,
+                max_seq_lens[i] if max_seq_lens is not None else None,
+            )
+            for i, (log_prob, total_length, response_length) in enumerate(
+                zip(log_probs, total_lengths, response_lengths, strict=False)
+            )
+        ]
+
+    full_rollout_log_probs = gather_log_probs(rollout_log_probs)
+    full_old_log_probs = gather_log_probs(train_log_probs)
 
     # Main logic for is (decoupled)
     is_weights, modified_masks, is_metrics = compute_mis_weights(
@@ -364,8 +374,14 @@ def compute_mis_weights_with_cp(
         values: list[torch.Tensor], total_lengths: list[int], response_lengths: list[int]
     ) -> torch.Tensor:
         values = [
-            # TODO: A rename of this function?
-            slice_log_prob_with_cp(values[i], total_lengths[i], response_lengths[i], parallel_state)
+            slice_log_prob_with_cp(
+                values[i],
+                total_lengths[i],
+                response_lengths[i],
+                parallel_state,
+                qkv_format,
+                max_seq_lens[i] if max_seq_lens is not None else None,
+            )
             for i in range(len(values))
         ]
         return torch.cat(values, dim=0)

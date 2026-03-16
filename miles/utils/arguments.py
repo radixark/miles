@@ -198,6 +198,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
             )
+            reset_arg(
+                parser,
+                "--low-memory-resume",
+                action="store_true",
+                default=False,
+                help=(
+                    "Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "
+                ),
+            )
 
             return parser
 
@@ -1785,6 +1794,10 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+
+    if args.offload_train:
+        args.disable_grad_buffers_cpu_backup = True
+        args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path

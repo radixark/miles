@@ -50,6 +50,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     elif mode == "load":
         ckpt_args += f"--load /root/models/{MODEL_NAME}_miles "
         ckpt_args += f"--ckpt-step {ckpt_step} "
+        ckpt_args += "--low-memory-resume "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -95,9 +96,6 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        "--optimizer-cpu-offload "
-        "--overlap-cpu-optimizer-d2h-h2d "
-        "--use-precision-aware-optimizer "
     )
 
     sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.8 --sglang-cuda-graph-bs 1 2 4 8 16 "
