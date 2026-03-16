@@ -1872,6 +1872,14 @@ def miles_validate_args(args):
         args.prefill_num_servers is not None and args.rollout_external
     ), "prefill_num_servers cannot be set when rollout_external is set."
 
+    assert not (
+        getattr(args, "sglang_config", None) is not None and args.rollout_external
+    ), "sglang_config cannot be set when rollout_external is set."
+
+    assert not (
+        getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
+    ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."
+
     if args.qkv_format == "bshd":
         assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
         assert (
