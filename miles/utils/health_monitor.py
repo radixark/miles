@@ -2,6 +2,7 @@ import logging
 import threading
 
 import ray
+import requests
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class RolloutHealthMonitor:
     def __init__(self, rollout_manager, args):
         # TODO may remove this dependency after refactoring
         self._rollout_manager = rollout_manager
+        self._args = args
 
         self._thread = None
         self._stop_event = None
@@ -176,3 +178,16 @@ class RolloutHealthMonitor:
             else:
                 logger.info(f"Engine at index {i} is already None")
             self._rollout_manager.all_rollout_engines[i] = None
+
+    def _notify_router_remove_worker(self, worker_url: str) -> None:
+        """Notify the router to remove a dead worker so it stops routing requests to it."""
+        router_ip = getattr(self._args, "sglang_router_ip", None)
+        router_port = getattr(self._args, "sglang_router_port", None)
+        if not router_ip or not router_port:
+            return
+        try:
+            url = f"http://{router_ip}:{router_port}/remove_worker"
+            requests.post(url, params={"url": worker_url}, timeout=5.0)
+            logger.info(f"Notified router to remove worker {worker_url}")
+        except Exception as e:
+            logger.warning(f"Failed to notify router to remove worker {worker_url}: {e}")

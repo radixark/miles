@@ -2,7 +2,9 @@
 Utils to handle tool calls.
 """
 
+import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -14,6 +16,8 @@ from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
 
 _DUMMY_USER = {"role": "user", "content": "dummy"}
 
@@ -28,15 +32,18 @@ def create_tool_call_parser(tool_specs, tool_call_parser):
 async def execute_tool_calls(
     tool_calls: list[ToolCallItem | ChatCompletionMessageToolCall],
     execute_one: Callable,
+    timeout: float | None = None,
 ) -> list[dict[str, Any]]:
     tool_messages = []
     for call in tool_calls:
-        tool_messages.append(await _execute_tool_call(call, execute_one))
+        tool_messages.append(await _execute_tool_call(call, execute_one, timeout=timeout))
     return tool_messages
 
 
 async def _execute_tool_call(
-    call: ToolCallItem | ChatCompletionMessageToolCall, execute_one: Callable
+    call: ToolCallItem | ChatCompletionMessageToolCall,
+    execute_one: Callable,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     if isinstance(call, ChatCompletionMessageToolCall):
         name = call.function.name
@@ -49,8 +56,20 @@ async def _execute_tool_call(
     else:
         raise TypeError(f"Unsupported tool call type: {type(call)}")
 
-    result = await execute_one(name, params)
-    assert isinstance(result, str)
+    try:
+        if timeout and timeout > 0:
+            result = await asyncio.wait_for(execute_one(name, params), timeout=timeout)
+        else:
+            result = await execute_one(name, params)
+    except asyncio.TimeoutError:
+        logger.warning(f"Tool '{name}' execution timed out after {timeout}s")
+        result = f"Error: Tool '{name}' execution timed out after {timeout}s. Please try a different approach."
+    except Exception as e:
+        logger.warning(f"Tool '{name}' execution failed: {e}")
+        result = f"Error: Tool '{name}' execution failed: {e}"
+
+    if not isinstance(result, str):
+        result = str(result)
 
     return {"role": "tool", "tool_call_id": tool_call_id, "content": result, "name": name}
 
