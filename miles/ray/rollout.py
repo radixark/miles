@@ -146,6 +146,7 @@ class RolloutManager:
         data, metrics = self._get_rollout_data(rollout_id=rollout_id)
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+        self._log_fault_tolerance_metrics(rollout_id)
         data = self._convert_samples_to_train_data(data)
         return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
 
@@ -213,19 +214,51 @@ class RolloutManager:
             return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
         dead_indices = [i for i, engine in enumerate(self.all_rollout_engines) if engine is None]
+        recover_start = time.time()
         self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
-        logger.info(f"Recovered {self.num_new_engines} dead rollout engines")
+        recover_elapsed = time.time() - recover_start
+        logger.info(f"Recovered {self.num_new_engines} dead rollout engines in {recover_elapsed:.1f}s")
         assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
         if self.args.offload_rollout and dead_indices:
             new_engines = [self.all_rollout_engines[i] for i in dead_indices]
             ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
             ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
 
+        if self.num_new_engines > 0:
+            step = compute_rollout_step(self.args, self.rollout_id)
+            tracking_utils.log(
+                self.args,
+                {
+                    "fault_tolerance/num_recovered": self.num_new_engines,
+                    "fault_tolerance/recovery_time_seconds": recover_elapsed,
+                    "rollout/step": step,
+                },
+                step_key="rollout/step",
+            )
+
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
     def clear_num_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights
         self.num_new_engines = 0
+
+    def _log_fault_tolerance_metrics(self, rollout_id):
+        if not self.args.use_fault_tolerance or self._health_monitor is None:
+            return
+        total = len(self.all_rollout_engines)
+        alive = sum(1 for e in self.all_rollout_engines if e is not None)
+        step = compute_rollout_step(self.args, rollout_id)
+        tracking_utils.log(
+            self.args,
+            {
+                "fault_tolerance/alive_engines": alive,
+                "fault_tolerance/dead_engines": total - alive,
+                "fault_tolerance/alive_ratio": alive / total if total > 0 else 1.0,
+                "fault_tolerance/cumulative_kills": self._health_monitor.total_kills,
+                "rollout/step": step,
+            },
+            step_key="rollout/step",
+        )
 
     def check_weights(self, action: str):
         return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
