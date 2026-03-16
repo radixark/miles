@@ -3,8 +3,11 @@ import os
 
 import pytest
 import requests
+from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang_patch.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
+
+register_cuda_ci(est_time=300, suite="stage-b-sglang-1-gpu", num_gpus=1)
 
 MODEL_PATH = os.environ.get("SGLANG_E2E_MODEL_PATH", "Qwen/Qwen3-0.6B")
 SEED = 1234

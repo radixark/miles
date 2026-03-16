@@ -1,8 +1,10 @@
 import os
-from argparse import ArgumentParser
+
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
+register_cuda_ci(est_time=1200, suite="stage-c-ckpt-8-gpu", num_gpus=8)
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
@@ -10,19 +12,6 @@ TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
-
-
-parser = ArgumentParser()
-parser.add_argument("--async-save", action="store_true", help="Whether to test async save/load.")
-
-
-def _get_latest_checkpointed_iteration() -> int:
-    latest_path = f"/root/models/{MODEL_NAME}_miles/latest_checkpointed_iteration.txt"
-    with open(latest_path, encoding="utf-8") as f:
-        latest_text = f.read().strip()
-    if not latest_text.isdigit():
-        raise ValueError(f"Invalid latest checkpoint value: {latest_text}")
-    return int(latest_text)
 
 
 def prepare():
@@ -141,11 +130,10 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    # TODO also use typer
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute("save" if not args.async_save else "async_save")
-    latest_step = _get_latest_checkpointed_iteration()
-    execute("load", ckpt_step=latest_step)
+    execute("save")
+    execute("load")
+    execute("async_save")
+    execute("load")
