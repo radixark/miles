@@ -1,4 +1,5 @@
 import wandb
+
 from miles.utils.tensorboard_utils import _TensorboardAdapter
 
 from . import wandb_utils
