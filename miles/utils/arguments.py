@@ -1843,6 +1843,13 @@ def miles_validate_args(args):
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
+        if not args.use_miles_router:
+            raise ValueError(
+                "--use-rollout-routing-replay requires --use-miles-router to be set. "
+                "Without the Miles router, the SGLang engine will not be launched with "
+                "enable_return_routed_experts=True and rollout_routed_experts data "
+                "will not be available."
+            )
 
     if args.custom_config_path:
         with open(args.custom_config_path) as f:
