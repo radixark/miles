@@ -62,7 +62,7 @@ def compute_samples_from_openai_records(
         output_ids = [t[1] for t in record.response["choices"][0]["meta_info"]["output_token_logprobs"]]
 
         trim_count = 0
-        if not is_last and accumulated_token_ids is not None:
+        if accumulated_token_ids is not None:
             cursor = len(prompt_ids)
             matched = 0
             for j in range(len(output_ids)):
@@ -72,8 +72,10 @@ def compute_samples_from_openai_records(
                 else:
                     break
             trim_count = len(output_ids) - matched
-            assert trim_count <= max_trim_tokens, (
-                f"trim_count {trim_count} exceeds max_trim_tokens={max_trim_tokens}; "
+            allowed = 0 if is_last else max_trim_tokens
+            assert trim_count <= allowed, (
+                f"trim_count {trim_count} exceeds allowed={allowed} "
+                f"(is_last={is_last}, max_trim_tokens={max_trim_tokens}); "
                 f"output_ids[-3:]={output_ids[-3:]}, "
                 f"accumulated[cursor:cursor+3]={accumulated_token_ids[cursor:cursor+3]}"
             )
@@ -81,6 +83,12 @@ def compute_samples_from_openai_records(
 
         sample = _compute_sample_from_openai_record(args, input_sample, record, tokenizer, trim_count)
         samples.append(sample)
+
+    if accumulated_token_ids is not None:
+        assert cursor == len(accumulated_token_ids), (
+            f"cursor {cursor} != len(accumulated_token_ids) {len(accumulated_token_ids)} "
+            f"after processing all {len(records)} records"
+        )
 
     return samples
 
