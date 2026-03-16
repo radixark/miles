@@ -8,6 +8,7 @@ from megatron.core.extensions.transformer_engine import TELinear, TENorm
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
+from .cp_utils import all_gather_cp
 
 try:
     from fast_hadamard_transform import hadamard_transform
@@ -111,7 +112,8 @@ class V4Indexer(MegatronModule):
 
         rd = self.rope_head_dim
         cp_size = parallel_state.get_context_parallel_world_size()
-        freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen, cp_size, self.pg_collection.cp, stride=1)
+        cp_group = self.pg_collection.cp if hasattr(self.pg_collection, "cp") else None
+        freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen, cp_size, cp_group, stride=1)
         q = q.clone()
         q = einops.rearrange(q, 's b ... -> b s ...')
         apply_rotary_emb(q[..., -rd:], freqs_cis)
@@ -127,8 +129,17 @@ class V4Indexer(MegatronModule):
         softmax_scale = self.index_head_dim ** -0.5
         weights = weights * (self.index_n_heads ** -0.5) * softmax_scale
 
+        if cp_size > 1 and cp_group is not None:
+            k = all_gather_cp(k, dim=0, cp_group=cp_group)
+
+        seqlen_global = seqlen * cp_size
         seqlen_kv = k.shape[0]
-        cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen, seqlen_kv, self.compress_ratio, q.device)
+        cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen_global, seqlen_kv, self.compress_ratio, q.device)
+        # cu_seqlens are for global positions; slice to local query positions
+        if cp_size > 1 and cp_group is not None:
+            cp_rank = cp_group.rank()
+            cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
+            cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
         topk_k = min(self.index_topk, index_scores.size(-1))

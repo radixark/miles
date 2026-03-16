@@ -27,7 +27,7 @@ from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 from .ops.attention_core import dense_attn_torch, sparse_attn_tilelang, sparse_attn_torch
 from .ops.compressor import DeepSeekV4Compressor
 from .ops.cp_utils import (
-    all_gather_cp_natural_order,
+    all_gather_cp,
     get_compress_topk_idxs_cp,
     get_freqs_cis_for_cp,
     get_q_positions_for_cp,
@@ -269,11 +269,9 @@ class DeepSeekV4Attention(MegatronModule):
         assert self.attn_sink.dtype == torch.float32
 
         if self.cp_size > 1:
-            kv_vanilla = all_gather_cp_natural_order(kv_vanilla, dim=1, cp_size=self.cp_size, cp_group=self.cp_group)
+            kv_vanilla = all_gather_cp(kv_vanilla, dim=1, cp_group=self.cp_group)
             if kv_compress is not None:
-                kv_compress = all_gather_cp_natural_order(
-                    kv_compress, dim=1, cp_size=self.cp_size, cp_group=self.cp_group
-                )
+                kv_compress = all_gather_cp(kv_compress, dim=1, cp_group=self.cp_group)
 
         if kv_compress is not None:
             kv = torch.cat([kv_vanilla, kv_compress], dim=1)

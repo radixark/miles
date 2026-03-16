@@ -7,7 +7,7 @@ import torch.nn as nn
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.nn import Linear
 
-from .cp_utils import all_gather_cp_natural_order, get_freqs_cis_for_cp, natural_to_zigzag_slice
+from .cp_utils import all_gather_cp, get_freqs_cis_for_cp
 from .qat import fp8_simulate_qat
 from .ref_model import Compressor as CompressorRef
 from .ref_model import RMSNorm, apply_rotary_emb, rotate_activation
@@ -85,13 +85,13 @@ class DeepSeekV4Compressor(nn.Module):
         if self.cp_size == 1:
             return self.overlap_transform_raw(tensor, value)
 
-        tensor = all_gather_cp_natural_order(tensor, dim=1, cp_size=self.cp_size, cp_group=self.cp_group)
+        tensor = all_gather_cp(tensor, dim=1, cp_group=self.cp_group)
 
         tensor = self.overlap_transform_raw(tensor, value)
 
-        tensor = natural_to_zigzag_slice(tensor, dim=1, cp_size=self.cp_size, cp_rank=self.cp_rank)
-
-        return tensor
+        G_local = tensor.shape[1] // self.cp_size
+        start = self.cp_rank * G_local
+        return tensor[:, start : start + G_local, :, :]
 
     def forward_raw(self, x: torch.Tensor) -> torch.Tensor:
         assert self.ape.dtype == torch.float32
