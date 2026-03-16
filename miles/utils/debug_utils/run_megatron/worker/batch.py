@@ -12,6 +12,7 @@ def prepare_batch(
     batch_size: int,
     cp_rank: int = 0,
     cp_size: int = 1,
+    allgather_cp: bool = False,
     device: str | torch.device = "cuda",
 ) -> dict[str, torch.Tensor]:
     """Build the batch dict for Megatron forward from pre-tokenized token IDs.
@@ -19,7 +20,7 @@ def prepare_batch(
     Returns a dict containing:
     - input_ids: [batch_size, local_seq_len]
     - position_ids: [batch_size, local_seq_len]
-    - attention_mask: [batch_size, 1, local_seq_len, local_seq_len] causal mask
+    - attention_mask: None
     - labels: [batch_size, local_seq_len] (CP-aware next-token labels)
     - global_input_ids: [batch_size, full_seq_len] (unsliced, for reference)
     """
@@ -32,16 +33,24 @@ def prepare_batch(
     global_tokens: torch.Tensor = token_tensor.clone()
 
     if cp_size > 1:
-        from miles.backends.training_utils.cp_utils import slice_with_cp
+        if allgather_cp:
+            # Contiguous CP: rank k gets tokens [k*local_len : (k+1)*local_len]
+            local_len = seq_length // cp_size
+            start = cp_rank * local_len
+            token_tensor = token_tensor[start : start + local_len]
+            position_tensor = position_tensor[start : start + local_len]
+        else:
+            # Zigzag CP: rank k gets chunks [k, 2*cp_size-k-1]
+            from miles.backends.training_utils.cp_utils import slice_with_cp
 
-        cp_kwargs: dict[str, object] = dict(
-            pad_value=0,
-            parallel_state=SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size),
-            qkv_format="bshd",
-            max_seq_len=seq_length,
-        )
-        token_tensor = slice_with_cp(token_tensor, **cp_kwargs)
-        position_tensor = slice_with_cp(position_tensor, **cp_kwargs)
+            cp_kwargs: dict[str, object] = dict(
+                pad_value=0,
+                parallel_state=SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size),
+                qkv_format="bshd",
+                max_seq_len=seq_length,
+            )
+            token_tensor = slice_with_cp(token_tensor, **cp_kwargs)
+            position_tensor = slice_with_cp(position_tensor, **cp_kwargs)
 
     input_ids: torch.Tensor = token_tensor.unsqueeze(0).expand(batch_size, -1)
     position_ids: torch.Tensor = position_tensor.unsqueeze(0).expand(batch_size, -1)
@@ -70,9 +79,9 @@ def _build_labels(
     global_input_ids: torch.Tensor,
     cp_size: int,
 ) -> torch.Tensor:
-    """Build next-token prediction labels, handling CP zigzag slicing.
+    """Build next-token prediction labels, handling CP slicing.
 
-    With CP>1, each rank sees non-contiguous positions (zigzag pattern).
+    With CP>1, each rank sees a subset of positions.
     We use position_ids to gather the correct next-token from global_input_ids.
     Positions at the end of the global sequence get label -100 (ignored by loss).
     """

@@ -59,41 +59,83 @@ def main() -> None:
 
     load_replay_data(script, rank=rank, sequence_parallel=getattr(args, "sequence_parallel", False))
 
-    token_ids: list[int] = json.loads(script.token_ids_file.read_text())
-    batch: dict[str, torch.Tensor] = prepare_batch(
-        token_ids=token_ids,
-        batch_size=args.micro_batch_size,
-        cp_rank=mpu.get_context_parallel_rank(),
-        cp_size=mpu.get_context_parallel_world_size(),
-    )
+    raw_token_data = json.loads(script.token_ids_file.read_text())
 
-    if rank == 0:
-        print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
-
-    captured_logits: torch.Tensor | None = _run_forward_backward(
-        args=args,
-        script=script,
-        model=model,
-        batch=batch,
-    )
+    # Support both single sequence [int, ...] and multi-sequence [[int, ...], ...]
+    if isinstance(raw_token_data[0], list):
+        all_token_ids: list[list[int]] = raw_token_data
+    else:
+        all_token_ids = [raw_token_data]
 
     is_last_pp_stage: bool = mpu.is_pipeline_last_stage()
+    all_logprob_entries: list[list[dict]] = []
 
-    if script.logprob_output is not None and captured_logits is not None and is_last_pp_stage:
-        compute_and_save_output_info(
-            logits=captured_logits,
-            labels=batch["labels"],
-            position_ids=batch["position_ids"],
-            output_dir=script.logprob_output,
+    for seq_idx, token_ids in enumerate(all_token_ids):
+        batch: dict[str, torch.Tensor] = prepare_batch(
+            token_ids=token_ids,
+            batch_size=args.micro_batch_size,
+            cp_rank=mpu.get_context_parallel_rank(),
+            cp_size=mpu.get_context_parallel_world_size(),
+            allgather_cp=script.allgather_cp,
         )
 
-    if script.top_k > 0 and captured_logits is not None and is_last_pp_stage:
-        print_top_k(
-            logits=captured_logits,
-            input_ids=batch["input_ids"],
-            top_k=script.top_k,
-            tokenizer_path=script.hf_checkpoint,
+        if rank == 0 and seq_idx == 0:
+            print(f"[worker] input_ids shape={batch['input_ids'].shape}, num_sequences={len(all_token_ids)}", flush=True)
+
+        captured_logits: torch.Tensor | None = _run_forward_backward(
+            args=args,
+            script=script,
+            model=model,
+            batch=batch,
         )
+
+        if script.logprob_output is not None and captured_logits is not None and is_last_pp_stage:
+            if len(all_token_ids) == 1:
+                # Single sequence: use original save path
+                compute_and_save_output_info(
+                    logits=captured_logits,
+                    labels=batch["labels"],
+                    position_ids=batch["position_ids"],
+                    output_dir=script.logprob_output,
+                )
+            else:
+                # Multi-sequence: accumulate entries, save once at end
+                from miles.utils.debug_utils.run_megatron.worker.output import _compute_logprob_entries
+                entries = _compute_logprob_entries(
+                    logits=captured_logits,
+                    labels=batch["labels"],
+                    position_ids=batch["position_ids"],
+                )
+                if entries is not None:
+                    all_logprob_entries.extend(entries)
+
+        if script.top_k > 0 and captured_logits is not None and is_last_pp_stage and seq_idx == 0:
+            print_top_k(
+                logits=captured_logits,
+                input_ids=batch["input_ids"],
+                top_k=script.top_k,
+                tokenizer_path=script.hf_checkpoint,
+            )
+
+        if rank == 0 and len(all_token_ids) > 1 and (seq_idx + 1) % 10 == 0:
+            print(f"[worker] processed {seq_idx + 1}/{len(all_token_ids)} sequences", flush=True)
+
+    # Save accumulated logprobs for multi-sequence mode
+    if all_logprob_entries and script.logprob_output is not None and is_last_pp_stage:
+        import torch.distributed as _dist
+        _rank = _dist.get_rank() if _dist.is_initialized() else 0
+        script.logprob_output.mkdir(parents=True, exist_ok=True)
+        output_path = script.logprob_output / f"rank_{_rank}.json"
+        payload = {
+            "rank": _rank,
+            "tp_size": mpu.get_tensor_model_parallel_world_size() if dist.is_initialized() else 1,
+            "cp_size": mpu.get_context_parallel_world_size() if dist.is_initialized() else 1,
+            "pp_size": mpu.get_pipeline_model_parallel_world_size() if dist.is_initialized() else 1,
+            "logprob_entries": all_logprob_entries,
+        }
+        output_path.write_text(json.dumps(payload, indent=2))
+        if rank == 0:
+            print(f"[worker] saved logprobs for {len(all_logprob_entries)} sequences to {output_path}", flush=True)
 
     save_replay_data(script, rank=rank)
     _finalize_dumper()

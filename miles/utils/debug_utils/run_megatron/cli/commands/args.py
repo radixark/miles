@@ -32,6 +32,7 @@ class CommonRunArgs:
     top_k: int = _field(default=0, help="Print top-k predictions per position (0=disabled)")
     dumper_filter: str = _field(default="", help="Dumper filter expression")
     megatron_path: Path | None = _field(default=None, help="Path to Megatron-LM")
+    allgather_cp: bool = _field(default=False, help="Use allgather (contiguous) CP instead of zigzag CP")
     extra_args: str = _field(default="", help="Extra args passed to worker")
 
 
@@ -46,6 +47,11 @@ class RunArgs(CommonRunArgs):
     routing_replay_dump_path: Path | None = _field(default=None, help="Routing replay dump path")
     routing_replay_load_path: Path | None = _field(default=None, help="Routing replay load path")
     logprob_output: Path | None = _field(default=None, help="Directory to save per-token logprob JSON files")
+    rollout_data: Path | None = _field(
+        default=None,
+        help="Path to rollout .pt file from --debug-rollout-only. Loads token_ids and SGLang logprobs, "
+        "runs Megatron forward, then compares logprobs.",
+    )
 
 
 @dataclasses.dataclass(kw_only=True)
