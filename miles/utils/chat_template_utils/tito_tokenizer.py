@@ -58,6 +58,12 @@ class TITOTokenizer(ABC):
     """Base class for incremental tokenization and prefix merging."""
 
     _max_trim_tokens: int = 0
+    _trailing_token_ids: frozenset[int] = frozenset()
+
+    def get_comparator_ignore_trailing_ids(self) -> set[int] | None:
+        """Return token IDs that the comparator should strip from sequence
+        tails before comparison, or ``None`` if no stripping is needed."""
+        return set(self._trailing_token_ids) if self._trailing_token_ids else None
 
     def __init__(
         self,
@@ -204,6 +210,7 @@ class GLM47TITOTokenizer(DefaultTITOTokenizer):
         self._observation_id: int = tokenizer.convert_tokens_to_ids("<|observation|>")
         self._user_id: int = tokenizer.convert_tokens_to_ids("<|user|>")
         self._ambiguous_boundary_ids: set[int] = {self._observation_id, self._user_id}
+        self._trailing_token_ids = frozenset(self._ambiguous_boundary_ids)
 
     def merge_tokens(
         self,

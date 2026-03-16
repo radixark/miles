@@ -116,7 +116,7 @@ class SingleUserTurnTrajectoryManager:
         self.args = args
         self.tokenizer = tokenizer
         self._lock = threading.RLock()
-        self._comparator = TokenSeqComparator(tokenizer) if tokenizer else None
+        self._comparator = TokenSeqComparator(tokenizer)
         self._tito_tokenizer = tito_tokenizer
 
     @property
@@ -159,11 +159,15 @@ class SingleUserTurnTrajectoryManager:
                     add_generation_prompt=False,
                     tokenize=True,
                 )
+                trim_ids = self._tito_tokenizer.get_comparator_ignore_trailing_ids() if self._tito_tokenizer else None
                 mismatches = self._comparator.compare_sequences(
                     expected_ids,
                     session.token_ids,
+                    trim_trailing_ids=trim_ids,
                 )
-                return {"tito_session_mismatch": [m.to_dict() for m in mismatches]}
+                result = {"tito_session_mismatch": [m.to_dict() for m in mismatches]}
+                print(f"[tito_session_mismatch] session={session_id}, mismatches={result['tito_session_mismatch']}")
+                return result
             except Exception:
                 logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
                 return {}

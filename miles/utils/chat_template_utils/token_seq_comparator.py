@@ -87,9 +87,9 @@ class TokenSeqComparator:
         tool_end_ids: set[int] | None = None,
     ):
         self.tokenizer = tokenizer
-        self._special_ids: set[int] = (
-            set(special_token_ids) if special_token_ids is not None else self._collect_special_ids(tokenizer)
-        )
+        self._special_ids: set[int] = self._collect_special_ids(tokenizer)
+        if special_token_ids is not None:
+            self._special_ids |= set(special_token_ids)
         self._tool_start_ids: set[int] = set(tool_start_ids) if tool_start_ids else set()
         self._tool_end_ids: set[int] = set(tool_end_ids) if tool_end_ids else set()
 
@@ -215,8 +215,11 @@ class TokenSeqComparator:
                         )
                     )
             else:
-                exp_text = self._decode(exp.token_ids)
-                act_text = self._decode(act.token_ids)
+                # Chat-template assembly and natural model output may differ
+                # in leading/trailing whitespace (\n, spaces) at segment
+                # boundaries — strip so these are not reported as mismatches.
+                exp_text = self._decode(exp.token_ids).strip()
+                act_text = self._decode(act.token_ids).strip()
                 if exp_text == act_text:
                     continue
 
