@@ -1,0 +1,178 @@
+patches:
+  # ============================================================
+  # DeepSeekV4Attention.forward — Query / KV / Attention / Output
+  #
+  # Parallelism context:
+  #   - After gather_from_sequence_parallel_region, x has full local CP shard, replicated across TP
+  #   - With CP>1, seq dim is CP-sharded (contiguous allgather CP)
+  #   - wq_a, wkv are parallel_mode="duplicated" → output replicated across TP
+  #   - wq_b is ColumnParallelLinear(gather_output=False) → TP-sharded on heads
+  #   - wo_a is ColumnParallelLinear(gather_output=False) → TP-sharded on groups
+  #   - wo_b is RowParallelLinear → output allreduced, replicated across TP
+  #   - kv_assembled is post-CP-gather → replicated across CP
+  # ============================================================
+  - target: miles_plugins.models.deepseek_v4.deepseek_v4.DeepSeekV4Attention.forward
+    edits:
+      # -- Input (after SP gather, CP-sharded seq) --
+      - match: |
+          x = einops.rearrange(hidden_states, "s b d -> b s d")
+        append: |
+          dumper.dump('attn_input', x, dims='b s[cp] d # tp:replicated')
+
+      # -- Q path: duplicated linear → replicated across TP, CP-sharded seq --
+      - match: "q_after_wq_a = self.wq_a(x)[0]"
+        append: |
+          dumper.dump('q_after_wq_a', q_after_wq_a, dims='b s[cp] d # tp:replicated')
+
+      - match: "qr = q = self.q_norm(q_after_wq_a)"
+        append: |
+          dumper.dump('q_after_norm', qr, dims='b s[cp] d # tp:replicated')
+
+      # -- Q path: after ColumnParallel wq_b → TP-sharded on heads --
+      - match: "q = q * torch.rsqrt(q.square().mean(-1, keepdim=True) + self.eps)"
+        append: |
+          dumper.dump('q_after_head_norm', q, dims='b s[cp] h[tp] d')
+
+      - match: "apply_rotary_emb(q[..., -rd:], freqs_cis)"
+        append: |
+          dumper.dump('q_after_rope', q, dims='b s[cp] h[tp] d')
+
+      # -- KV vanilla path: duplicated linear → replicated across TP, CP-sharded seq --
+      - match: "kv_after_wkv = self.wkv(x)[0]"
+        append: |
+          dumper.dump('kv_after_wkv', kv_after_wkv, dims='b s[cp] d # tp:replicated')
+
+      - match: "kv_vanilla = self.kv_norm(kv_after_wkv)"
+        append: |
+          dumper.dump('kv_vanilla_after_norm', kv_vanilla, dims='b s[cp] d # tp:replicated')
+
+      - match: "apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)"
+        append: |
+          dumper.dump('kv_vanilla_after_rope', kv_vanilla, dims='b s[cp] d # tp:replicated')
+
+      # -- Indexer output (V4Indexer path): indices are replicated across TP, CP-sharded on queries --
+      - match: "compress_topk_idxs = self.indexer(x_sbd, qr_sbd)"
+        append: |
+          dumper.dump('indexer_topk_idxs', compress_topk_idxs, dims='b s[cp] topk # tp:replicated')
+
+      # -- Indexer output (legacy DSAIndexer path) --
+      - match: "compress_topk_idxs = self.indexer(x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None)"
+        append: |
+          dumper.dump('indexer_topk_idxs', compress_topk_idxs, dims='b s[cp] topk # tp:replicated')
+
+      # -- Compressor output: replicated across TP, CP-sharded seq --
+      - match: "kv_compress_sbd = self.compressor(x_sbd)"
+        append: |
+          dumper.dump('compressor_output', kv_compress_sbd, dims='s[cp] b d # tp:replicated')
+
+      # -- KV assembled: post-CP-gather, replicated across both CP and TP --
+      - match: "kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)"
+        append: |
+          dumper.dump('kv_assembled', kv, dims='b s d # cp:replicated tp:replicated')
+
+      # -- Attention output: TP-sharded on heads, CP-sharded on queries --
+      - match: "apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)"
+        prepend: |
+          dumper.dump('attn_out_pre_inv_rope', o, dims='b s[cp] h[tp] d')
+
+      # -- Output projection: wo_a is ColumnParallel → TP-sharded on groups --
+      - match: |
+          o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
+        append: |
+          dumper.dump('attn_after_wo_a', o, dims='b s[cp] g[tp] r')
+
+      # -- wo_b is RowParallel → allreduced output, replicated across TP --
+      - match: "x, _ = self.wo_b(o.flatten(2))"
+        append: |
+          dumper.dump('attn_after_wo_b', x, dims='b s[cp] d # tp:replicated')
+
+  # ============================================================
+  # DeepSeekV4Compressor.forward_raw — Compression internals
+  #
+  # All ops use nn.Linear (not TP-sharded), input is replicated across TP.
+  # Seq dim is CP-sharded (compressor operates on local CP shard).
+  # ============================================================
+  - target: miles_plugins.models.deepseek_v4.ops.compressor.DeepSeekV4Compressor.forward_raw
+    edits:
+      - match: "kv = self.wkv(x_fp32)"
+        append: |
+          dumper.dump('compress_kv_proj', kv, dims='b s[cp] d # tp:replicated')
+
+      - match: "score = self.wgate(x_fp32)"
+        append: |
+          dumper.dump('compress_score_proj', score, dims='b s[cp] d # tp:replicated')
+
+      - match: "score_softmax = score.softmax(dim=2)"
+        append: |
+          dumper.dump('compress_score_softmax', score_softmax, dims='b g[cp] r d # tp:replicated')
+
+      - match: "kv = (kv * score_softmax).sum(dim=2)"
+        append: |
+          dumper.dump('compress_pooled', kv, dims='b g[cp] d # tp:replicated')
+
+      - match: "kv = self.norm(kv.to(dtype))"
+        append: |
+          dumper.dump('compress_after_norm', kv, dims='b g[cp] d # tp:replicated')
+
+  # ============================================================
+  # TransformerLayer._forward_attention — HC pre/post + layernorm
+  #
+  # Inter-layer tensors are CP+SP-sharded on seq dim.
+  # ============================================================
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
+    edits:
+      # -- HC pre output: CP+SP-sharded --
+      - match: |
+          hidden_states, hc_attn_post, hc_attn_comb = hc_util.layer_pre(
+              hidden_states, self.hc_attn_fn, self.hc_attn_scale, self.hc_attn_base
+          )
+        append: |
+          dumper.dump('hc_attn_pre_output', hidden_states, dims='s[cp,sp] b d')
+
+      # -- Input layernorm: CP+SP-sharded --
+      - match: "input_layernorm_output = self.input_layernorm(hidden_states)"
+        append: |
+          dumper.dump('input_layernorm_output', input_layernorm_output, dims='s[cp,sp] b d')
+
+      # -- HC post output: CP+SP-sharded with hc dim --
+      - match: |
+          hidden_states = hc_util.layer_post(
+              attention_output_with_bias, residual, hc_attn_post, hc_attn_comb
+          )
+        append: |
+          dumper.dump('hc_attn_post_output', hidden_states, dims='s[cp,sp] b hc d')
+
+  # ============================================================
+  # TransformerLayer._forward_mlp — HC pre/post + layernorm + MoE
+  # ============================================================
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
+    edits:
+      # -- HC pre for MLP: CP+SP-sharded --
+      - match: |
+          hidden_states, hc_ffn_post, hc_ffn_comb = hc_util.layer_pre(
+              hidden_states, self.hc_ffn_fn, self.hc_ffn_scale, self.hc_ffn_base
+          )
+        append: |
+          dumper.dump('hc_ffn_pre_output', hidden_states, dims='s[cp,sp] b d')
+
+      # -- Pre-MLP layernorm: CP+SP-sharded --
+      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
+        append: |
+          dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp,sp] b d')
+
+      # -- MLP/MoE output: CP+SP-sharded --
+      - match: "mlp_output, mlp_output_bias = mlp_output_with_bias"
+        append: |
+          dumper.dump('mlp_raw_output', mlp_output, dims='s[cp,sp] b d')
+
+  # ============================================================
+  # TransformerLayer._forward_post_mlp — HC post for MLP
+  # ============================================================
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_post_mlp
+    edits:
+      - match: |
+          hidden_states = hc_util.layer_post(
+              mlp_output_with_bias, residual, hc_ffn_post, hc_ffn_comb
+          )
+        append: |
+          dumper.dump('hc_ffn_post_output', hidden_states, dims='s[cp,sp] b hc d')
