@@ -19,6 +19,7 @@ from megatron.core.tensor_parallel.mappings import (
 )
 from megatron.core.transformer.experimental_attention_variant.dsa import DSAIndexer, DSAIndexerSubmodules
 from megatron.core.transformer.module import MegatronModule
+from .ops.v4_indexer import V4Indexer
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
@@ -33,7 +34,6 @@ from .ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from .ops.qat import fp8_simulate_qat
-from megatron.core.extensions.transformer_engine import TENorm
 from .ops.ref_model import apply_rotary_emb
 from .ops.utils import wrapped_precompute_freqs_cis
 
@@ -154,13 +154,16 @@ class DeepSeekV4Attention(MegatronModule):
                 cp_group=self.cp_group,
             )
             if self.compress_ratio == 4:
-                indexer_submodules = DSAIndexerSubmodules(
-                    linear_wq_b=TELinear,
-                    linear_wk=TELinear,
-                    k_norm=TENorm,
-                    linear_weights_proj=TELinear,
-                )
-                self.indexer = DSAIndexer(config=config, submodules=indexer_submodules)
+                if os.environ.get("V4_INDEXER_IMPL", "tilelang") == "tilelang":
+                    self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
+                else:
+                    indexer_submodules = DSAIndexerSubmodules(
+                        linear_wq_b=TELinear,
+                        linear_wk=TELinear,
+                        k_norm=TENorm,
+                        linear_weights_proj=TELinear,
+                    )
+                    self.indexer = DSAIndexer(config=config, submodules=indexer_submodules)
             else:
                 self.indexer = None
 
@@ -243,8 +246,11 @@ class DeepSeekV4Attention(MegatronModule):
                 if self.sequence_parallel:
                     x_sbd = scatter_to_sequence_parallel_region(x_sbd, group=self.tp_group)
                     qr_sbd = scatter_to_sequence_parallel_region(qr_sbd, group=self.tp_group)
-                indexer_mask = self._compute_indexer_mask(q_positions=q_positions, seqlen_global=seqlen_global)
-                compress_topk_idxs = self.indexer(x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None)
+                if isinstance(self.indexer, V4Indexer):
+                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd)
+                else:
+                    indexer_mask = self._compute_indexer_mask(q_positions=q_positions, seqlen_global=seqlen_global)
+                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None)
                 q_first_invalid_group = (q_positions + 1).unsqueeze(1) // ratio
                 topk_idx_mask = (compress_topk_idxs >= q_first_invalid_group) | (compress_topk_idxs < 0)
                 compress_topk_idxs = torch.where(topk_idx_mask, -1, compress_topk_idxs + kv_compress_offset)
@@ -300,15 +306,13 @@ class DeepSeekV4Attention(MegatronModule):
         return output
 
     def _compute_indexer_mask(self, *, q_positions: torch.Tensor, seqlen_global: int) -> torch.Tensor:
+        """Dense causal mask for legacy DSAIndexer path."""
         ratio = 4
         device = q_positions.device
-
         k_group_idx = torch.arange(seqlen_global // ratio, device=device).unsqueeze(0)
         q_first_invalid_group = (q_positions.unsqueeze(1) + 1) // ratio
         invalid_mask = k_group_idx >= q_first_invalid_group
-        float_mask = torch.where(invalid_mask, float("-inf"), 0.0)
-
-        return float_mask
+        return torch.where(invalid_mask, float("-inf"), 0.0)
 
 
 def _dsv4_attention_module_spec(config, backend=None):
