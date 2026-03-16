@@ -1,4 +1,10 @@
 # ruff: noqa
+# Adapted from miles_plugins/models/glm5/ops/tilelang_sparse_mla_bwd.py for DeepSeek-V4.
+# Key differences from GLM-5:
+#   - attn_sink: gradient computation for learnable per-head scalar
+#   - Single-head KV: kv shape [B, S_kv, D] (no kv_group, no D/D_tail split)
+#   - Index shape: [B, S, topk] (no kv_group dim)
+#   - Outputs: dQ [B, S, H, D], dKV [B, S_kv, D], dAttnSink [H]
 import tilelang
 import torch
 from tilelang import language as T
@@ -61,10 +67,10 @@ def postprocess(
         dKV: T.Tensor(dkv_shape, accum_dtype),
         dKV_out: T.Tensor(dkv_shape, dtype),
     ):
-        with T.Kernel(T.ceildiv(S_kv, block_N), B, threads=threads) as (bx, bz):
+        with T.Kernel(T.ceildiv(S_kv, block_N), B, threads=threads) as (bx, by):
             T.copy(
-                dKV[bz, bx * block_N : (bx + 1) * block_N, :],
-                dKV_out[bz, bx * block_N : (bx + 1) * block_N, :],
+                dKV[by, bx * block_N : (bx + 1) * block_N, :],
+                dKV_out[by, bx * block_N : (bx + 1) * block_N, :],
             )
 
     return postprocess_kernel
@@ -86,23 +92,20 @@ def bwd(
     D,
     topk,
     sm_scale=None,
-    is_causal=True,
     block_size=32,
     num_stages=0,
-    threads=256,
+    threads=128,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
 ):
-    assert is_causal == True, "non-casual is not supported now"
-    assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
+    assert topk % block_size == 0, f"topk ({topk}) must be divisible by block_size ({block_size})"
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
-    assert indices_dtype == T.int32
 
     if sm_scale is None:
         sm_scale = D ** (-0.5)
-    sm_scale_mul_reciprocal_log2 = sm_scale * 1.44269504
+    sm_scale_mul_reciprocal_log2 = sm_scale * 1.44269504  # log2(e)
 
     q_shape = [B, S, H, D]
     kv_shape = [B, S_kv, D]
@@ -111,9 +114,6 @@ def bwd(
     delta_shape = [B, S, H]
     lse_shape = [B, S, H]
     attn_sink_shape = [H]
-    assert indices_dtype == T.int32
-    assert dtype == T.bfloat16
-    assert accum_dtype == T.float32
 
     padded_H = max(tilelang.math.next_power_of_2(H), 16)
     block_H = min(64, padded_H)
@@ -125,11 +125,11 @@ def bwd(
     split_store = 2
 
     @T.prim_func
-    def sparse_mla_bwd_kernel(
+    def sparse_mqa_bwd_kernel(
         Q: T.Tensor(q_shape, dtype),
         KV: T.Tensor(kv_shape, dtype),
-        AttnSink: T.Tensor(attn_sink_shape, accum_dtype),
         dO: T.Tensor(o_shape, dtype),
+        AttnSink: T.Tensor(attn_sink_shape, accum_dtype),
         Indices: T.Tensor(indices_shape, indices_dtype),
         Lse: T.Tensor(lse_shape, accum_dtype),
         Delta: T.Tensor(delta_shape, accum_dtype),
@@ -142,7 +142,6 @@ def bwd(
             KV_shared = T.alloc_shared([BS, D], dtype)
             dO_shared = T.alloc_shared([block_H, D], dtype)
             mask = T.alloc_fragment([BS], "bool")
-            attn_sink_local = T.alloc_fragment([block_H], accum_dtype)
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
@@ -154,9 +153,8 @@ def bwd(
             acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
 
-            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :], Q_shared)
-            T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :], dO_shared)
-            T.copy(AttnSink[bz * block_H : (bz + 1) * block_H], attn_sink_local)
+            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
+            T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :D], dO_shared)
 
             T.clear(acc_dq)
 
@@ -168,12 +166,11 @@ def bwd(
                     acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
 
                 for bi_i, d_i in T.Parallel(BS, D):
-                    KV_shared[bi_i, d_i] = T.if_then_else(
-                        mask[bi_i], KV[by, Indices[by, s_i, i_i * BS + bi_i], d_i], 0
-                    )
+                    KV_shared[bi_i, d_i] = KV[by, Indices[by, s_i, i_i * BS + bi_i], d_i]
 
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
+                # P = exp2(scores * sm_scale_log2e - LSE)
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_p[h_i, bi_i] = T.exp2(
                         acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - Lse[by, s_i, bz * block_H + h_i]
@@ -181,6 +178,7 @@ def bwd(
 
                 T.copy(acc_p, P_shared_cast)
 
+                # dP = P * (dO @ KV^T - Delta)
                 T.gemm(
                     dO_shared, KV_shared, acc_dp, transpose_B=True, policy=T.GemmWarpPolicy.FullCol, clear_accum=True
                 )
@@ -191,8 +189,11 @@ def bwd(
                     )
 
                 T.copy(acc_dp, dP_shared_cast)
+
+                # dQ += dP @ KV
                 T.gemm(dP_shared_cast, KV_shared, acc_dq, policy=T.GemmWarpPolicy.FullCol)
 
+                # dKV += dP^T @ Q + P^T @ dO
                 T.gemm(
                     dP_shared_cast,
                     Q_shared,
@@ -203,85 +204,79 @@ def bwd(
                 )
                 T.gemm(P_shared_cast, dO_shared, acc_dkv, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
 
+                # Atomic store dKV with split to reduce register pressure
                 for s in range(split_store):
                     for bi_i, d_i in T.Parallel(BS, D):
                         if bi_i < BS // split_store:
                             acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
-                        raw_idx = Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)]
-                        if raw_idx != -1:
-                            T.atomic_addx4(
-                                dKV[by, raw_idx, d_i * 4],
-                                acc_dkv_shared[bi_i, d_i * 4],
-                            )
+                        T.atomic_addx4(
+                            dKV[
+                                by,
+                                Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)],
+                                d_i * 4,
+                            ],
+                            acc_dkv_shared[bi_i, d_i * 4],
+                        )
 
+            # Store dQ
             T.copy(acc_dq, dQ_shared)
-            T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :])
+            T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
 
-            log2_e = 1.44269504
+            # dAttnSink[h] = -sum_{b,s}( Delta[b,s,h] * p_sink[b,s,h] )
+            # where p_sink = exp(attn_sink[h]) / Z = exp2(attn_sink[h]*log2e - LSE)
+            # attn_sink is a pre-scaled logit, so only convert to log2 base (no sm_scale)
             for h_i in T.Parallel(block_H):
                 T.atomic_add(
                     dAttnSink[bz * block_H + h_i],
                     -Delta[by, s_i, bz * block_H + h_i]
-                    * T.exp2(attn_sink_local[h_i] * log2_e - Lse[by, s_i, bz * block_H + h_i]),
+                    * T.exp2(AttnSink[bz * block_H + h_i] * 1.44269504 - Lse[by, s_i, bz * block_H + h_i]),
                 )
 
-    return sparse_mla_bwd_kernel
+    return sparse_mqa_bwd_kernel
 
 
-def sparse_mqa_bwd_interface(
-    q, kv, attn_sink, o, do, indices, lse, sm_scale=None, is_casual=True, delta=None, block_size=32
-):
-    assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous() and lse.is_contiguous()
-    batch, seq_len, heads, dim = q.shape
-    _, seq_len_kv, kv_dim = kv.shape
-    assert kv_dim == dim == 512
-    assert kv.shape[0] == batch
-    assert attn_sink.shape == (heads,)
+def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=None):
+    """Backward interface for V4 sparse MQA attention.
 
-    topk = indices.shape[-1]
-    assert indices.shape == (batch, seq_len, topk)
-    assert lse.shape == (batch, seq_len, heads)
+    Args:
+        q:         [B, S, H, D] bf16
+        kv:        [B, S_kv, D] bf16
+        attn_sink: [H] fp32
+        o:         [B, S, H, D] bf16 (forward output)
+        do:        [B, S, H, D] bf16 (grad of output)
+        topk_idxs: [B, S, topk] int32
+        lse:       [B, S, H] fp32 (log-sum-exp from forward)
+        sm_scale:  float or None
 
+    Returns:
+        dq:         [B, S, H, D] bf16
+        dkv:        [B, S_kv, D] bf16
+        d_attn_sink: [H] fp32
+    """
+    assert q.is_contiguous() and kv.is_contiguous()
+    assert topk_idxs.is_contiguous() and lse.is_contiguous()
+    B, S, H, D = q.shape
+    _, S_kv, _ = kv.shape
+    topk = topk_idxs.shape[-1]
+
+    # Pad topk to next multiple of block_size (kernel requires divisibility)
+    block_size = 32
     padded_topk = (topk + block_size - 1) // block_size * block_size
     if padded_topk != topk:
-        padded_indices = torch.full((batch, seq_len, padded_topk), -1, dtype=indices.dtype, device=indices.device)
-        padded_indices[:, :, :topk] = indices
-        indices = padded_indices
+        pad = torch.full((B, S, padded_topk - topk), -1, device=topk_idxs.device, dtype=topk_idxs.dtype)
+        topk_idxs = torch.cat([topk_idxs, pad], dim=-1).contiguous()
         topk = padded_topk
 
-    padded_heads = max(tilelang.math.next_power_of_2(heads), 64)
-    if padded_heads != heads:
-        q_padded = torch.zeros(batch, seq_len, padded_heads, dim, dtype=q.dtype, device=q.device)
-        q_padded[:, :, :heads, :] = q
-        q = q_padded
-        o_padded = torch.zeros(batch, seq_len, padded_heads, dim, dtype=o.dtype, device=o.device)
-        o_padded[:, :, :heads, :] = o
-        o = o_padded
-        do_padded = torch.zeros(batch, seq_len, padded_heads, dim, dtype=do.dtype, device=do.device)
-        do_padded[:, :, :heads, :] = do
-        do = do_padded
-        lse_padded = torch.zeros(batch, seq_len, padded_heads, dtype=lse.dtype, device=lse.device)
-        lse_padded[:, :, :heads] = lse
-        lse = lse_padded
-        attn_sink_padded = torch.full((padded_heads,), float("-inf"), dtype=attn_sink.dtype, device=attn_sink.device)
-        attn_sink_padded[:heads] = attn_sink
-        attn_sink = attn_sink_padded
+    preprocess_kernel = preprocess(B, S, H, D)
+    bwd_kernel = bwd(B, S, S_kv, H, D, topk, sm_scale)
+    postprocess_kernel = postprocess(B, S_kv, D)
 
-    preprocess_kernel = preprocess(batch, seq_len, padded_heads, dim)
-    bwd_kernel = bwd(batch, seq_len, seq_len_kv, padded_heads, dim, topk, sm_scale, is_casual, block_size=block_size)
-    postprocess_kernel = postprocess(batch, seq_len_kv, dim)
-
-    if delta is None:
-        delta = preprocess_kernel(o, do)
+    delta = preprocess_kernel(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    d_attn_sink = torch.zeros(padded_heads, dtype=torch.float32, device=attn_sink.device)
-    dq = bwd_kernel(q, kv, attn_sink, do, indices, lse, delta, dkv, d_attn_sink)
+    d_attn_sink = torch.zeros_like(attn_sink)
+    dq = bwd_kernel(q, kv, do, attn_sink, topk_idxs, lse, delta, dkv, d_attn_sink)
     dkv = postprocess_kernel(dkv)
-
-    if padded_heads != heads:
-        dq = dq[:, :, :heads, :].contiguous()
-        d_attn_sink = d_attn_sink[:heads].contiguous()
 
     return dq, dkv, d_attn_sink

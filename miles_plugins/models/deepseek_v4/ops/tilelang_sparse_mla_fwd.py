@@ -1,4 +1,10 @@
 # ruff: noqa
+# Adapted from miles_plugins/models/glm5/ops/tilelang_sparse_mla_fwd.py for DeepSeek-V4.
+# Key differences from GLM-5:
+#   - attn_sink: learnable per-head scalar added to softmax denominator
+#   - Single-head KV: kv shape [B, S_kv, D] (no kv_group, no D/D_tail split)
+#   - Index shape: [B, S, topk] (no kv_group dim)
+#   - Output: [B, S, H, D] + LSE [B, S, H]
 import tilelang
 import torch
 from tilelang import language as T
@@ -11,22 +17,21 @@ from tilelang import language as T
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
     },
 )
-def sparse_mla_fwd(
+def sparse_mqa_fwd(
     heads,
     dim,
     topk,
     sm_scale=None,
-    is_causal=True,
     block_I=64,
     num_stages=2,
     threads=256,
 ):
-    assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
-    assert is_causal == True, "non-casual is not supported"
+    assert dim == tilelang.math.next_power_of_2(dim), f"dim must be power of 2, got {dim}"
+    assert topk % block_I == 0, f"topk ({topk}) must be divisible by block_I ({block_I})"
     if sm_scale is None:
-        sm_scale = (1.0 / dim) ** 0.5 * 1.44269504
+        sm_scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e)
     else:
-        sm_scale = sm_scale * 1.44269504
+        sm_scale = sm_scale * 1.44269504  # log2(e)
 
     batch = T.dynamic("batch")
     seq_len = T.dynamic("seq_len")
@@ -65,16 +70,12 @@ def sparse_mla_fwd(
         Output: T.Tensor(o_shape, dtype),  # type: ignore
         Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
     ):
-        with T.Kernel(seq_len * REPLICATE_H, batch, threads=threads) as (
-            bx,
-            by,
-        ):
+        with T.Kernel(seq_len * REPLICATE_H, batch, threads=threads) as (bx, by):
             Q_shared = T.alloc_shared([H_per_block, D], dtype)
             KV_shared = T.alloc_shared([BI, D], dtype)
             O_shared = T.alloc_shared([H_per_block, D], dtype)
             Lse_shared = T.alloc_shared([H_per_block], accum_dtype)
             mask = T.alloc_fragment([BI], "bool")
-            attn_sink_local = T.alloc_fragment([H_per_block], accum_dtype)
 
             acc_o = T.alloc_fragment([H_per_block, D], accum_dtype)
             acc_s = T.alloc_fragment([H_per_block, BI], accum_dtype)
@@ -91,23 +92,18 @@ def sparse_mla_fwd(
 
             b_i = by
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
-            q_i = s_i
-            max_kv_i = q_i
 
             H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64
             H1 = H0 + H_per_block
 
-            T.copy(Q[b_i, s_i, H0:H1, :], Q_shared)
-            T.copy(AttnSink[H0:H1], attn_sink_local)
+            T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
 
             for i_i in T.Pipelined(NI, num_stages=num_stages):
                 for bi_i in T.Parallel(BI):
                     mask[bi_i] = Indices[b_i, s_i, i_i * BI + bi_i] != -1
 
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = T.if_then_else(
-                        mask[bi_i], KV[b_i, Indices[b_i, s_i, i_i * BI + bi_i], d_i], 0
-                    )
+                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, i_i * BI + bi_i], d_i]
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
@@ -135,11 +131,15 @@ def sparse_mla_fwd(
                 T.copy(acc_s, S_shared)
                 T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-            log2_e = 1.44269504
+            # attn_sink: add exp(attn_sink[h] - max_scaled) to softmax denominator
+            # attn_sink is a pre-scaled logit (same space as scores*sm_scale), so only convert to log2 base
             for h_i in T.Parallel(H_per_block):
-                sumexp[h_i] = sumexp[h_i] + T.exp2(attn_sink_local[h_i] * log2_e - m_i[h_i] * sm_scale)
+                sumexp[h_i] += T.exp2(AttnSink[H0 + h_i] * 1.44269504 - m_i[h_i] * sm_scale)
+
+            # Rescale output
             for h_i, d_i in T.Parallel(H_per_block, D):
                 acc_o[h_i, d_i] /= sumexp[h_i]
+            # LSE = log2(sumexp) + m_i * sm_scale (in log2 space)
             for h_i in T.Parallel(H_per_block):
                 sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
 
@@ -149,42 +149,41 @@ def sparse_mla_fwd(
     return main
 
 
-def sparse_mqa_fwd_interface(
-    q, kv, attn_sink, indices, sm_scale=None, return_p_sum: bool = False, block_I=64, num_stages=2, threads=256
-):
-    is_casual = True
-    assert return_p_sum == False, "This kernel file is for fwd only"
-    assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
+def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I=64, num_stages=2, threads=256):
+    """Forward interface for V4 sparse MQA attention.
+
+    Args:
+        q:         [B, S, H, D] bf16
+        kv:        [B, S_kv, D] bf16
+        attn_sink: [H] fp32
+        topk_idxs: [B, S, topk] int32
+        sm_scale:  float or None (defaults to 1/sqrt(D))
+
+    Returns:
+        out: [B, S, H, D] bf16
+        lse: [B, S, H] fp32
+    """
+    assert q.is_contiguous() and kv.is_contiguous() and topk_idxs.is_contiguous()
     batch, seq_len, heads, dim = q.shape
     _, seq_len_kv, kv_dim = kv.shape
+    assert kv_dim == dim
+    _, _, topk = topk_idxs.shape
 
-    assert kv_dim == dim == 512
-    assert kv.shape[0] == batch
-    _, _, topk = indices.shape
-    assert indices.shape == (batch, seq_len, topk)
-
+    # Pad topk to next multiple of block_I (kernel requires divisibility)
     padded_topk = (topk + block_I - 1) // block_I * block_I
     if padded_topk != topk:
-        padded_indices = torch.full((batch, seq_len, padded_topk), -1, dtype=indices.dtype, device=indices.device)
-        padded_indices[:, :, :topk] = indices
-        indices = padded_indices
+        pad = torch.full((batch, seq_len, padded_topk - topk), -1, device=topk_idxs.device, dtype=topk_idxs.dtype)
+        topk_idxs = torch.cat([topk_idxs, pad], dim=-1).contiguous()
         topk = padded_topk
 
-    padded_heads = max(tilelang.math.next_power_of_2(heads), 64)
-    if padded_heads != heads:
-        q_padded = torch.zeros(batch, seq_len, padded_heads, dim, dtype=q.dtype, device=q.device)
-        q_padded[:, :, :heads, :] = q
-        q = q_padded
-        attn_sink_padded = torch.full((padded_heads,), float("-inf"), dtype=attn_sink.dtype, device=attn_sink.device)
-        attn_sink_padded[:heads] = attn_sink
-        attn_sink = attn_sink_padded
-
-    kernel = sparse_mla_fwd(
-        padded_heads, dim, topk, sm_scale, is_casual, block_I=block_I, num_stages=num_stages, threads=threads
+    kernel = sparse_mqa_fwd(
+        heads,
+        dim,
+        topk,
+        sm_scale,
+        block_I=block_I,
+        num_stages=num_stages,
+        threads=threads,
     )
-    out, lse = kernel(q, kv, attn_sink, indices)
-
-    if padded_heads != heads:
-        out = out[:, :, :heads, :].contiguous()
-        lse = lse[:, :, :heads].contiguous()
+    out, lse = kernel(q, kv, attn_sink, topk_idxs)
     return out, lse
