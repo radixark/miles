@@ -70,7 +70,7 @@ class MilesRouter:
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
         # Session routes - must be registered before catch-all
-        setup_session_routes(self.app, self)
+        setup_session_routes(self.app, self, self.args)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
@@ -132,10 +132,10 @@ class MilesRouter:
 
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
-        result = await self._do_proxy(request, path)
-        return self._build_proxy_response(result)
+        result = await self.do_proxy(request, path)
+        return self.build_proxy_response(result)
 
-    async def _do_proxy(
+    async def do_proxy(
         self,
         request: Request,
         path: str,
@@ -165,7 +165,7 @@ class MilesRouter:
         finally:
             self._finish_url(worker_url)
 
-    def _build_proxy_response(self, result: dict) -> Response:
+    def build_proxy_response(self, result: dict) -> Response:
         """Build HTTP response from proxy result."""
         content = result["response_body"]
         status_code = result["status_code"]

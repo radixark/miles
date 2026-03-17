@@ -1,39 +1,51 @@
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import Protocol, runtime_checkable
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
+from starlette.responses import Response as StarletteResponse
 
 from miles.router.session.session_types import GetSessionResponse, SessionRecord
 from miles.router.session.single_user_turn_trajectory import SingleUserTurnTrajectoryManager
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 
-if TYPE_CHECKING:
-    from miles.router.router import MilesRouter
-
 logger = logging.getLogger(__name__)
 
 
-def setup_session_routes(app, router: "MilesRouter"):
-    hf_checkpoint = getattr(router.args, "hf_checkpoint", None)
+@runtime_checkable
+class SessionBackend(Protocol):
+    """Protocol that any backend (MilesRouter, standalone SessionServer, etc.) must satisfy."""
+
+    async def do_proxy(
+        self,
+        request: Request,
+        path: str,
+        body: bytes | None = None,
+        headers: dict | None = None,
+    ) -> dict: ...
+
+    def build_proxy_response(self, result: dict) -> StarletteResponse: ...
+
+
+def setup_session_routes(app, backend: SessionBackend, args):
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
     if not hf_checkpoint:
-        if getattr(router, "verbose", False):
-            logger.info("[miles-router] Skipping session routes (hf_checkpoint not set).")
+        logger.info("[session] Skipping session routes (hf_checkpoint not set).")
         return
 
     tokenizer = load_tokenizer(
-        hf_checkpoint, chat_template_path=getattr(router.args, "chat_template_path", None), trust_remote_code=True
+        hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
     )
 
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=getattr(router.args, "tito_model", "default"),
+        tokenizer_type=getattr(args, "tito_model", "default"),
     )
 
-    manager = SingleUserTurnTrajectoryManager(router.args, tokenizer, tito_tokenizer=tito_tokenizer)
+    manager = SingleUserTurnTrajectoryManager(args, tokenizer, tito_tokenizer=tito_tokenizer)
 
     @app.post("/sessions")
     async def create_session():
@@ -69,13 +81,10 @@ def setup_session_routes(app, router: "MilesRouter"):
         body = await request.body()
         request_body = json.loads(body) if body else {}
 
-        # TITO token tracking requires per-token info from SGLang responses.
-        # These are hardcoded (not setdefault) to prevent agent-side overrides
-        # from breaking the token accumulation invariants.
-        request_body["logprobs"] = True  # returns output_token_logprobs: [(logprob, token_id), ...]
-        request_body["return_prompt_token_ids"] = True  # returns prompt token IDs for checkpoint construction
-        request_body["return_meta_info"] = True  # wraps the above in choice.meta_info
-        if getattr(router.args, "use_rollout_routing_replay", False):
+        request_body["logprobs"] = True
+        request_body["return_prompt_token_ids"] = True
+        request_body["return_meta_info"] = True
+        if getattr(args, "use_rollout_routing_replay", False):
             request_body["return_routed_experts"] = True
         # Must be False so stop tokens are trimmed from output: otherwise the
         # agent sees stop-token text in content, and the accumulated checkpoint
@@ -93,13 +102,13 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         body = json.dumps(request_body).encode()
 
-        result = await router._do_proxy(request, "v1/chat/completions", body=body)
+        result = await backend.do_proxy(request, "v1/chat/completions", body=body)
 
         # If SGLang returned a non-200 error (e.g. 400 for context too long),
         # pass it through to the agent without recording — the agent can retry
         # or handle the error.
         if result["status_code"] != 200:
-            return router._build_proxy_response(result)
+            return backend.build_proxy_response(result)
 
         response = json.loads(result["response_body"])
 
@@ -150,9 +159,9 @@ def setup_session_routes(app, router: "MilesRouter"):
         appended = manager.append_session_record(session_id, record)
         if appended is None:
             return JSONResponse(status_code=404, content={"error": "session not found"})
-        return router._build_proxy_response(result)
+        return backend.build_proxy_response(result)
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def session_proxy(request: Request, session_id: str, path: str):
-        result = await router._do_proxy(request, path)
-        return router._build_proxy_response(result)
+        result = await backend.do_proxy(request, path)
+        return backend.build_proxy_response(result)

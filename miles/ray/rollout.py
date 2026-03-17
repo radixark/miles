@@ -1083,6 +1083,51 @@ def _resolve_sglang_config(args) -> SglangConfig:
 # ---------------------------------------------------------------------------
 
 
+def _start_session_server(args):
+    """Start a standalone session server when session/TITO support is needed.
+
+    The session server runs as a separate process with its own port and proxies
+    inference requests to the backend router (sglang or miles).  It is started
+    when ``hf_checkpoint`` and ``chat_template_path`` are both set, indicating
+    that TITO pre-tokenization is desired.
+
+    When ``--use-miles-router`` is active, sessions are already embedded in the
+    Miles Router so we skip the standalone server and simply alias the session
+    server address to the router address.
+    """
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    chat_template_path = getattr(args, "chat_template_path", None)
+    if not hf_checkpoint or not chat_template_path:
+        return
+
+    if args.use_miles_router:
+        # Miles Router already serves session routes on the router port.
+        args.session_server_ip = args.sglang_router_ip
+        args.session_server_port = args.sglang_router_port
+        return
+
+    if getattr(args, "session_server_ip", None) is None:
+        args.session_server_ip = args.sglang_router_ip
+    if getattr(args, "session_server_port", None) is None:
+        args.session_server_port = find_available_port(random.randint(5000, 6000))
+
+    port = args.session_server_port
+    if not is_port_available(port):
+        raise RuntimeError(
+            f"Session server port {port} is already in use. "
+            f"Run 'pkill -9 python' to kill stale processes, then retry."
+        )
+
+    from miles.router.session.session_server import run_session_server
+
+    process = multiprocessing.Process(target=run_session_server, args=(args,))
+    process.daemon = True
+    process.start()
+    time.sleep(3)
+    assert process.is_alive(), "Session server process died on startup"
+    logger.info(f"Session server launched at {args.session_server_ip}:{args.session_server_port}")
+
+
 def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):
     if args.custom_eval_rollout_log_function_path is not None:
         custom_log_func = load_function(args.custom_eval_rollout_log_function_path)

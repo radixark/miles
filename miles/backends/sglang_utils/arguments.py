@@ -25,6 +25,18 @@ def add_sglang_router_arguments(parser):
         default=14400,
         help="Timeout for requests to the SGLang router in seconds",
     )
+    parser.add_argument(
+        "--session-server-ip",
+        type=str,
+        default=None,
+        help="IP address of the standalone session server. Defaults to sglang-router-ip.",
+    )
+    parser.add_argument(
+        "--session-server-port",
+        type=int,
+        default=None,
+        help="Port of the standalone session server. Auto-allocated if not set.",
+    )
     return parser
 
 
