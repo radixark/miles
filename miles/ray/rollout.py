@@ -772,6 +772,10 @@ def compute_metrics_from_samples(args, samples):
     tito_vals = [v for v in tito_vals if v is not None]
     if tito_vals:
         log_dict["tito_session_mismatch_rate"] = np.mean([len(v) > 0 for v in tito_vals]).item()
+        for mtype in ("special_token_type", "special_token_count", "text", "json"):
+            log_dict[f"tito_session_mismatch_rate/{mtype}"] = np.mean(
+                [any(m.get("type") == mtype for m in v) for v in tito_vals]
+            ).item()
 
     return log_dict
 
