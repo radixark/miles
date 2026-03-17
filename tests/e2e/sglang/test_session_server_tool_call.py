@@ -39,17 +39,18 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_parser="qwen25",
         tito_model="qwen3",
     ),
-    "qwen35": ModelConfig(
-        model_name="Qwen/Qwen3.5-4B",
-        reasoning_parser="qwen3",
-        tool_call_parser="qwen3_coder",
-    ),
+    # qwen3.5 still has some small bugs.
+    # "qwen35": ModelConfig(
+    #     model_name="Qwen/Qwen3.5-4B",
+    #     reasoning_parser="qwen3",
+    #     tool_call_parser="qwen3_coder",
+    # ),
     "glm47": ModelConfig(
         model_name="zai-org/GLM-4.7-Flash",
         reasoning_parser="glm45",
         tool_call_parser="glm47",
         tito_model="glm47",
-        num_gpus=4,
+        num_gpus=1,
     ),
 }
 

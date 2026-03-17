@@ -15,6 +15,7 @@ import os
 import httpx
 
 from miles.utils.chat_template_utils import TokenSeqComparator, apply_chat_template, try_get_fixed_chat_template
+from miles.utils.chat_template_utils.tito_tokenizer import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     # Accumulated across turns for final comparison.
     last_prompt_ids: list[int] | None = None
     last_completion_ids: list[int] | None = None
+    last_messages_snapshot: list[dict] | None = None
 
     async with httpx.AsyncClient(
         timeout=180, limits=httpx.Limits(max_connections=1000, max_keepalive_connections=100)
@@ -164,6 +166,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             )
 
             messages.append(assistant_msg)
+            last_messages_snapshot = list(messages)
 
             if _is_task_complete(assistant_msg):
                 logger.info("Turn %d: task complete, ending loop", turn)
@@ -216,24 +219,31 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 
     assert last_prompt_ids is not None, "No turns completed"
     assert last_completion_ids is not None, "No completion tokens collected"
+    assert last_messages_snapshot is not None, "No messages snapshot saved"
 
     # Actual token IDs used in inference: prompt + completion.
     actual_ids = last_prompt_ids + last_completion_ids
 
-    # Expected: re-tokenize the full message history (including last
-    # assistant response) without generation prompt.
+    # Expected: re-tokenize the message history as it stood right after
+    # the last assistant response was appended (before any tool responses
+    # that the model never saw as input).
     expected_ids = apply_chat_template(
-        messages,
+        last_messages_snapshot,
         tokenizer=tokenizer,
         tools=TOOLS,
         add_generation_prompt=False,
         tokenize=True,
     )
 
+    tito_model = os.environ.get("MILES_TITO_MODEL", "default")
+    tito_tok = get_tito_tokenizer(tokenizer, tito_model)
+    trim_ids = tito_tok.get_comparator_ignore_trailing_ids()
+
     comparator = TokenSeqComparator(tokenizer)
     mismatches = comparator.compare_sequences(
         expected_ids,
         actual_ids,
+        trim_trailing_ids=trim_ids,
     )
 
     for m in mismatches:

@@ -176,12 +176,38 @@ class DefaultTITOTokenizer(TITOTokenizer):
 
 
 class Qwen3TITOTokenizer(DefaultTITOTokenizer):
-    """Qwen3 variant.
+    """Qwen3 variant: handles missing newline at the boundary.
 
-    TODO: may need to insert/delete a trailing newline at the boundary
-    between pretokenized prefix and incremental tokens.  Currently uses
-    default concatenation — to be refined after further investigation.
+    The Qwen3 chat template emits ``<|im_end|>\\n`` after every message, but
+    the model stops at ``<|im_end|>`` without generating the trailing ``\\n``.
+    ``merge_tokens`` inserts the missing newline so that the pretokenized
+    prefix matches the canonical template output.
     """
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+    ):
+        super().__init__(tokenizer, chat_template_kwargs)
+        nl_ids = tokenizer.encode("\n", add_special_tokens=False)
+        assert len(nl_ids) == 1, f"Expected single newline token, got {nl_ids}"
+        self._newline_id: int = nl_ids[0]
+        self._im_end_id: int = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        self._trailing_token_ids = frozenset({self._newline_id})
+
+    def merge_tokens(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        pretokenized_token_ids: list[int],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, pretokenized_token_ids, tools)
+        prefix = list(pretokenized_token_ids)
+        if prefix and prefix[-1] == self._im_end_id:
+            prefix.append(self._newline_id)
+        return prefix + incremental
 
 
 # ---------------------------------------------------------------------------
