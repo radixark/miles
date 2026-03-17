@@ -59,7 +59,7 @@ def load_replay_data(
         )
 
     replay_file: Path = replay_files[0]
-    _load_replay(replay_file, rank=rank, sequence_parallel=sequence_parallel)
+    _load_replay(replay_file, rank=rank, sequence_parallel=sequence_parallel, allgather_cp=script.allgather_cp)
 
 
 def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
@@ -104,8 +104,9 @@ def _load_replay(
     *,
     rank: int,
     sequence_parallel: bool,
+    allgather_cp: bool = False,
 ) -> None:
-    """Load replay from rank 0's file with CP zigzag slicing and SP slicing."""
+    """Load replay from rank 0's file with CP slicing and SP slicing."""
     saved_replays: list[list[torch.Tensor]] = torch.load(replay_file, weights_only=False)
 
     expected: int = len(routing_replay_manager.replays)
@@ -122,9 +123,22 @@ def _load_replay(
         sliced: list[torch.Tensor] = indices_list
 
         if ranks.cp_size > 1:
-            from megatron.core.transformer.deepseek_v4_cp_utils import natural_to_zigzag_slice
+            if allgather_cp:
+                # Contiguous CP: rank k owns [k*local : (k+1)*local]
+                def _cp_slice(t, cp_size, cp_rank):
+                    local = t.shape[0] // cp_size
+                    return t[cp_rank * local : (cp_rank + 1) * local]
 
-            sliced = [natural_to_zigzag_slice(t, dim=0, cp_size=ranks.cp_size, cp_rank=ranks.cp_rank) for t in sliced]
+                sliced = [_cp_slice(t, cp_size=ranks.cp_size, cp_rank=ranks.cp_rank) for t in sliced]
+            else:
+                # Zigzag CP: rank k owns chunks [k, 2*cp_size-k-1]
+                def _zigzag_slice(t, cp_size, cp_rank):
+                    chunk_size = t.shape[0] // (2 * cp_size)
+                    indices = torch.tensor([cp_rank, 2 * cp_size - 1 - cp_rank], device=t.device)
+                    t = t.unflatten(0, (2 * cp_size, chunk_size))
+                    return t.index_select(0, indices).flatten(0, 1)
+
+                sliced = [_zigzag_slice(t, cp_size=ranks.cp_size, cp_rank=ranks.cp_rank) for t in sliced]
 
         if do_sp_slice:
             sliced = [_sp_slice(t, tp_size=ranks.tp_size, tp_rank=ranks.tp_rank) for t in sliced]
