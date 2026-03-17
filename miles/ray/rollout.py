@@ -171,6 +171,12 @@ class ServerGroup:
                 base_port=base_port,
             )
 
+        if not hasattr(self.args, "sglang_worker_urls") or self.args.sglang_worker_urls is None:
+            self.args.sglang_worker_urls = []
+        self.args.sglang_worker_urls.extend(
+            [f"http://{ap['host']}:{ap['port']}" for ap in addr_and_ports.values() if "host" in ap and "port" in ap]
+        )
+
         init_handles = [
             engine.init.remote(
                 **(addr_and_ports[rank]),
@@ -361,6 +367,7 @@ class RolloutManager:
         else:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
+            _start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -1118,9 +1125,16 @@ def _start_session_server(args):
             f"Run 'pkill -9 python' to kill stale processes, then retry."
         )
 
+    worker_urls = getattr(args, "sglang_worker_urls", None)
+    if not worker_urls:
+        worker_urls = [f"http://{args.sglang_router_ip}:{args.sglang_router_port}"]
+        logger.warning("No worker URLs available; session server will proxy through the router.")
+    else:
+        worker_urls = list(dict.fromkeys(worker_urls))
+
     from miles.rollout.session.session_server import run_session_server
 
-    process = multiprocessing.Process(target=run_session_server, args=(args,))
+    process = multiprocessing.Process(target=run_session_server, args=(args, worker_urls))
     process.daemon = True
     process.start()
     time.sleep(3)

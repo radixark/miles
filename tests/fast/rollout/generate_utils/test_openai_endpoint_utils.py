@@ -4,7 +4,7 @@ Validates the contract between session records, sample construction,
 and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 """
 
-from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,9 +16,7 @@ from miles.utils.types import Sample
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-
-def _mock_args():
-    return Namespace(use_rollout_routing_replay=False)
+_ARGS = SimpleNamespace()
 
 
 def _mock_tokenizer():
@@ -49,18 +47,11 @@ def _make_record(
     output_log_probs: list[float] | None = None,
     finish_reason: str = "stop",
 ) -> SessionRecord:
-    """Build a minimal session record mimicking SGLang's response format.
-
-    Token IDs and logprobs are stored in meta_info.output_token_logprobs
-    as (logprob, token_id) tuples, matching the real SGLang response.
-    """
+    """Build a minimal session record mimicking SGLang's response format."""
     if output_log_probs is None:
         output_log_probs = [-0.1 * (i + 1) for i in range(len(output_token_ids))]
 
-    output_token_logprobs = [(lp, tid) for tid, lp in zip(output_token_ids, output_log_probs, strict=True)]
-    logprobs_content = [
-        {"logprob": lp, "token": f"t{tid}"} for tid, lp in zip(output_token_ids, output_log_probs, strict=True)
-    ]
+    output_token_logprobs = list(zip(output_log_probs, output_token_ids, strict=True))
     return SessionRecord(
         timestamp=0.0,
         method="POST",
@@ -73,7 +64,6 @@ def _make_record(
                     "prompt_token_ids": prompt_token_ids,
                     "message": {"role": "assistant", "content": "response"},
                     "finish_reason": finish_reason,
-                    "logprobs": {"content": logprobs_content},
                     "meta_info": {
                         "output_token_logprobs": output_token_logprobs,
                         "completion_tokens": len(output_token_ids),
@@ -89,7 +79,6 @@ def _make_record(
 
 class TestComputeSamplesFromRecords:
     def test_single_record_builds_correct_sample(self):
-        args = _mock_args()
         tok = _mock_tokenizer()
         record = _make_record(
             prompt_token_ids=[1, 2, 3],
@@ -98,7 +87,7 @@ class TestComputeSamplesFromRecords:
         )
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, [record], tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
 
         assert len(samples) == 1
         s = samples[0]
@@ -109,7 +98,6 @@ class TestComputeSamplesFromRecords:
         assert s.status == Sample.Status.COMPLETED
 
     def test_multiple_records_produce_multiple_samples(self):
-        args = _mock_args()
         tok = _mock_tokenizer()
         records = [
             _make_record(prompt_token_ids=[1, 2], output_token_ids=[10]),
@@ -117,14 +105,13 @@ class TestComputeSamplesFromRecords:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
 
         assert len(samples) == 2
         assert samples[0].tokens == [1, 2, 10]
         assert samples[1].tokens == [1, 2, 10, 20, 30]
 
     def test_finish_reason_length_gives_truncated(self):
-        args = _mock_args()
         tok = _mock_tokenizer()
         record = _make_record(
             prompt_token_ids=[1, 2],
@@ -133,7 +120,7 @@ class TestComputeSamplesFromRecords:
         )
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, [record], tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
 
         assert samples[0].status == Sample.Status.TRUNCATED
 
@@ -152,7 +139,6 @@ class TestMultiTurnPrefixChain:
 
     def test_two_turn_merge_succeeds(self):
         """Normal two-turn conversation: samples merge without error."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Turn 1: prompt=[1,2,3], model outputs [10,11]
@@ -172,7 +158,7 @@ class TestMultiTurnPrefixChain:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
         merged = merge_samples(samples, tok)
 
         assert merged.tokens == [1, 2, 3, 10, 11, 20, 21, 30, 31]
@@ -182,7 +168,6 @@ class TestMultiTurnPrefixChain:
 
     def test_three_turn_merge_succeeds(self):
         """Three-turn conversation: prefix chain holds across all turns."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         records = [
@@ -204,7 +189,7 @@ class TestMultiTurnPrefixChain:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
         merged = merge_samples(samples, tok)
 
         assert merged.tokens == [1, 2, 10, 20, 30, 40, 50]
@@ -212,7 +197,6 @@ class TestMultiTurnPrefixChain:
 
     def test_prefix_mismatch_raises(self):
         """When the prefix chain is broken, merge_samples must fail."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Turn 2's prompt does NOT start with turn 1's full tokens
@@ -228,7 +212,7 @@ class TestMultiTurnPrefixChain:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
 
         with pytest.raises(AssertionError, match="b.tokens must start with a.tokens"):
             merge_samples(samples, tok)
@@ -483,7 +467,6 @@ class TestThinkingTokenPrefixBreak:
     def test_thinking_tokens_break_prefix_chain(self):
         """Demonstrates the failure: model outputs <think>..., but the agent
         strips it from history, so the next prompt doesn't include those tokens."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Turn 1: model generates <think>\nreasoning\n</think>\n then actual response
@@ -513,7 +496,7 @@ class TestThinkingTokenPrefixBreak:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
 
         # sample[0].tokens = [1,2,3] + thinking + [10,11] = [1,2,3, <think>,\n,42,43,\n,</think>,\n, 10,11]
         # sample[1].tokens = [1,2,3, 10,11, 20,21, 30,31]
@@ -523,7 +506,6 @@ class TestThinkingTokenPrefixBreak:
 
     def test_no_thinking_tokens_prefix_chain_holds(self):
         """When thinking is disabled, the same conversation merges fine."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Same conversation but model output has no thinking prefix
@@ -539,7 +521,7 @@ class TestThinkingTokenPrefixBreak:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
         merged = merge_samples(samples, tok)
 
         assert merged.tokens == [1, 2, 3, 10, 11, 20, 21, 30, 31]

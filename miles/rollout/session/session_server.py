@@ -1,10 +1,12 @@
-"""Standalone Session Server that proxies to any backend router (sglang or miles).
+"""Standalone Session Server that proxies to SGLang worker engines directly.
 
 This decouples session/TITO logic from the Miles Router, allowing sessions
-to work with the SGLang Rust Router or any other backend that exposes
-standard ``/v1/chat/completions`` endpoints.
+to work with the SGLang Rust Router or any other backend.  Requests are
+proxied directly to SGLang worker engines (not the Rust Router) so that
+the full response including ``meta_info`` is preserved.
 """
 
+import itertools
 import json
 import logging
 
@@ -21,10 +23,11 @@ logger = logging.getLogger(__name__)
 
 class SessionServer:
     """Lightweight FastAPI server that manages sessions and proxies inference
-    requests to a backend router (SGLang Rust Router or Miles Router)."""
+    requests directly to SGLang worker engines."""
 
-    def __init__(self, args, backend_url: str):
-        self.backend_url = backend_url
+    def __init__(self, args, worker_urls: list[str]):
+        self.worker_urls = worker_urls
+        self._worker_cycle = itertools.cycle(worker_urls)
         self.app = FastAPI()
 
         timeout = getattr(args, "miles_router_timeout", None)
@@ -41,7 +44,8 @@ class SessionServer:
         body: bytes | None = None,
         headers: dict | None = None,
     ) -> dict:
-        url = f"{self.backend_url}/{path}"
+        worker_url = next(self._worker_cycle)
+        url = f"{worker_url}/{path}"
 
         if body is None:
             body = await request.body()
@@ -71,14 +75,13 @@ class SessionServer:
             return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
 
 
-def run_session_server(args):
+def run_session_server(args, worker_urls: list[str]):
     """Entry point to start the standalone session server as a subprocess."""
-    backend_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    server = SessionServer(args, backend_url)
+    server = SessionServer(args, worker_urls)
     logger.info(
         "[session-server] Starting on %s:%s, proxying to %s",
         args.session_server_ip,
         args.session_server_port,
-        backend_url,
+        worker_urls,
     )
     uvicorn.run(server.app, host=args.session_server_ip, port=args.session_server_port, log_level="info")

@@ -102,6 +102,8 @@ class TokenSeqComparator:
         by the assistant — the tokenizer does not flag them as
         ``special=True``, so they are not collected here.
         """
+        if tokenizer is None:
+            return set()
         ids = set(tokenizer.all_special_ids)
         decoder = getattr(tokenizer, "added_tokens_decoder", None)
         if decoder:
