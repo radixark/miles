@@ -256,8 +256,8 @@ RUN cd /app/sglang \
 # both the empty-device-name file (what SGLang looks up) and the OAM name (for standard envs).
 COPY amd_patch/sglv0.5.10/E=128,N=96,device_name=AMD_Instinct_MI300X_OAM.json \
      /app/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/triton_3_4_0/E=128,N=96,device_name=AMD_Instinct_MI300X_OAM.json
-RUN cp "/app/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/triton_3_4_0/E=128,N=96,device_name=AMD_Instinct_MI300X_OAM.json" \
-       "/app/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/triton_3_4_0/E=128,N=96,device_name=.json"
+COPY amd_patch/sglv0.5.10/E=128,N=96,device_name=AMD_Instinct_MI300X_OAM.json \
+     /app/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/triton_3_4_0/E=128,N=96,device_name=.json
 
 # Copy MOE configs for gfx942/MI300
 RUN find /app/sglang/python/sglang/srt/layers/quantization/configs/ \

@@ -39,17 +39,24 @@ index c3ca1e4f3..2bb763b6a 100644
 diff --git a/python/sglang/srt/layers/quantization/unquant.py b/python/sglang/srt/layers/quantization/unquant.py
 --- a/python/sglang/srt/layers/quantization/unquant.py
 +++ b/python/sglang/srt/layers/quantization/unquant.py
-@@ -227,7 +227,14 @@ def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+@@ -224,6 +224,16 @@ def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
++def _aiter_moe_supported(layer: torch.nn.Module) -> bool:
++    """Check if aiter CK MoE GEMM supports the layer's GEMM dimensions.
++
++    aiter ck_moe_stage1 requires inter_dim % 64 == 0 (minimum NPerBlock=64).
++    With TP sharding, inter_dim = moe_intermediate_size // tp_size.
++    e.g. Qwen3-30B-A3B: 768 // 8 = 96, which is not divisible by 64.
++    """
++    inter_dim = layer.w2_weight.shape[2]
++    return inter_dim % 64 == 0
++
++
+@@ -227,7 +237,20 @@ def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
      # Skip aiter weight shuffle when using non-auto MoE backend (e.g., triton, triton_kernels)
      # because aiter CK kernels don't support all GEMM dimensions
      _should_use_aiter_moe = _use_aiter and get_moe_runner_backend().is_auto()
-+    # aiter CK stage1 GEMM requires inter_dim % 64 == 0 (minimum NPerBlock=64).
-+    # With TP sharding, inter_dim = moe_intermediate_size // tp_size.
-+    # e.g. Qwen3-30B-A3B: 768 // 8 = 96, which fails. Skip weight shuffle.
 +    if _should_use_aiter_moe:
-+        _inter_dim = layer.w2_weight.shape[2]
-+        if _inter_dim % 64 != 0:
-+            _should_use_aiter_moe = False
++        _should_use_aiter_moe = _aiter_moe_supported(layer)
      if _should_use_aiter_moe:
          layer.w13_weight = torch.nn.Parameter(
              shuffle_weight(layer.w13_weight.data, (16, 16)),
@@ -57,11 +64,6 @@ diff --git a/python/sglang/srt/layers/quantization/unquant.py b/python/sglang/sr
          # Skip aiter fused_moe when using non-auto MoE backend (e.g., triton, triton_kernels)
          # because aiter CK kernels don't support all GEMM dimensions
          _should_use_aiter_moe = _use_aiter and get_moe_runner_backend().is_auto()
-+        # aiter CK stage1 GEMM requires inter_dim % 64 == 0 (minimum NPerBlock=64).
-+        # With TP sharding, inter_dim = moe_intermediate_size // tp_size.
-+        # e.g. Qwen3-30B-A3B: 768 // 8 = 96, which fails. Fall back to triton.
 +        if _should_use_aiter_moe:
-+            _inter_dim = layer.w2_weight.shape[2]
-+            if _inter_dim % 64 != 0:
-+                _should_use_aiter_moe = False
++            _should_use_aiter_moe = _aiter_moe_supported(layer)
          if _should_use_aiter_moe:
