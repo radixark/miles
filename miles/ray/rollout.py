@@ -12,7 +12,7 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+from miles.backends.sglang_utils.sglang_engine import SGLangEngine, is_benign_stop_profile_error
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -182,6 +182,61 @@ class RolloutManager:
                 if engine is not None
             ]
         )
+
+    def start_profile_all(
+        self,
+        output_dir: str | None = None,
+        rollout_id: int | None = None,
+        start_step: int | None = None,
+        num_steps: int | None = None,
+        activities: list[str] | None = None,
+        profile_by_stage: bool = False,
+        with_stack: bool | None = None,
+        record_shapes: bool | None = None,
+    ):
+        handles = []
+        for engine_id, engine in enumerate(self.rollout_engines):
+            if engine is None:
+                continue
+
+            engine_output_dir = None
+            if output_dir is not None:
+                path = Path(output_dir)
+                if rollout_id is not None:
+                    path = path / f"rollout_{rollout_id}"
+                path = path / f"engine_{engine_id}"
+                engine_output_dir = str(path)
+
+            handles.append(
+                engine.start_profile.remote(
+                    output_dir=engine_output_dir,
+                    start_step=start_step,
+                    num_steps=num_steps,
+                    activities=activities,
+                    profile_by_stage=profile_by_stage,
+                    with_stack=with_stack,
+                    record_shapes=record_shapes,
+                )
+            )
+        return ray.get(handles)
+
+    def stop_profile_all(self):
+        stop_refs = [engine.stop_profile.remote() for engine in self.rollout_engines if engine is not None]
+        results = []
+        non_benign_errors = []
+        for ref in stop_refs:
+            try:
+                results.append(ray.get(ref))
+            except Exception as e:
+                if is_benign_stop_profile_error(str(e)):
+                    logger.warning("stop_profile_all: got benign stop-profile error; ignoring: %s", e)
+                    continue
+                non_benign_errors.append(e)
+        if non_benign_errors:
+            for e in non_benign_errors:
+                logger.error("stop_profile_all: non-benign stop-profile error: %s", e)
+            raise non_benign_errors[0]
+        return results
 
     def onload(self, tags: list[str] | None = None):
         return ray.get(
