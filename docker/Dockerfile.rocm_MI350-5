@@ -14,7 +14,7 @@
 # - aiter: v0.1.10.post3
 # - Ray: 2.47.1
 #
-# Patches: amd_patch/sglv0.5.7/
+# Patches: amd_patch/sglv0.5.10/
 # - megatron.patch
 # - sglang.patch
 # =====================================================================
@@ -230,8 +230,8 @@ RUN python -m pip cache purge
 ###########################################
 
 # Copy patch from miles repo
-COPY amd_patch/sglv0.5.7/megatron.patch /app/patch/megatron.patch
-COPY amd_patch/sglv0.5.7/sglang.patch /app/patch/sglang.patch
+COPY amd_patch/sglv0.5.10/megatron.patch /app/patch/megatron.patch
+COPY amd_patch/sglv0.5.10/sglang.patch /app/patch/sglang.patch
 
 # Apply Megatron patches
 RUN cd /app/Megatron-LM \
