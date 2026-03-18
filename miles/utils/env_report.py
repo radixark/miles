@@ -139,7 +139,7 @@ def _collect_git_info(*, package_name: str, location: str) -> GitRepoInfo | None
         commit = commit_result.stdout.strip()
 
         diff_result = subprocess.run(
-            ["git", "diff", "--stat"],
+            ["git", "diff", "--stat", "HEAD"],
             capture_output=True,
             text=True,
             timeout=10,
