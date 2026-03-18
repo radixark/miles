@@ -60,6 +60,7 @@ def prepare(args: ScriptArgs):
             megatron_model_type=args.megatron_model_type,
             num_gpus_per_node=args.num_gpus_per_node,
             dir_dst=args.model_dir,
+            hf_checkpoint=f"{args.model_dir}/{args.model_name}",
             megatron_path=args.megatron_path,
         )
 

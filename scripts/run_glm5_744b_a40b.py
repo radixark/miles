@@ -191,6 +191,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         num_nodes=num_nodes,
         extra_args=extra_args,
         dir_dst=args.model_dir,
+        hf_checkpoint=f"{args.model_dir}/{args.model_name}",
         megatron_path=args.megatron_path,
     )
 
