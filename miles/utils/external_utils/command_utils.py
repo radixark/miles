@@ -92,7 +92,6 @@ class ExecuteTrainConfig:
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
-    env_report: str = ""
 
 
 def execute_train(
@@ -172,7 +171,7 @@ def execute_train(
                 ),
                 **extra_env_vars,
                 **_parse_extra_env_vars(config.extra_env_vars),
-                **({"MILES_ENV_REPORT": config.env_report} if config.env_report else {}),
+                **({"MILES_ENV_REPORT": _env_report} if (_env_report := os.environ.get("MILES_ENV_REPORT", "")) else {}),
             }
         }
     )
