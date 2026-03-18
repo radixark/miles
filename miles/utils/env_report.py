@@ -56,15 +56,13 @@ def collect_and_print_node_env_report(
         except json.JSONDecodeError:
             logger.warning("Failed to parse partial_env_report", exc_info=True)
 
-    editable_packages = _collect_editable_packages()
+    editable_packages, full_pip_list = _collect_pip_info()
 
     git_repos = [
         info
         for pkg in editable_packages
         if (info := _collect_git_info(package_name=pkg.name, location=pkg.location))
     ]
-
-    full_pip_list = _collect_full_pip_list()
 
     report = NodeEnvReport(
         role=role,
@@ -79,61 +77,46 @@ def collect_and_print_node_env_report(
     return report
 
 
-def _collect_editable_packages() -> list[EditablePackageInfo]:
-    """Collect editable packages with locations via batched pip show."""
+def _collect_pip_info() -> tuple[list[EditablePackageInfo], list[dict[str, str]]]:
+    """Collect all pip info in a single `pip inspect` call.
+
+    Returns (editable_packages, full_pip_list).
+    """
     try:
         result = subprocess.run(
-            ["pip", "list", "--editable", "--format", "json"],
+            ["pip", "inspect"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
         if result.returncode != 0:
-            logger.warning("pip list --editable failed: %s", result.stderr)
-            return []
+            logger.warning("pip inspect failed: %s", result.stderr)
+            return [], []
 
-        packages = json.loads(result.stdout)
-        if not packages:
-            return []
+        data = json.loads(result.stdout)
+        installed: list[dict[str, Any]] = data.get("installed", [])
 
-        locations = _batch_get_package_locations([pkg["name"] for pkg in packages])
-        return [
-            EditablePackageInfo(
-                name=pkg["name"],
-                version=pkg["version"],
-                location=locations.get(pkg["name"], ""),
-            )
-            for pkg in packages
-        ]
+        editable_packages: list[EditablePackageInfo] = []
+        full_pip_list: list[dict[str, str]] = []
+
+        for pkg in installed:
+            metadata = pkg.get("metadata", {})
+            name = metadata.get("name", "")
+            version = metadata.get("version", "")
+            full_pip_list.append({"name": name, "version": version})
+
+            direct_url = pkg.get("direct_url")
+            if direct_url and direct_url.get("dir_info", {}).get("editable"):
+                url = direct_url.get("url", "")
+                location = url.removeprefix("file://")
+                editable_packages.append(EditablePackageInfo(
+                    name=name, version=version, location=location,
+                ))
+
+        return editable_packages, full_pip_list
     except Exception:
-        logger.warning("Failed to collect editable packages", exc_info=True)
-        return []
-
-
-def _batch_get_package_locations(package_names: list[str]) -> dict[str, str]:
-    """Get locations for multiple packages in a single pip show call."""
-    try:
-        result = subprocess.run(
-            ["pip", "show", *package_names],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        locations: dict[str, str] = {}
-        current_name = ""
-        for line in result.stdout.splitlines():
-            if line.startswith("Name:"):
-                current_name = line.split(":", 1)[1].strip()
-            elif line.startswith("Editable project location:"):
-                locations[current_name] = line.split(":", 1)[1].strip()
-            elif line.startswith("Location:") and current_name not in locations:
-                locations[current_name] = line.split(":", 1)[1].strip()
-
-        return locations
-    except Exception:
-        logger.warning("Failed to batch get package locations", exc_info=True)
-        return {}
+        logger.warning("Failed to collect pip info", exc_info=True)
+        return [], []
 
 
 def _collect_git_info(*, package_name: str, location: str) -> GitRepoInfo | None:
@@ -173,23 +156,6 @@ def _collect_git_info(*, package_name: str, location: str) -> GitRepoInfo | None
             "Failed to collect git info for %s at %s", package_name, location, exc_info=True
         )
         return None
-
-
-def _collect_full_pip_list() -> list[dict[str, str]]:
-    try:
-        result = subprocess.run(
-            ["pip", "list", "--format", "json"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            logger.warning("pip list failed: %s", result.stderr)
-            return []
-        return json.loads(result.stdout)
-    except Exception:
-        logger.warning("Failed to collect full pip list", exc_info=True)
-        return []
 
 
 def _print_report(report: NodeEnvReport) -> None:
