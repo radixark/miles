@@ -129,7 +129,7 @@ RUN pip install "ray[data,train,tune,serve]==2.47.1"
 #########################################
 ###6. Install torch_memory_saver#########
 #########################################
-RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@64a92e1d7fb822ea4af5579c8cebb162692c531c --no-cache-dir --force-reinstall
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a6394d1e09c613fab90260054cecc2684586d --no-cache-dir --force-reinstall
 #########################################
 #########################################
 
