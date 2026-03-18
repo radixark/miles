@@ -171,7 +171,7 @@ def execute_train(
                 ),
                 **extra_env_vars,
                 **_parse_extra_env_vars(config.extra_env_vars),
-                **({"MILES_ENV_REPORT": env_report} if (env_report := os.environ.get("MILES_ENV_REPORT", "")) else {}),
+                **({"MILES_SCRIPT_ENV_REPORT": env_report} if (env_report := os.environ.get("MILES_SCRIPT_ENV_REPORT", "")) else {}),
             }
         }
     )

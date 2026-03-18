@@ -52,7 +52,7 @@ class TrainRayActor(RayActor):
         self.role = role
         self.with_ref = with_ref
 
-        if env_report := args.env_report:
+        if env_report := os.environ.get("MILES_SCRIPT_ENV_REPORT", ""):
             from miles.utils.env_report import collect_and_print_node_env_report
 
             collect_and_print_node_env_report(

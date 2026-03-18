@@ -1232,7 +1232,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--env-report",
                 type=str,
-                default=os.environ.get("MILES_ENV_REPORT", ""),
+                default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
                 help="JSON string containing environment report from external launcher.",
             )
             return parser

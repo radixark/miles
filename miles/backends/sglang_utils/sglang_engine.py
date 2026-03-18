@@ -134,7 +134,7 @@ class SGLangEngine(RayActor):
         router_ip=None,
         router_port=None,
     ):
-        if env_report := self.args.env_report:
+        if env_report := os.environ.get("MILES_SCRIPT_ENV_REPORT", ""):
             from miles.utils.env_report import collect_and_print_node_env_report
 
             collect_and_print_node_env_report(
