@@ -59,11 +59,11 @@ def collect_and_print_node_env_report(
 
     editable_packages = _collect_editable_packages()
 
-    git_repos = []
-    for pkg in editable_packages:
-        git_info = _collect_git_info(package_name=pkg.name, location=pkg.location)
-        if git_info:
-            git_repos.append(git_info)
+    git_repos = [
+        info
+        for pkg in editable_packages
+        if (info := _collect_git_info(package_name=pkg.name, location=pkg.location))
+    ]
 
     full_pip_list = _collect_full_pip_list()
 
