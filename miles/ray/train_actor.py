@@ -56,7 +56,7 @@ class TrainRayActor(RayActor):
             from miles.utils.env_report import collect_and_print_node_env_report
 
             collect_and_print_node_env_report(
-                role=role, rank=self._rank, env_report_json=env_report,
+                role=role, rank=self._rank, partial_env_report=env_report,
             )
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
