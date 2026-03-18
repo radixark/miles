@@ -671,7 +671,7 @@ class RolloutManager:
             "response_lengths": [sample.response_length for sample in samples],
             # some reward model, e.g. remote rm, may return multiple rewards,
             # we could use key to select the reward.
-            "rewards": rewards,
+            "normalized_reward": rewards,
             "raw_reward": raw_rewards,
             "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
             "sample_indices": [sample.index for sample in samples],
@@ -747,7 +747,7 @@ class RolloutManager:
                 "tokens",
                 "multimodal_train_inputs",
                 "response_lengths",
-                "rewards",
+                "normalized_reward",
                 "truncated",
                 "loss_masks",
                 "round_number",

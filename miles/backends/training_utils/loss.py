@@ -298,13 +298,13 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
         args: Configuration specifying estimator type, KL coefficient,
             normalization settings, and other hyperparameters.
         rollout_data: Dict containing input lists ("log_probs", "ref_log_probs",
-            "rewards", "values", "response_lengths", "loss_masks",
+            "normalized_reward", "values", "response_lengths", "loss_masks",
             "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
     """
     log_probs: list[torch.Tensor] = rollout_data.get("rollout_log_probs" if args.use_rollout_logprobs else "log_probs")
     ref_log_probs: list[torch.Tensor] = rollout_data.get("ref_log_probs")
-    rewards: list[float] = rollout_data.get("rewards")
+    rewards: list[float] = rollout_data.get("normalized_reward")
     values: None | list[torch.Tensor] = rollout_data.get("values")
     response_lengths: list[int] = rollout_data.get("response_lengths")
     loss_masks: list[torch.Tensor] = rollout_data.get("loss_masks")
