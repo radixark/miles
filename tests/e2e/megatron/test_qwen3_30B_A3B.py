@@ -7,6 +7,7 @@ ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
 USE_FP8_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_FP8_ROLLOUT", "1")))
+USE_INT4_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_INT4_ROLLOUT", "0")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
@@ -16,7 +17,14 @@ NUM_GPUS = 8
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+    if USE_FP8_ROLLOUT:
+        U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+    if USE_INT4_ROLLOUT:
+        U.exec_command(
+            f"python tools/convert_hf_to_int4_direct.py "
+            f"--model-dir /root/models/{MODEL_NAME} "
+            f"--save-dir /root/models/{MODEL_NAME}-INT4"
+        )
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
@@ -24,7 +32,9 @@ def prepare():
 
 
 def execute():
-    if USE_FP8_ROLLOUT:
+    if USE_INT4_ROLLOUT:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    elif USE_FP8_ROLLOUT:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
     else:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
@@ -91,12 +101,19 @@ def execute():
         "--use-precision-aware-optimizer "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
-        f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
-        "--sglang-max-running-requests 512 "
-        "--sglang-enable-metrics "
-    )
+    if USE_INT4_ROLLOUT:
+        sglang_args = (
+            "--rollout-num-gpus-per-engine 1 "
+            f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
+            "--sglang-cuda-graph-max-bs 512 "
+        )
+    else:
+        sglang_args = (
+            "--rollout-num-gpus-per-engine 8 "
+            f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
+            "--sglang-max-running-requests 512 "
+            "--sglang-enable-metrics "
+        )
 
     if USE_DEEPEP:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
@@ -135,11 +152,18 @@ def execute():
         f"{misc_args} "
     )
 
+    extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    if USE_INT4_ROLLOUT:
+        extra_env_vars |= {
+            "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
+            "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
+        }
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+        extra_env_vars=extra_env_vars,
     )
 
 

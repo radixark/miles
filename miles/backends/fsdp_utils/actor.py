@@ -84,7 +84,9 @@ class FSDPTrainRayActor(TrainRayActor):
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
                 self.hf_config = AutoConfig.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
-                self.tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
+                self.tokenizer = load_tokenizer(
+                    self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+                )
                 # Vision models have `vision_config` in the config
                 if hasattr(self.hf_config, "vision_config"):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
@@ -547,14 +549,19 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
-            self.rollout_manager.get_rollout_engines_and_lock.remote()
+        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
+            self.rollout_manager.get_updatable_engines_and_lock.remote()
         )
         if num_new_engines > 0:
-            self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
+            self.weight_updater.connect_rollout_engines(
+                rollout_engines,
+                rollout_engine_lock,
+                engine_gpu_counts=engine_gpu_counts,
+                engine_gpu_offsets=engine_gpu_offsets,
+            )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
 
         self.weight_updater.update_weights()
 

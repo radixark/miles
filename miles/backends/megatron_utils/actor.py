@@ -10,7 +10,7 @@ import torch.distributed as dist
 from megatron.core import mpu
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
@@ -18,6 +18,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.ft.factories.embedded_agent import build_training_rank_agent, ensure_node_agent
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers
@@ -29,7 +30,7 @@ from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
-from ..training_utils.log_utils import log_perf_data, log_rollout_data
+from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
@@ -60,7 +61,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        if is_megatron_main_rank():
+        self._is_main_rank = is_megatron_main_rank()
+
+        if self._is_main_rank:
             init_tracking(args, primary=False)
 
         self.prof = TrainProfiler(args)
@@ -69,7 +72,9 @@ class MegatronTrainRayActor(TrainRayActor):
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
                 self.hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-                self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+                self.tokenizer = load_tokenizer(
+                    self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+                )
             dist.barrier(group=get_gloo_group())
 
         self.train_parallel_config = {
@@ -186,6 +191,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         print_memory("after offload model")
 
+        if self._is_main_rank and hasattr(self, "_last_rollout_id"):
+            log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
+
     @timer
     def wake_up(self) -> None:
         assert self.args.offload_train
@@ -298,6 +306,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
     def train(self, rollout_id: int, rollout_data_ref: Box) -> None:
+        self._last_rollout_id = rollout_id
         if self.args.offload_train:
             self.wake_up()
 
@@ -495,21 +504,26 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if "rollout" in self.args.ft_components:
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.recover_rollout_engines.remote())
+                ray.get(self.rollout_manager.recover_updatable_engines.remote())
             dist.barrier(group=get_gloo_group())
 
-        rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
-            self.rollout_manager.get_rollout_engines_and_lock.remote()
+        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
+            self.rollout_manager.get_updatable_engines_and_lock.remote()
         )
 
         if self.args.offload_train:
             reload_process_groups()
 
         if num_new_engines > 0:
-            self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
+            self.weight_updater.connect_rollout_engines(
+                rollout_engines,
+                rollout_engine_lock,
+                engine_gpu_counts=engine_gpu_counts,
+                engine_gpu_offsets=engine_gpu_offsets,
+            )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
 
         if self.args.offload_train and is_lora_enabled(self.args):
             # For LoRA, we must resume() to restore GPU memory backing for adapter

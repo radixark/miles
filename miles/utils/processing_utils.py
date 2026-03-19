@@ -1,6 +1,7 @@
 import base64
 import io
 import logging
+import os
 
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
@@ -12,8 +13,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_PATCH_SIZE = 14
 
 
-def load_tokenizer(name_or_path: str, **kwargs):
-    return AutoTokenizer.from_pretrained(name_or_path, **kwargs)
+def load_tokenizer(name_or_path: str, chat_template_path: str = None, **kwargs):
+    tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
+    if chat_template_path:
+        assert os.path.isfile(chat_template_path), (
+            f"chat_template_path not found: {chat_template_path}. "
+            f"Ensure the path is accessible on this node (e.g. inside the miles repo or on a shared filesystem)."
+        )
+        with open(chat_template_path) as f:
+            tokenizer.chat_template = f.read()
+        logger.info("Loaded custom chat template from %s", chat_template_path)
+    return tokenizer
 
 
 def load_processor(name_or_path: str, **kwargs):

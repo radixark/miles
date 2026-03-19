@@ -123,7 +123,12 @@ def get_sum_of_sample_mean(
 
 
 def all_gather_with_cp(
-    tensor: torch.Tensor, total_length: int, response_length: int, parallel_state: ParallelState
+    tensor: torch.Tensor,
+    total_length: int,
+    response_length: int,
+    parallel_state: ParallelState,
+    qkv_format: str = "thd",
+    max_seq_len: int | None = None,
 ) -> torch.Tensor:
     """
     Gather tensors across all ranks in the context parallel group.
@@ -135,7 +140,9 @@ def all_gather_with_cp(
     if cp_size == 1:
         return tensor
 
-    _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(total_length, response_length, parallel_state)
+    _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
+        total_length, response_length, parallel_state, qkv_format, max_seq_len
+    )
 
     prompt_length = total_length - response_length
 

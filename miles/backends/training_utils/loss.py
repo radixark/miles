@@ -626,6 +626,7 @@ def policy_loss_function(
             "total_lengths": total_lengths,
             "response_lengths": response_lengths,
             "parallel_state": parallel_state,
+            "max_seq_lens": max_seq_lens,
         }
 
         if args.custom_tis_function_path is not None:
@@ -902,6 +903,14 @@ def loss_function(
         )
     else:
         loss, log = func(args, parallel_state, batch, logits, sum_of_sample_mean)
+
+    # With allgather-CP, some CP ranks may have no loss-contributing tokens (e.g., all
+    # padding). Without this, gradient doesn't flow through their attention path, so
+    # the CP gather's backward (reduce-scatter) is not called, deadlocking other CP
+    # ranks that call it. Adding this zero loss forces autograd to traverse the full
+    # graph on every rank without changing gradient values.
+    if parallel_state.cp_size > 1 and args.allgather_cp:
+        loss = loss + 0 * logits.sum()
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
