@@ -120,6 +120,10 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             rollout_log_probs=[],
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
+        # tito_session_mismatch is populated by the session server's token
+        # comparison — dynamic content that depends on mock alignment, so
+        # exclude it from the structural sample comparison.
+        actual_partial.metadata.pop("tito_session_mismatch", None)
         assert actual_partial == expected_item.partial_sample
 
 
@@ -127,23 +131,40 @@ def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_param
     return run_generate(env, sample, sampling_params, variant=variant)
 
 
-def expected_request(input_ids: list[int], sampling_params: dict | None = None) -> dict:
+def expected_request(
+    input_ids: list[int],
+    sampling_params: dict | None = None,
+    *,
+    return_routed_experts: bool = False,
+) -> dict:
     return {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
-        "return_routed_experts": False,
+        "return_routed_experts": return_routed_experts,
     }
 
 
-def expected_openai_request(messages: list[dict]) -> dict:
+def expected_openai_request(messages: list[dict], **extra) -> dict:
     return {
         "messages": messages,
         "model": "default",
         "tools": SAMPLE_TOOLS,
+        # Injected by the session route for TITO token tracking
         "logprobs": True,
         "return_prompt_token_ids": True,
+        "return_meta_info": True,
+        "no_stop_trim": False,
+        **extra,
     }
+
+
+_SESSION_PRETOKENIZED_KEYS = {"input_ids"}
+
+
+def _strip_pretokenized(requests: list[dict]) -> list[dict]:
+    """Strip session-injected pretokenized fields for deterministic comparison."""
+    return [{k: v for k, v in r.items() if k not in _SESSION_PRETOKENIZED_KEYS} for r in requests]
 
 
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
@@ -195,7 +216,7 @@ class TestBasicMultiTurn:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         if is_agentic_variant(variant):
-            assert result.requests == [
+            assert _strip_pretokenized(result.requests) == [
                 expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN),
                 expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT),
             ]
@@ -457,7 +478,7 @@ class TestThreeTurn:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         if is_agentic_variant(variant):
-            assert result.requests == [
+            assert _strip_pretokenized(result.requests) == [
                 expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN),
                 expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT),
                 expected_openai_request(S.OPENAI_MESSAGES_THIRD_TURN_FROM_CLIENT),
@@ -535,9 +556,6 @@ class TestRoutedExpertsMultiTurn:
         indirect=True,
     )
     def test_two_turns_routed_experts(self, variant, generation_env):
-        if is_agentic_variant(variant):
-            pytest.skip("TODO: implement")
-
         S = TwoTurnStub
         num_layers, moe_router_topk = 2, 4
         generation_env.args.num_layers = num_layers
@@ -571,7 +589,26 @@ class TestRoutedExpertsMultiTurn:
         generation_env.mock_server.process_fn = process_fn
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT), DEFAULT_SAMPLING_PARAMS)
 
+        if is_agentic_variant(variant):
+            assert len(result.requests) == 2
+            assert result.requests[0]["messages"] == S.OPENAI_MESSAGES_FIRST_TURN
+            assert result.requests[1]["messages"] == S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT
+            for req in result.requests:
+                assert req["logprobs"] is True
+                assert req["return_prompt_token_ids"] is True
+                assert req["return_meta_info"] is True
+                assert req["no_stop_trim"] is False
+                assert req["return_routed_experts"] is True
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS, return_routed_experts=True),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS, return_routed_experts=True),
+            ]
+
         sample = result.sample[-1] if isinstance(result.sample, list) else result.sample
+        expected_second_turn_log_probs = [-1 / 128 * i for i in range(token_len(S.SECOND_RESPONSE))]
+        assert sample.rollout_log_probs is not None
+        assert sample.rollout_log_probs[-len(expected_second_turn_log_probs) :] == expected_second_turn_log_probs
         assert sample.rollout_routed_experts is not None
         assert sample.rollout_routed_experts.shape == second_routed_experts.shape
         np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)
@@ -604,6 +641,18 @@ class TestAgentMetadata:
             for key, value in _AGENT_METADATA.items():
                 assert key in s.metadata, f"metadata should contain key '{key}'"
                 assert s.metadata[key] == value, f"metadata['{key}'] should be {value}, got {s.metadata[key]}"
+
+    def test_tito_session_mismatch_present_in_metadata(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+        sample = result.sample if not isinstance(result.sample, list) else result.sample[-1]
+        assert "tito_session_mismatch" in sample.metadata, "tito_session_mismatch should be present in sample metadata"
+        mismatches = sample.metadata["tito_session_mismatch"]
+        assert isinstance(mismatches, list)
+        for m in mismatches:
+            assert {"type", "segment_index", "expected_text", "actual_text", "detail"} == set(m.keys())
 
     def test_agent_returns_none_metadata_unchanged(self, variant, generation_env):
         generation_env.mock_server.process_fn = TwoTurnStub.process_fn

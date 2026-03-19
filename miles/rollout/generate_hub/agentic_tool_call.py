@@ -57,7 +57,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         metadata=input.sample.metadata,
     )
 
-    records = await tracer.collect_records()
+    records, session_metadata = await tracer.collect_records()
 
     if not records:
         logger.warning("No model calls recorded for sample")
@@ -65,13 +65,32 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
-    samples = compute_samples_from_openai_records(input.sample, records, input.state.tokenizer)
+    samples = compute_samples_from_openai_records(
+        input.args,
+        input.sample,
+        records,
+        input.state.tokenizer,
+        accumulated_token_ids=session_metadata.get("accumulated_token_ids"),
+        max_trim_tokens=session_metadata.get("max_trim_tokens", 0),
+    )
 
     for s in samples:
         s.metadata.update(agent_metadata or {})
 
     if not input.args.generate_multi_samples:
-        samples = merge_samples(samples, input.state.tokenizer)
+        if all(s.status == Sample.Status.COMPLETED for s in samples[:-1]):
+            samples = merge_samples(samples, input.state.tokenizer)
+        else:
+            logger.warning(
+                "Skipping multi-turn merge: %d/%d intermediate samples are not COMPLETED, "
+                "returning last sample only",
+                sum(1 for s in samples[:-1] if s.status != Sample.Status.COMPLETED),
+                len(samples) - 1,
+            )
+            samples = samples[-1]
+        samples.metadata.update(session_metadata)
+    else:
+        samples[-1].metadata.update(session_metadata)
     return GenerateFnOutput(samples=samples)
 
 
@@ -96,12 +115,6 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
             if dst not in request_kwargs:
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
-
-    # return_prompt_token_ids: get prompt token IDs without computing logprobs (zero cost, cache-safe)
-    # logprobs: get output token IDs + logprobs (via logprobs.content[].token_id)
-    # NOTE: do NOT set logprob_start_len=0, that would destroy SGLang's prefix cache.
-    request_kwargs["return_prompt_token_ids"] = True
-    request_kwargs["logprobs"] = True
 
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys
