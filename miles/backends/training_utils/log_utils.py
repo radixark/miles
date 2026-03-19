@@ -194,7 +194,7 @@ def log_rollout_data(
     if args.log_multi_turn:
         log_multi_turn_data(rollout_id, args, rollout_data, parallel_state)
     if args.log_passrate:
-        log_passrate(rollout_id, args, rollout_data)
+        log_passrate(rollout_id, args, rollout_data, parallel_state)
 
     if args.log_correct_samples:
         if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
