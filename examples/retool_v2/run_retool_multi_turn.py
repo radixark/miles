@@ -19,7 +19,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_path: str = "/root/Qwen3-4B_miles/retool_v2_multi_turn"
     prompt_data: str = "/root/dapo-math-17k/dapo-math-17k.jsonl"
     generate_max_turns: int = 16
-    rollout_num_gpus_per_engine: int = 4
+    rollout_num_gpus_per_engine: int = 2
     extra_args: str = ""
 
     # resolved in __post_init__, not set by user
@@ -102,11 +102,11 @@ def execute(args: ScriptArgs):
         "--custom-rm-path examples.retool_v2.tool_sandbox.reward_func "
         "--reward-key score "
         "--num-rollout 3000 "
-        "--rollout-batch-size 16 "
+        "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 1 "
-        "--global-batch-size 128 "
+        "--global-batch-size 256 "
         "--balance-data "
     )
 
@@ -144,8 +144,15 @@ def execute(args: ScriptArgs):
     )
 
     perf_args = (
-        f"--tensor-model-parallel-size {2 if args.num_gpus_per_node == 8 else 1} "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
+        "--pipeline-model-parallel-size 1 "
+        "--context-parallel-size 1 "
+        "--expert-model-parallel-size 1 "
+        "--expert-tensor-parallel-size 1 "
+        "--recompute-granularity full "
+        "--recompute-method uniform "
+        "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 9216 "
     )
@@ -186,6 +193,7 @@ def execute(args: ScriptArgs):
         megatron_model_type=megatron_model_type,
         extra_env_vars={
             "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+            "DEPRECATED_MEGATRON_COMPATIBLE": "1",
             "PYTHONPATH": "/root/Megatron-LM/:/root/miles",
         },
     )

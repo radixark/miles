@@ -96,13 +96,6 @@ def format_conversation_with_tools(
 
 def postprocess_predictions(prediction: str):
     """Extract action and content from prediction string"""
-    # Check for Answer: \boxed{...} format first (explicit answer marker)
-    answer_pattern = r"Answer:\s*\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}"
-    answer_match = re.search(answer_pattern, prediction, re.DOTALL)
-    if answer_match:
-        content = answer_match.group(1).strip()
-        return "answer", content
-
     # Check for bare \boxed{...} (model may omit "Answer:" prefix)
     boxed_pattern = r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}"
     boxed_match = re.search(boxed_pattern, prediction, re.DOTALL)
@@ -314,10 +307,6 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         next_obs, done = await execute_predictions(cur_response)
         if done:
             break
-
-        # # Model finished naturally (EOS) but no tool was executed — accept as-is (matches v2 behavior)
-        # if output["meta_info"]["finish_reason"]["type"] == "stop" and "<interpreter>" not in next_obs:
-        #     break
 
         # Count tool calls (when we get interpreter output, it means a tool
         # was called)
