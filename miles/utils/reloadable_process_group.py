@@ -157,6 +157,14 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
             group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend="nccl")
             reloadable_group.group = group
 
+        # Synchronize all ranks after reload to prevent race conditions
+        # where fast ranks start collective ops before slow ranks finish reloading
+        torch.cuda.synchronize()
+        from miles.utils.distributed_utils import get_gloo_group
+
+        dist.barrier(group=get_gloo_group())
+        logger.info(f"Process group reload complete and synchronized in pid {pid}")
+
     def rank(self) -> int:
         return self.group.rank()
 
