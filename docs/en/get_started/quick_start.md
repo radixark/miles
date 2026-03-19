@@ -89,7 +89,17 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     --save /root/GLM-Z1-9B-0414_torch_dist
 ```
 
-For larger models, you can use `torchrun` to start the conversion script to convert with multi-gpus or even multi-nodes.
+For larger models (e.g. Qwen3-30B-A3B), the single-GPU command above may run out of memory or be very slow. Use `torchrun` to distribute the conversion across multiple GPUs:
+
+```bash
+PYTHONPATH=/root/Megatron-LM torchrun --nproc_per_node=8 tools/convert_hf_to_torch_dist.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/Qwen3-30B-A3B \
+    --save /root/Qwen3-30B-A3B_torch_dist
+```
+
+For multi-node conversion, add `--nnodes` and `--node_rank` to the `torchrun` command.
+
 Note: When converting the kimi-k2 model weights, you need to open config.json in the model path and change "model_type": "kimi_k2" to "model_type": "deepseek_v3".
 
 ### Convert from Megatron Format to Hugging Face Format
