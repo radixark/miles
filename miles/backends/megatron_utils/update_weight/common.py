@@ -4,10 +4,12 @@ import re
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
 
+import ray
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.utils.types import ParamInfo
@@ -270,3 +272,22 @@ def collect_named_tensors_for_weight_transfer(
     ):
         if is_expert == (".experts." in name):
             yield name, tensor
+
+
+def post_process_weights(
+    restore_weights_before_load: bool,
+    post_process_quantization: bool,
+    rollout_engines: Sequence[ActorHandle],
+):
+    """
+    Trigger post-process for int4/fp4 quantization on all rollout engines.
+    """
+    ray.get(
+        [
+            engine.post_process_weights.remote(
+                restore_weights_before_load=restore_weights_before_load,
+                post_process_quantization=post_process_quantization,
+            )
+            for engine in rollout_engines
+        ]
+    )
