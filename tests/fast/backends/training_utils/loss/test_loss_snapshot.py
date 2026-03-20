@@ -116,9 +116,8 @@ def mode(request):
     assert not (snapshot and compare), "Cannot use --snapshot and --compare together"
     if snapshot:
         return "snapshot"
-    if compare:
-        return "compare"
-    pytest.skip("Pass --snapshot or --compare to run these tests")
+    # Default to compare mode (CI runs `pytest tests/fast` without flags)
+    return "compare"
 
 
 # ---------------------------------------------------------------------------
