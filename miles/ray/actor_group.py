@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import os
 
 import ray
-from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.utils.placement_group_utils import PlacementGroupSlice
 
 
 class RayTrainGroup:
@@ -29,9 +31,9 @@ class RayTrainGroup:
     def __init__(
         self,
         args,
-        num_nodes,
-        num_gpus_per_node,
-        pg: tuple[PlacementGroup, list[int], list[int]],
+        num_nodes: int,
+        num_gpus_per_node: int,
+        pg: PlacementGroupSlice,
         num_gpus_per_actor: float = 1,
         role: str = "actor",
     ) -> None:
@@ -43,12 +45,8 @@ class RayTrainGroup:
         # Allocate the GPUs for actors w/o instantiating them
         self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
 
-    def _allocate_gpus_for_actor(self, pg, num_gpus_per_actor):
+    def _allocate_gpus_for_actor(self, pg_slice: PlacementGroupSlice, num_gpus_per_actor: float) -> None:
         world_size = self._num_nodes * self._num_gpus_per_node
-
-        # Use placement group to lock resources for models of same type
-        assert pg is not None
-        pg, reordered_bundle_indices, _reordered_gpu_ids = pg
 
         env_vars = {
             # because sglang will always set NCCL_CUMEM_ENABLE to 0
@@ -93,8 +91,8 @@ class RayTrainGroup:
                 num_cpus=num_gpus_per_actor,
                 num_gpus=num_gpus_per_actor,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg,
-                    placement_group_bundle_index=reordered_bundle_indices[rank],
+                    placement_group=pg_slice.pg,
+                    placement_group_bundle_index=pg_slice.reordered_bundle_indices[rank],
                 ),
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:

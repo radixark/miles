@@ -34,6 +34,9 @@ def reset_arg(parser, name, **kwargs):
         parser.add_argument(name, **kwargs)
 
 
+_FT_CHOICES = ["rollout", "train"]
+
+
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
         # Ray
@@ -475,7 +478,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-fault-tolerance",
                 action="store_true",
                 default=False,
-                help="Whether to enable the fault tolerance function during rollout.",
+                help="Enable fault tolerance. Use --ft-components to select which components.",
+            )
+            parser.add_argument(
+                "--ft-components",
+                nargs="+",
+                default=None,
+                choices=_FT_CHOICES,
+                help="FT components to enable (requires --use-fault-tolerance). "
+                "Choices: rollout, train. Default when omitted: rollout.",
             )
             parser.add_argument(
                 "--rollout-health-check-interval",
@@ -494,6 +505,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
+            )
+            parser.add_argument(
+                "--placement-persist-path",
+                type=str,
+                default=None,
+                help="Path to persist PG bundle-to-node snapshot. "
+                "On restart, the new PG reuses the old node-role mapping for stability. "
+                "Typically on shared storage (e.g. {save_dir}/pg_snapshot.json).",
             )
             return parser
 
@@ -1627,6 +1646,19 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+_FT_DEFAULT_COMPONENTS: frozenset[str] = frozenset({"rollout"})
+
+
+def _resolve_ft_components(args: argparse.Namespace) -> frozenset[str]:
+    if not args.use_fault_tolerance:
+        if args.ft_components is not None:
+            logger.warning("--ft-components is ignored without --use-fault-tolerance")
+        return frozenset()
+    if args.ft_components is None:
+        return _FT_DEFAULT_COMPONENTS
+    return frozenset(args.ft_components)
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -1885,6 +1917,18 @@ def miles_validate_args(args):
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+
+    if getattr(args, "use_fault_tolerance", False) and getattr(args, "placement_persist_path", None) is None:
+        save_dir = getattr(args, "save", None)
+        if save_dir:
+            args.placement_persist_path = os.path.join(save_dir, "pg_snapshot.json")
+
+    if getattr(args, "use_fault_tolerance", False):
+        assert (
+            getattr(args, "placement_persist_path", None) is not None
+        ), "--use-fault-tolerance requires --placement-persist-path (or --save to auto-derive it)"
+
+    args.ft_components = _resolve_ft_components(args)
 
 
 def hf_validate_args(args, hf_config):

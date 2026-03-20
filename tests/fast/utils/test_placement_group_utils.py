@@ -1,0 +1,563 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from miles.utils.placement_group_utils import (
+    BundleLocationSnapshot,
+    PlacementGroupInfo,
+    _bundle_sort_key,
+    _load_snapshots,
+    _partial_resort_snapshots,
+    _save_snapshots,
+)
+
+
+class _FakePlacementGroup:
+    """Minimal stand-in for ray.util.placement_group.PlacementGroup."""
+
+
+def _make_pg_info(snapshots: list[BundleLocationSnapshot]) -> PlacementGroupInfo:
+    return PlacementGroupInfo(pg=_FakePlacementGroup(), _bundle_location_snapshots=snapshots)
+
+
+def _make_six_bundle_snapshots() -> list[BundleLocationSnapshot]:
+    """6 bundles across 3 nodes (2 GPUs each), already sorted."""
+    return [
+        BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+        BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+        BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.2", gpu_id="0"),
+        BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.2", gpu_id="1"),
+        BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+        BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+    ]
+
+
+class TestBundleSortKey:
+    def test_sorts_by_ip_then_gpu_id(self) -> None:
+        snapshots = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.2", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.2", gpu_id="0"),
+        ]
+        result = sorted(snapshots, key=_bundle_sort_key)
+        assert [(s.node_ip, s.gpu_id) for s in result] == [
+            ("10.0.0.1", "0"),
+            ("10.0.0.1", "1"),
+            ("10.0.0.2", "0"),
+            ("10.0.0.2", "1"),
+        ]
+
+    def test_hostname_fallback_to_ascii(self) -> None:
+        """Non-resolvable hostnames use ASCII char codes for stable sorting."""
+        snapshots = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="node-b", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="node-a", gpu_id="0"),
+        ]
+        result = sorted(snapshots, key=_bundle_sort_key)
+        assert [s.node_ip for s in result] == ["node-a", "node-b"]
+
+    def test_same_node_sorted_by_gpu_id(self) -> None:
+        snapshots = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.1", gpu_id="2"),
+        ]
+        result = sorted(snapshots, key=_bundle_sort_key)
+        assert [s.gpu_id for s in result] == ["1", "2", "3"]
+
+
+class TestBundleLocationSnapshot:
+    def test_fields(self) -> None:
+        s = BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="2")
+        assert s.bundle_index == 3
+        assert s.node_ip == "10.0.0.1"
+        assert s.gpu_id == "2"
+
+    def test_frozen(self) -> None:
+        s = BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0")
+        with pytest.raises(AttributeError):
+            s.node_ip = "10.0.0.2"  # type: ignore[misc]
+
+
+class TestPlacementGroupInfo:
+    def test_reordered_bundle_indices(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots()[:3])
+        assert info.reordered_bundle_indices == [3, 0, 5]
+
+    def test_reordered_gpu_ids(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots()[:3])
+        assert info.reordered_gpu_ids == ["0", "1", "0"]
+
+    def test_empty_bundles(self) -> None:
+        info = PlacementGroupInfo(pg=_FakePlacementGroup(), _bundle_location_snapshots=[])
+        assert info.reordered_bundle_indices == []
+        assert info.reordered_gpu_ids == []
+
+    def test_getitem_rejects_int_index(self) -> None:
+        info = _make_pg_info([BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0")])
+        with pytest.raises(TypeError, match="slices"):
+            info[0]
+
+    def test_getitem_rejects_step(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots()[:2])
+        with pytest.raises(ValueError, match="step"):
+            info[0:2:2]
+
+
+class TestPlacementGroupSlice:
+    def test_slice_offset_and_count(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[2:4]
+        assert s.reordered_bundle_indices == [5, 1]
+        assert s.reordered_gpu_ids == ["0", "1"]
+
+    def test_slice_from_start(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[0:4]
+        assert s.reordered_bundle_indices == [3, 0, 5, 1]
+        assert s.reordered_gpu_ids == ["0", "1", "0", "1"]
+
+    def test_slice_to_end(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[4:6]
+        assert s.reordered_bundle_indices == [4, 2]
+        assert s.reordered_gpu_ids == ["0", "1"]
+
+    def test_slice_full(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[0:6]
+        assert s.reordered_bundle_indices == info.reordered_bundle_indices
+        assert s.reordered_gpu_ids == info.reordered_gpu_ids
+
+    def test_slice_open_end(self) -> None:
+        """info[4:] should slice to the end."""
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[4:]
+        assert s.reordered_bundle_indices == [4, 2]
+        assert s.reordered_gpu_ids == ["0", "1"]
+
+    def test_slice_pg_returns_owner_pg(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[0:2]
+        assert s.pg is info.pg
+
+    def test_slice_reflects_snapshot_replacement(self) -> None:
+        """Slice sees updated data when owner's snapshot list is replaced (refresh)."""
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[2:4]
+        assert s.reordered_bundle_indices == [5, 1]
+
+        info._bundle_location_snapshots = _partial_resort_snapshots(
+            info._bundle_location_snapshots,
+            [
+                BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+                BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+                BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+                BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+                BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+                BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+            ],
+        )
+
+        assert s.reordered_bundle_indices == [1, 5]
+        assert s.reordered_gpu_ids == ["1", "3"]
+
+    def test_multiple_slices_share_owner(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        actor_slice = info[0:2]
+        rollout_slice = info[4:6]
+
+        assert actor_slice._owner is rollout_slice._owner
+        assert actor_slice.pg is rollout_slice.pg
+
+    def test_single_bundle_slice(self) -> None:
+        info = _make_pg_info(_make_six_bundle_snapshots())
+        s = info[3:4]
+        assert s.reordered_bundle_indices == [1]
+        assert s.reordered_gpu_ids == ["1"]
+
+
+class TestPartialResortSnapshots:
+    """Tests for _partial_resort_snapshots (pure function, no Ray)."""
+
+    def test_no_change_preserves_snapshots(self) -> None:
+        """No node_ip changes -> output equals input."""
+        old = _make_six_bundle_snapshots()
+        new = list(old)
+        result = _partial_resort_snapshots(old, new)
+        assert result == old
+
+    def test_does_not_mutate_inputs(self) -> None:
+        old = _make_six_bundle_snapshots()
+        old_copy = list(old)
+        new = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        new_copy = list(new)
+        _partial_resort_snapshots(old, new)
+        assert old == old_copy
+        assert new == new_copy
+
+    def test_partial_node_change_reorders_only_affected_ranks(self) -> None:
+        """node_2 replaced by node_4 -> only ranks 2,3 reordered, rest unchanged."""
+        old = _make_six_bundle_snapshots()
+        new = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        assert result == [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+
+    def test_all_nodes_changed_degrades_to_full_sort(self) -> None:
+        """All nodes replaced -> all ranks reordered (same as initial sort)."""
+        old = _make_six_bundle_snapshots()
+        new = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.7", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.8", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.7", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.9", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.8", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.9", gpu_id="0"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        assert result == [
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.7", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.7", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.8", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.8", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.9", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.9", gpu_id="1"),
+        ]
+
+    def test_two_nodes_changed(self) -> None:
+        """2 of 3 nodes replaced -> 4 changed ranks re-sorted, 2 unchanged."""
+        old = _make_six_bundle_snapshots()
+        # node_2 (10.0.0.2) -> node_4 (10.0.0.4), node_3 (10.0.0.3) -> node_5 (10.0.0.5)
+        new = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.5", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.5", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        assert result == [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.5", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.5", gpu_id="1"),
+        ]
+
+    def test_gpu_id_change_on_same_node_treated_as_changed(self) -> None:
+        """gpu_id change on the same node_ip IS treated as a change (location key includes gpu_id)."""
+        old = _make_six_bundle_snapshots()
+        # node 10.0.0.1: gpu 0→5, gpu 1→6
+        new = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="5"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="6"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.2", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+        # ranks 0,1 unmatched (old gpu 0,1 not in new), ranks 2-5 matched
+        # unmatched new: (10.0.0.1, 5) and (10.0.0.1, 6), sorted → (5, 6)
+        assert result[0] == BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="5")
+        assert result[1] == BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="6")
+        assert result[2:] == old[2:]
+
+    def test_single_rank_change(self) -> None:
+        """Only one bundle changes node -> only that rank is updated."""
+        old = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.5", gpu_id="2"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        assert result == [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.5", gpu_id="2"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+
+    def test_node_swap(self) -> None:
+        """Two bundles swap nodes (A->B, B->A) — sort decides final rank assignment."""
+        old = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        assert result == [
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="0"),
+        ]
+
+    def test_new_snapshots_order_irrelevant(self) -> None:
+        """new_snapshots order doesn't matter — lookup is by (node_ip, gpu_id)."""
+        old = _make_six_bundle_snapshots()
+        new_forward = [
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.4", gpu_id="3"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        new_reversed = list(reversed(new_forward))
+
+        assert _partial_resort_snapshots(old, new_forward) == _partial_resort_snapshots(old, new_reversed)
+
+    def test_shuffled_old_snapshots_preserves_surviving_positions(self) -> None:
+        """Old snapshots in non-sorted order (post previous partial-resort). Surviving bundles keep positions."""
+        old = [
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.2", gpu_id="1"),
+        ]
+        # Node 10.0.0.2 replaced by 10.0.0.9; nodes 1 and 3 survive
+        new = [
+            BundleLocationSnapshot(bundle_index=10, node_ip="10.0.0.3", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=11, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=12, node_ip="10.0.0.9", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=13, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=14, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=15, node_ip="10.0.0.9", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        # Surviving positions: rank 0 (10.0.0.3, "1"), rank 1 (10.0.0.1, "0"),
+        # rank 3 (10.0.0.1, "1"), rank 4 (10.0.0.3, "0")
+        assert (result[0].node_ip, result[0].gpu_id) == ("10.0.0.3", "1")
+        assert (result[1].node_ip, result[1].gpu_id) == ("10.0.0.1", "0")
+        assert (result[3].node_ip, result[3].gpu_id) == ("10.0.0.1", "1")
+        assert (result[4].node_ip, result[4].gpu_id) == ("10.0.0.3", "0")
+        # Vacated ranks 2, 5 filled with new node sorted: (10.0.0.9, "0"), (10.0.0.9, "1")
+        assert (result[2].node_ip, result[2].gpu_id) == ("10.0.0.9", "0")
+        assert (result[5].node_ip, result[5].gpu_id) == ("10.0.0.9", "1")
+
+    def test_shuffled_old_snapshots_all_survive(self) -> None:
+        """Old snapshots in reverse order, all nodes survive → every rank preserved."""
+        old = list(reversed(_make_six_bundle_snapshots()))
+        new_same_locations = [
+            BundleLocationSnapshot(bundle_index=10 + i, node_ip=old[i].node_ip, gpu_id=old[i].gpu_id)
+            for i in range(len(old))
+        ]
+        result = _partial_resort_snapshots(old, new_same_locations)
+        assert [(s.node_ip, s.gpu_id) for s in result] == [(s.node_ip, s.gpu_id) for s in old]
+
+    def test_two_of_four_nodes_changed(self) -> None:
+        """8 bundles across 4 nodes. Nodes 2,3 replaced; nodes 1,4 survive."""
+        old = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.2", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=6, node_ip="10.0.0.4", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=7, node_ip="10.0.0.4", gpu_id="1"),
+        ]
+        # Nodes 2→5, 3→6; nodes 1,4 survive
+        new = [
+            BundleLocationSnapshot(bundle_index=10, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=11, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=12, node_ip="10.0.0.5", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=13, node_ip="10.0.0.5", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=14, node_ip="10.0.0.6", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=15, node_ip="10.0.0.6", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=16, node_ip="10.0.0.4", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=17, node_ip="10.0.0.4", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+
+        # Surviving ranks: 0,1 (node 1) and 6,7 (node 4)
+        assert (result[0].node_ip, result[0].gpu_id) == ("10.0.0.1", "0")
+        assert (result[1].node_ip, result[1].gpu_id) == ("10.0.0.1", "1")
+        assert (result[6].node_ip, result[6].gpu_id) == ("10.0.0.4", "0")
+        assert (result[7].node_ip, result[7].gpu_id) == ("10.0.0.4", "1")
+
+        # Vacated ranks 2,3,4,5 filled with new nodes sorted:
+        # (10.0.0.5, "0"), (10.0.0.5, "1"), (10.0.0.6, "0"), (10.0.0.6, "1")
+        changed = [(result[i].node_ip, result[i].gpu_id) for i in range(2, 6)]
+        assert changed == [
+            ("10.0.0.5", "0"),
+            ("10.0.0.5", "1"),
+            ("10.0.0.6", "0"),
+            ("10.0.0.6", "1"),
+        ]
+
+
+class TestPartialResortSnapshotsCrossPg:
+    """Tests for cross-PG restart scenario (old snapshots from backup file)."""
+
+    def test_all_nodes_survive_perfect_affinity(self) -> None:
+        """All nodes alive after restart → 100% position preservation."""
+        old = _make_six_bundle_snapshots()
+        # New PG: same nodes, different bundle_indices
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.2", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.2", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+        assert [(s.node_ip, s.gpu_id) for s in result] == [
+            ("10.0.0.1", "0"),
+            ("10.0.0.1", "1"),
+            ("10.0.0.2", "0"),
+            ("10.0.0.2", "1"),
+            ("10.0.0.3", "0"),
+            ("10.0.0.3", "1"),
+        ]
+        # bundle_indices come from the NEW PG
+        assert [s.bundle_index for s in result] == [0, 1, 2, 3, 4, 5]
+
+    def test_one_node_replaced(self) -> None:
+        """Node 10.0.0.2 evicted, replaced by 10.0.0.4 → other nodes keep positions."""
+        old = _make_six_bundle_snapshots()
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.1", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.1", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.4", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.4", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.3", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.3", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+        assert [(s.node_ip, s.gpu_id) for s in result] == [
+            ("10.0.0.1", "0"),
+            ("10.0.0.1", "1"),
+            ("10.0.0.4", "0"),
+            ("10.0.0.4", "1"),
+            ("10.0.0.3", "0"),
+            ("10.0.0.3", "1"),
+        ]
+
+    def test_cross_pg_all_nodes_replaced(self) -> None:
+        """All nodes different → degrades to full sort (same as fresh PG creation)."""
+        old = _make_six_bundle_snapshots()
+        new = [
+            BundleLocationSnapshot(bundle_index=0, node_ip="10.0.0.7", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=1, node_ip="10.0.0.7", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=2, node_ip="10.0.0.8", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=3, node_ip="10.0.0.8", gpu_id="1"),
+            BundleLocationSnapshot(bundle_index=4, node_ip="10.0.0.9", gpu_id="0"),
+            BundleLocationSnapshot(bundle_index=5, node_ip="10.0.0.9", gpu_id="1"),
+        ]
+        result = _partial_resort_snapshots(old, new)
+        assert result == sorted(new, key=_bundle_sort_key)
+
+
+class TestSnapshotPersistence:
+    def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
+        snapshots = _make_six_bundle_snapshots()
+        path = tmp_path / "pg_snapshot.json"
+        _save_snapshots(path, snapshots)
+        loaded = _load_snapshots(path)
+        assert loaded == snapshots
+
+    def test_load_nonexistent_returns_none(self, tmp_path: Path) -> None:
+        assert _load_snapshots(tmp_path / "does_not_exist.json") is None
+
+    def test_load_corrupt_json_returns_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.json"
+        path.write_text("not valid json!!!")
+        assert _load_snapshots(path) is None
+
+    def test_load_wrong_schema_returns_none(self, tmp_path: Path) -> None:
+        """Valid JSON but wrong field names → TypeError caught, returns None."""
+        path = tmp_path / "wrong_schema.json"
+        path.write_text('[{"index": 0, "ip": "1.2.3.4", "gpu": "0"}]')
+        assert _load_snapshots(path) is None
+
+    def test_save_and_load_empty_list(self, tmp_path: Path) -> None:
+        path = tmp_path / "empty.json"
+        _save_snapshots(path, [])
+        assert _load_snapshots(path) == []
+
+    def test_save_creates_parent_dirs(self, tmp_path: Path) -> None:
+        path = tmp_path / "sub" / "dir" / "pg_snapshot.json"
+        _save_snapshots(path, _make_six_bundle_snapshots())
+        assert path.exists()
+
+    def test_save_atomic_via_rename(self, tmp_path: Path) -> None:
+        """Ensure .tmp file is cleaned up after save."""
+        path = tmp_path / "pg_snapshot.json"
+        _save_snapshots(path, _make_six_bundle_snapshots())
+        assert not path.with_suffix(".tmp").exists()
+        assert path.exists()
+
+    def test_post_init_saves_when_path_and_snapshots_provided(self, tmp_path: Path) -> None:
+        """PlacementGroupInfo.__post_init__ auto-saves snapshots to disk."""
+        path = tmp_path / "auto_save.json"
+        snapshots = _make_six_bundle_snapshots()
+        PlacementGroupInfo(
+            pg=_FakePlacementGroup(),
+            _bundle_location_snapshots=snapshots,
+            _snapshot_path=path,
+        )
+        loaded = _load_snapshots(path)
+        assert loaded == snapshots
+
+    def test_post_init_skips_save_when_no_path(self) -> None:
+        """No snapshot_path → no file written (no error either)."""
+        PlacementGroupInfo(
+            pg=_FakePlacementGroup(),
+            _bundle_location_snapshots=_make_six_bundle_snapshots(),
+            _snapshot_path=None,
+        )
+
+    def test_post_init_skips_save_when_empty_snapshots(self, tmp_path: Path) -> None:
+        """Empty snapshot list + path → no file written."""
+        path = tmp_path / "should_not_exist.json"
+        PlacementGroupInfo(
+            pg=_FakePlacementGroup(),
+            _bundle_location_snapshots=[],
+            _snapshot_path=path,
+        )
+        assert not path.exists()

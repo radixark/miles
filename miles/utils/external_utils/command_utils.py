@@ -92,6 +92,8 @@ class ExecuteTrainConfig:
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+    full_fault_tolerance: bool = False
+    ft_launch_extra_args: str = ""
 
 
 def execute_train(
@@ -185,9 +187,11 @@ def execute_train(
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
             f'ray job submit --address="http://127.0.0.1:8265" '
+            f"{'-- python -m miles.utils.ft launch ' + config.ft_launch_extra_args + ' ' if config.full_fault_tolerance else ''}"
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
+            f"{'--use-fault-tolerance --ft-components rollout train ' if config.full_fault_tolerance else ''}"
             f"{train_args}"
         )
 

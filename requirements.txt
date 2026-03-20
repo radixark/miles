@@ -1,13 +1,19 @@
 accelerate
 blobfile
 datasets
+frozendict
 httpx[http2]
+kubernetes_asyncio
 mcp[cli]
 memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
 omegaconf
 pillow
+polars
+psutil
 pybase64
 pylatexenc
+pytest
+pytest-asyncio
 pyyaml
 qwen_vl_utils # for VLM
 ray[default]

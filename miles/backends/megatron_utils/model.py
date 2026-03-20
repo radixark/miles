@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import gc
 import logging
@@ -6,6 +8,7 @@ from argparse import Namespace
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 from megatron.core import mpu
@@ -29,16 +32,12 @@ from ..training_utils.log_utils import aggregate_forward_results, aggregate_trai
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
-from .ci_utils import (
-    check_model_hashes,
-    check_peak_gpu_memory_after_load,
-    compute_model_hashes_by_layer,
-    save_model_hashes,
-)
-from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
+
+if TYPE_CHECKING:
+    from miles.utils.ft.agents.core.training_rank_agent import FtTrainingRankAgent
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +501,7 @@ def train(
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
     parallel_state: ParallelState,
+    ft_agent: FtTrainingRankAgent | None = None,
 ) -> None:
     """Run training over a rollout consisting of multiple steps.
 
@@ -515,6 +515,7 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
+        ft_agent: Optional FtTrainingRankAgent for fault tolerance heartbeat.
     """
     args = get_args()
 
@@ -550,7 +551,11 @@ def train(
     pre_hook_enabled = False
 
     if args.reset_optimizer_states:
-        if is_megatron_main_rank():
+        if (
+            mpu.get_data_parallel_rank(with_context_parallel=True) == 0
+            and mpu.get_tensor_model_parallel_rank() == 0
+            and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
+        ):
             print("Reset optimizer states")
         for chained_optimizer in optimizer.chained_optimizers:
             for group in chained_optimizer.optimizer.param_groups:
@@ -628,9 +633,17 @@ def train(
 
                     check_mtp_loss(mtp_losses)
 
+        accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
+
+        if ft_agent is not None:
+            ft_agent.step()
+
         # per train step log.
-        if is_megatron_main_rank():
-            accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
+        if (
+            mpu.get_data_parallel_rank(with_context_parallel=True) == 0
+            and mpu.get_tensor_model_parallel_rank() == 0
+            and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
+        ):
             role = getattr(model[0], "role", "actor")
             role_tag = "" if role == "actor" else f"{role}-"
 
@@ -685,9 +698,6 @@ def save(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
     """
     args = get_args()
-    hashes = None
-    if args.ci_test and args.ci_save_model_hash:
-        hashes = compute_model_hashes_by_layer(model)
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
@@ -705,8 +715,6 @@ def save(
             preprocess_common_state_dict_fn=None,
         )
 
-    if hashes is not None:
-        save_model_hashes(args, model, iteration, hashes)
     if should_disable_forward_pre_hook(args):
         enable_forward_pre_hook(model)
 
@@ -801,10 +809,7 @@ def initialize_model_and_optimizer(
         checkpointing_context={},
         skip_load_to_model_and_opt=False,
     )
-    check_peak_gpu_memory_after_load(args)
     clear_memory()
-
-    check_model_hashes(args, model, iteration)
 
     opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
