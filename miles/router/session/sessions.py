@@ -95,6 +95,9 @@ def setup_session_routes(app, router: "MilesRouter"):
 
         result = await router._do_proxy(request, "v1/chat/completions", body=body)
 
+        # If SGLang returned a non-200 error (e.g. 400 for context too long),
+        # pass it through to the agent without recording — the agent can retry
+        # or handle the error.
         if result["status_code"] != 200:
             return router._build_proxy_response(result)
 
