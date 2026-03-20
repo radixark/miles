@@ -76,23 +76,16 @@ def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
     SGLang validates tools with ``protocol.Tool`` (Pydantic) and then passes
     ``item.function.model_dump()`` into the template.  This stabilizes field
     order and injects defaults like ``strict=False``.
-
-    Falls back to plain extraction when ``sglang`` is not importable.
     """
     if not tools:
         return None
 
-    try:
-        from pydantic import TypeAdapter
-        from sglang.srt.entrypoints.openai.protocol import Tool
+    from pydantic import TypeAdapter
+    from sglang.srt.entrypoints.openai.protocol import Tool
 
-        wrapped = [
-            t if isinstance(t, dict) and "function" in t else {"type": "function", "function": t} for t in tools
-        ]
-        validated = TypeAdapter(list[Tool]).validate_python(wrapped)
-        return [tool.function.model_dump() for tool in validated]
-    except Exception:
-        return [t["function"] if "function" in t else t for t in tools]
+    wrapped = [t if isinstance(t, dict) and "function" in t else {"type": "function", "function": t} for t in tools]
+    validated = TypeAdapter(list[Tool]).validate_python(wrapped)
+    return [tool.function.model_dump() for tool in validated]
 
 
 def apply_chat_template_from_str(

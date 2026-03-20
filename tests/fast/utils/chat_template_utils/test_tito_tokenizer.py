@@ -127,16 +127,18 @@ class TestTrailingConfig:
 
 class TestFactory:
     def test_factory_qwen3(self):
+        """Auto-detection should agree with the Qwen3 subclass's hardcoded default."""
         tok = _get_tokenizer("Qwen/Qwen3-4B")
-        tito = get_tito_tokenizer(tok, tokenizer_type="qwen3")
-        assert isinstance(tito, Qwen3TITOTokenizer)
-        assert tito._assistant_start_str == "<|im_start|>assistant"
+        auto_tito = TITOTokenizer(tok)
+        hardcoded_tito = Qwen3TITOTokenizer(tok)
+        assert auto_tito._assistant_start_str == hardcoded_tito._assistant_start_str
 
     def test_factory_glm47(self):
+        """Auto-detection should agree with the GLM47 subclass's hardcoded default."""
         tok = _get_tokenizer("zai-org/GLM-4.7-Flash")
-        tito = get_tito_tokenizer(tok, tokenizer_type="glm47")
-        assert isinstance(tito, GLM47TITOTokenizer)
-        assert tito._assistant_start_str == "<|assistant|>"
+        auto_tito = TITOTokenizer(tok)
+        hardcoded_tito = GLM47TITOTokenizer(tok)
+        assert auto_tito._assistant_start_str == hardcoded_tito._assistant_start_str
 
     def test_factory_default(self):
         tok = _get_tokenizer("Qwen/Qwen3-4B")

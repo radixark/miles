@@ -107,6 +107,10 @@ class TITOTokenizer:
             diff = with_prompt[len(without) :]
             if diff:
                 result = diff.rstrip("\n")
+                # <think> is reasoning content, not a role boundary — strip it
+                # so the marker remains valid when thinking mode is disabled.
+                if result.endswith("<think>"):
+                    result = result[: -len("<think>")]
                 logger.info("Auto-detected assistant_start_str=%r", result)
                 return result
         raise ValueError(
@@ -315,4 +319,7 @@ def get_tito_tokenizer(
         resolved = tokenizer_type
 
     cls = _TOKENIZER_REGISTRY[resolved]
-    return cls(tokenizer, chat_template_kwargs=chat_template_kwargs, assistant_start_str=assistant_start_str)
+    kwargs: dict[str, Any] = {"chat_template_kwargs": chat_template_kwargs}
+    if assistant_start_str is not None:
+        kwargs["assistant_start_str"] = assistant_start_str
+    return cls(tokenizer, **kwargs)
