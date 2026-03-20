@@ -14,14 +14,11 @@ quirks at the junction.
 
 from __future__ import annotations
 
-import logging
 from enum import Enum
 from typing import Any
 
 from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
-
-logger = logging.getLogger(__name__)
 
 _DUMMY_USER: dict[str, Any] = {"role": "user", "content": "dummy"}
 
@@ -77,47 +74,7 @@ class TITOTokenizer:
     ):
         self.tokenizer = tokenizer
         self.chat_template_kwargs = chat_template_kwargs or {}
-        if assistant_start_str is None:
-            assistant_start_str = self._detect_assistant_start()
         self._assistant_start_str = assistant_start_str
-
-    def _detect_assistant_start(self) -> str:
-        """Auto-detect the assistant generation prompt by diffing
-        ``add_generation_prompt=True`` vs ``False``.
-
-        Raises :class:`ValueError` if detection fails — pass
-        ``assistant_start_str`` explicitly in that case.
-        """
-        messages = [{"role": "user", "content": "hi"}]
-        without = apply_chat_template(
-            messages,
-            tokenizer=self.tokenizer,
-            tokenize=False,
-            add_generation_prompt=False,
-            **self.chat_template_kwargs,
-        )
-        with_prompt = apply_chat_template(
-            messages,
-            tokenizer=self.tokenizer,
-            tokenize=False,
-            add_generation_prompt=True,
-            **self.chat_template_kwargs,
-        )
-        if with_prompt.startswith(without):
-            diff = with_prompt[len(without) :]
-            if diff:
-                result = diff.rstrip("\n")
-                # <think> is reasoning content, not a role boundary — strip it
-                # so the marker remains valid when thinking mode is disabled.
-                if result.endswith("<think>"):
-                    result = result[: -len("<think>")]
-                logger.info("Auto-detected assistant_start_str=%r", result)
-                return result
-        raise ValueError(
-            "Could not auto-detect assistant_start_str from the chat template "
-            "(generation prompt diff was empty or not a clean suffix). "
-            "Pass assistant_start_str= explicitly."
-        )
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -207,13 +164,15 @@ class Qwen3TITOTokenizer(TITOTokenizer):
     prefix matches the canonical template output.
     """
 
+    _default_assistant_start_str: str = "<|im_start|>assistant"
+
     def __init__(
         self,
         tokenizer: Any,
         chat_template_kwargs: dict[str, Any] | None = None,
-        assistant_start_str: str | None = "<|im_start|>assistant",
+        assistant_start_str: str | None = None,
     ):
-        super().__init__(tokenizer, chat_template_kwargs, assistant_start_str)
+        super().__init__(tokenizer, chat_template_kwargs, assistant_start_str or self._default_assistant_start_str)
         nl_ids = tokenizer.encode("\n", add_special_tokens=False)
         assert len(nl_ids) == 1, f"Expected single newline token, got {nl_ids}"
         self._newline_id: int = nl_ids[0]
@@ -251,14 +210,15 @@ class GLM47TITOTokenizer(TITOTokenizer):
     """
 
     max_trim_tokens: int = 1
+    _default_assistant_start_str: str = "<|assistant|>"
 
     def __init__(
         self,
         tokenizer: Any,
         chat_template_kwargs: dict[str, Any] | None = None,
-        assistant_start_str: str | None = "<|assistant|>",
+        assistant_start_str: str | None = None,
     ):
-        super().__init__(tokenizer, chat_template_kwargs, assistant_start_str)
+        super().__init__(tokenizer, chat_template_kwargs, assistant_start_str or self._default_assistant_start_str)
         self._observation_id: int = tokenizer.convert_tokens_to_ids("<|observation|>")
         self._user_id: int = tokenizer.convert_tokens_to_ids("<|user|>")
         self._ambiguous_boundary_ids: set[int] = {self._observation_id, self._user_id}
