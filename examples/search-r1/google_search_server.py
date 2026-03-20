@@ -73,9 +73,10 @@ async def fetch_all(urls: list[str], limit: int = 8) -> list[str]:
 def collect_context(snippet: str, doc: str) -> str:
     snippets = parse_snippet(snippet)
     ctx_paras = []
+    doc_searchable = doc.replace("\n", " ")
 
     for s in snippets:
-        pos = doc.replace("\n", " ").find(s)
+        pos = doc_searchable.find(s)
         if pos == -1:
             continue
         sta = pos
