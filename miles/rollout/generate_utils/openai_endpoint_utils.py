@@ -100,6 +100,8 @@ def _compute_sample_from_openai_record(
 
     if "prompt_token_ids" in choice:
         prompt_token_ids = choice["prompt_token_ids"]
+    else:
+        raise ValueError("prompt_token_ids not found in response choice — ensure return_prompt_token_ids=True is set")
 
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]

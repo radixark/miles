@@ -66,11 +66,17 @@ def setup_session_routes(app, router: "MilesRouter"):
         body = await request.body()
         request_body = json.loads(body) if body else {}
 
-        request_body["logprobs"] = True
-        request_body["return_prompt_token_ids"] = True
-        request_body["return_meta_info"] = True
+        # TITO token tracking requires per-token info from SGLang responses.
+        # These are hardcoded (not setdefault) to prevent agent-side overrides
+        # from breaking the token accumulation invariants.
+        request_body["logprobs"] = True  # returns output_token_logprobs: [(logprob, token_id), ...]
+        request_body["return_prompt_token_ids"] = True  # returns prompt token IDs for checkpoint construction
+        request_body["return_meta_info"] = True  # wraps the above in choice.meta_info
         if getattr(router.args, "use_rollout_routing_replay", False):
             request_body["return_routed_experts"] = True
+        # Must be False so stop tokens are trimmed from output: otherwise the
+        # agent sees stop-token text in content, and the accumulated checkpoint
+        # would duplicate structural delimiters that the chat template also emits.
         request_body["no_stop_trim"] = False
 
         request_messages = request_body.get("messages", [])
@@ -111,7 +117,7 @@ def setup_session_routes(app, router: "MilesRouter"):
             raise RuntimeError(
                 "invalid chat completion response: "
                 f"len(output_token_logprobs)={actual_output_logprobs_len} "
-                f"!= completion_tokens={completion_tokens}"
+                f"!= completion_tokens={completion_tokens}. "
                 f"Please check whether you use the correct SGLang branch which has fix the tokenizer batch decode issue."
             )
 
