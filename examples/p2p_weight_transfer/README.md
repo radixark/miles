@@ -4,7 +4,7 @@ This is an example of P2P (point-to-point) weight transfer between training and 
 
 ## Files
 
-* `test_qwen3_4b_p2p.py`: single-node test with Qwen3-4B.
+* `test_qwen3_4B_p2p.py`: single-node test with Qwen3-4B.
 
 ## Quick Start
 
