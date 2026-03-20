@@ -110,13 +110,13 @@ class SingleUserTurnTrajectoryManager:
     rolled back to that checkpoint before proceeding.
     """
 
-    def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer | None = None):
+    def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer):
         self.sessions: dict[str, SingleUserTurnTrajectory] = {}
         self.args = args
         self.tokenizer = tokenizer
         self._lock = threading.RLock()
-        self._tito_tokenizer = tito_tokenizer
-        self._comparator = tito_tokenizer.create_comparator() if tito_tokenizer else None
+        self.tito_tokenizer = tito_tokenizer
+        self.comparator = tito_tokenizer.create_comparator()
 
     def create_session(self) -> str:
         with self._lock:
@@ -138,15 +138,17 @@ class SingleUserTurnTrajectoryManager:
                 return []
             return session.token_ids
 
-    def compute_session_metadata(self, session_id: str) -> dict:
-        if self._comparator is None:
-            return {}
+    def compute_session_mismatch(self, session_id: str) -> list[dict] | None:
+        """Compare accumulated token IDs against canonical chat template output.
+
+        Returns a list of mismatch dicts, or None if comparison is not possible.
+        """
         with self._lock:
             session = self.sessions.get(session_id)
             if session is None or not session.token_ids:
-                return {}
+                return None
             try:
-                tools = session.records[-1].request.get("tools")
+                tools = session.records[-1].request.get("tools") if session.records else None
                 expected_ids = apply_chat_template(
                     session.messages,
                     tokenizer=self.tokenizer,
@@ -155,20 +157,17 @@ class SingleUserTurnTrajectoryManager:
                     tokenize=True,
                 )
                 trim_ids = (
-                    set(self._tito_tokenizer.trailing_token_ids)
-                    if self._tito_tokenizer and self._tito_tokenizer.trailing_token_ids
-                    else None
+                    set(self.tito_tokenizer.trailing_token_ids) if self.tito_tokenizer.trailing_token_ids else None
                 )
-                mismatches = self._comparator.compare_sequences(
+                mismatches = self.comparator.compare_sequences(
                     expected_ids,
                     session.token_ids,
                     trim_trailing_ids=trim_ids,
                 )
-                result = {"tito_session_mismatch": [m.to_dict() for m in mismatches]}
-                return result
+                return [m.to_dict() for m in mismatches]
             except Exception:
                 logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
-                return {}
+                return None
 
     def delete_session_by_id(self, session_id: str) -> bool | None:
         with self._lock:
@@ -223,10 +222,7 @@ class SingleUserTurnTrajectoryManager:
             session._detect_and_rollback(request_messages)
             assert_messages_append_only(session.messages, request_messages)
 
-            if self._tito_tokenizer is None:
-                return None
-
-            merged = self._tito_tokenizer.merge_tokens(
+            merged = self.tito_tokenizer.merge_tokens(
                 old_messages=session.messages,
                 new_messages=request_messages,
                 pretokenized_token_ids=session.token_ids,
@@ -259,7 +255,7 @@ class SingleUserTurnTrajectoryManager:
             all_token_ids = prompt_token_ids + completion_token_ids
             session.messages = list(request_messages) + [assistant_message]
 
-            max_trim = self._tito_tokenizer.max_trim_tokens if self._tito_tokenizer else 0
+            max_trim = self.tito_tokenizer.max_trim_tokens
             prev = session.token_ids
             if prev:
                 check_len = len(prev) - max_trim

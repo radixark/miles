@@ -171,6 +171,9 @@ class Sample:
         """Remove the last *n* output tokens and all associated per-token info."""
         if n <= 0:
             return
+        assert (
+            n <= self.response_length
+        ), f"cannot strip {n} tokens: only {self.response_length} output tokens available"
         self.tokens = self.tokens[:-n]
         self.response_length -= n
         if self.rollout_log_probs is not None:

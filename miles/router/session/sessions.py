@@ -45,9 +45,12 @@ def setup_session_routes(app, router: "MilesRouter"):
         records = manager.get_session_records_by_id(session_id)
         if records is None:
             return JSONResponse(status_code=404, content={"error": "session not found"})
-        metadata = manager.compute_session_metadata(session_id)
+        metadata = {}
+        mismatch = manager.compute_session_mismatch(session_id)
+        if mismatch is not None:
+            metadata["tito_session_mismatch"] = mismatch
         metadata["accumulated_token_ids"] = manager.get_session_token_ids(session_id)
-        metadata["max_trim_tokens"] = manager._tito_tokenizer.max_trim_tokens if manager._tito_tokenizer else 0
+        metadata["max_trim_tokens"] = manager.tito_tokenizer.max_trim_tokens
         return GetSessionResponse(
             session_id=session_id,
             records=records,
@@ -103,9 +106,11 @@ def setup_session_routes(app, router: "MilesRouter"):
             raise RuntimeError("meta_info and output_token_logprobs must be in choice (requires logprobs=True)")
 
         assistant_message = choice.get("message", {})
-        assert (
-            assistant_message.get("content") is not None
-        ), "assistant message content is None, when tool call parser failed SGLang should still return a empty content rather than None. Please check your modified SGLang version."
+        if assistant_message.get("content") is None:
+            raise RuntimeError(
+                "assistant message content is None, when tool call parser failed SGLang should still return "
+                "an empty content rather than None. Please check your modified SGLang version."
+            )
 
         prompt_token_ids = choice.get("prompt_token_ids")
         meta_info = choice["meta_info"]
