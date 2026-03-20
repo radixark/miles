@@ -59,6 +59,9 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
+        if source_patcher_config := self.args.dumper_source_patcher_config_train:
+            env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
+
         if self.args.offload_train and self.args.train_backend == "megatron":
             import torch_memory_saver
 
