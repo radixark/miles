@@ -9,6 +9,7 @@ from miles.utils.types import RolloutBatch
 from .cp_utils import get_sum_of_sample_mean
 from .loss_hub.advantages import compute_advantages, normalize_advantages
 from .loss_hub.losses import get_loss_function
+from .loss_hub.utils import get_log_probs_and_entropy, get_values  # noqa: F401
 from .parallel import ParallelState
 
 
