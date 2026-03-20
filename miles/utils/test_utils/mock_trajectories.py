@@ -916,17 +916,12 @@ def build_trajectory(
 
     raw_turns = _split_turns(messages)
 
-    tool_dicts = None
-    if tools:
-        tool_dicts = [t["function"] for t in tools if "function" in t]
-
     def _render(msgs: list[dict], add_generation_prompt: bool) -> str:
         if chat_template is not None:
-            # Use standalone Jinja rendering (for custom templates)
             from miles.utils.chat_template_utils.template import apply_chat_template_from_str
 
             return apply_chat_template_from_str(
-                chat_template, msgs, add_generation_prompt=add_generation_prompt, tools=tool_dicts
+                chat_template, msgs, add_generation_prompt=add_generation_prompt, tools=tools
             )
         return tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=add_generation_prompt, tools=tools
@@ -965,15 +960,12 @@ def build_process_fn(
     corresponding response_text.
     """
     tools = trajectory.tools
-    tool_dicts = None
-    if tools:
-        tool_dicts = [t["function"] for t in tools if "function" in t]
 
     def _render(msgs: list[dict]) -> str:
         if chat_template is not None:
             from miles.utils.chat_template_utils.template import apply_chat_template_from_str
 
-            return apply_chat_template_from_str(chat_template, msgs, add_generation_prompt=True, tools=tool_dicts)
+            return apply_chat_template_from_str(chat_template, msgs, add_generation_prompt=True, tools=tools)
         return tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True, tools=tools)
 
     # Build prompt → response mapping
