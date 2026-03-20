@@ -25,12 +25,8 @@ from miles.backends.training_utils.loss import (
     get_values,
     loss_function,
 )
-from miles.backends.training_utils.loss_hub.importance_sampling import icepop_function, vanilla_tis_function
-from miles.backends.training_utils.loss_hub.losses import (
-    policy_loss_function,
-    sft_loss_function,
-    value_loss_function,
-)
+from miles.backends.training_utils.loss_hub.corrections import icepop_function, vanilla_tis_function
+from miles.backends.training_utils.loss_hub.losses import policy_loss_function, sft_loss_function, value_loss_function
 
 from .loss_test_utils import (
     assert_outputs_equal,

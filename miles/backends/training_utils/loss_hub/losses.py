@@ -4,12 +4,7 @@ from collections.abc import Callable
 import torch
 
 from miles.utils.misc import load_function
-from miles.utils.ppo_utils import (
-    compute_approx_kl,
-    compute_gspo_kl,
-    compute_opsm_mask,
-    compute_policy_loss,
-)
+from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
 from miles.utils.types import RolloutBatch
 
 from ..cp_utils import all_gather_with_cp, get_sum_of_sample_mean
@@ -350,3 +345,17 @@ def sft_loss_function(
             "loss": loss.clone().detach(),
         },
     )
+
+
+def get_loss_function(args) -> Callable:
+    match args.loss_type:
+        case "policy_loss":
+            return policy_loss_function
+        case "value_loss":
+            return value_loss_function
+        case "sft_loss":
+            return sft_loss_function
+        case "custom_loss":
+            return load_function(args.custom_loss_function_path)
+        case _:
+            raise ValueError(f"Unknown loss type: {args.loss_type}")

@@ -3,15 +3,12 @@ from argparse import Namespace
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from miles.utils.distributed_utils import distributed_masked_whiten
-from miles.utils.misc import load_function
 from miles.utils.ppo_utils import compute_approx_kl
 from miles.utils.types import RolloutBatch
 
-from .cp_utils import get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
-from .loss_hub.advantage_estimators import compute_advantages
-from .loss_hub.losses import policy_loss_function, sft_loss_function, value_loss_function
-from .loss_hub.logit_processing import get_log_probs_and_entropy, get_values
+from .cp_utils import get_sum_of_sample_mean
+from .loss_hub.advantages import compute_advantages, normalize_advantages
+from .loss_hub.losses import get_loss_function
 from .parallel import ParallelState
 
 
@@ -76,61 +73,10 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
         teacher_log_probs=rollout_data.get("teacher_log_probs"),
     )
 
-    # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.
     if args.normalize_advantages:
-        all_advs = torch.cat(advantages)
-        cp_size = parallel_state.cp_size
-        if cp_size == 1:
-            all_masks = torch.cat(loss_masks)
-        else:
-            mask_chunks = []
-            for i in range(len(advantages)):
-                total_len = total_lengths[i]
-                response_len = response_lengths[i]
-                prompt_len = total_len - response_len
-                max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
-
-                _, _, _, token_offsets = get_logits_and_tokens_offset_with_cp(
-                    total_len, response_len, parallel_state, args.qkv_format, max_seq_len
-                )
-
-                # Convert global offsets to response-space offsets
-                s0, e0 = token_offsets[0]
-                s1, e1 = token_offsets[1]
-                res_s0, res_e0 = max(0, s0 - prompt_len), max(0, e0 - prompt_len)
-                res_s1, res_e1 = max(0, s1 - prompt_len), max(0, e1 - prompt_len)
-
-                local_mask_parts = []
-                full_mask = loss_masks[i]
-                if res_e0 > res_s0:
-                    local_mask_parts.append(full_mask[res_s0:res_e0])
-                if res_e1 > res_s1:
-                    local_mask_parts.append(full_mask[res_s1:res_e1])
-
-                # Concatenate the parts to form the final mask chunk for this rank and this sequence
-                local_mask_chunk = (
-                    torch.cat(local_mask_parts)
-                    if local_mask_parts
-                    else torch.tensor([], device=all_advs.device, dtype=full_mask.dtype)
-                )
-                mask_chunks.append(local_mask_chunk)
-
-            all_masks = torch.cat(mask_chunks)
-
-        if all_masks.numel() > 0:
-            assert (
-                all_advs.size() == all_masks.size()
-            ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-            dp_group = parallel_state.dp_group
-
-            whitened_advs_flat = distributed_masked_whiten(
-                all_advs,
-                all_masks,
-                process_group=dp_group,
-                shift_mean=True,
-            )
-            chunk_lengths = [chunk.size(0) for chunk in advantages]
-            advantages = list(torch.split(whitened_advs_flat, chunk_lengths))
+        advantages = normalize_advantages(
+            args, parallel_state, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens
+        )
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns
@@ -180,17 +126,7 @@ def loss_function(
         batch.get("max_seq_lens", None),
     )
 
-    match args.loss_type:
-        case "policy_loss":
-            func = policy_loss_function
-        case "value_loss":
-            func = value_loss_function
-        case "sft_loss":
-            func = sft_loss_function
-        case "custom_loss":
-            func = load_function(args.custom_loss_function_path)
-        case _:
-            raise ValueError(f"Unknown loss type: {args.loss_type}")
+    func = get_loss_function(args)
 
     if args.recompute_loss_function:
         loss, log = checkpoint(
@@ -204,11 +140,7 @@ def loss_function(
     else:
         loss, log = func(args, parallel_state, batch, logits, sum_of_sample_mean)
 
-    # With allgather-CP, some CP ranks may have no loss-contributing tokens (e.g., all
-    # padding). Without this, gradient doesn't flow through their attention path, so
-    # the CP gather's backward (reduce-scatter) is not called, deadlocking other CP
-    # ranks that call it. Adding this zero loss forces autograd to traverse the full
-    # graph on every rank without changing gradient values.
+    # Forces autograd to traverse the full graph on every rank to avoid hang.
     if parallel_state.cp_size > 1 and args.allgather_cp:
         loss = loss + 0 * logits.sum()
 
