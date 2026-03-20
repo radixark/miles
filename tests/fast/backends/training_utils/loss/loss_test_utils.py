@@ -22,12 +22,16 @@ Usage:
 from __future__ import annotations
 
 import copy
+import subprocess
 from argparse import Namespace
 from pathlib import Path
 
 import torch
 
 from miles.backends.training_utils.parallel import ParallelState
+
+ARTIFACTS_REPO = "https://github.com/yueming-yuan/miles-artifacts.git"
+ARTIFACTS_CACHE = Path.home() / ".cache" / "miles-test-artifacts"
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +284,28 @@ def assert_outputs_equal(actual, expected, path: str = "root"):
 # ---------------------------------------------------------------------------
 # Snapshot save / load
 # ---------------------------------------------------------------------------
+
+
+def ensure_snapshot_dir(snapshot_dir: Path) -> Path:
+    """Return a directory containing .pt snapshots.
+
+    If *snapshot_dir* already has .pt files, return it as-is.
+    Otherwise, shallow-clone yueming-yuan/miles-artifacts into a cache
+    directory and return the path to loss_snapshots/ inside the clone.
+    """
+    if snapshot_dir.exists() and any(snapshot_dir.glob("*.pt")):
+        return snapshot_dir
+    repo_dir = ARTIFACTS_CACHE / "repo"
+    result_dir = repo_dir / "loss_snapshots"
+    if result_dir.exists() and any(result_dir.glob("*.pt")):
+        return result_dir
+    ARTIFACTS_CACHE.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "--depth=1", ARTIFACTS_REPO, str(repo_dir)],
+        check=True,
+    )
+    assert result_dir.exists(), f"Expected {result_dir} after clone"
+    return result_dir
 
 
 def save_snapshot(path: str | Path, inputs: dict, outputs: dict) -> None:

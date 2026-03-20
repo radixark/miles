@@ -35,6 +35,7 @@ from miles.backends.training_utils.loss_new import (
 from .loss_test_utils import (
     assert_outputs_equal,
     deep_clone,
+    ensure_snapshot_dir,
     load_snapshot,
     make_args,
     make_batch,
@@ -190,25 +191,33 @@ def run_loss_fn(args, parallel_state, inputs):
     loss_type = args.loss_type
     batch = make_batch(inputs, loss_type)
     logits = deep_clone(inputs["policy_logits"] if loss_type != "value_loss" else inputs["value_logits"])
+    logits.requires_grad_(True)
     som = _get_sum_of_sample_mean(batch, args, parallel_state)
     fn = {"policy_loss": policy_loss_function, "value_loss": value_loss_function, "sft_loss": sft_loss_function}[
         loss_type
     ]
     loss, metrics = fn(args, parallel_state, batch, logits, som)
-    return {"loss": loss.detach(), "metrics": {k: v.detach() for k, v in metrics.items()}}
+    loss.backward()
+    result = {"loss": loss.detach(), "metrics": {k: v.detach() for k, v in metrics.items()}}
+    result["logits_grad"] = logits.grad.clone()
+    return result
 
 
 def run_loss_function_dispatcher(args, parallel_state, inputs):
     loss_type = args.loss_type
     batch = make_batch(inputs, loss_type)
     logits = deep_clone(inputs["policy_logits"] if loss_type != "value_loss" else inputs["value_logits"])
+    logits.requires_grad_(True)
     loss, normalizer, log_dict = loss_function(args, parallel_state, batch, 1, logits)
-    return {
+    loss.backward()
+    result = {
         "loss": loss.detach(),
         "normalizer": normalizer.detach() if isinstance(normalizer, torch.Tensor) else normalizer,
         "log_dict_keys": log_dict["keys"],
         "log_dict_values": log_dict["values"].detach(),
+        "logits_grad": logits.grad.clone(),
     }
+    return result
 
 
 def run_all(args, parallel_state, inputs):
@@ -249,14 +258,16 @@ class TestLossSnapshot:
 
     def test_loss_snapshot(self, config, mode):
         args, parallel_state, inputs = self._build(config)
-        path = self._snapshot_path(config)
 
         if mode == "snapshot":
+            path = self._snapshot_path(config)
             outputs = run_all(args, parallel_state, inputs)
             save_snapshot(path, inputs, outputs)
 
         elif mode == "compare":
-            assert path.exists(), f"Snapshot not found: {path}. Run with --snapshot first."
+            snapshot_dir = ensure_snapshot_dir(SNAPSHOT_DIR)
+            path = snapshot_dir / f"{config[0]}.pt"
+            assert path.exists(), f"Snapshot not found: {path}"
             saved_inputs, saved_outputs = load_snapshot(path)
             saved_args = Namespace(**saved_inputs["args_dict"])
             outputs = run_all(saved_args, parallel_state, saved_inputs)
