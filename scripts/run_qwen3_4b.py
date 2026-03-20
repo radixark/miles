@@ -33,6 +33,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.train_backend == "megatron":
             self.megatron_model_type = {
+                "Qwen3-0.6B": "qwen3-0.6B",
                 "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
                 "Qwen3-4B-Base": "qwen3-4B",
                 "Qwen3-4B": "qwen3-4B",
@@ -176,11 +177,17 @@ eval:
             perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 32768 "
 
         case "megatron":
+            if args.model_name in ("Qwen3-0.6B",):
+                tp_size = 1
+                cp_size = 1
+            else:
+                tp_size = 2 if args.num_gpus_per_node == 8 else 1
+                cp_size = 4 if args.num_gpus_per_node == 8 else 1
             train_backend_args = (
-                f"--tensor-model-parallel-size {2 if args.num_gpus_per_node == 8 else 1} "
+                f"--tensor-model-parallel-size {tp_size} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
-                f"--context-parallel-size {4 if args.num_gpus_per_node == 8 else 1} "
+                f"--context-parallel-size {cp_size} "
                 "--expert-model-parallel-size 1 "
                 "--expert-tensor-parallel-size 1 "
                 "--recompute-granularity full "
