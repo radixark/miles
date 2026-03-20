@@ -47,12 +47,16 @@ async def configure_sglang(args: Namespace) -> None:
 
     worker_urls = await get_worker_urls(args)
     overrides = _get_phase_override_configs(args, DumperPhase.INFERENCE)
+
+    engines_dir: Path = _get_dir(args) / "engines"
+    _cleanup_dump_dir(engines_dir)
+
     coros = []
     for i, url in enumerate(worker_urls):
         body = {
             "enable": True,
             "dir": str(_get_dir(args)),
-            "exp_name": f"engine_{i}",
+            "exp_name": f"engines/engine_{i}",
             **overrides,
         }
         coros.append(post(f"{url}/dumper/configure", body))
