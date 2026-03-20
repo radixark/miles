@@ -161,14 +161,19 @@ def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     return True
 
 
+_DEFAULT_APPEND_ROLES = frozenset({"tool", "system"})
+
+
 def assert_messages_append_only(
     stored_messages: list[dict[str, Any]],
     new_messages: list[dict[str, Any]],
+    allowed_append_roles: set[str] | frozenset[str] = _DEFAULT_APPEND_ROLES,
 ) -> None:
     """Assert *new_messages* is an append-only extension of *stored_messages*.
 
     The stored prefix must match exactly (compared by template-relevant keys),
-    and any appended messages must have role ``'tool'`` or ``'system'``.
+    and any appended messages must have a role in *allowed_append_roles*
+    (default: ``{'tool', 'system'}``).
     """
     if not stored_messages:
         return
@@ -193,12 +198,11 @@ def assert_messages_append_only(
                 f"Diffs: {diffs}"
             )
 
-    ALLOWED_APPEND_ROLES = {"tool", "system"}
     for j, msg in enumerate(new_messages[len(stored_messages) :]):
-        if msg.get("role") not in ALLOWED_APPEND_ROLES:
+        if msg.get("role") not in allowed_append_roles:
             raise ValueError(
                 f"appended message at index {len(stored_messages) + j} "
-                f"has role={msg.get('role')!r}, allowed={ALLOWED_APPEND_ROLES}"
+                f"has role={msg.get('role')!r}, allowed={allowed_append_roles}"
             )
 
 
