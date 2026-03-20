@@ -112,7 +112,7 @@ class RemoteTransferPlan:
                 engine_idx, engine_rank = target
                 counted = count_engine_index_assignments(engine_rank)
                 if max(counted) > 0:
-                    # assign it to existing source rank assigned to the same target engine_tp_rank, with lowest load
+                    # assign it to existing source rank assigned to the same target engine_rank, with lowest load
                     _, select_source = min((val, idx) for (idx, val) in enumerate(counted) if val > 0)
                 else:
                     # otherwise round robin
@@ -179,18 +179,6 @@ class P2PTransferManager:
                 logger.error(f"[P2P] Transfer future failed: {e}")
 
         self.transfer_futures.clear()
-
-
-@dataclasses.dataclass
-class EngineRankInfo:
-    """Per-engine-rank metadata: unique model replica (weight_loaders), shared CPU pinned buffers."""
-
-    engine_rank: int
-    model_replica: torch.nn.Module  # single CPU replica shared among all sessions
-    remote_weight_infos: list[RemoteWeightInfo]
-
-    def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
-        self.remote_weight_infos.append(remote_info)
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
