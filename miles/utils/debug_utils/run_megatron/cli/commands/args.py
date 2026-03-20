@@ -39,5 +39,6 @@ class RunArgs(CommonRunArgs):
     output_dir: Path = _field(default=Path("/tmp/run_megatron_dump"), help="Dump output directory")
     tp: int = _field(default=1, help="Tensor parallel size")
     pp: int = _field(default=1, help="Pipeline parallel size")
+    cp: int = _field(default=1, help="Context parallel size")
     ep: int | None = _field(default=None, help="Expert parallel size (default=tp)")
     etp: int = _field(default=1, help="Expert tensor parallel size")
