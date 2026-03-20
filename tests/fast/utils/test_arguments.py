@@ -1,10 +1,11 @@
 import argparse
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from miles.utils.arguments import get_miles_extra_args_provider
+from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -56,3 +57,69 @@ class TestAddArgumentsSupport:
         ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
+
+
+class TestMaybeApplyDumperOverrides:
+    def _make_args(
+        self,
+        *,
+        dumper_enable: bool = False,
+        use_fault_tolerance: bool = False,
+        router_disable_health_check: bool = False,
+        rollout_health_check_interval: float = 30.0,
+        start_rollout_id: int | None = None,
+        num_rollout: int = 10,
+        eval_interval: int | None = 5,
+        save_interval: int | None = 5,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            dumper_enable=dumper_enable,
+            use_fault_tolerance=use_fault_tolerance,
+            router_disable_health_check=router_disable_health_check,
+            rollout_health_check_interval=rollout_health_check_interval,
+            start_rollout_id=start_rollout_id,
+            num_rollout=num_rollout,
+            eval_interval=eval_interval,
+            save_interval=save_interval,
+        )
+
+    def test_noop_when_dumper_disabled(self) -> None:
+        args = self._make_args(
+            dumper_enable=False,
+            use_fault_tolerance=True,
+            rollout_health_check_interval=30.0,
+        )
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.use_fault_tolerance is True
+        assert args.router_disable_health_check is False
+        assert args.rollout_health_check_interval == 30.0
+        assert args.num_rollout == 10
+        assert args.eval_interval == 5
+        assert args.save_interval == 5
+
+    def test_disables_all_heartbeats(self) -> None:
+        args = self._make_args(
+            dumper_enable=True,
+            use_fault_tolerance=True,
+            rollout_health_check_interval=30.0,
+        )
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.use_fault_tolerance is False
+        assert args.router_disable_health_check is True
+        assert args.rollout_health_check_interval == 1e18
+
+    def test_forces_single_rollout(self) -> None:
+        args = self._make_args(dumper_enable=True, num_rollout=100)
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.num_rollout == 1
+        assert args.eval_interval is None
+        assert args.save_interval is None
+
+    def test_respects_start_rollout_id(self) -> None:
+        args = self._make_args(dumper_enable=True, start_rollout_id=5, num_rollout=100)
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.num_rollout == 6
