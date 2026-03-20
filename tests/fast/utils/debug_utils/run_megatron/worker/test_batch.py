@@ -496,7 +496,7 @@ class TestPrepareBatchZigzagPadding:
             batch = prepare_batch(token_ids=token_ids, batch_size=1, cp_rank=rank, cp_size=2, device="cpu")
             pos = batch["position_ids"][0].tolist()
             ids = batch["input_ids"][0].tolist()
-            all_token_pos.extend(zip(pos, ids, strict=False))
+            all_token_pos.extend(zip(pos, ids, strict=True))
 
         original_positions = {p for p, _ in all_token_pos if p < 7}
         assert original_positions == set(range(7))

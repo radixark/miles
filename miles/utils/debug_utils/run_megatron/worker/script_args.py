@@ -2,7 +2,7 @@
 
 All flags use the ``--script-`` prefix to avoid collision with Megatron's own
 argparse namespace.  Adding a new field here is the *only* change needed —
-serialization (CLI -> worker) and deserialization (worker argparse) are automatic.
+serialization (CLI → worker) and deserialization (worker argparse) are automatic.
 """
 
 from __future__ import annotations

@@ -48,20 +48,6 @@ class RunArgs(CommonRunArgs):
     logprob_output: Path | None = _field(default=None, help="Directory to save per-token logprob JSON files")
 
 
-@dataclasses.dataclass
-class CompareArgs:
-    baseline_dir: Path = _field(help="Baseline dump directory")
-    target_dir: Path = _field(help="Target dump directory")
-    output_format: str = _field(default="text", help="Output format: text / json")
-    override_baseline_dims: str | None = _field(default=None, help="Override baseline dims")
-    override_target_dims: str | None = _field(default=None, help="Override target dims")
-    patch_config: Path | None = _field(default=None, help="Patch config YAML path")
-    diff_threshold: float | None = _field(default=None, help="Pass/fail threshold")
-    baseline_logprob_dir: Path | None = _field(default=None, help="Baseline logprob JSON directory")
-    target_logprob_dir: Path | None = _field(default=None, help="Target logprob JSON directory")
-    logprob_threshold: float | None = _field(default=None, help="Logprob max abs diff threshold")
-
-
 @dataclasses.dataclass(kw_only=True)
 class RunAndCompareArgs(CommonRunArgs):
     output_base_dir: Path = _field(help="Base output directory for dumps")
@@ -78,4 +64,18 @@ class RunAndCompareArgs(CommonRunArgs):
     baseline_extra_args: str = _field(default="", help="Extra megatron args for baseline run only")
     target_extra_args: str = _field(default="", help="Extra megatron args for target run only")
     diff_threshold: float | None = _field(default=None, help="Activation diff pass/fail threshold")
+    logprob_threshold: float | None = _field(default=None, help="Logprob max abs diff threshold")
+
+
+@dataclasses.dataclass
+class CompareArgs:
+    baseline_dir: Path = _field(help="Baseline dump directory")
+    target_dir: Path = _field(help="Target dump directory")
+    output_format: str = _field(default="text", help="Output format: text / json")
+    override_baseline_dims: str | None = _field(default=None, help="Override baseline dims")
+    override_target_dims: str | None = _field(default=None, help="Override target dims")
+    patch_config: Path | None = _field(default=None, help="Patch config YAML path")
+    diff_threshold: float | None = _field(default=None, help="Pass/fail threshold")
+    baseline_logprob_dir: Path | None = _field(default=None, help="Baseline logprob JSON directory")
+    target_logprob_dir: Path | None = _field(default=None, help="Target logprob JSON directory")
     logprob_threshold: float | None = _field(default=None, help="Logprob max abs diff threshold")
