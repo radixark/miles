@@ -2,10 +2,7 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-
-NUM_TRAIN_GPUS = 1
-NUM_ROLLOUT_GPUS = 1
-NUM_GPUS = NUM_TRAIN_GPUS + NUM_ROLLOUT_GPUS
+NUM_GPUS = 8
 
 
 def prepare():
@@ -16,7 +13,6 @@ def prepare():
 
 
 def execute():
-
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -36,11 +32,10 @@ def execute():
     )
     # Training parallellism settings
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        "--tensor-model-parallel-size 2 "
+        "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
-        "--expert-model-parallel-size 1 "
-        "--expert-tensor-parallel-size 1 "
-        "--context-parallel-size 1 "
+        "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -67,11 +62,8 @@ def execute():
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 "
-        f"--rollout-num-gpus {NUM_ROLLOUT_GPUS} "
-        "--sglang-data-parallel-size 1 "
-        "--sglang-expert-parallel-size 1 "
-        "--sglang-pipeline-parallel-size 1 "
+        "--rollout-num-gpus-per-engine 2 "
+        "--rollout-num-gpus 4 "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     )
@@ -83,7 +75,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {NUM_TRAIN_GPUS} "
+        f"--actor-num-gpus-per-node 4 "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
         "--check-weight-update-equal "
         "--update-weight-transfer-mode p2p "
