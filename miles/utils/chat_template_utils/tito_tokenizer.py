@@ -205,8 +205,9 @@ class GLM47TITOTokenizer(TITOTokenizer):
     next-message start tokens in the chat template.  In ``merge_tokens``,
     the last token of the pretokenized prefix is always stripped when it is
     one of these boundary tokens — whether it matches the first incremental
-    token (overlap) or differs (e.g. model stopped with ``<|user|>`` but
-    next turn is ``<|observation|>``).
+    token (overlap) or differs (e.g. model stopped with ``<|observation|>`` but
+    next turn is ``<|user|>`` because the tool call failed and a system message
+    is injected instead).
     """
 
     max_trim_tokens: int = 1
