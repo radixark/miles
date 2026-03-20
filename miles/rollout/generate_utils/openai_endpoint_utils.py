@@ -53,6 +53,22 @@ def compute_samples_from_openai_records(
     accumulated_token_ids: list[int] | None = None,
     max_trim_tokens: int = 0,
 ) -> list[Sample]:
+    """Convert per-turn session records into training Samples, aligning each
+    turn's output tokens against the TITO accumulated token sequence.
+
+    In TITO multi-turn sessions, the session server accumulates a single
+    contiguous token sequence across all turns::
+
+        accumulated = [prompt_1 | output_1 | prompt_2_suffix | output_2 | ...]
+
+    Each record contains its own ``prompt_token_ids`` (the full prefix up to
+    that turn) and ``output_token_ids`` (the model's generation for that turn).
+    Because of pretokenized prefix reuse, the boundary between output and the
+    next turn's prompt may include "trailing tokens" (e.g. stop tokens that the
+    chat template also emits as the next turn's delimiter).  These trailing
+    tokens must be stripped from the training sample to avoid double-counting.
+
+    """
     samples = []
     cursor = 0
 
@@ -63,7 +79,10 @@ def compute_samples_from_openai_records(
 
         trim_count = 0
         if accumulated_token_ids is not None:
+            # Step 1: position cursor right after this turn's prompt
             cursor = len(prompt_ids)
+
+            # Step 2: greedily match output_ids against accumulated[cursor:]
             matched = 0
             for j in range(len(output_ids)):
                 idx = cursor + j
@@ -71,6 +90,10 @@ def compute_samples_from_openai_records(
                     matched += 1
                 else:
                     break
+
+            # Step 3: unmatched trailing tokens were consumed by the next
+            # turn's template rendering (e.g. stop tokens that double as
+            # the next message delimiter) — strip them from the sample.
             trim_count = len(output_ids) - matched
             allowed = 0 if is_last else max_trim_tokens
             assert trim_count <= allowed, (
@@ -79,12 +102,15 @@ def compute_samples_from_openai_records(
                 f"output_ids[-3:]={output_ids[-3:]}, "
                 f"accumulated[cursor:cursor+3]={accumulated_token_ids[cursor:cursor+3]}"
             )
+
+            # Step 4: advance cursor past matched output to the next turn
             cursor += matched
 
         sample = _compute_sample_from_openai_record(args, input_sample, record, tokenizer, trim_count)
         samples.append(sample)
 
     if accumulated_token_ids is not None:
+        # Step 5: verify the entire accumulated sequence was consumed
         assert cursor == len(accumulated_token_ids), (
             f"cursor {cursor} != len(accumulated_token_ids) {len(accumulated_token_ids)} "
             f"after processing all {len(records)} records"

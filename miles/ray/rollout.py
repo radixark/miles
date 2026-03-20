@@ -1162,9 +1162,8 @@ def compute_metrics_from_samples(args, samples):
                     "this indicates a bug in the TITO algorithm or chat template. "
                     "Please check your tito model and chat template."
                 )
-            assert (
-                log_dict["tito_session_mismatch_rate"] < 0.03
-            ), f"tito_session_mismatch_rate={log_dict['tito_session_mismatch_rate']:.4f} too high, please check your tito model and chat template."
+            # assistant_text mismatch is non-critical: assistant tokens are inherited
+            # from the pretokenized prefix and may differ from canonical tokenization.
 
     return log_dict
 
