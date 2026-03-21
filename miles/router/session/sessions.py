@@ -25,7 +25,7 @@ def setup_session_routes(app, router: "MilesRouter"):
         return
 
     tokenizer = load_tokenizer(
-        hf_checkpoint, chat_template_path=router.args.chat_template_path, trust_remote_code=True
+        hf_checkpoint, chat_template_path=getattr(router.args, "chat_template_path", None), trust_remote_code=True
     )
 
     tito_tokenizer = get_tito_tokenizer(
