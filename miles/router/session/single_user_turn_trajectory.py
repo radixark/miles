@@ -37,12 +37,39 @@ class SingleUserTurnTrajectory(BaseModel):
         self,
         request_messages: list[dict[str, Any]],
     ) -> None:
-        """Detect if *request_messages* requires a rollback and perform it.
+        """Detect if *request_messages* diverges from stored history and roll back.
 
-        A rollback is triggered when *request_messages* diverges from
-        ``self.messages`` before reaching the end of stored messages.
-        The divergence point must fall after an assistant message (checkpoint
-        boundary).  The session state is truncated to that checkpoint.
+        In agentic workflows the agent may retry from an earlier point — for
+        example, re-running a tool call with different arguments.  When that
+        happens the new request shares a common prefix with the stored messages
+        but diverges before the end.  This method truncates session state back
+        to the last assistant checkpoint within the matching prefix.
+
+        Example — agent retries after the first tool call::
+
+            stored:  [sys, user, assistant₁, tool₁, assistant₂]
+                      ───────────────────── ▲
+                      checkpoint 0 (assistant₁)   checkpoint 1 (assistant₂)
+
+            request: [sys, user, assistant₁, tool₁_different, ...]
+                                             ↑ diverges here (index 3)
+
+            match_len = 3  (sys, user, assistant₁ all match)
+            Last assistant in matched prefix → assistant₁ (checkpoint 0)
+
+            After rollback:
+              messages           = [sys, user, assistant₁]
+              trajectory_token_ids = [checkpoint_0_ids]
+              records              = [record_0]
+              num_assistant        = 1
+
+        No rollback occurs when:
+        - The stored history is empty.
+        - *request_messages* is a strict extension of stored messages
+          (``match_len >= len(stored)``).
+
+        Raises ``ValueError`` if a rollback is needed but no assistant message
+        exists in the matched prefix (cannot determine a safe truncation point).
         """
         stored = self.messages
         if not stored or not self.trajectory_token_ids:
