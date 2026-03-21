@@ -1,12 +1,15 @@
-"""Test that apply_chat_template aligns with SGLang's _process_messages prompt_ids.
+"""Test that apply_chat_template aligns with SGLang's _apply_jinja_template.
 
-The reference function ``sglang_prompt_ids`` replicates the exact preprocessing
-from ``OpenAIServingChat._apply_jinja_template`` (serving_chat.py):
-1. Parse messages through SGLang's Pydantic models.
-2. Set ``content = ""`` for all None-content messages.
-3. Parse JSON-string tool_call arguments to dicts via orjson.
-4. Canonicalize tools via ``protocol.Tool`` → ``function.model_dump()``.
-5. Call ``tokenizer.apply_chat_template`` with fallback to wrapped tool format.
+The reference function ``sglang_prompt_ids`` calls
+``OpenAIServingChat._process_messages`` directly — the *actual* SGLang code
+path, not a re-implementation.  A lightweight ``OpenAIServingChat`` instance
+is constructed via ``object.__new__`` (bypassing ``__init__``) with only the
+attributes that ``_process_messages`` / ``_apply_jinja_template`` read:
+
+- ``tokenizer_manager.tokenizer`` — the HF tokenizer under test
+- ``template_manager.chat_template_name = None`` → selects the Jinja path
+- ``template_manager.jinja_template_content_format = "string"`` → text-only
+- ``use_dpsk_v32_encoding = False`` / ``is_gpt_oss = False``
 
 Each test asserts that our ``apply_chat_template`` produces identical token IDs.
 """
@@ -15,14 +18,11 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from unittest.mock import MagicMock
 
-import orjson
 import pytest
-from sglang.srt.entrypoints.openai.protocol import (
-    ChatCompletionMessageGenericParam,
-    ChatCompletionMessageUserParam,
-    Tool,
-)
+from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
+from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils.template import apply_chat_template
@@ -32,27 +32,35 @@ from miles.utils.test_utils.mock_trajectories import (
     LongChainThinkingTrajectory,
     LongChainTrajectory,
     MultiToolSingleTurnTrajectory,
+    MultiTurnNoToolThinkingTrajectory,
+    MultiTurnNoToolTrajectory,
     MultiTurnThinkingTrajectory,
     MultiTurnTrajectory,
     MultiUserToolChainTrajectory,
     MultiUserTurnThinkingTrajectory,
     ParallelToolsTrajectory,
     RetrySystemTrajectory,
-    SimpleNoToolTrajectory,
     SingleToolThinkingTrajectory,
     SingleToolTrajectory,
 )
 
 # ---------------------------------------------------------------------------
-# SGLang reference implementation
+# SGLang reference: calls OpenAIServingChat._process_messages directly
 # ---------------------------------------------------------------------------
 
 
-def _parse_message(raw: dict):
-    """Parse a raw message dict through SGLang's Pydantic model (same as FastAPI)."""
-    if raw.get("role") == "user":
-        return ChatCompletionMessageUserParam(**raw)
-    return ChatCompletionMessageGenericParam(**raw)
+def _make_serving(tokenizer) -> OpenAIServingChat:
+    """Create a minimal ``OpenAIServingChat`` that can run ``_process_messages``."""
+    serving = object.__new__(OpenAIServingChat)
+    serving.tokenizer_manager = MagicMock()
+    serving.tokenizer_manager.tokenizer = tokenizer
+    serving.template_manager = MagicMock()
+    serving.template_manager.chat_template_name = None
+    serving.template_manager.jinja_template_content_format = "string"
+    serving.use_dpsk_v32_encoding = False
+    serving.is_gpt_oss = False
+    serving.tool_call_parser = None
+    return serving
 
 
 def sglang_prompt_ids(
@@ -61,30 +69,17 @@ def sglang_prompt_ids(
     tools: list[dict] | None = None,
     **kwargs,
 ) -> list[int]:
-    """Replicate SGLang's ``_apply_jinja_template`` preprocessing → prompt_ids."""
-    sglang_msgs = []
-    for raw in copy.deepcopy(messages):
-        msg = _parse_message(raw)
-        if msg.content is None:
-            msg.content = ""
-        d = msg.model_dump()
-        if d["role"] == "assistant" and isinstance(d.get("tool_calls"), list):
-            for item in d["tool_calls"]:
-                if "function" in item and isinstance(item["function"].get("arguments"), str):
-                    item["function"]["arguments"] = orjson.loads(item["function"]["arguments"])
-        sglang_msgs.append(d)
+    """Get prompt_ids by calling SGLang's ``_process_messages`` directly."""
+    request_data: dict = {"messages": copy.deepcopy(messages), "model": "test"}
+    if tools:
+        request_data["tools"] = copy.deepcopy(tools)
+    if kwargs:
+        request_data["chat_template_kwargs"] = kwargs
+    request = ChatCompletionRequest(**request_data)
 
-    tool_defs = [Tool(**t).function.model_dump() for t in tools] if tools else None
-
-    try:
-        return tokenizer.apply_chat_template(
-            sglang_msgs, tokenize=True, add_generation_prompt=True, tools=tool_defs, return_dict=False, **kwargs
-        )
-    except Exception:
-        tool_defs = [{"function": t} for t in tool_defs] if tool_defs else None
-        return tokenizer.apply_chat_template(
-            sglang_msgs, tokenize=True, add_generation_prompt=True, tools=tool_defs, return_dict=False, **kwargs
-        )
+    serving = _make_serving(tokenizer)
+    result = serving._process_messages(request, is_multimodal=False)
+    return result.prompt_ids
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +125,7 @@ _STANDARD_CASES = [
     pytest.param(ParallelToolsTrajectory, {}, id="parallel_tools"),
     pytest.param(LongChainTrajectory, {}, id="long_chain"),
     pytest.param(MultiUserToolChainTrajectory, {}, id="multi_user_tool_chain"),
-    pytest.param(SimpleNoToolTrajectory, {}, id="simple_no_tool"),
+    pytest.param(MultiTurnNoToolTrajectory, {}, id="multi_turn_no_tool"),
 ]
 
 # Trajectories with intermediate system messages (Qwen3.5 uses fixed template).
@@ -145,6 +140,8 @@ _THINKING_CASES = [
     pytest.param(MultiTurnThinkingTrajectory, {"enable_thinking": True}, id="multi_turn_thinking_on"),
     pytest.param(LongChainThinkingTrajectory, {"enable_thinking": True}, id="long_chain_thinking_on"),
     pytest.param(MultiUserTurnThinkingTrajectory, {"enable_thinking": True}, id="multi_user_turn_thinking_on"),
+    pytest.param(MultiTurnNoToolThinkingTrajectory, {"enable_thinking": True}, id="multi_turn_no_tool_thinking_on"),
+    pytest.param(MultiTurnNoToolThinkingTrajectory, {"enable_thinking": False}, id="multi_turn_no_tool_thinking_off"),
 ]
 
 _INTERMEDIATE_SYSTEM_THINKING_CASES = [

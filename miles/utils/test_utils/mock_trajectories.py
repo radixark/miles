@@ -492,6 +492,36 @@ class SimpleNoToolTrajectory:
     ]
 
 
+class MultiTurnNoToolTrajectory:
+    """sys, user, assistant, user (no tools) — multi-turn plain conversation"""
+
+    TOOLS = None
+    PRETOKENIZE_POSITIONS = [3, 5]
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is the capital of France?"},
+        {"role": "assistant", "content": "The capital of France is Paris."},
+        {"role": "user", "content": "And what about Germany?"},
+    ]
+
+
+class MultiTurnNoToolThinkingTrajectory:
+    """sys, user, assistant(reasoning_content), user (no tools) — multi-turn with thinking"""
+
+    TOOLS = None
+    PRETOKENIZE_POSITIONS = [3, 5]
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is the capital of France?"},
+        {
+            "role": "assistant",
+            "reasoning_content": "The user is asking about geography. The capital of France is Paris.",
+            "content": "The capital of France is Paris.",
+        },
+        {"role": "user", "content": "And what about Germany?"},
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Thinking variants
 # ---------------------------------------------------------------------------

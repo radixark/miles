@@ -194,9 +194,12 @@ class TokenSeqComparator:
     ) -> Mismatch | None:
         """Compare a single aligned segment pair and return a mismatch if they differ.
 
-        Special segments are compared by token ID; content segments are decoded
-        and compared as stripped text (leading/trailing whitespace ignored),
-        classified as assistant or non-assistant.
+        Special segments are compared by token ID.  Content segments are decoded
+        and compared as stripped text — leading/trailing whitespace (``\\n``,
+        spaces) is ignored because chat templates may insert boundary newlines
+        that differ from the TITO prefix.  This whitespace-only difference does
+        not cause meaningful misalignment with the chat template, so we strip
+        to avoid noisy false positives.
         """
         if exp.is_special:
             if exp.token_ids != act.token_ids:
@@ -256,21 +259,11 @@ class TokenSeqComparator:
 def _trim_trailing(ids: list[int], to_remove: set[int]) -> list[int]:
     """Strip trailing token IDs that belong to *to_remove*.
 
-    This handles cases where the actual generated sequence contains trailing stop
-    tokens that do not appear in the expected template-rendered sequence.
-
-    For example, with GLM 4.7, the model might generate a tool call ending with
-    the stop token ``<|observation|>``:
-        Actual:   ... [tool call] <|observation|>
-
-    If tool call parsing fails, an agent framework may choose to append a system
-    message (e.g., "Parse error") instead of a tool response. The chat template
-    might render this as:
-        Expected: ... [tool call] <|system|> [Parse error]
-
-    Because the expected sequence does not contain the ``<|observation|>`` token,
-    we strip these trailing tokens from the actual prefix to avoid a false
-    structural mismatch.
+    The model's generated output typically ends with a stop token (e.g.
+    ``<|observation|>`` for GLM, ``<|im_end|>`` for Qwen) that won't appear
+    at the same position in the template-rendered expected sequence.  Stripping
+    these trailing tokens from both sides before comparison avoids false
+    structural mismatches.
     """
     end = len(ids)
     while end > 0 and ids[end - 1] in to_remove:

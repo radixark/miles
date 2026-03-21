@@ -70,11 +70,11 @@ def _normalize_tool_arguments(messages: list[dict]) -> list[dict]:
 
 
 def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
-    """Extract and canonicalize function definitions from OpenAI tool format.
+    """Canonicalize tools via Pydantic, returning full Tool model dumps.
 
-    Matches SGLang's tool canonicalization before ``apply_chat_template``:
-    SGLang validates tools with ``protocol.Tool`` (Pydantic) and then passes
-    ``item.function.model_dump()`` into the template.
+    Matches SGLang's ``_process_messages`` (``serving_chat.py`` lines 343-344):
+    ``tools = [item.model_dump() for item in request.tools]`` — each tool is
+    a full ``Tool`` model dump (``{"type": "function", "function": {...}}``).
     """
     if not tools:
         return None
@@ -84,7 +84,7 @@ def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
 
     wrapped = [t if isinstance(t, dict) and "function" in t else {"type": "function", "function": t} for t in tools]
     validated = TypeAdapter(list[Tool]).validate_python(wrapped)
-    return [tool.function.model_dump() for tool in validated]
+    return [tool.model_dump() for tool in validated]
 
 
 def apply_chat_template_from_str(
@@ -122,7 +122,7 @@ def apply_chat_template_from_str(
     except Exception as e:
         if tool_defs is not None:
             try:
-                return _render([{"function": t} for t in tool_defs])
+                return _render([t["function"] if "function" in t else t for t in tool_defs])
             except TemplateError as te:
                 raise ValueError(f"Chat template rendering failed (tool format fallback): {te}") from te
         raise ValueError(f"Chat template rendering failed: {e}") from e
@@ -234,7 +234,7 @@ def apply_chat_template(
                 return tokenizer.apply_chat_template(
                     messages,
                     tokenize=tokenize,
-                    tools=[{"function": t} for t in tool_defs],
+                    tools=[t["function"] if "function" in t else t for t in tool_defs],
                     return_dict=False,
                     **render_kwargs,
                 )
