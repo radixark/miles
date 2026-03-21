@@ -170,14 +170,7 @@ class SingleUserTurnTrajectoryManager:
                     add_generation_prompt=False,
                     tokenize=True,
                 )
-                trim_ids = (
-                    set(self.tito_tokenizer.trailing_token_ids) if self.tito_tokenizer.trailing_token_ids else None
-                )
-                mismatches = self.comparator.compare_sequences(
-                    expected_ids,
-                    session.token_ids,
-                    trim_trailing_ids=trim_ids,
-                )
+                mismatches = self.comparator.compare_sequences(expected_ids, session.token_ids)
                 return [m.to_dict() for m in mismatches]
             except Exception:
                 logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
