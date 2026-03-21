@@ -157,7 +157,7 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
         from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
         from harbor.trial.trial import Trial
     except ImportError:
-        logger.error("Harbor not installed. Install with: pip install harbor-framework")
+        logger.error("Harbor not installed. Please refer to README.md for installation instructions.")
         return _error_response("ImportError")
 
     try:

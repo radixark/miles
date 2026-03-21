@@ -56,81 +56,84 @@ Docker Network (swe-net)
 
 ### Prerequisites
 
-- Docker with GPU support (nvidia-container-toolkit)
-- Model weights downloaded (e.g. `zai-org/GLM-4.7-Flash`)
-- `transformers>=5` (`pip install "transformers>=5"` — GLM-4.7-Flash's `glm4_moe_lite` model type is not in transformers 4.x)
+- Two machines: one with at least 8 x H200 GPUs for launching the training job, and another CPU-only machine for hosting the agent server.  The GPU machine must have Docker with GPU support (nvidia-container-toolkit).
+- GLM-4.7-Flash Model weights downloaded on the GPU machine (e.g. `zai-org/GLM-4.7-Flash`).
+- Docker CLI installed on the CPU machine via `docker-ce-li`.  [Installation guide](https://docs.docker.com/engine/install/ubuntu/)
+- Python virtual environment management tool `uv`.  This can be installed via `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - Recommended transformer version: `pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa`
-- Harbor task directories prepared under a shared path
 
-### Step 1: Create Docker network
+### Step 1: start agent server (on the CPU machine)
 
-All containers must be on the same network so Harbor-spawned agent containers can reach the Miles Router.
+The following commands assume that the initial working directory is `$CWD`.  The agent server will be hosted on port 11000 of the CPU machine.
 
 ```bash
-docker network create swe-net
+# Clone the miles repo
+git clone git@github.com:radixark/miles.git
+
+# Clone the forked harbor repo
+git clone git@github.com:radixark/harbor-private.git
+
+# Create a venv named "agent-server" and activate it
+cd $CWD/harbor-private && uv venv agent-server
+source agent-server/bin/activate  # For fish shell: source agent-server/bin/activate.fish
+
+# Install harbor
+uv pip install harbor
+
+# Download and register the SWE-Gym tasks to $HARBOR_TASKS_DIR
+cd $CWD/harbor-private/adapters/swe-gym && uv sync
+uv run run_adapter.py --task-dir $HARBOR_TASKS_DIR
+
+# Start the agent server
+export OPENAI_API_KEY="dummy"
+uv run python $CWD/miles/examples/experimental/swe-agent-v2/server.py \
+    --port 11000 \
+    --max-concurrent 8 \
+    > /tmp/server.log 2>&1
 ```
 
-### Step 2: Start the Miles container (GPU, training + inference)
+You can verify that the agent server is running by `curl -s http://localhost:11000/health`.  If you see `{"status":"ok"}`, the agent server is ready to go.
 
+### Step 2: Start the Miles container (on the GPU machine), download data, and prepare model weights.
+
+The following command starts a docker container named `miles` off image `radixark/miles:latest`.
+Note that the command masks the `miles` repo on the image with the `miles` repo on the host machine.
+This isn't always necessary.  Do it at your own discretion.
 ```bash
 docker run -itd \
   --shm-size 32g \
   --gpus all \
   -v /data/cache/huggingface:/root/.cache/huggingface \
   -v /data:/data \
+  -v $LOCAL_MILES_DIR:/root/miles \
   --ipc=host \
   --ulimit nofile=65536:65536 \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   --privileged \
-  --network swe-net \
   --name miles \
   radixark/miles:latest \
   /bin/bash
 ```
 
-### Step 3: Start the agent-env container (Harbor server + Docker-in-Docker)
-
-This container runs the Harbor server and spawns agent Docker containers via the host's Docker socket.
-
+Inside the docker container `miles`,
 ```bash
-docker run -itd \
-  --name agent_env \
-  --shm-size 16g \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /data:/data \
-  --ipc=host \
-  --ulimit nofile=65536:65536 \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  --network swe-net \
-  python:3.12-slim \
-  /bin/bash
-```
+# Install the appropriate `transformers` package
+pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa
 
-Inside agent_env, install Harbor and set up the server:
+# Download SWE-Gym data and convert to Miles format
+python /root/miles/examples/experimental/swe-agent-v2/download_and_process_data.py --input SWE-Gym/SWE-Gym --output /root/swe.jsonl
 
-```bash
-pip install harbor
-# Copy server.py into the container, or mount the miles repo
-```
+# If needed, download GLM-4.7-Flash model weights
+huggingface-cli download zai-org/GLM-4.7-Flash --local-dir /root/GLM-4.7-Flash
 
-### Step 4: Prepare data and Harbor task directories
-
-```bash
-# Inside miles container:
-
-# Download and convert to Miles format
-python download_and_process_data.py --input SWE-Gym/SWE-Gym --output swe.jsonl
-python download_and_process_data.py --input /data/tb.jsonl --output tb.jsonl \
-  --agent-name terminus-2 --prompt-key instruction
-
-# Merge into one mixed JSONL
-cat swe.jsonl tb.jsonl > mixed.jsonl
-
-# Create Harbor task dirs (for custom data without a Harbor adapter)
-python prepare_harbor_tasks.py --input my.jsonl --output /root/harbor_tasks/ \
-  --docker-network swe-net
+# Converting HuggingFace model weights to Megatron format for training
+export PYTHONPATH="/root/Megatron-LM"
+source /root/miles/scripts/models/glm4.7-flash.sh
+python /root/miles/tools/convert_hf_to_torch_dist.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/GLM-4.7-Flash \
+    --save /root/GLM-4.7-Flash_torch_dist
 ```
 
 Each Harbor task directory contains 4 files:
@@ -139,36 +142,9 @@ Each Harbor task directory contains 4 files:
 - `environment/Dockerfile` (or `docker-compose.yaml`) — container image
 - `tests/test.sh` — grading logic
 
-### Step 5: Start the Harbor server (in agent_env)
+### Step 3: Launch training
 
-```bash
-docker exec -d agent_env bash -c \
-  'OPENAI_API_KEY=dummy python server.py --port 11000 --max-concurrent 8 \
-   > /tmp/server.log 2>&1'
-```
-
-Verify it's running:
-
-```bash
-docker exec agent_env curl -s http://localhost:11000/health
-# {"status":"ok"}
-```
-
-### Step 6: Convert model weights to Megatron format
-
-The reference checkpoint must be in Megatron distributed format for training:
-
-```bash
-# Inside miles container — one-time conversion
-cd /root/miles
-source scripts/models/glm4.7-flash.sh
-PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
-    ${MODEL_ARGS[@]} \
-    --hf-checkpoint /root/GLM-4.7-Flash \
-    --save /root/GLM-4.7-Flash_torch_dist
-```
-
-### Step 7: Launch training
+Inside the `miles` docker container in the GPU machine,
 
 ```bash
 # Inside miles container:
@@ -178,15 +154,13 @@ cd /root/miles/examples/experimental/swe-agent-v2
 bash run.sh --mode debug --num-gpus 8 --ep 8 \
   --prompt-data /root/mixed.jsonl \
   --sglang-tool-call-parser glm47 \
-  --sglang-reasoning-parser glm45 \
-  --no-wait
+  --sglang-reasoning-parser glm45
 
 # Full training
 bash run.sh --num-gpus 8 --ep 8 \
   --prompt-data /root/mixed.jsonl \
   --sglang-tool-call-parser glm47 \
-  --sglang-reasoning-parser glm45 \
-  --no-wait
+  --sglang-reasoning-parser glm45
 ```
 
 What `run.sh` does:
@@ -195,11 +169,6 @@ What `run.sh` does:
 3. Sources the model architecture script (e.g. `glm4.7-flash.sh`)
 4. Submits a Ray job running `train.py` with all configured arguments
 
-Monitor the job:
-
-```bash
-ray job logs <JOB_ID> --follow
-```
 
 ### Step 8 (Optional): Start the trace-viewer
 
