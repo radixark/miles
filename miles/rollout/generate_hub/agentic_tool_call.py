@@ -41,25 +41,6 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-_SEVERE_MISMATCH_TYPES = {"special_token_count", "special_token_type", "non_assistant_text"}
-
-
-def _check_tito_mismatches(session_metadata: dict) -> None:
-    """Log a warning if session metadata contains severe TITO mismatches.
-
-    Mismatches are diagnostic only — they signal a potential token-level
-    difference between the incrementally-built TITO sequence and a fresh
-    full re-tokenization.  False positives are expected when the model's
-    trailing token behavior doesn't perfectly match the default tokenizer
-    (e.g. Qwen3's trailing newline).  We log instead of raising so that
-    single-turn or best-effort sessions are not blocked.
-    """
-    mismatches = session_metadata.get("tito_session_mismatch", [])
-    severe = [m for m in mismatches if m.get("type") in _SEVERE_MISMATCH_TYPES]
-    if severe:
-        summary = "; ".join(f'{m["type"]} at segment {m["segment_index"]}' for m in severe)
-        logger.warning("TITO diagnostic: %d severe mismatch(es): %s", len(severe), summary)
-
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tracer = await OpenAIEndpointTracer.create(input.args)
@@ -77,7 +58,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     )
 
     records, session_metadata = await tracer.collect_records()
-    _check_tito_mismatches(session_metadata)
 
     if not records:
         logger.warning("No model calls recorded for sample")
