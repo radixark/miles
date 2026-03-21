@@ -56,17 +56,70 @@ def compute_samples_from_openai_records(
     """Convert per-turn session records into training Samples, aligning each
     turn's output tokens against the TITO accumulated token sequence.
 
-    In TITO multi-turn sessions, the session server accumulates a single
-    contiguous token sequence across all turns::
+    Each record carries its own ``prompt_token_ids`` and ``output_token_ids``
+    (with logprobs).  We want to reuse those per-turn logprobs directly
+    instead of re-decoding, but we must first trim "trailing tokens" — stop
+    tokens the model emitted that the chat template also renders as the next
+    turn's delimiter — to avoid double-counting.
 
-        accumulated = [prompt_1 | output_1 | prompt_2_suffix | output_2 | ...]
+    Concrete example — agentic tool-call retries
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    Each record contains its own ``prompt_token_ids`` (the full prefix up to
-    that turn) and ``output_token_ids`` (the model's generation for that turn).
-    Because of pretokenized prefix reuse, the boundary between output and the
-    next turn's prompt may include "trailing tokens" (e.g. stop tokens that the
-    chat template also emits as the next turn's delimiter).  These trailing
-    tokens must be stripped from the training sample to avoid double-counting.
+    Suppose an agent makes three turns.  The model's tool call fails to parse
+    on turns 1 and 2, so the agent feeds back an error and retries.
+
+    The session server sees three request/response pairs (records).  Each
+    record's response is an independent inference that the session server
+    re-stitched via pretokenized prefix reuse, so the token sequences are::
+
+        record 0  request:  <|system|>aaa<|user|>bbb
+                  response: <|system|>aaa<|user|>bbb<|assistant|>ccc<|observation|>
+                  prompt_token_ids:  [<|system|>, aaa, <|user|>, bbb, <|assistant|>]
+                  output_token_ids:  [ccc, <|observation|>]     ← model stopped with <|observation|>
+
+        record 1  request:  <|system|>aaa<|user|>bbb<|assistant|>ccc<|system|>ddd
+                  response: <|system|>aaa<|user|>bbb<|assistant|>ccc<|system|>ddd<|assistant|>eee<|observation|>
+                  prompt_token_ids:  [<|system|>, aaa, <|user|>, bbb, <|assistant|>, ccc, <|system|>, ddd, <|assistant|>]
+                  output_token_ids:  [eee, <|observation|>]
+
+        record 2  request:  <|system|>aaa<|user|>bbb<|assistant|>ccc<|system|>ddd<|assistant|>eee<|system|>fff
+                  response: <|system|>aaa<|user|>bbb<|assistant|>ccc<|system|>ddd<|assistant|>eee<|system|>fff<|assistant|>ggg<|observation|>
+                  prompt_token_ids:  [<|system|>, aaa, ..., fff, <|assistant|>]
+                  output_token_ids:  [ggg, <|observation|>]
+
+    ``accumulated_token_ids`` is the final contiguous sequence the session
+    server maintained (= record 2's prompt + output)::
+
+        [<|system|>, aaa, <|user|>, bbb, <|assistant|>, ccc, <|system|>, ddd,
+         <|assistant|>, eee, <|system|>, fff, <|assistant|>, ggg, <|observation|>]
+
+    Note there is **no** ``<|observation|>`` between ``ccc`` and ``<|system|>``
+    in the accumulated sequence — the stop token the model emitted at turn 1
+    was consumed by the chat template when rendering turn 2's prompt.
+
+    The algorithm walks ``accumulated_token_ids`` with a cursor::
+
+        Record 0:  cursor = len(prompt_0) → points to "ccc"
+                   Match output [ccc, <|observation|>] against accumulated[cursor:]:
+                     ccc ✓  <|observation|> ✗ (accumulated has <|system|> here)
+                   → trim_count = 1, strip <|observation|> from this sample
+                   → cursor advances past "ccc"
+
+        Record 1:  cursor = len(prompt_1) → points to "eee"
+                   Match output [eee, <|observation|>]:
+                     eee ✓  <|observation|> ✗ (accumulated has <|system|> here)
+                   → trim_count = 1, strip <|observation|>
+                   → cursor advances past "eee"
+
+        Record 2:  cursor = len(prompt_2) → points to "ggg"
+                   Match output [ggg, <|observation|>]:
+                     ggg ✓  <|observation|> ✓ (last turn, everything matches)
+                   → trim_count = 0, keep full output
+                   → cursor reaches end of accumulated
+
+    Result: three Samples whose output tokens are ``[ccc]``, ``[eee]``,
+    ``[ggg, <|observation|>]`` — each carrying the original per-turn logprobs,
+    with trailing stop tokens correctly stripped for non-final turns.
 
     """
     samples = []
