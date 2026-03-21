@@ -229,6 +229,21 @@ class TestCollectAndPrintNodeEnvReport:
         assert parsed["role"] == "rollout"
         assert parsed["rank"] == 3
 
+    def test_printed_json_has_sorted_keys(self, capsys) -> None:
+        """Verify JSON output uses sort_keys for deterministic cross-process comparison."""
+        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+            collect_and_print_node_env_report(
+                role="training",
+                rank=0,
+                partial_env_report='{"b": 2, "a": 1}',
+            )
+
+        captured = capsys.readouterr()
+        line = next(x for x in captured.out.splitlines() if x.startswith(ENV_REPORT_PREFIX))
+        json_str = line.removeprefix(ENV_REPORT_PREFIX)
+        keys = list(json.loads(json_str).keys())
+        assert keys == sorted(keys), f"Top-level keys not sorted: {keys}"
+
     def test_empty_partial_env_report(self) -> None:
         with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
             report = collect_and_print_node_env_report(

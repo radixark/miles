@@ -175,4 +175,4 @@ ENV_REPORT_PREFIX = "ENV_REPORT_JSON="
 
 
 def _print_report(report: NodeEnvReport) -> None:
-    print(f"{ENV_REPORT_PREFIX}{json.dumps(asdict(report), separators=(',', ':'), default=str)}")
+    print(f"{ENV_REPORT_PREFIX}{json.dumps(asdict(report), separators=(',', ':'), sort_keys=True, default=str)}")
