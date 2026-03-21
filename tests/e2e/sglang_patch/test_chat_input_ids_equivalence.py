@@ -28,6 +28,25 @@ def _build_messages() -> list[dict]:
     ]
 
 
+def _extract_chat_token_ids_and_logprobs(chat_choice: dict):
+    """Extract output token IDs and logprobs from the chat response.
+
+    Supports two sglang response formats:
+    - meta_info path: choice.meta_info.output_token_logprobs as (logprob, token_id) tuples
+    - logprobs path:  choice.logprobs.content[*].token_id  (sglang-miles branch)
+    """
+    if "meta_info" in chat_choice and "output_token_logprobs" in chat_choice.get("meta_info", {}):
+        output_token_logprobs = chat_choice["meta_info"]["output_token_logprobs"]
+        token_ids = [t[1] for t in output_token_logprobs]
+        logprobs = [t[0] for t in output_token_logprobs]
+        return token_ids, logprobs
+
+    content = chat_choice["logprobs"]["content"]
+    token_ids = [t["token_id"] for t in content]
+    logprobs = [t["logprob"] for t in content]
+    return token_ids, logprobs
+
+
 @pytest.mark.system
 def test_generate_and_chat_completions_equivalence(sglang_server):
     """The /generate (token) and /v1/chat/completions (message) endpoints
@@ -48,13 +67,11 @@ def test_generate_and_chat_completions_equivalence(sglang_server):
 
     # --- output token ids ---
     gen_token_ids = [t[1] for t in gen_resp["meta_info"]["output_token_logprobs"]]
-    chat_output_token_logprobs = chat_choice["meta_info"]["output_token_logprobs"]
-    chat_token_ids = [t[1] for t in chat_output_token_logprobs]
+    chat_token_ids, chat_logprobs = _extract_chat_token_ids_and_logprobs(chat_choice)
     assert gen_token_ids == chat_token_ids, "output token ids mismatch"
 
     # --- output logprobs ---
     gen_logprobs = [t[0] for t in gen_resp["meta_info"]["output_token_logprobs"]]
-    chat_logprobs = [t[0] for t in chat_output_token_logprobs]
     assert len(gen_logprobs) == len(chat_logprobs)
     for i, (g, c) in enumerate(zip(gen_logprobs, chat_logprobs, strict=True)):
         assert math.isclose(g, c, abs_tol=LOGPROB_TOL), f"logprob mismatch at {i}: {g} vs {c}"

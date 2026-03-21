@@ -18,9 +18,20 @@ from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, TwoTurnStub
 def expected_logprobs(tokenizer, text: str) -> list[dict]:
     output_ids = tokenizer.encode(text, add_special_tokens=False)
     return [
-        {"token": tokenizer.convert_ids_to_tokens(tid), "token_id": tid, "logprob": -i / 128}
-        for i, tid in enumerate(output_ids)
+        {"token": tokenizer.convert_ids_to_tokens(tid), "logprob": -1 / 128 * i} for i, tid in enumerate(output_ids)
     ]
+
+
+def expected_response_token_ids(tokenizer, text: str) -> list[int]:
+    return tokenizer.encode(text, add_special_tokens=False)
+
+
+def expected_choice_meta_info(tokenizer, text: str) -> dict:
+    output_ids = tokenizer.encode(text, add_special_tokens=False)
+    return {
+        "completion_tokens": len(output_ids),
+        "output_token_logprobs": [[-1 / 128 * i, tid] for i, tid in enumerate(output_ids)],
+    }
 
 
 def expected_prompt_token_ids(tokenizer, messages: list[dict], tools: list[dict] | None) -> list[int]:
@@ -262,8 +273,10 @@ class TestChatCompletionsEndpoint:
                     "index": 0,
                     "message": {"role": "assistant", "content": "\\boxed{6}", "tool_calls": None},
                     "logprobs": {"content": expected_logprobs(mock_server.tokenizer, "\\boxed{6}")},
+                    "response_token_ids": expected_response_token_ids(mock_server.tokenizer, "\\boxed{6}"),
                     "prompt_token_ids": expected_prompt_token_ids(mock_server.tokenizer, messages, None),
                     "finish_reason": "stop",
+                    "meta_info": expected_choice_meta_info(mock_server.tokenizer, "\\boxed{6}"),
                 }
             ],
         }
@@ -296,12 +309,14 @@ class TestChatCompletionsEndpoint:
                     ],
                 },
                 "logprobs": {"content": expected_logprobs(server.tokenizer, tool_call_response)},
+                "response_token_ids": expected_response_token_ids(server.tokenizer, tool_call_response),
                 "prompt_token_ids": expected_prompt_token_ids(
                     server.tokenizer,
                     [{"role": "user", "content": "What year is it?"}],
                     SAMPLE_TOOLS,
                 ),
                 "finish_reason": "tool_calls",
+                "meta_info": expected_choice_meta_info(server.tokenizer, tool_call_response),
             }
 
     def test_with_tools_but_no_tool_call(self):
@@ -326,12 +341,14 @@ class TestChatCompletionsEndpoint:
                 "index": 0,
                 "message": {"role": "assistant", "content": response_text, "tool_calls": None},
                 "logprobs": {"content": expected_logprobs(server.tokenizer, response_text)},
+                "response_token_ids": expected_response_token_ids(server.tokenizer, response_text),
                 "prompt_token_ids": expected_prompt_token_ids(
                     server.tokenizer,
                     [{"role": "user", "content": "What's the weather?"}],
                     SAMPLE_TOOLS,
                 ),
                 "finish_reason": "stop",
+                "meta_info": expected_choice_meta_info(server.tokenizer, response_text),
             }
 
     def test_with_multiple_tool_calls(self):
@@ -371,12 +388,14 @@ class TestChatCompletionsEndpoint:
                     ],
                 },
                 "logprobs": {"content": expected_logprobs(server.tokenizer, multi_tool_response)},
+                "response_token_ids": expected_response_token_ids(server.tokenizer, multi_tool_response),
                 "prompt_token_ids": expected_prompt_token_ids(
                     server.tokenizer,
                     [{"role": "user", "content": "What year and temperature?"}],
                     SAMPLE_TOOLS,
                 ),
                 "finish_reason": "tool_calls",
+                "meta_info": expected_choice_meta_info(server.tokenizer, multi_tool_response),
             }
 
 
