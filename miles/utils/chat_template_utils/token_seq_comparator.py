@@ -256,12 +256,21 @@ class TokenSeqComparator:
 def _trim_trailing(ids: list[int], to_remove: set[int]) -> list[int]:
     """Strip trailing token IDs that belong to *to_remove*.
 
-    Models may generate stop tokens that the chat template also emits as the
-    next turn's start token, causing a duplicate at the boundary.  E.g. GLM 4.7
-    uses ``<|observation|>`` both as an assistant stop token and as the next
-    tool-response turn's opening — the pretokenized prefix may end with
-    ``<|observation|>`` while the expected (template-rendered) sequence does not,
-    so trimming avoids a false structural mismatch.
+    This handles cases where the actual generated sequence contains trailing stop
+    tokens that do not appear in the expected template-rendered sequence.
+
+    For example, with GLM 4.7, the model might generate a tool call ending with
+    the stop token ``<|observation|>``:
+        Actual:   ... [tool call] <|observation|>
+
+    If tool call parsing fails, an agent framework may choose to append a system
+    message (e.g., "Parse error") instead of a tool response. The chat template
+    might render this as:
+        Expected: ... [tool call] <|system|> [Parse error]
+
+    Because the expected sequence does not contain the ``<|observation|>`` token,
+    we strip these trailing tokens from the actual prefix to avoid a false
+    structural mismatch.
     """
     end = len(ids)
     while end > 0 and ids[end - 1] in to_remove:
