@@ -480,21 +480,26 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.use_fault_tolerance:
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.recover_rollout_engines.remote())
+                ray.get(self.rollout_manager.recover_updatable_engines.remote())
             dist.barrier(group=get_gloo_group())
 
-        rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
-            self.rollout_manager.get_rollout_engines_and_lock.remote()
+        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
+            self.rollout_manager.get_updatable_engines_and_lock.remote()
         )
 
         if self.args.offload_train:
             reload_process_groups()
 
         if num_new_engines > 0:
-            self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
+            self.weight_updater.connect_rollout_engines(
+                rollout_engines,
+                rollout_engine_lock,
+                engine_gpu_counts=engine_gpu_counts,
+                engine_gpu_offsets=engine_gpu_offsets,
+            )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
 
         if self.args.offload_train and is_lora_enabled(self.args):
             # For LoRA, we must resume() to restore GPU memory backing for adapter

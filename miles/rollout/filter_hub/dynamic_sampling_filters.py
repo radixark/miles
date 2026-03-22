@@ -15,8 +15,17 @@ def check_reward_nonzero_std(args, samples: list[Sample], **kwargs):
     )
 
 
+def _flatten_samples(samples):
+    """Flatten samples that may contain nested lists (from --generate-multi-samples)."""
+    for s in samples:
+        if isinstance(s, list):
+            yield from s
+        else:
+            yield s
+
+
 def check_no_aborted(args, samples: list[Sample], **kwargs):
     """Reject entire group if any sample was aborted (e.g. env timeout, Docker crash)."""
-    if any(s.status == Sample.Status.ABORTED for s in samples):
+    if any(s.status == Sample.Status.ABORTED for s in _flatten_samples(samples)):
         return DynamicFilterOutput(keep=False, reason="group_has_aborted")
     return DynamicFilterOutput(keep=True)

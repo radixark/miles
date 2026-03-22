@@ -40,6 +40,8 @@ class UpdateWeight(abc.ABC):
         self,
         rollout_engines: Sequence[ActorHandle],
         rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         pass
 
@@ -92,6 +94,8 @@ class UpdateWeightFromTensor(UpdateWeight):
         self,
         rollout_engines: Sequence[ActorHandle],
         rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """Attach rollout engines and create per-engine IPC (Gloo) groups.
 
@@ -186,6 +190,8 @@ class UpdateWeightFromDistributed(UpdateWeight):
         self,
         rollout_engines: Sequence[ActorHandle],
         rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """On rank 0, initialize a temporary NCCL group for parameter broadcast."""
         self.rollout_engines = rollout_engines

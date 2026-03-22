@@ -51,7 +51,7 @@ async def run(
     request = {
         **metadata,
         "base_url": session_url,
-        "model": f"hosted_vllm/{model_name}",
+        "model": f"openai/{model_name}",
         "sampling_params": request_kwargs,
     }
 

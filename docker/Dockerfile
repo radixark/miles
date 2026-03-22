@@ -3,10 +3,10 @@
 #
 # 2. radixark/miles:dev-cu13-arm64
 #    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.8.post1-cu130-arm64 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.9-cu130-arm64 \
 #    build-arg:WHEELS_TAG=cu130-aarch64 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.8.post1
+ARG SGLANG_IMAGE_TAG=v0.5.9
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -113,10 +113,6 @@ RUN cd /sgl-workspace/sglang && \
       git checkout FETCH_HEAD; \
     fi && \
     pip install -e "python[all]" --no-deps
-
-# Current sglang requires "flashinfer_python>=0.6.2"
-RUN pip uninstall flashinfer-jit-cache -y
-RUN pip install "flashinfer_python==0.6.2" "flashinfer-cubin==0.6.2" --no-deps
 
 # ====================================== Install main package ============================================
 
