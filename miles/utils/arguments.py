@@ -1229,6 +1229,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--env-report",
+                type=str,
+                default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
+                help="JSON string containing environment report from external launcher.",
+            )
             return parser
 
         def add_network_arguments(parser):
@@ -1505,6 +1511,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_custom_megatron_plugins_arguments(parser)
         if enable_experimental_rollout_refactor():
             parser = add_user_provided_function_arguments(parser)
+
         reset_arg(
             parser,
             "--custom-config-path",

@@ -15,6 +15,7 @@ from urllib3.exceptions import NewConnectionError
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
 from miles.ray.ray_actor import RayActor
+from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,13 @@ class SGLangEngine(RayActor):
         router_ip=None,
         router_port=None,
     ):
+        if env_report := self.args.env_report:
+            collect_and_print_node_env_report(
+                role="rollout",
+                rank=self.rank,
+                partial_env_report=env_report,
+            )
+
         self.router_ip = router_ip if router_ip is not None else self.args.sglang_router_ip
         self.router_port = router_port if router_port is not None else self.args.sglang_router_port
 

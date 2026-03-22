@@ -11,6 +11,7 @@ import torch.distributed as dist
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
 from miles.utils.distributed_utils import init_gloo_group
+from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
 
@@ -51,6 +52,13 @@ class TrainRayActor(RayActor):
         self.args = args
         self.role = role
         self.with_ref = with_ref
+
+        if env_report := args.env_report:
+            collect_and_print_node_env_report(
+                role=role,
+                rank=self._rank,
+                partial_env_report=env_report,
+            )
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 
