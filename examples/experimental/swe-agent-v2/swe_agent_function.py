@@ -55,6 +55,10 @@ async def run(
         "sampling_params": request_kwargs,
     }
 
+    max_total_response_tokens = metadata.get("max_total_response_tokens")
+    if max_total_response_tokens is not None:
+        request["max_total_response_tokens"] = int(max_total_response_tokens)
+
     try:
         response = await post(f"{agent_server_url}/run", request)
     except Exception as e:

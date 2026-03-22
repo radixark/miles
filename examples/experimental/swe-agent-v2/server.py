@@ -55,6 +55,7 @@ class RunRequest(BaseModel):
 
     instance_id: str = ""
     agent_name: str = "mini-swe-agent"
+    max_total_response_tokens: int | None = None
 
     model_config = {"extra": "allow"}
 
@@ -72,6 +73,7 @@ def get_semaphore() -> asyncio.Semaphore:
 
 
 _TIMEOUT_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "EnvironmentStartTimeoutError"}
+_OUTPUT_LIMIT_EXCEPTIONS = {"TotalResponseLengthExceededError"}
 
 _HOST_PROCESS_AGENTS = {"terminus-2", "terminus-1", "terminus"}
 
@@ -85,6 +87,8 @@ def _extract_exit_status(result) -> str:
         exc_type = getattr(exc, "exception_type", "")
         if exc_type in _TIMEOUT_EXCEPTIONS:
             return "LimitsExceeded"
+        if exc_type in _OUTPUT_LIMIT_EXCEPTIONS:
+            return "OutputLimitExceeded"
         return "AgentError"
     if getattr(result, "verifier_result", None) is not None:
         return "Submitted"
@@ -205,6 +209,8 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
             agent_kwargs["api_base"] = request.base_url
             agent_kwargs["api_key"] = request.api_key or "dummy"
             agent_kwargs["enable_summarize"] = False
+            if request.max_total_response_tokens is not None:
+                agent_kwargs["max_total_response_tokens"] = request.max_total_response_tokens
             agent_env = {
                 "OPENAI_API_KEY": request.api_key or "dummy",
                 "OPENAI_API_BASE": request.base_url,
