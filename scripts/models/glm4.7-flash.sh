@@ -11,7 +11,7 @@ N_MOE_LAYERS=46
 NHEADS=20
 
 MODEL_ARGS=(
-    --moe-layer-freq [0]*$N_DENSE_LAYERS+[1]*$N_MOE_LAYERS
+    --moe-layer-freq "[0]*${N_DENSE_LAYERS}+[1]*${N_MOE_LAYERS}"
     --num-experts $MOE_ROUTED_EXPERTS
     --moe-shared-expert-intermediate-size $MOE_SHARED_EXPERT_INTERMEDIATE_SIZE
     --moe-router-topk $MOE_ACTIVE_ROUTED_EXPERTS

@@ -27,6 +27,9 @@
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
+    {'test_file': 'e2e/sglang_config/test_sglang_config.py', 'num_gpus': 8},
+    {'test_file': 'e2e/sglang_config/test_sglang_config_mixed_offload.py', 'num_gpus': 8},
+    {'test_file': 'e2e/sglang_config/test_sglang_config_mixed_offload_ft.py', 'num_gpus': 8},
 ] %>
 
 <% set precision_tests = [
@@ -60,6 +63,7 @@
       'test_executor': 'pytest',
       'tests': [
         {'test_file': 'fast', 'num_gpus': 0},
+        {'test_file': 'utils/test_sglang_config.py', 'num_gpus': 0},
       ],
     },
     'unit-test': {

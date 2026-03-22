@@ -59,6 +59,7 @@ Docker Network (swe-net)
 - Docker with GPU support (nvidia-container-toolkit)
 - Model weights downloaded (e.g. `zai-org/GLM-4.7-Flash`)
 - `transformers>=5` (`pip install "transformers>=5"` — GLM-4.7-Flash's `glm4_moe_lite` model type is not in transformers 4.x)
+- Recommended transformer version: `pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa`
 - Harbor task directories prepared under a shared path
 
 ### Step 1: Create Docker network
@@ -159,12 +160,12 @@ The reference checkpoint must be in Megatron distributed format for training:
 
 ```bash
 # Inside miles container — one-time conversion
-torchrun --nproc_per_node=4 /root/miles/tools/convert_hf_to_torch_dist.py \
-  --hf-checkpoint zai-org/GLM-4.7-Flash \
-  --save /root/GLM-4.7-Flash_torch_dist \
-  --tensor-model-parallel-size 1 \
-  --pipeline-model-parallel-size 1 \
-  --expert-model-parallel-size 4
+cd /root/miles
+source scripts/models/glm4.7-flash.sh
+PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/GLM-4.7-Flash \
+    --save /root/GLM-4.7-Flash_torch_dist
 ```
 
 ### Step 7: Launch training

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Agent V2 launcher: Miles <-> Harbor agent orchestration.
+# Agent V2 launcher (Qwen3-4B): Miles <-> Harbor agent orchestration.
 #
 # Supports any task type (SWE-bench, Terminal-Bench, custom) via Harbor.
 
@@ -18,7 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MILES_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-source "$MILES_ROOT/scripts/models/glm4.7-flash.sh"
+source "$MILES_ROOT/scripts/models/qwen3-4B.sh"
 
 BASE_DIR=/root/shared
 AGENT_SERVER_URL="${AGENT_SERVER_URL:-${SWE_AGENT_URL:-http://agent_env:11000}}"
@@ -26,9 +26,9 @@ HARBOR_TASKS_DIR="${HARBOR_TASKS_DIR:-/root/harbor_tasks}"
 ROUTER_EXTERNAL_HOST="${MILES_ROUTER_EXTERNAL_HOST:-$(hostname)}"
 
 CKPT_ARGS=(
-  --hf-checkpoint $BASE_DIR/GLM-4.7-Flash
-  --ref-load $BASE_DIR/GLM-4.7-Flash_torch_dist
-  --save $BASE_DIR/GLM-4.7-Flash_agent_v2/
+  --hf-checkpoint $BASE_DIR/Qwen3-4B
+  --ref-load $BASE_DIR/Qwen3-4B_torch_dist
+  --save $BASE_DIR/Qwen3-4B_agent_V2/
   --save-interval 100
 )
 
@@ -39,19 +39,19 @@ ROLLOUT_ARGS=(
   --rollout-shuffle
 
   --num-rollout 3000
-  --rollout-batch-size 8
-  --n-samples-per-prompt 8
+  --rollout-batch-size 1
+  --n-samples-per-prompt 1
   --rollout-temperature 0.8
   --rollout-max-response-len 8192
-  --global-batch-size 64
+  --global-batch-size 1
   --balance-data
 )
 
 PERF_ARGS=(
-  --tensor-model-parallel-size 4
+  --tensor-model-parallel-size 1
   --pipeline-model-parallel-size 1
   --context-parallel-size 1
-  --expert-model-parallel-size 8
+  --expert-model-parallel-size 1
   --expert-tensor-parallel-size 1
 
   --recompute-granularity full
@@ -59,7 +59,7 @@ PERF_ARGS=(
   --recompute-num-layers 1
 
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 16384
+  --max-tokens-per-gpu 2048
 )
 
 GRPO_ARGS=(
@@ -83,13 +83,9 @@ OPTIMIZER_ARGS=(
 
 SGLANG_ARGS=(
   --rollout-num-gpus-per-engine 1
-  # --sglang-speculative-algorithm EAGLE
-  # --sglang-speculative-num-steps 2
-  # --sglang-speculative-eagle-topk 1
-  # --sglang-speculative-num-draft-tokens 3
-  --sglang-mem-fraction-static 0.7
-  --sglang-tool-call-parser glm47
-  --sglang-reasoning-parser glm45
+  --sglang-mem-fraction-static 0.8
+  --sglang-tool-call-parser qwen25
+  --sglang-reasoning-parser qwen3
 
   --use-miles-router
   --sglang-router-port 30000
@@ -126,7 +122,7 @@ DEBUG_ARGS=(
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head \
   --node-ip-address "$MASTER_ADDR" \
-  --num-gpus 8 \
+  --num-gpus 1 \
   --disable-usage-stats \
   --dashboard-host=0.0.0.0 \
   --dashboard-port=8265 \
@@ -154,8 +150,8 @@ ray job submit \
   -- python3 "$MILES_ROOT/train.py" \
   --colocate \
   --actor-num-nodes 1 \
-  --actor-num-gpus-per-node 8 \
-  --rollout-num-gpus 8 \
+  --actor-num-gpus-per-node 1 \
+  --rollout-num-gpus 1 \
   "${MODEL_ARGS[@]}" \
   "${CKPT_ARGS[@]}" \
   "${ROLLOUT_ARGS[@]}" \
