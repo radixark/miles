@@ -66,7 +66,7 @@ def patch_wy_fast():
         content = f.read()
 
     if "safe_dot" in content:
-        print(f"  SKIP: already patched")
+        print("  SKIP: already patched")
         return True
 
     TARGET_IMPORT = "import triton.language as tl"
@@ -102,7 +102,7 @@ def patch_triton_jit():
         content = f.read()
 
     if "gluon_ir not compiled" in content:
-        print(f"  SKIP: already patched")
+        print("  SKIP: already patched")
         return True
 
     OLD = "    from triton.experimental.gluon.nvidia.hopper import TensorDescriptor as GluonTensorDescriptor"
@@ -112,7 +112,7 @@ def patch_triton_jit():
         GluonTensorDescriptor = type(None)  # gluon_ir not compiled on this build"""
 
     if OLD not in content:
-        print(f"  ERROR: target line not found in jit.py — Triton version may differ")
+        print("  ERROR: target line not found in jit.py — Triton version may differ")
         return False
 
     content = content.replace(OLD, NEW, 1)
@@ -132,7 +132,7 @@ def patch_triton_gluon_semantic():
         content = f.read()
 
     if "gluon_ir not compiled" in content:
-        print(f"  SKIP: already patched")
+        print("  SKIP: already patched")
         return True
 
     OLD = "from triton._C.libtriton.gluon_ir import GluonOpBuilder"
@@ -144,7 +144,7 @@ except (ImportError, ModuleNotFoundError):
             raise NotImplementedError(f"GluonOpBuilder.{name}: gluon_ir not compiled")"""
 
     if OLD not in content:
-        print(f"  ERROR: target line not found in _semantic.py")
+        print("  ERROR: target line not found in _semantic.py")
         return False
 
     content = content.replace(OLD, NEW, 1)
@@ -159,7 +159,7 @@ def clear_triton_cache():
         shutil.rmtree(TRITON_CACHE)
         print(f"  Cleared Triton cache: {TRITON_CACHE}")
     else:
-        print(f"  Triton cache not found (nothing to clear)")
+        print("  Triton cache not found (nothing to clear)")
 
 
 if __name__ == "__main__":
