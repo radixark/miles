@@ -329,7 +329,7 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
             for i in range(len(log_probs))
         ]
 
-    if args.advantage_estimator in ["grpo", "gspo"]:
+    if args.advantage_estimator in ["grpo", "gspo", "gdpo"]:
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
         returns = get_grpo_returns(rewards, kl)
         # TODO: is the copy necessary?
