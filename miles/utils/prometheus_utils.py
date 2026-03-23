@@ -2,8 +2,6 @@ import logging
 import os
 import tempfile
 
-from miles.utils.misc import SingletonMeta
-
 logger = logging.getLogger(__name__)
 
 _PROMETHEUS_MULTIPROC_DIR = os.path.join(tempfile.gettempdir(), "prometheus_multiproc")
@@ -12,8 +10,22 @@ os.environ["PROMETHEUS_MULTIPROC_DIR"] = _PROMETHEUS_MULTIPROC_DIR
 
 _METRIC_PREFIX = "miles_metric_"
 
+_prometheus: "PrometheusAdapter | None" = None
 
-class PrometheusAdapter(metaclass=SingletonMeta):
+
+def init_prometheus(args, start_server: bool = False):
+    global _prometheus
+    _prometheus = PrometheusAdapter(args, start_server=start_server)
+
+
+def get_prometheus() -> "PrometheusAdapter":
+    assert _prometheus is not None, (
+        "PrometheusAdapter not initialized. Call init_prometheus() first."
+    )
+    return _prometheus
+
+
+class PrometheusAdapter:
     """Prometheus adapter that works across multiple Ray actor processes.
 
     Uses prometheus_client's multiprocess mode: each process writes gauge
