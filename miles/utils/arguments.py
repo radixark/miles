@@ -1391,12 +1391,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
             )
-            parser.add_argument(
-                "--use-gated-attention",
-                action="store_true",
-                default=False,
-                help="Enable gated attention (used by Qwen3.5 hybrid models).",
-            )
             return parser
 
         def add_mtp_training_arguments(parser):

@@ -10,7 +10,6 @@ MODEL_ARGS=(
    --num-layers 32
    --hidden-size 4096
    --ffn-hidden-size 12288
-   --use-gated-attention
 
    --normalization RMSNorm
    --apply-layernorm-1p

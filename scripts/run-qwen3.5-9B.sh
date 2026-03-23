@@ -117,7 +117,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   --log-probs-chunk-size 256
 )
 
 # launch the master node of ray in container

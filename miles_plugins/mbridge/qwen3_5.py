@@ -307,9 +307,6 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             **mtp_args,
         )
 
-        if self._supports_transformer_config_kwarg("use_gated_attention"):
-            base_kwargs["use_gated_attention"] = True
-
         # Handle MoE-specific config
         if hasattr(text_config, "num_experts"):
             base_kwargs.update(

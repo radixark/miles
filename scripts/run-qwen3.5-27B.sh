@@ -110,7 +110,6 @@ SGLANG_ARGS=(
    # SGLang TP>1 produces garbage output for Qwen3.5, use TP=1 per engine
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.5
-   --sglang-disable-cuda-graph
 )
 
 MISC_ARGS=(
@@ -122,10 +121,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   --log-probs-chunk-size 256
-   --recompute-loss-function
-   --train-memory-margin-bytes 0
-   --disable-weights-backuper
 )
 
 # launch the master node of ray in container
