@@ -6,9 +6,7 @@ from miles.utils.misc import SingletonMeta
 
 logger = logging.getLogger(__name__)
 
-_PROMETHEUS_MULTIPROC_DIR = os.path.join(
-    tempfile.gettempdir(), "prometheus_multiproc"
-)
+_PROMETHEUS_MULTIPROC_DIR = os.path.join(tempfile.gettempdir(), "prometheus_multiproc")
 os.makedirs(_PROMETHEUS_MULTIPROC_DIR, exist_ok=True)
 os.environ["PROMETHEUS_MULTIPROC_DIR"] = _PROMETHEUS_MULTIPROC_DIR
 
@@ -30,35 +28,23 @@ class PrometheusAdapter(metaclass=SingletonMeta):
             self._Gauge = Gauge
             self._gauges: dict = {}
             self._run_name = (
-                getattr(args, "prometheus_run_name", None)
-                or getattr(args, "wandb_group", None)
-                or "miles_training"
+                getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None) or "miles_training"
             )
             self._label_keys = ["run_name"]
             self._label_vals = [self._run_name]
 
             if start_server:
-                from prometheus_client import (
-                    CollectorRegistry,
-                    multiprocess,
-                    start_http_server,
-                )
-                
+                from prometheus_client import CollectorRegistry, multiprocess, start_http_server
+
                 # The HTTP server needs a registry with `MultiProcessCollector`
                 # to aggregate gauge files from all processes on scrape.
                 registry = CollectorRegistry()
                 multiprocess.MultiProcessCollector(registry)
                 port = args.prometheus_port
                 start_http_server(port, registry=registry)
-                logger.info(
-                    f"Prometheus metrics server started on port {port}, "
-                    f"run_name={self._run_name}"
-                )
+                logger.info(f"Prometheus metrics server started on port {port}, " f"run_name={self._run_name}")
         except ImportError:
-            logger.error(
-                "prometheus_client not installed. "
-                "Run: pip install prometheus-client"
-            )
+            logger.error("prometheus_client not installed. " "Run: pip install prometheus-client")
             raise
         except OSError as e:
             logger.warning(f"Prometheus HTTP server not started: {e}")
@@ -73,9 +59,7 @@ class PrometheusAdapter(metaclass=SingletonMeta):
         for key, value in metrics.items():
             if not isinstance(value, (int, float)):
                 continue
-            safe_key = _METRIC_PREFIX + (
-                key.replace("/", "_").replace("-", "_").replace("@", "_at_")
-            )
+            safe_key = _METRIC_PREFIX + (key.replace("/", "_").replace("-", "_").replace("@", "_at_"))
             if safe_key not in self._gauges:
                 self._gauges[safe_key] = self._Gauge(
                     safe_key,
