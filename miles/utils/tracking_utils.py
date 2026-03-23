@@ -29,4 +29,6 @@ def log(args, metrics, step_key: str):
         _TensorboardAdapter(args).log(data=metrics_except_step, step=metrics[step_key])
 
     if args.use_prometheus:
-        get_prometheus().update(metrics)
+        prom = get_prometheus()
+        if prom is not None:
+            prom.update.remote(metrics)

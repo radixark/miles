@@ -1,73 +1,79 @@
 import logging
-import os
-import tempfile
+import time
+
+import ray
 
 logger = logging.getLogger(__name__)
 
-_PROMETHEUS_MULTIPROC_DIR = os.path.join(tempfile.gettempdir(), "prometheus_multiproc")
-os.makedirs(_PROMETHEUS_MULTIPROC_DIR, exist_ok=True)
-os.environ["PROMETHEUS_MULTIPROC_DIR"] = _PROMETHEUS_MULTIPROC_DIR
-
 _METRIC_PREFIX = "miles_metric_"
+_COLLECTOR_ACTOR_NAME = "prometheus_collector"
+_GET_ACTOR_TIMEOUT = 60
+_GET_ACTOR_INTERVAL = 2
 
-_prometheus: "PrometheusAdapter | None" = None
+_collector_handle = None
 
 
 def init_prometheus(args, start_server: bool = False):
-    global _prometheus
-    _prometheus = PrometheusAdapter(args, start_server=start_server)
+    """Initialize the Prometheus metric collector.
+
+    The driver process (``start_server=True``) creates a named Ray
+    actor that holds the HTTP server and all gauges.  Actor processes
+    (``start_server=False``) look up the existing named actor.  Ray
+    remote calls transport metrics across nodes transparently.
+    """
+    global _collector_handle
+
+    if start_server:
+        _collector_handle = ray.remote(_PrometheusCollector).options(name=_COLLECTOR_ACTOR_NAME).remote(args)
+        ray.get(_collector_handle.ping.remote())
+        logger.info("Prometheus collector actor created")
+    else:
+        deadline = time.monotonic() + _GET_ACTOR_TIMEOUT
+        while True:
+            try:
+                _collector_handle = ray.get_actor(_COLLECTOR_ACTOR_NAME)
+                break
+            except ValueError:
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "Prometheus collector actor not found "
+                        f"after {_GET_ACTOR_TIMEOUT}s, "
+                        "metrics will not be reported"
+                    )
+                    return
+                time.sleep(_GET_ACTOR_INTERVAL)
 
 
-def get_prometheus() -> "PrometheusAdapter":
-    assert _prometheus is not None, (
-        "PrometheusAdapter not initialized. Call init_prometheus() first."
-    )
-    return _prometheus
+def get_prometheus():
+    """Return the collector actor handle, or ``None``."""
+    return _collector_handle
 
 
-class PrometheusAdapter:
-    """Prometheus adapter that works across multiple Ray actor processes.
+class _PrometheusCollector:
+    """Ray actor that owns the Prometheus HTTP server and gauges.
 
-    Uses prometheus_client's multiprocess mode: each process writes gauge
-    values to files in a shared directory, and the HTTP server (started only
-    by the primary process) aggregates them when Prometheus scrapes /metrics.
+    Runs on the driver node.  All processes push metrics here via
+    ``handle.update.remote(metrics)`` — works across nodes because
+    Ray handles the RPC transparently.
     """
 
-    def __init__(self, args, start_server: bool = False):
-        try:
-            from prometheus_client import Gauge
+    def __init__(self, args):
+        from prometheus_client import Gauge, start_http_server
 
-            self._Gauge = Gauge
-            self._gauges: dict = {}
-            self._run_name = (
-                getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None) or "miles_training"
-            )
-            self._label_keys = ["run_name"]
-            self._label_vals = [self._run_name]
+        self._Gauge = Gauge
+        self._gauges: dict = {}
+        self._run_name = (
+            getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None) or "miles_training"
+        )
+        self._label_keys = ["run_name"]
+        self._label_vals = [self._run_name]
 
-            if start_server:
-                from prometheus_client import CollectorRegistry, multiprocess, start_http_server
-
-                # The HTTP server needs a registry with `MultiProcessCollector`
-                # to aggregate gauge files from all processes on scrape.
-                registry = CollectorRegistry()
-                multiprocess.MultiProcessCollector(registry)
-                port = args.prometheus_port
-                start_http_server(port, registry=registry)
-                logger.info(f"Prometheus metrics server started on port {port}, " f"run_name={self._run_name}")
-        except ImportError:
-            logger.error("prometheus_client not installed. " "Run: pip install prometheus-client")
-            raise
-        except OSError as e:
-            logger.warning(f"Prometheus HTTP server not started: {e}")
+        port = args.prometheus_port
+        start_http_server(port)
+        logger.info("Prometheus metrics server started on " f"port {port}, run_name={self._run_name}")
 
     def update(self, metrics: dict):
-        """Set gauge values for all numeric metrics.
-
-        Every gauge carries a ``run_name`` label so different training
-        runs on the same or different Pods can be distinguished in Grafana.
-        Prometheus will scrape these at its configured interval.
-        """
+        """Set gauge values for all numeric metrics."""
         for key, value in metrics.items():
             if not isinstance(value, (int, float)):
                 continue
@@ -79,3 +85,6 @@ class PrometheusAdapter:
                     self._label_keys,
                 )
             self._gauges[safe_key].labels(*self._label_vals).set(value)
+
+    def ping(self):
+        return True
