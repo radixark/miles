@@ -16,7 +16,7 @@ from miles.utils.types import Sample
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
-    if state.processor:
+    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
         processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
 
