@@ -26,7 +26,7 @@ from miles.rollout.inference_rollout.compatibility import call_rollout_function,
 from miles.utils import tracking_utils
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
-from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
+from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client, is_port_available
 from miles.utils.iter_utils import group_by
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
@@ -932,6 +932,13 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
 
         logger.info(f"Launch router with args: {router_args}")
 
+    port = router_port
+    if not is_port_available(port):
+        raise RuntimeError(
+            f"Port {port} is already in use — a stale router process may still be running. "
+            f"Run 'pkill -9 python' to kill it, then retry."
+        )
+
     process = multiprocessing.Process(
         target=run_router,
         args=(router_args,),
@@ -1138,6 +1145,26 @@ def compute_metrics_from_samples(args, samples):
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
+
+    tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
+    tito_vals = [v for v in tito_vals if v is not None]
+    if tito_vals:
+        log_dict["tito_session_mismatch_rate"] = np.mean([len(v) > 0 for v in tito_vals]).item()
+        for mtype in ("special_token_count", "special_token_type", "non_assistant_text", "assistant_text"):
+            log_dict[f"tito_session_mismatch_rate/{mtype}"] = np.mean(
+                [any(m.get("type") == mtype for m in v) for v in tito_vals]
+            ).item()
+        if args.ci_test:
+            for strict_type in ("special_token_count", "special_token_type", "non_assistant_text"):
+                rate = log_dict.get(f"tito_session_mismatch_rate/{strict_type}", 0)
+                assert rate == 0, (
+                    f"tito_session_mismatch_rate/{strict_type}={rate:.4f} must be 0 — "
+                    "this indicates a bug in the TITO algorithm or chat template. "
+                    "Please check your tito model and chat template."
+                )
+            # assistant_text mismatch is non-critical: assistant tokens are inherited
+            # from the pretokenized prefix and may differ from canonical tokenization.
+
     return log_dict
 
 

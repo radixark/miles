@@ -145,7 +145,12 @@ class MockSGLangServer:
         prompt_str = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, tools=tools
         )
-        prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
+
+        input_ids = payload.get("input_ids")
+        if input_ids is not None:
+            prompt_ids = list(input_ids)
+        else:
+            prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
 
         process_result = self.process_fn(prompt_str)
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
@@ -180,6 +185,8 @@ class MockSGLangServer:
         else:
             message_content = process_result.text
 
+        output_token_logprobs = [(-1 / 128 * i, tid) for i, tid in enumerate(output_ids)]
+
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion",
@@ -196,6 +203,11 @@ class MockSGLangServer:
                     "logprobs": {"content": logprobs_content},
                     "prompt_token_ids": prompt_ids,
                     "finish_reason": finish_reason,
+                    "meta_info": {
+                        "output_token_logprobs": output_token_logprobs,
+                        "completion_tokens": len(output_ids),
+                        **process_result.meta_info.to_dict(),
+                    },
                 }
             ],
         }
