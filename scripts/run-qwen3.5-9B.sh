@@ -103,7 +103,8 @@ WANDB_ARGS=(
 )
 
 SGLANG_ARGS=(
-   # SGLang TP>1 produces garbage output for Qwen3.5, use TP=1 per engine
+   # Workaround: SGLang TP>1 produces garbage output for Qwen3.5 (https://github.com/sgl-project/sglang/issues/21039)
+   # This is fixed in sglang main branch & dev docker, but miles still uses 0.5.9, so use TP=1 per engine for now
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.6
 )
