@@ -92,6 +92,7 @@ def _collect_pip_info() -> tuple[list[EditablePackageInfo], list[dict[str, str]]
     Returns (editable_packages, full_pip_list).
     """
     try:
+        # TODO: remove this workaround and still make Megatron detected
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         result = subprocess.run(
             ["pip", "inspect"],
