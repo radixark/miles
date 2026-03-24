@@ -24,14 +24,13 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4B.sh"
+source "${SCRIPT_DIR}/models/qwen3.5-35B-A3B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B
-   #--hf-checkpoint /root/Qwen3-4B-FP8
-   --ref-load /root/Qwen3-4B_torch_dist
-   --load /root/Qwen3-4B_miles/
-   --save /root/Qwen3-4B_miles/
+   --hf-checkpoint /root/Qwen3.5-35B-A3B
+   --ref-load /root/Qwen3.5-35B-A3B_torch_dist
+   --load /root/Qwen3.5-35B-A3B_miles/
+   --save /root/Qwen3.5-35B-A3B_miles/
    --save-interval 20
 )
 
@@ -61,11 +60,11 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 1
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
-   --expert-model-parallel-size 1
+   --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -74,7 +73,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 8192
 )
 
 GRPO_ARGS=(
@@ -94,24 +93,39 @@ OPTIMIZER_ARGS=(
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
+
+   --optimizer-cpu-offload
+   --overlap-cpu-optimizer-d2h-h2d
+   --use-precision-aware-optimizer
 )
 
 WANDB_ARGS=(
    # --use-wandb
    # --wandb-project miles-dev
-   # --wandb-group qwen3-4B-test
+   # --wandb-group qwen3.5-35B-A3B-mtp-test
    # --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 2
+   --rollout-num-gpus-per-engine 8
    --sglang-mem-fraction-static 0.7
+   --sglang-ep-size 8
+
+   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
+
+   # mtp speculative decoding
+   --sglang-speculative-algorithm EAGLE
+   --sglang-speculative-num-steps 2
+   --sglang-speculative-eagle-topk 1
+   --sglang-speculative-num-draft-tokens 3
+
+   --sglang-max-running-requests 512
 )
 
-PROMETHEUS_ARGS=(
-   # --use-prometheus
-   # --prometheus-port 9090
-   # --prometheus-run-name "qwen3-4B-exp"
+MTP_ARGS=(
+   --enable-mtp-training
+   --mtp-num-layers 1
+   --mtp-loss-scaling-factor 0.2
 )
 
 MISC_ARGS=(
@@ -123,6 +137,8 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+
+   --moe-token-dispatcher-type flex
 )
 
 # launch the master node of ray in container
@@ -153,5 +169,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${PROMETHEUS_ARGS[@]} \
+   ${MTP_ARGS[@]} \
    ${MISC_ARGS[@]}

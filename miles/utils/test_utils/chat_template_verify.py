@@ -15,7 +15,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 
-from miles.utils.chat_template_utils.template import apply_chat_template_from_str, extract_tool_dicts
+from miles.utils.chat_template_utils.template import apply_chat_template_from_str
 
 
 def simulate_pretokenized_path(
@@ -33,13 +33,11 @@ def simulate_pretokenized_path(
 
     Raises ``ValueError`` on prefix mismatch.
     """
-    tool_dicts = extract_tool_dicts(tools)
-
     prefix_text = apply_chat_template_from_str(
         chat_template,
         messages[:pretokenized_num_message],
         add_generation_prompt=False,
-        tools=tool_dicts,
+        tools=tools,
         **template_kwargs,
     )
 
@@ -47,7 +45,7 @@ def simulate_pretokenized_path(
         chat_template,
         messages,
         add_generation_prompt=True,
-        tools=tool_dicts,
+        tools=tools,
         **template_kwargs,
     )
 
@@ -68,13 +66,11 @@ def get_standard_result(
     **template_kwargs,
 ) -> str:
     """Standard path: render all messages with generation prompt."""
-    tool_dicts = extract_tool_dicts(tools)
-
     return apply_chat_template_from_str(
         chat_template,
         messages,
         add_generation_prompt=True,
-        tools=tool_dicts,
+        tools=tools,
         **template_kwargs,
     )
 

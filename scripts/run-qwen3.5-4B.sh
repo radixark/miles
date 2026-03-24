@@ -24,14 +24,13 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4B.sh"
+source "${SCRIPT_DIR}/models/qwen3.5-4B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B
-   #--hf-checkpoint /root/Qwen3-4B-FP8
-   --ref-load /root/Qwen3-4B_torch_dist
-   --load /root/Qwen3-4B_miles/
-   --save /root/Qwen3-4B_miles/
+   --hf-checkpoint /root/Qwen3.5-4B
+   --ref-load /root/Qwen3.5-4B_torch_dist
+   --load /root/Qwen3.5-4B_miles/
+   --save /root/Qwen3.5-4B_miles/
    --save-interval 20
 )
 
@@ -99,19 +98,15 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    # --use-wandb
    # --wandb-project miles-dev
-   # --wandb-group qwen3-4B-test
+   # --wandb-group qwen3.5-4B-test
    # --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 2
+   # Workaround: SGLang TP>1 produces garbage output for Qwen3.5 (https://github.com/sgl-project/sglang/issues/21039)
+   # This is fixed in sglang main branch & dev docker, but miles still uses 0.5.9, so use TP=1 per engine for now
+   --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.7
-)
-
-PROMETHEUS_ARGS=(
-   # --use-prometheus
-   # --prometheus-port 9090
-   # --prometheus-run-name "qwen3-4B-exp"
 )
 
 MISC_ARGS=(
@@ -153,5 +148,4 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${PROMETHEUS_ARGS[@]} \
    ${MISC_ARGS[@]}
