@@ -82,21 +82,21 @@ def _compute_sample_from_openai_record(input_sample: Sample, record: SessionReco
 
 def truncate_samples_by_total_tokens(
     samples: list[Sample],
-    max_total_response_tokens: int,
+    max_seq_len: int,
     tokenizer,
 ) -> list[Sample]:
     """Truncate samples so the total token count (prompt + output, including
-    env responses) does not exceed max_total_response_tokens.
+    env responses) does not exceed ``max_seq_len``.
     """
     result: list[Sample] = []
 
     for sample in samples:
         total = len(sample.tokens)
-        if total <= max_total_response_tokens:
+        if total <= max_seq_len:
             result.append(sample)
             continue
 
-        overshoot = total - max_total_response_tokens
+        overshoot = total - max_seq_len
         allowed_output = sample.response_length - overshoot
         if allowed_output <= 0:
             break
@@ -116,6 +116,8 @@ def _truncate_sample_output(sample: Sample, keep_tokens: int, tokenizer) -> None
     sample.tokens = sample.tokens[:prompt_len] + kept_ids
     sample.response = tokenizer.decode(kept_ids)
     sample.response_length = keep_tokens
-    sample.rollout_log_probs = sample.rollout_log_probs[:keep_tokens]
-    sample.loss_mask = sample.loss_mask[:keep_tokens]
+    if sample.rollout_log_probs is not None:
+        sample.rollout_log_probs = sample.rollout_log_probs[:keep_tokens]
+    if sample.loss_mask is not None:
+        sample.loss_mask = sample.loss_mask[:keep_tokens]
     sample.status = Sample.Status.TRUNCATED

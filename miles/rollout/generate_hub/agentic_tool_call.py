@@ -51,11 +51,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         custom_agent_function is not None
     ), f"Custom agent function {input.args.custom_agent_function_path} not found"
 
-    max_total_response_tokens = getattr(input.args, "max_total_response_tokens", None)
+    max_seq_len = getattr(input.args, "max_seq_len", None)
 
     metadata = input.sample.metadata
-    if max_total_response_tokens is not None:
-        metadata = {**metadata, "max_total_response_tokens": max_total_response_tokens}
+    if max_seq_len is not None:
+        metadata = {**metadata, "max_seq_len": max_seq_len}
 
     agent_metadata = await custom_agent_function(
         base_url=tracer.base_url,
@@ -77,8 +77,14 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     for s in samples:
         s.metadata.update(agent_metadata or {})
 
-    if max_total_response_tokens is not None:
-        samples = truncate_samples_by_total_tokens(samples, max_total_response_tokens, input.state.tokenizer)
+    if max_seq_len is not None:
+        samples = truncate_samples_by_total_tokens(samples, max_seq_len, input.state.tokenizer)
+
+    if not samples:
+        logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
+        sample = deepcopy(input.sample)
+        sample.status = Sample.Status.TRUNCATED
+        return GenerateFnOutput(samples=sample)
 
     if not input.args.generate_multi_samples:
         samples = merge_samples(samples, input.state.tokenizer)
@@ -89,12 +95,13 @@ def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--custom-agent-function-path", type=str)
     parser.add_argument("--generate-multi-samples", action="store_true", default=False)
     parser.add_argument(
-        "--max-total-response-tokens",
+        "--max-seq-len",
         type=int,
         default=None,
-        help="Max total tokens (prompt + completion, including env responses) "
-        "in the session. Truncates samples on the Miles side and is forwarded "
-        "to the Harbor agent server to abort the trial early.",
+        dest="max_seq_len",
+        help="Max sequence length in tokens (prompt + completion, including env responses) "
+        "per session. Truncates samples on the Miles side and is forwarded to the "
+        "Harbor agent server (as max_seq_len) to abort the trial early.",
     )
 
 
