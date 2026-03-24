@@ -6,7 +6,7 @@ import ray
 logger = logging.getLogger(__name__)
 
 _METRIC_PREFIX = "miles_metric_"
-_COLLECTOR_ACTOR_NAME = "prometheus_collector"
+_COLLECTOR_ACTOR_NAME = "miles_prometheus_collector"
 _GET_ACTOR_TIMEOUT = 60
 _GET_ACTOR_INTERVAL = 2
 

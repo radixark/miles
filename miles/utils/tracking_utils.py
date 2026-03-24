@@ -30,5 +30,8 @@ def log(args, metrics, step_key: str):
 
     if args.use_prometheus:
         prom = get_prometheus()
-        if prom is not None:
-            prom.update.remote(metrics)
+        assert prom is not None, (
+            "Prometheus collector is not initialized; ensure init_tracking(..., primary=...) ran on the "
+            "driver and workers can resolve the miles_prometheus_collector Ray actor."
+        )
+        prom.update.remote(metrics)
