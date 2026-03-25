@@ -584,8 +584,8 @@ class StringRadixTrie:
             text: Input text to get tokens for
             return_logprob: If True, also return log probabilities
         Returns:
-            List of token IDs corresponding to the input text if return_logprob is False.
-            Tuple of (token_ids, logp) if return_logprob is True.
+            List of token (IDs, logp, loss_mask) corresponding to the input text
+            if return_logprob is False, all logp will be 0.0
         """
         # Call find_longest_prefix to get the match result
         result = self.find_longest_prefix(text)

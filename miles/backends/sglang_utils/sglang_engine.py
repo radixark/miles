@@ -13,7 +13,9 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
 from miles.ray.ray_actor import RayActor
+from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
@@ -107,15 +109,41 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
 
 
 class SGLangEngine(RayActor):
-    def __init__(self, args, rank: int, worker_type: str = "regular", base_gpu_id: int | None = None):
+    def __init__(
+        self,
+        args,
+        rank: int,
+        worker_type: str = "regular",
+        base_gpu_id: int | None = None,
+        sglang_overrides: dict | None = None,
+        num_gpus_per_engine: int | None = None,
+    ):
         self.args = args
         self.rank = rank
         self.worker_type = worker_type
         self.base_gpu_id = base_gpu_id
+        self.sglang_overrides = sglang_overrides or {}
+        self.num_gpus_per_engine = num_gpus_per_engine
 
-    def init(self, dist_init_addr, port, nccl_port, host=None, disaggregation_bootstrap_port=None):
-        self.router_ip = self.args.sglang_router_ip
-        self.router_port = self.args.sglang_router_port
+    def init(
+        self,
+        dist_init_addr,
+        port,
+        nccl_port,
+        host=None,
+        disaggregation_bootstrap_port=None,
+        router_ip=None,
+        router_port=None,
+    ):
+        if env_report := self.args.env_report:
+            collect_and_print_node_env_report(
+                role="rollout",
+                rank=self.rank,
+                partial_env_report=env_report,
+            )
+
+        self.router_ip = router_ip if router_ip is not None else self.args.sglang_router_ip
+        self.router_port = router_port if router_port is not None else self.args.sglang_router_port
 
         host = host or get_host_info()[1]
 
@@ -143,6 +171,8 @@ class SGLangEngine(RayActor):
             self.worker_type,
             disaggregation_bootstrap_port,
             base_gpu_id=self.base_gpu_id,
+            sglang_overrides=self.sglang_overrides,
+            num_gpus_per_engine=self.num_gpus_per_engine,
         )
 
         self.node_rank = server_args_dict["node_rank"]
@@ -272,6 +302,32 @@ class SGLangEngine(RayActor):
             payload,
         )
 
+    def load_lora_adapter_from_tensors(
+        self,
+        lora_name: str,
+        serialized_tensors: str,
+        config_dict: dict,
+        load_format: str | None = None,
+        pinned: bool = False,
+        added_tokens_config: dict | None = None,
+    ):
+        """Load a LoRA adapter from serialized tensor data."""
+        payload = {
+            "lora_name": lora_name,
+            "serialized_tensors": serialized_tensors,
+            "config_dict": config_dict,
+            "pinned": pinned,
+        }
+        if load_format is not None:
+            payload["load_format"] = load_format
+        if added_tokens_config is not None:
+            payload["added_tokens_config"] = added_tokens_config
+
+        return self._make_request(
+            "load_lora_adapter_from_tensors",
+            payload,
+        )
+
     def flush_cache(self):
         """Flush the cache of the server."""
         if self.node_rank != 0:
@@ -328,14 +384,28 @@ class SGLangEngine(RayActor):
     def get_weight_version(self):
         if self.node_rank != 0:
             return
-        url = f"http://{self.server_host}:{self.server_port}/get_weight_version"
-        response = requests.get(url)
+        base = f"http://{self.server_host}:{self.server_port}"
+        # new sglang change api from /get_weight_version to /model_info
+        for endpoint in ("/model_info", "/get_weight_version"):
+            response = requests.get(f"{base}{endpoint}")
+            if response.status_code == 200:
+                return response.json()["weight_version"]
         response.raise_for_status()
-        return response.json()["weight_version"]
 
-    def release_memory_occupation(self):
+    def unload_lora_adapter(self, lora_name: str):
+        """Unload LoRA adapter."""
+        return self._make_request(
+            "unload_lora_adapter",
+            {"lora_name": lora_name},
+        )
+
+    def release_memory_occupation(self, tags: list[str] = None):
+        """Release memory occupation. Available tags: weights, kv_cache."""
         self.flush_cache()
-        return self._make_request("release_memory_occupation")
+        return self._make_request(
+            "release_memory_occupation",
+            {"tags": tags},
+        )
 
     def resume_memory_occupation(self, tags: list[str] = None):
         """
@@ -351,6 +421,17 @@ class SGLangEngine(RayActor):
         if payload is not None:
             data.update(payload)
         return self._make_request("weights_checker", data)
+
+    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
+        """Reload weights from *model_path* without restarting the engine.
+
+        Used for non-updatable (frozen) models that overlap with megatron:
+        after offload, weights are restored from disk instead of CPU cache.
+        """
+        payload = {"model_path": model_path}
+        if load_format is not None:
+            payload["load_format"] = load_format
+        return self._make_request("update_weights_from_disk", payload)
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
         return self._make_request(
@@ -403,6 +484,25 @@ class SGLangEngine(RayActor):
         response = requests.post(f"http://{self.server_host}:{self.server_port}/continue_generation", json={})
         response.raise_for_status()
         return response
+
+    def post_process_weights(
+        self,
+        restore_weights_before_load: bool = False,
+        post_process_quantization: bool = False,
+    ):
+        """
+        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
+        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
+        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
+        """
+
+        return self._make_request(
+            "post_process_weights",
+            {
+                "restore_weights_before_load": restore_weights_before_load,
+                "post_process_quantization": post_process_quantization,
+            },
+        )
 
     def start_profile(
         self,
@@ -460,8 +560,11 @@ def _compute_server_args(
     worker_type: str = "regular",
     disaggregation_bootstrap_port: int | None = None,
     base_gpu_id: int | None = None,
+    sglang_overrides: dict | None = None,
+    num_gpus_per_engine: int | None = None,
 ):
-    nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
+    _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
+    nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
     base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
     base = _to_local_gpu_id(base)
@@ -481,7 +584,7 @@ def _compute_server_args(
         "gpu_id_step": 1,
         "base_gpu_id": base,
         # parallel
-        "tp_size": args.rollout_num_gpus_per_engine,
+        "tp_size": _gpus_per_engine,
         "dp_size": args.sglang_dp_size,
         "pp_size": args.sglang_pp_size,
         "ep_size": args.sglang_ep_size,
@@ -490,6 +593,9 @@ def _compute_server_args(
         # always enable draft weights cpu backup so that we run training without mtp weights.
         "enable_draft_weights_cpu_backup": True,
     }
+
+    if sglang_overrides:
+        kwargs.update(sglang_overrides)
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
@@ -507,6 +613,18 @@ def _compute_server_args(
     if args.fp16:
         kwargs["dtype"] = "float16"
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
+
+    if is_lora_enabled(args):
+        kwargs["enable_weights_cpu_backup"] = args.offload_rollout
+        kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = 1
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+
+        if args.lora_adapter_path is not None:
+            kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+        else:
+            logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):

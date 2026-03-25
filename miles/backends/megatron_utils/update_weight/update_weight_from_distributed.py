@@ -1,4 +1,3 @@
-import hashlib
 import socket
 import time
 from argparse import Namespace
@@ -15,7 +14,7 @@ from tqdm import tqdm
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 from ..megatron_to_hf import convert_to_hf
-from .common import all_gather_param, named_params_and_buffers
+from .common import all_gather_param, compute_tensor_checksums, named_params_and_buffers
 
 
 class UpdateWeightFromDistributed:
@@ -32,6 +31,7 @@ class UpdateWeightFromDistributed:
         *,
         model_name: str,
         quantization_config: dict[str, int | str | list[str]] | None,
+        is_lora: bool = False,
     ) -> None:
         """
         Initialize. Groups created in connect_rollout_engines.
@@ -44,13 +44,18 @@ class UpdateWeightFromDistributed:
         self._model_update_groups = None
 
     def connect_rollout_engines(
-        self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
+        self,
+        rollout_engines: Sequence[ActorHandle],
+        rollout_engine_lock: ActorHandle,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
         self.rollout_engine_lock = rollout_engine_lock
+        self._engine_gpu_counts = engine_gpu_counts
 
         # For TP:
         #   1. AllGather parameters to rank 0
@@ -81,6 +86,14 @@ class UpdateWeightFromDistributed:
         if dist.get_rank() == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+
+            # int4/fp4 pre_process
+            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
+                post_process_weights(
+                    restore_weights_before_load=True,
+                    post_process_quantization=False,
+                    rollout_engines=self.rollout_engines,
+                )
         dist.barrier(group=get_gloo_group())
 
         self._last_checksums = {}
@@ -116,6 +129,16 @@ class UpdateWeightFromDistributed:
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
+            # int4/fp4 post_process, mxfp8 post-process (swizzle MoE scales).
+            if self.quantization_config and self.quantization_config["quant_method"] in [
+                "compressed-tensors",
+                "mxfp8",
+            ]:
+                post_process_weights(
+                    restore_weights_before_load=False,
+                    post_process_quantization=True,
+                    rollout_engines=self.rollout_engines,
+                )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
@@ -147,7 +170,7 @@ class UpdateWeightFromDistributed:
         Non-expert: gather TP → rm pad → HF → buffer (flush if full). All gather, PP source buffers.
         Returns updated bytes on source, None on non-source.
         """
-        param = all_gather_param(name, param)
+        param = all_gather_param(self.args, name, param)
         if not self._is_pp_src_rank:
             return
 
@@ -170,7 +193,7 @@ class UpdateWeightFromDistributed:
         """
         Expert: gather TP → rm pad → buffer. EP gather + HF deferred. Threshold × EP size.
         """
-        param = all_gather_param(name, param)
+        param = all_gather_param(self.args, name, param)
 
         param_size = param.numel() * param.element_size()
         if (
@@ -228,9 +251,7 @@ class UpdateWeightFromDistributed:
         Lock → broadcast → clear → unlock → pbar++. Lock prevents NCCL deadlock.
         """
         if self.args.enable_weight_checker or self.args.check_weight_update_equal:
-            for name, tensor in converted_named_tensors:
-                t_cpu = tensor.detach().cpu().contiguous()
-                self._last_checksums[name] = hashlib.sha256(t_cpu.view(torch.uint8).numpy()).hexdigest()
+            self._last_checksums.update(compute_tensor_checksums(converted_named_tensors))
 
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
@@ -251,28 +272,40 @@ class UpdateWeightFromDistributed:
 
 
 def connect_rollout_engines_from_distributed(
-    args: Namespace, group_name: str, rollout_engines: Sequence[ActorHandle]
+    args: Namespace,
+    group_name: str,
+    rollout_engines: Sequence[ActorHandle],
+    engine_gpu_counts: Sequence[int] | None = None,
 ) -> dist.ProcessGroup:
     """
     Create NCCL group: training rank 0 + all engine GPUs. Blocks until joined.
+
+    ``engine_gpu_counts`` gives the number of GPUs per engine.  When engines
+    have heterogeneous TP sizes (e.g. prefill TP=2, decode TP=4), each engine
+    occupies a different number of ranks in the NCCL group.
     """
+    if engine_gpu_counts is None:
+        engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
     master_address = ray._private.services.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
         master_port = sock.getsockname()[1]
-    world_size = len(rollout_engines) * args.rollout_num_gpus_per_engine + 1
+    world_size = sum(engine_gpu_counts) + 1
 
-    refs = [
-        engine.init_weights_update_group.remote(
-            master_address,
-            master_port,
-            i * args.rollout_num_gpus_per_engine + 1,
-            world_size,
-            group_name,
-            backend="nccl",
+    refs = []
+    rank_cursor = 1
+    for i, engine in enumerate(rollout_engines):
+        refs.append(
+            engine.init_weights_update_group.remote(
+                master_address,
+                master_port,
+                rank_cursor,
+                world_size,
+                group_name,
+                backend="nccl",
+            )
         )
-        for i, engine in enumerate(rollout_engines)
-    ]
+        rank_cursor += engine_gpu_counts[i]
     model_update_groups = init_process_group(
         backend="nccl",
         init_method=f"tcp://{master_address}:{master_port}",
@@ -321,3 +354,22 @@ def update_weights_from_distributed(
         handle.wait()
 
     return refs
+
+
+def post_process_weights(
+    restore_weights_before_load: bool,
+    post_process_quantization: bool,
+    rollout_engines: Sequence[ActorHandle],
+):
+    """
+    Trigger post-process for int4/fp4 quantization on all rollout engines.
+    """
+    ray.get(
+        [
+            engine.post_process_weights.remote(
+                restore_weights_before_load=restore_weights_before_load,
+                post_process_quantization=post_process_quantization,
+            )
+            for engine in rollout_engines
+        ]
+    )

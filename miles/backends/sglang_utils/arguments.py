@@ -39,6 +39,7 @@ def add_sglang_arguments(parser):
 
     skipped_args = [
         "model_path",
+        "config",
         "trust_remote_code",
         "random_seed",
         # memory
@@ -107,6 +108,20 @@ def add_sglang_arguments(parser):
     parser.add_argument = new_add_argument_wrapper
     ServerArgs.add_cli_args(parser)
     parser.add_argument = old_add_argument
+
+    parser.add_argument(
+        "--sglang-config",
+        type=str,
+        default=None,
+        help=(
+            "Path to a YAML config for SGLang engine deployment. "
+            "Defines server_groups with worker_type (regular/prefill/decode/placeholder), "
+            "num_gpus per group, and optional per-group 'overrides' dict of "
+            "ServerArgs field names that override the base --sglang-* CLI args. "
+            "Placeholder groups reserve GPU slots without creating engines. "
+            "Mutually exclusive with --prefill-num-servers."
+        ),
+    )
 
     return parser
 

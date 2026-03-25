@@ -5,10 +5,10 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from transformers import AutoTokenizer
 
 from miles.utils.http_utils import post
 from miles.utils.mask_utils import get_response_lengths
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
 from .radix_tree import StringRadixTrie
@@ -61,17 +61,21 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.router = router
         self.args = router.args
-        self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(
+            self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+        )
         self.radix_tree = StringRadixTrie(max_cache_size=10000, tokenizer=self.tokenizer, verbose=False)
         self.router.radix_tree = self.radix_tree
 
     async def dispatch(self, request: Request, call_next):
-
         path = request.url.path
+        if path == "/generate":
+            return await self._generate(request, call_next)
+        if path == "/retrieve_from_text":
+            return await self._retrieve_from_text(request)
+        return await call_next(request)
 
-        if path != "/generate":
-            return await call_next(request)
-
+    async def _generate(self, request: Request, call_next):
         request_json = await request.json()
         if "text" in request_json:
             input_text = request_json.pop("text", "")
@@ -153,6 +157,23 @@ class RadixTreeMiddleware(BaseHTTPMiddleware):
                     if getattr(self.router, "verbose", False):
                         print(f"[miles-router] Warning: Failed to cache trajectory: {e}")
         return response
+
+    async def _retrieve_from_text(self, request: Request):
+        payload = await request.json()
+        text = payload.get("text", "")
+        token_ids, logp, loss_mask = self.radix_tree.retrieve_from_text(text, return_logprob=True)
+        result = {
+            "response": text,
+            "tokens": token_ids,
+            "loss_mask": loss_mask,
+            "rollout_logp": logp,
+            "token_length": len(token_ids),
+            "loss_mask_length": len(loss_mask),
+        }
+        assert (
+            len(token_ids) == len(logp) == len(loss_mask)
+        ), "Token IDs, logp, and loss mask must have the same length"
+        return JSONResponse(result)
 
 
 async def postprocess_sample_with_radix_tree(args, sample: Sample, output: dict):

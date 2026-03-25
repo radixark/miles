@@ -2,6 +2,7 @@ import asyncio
 import copy
 import inspect
 import logging
+
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.async_utils import run
@@ -20,14 +22,38 @@ from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.misc import SingletonMeta, load_function
-from miles.utils.processing_utils import encode_image_for_rollout_engine, load_processor, load_tokenizer
+from miles.utils.processing_utils import (
+    build_processor_kwargs,
+    encode_image_for_rollout_engine,
+    load_processor,
+    load_tokenizer,
+)
 from miles.utils.types import Sample
 
 from .rm_hub import async_rm, batched_async_rm
 
-__all__ = ["generate_rollout"]
+__all__ = ["generate_rollout", "get_model_url"]
 
 logger = logging.getLogger(__name__)
+
+
+def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate") -> str:
+    """Return the router URL for a named model.
+
+    Use this in custom rollout functions to route requests to a specific
+    model when multiple models are deployed via ``--sglang-config``::
+
+        url = get_model_url(args, "ref", "/generate")
+        resp = await post(url, json=payload)
+
+    Falls back to the default router if *model_name* is not found or
+    ``sglang_model_routers`` is not set.
+    """
+    routers = getattr(args, "sglang_model_routers", None)
+    if routers and model_name in routers:
+        ip, port = routers[model_name]
+        return f"http://{ip}:{port}{endpoint}"
+    return f"http://{args.sglang_router_ip}:{args.sglang_router_port}{endpoint}"
 
 
 class GenerateState(metaclass=SingletonMeta):
@@ -38,7 +64,9 @@ class GenerateState(metaclass=SingletonMeta):
     def __init__(self, args: Namespace) -> None:
         # persistent state for the generation process
         self.args = args
-        self.tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
         self.semaphore = asyncio.Semaphore(
@@ -111,8 +139,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    if state.processor:
-        processor_output = state.processor(text=sample.prompt, **sample.multimodal_inputs)
+    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+        processor_kwargs = build_processor_kwargs(sample.multimodal_inputs)
+        processor_output = state.processor(text=sample.prompt, **processor_kwargs)
         prompt_ids = processor_output["input_ids"][0]
         sample.multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
@@ -135,6 +164,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+
+    if is_lora_enabled(args):
+        payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
@@ -168,6 +200,11 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.tokens = sample.tokens + new_response_tokens
         sample.response_length += len(new_response_tokens)
         sample.response += output["text"]
+
+        # When partial rollout and masking off policy is enabled, update the loss mask
+        if sample.loss_mask is not None:
+            assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
+            sample.loss_mask += [1] * len(new_response_tokens)
 
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = []
@@ -214,8 +251,11 @@ async def generate_and_rm(
             return sample
 
         with state.dp_rank_context() as _:
-            if args.custom_generate_function_path is not None:
-                custom_generate_func = load_function(args.custom_generate_function_path)
+            # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
+            custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
+
+            if custom_func_path is not None:
+                custom_generate_func = load_function(custom_func_path)
                 # if signature has evaluation, pass evaluation
                 if "evaluation" in inspect.signature(custom_generate_func).parameters:
                     sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
@@ -294,7 +334,11 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         urls = [worker["url"] for worker in response["workers"]]
 
     logger.info(f"Abort request for {urls}")
-    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
+    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
+    for url, result in zip(urls, abort_results, strict=False):
+        if isinstance(result, Exception):
+            logger.warning(f"Failed to abort worker at {url}: {result}")
 
     # make sure all the pending tasks are finished
     count = 0
@@ -366,7 +410,7 @@ async def generate_rollout_async(
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
-                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
                 )
                 do_print = False
 
@@ -387,7 +431,7 @@ async def generate_rollout_async(
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
-        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
     )
 
     # there are still some unfinished requests, abort them
@@ -395,7 +439,9 @@ async def generate_rollout_async(
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
-    all_samples = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
+    all_samples = sorted(
+        all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
+    )
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
@@ -441,9 +487,11 @@ async def eval_rollout_single_dataset(
 
     global EVAL_PROMPT_DATASET
 
-    cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template)
+    cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template, args.chat_template_path)
     if cache_key not in EVAL_PROMPT_DATASET:
-        tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        tokenizer = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
         processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
         EVAL_PROMPT_DATASET[cache_key] = Dataset(
             path=dataset_cfg.path,
@@ -482,6 +530,7 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
+            sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
             sampling_params = base_sampling_params
             if getattr(args, "sglang_enable_deterministic_inference", False):
                 sampling_params = base_sampling_params.copy()

@@ -8,7 +8,7 @@ After pulling the `radixark/miles:latest` image, initialize the image environmen
 cd /root/
 git clone https://github.com/radixark/miles.git
 cd miles/
-pip install -e .
+pip install -e . --no-deps
 ```
 
 Download the model and data:

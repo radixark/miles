@@ -133,9 +133,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   ### AMD Support ###
-   # disable gradient accumulation fusion: Need to add apex to enable this
-   --no-gradient-accumulation-fusion
    ###################
 )
 

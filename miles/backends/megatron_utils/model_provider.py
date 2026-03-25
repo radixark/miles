@@ -1,6 +1,7 @@
 # Adapt from https://github.com/NVIDIA/Megatron-LM/blob/b1efb3c7126ef7615e8c333432d76e08038e17ff/pretrain_gpt.py
 import argparse
 import inspect
+import logging
 from contextlib import nullcontext
 from typing import Literal
 
@@ -17,6 +18,9 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.utils.misc import load_function
+from miles.utils.replay_base import routing_replay_manager
+
+logger = logging.getLogger(__name__)
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -59,8 +63,13 @@ def get_model_provider_func(
     if getattr(args, "custom_model_provider_path", None):
 
         def wrapped_model_provider(
-            pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None
+            pre_process: bool = True,
+            post_process: bool = True,
+            vp_stage: int | None = None,
+            config: TransformerConfig | None = None,
+            pg_collection=None,
         ) -> GPTModel:
+            assert config is None, "miles builds the config from args, so it expects config to be None"
             custom_model_provider = load_function(args.custom_model_provider_path)
             # Check if the custom provider supports vp_stage parameter
             has_vp_stage = "vp_stage" in inspect.signature(custom_model_provider).parameters
@@ -89,9 +98,26 @@ def get_model_provider_func(
         provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
         provider.sequence_parallel = args.sequence_parallel
         provider.finalize()
-        return provider.provide
 
-    def model_provider(pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None) -> GPTModel:
+        def wrapped_bridge_provider(
+            pre_process: bool = True,
+            post_process: bool = True,
+            vp_stage: int | None = None,
+            config: TransformerConfig | None = None,
+            pg_collection=None,
+        ) -> GPTModel:
+            assert config is None, "miles builds the config from args, so it expects config to be None"
+            return provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+
+        return wrapped_bridge_provider
+
+    def model_provider(
+        pre_process: bool = True,
+        post_process: bool = True,
+        vp_stage: int | None = None,
+        config: TransformerConfig | None = None,
+        pg_collection=None,
+    ) -> GPTModel:
         """Builds the model.
 
         If you set the use_legacy_models to True, it will return the legacy GPT model and if not the mcore GPT model.
@@ -107,7 +133,8 @@ def get_model_provider_func(
         use_te = args.transformer_impl == "transformer_engine"
 
         # Experimental loading arguments from yaml
-        config: TransformerConfig = core_transformer_config_from_args(args)
+        assert config is None, "miles builds the config from args, so it expects config to be None"
+        config = core_transformer_config_from_args(args)
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
@@ -187,8 +214,17 @@ def get_model_provider_func(
             if vp_stage is not None:
                 mtp_kwargs["vp_stage"] = vp_stage
 
+            # hard code here to skip r3 registration for mtp layers
+            # getattr is required to avoid ckpt conversion errors
+            if getattr(args, "use_rollout_routing_replay", False):
+                routing_replay_manager.enabled = False
+                logger.warning(
+                    "Rollout routing replay is not applicable for MTP modules, so skipped replay registration"
+                )
             mtp_block_spec = get_gpt_mtp_block_spec(config, transformer_layer_spec, **mtp_kwargs)
             kwargs["mtp_block_spec"] = mtp_block_spec
+            if getattr(args, "use_rollout_routing_replay", False):
+                routing_replay_manager.enabled = True
 
         with build_model_context(**build_model_context_args):
             model = GPTModel(**kwargs)

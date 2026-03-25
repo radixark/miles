@@ -1,0 +1,33 @@
+diff --git a/src/transformers/models/auto/tokenization_auto.py b/src/transformers/models/auto/tokenization_auto.py
+index d0c3af490d..6885ac539e 100644
+--- a/src/transformers/models/auto/tokenization_auto.py
++++ b/src/transformers/models/auto/tokenization_auto.py
+@@ -789,7 +789,7 @@ CONFIG_TO_TYPE = {v: k for k, v in CONFIG_MAPPING_NAMES.items()}
+
+
+ def tokenizer_class_from_name(class_name: str) -> Union[type[Any], None]:
+-    if class_name == "PreTrainedTokenizerFast":
++    if class_name in ("PreTrainedTokenizerFast", "TokenizersBackend"):
+         return PreTrainedTokenizerFast
+
+     for module_name, tokenizers in TOKENIZER_MAPPING_NAMES.items():
+diff --git a/src/transformers/tokenization_utils_base.py b/src/transformers/tokenization_utils_base.py
+index 62afc15326..a556787e88 100644
+--- a/src/transformers/tokenization_utils_base.py
++++ b/src/transformers/tokenization_utils_base.py
+@@ -1468,7 +1468,14 @@ class PreTrainedTokenizerBase(SpecialTokensMixin, PushToHubMixin):
+         super().__init__(**kwargs)
+
+         self.extra_special_tokens = kwargs.pop("extra_special_tokens", {})
+-        self._set_model_specific_special_tokens(special_tokens=self.extra_special_tokens)
++        if isinstance(self.extra_special_tokens, dict):
++            self._set_model_specific_special_tokens(special_tokens=self.extra_special_tokens)
++        elif isinstance(self.extra_special_tokens, (list, tuple)):
++            existing = list(getattr(self, "additional_special_tokens", []) or [])
++            for tok in self.extra_special_tokens:
++                if tok not in existing:
++                    existing.append(tok)
++            self.additional_special_tokens = existing
+
+     @property
+     def max_len_single_sentence(self) -> int:

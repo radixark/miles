@@ -120,15 +120,9 @@ WANDB_ARGS=(
    # --wandb-key ${WANDB_KEY}
 )
 
-### AMD Support ###
-# Need to fix some issue with torch_memory_saver in rocm to support larger  --sglang-mem-fraction-static 
-# SGLANG_ARGS=(
-#    --rollout-num-gpus-per-engine 2
-#    --sglang-mem-fraction-static 0.7
-# )
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.4
+   --sglang-mem-fraction-static 0.7
 )
 ####################
 
@@ -142,10 +136,6 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   ### AMD Support ###
-   # disable gradient accumulation fusion: Need to add apex to enable this
-   --no-gradient-accumulation-fusion
-   ###################
 )
 
 # launch the master node of ray in container

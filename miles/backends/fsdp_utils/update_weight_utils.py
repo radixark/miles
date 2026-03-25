@@ -40,6 +40,8 @@ class UpdateWeight(abc.ABC):
         self,
         rollout_engines: Sequence[ActorHandle],
         rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         pass
 
@@ -92,6 +94,8 @@ class UpdateWeightFromTensor(UpdateWeight):
         self,
         rollout_engines: Sequence[ActorHandle],
         rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """Attach rollout engines and create per-engine IPC (Gloo) groups.
 
@@ -167,7 +171,12 @@ class UpdateWeightFromTensor(UpdateWeight):
                     "weight_version": str(weight_version),
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
-                ray.get(ref)
+                result = ray.get(ref)
+                if hasattr(result, "success") and not result.success:
+                    error_msg = getattr(result, "error_message", "unknown error")
+                    raise RuntimeError(
+                        f"Weight sync failed on rollout engine: {error_msg}. " f"Check SGLang version compatibility."
+                    )
 
         if dist.get_rank() == self._ipc_gather_src:
             ref = self._ipc_engine.flush_cache.remote()
@@ -181,6 +190,8 @@ class UpdateWeightFromDistributed(UpdateWeight):
         self,
         rollout_engines: Sequence[ActorHandle],
         rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """On rank 0, initialize a temporary NCCL group for parameter broadcast."""
         self.rollout_engines = rollout_engines

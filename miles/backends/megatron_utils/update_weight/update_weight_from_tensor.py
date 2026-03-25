@@ -1,4 +1,4 @@
-import hashlib
+import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -10,22 +10,27 @@ from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, build_lora_sync_config, is_lora_weight_name
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
+from .common import compute_tensor_checksums
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
+    post_process_weights,
     update_weights_from_distributed,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class UpdateWeightFromTensor:
     """
     Update rollout engines from tensor dict:
-    load(dict→GPU) → broadcast PP/EP(GPU NCCL) → gather TP(GPU NCCL) → convert HF(GPU) → send.
-    Colocated: GPU→CPU serialize → gather_object(Gloo CPU, collects from rollout_num_gpus_per_engine ranks) → Ray IPC to engine.
+    load(dict->GPU) -> broadcast PP/EP(GPU NCCL) -> gather TP(GPU NCCL) -> convert HF(GPU) -> send.
+    Colocated: GPU->CPU serialize -> gather_object(Gloo CPU) -> Ray IPC to engine.
     Distributed: GPU NCCL broadcast to remote engines.
     """
 
@@ -37,6 +42,7 @@ class UpdateWeightFromTensor:
         *,
         model_name: str,
         quantization_config: dict[str, int | str | list[str]] | None,
+        is_lora: bool = False,
     ) -> None:
         """
         Compute param buckets, create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
@@ -47,12 +53,19 @@ class UpdateWeightFromTensor:
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.weight_version = 0
+        self.is_lora = is_lora
+        self._lora_loaded = False
 
         self._hf_weight_iterator = HfWeightIteratorBase.create(
-            args=args, model=model, model_name=model_name, quantization_config=quantization_config
+            args=args,
+            model=model,
+            model_name=model_name,
+            quantization_config=quantization_config,
+            is_lora=self.is_lora,
         )
 
-        # create the group within megatron.
+        self._lora_config = build_lora_sync_config(args) if self.is_lora else None
+        # Create IPC gather groups within megatron.
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = start_rank + self.args.rollout_num_gpus_per_engine
             group_ranks = list(range(start_rank, end_rank))
@@ -64,21 +77,42 @@ class UpdateWeightFromTensor:
         self._model_update_groups = None
 
     def connect_rollout_engines(
-        self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
+        self,
+        rollout_engines: Sequence[ActorHandle],
+        rollout_engine_lock: ActorHandle,
+        engine_gpu_counts: Sequence[int] | None = None,
+        engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """
         Split colocated/distributed engines. Global source rank (DP=TP=PP=0) creates NCCL
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
-        colocate_engine_nums = (
-            self.args.actor_num_nodes * self.args.actor_num_gpus_per_node // self.args.rollout_num_gpus_per_engine
-        )
+
+        if engine_gpu_counts is None:
+            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
+        if engine_gpu_offsets is None:
+            # Fallback: assume engines are densely packed (no placeholder gaps).
+            engine_gpu_offsets = []
+            offset = 0
+            for c in engine_gpu_counts:
+                engine_gpu_offsets.append(offset)
+                offset += c
+
+        # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
+        total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+        colocate_engine_nums = 0
+        for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
+            if gpu_offset + gpu_count > total_actor_gpus:
+                break
+            colocate_engine_nums += 1
+
         self.use_distribute = len(rollout_engines) > colocate_engine_nums
 
         if self.use_distribute:
             self.rollout_engines = rollout_engines[:colocate_engine_nums]
             self.distributed_rollout_engines = rollout_engines[colocate_engine_nums:]
+            distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
             self._is_distributed_src_rank = (
                 mpu.get_data_parallel_rank(with_context_parallel=True) == 0
                 and mpu.get_tensor_model_parallel_rank() == 0
@@ -92,15 +126,45 @@ class UpdateWeightFromTensor:
                     )
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
-                    self.args, self._group_name, self.distributed_rollout_engines
+                    self.args,
+                    self._group_name,
+                    self.distributed_rollout_engines,
+                    engine_gpu_counts=distributed_gpu_counts,
                 )
 
-        # Here we assume the gpu id of rollout engines and train actors are the same.
+        colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
+        colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]
+
+        # Determine whether this rank is covered by any colocated engine.
+        all_colocated_ranks = set()
+        for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True):
+            all_colocated_ranks.update(range(offset, offset + count))
+        rank_has_engine = dist.get_rank() in all_colocated_ranks
+
+        # Create IPC Gloo gather groups matching actual engine layout.
+        # Re-create on first call or when engine layout changes (placeholder ranks
+        # that had a group from __init__ but no actual engine need to be reset).
+        if rank_has_engine:
+            if self._ipc_gather_group is None:
+                for i in range(colocate_engine_nums):
+                    group_ranks = list(
+                        range(colocate_gpu_offsets[i], colocate_gpu_offsets[i] + colocate_gpu_counts[i])
+                    )
+                    new_group = dist.new_group(ranks=group_ranks, backend="gloo")
+                    if dist.get_rank() in group_ranks:
+                        self._ipc_gather_group = new_group
+                        self._ipc_gather_src = colocate_gpu_offsets[i]
+        else:
+            # Ranks not covered by any engine (e.g. placeholder GPU slots)
+            self._ipc_gather_group = None
+            self._ipc_gather_src = None
+
+        # Map training ranks to colocated engine actors.
+        self._ipc_engine = None
         for i, engine in enumerate(self.rollout_engines):
-            start_rank = i * self.args.rollout_num_gpus_per_engine
-            end_rank = (i + 1) * self.args.rollout_num_gpus_per_engine
-            group_ranks = list(range(start_rank, end_rank))
-            if dist.get_rank() in group_ranks:
+            start = colocate_gpu_offsets[i]
+            end = start + colocate_gpu_counts[i]
+            if start <= dist.get_rank() < end:
                 self._ipc_engine = engine
 
     @torch.no_grad()
@@ -112,36 +176,95 @@ class UpdateWeightFromTensor:
 
         rank = dist.get_rank()
         if rank == 0:
+            ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
+                post_process_weights(
+                    restore_weights_before_load=True,
+                    post_process_quantization=False,
+                    rollout_engines=self.rollout_engines,
+                )
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
 
+        sync_chunk_count = 0
         self._last_checksums = {}
-
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             if self.args.enable_weight_checker or self.args.check_weight_update_equal:
-                for name, tensor in hf_named_tensors:
-                    t_cpu = tensor.detach().cpu().contiguous()
-                    self._last_checksums[name] = hashlib.sha256(t_cpu.view(torch.uint8).numpy()).hexdigest()
+                self._last_checksums.update(compute_tensor_checksums(hf_named_tensors))
 
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
-            ray.get(refs)
+            results = ray.get(refs)
+            _check_weight_sync_results(results, is_lora=self.is_lora)
             del long_lived_tensors
+            sync_chunk_count += 1
 
+        if self.is_lora and sync_chunk_count == 0:
+            raise RuntimeError(
+                "LoRA weight sync failed: the weight iterator produced zero chunks. "
+                "No adapter weights were sent to the rollout engine. This usually means "
+                "the Megatron-Bridge or SGLang version is incompatible."
+            )
+
+        dist.barrier(group=get_gloo_group())
+
+        # int4/fp4 post_process, mxfp8 post-process (swizzle MoE scales).
+        if rank == 0:
+            if self.quantization_config and self.quantization_config["quant_method"] in [
+                "compressed-tensors",
+                "mxfp8",
+            ]:
+                post_process_weights(
+                    restore_weights_before_load=False,
+                    post_process_quantization=True,
+                    rollout_engines=self.rollout_engines,
+                )
+            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         all_refs = []
+        long_lived_tensors = []
 
-        refs_colocated, long_lived_tensors = _send_to_colocated_engine(
-            hf_named_tensors,
+        # Separate LoRA weights from base weights
+        if self.is_lora:
+            weight_tensors = [(n, t) for n, t in hf_named_tensors if is_lora_weight_name(n)]
+            if not weight_tensors:
+                raise RuntimeError(
+                    "LoRA weight sync failed: no LoRA weights (lora_A/lora_B) found in the "
+                    "HF weight chunk produced by the weight iterator. This usually means the "
+                    "Megatron-Bridge or SGLang version is incompatible and adapter weights were "
+                    "not exported. Check that `megatron_to_hf_mode` and bridge version match."
+                )
+        else:
+            weight_tensors = hf_named_tensors
+
+        kwargs = dict(
+            hf_named_tensors=weight_tensors,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            weight_version=self.weight_version,
         )
+        if self.is_lora:
+            kwargs |= dict(
+                lora_config=self._lora_config,
+                lora_name=LORA_ADAPTER_NAME,
+                lora_loaded=self._lora_loaded,
+            )
+        else:
+            kwargs |= dict(
+                weight_version=self.weight_version,
+            )
+
+        refs_colocated, long_lived_tensors = _send_to_colocated_engine(**kwargs)
         all_refs.extend(refs_colocated)
+
+        if self.is_lora:
+            self._lora_loaded = True
+
+        if self.is_lora and self.use_distribute and self._is_distributed_src_rank:
+            raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
 
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
@@ -149,7 +272,7 @@ class UpdateWeightFromTensor:
                 self._model_update_groups,
                 self.weight_version,
                 self.distributed_rollout_engines,
-                hf_named_tensors,
+                weight_tensors,
             )
             if refs_distributed:
                 all_refs.extend(refs_distributed)
@@ -159,18 +282,24 @@ class UpdateWeightFromTensor:
     def check_weights(self, action: str) -> None:
         if (self.args.enable_weight_checker or action == "compare") and self._last_checksums:
             if dist.get_rank() == 0:
+                target_engines = list(self.rollout_engines)
+                if self.use_distribute:
+                    target_engines.extend(self.distributed_rollout_engines)
                 # One request per update cycle to keep logs clean and minimize network overhead.
                 ray.get(
                     [
                         engine.check_weights.remote(
                             action="compare_checksum", payload={"checksums": self._last_checksums}
                         )
-                        for engine in self.rollout_engines
+                        for engine in target_engines
                     ]
                 )
         else:
             if dist.get_rank() == 0:
-                ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+                target_engines = list(self.rollout_engines)
+                if self.use_distribute:
+                    target_engines.extend(self.distributed_rollout_engines)
+                ray.get([engine.check_weights.remote(action=action) for engine in target_engines])
 
 
 def _send_to_colocated_engine(
@@ -179,9 +308,17 @@ def _send_to_colocated_engine(
     ipc_engine,
     ipc_gather_src,
     ipc_gather_group,
-    weight_version,
+    weight_version=None,
+    lora_config: dict | None = None,
+    lora_name: str | None = None,
+    lora_loaded: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
-    # TODO improve
+    # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
+    # gather_object is only collective among group members, so we skip entirely.
+    if ipc_gather_group is None:
+        return [], None
+
+    is_lora = lora_config is not None
     long_live_tensors = []
 
     if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
@@ -197,10 +334,9 @@ def _send_to_colocated_engine(
     serialized_tensors = []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
-        metadata = flattened_tensor_bucket.get_metadata()
         flattened_tensor_data = {
             "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-            "metadata": metadata,
+            "metadata": flattened_tensor_bucket.get_metadata(),
         }
         long_live_tensors.append(flattened_tensor_data)
         serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
@@ -217,14 +353,56 @@ def _send_to_colocated_engine(
 
     refs = []
     if dist.get_rank() == ipc_gather_src:
-        # TODO: here we assume all ranks have the same number of dtypes, not sure if that is correct.
-        num_dtypes = len(serialized_named_tensors[0])
-        for i in range(num_dtypes):
-            kwargs = {
-                "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
-                "load_format": "flattened_bucket",
-                "weight_version": str(weight_version),
-            }
-            refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
+        if is_lora:
+            if lora_loaded:
+                ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
+
+            # (Yusheng) to-do-1: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
+            # currently, we only support 1 type. If there are multiple dtypes, we need to serialize the tensors for each dtype.
+            # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
+            # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
+
+            refs.append(
+                ipc_engine.load_lora_adapter_from_tensors.remote(
+                    lora_name=lora_name,
+                    config_dict=lora_config,
+                    serialized_tensors=serialized_named_tensors[0][0],
+                    load_format="flattened_bucket",
+                )
+            )
+
+        else:
+            num_dtypes = len(serialized_named_tensors[0])
+            for i in range(num_dtypes):
+                kwargs = {
+                    "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
+                    "load_format": "flattened_bucket",
+                    "weight_version": str(weight_version),
+                }
+                refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
 
     return refs, long_live_tensors
+
+
+def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
+    """Validate return values from rollout engine weight-sync RPCs.
+
+    Raises RuntimeError if any engine reports failure, preventing silent
+    failures when SGLang versions are incompatible.
+    """
+    sync_type = "LoRA" if is_lora else "Base model"
+    for result in results:
+        if isinstance(result, Mapping):
+            success = result.get("success")
+            error_msg = result.get("error_message") or result.get("error") or "unknown error"
+        elif hasattr(result, "success"):
+            success = result.success
+            error_msg = getattr(result, "error_message", "unknown error")
+        else:
+            continue
+
+        if success is False:
+            raise RuntimeError(
+                f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
+                f"Check SGLang version compatibility."
+            )

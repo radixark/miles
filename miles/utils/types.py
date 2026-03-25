@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+import numpy
 import torch
 
 
@@ -24,7 +25,9 @@ class Sample:
     loss_mask: list[int] | None = None
     weight_versions: list[str] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
-    rollout_routed_experts: list[list[int]] | None = None  # Routed experts from rollout engine
+    rollout_routed_experts: numpy.ndarray | None = (
+        None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
+    )
     remove_sample: bool = False
 
     class Status(Enum):
@@ -40,6 +43,7 @@ class Sample:
     status: Status = Status.PENDING
 
     metadata: dict = field(default_factory=dict)
+    generate_function_path: str | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
@@ -123,10 +127,20 @@ class Sample:
 
     @staticmethod
     def from_dict(data: dict):
+        data = dict(data)
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))
-        return Sample(**data)
+
+        field_names = set(Sample.__dataclass_fields__.keys())
+        init_data = {k: v for k, v in data.items() if k in field_names}
+        sample = Sample(**init_data)
+
+        for key, value in data.items():
+            if key not in field_names:
+                setattr(sample, key, value)
+
+        return sample
 
     def get_reward_value(self, args) -> float:
         return self.reward if not args.reward_key else self.reward[args.reward_key]
@@ -134,6 +148,24 @@ class Sample:
     @property
     def effective_response_length(self):
         return sum(self.loss_mask) if self.loss_mask is not None else self.response_length
+
+    def validate(self):
+        assert self.response_length >= 0, f"response_length must be >= 0, got {self.response_length}"
+        assert (
+            len(self.tokens) >= self.response_length
+        ), f"tokens length ({len(self.tokens)}) must be >= response_length ({self.response_length})"
+        if self.loss_mask is not None:
+            assert (
+                len(self.loss_mask) == self.response_length
+            ), f"loss_mask length ({len(self.loss_mask)}) != response_length ({self.response_length})"
+        if self.rollout_log_probs is not None:
+            assert (
+                len(self.rollout_log_probs) == self.response_length
+            ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.rollout_routed_experts is not None:
+            actual = len(self.rollout_routed_experts)
+            expect = len(self.tokens) - 1
+            assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
 
     def update_from_meta_info(self, args, meta_info: dict):
         """

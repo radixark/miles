@@ -1,4 +1,5 @@
 import logging
+import os
 
 from megatron.training.arguments import parse_args, validate_args
 from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
@@ -14,10 +15,12 @@ def set_default_megatron_args(args):
     # TODO: maybe change this after megatron has good fp8 support
     args.bf16 = not args.fp16
     # placeholders
-    args.seq_length = 4096
+    if args.seq_length is None:
+        args.seq_length = 4096
     args.max_position_embeddings = args.seq_length
-    # TODO: revisit this when megatron(dev) have solved the optimizer-cpu-offload ckpt saving bug
-    args.dist_ckpt_save_pre_mcore_014 = True
+    # Notice(Jiajun): new megatron has removed this argument and use dp_reshardable instead of fully_shard
+    if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1":
+        args.dist_ckpt_save_pre_mcore_014 = True
     # compatible for megatron
     if hasattr(args, "rope_type") and args.rope_type is None:
         args.rope_type = "yarn" if args.multi_latent_attention else "rope"

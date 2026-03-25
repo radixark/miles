@@ -1,0 +1,286 @@
+#### Use the base image for ROCm 7 / gfx942 (MI300)
+
+# =====================================================================
+# Docker Image Version Information (Updated: Feb 5, 2026)
+# =====================================================================
+# Base image: ROCm 7 with vllm pre-built for gfx942
+# Target GPU: MI300 (gfx942)
+#
+# Key Dependencies:
+# - sglang: sglang-miles branch
+# - sgl_kernel: built from selected sglang commit
+# - Megatron-LM: radixark/Megatron-LM
+# - TransformerEngine: commit 90c04bcdc3c109505b318f40a39680263af55edf
+# - aiter: v0.1.10.post3
+# - Ray: 2.47.1
+#
+# Patches: amd_patch/sglv0.5.7/
+# - megatron.patch
+# - sglang.patch
+# =====================================================================
+
+
+FROM rocm/sgl-dev:rocm7-vllm-20250904
+
+SHELL ["/bin/bash", "-ceuxo", "pipefail"]
+
+ARG MAX_JOBS=128
+ARG SGLANG_REPO=sgl-project/sglang
+ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_COMMIT=""
+ARG MEGATRON_REPO=radixark/Megatron-LM
+ARG MEGATRON_BRANCH=miles-main
+ARG MEGATRON_COMMIT=""
+ENV MAX_JOBS=${MAX_JOBS}
+
+# Set environment variables for gfx942
+ENV GPU_ARCH=gfx942
+ENV PYTORCH_ROCM_ARCH=gfx942
+ENV GPU_ARCH_LIST=gfx942
+ENV AMDGPU_TARGET=gfx942
+
+
+###########################################
+##############1. Install AITER#############
+###########################################
+WORKDIR /app
+
+RUN pip uninstall -y aiter || true
+RUN rm -rf aiter
+RUN git clone https://github.com/ROCm/aiter.git \
+    && cd aiter \
+    && git checkout v0.1.10.post3 \
+    && curl -fsSL https://patch-diff.githubusercontent.com/raw/ROCm/aiter/pull/2075.patch -o /tmp/aiter-pr2075.patch \
+    && git apply --3way /tmp/aiter-pr2075.patch \
+    && rm -f /tmp/aiter-pr2075.patch \
+    && git submodule sync --recursive \
+    && git submodule update --init --recursive \
+    && GPU_ARCHS=gfx942 python setup.py develop
+###########################################
+###########################################
+###########################################
+
+
+###########################################
+####2. Install TransformerEngine for gfx942
+###########################################
+WORKDIR /app
+
+RUN rm -rf TransformerEngine
+RUN git clone https://github.com/ROCm/TransformerEngine.git \
+    && cd TransformerEngine \
+    && git checkout 90c04bcdc3c109505b318f40a39680263af55edf \
+    && git submodule update --init --recursive
+
+ENV NVTE_FRAMEWORK=pytorch
+ENV NVTE_ROCM_ARCH=gfx942
+ENV NVTE_USE_HIPBLASLT=1
+ENV NVTE_USE_ROCM=1
+ENV CMAKE_PREFIX_PATH="/opt/rocm:/opt/rocm/hip:/usr/local:/usr"
+
+RUN cd TransformerEngine && pip install . -v
+###########################################
+###########################################
+###########################################
+
+
+#########################################
+####3. Install Megatron-LM
+#########################################
+WORKDIR /app
+
+RUN pip install "numpy>=1.21.0,<2.0" --force-reinstall
+
+RUN pip uninstall -y megatron-core || true
+RUN rm -rf Megatron-LM
+RUN git clone https://github.com/${MEGATRON_REPO}.git \
+    && cd Megatron-LM \
+    && git fetch origin ${MEGATRON_BRANCH} \
+    && if [ -n "${MEGATRON_COMMIT}" ]; then \
+         git checkout ${MEGATRON_COMMIT}; \
+       else \
+         git checkout FETCH_HEAD; \
+       fi \
+    && pip install -e .
+#########################################
+#########################################
+#########################################
+
+
+########################################
+############ 4. Install mbridge#########
+########################################
+RUN pip install git+https://github.com/ISEEKYAN/mbridge.git --no-deps
+########################################
+########################################
+########################################
+
+
+########################################
+######5. Install Ray####################
+########################################
+RUN pip uninstall ray -y || true
+RUN pip install "ray[data,train,tune,serve]==2.47.1"
+########################################
+########################################
+########################################
+
+
+#########################################
+###6. Install torch_memory_saver#########
+#########################################
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@64a92e1d7fb822ea4af5579c8cebb162692c531c --no-cache-dir --force-reinstall
+#########################################
+#########################################
+
+
+#######################################
+####7. Install Apex for ROCm###########
+#######################################
+WORKDIR /app
+
+RUN pip uninstall -y apex || true
+RUN rm -rf apex
+RUN git clone https://github.com/ROCm/apex.git \
+    && cd apex \
+    && python setup.py install
+#######################################
+#######################################
+#######################################
+
+
+########################################
+###8. Install miles agent framework deps
+########################################
+RUN pip install pydra_config==0.0.15
+RUN pip install together
+RUN pip install google-generativeai
+RUN pip install tensorboard
+########################################
+########################################
+########################################
+
+
+########################################
+###9. Set performance environment vars##
+########################################
+ENV HIP_FORCE_DEV_KERNARG=1
+ENV HSA_NO_SCRATCH_RECLAIM=1
+ENV SGLANG_USE_AITER=1
+ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+ENV SGLANG_MOE_PADDING=1
+ENV SGLANG_SET_CPU_AFFINITY=1
+ENV SGLANG_ROCM_FUSED_DECODE_MLA=1
+ENV SGLANG_USE_ROCM700A=1
+ENV NCCL_MIN_NCHANNELS=112
+ENV VLLM_FP8_PADDING=1
+ENV VLLM_FP8_ACT_PADDING=1
+ENV VLLM_FP8_WEIGHT_PADDING=1
+ENV VLLM_FP8_REDUCE_CONV=1
+ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
+ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
+########################################
+########################################
+########################################
+
+
+###########################################
+##############Install SGLang###############
+###########################################
+WORKDIR /app
+
+# Install prerequisites
+RUN pip install IPython orjson python-multipart torchao==0.9.0 pybind11
+
+# Clone SGLang
+RUN pip uninstall -y sgl_kernel sglang || true
+RUN rm -rf sglang
+RUN git clone https://github.com/${SGLANG_REPO}.git \
+    && cd sglang \
+    && git fetch origin ${SGLANG_BRANCH} \
+    && if [ -n "${SGLANG_COMMIT}" ]; then \
+         git checkout ${SGLANG_COMMIT}; \
+       else \
+         git checkout FETCH_HEAD; \
+       fi
+
+# Build sgl-kernel for gfx942
+RUN cd sglang/sgl-kernel \
+    && rm -f pyproject.toml \
+    && mv pyproject_rocm.toml pyproject.toml \
+    && AMDGPU_TARGET=gfx942 python setup_rocm.py install
+
+# Install SGLang
+RUN cd sglang \
+    && rm -rf python/pyproject.toml \
+    && mv python/pyproject_other.toml python/pyproject.toml \
+    && pip install -e "python[all_hip]"
+
+# Test SGLang installation
+RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
+
+RUN python -m pip cache purge
+###########################################
+###########################################
+###########################################
+
+
+###########################################
+#### APPLY PATCHES (gfx942/MI300) #########
+###########################################
+
+# Copy patch from miles repo
+COPY amd_patch/sglv0.5.7/megatron.patch /app/patch/megatron.patch
+COPY amd_patch/sglv0.5.7/sglang.patch /app/patch/sglang.patch
+
+# Apply Megatron patches
+RUN cd /app/Megatron-LM \
+    && git apply --3way /app/patch/megatron.patch \
+    && if grep -R -n '^<<<<<<< ' .; then \
+        echo "Patch failed to apply cleanly. Please resolve conflicts." && \
+        exit 1; \
+    fi \
+    && pip install -e . -v
+
+# Apply SGLang patch
+RUN cd /app/sglang \
+    && git apply --3way /app/patch/sglang.patch \
+    && if grep -R -n '^<<<<<<< ' .; then \
+        echo "SGLang patch failed to apply cleanly. Please resolve conflicts." && \
+        exit 1; \
+    fi
+
+# Copy MOE configs for gfx942/MI300
+RUN find /app/sglang/python/sglang/srt/layers/quantization/configs/ \
+         /app/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/ \
+         -type f -name '*MI300X*' 2>/dev/null | while read f; do \
+    cp "$f" "$(echo $f | sed 's/MI300X/MI300X_VF/')" 2>/dev/null || true; \
+    cp "$f" "$(echo $f | sed 's/MI300X/MI355/')" 2>/dev/null || true; \
+done
+
+###########################################
+###########################################
+###########################################
+
+
+########################################
+#### Install additional packages########
+########################################
+RUN pip install sglang-router --force-reinstall
+########################################
+########################################
+########################################
+
+
+########################################
+# Fix click/ray incompatibility with Python 3.10
+########################################
+RUN pip install click==8.2.1
+########################################
+########################################
+########################################
+
+
+WORKDIR /app
+
+CMD ["/usr/bin/bash"]

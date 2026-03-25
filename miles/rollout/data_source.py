@@ -53,7 +53,9 @@ class RolloutDataSource(DataSource):
         self.metadata = {}
 
         if args.rollout_global_dataset:
-            tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+            tokenizer = load_tokenizer(
+                args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+            )
             processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
             # TODO move (during the refactor)

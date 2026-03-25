@@ -1,8 +1,7 @@
 import random
 
-from transformers import AutoTokenizer
-
 from miles.utils.misc import load_function
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
 MULTI_AGENT_CONFIGS = {
@@ -15,7 +14,7 @@ MULTI_AGENT_CONFIGS = {
 
 async def generate_with_multi_agents(args, sample: Sample, sampling_params, evaluation=False) -> list[Sample]:
 
-    tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True)
     max_context_length = args.rollout_max_context_len if not evaluation else args.eval_max_context_len
 
     args.sampling_params = sampling_params
