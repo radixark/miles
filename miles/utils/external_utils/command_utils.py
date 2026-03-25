@@ -92,6 +92,7 @@ class ExecuteTrainConfig:
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+    external_ft_dir: str | None = None
 
 
 def execute_train(
@@ -188,6 +189,7 @@ def execute_train(
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
+            f"""{f'--use-prometheus --use-control-server --placement-persist-path {config.external_ft_dir}/pg_snapshot.json ' if config.external_ft_dir else ''}"""
             f"{train_args}"
         )
 

@@ -33,6 +33,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
+from miles.utils.rollout_cell_health_checker import RolloutCellHealthChecker
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
@@ -365,6 +366,8 @@ class RolloutManager:
         self.rollout_id = -1
 
         self._metric_checker = MetricChecker.maybe_create(args)
+        self._cell_health_checker = RolloutCellHealthChecker.maybe_create(servers=self.servers, args=args)
+
         self._health_monitors = []
         if not self.args.debug_train_only and self.args.use_fault_tolerance:
             for srv in self.servers.values():
@@ -395,7 +398,9 @@ class RolloutManager:
             except Exception as e:
                 logger.warning(f"CI Fault Injection failed: {e}")
 
-    def dispose(self):
+    async def dispose(self):
+        if self._cell_health_checker is not None:
+            await self._cell_health_checker.shutdown()
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
@@ -487,10 +492,14 @@ class RolloutManager:
     def health_monitoring_pause(self) -> None:
         for monitor in self._health_monitors:
             monitor.pause()
+        if self._cell_health_checker is not None:
+            self._cell_health_checker.pause()
 
     def health_monitoring_resume(self) -> None:
         for monitor in self._health_monitors:
             monitor.resume()
+        if self._cell_health_checker is not None:
+            self._cell_health_checker.resume()
 
     def onload_weights(self):
         for srv in self.servers.values():
@@ -774,6 +783,21 @@ class RolloutManager:
                 rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
             rollout_data_refs.append(Box(ray.put(rollout_data)))
         return rollout_data_refs
+
+    def start_cell(self, cell_id: str) -> int:
+        raise NotImplementedError("Pending PR #729")
+
+    def stop_cell(self, cell_id: str, timeout_seconds: int = 30) -> None:
+        raise NotImplementedError("Pending PR #729")
+
+    def get_cell_status(self, cell_id: str) -> str:
+        raise NotImplementedError("Pending PR #729")
+
+    def get_cell_node_ids(self, cell_id: str) -> list[str]:
+        raise NotImplementedError("Pending PR #729")
+
+    def list_cells(self) -> list[dict]:
+        raise NotImplementedError("Pending PR #729")
 
 
 # ---------------------------------------------------------------------------

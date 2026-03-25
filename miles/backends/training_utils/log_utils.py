@@ -1,9 +1,11 @@
+import enum
 import logging
 from argparse import Namespace
 from math import isclose
 
 import numpy as np
 import psutil
+import ray
 import torch
 import torch.distributed as dist
 
@@ -13,11 +15,51 @@ from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils
+from ...utils.prometheus_utils import get_prometheus
 from .cp_utils import get_sum_of_sample_mean
 from .data import DataIterator
 from .parallel import ParallelState
 
 logger = logging.getLogger(__name__)
+
+
+class TrainingPhase(enum.IntEnum):
+    IDLE = 0
+    TRAINING = 1
+    CHECKPOINT_SAVING = 2
+
+
+class TrainingPrometheusReporter:
+    """Reports training phase and heartbeat to the Prometheus collector actor.
+
+    Owns the heartbeat counter and phase state. Only active on rank 0.
+    Calls are synchronous (ray.get) to ensure delivery.
+    """
+
+    def __init__(self) -> None:
+        self._enabled = dist.get_rank() == 0 and get_prometheus() is not None
+        self._handle = get_prometheus() if self._enabled else None
+        self._heartbeat_counter = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def set_phase(self, phase: TrainingPhase) -> None:
+        """Set phase gauge and bump heartbeat."""
+        if self._handle is None:
+            return
+        ray.get(self._handle.set_gauge.remote("miles_training_phase", phase.value))
+        self._bump_heartbeat()
+
+    def bump_heartbeat(self) -> None:
+        if self._handle is None:
+            return
+        self._bump_heartbeat()
+
+    def _bump_heartbeat(self) -> None:
+        self._heartbeat_counter += 1
+        ray.get(self._handle.set_gauge.remote("miles_training_heartbeat", self._heartbeat_counter))
 
 
 def gather_log_data(

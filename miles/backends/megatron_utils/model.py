@@ -25,7 +25,12 @@ from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
-from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
+from ..training_utils.log_utils import (
+    TrainingPrometheusReporter,
+    aggregate_forward_results,
+    aggregate_train_losses,
+    log_train_step,
+)
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
@@ -502,6 +507,7 @@ def train(
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
     parallel_state: ParallelState,
+    prometheus_reporter: TrainingPrometheusReporter | None = None,
 ) -> None:
     """Run training over a rollout consisting of multiple steps.
 
@@ -515,6 +521,7 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
+        prometheus_reporter: Optional reporter for FT heartbeat/phase metrics.
     """
     args = get_args()
 
@@ -627,6 +634,9 @@ def train(
                     from miles.backends.megatron_utils.ci_utils import check_mtp_loss
 
                     check_mtp_loss(mtp_losses)
+
+        if prometheus_reporter is not None:
+            prometheus_reporter.bump_heartbeat()
 
         # per train step log.
         if is_megatron_main_rank():

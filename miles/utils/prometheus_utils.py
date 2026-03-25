@@ -1,7 +1,11 @@
 import logging
 import time
+from typing import Any
 
 import ray
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+from miles.utils.misc import get_current_node_ip
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +28,21 @@ def init_prometheus(args, start_server: bool = False):
     global _collector_handle
 
     if start_server:
-        _collector_handle = ray.remote(_PrometheusCollector).options(name=_COLLECTOR_ACTOR_NAME).remote(args)
+        current_node_id = ray.get_runtime_context().get_node_id()
+        _collector_handle = (
+            ray.remote(_PrometheusCollector)
+            .options(
+                name=_COLLECTOR_ACTOR_NAME,
+                # Hard-pin: the HTTP server must bind on the driver node where
+                # the Prometheus scraper expects it.  Driver node failure kills
+                # the entire Ray job anyway, so soft fallback adds no value.
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node_id=current_node_id,
+                    soft=False,
+                ),
+            )
+            .remote(args)
+        )
         ray.get(_collector_handle.ping.remote())
         logger.info("Prometheus collector actor created")
     else:
@@ -44,7 +62,7 @@ def init_prometheus(args, start_server: bool = False):
                 time.sleep(_GET_ACTOR_INTERVAL)
 
 
-def get_prometheus():
+def get_prometheus() -> Any:
     """Return the collector actor handle, or ``None``."""
     return _collector_handle
 
@@ -65,12 +83,12 @@ class _PrometheusCollector:
         self._run_name = (
             getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None) or "miles_training"
         )
-        self._label_keys = ["run_name"]
-        self._label_vals = [self._run_name]
 
         port = args.prometheus_port
         start_http_server(port)
-        logger.info("Prometheus metrics server started on " f"port {port}, run_name={self._run_name}")
+
+        bind_ip = get_current_node_ip()
+        logger.info("Prometheus metrics server started on %s:%d, run_name=%s", bind_ip, port, self._run_name)
 
     def update(self, metrics: dict):
         """Set gauge values for all numeric metrics."""
@@ -78,13 +96,19 @@ class _PrometheusCollector:
             if not isinstance(value, (int, float)):
                 continue
             safe_key = _METRIC_PREFIX + (key.replace("/", "_").replace("-", "_").replace("@", "_at_"))
-            if safe_key not in self._gauges:
-                self._gauges[safe_key] = self._Gauge(
-                    safe_key,
-                    key,
-                    self._label_keys,
-                )
-            self._gauges[safe_key].labels(*self._label_vals).set(value)
+            self.set_gauge(safe_key, value)
+
+    def set_gauge(self, name: str, value: float, extra_labels: dict[str, str] | None = None) -> None:
+        """Set a named gauge. Always includes run_name; extra_labels are merged in."""
+        labels = (extra_labels or {}) | {"run_name": self._run_name}
+
+        label_keys = sorted(labels.keys())
+        cache_key = (name, tuple(label_keys))
+
+        if cache_key not in self._gauges:
+            self._gauges[cache_key] = self._Gauge(name, name, label_keys)
+
+        self._gauges[cache_key].labels(**labels).set(value)
 
     def ping(self):
         return True
