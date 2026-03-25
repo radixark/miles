@@ -83,7 +83,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     if not samples:
         logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
         sample = deepcopy(input.sample)
-        sample.status = Sample.Status.TRUNCATED
+        sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
     if not input.args.generate_multi_samples:
