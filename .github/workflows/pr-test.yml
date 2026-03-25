@@ -84,6 +84,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -192,6 +193,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -300,6 +302,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -408,6 +411,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -516,6 +520,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -624,6 +629,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -732,6 +738,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -840,6 +847,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -948,6 +956,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -1056,6 +1065,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -1164,6 +1174,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -1272,6 +1283,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
@@ -1335,6 +1347,7 @@ jobs:
     env:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
