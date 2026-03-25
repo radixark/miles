@@ -19,22 +19,24 @@ TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+NUM_GPUS = 4 if FEW_GPU else 8
+GROUP_GPUS = NUM_GPUS // 2
 
-# Two models on 8 GPUs (colocate): actor gets weight updates, ref is frozen.
-SGLANG_CONFIG_YAML = """\
+# Two models on NUM_GPUS GPUs (colocate): actor gets weight updates, ref is frozen.
+SGLANG_CONFIG_YAML = f"""\
 sglang:
   - name: actor
     update_weights: true
     server_groups:
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: {GROUP_GPUS}
         num_gpus_per_engine: 1
   - name: ref
     update_weights: false
     server_groups:
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: {GROUP_GPUS}
         num_gpus_per_engine: 1
 """
 
@@ -130,7 +132,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
         "--megatron-to-hf-mode bridge "
     )

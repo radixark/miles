@@ -7,22 +7,24 @@ TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+NUM_GPUS = 4 if FEW_GPU else 8
+GROUP_GPUS = NUM_GPUS // 2
 
 # Inline sglang config: same model, 2 engine groups with different sizes.
-# Group 1: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
-# Group 2: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
+# Group 1: GROUP_GPUS GPUs, 1 GPU/engine (tp=1) -> GROUP_GPUS engines
+# Group 2: GROUP_GPUS GPUs, 1 GPU/engine (tp=1) -> GROUP_GPUS engines
 # Tests that ServerGroup/RolloutServer correctly manages multiple groups
 # behind a single router, with separate port cursors per group.
-SGLANG_CONFIG_YAML = """\
+SGLANG_CONFIG_YAML = f"""\
 sglang:
   - name: default
     server_groups:
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: {GROUP_GPUS}
         num_gpus_per_engine: 1
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: {GROUP_GPUS}
         num_gpus_per_engine: 1
 """
 
@@ -113,7 +115,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
         "--megatron-to-hf-mode bridge "
     )

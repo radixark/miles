@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import IO
 
 import requests
+import torch
 
 from miles.utils.http_utils import find_available_port
 
@@ -70,6 +71,11 @@ def start_sglang_server(
     ]
     if enable_deterministic_inference:
         cmd.append("--enable-deterministic-inference")
+        # trtllm_mha (default on Blackwell) does not support deterministic inference;
+        # fall back to flashinfer automatically.
+        major, _ = torch.cuda.get_device_capability()
+        if major >= 10:
+            cmd.extend(["--attention-backend", "flashinfer"])
     if extra_args:
         cmd.extend(extra_args)
 
