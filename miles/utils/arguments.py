@@ -1251,7 +1251,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--enable-weight-checksum-checker",
-                "--enable-weight-checker",
                 dest="enable_weight_checksum_checker",
                 action="store_true",
                 help="Verify synced rollout weights by comparing Miles payload checksums against the weights stored in SGLang after update.",
