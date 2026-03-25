@@ -135,6 +135,7 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
+        "--train-memory-margin-bytes 1073741824 "
     )
 
     if USE_BRIDGE:
