@@ -27,7 +27,7 @@ def train(args):
     # always update weight first so that sglang has the loaded weights from training.
     actor_model.update_weights()
 
-    if args.check_weight_update_equal or args.enable_weight_checker:
+    if args.check_weight_update_equal or args.enable_weight_checksum_checker:
         actor_model.check_weights()
 
     if args.offload_rollout:
@@ -93,7 +93,7 @@ def train(args):
         if args.offload_rollout:
             ray.get(rollout_manager.onload_weights.remote())
         actor_model.update_weights()
-        if args.check_weight_update_equal or args.enable_weight_checker:
+        if args.check_weight_update_equal or args.enable_weight_checksum_checker:
             actor_model.check_weights()
         if args.offload_rollout:
             ray.get(rollout_manager.onload_kv.remote())

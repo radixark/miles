@@ -3,15 +3,14 @@ import os
 import miles.utils.external_utils.command_utils as U
 
 
-MODEL_NAME = "Qwen3-4B"
-MODEL_TYPE = "qwen3-4B"
+MODEL_NAME = "Qwen2.5-3B"
+MODEL_TYPE = "qwen2.5-3B"
 NUM_GPUS = 2
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME}-FP8 --local-dir /root/models/{MODEL_NAME}-FP8")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.convert_checkpoint(
         model_name=MODEL_NAME,
@@ -22,7 +21,7 @@ def prepare():
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "

@@ -191,7 +191,7 @@ class UpdateWeightFromTensor:
         sync_chunk_count = 0
         self._last_checksums = {}
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
-            if self.args.enable_weight_checker or self.args.check_weight_update_equal:
+            if self.args.enable_weight_checksum_checker:
                 self._last_checksums.update(compute_tensor_checksums(hf_named_tensors))
 
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
@@ -280,7 +280,7 @@ class UpdateWeightFromTensor:
         return all_refs, long_lived_tensors
 
     def check_weights(self, action: str) -> None:
-        if (self.args.enable_weight_checker or action == "compare") and self._last_checksums:
+        if self.args.enable_weight_checksum_checker and self._last_checksums:
             if dist.get_rank() == 0:
                 target_engines = list(self.rollout_engines)
                 if self.use_distribute:

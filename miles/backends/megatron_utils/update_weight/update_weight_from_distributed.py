@@ -143,7 +143,7 @@ class UpdateWeightFromDistributed:
         dist.barrier(group=get_gloo_group())
 
     def check_weights(self, action: str) -> None:
-        if (self.args.enable_weight_checker or action == "compare") and self._last_checksums:
+        if self.args.enable_weight_checksum_checker and self._last_checksums:
             if dist.get_rank() == 0:
                 # Send the entire dictionary in one Ray RPC call to ensure a single summary log.
                 ray.get(
@@ -250,7 +250,7 @@ class UpdateWeightFromDistributed:
         """
         Lock → broadcast → clear → unlock → pbar++. Lock prevents NCCL deadlock.
         """
-        if self.args.enable_weight_checker or self.args.check_weight_update_equal:
+        if self.args.enable_weight_checksum_checker:
             self._last_checksums.update(compute_tensor_checksums(converted_named_tensors))
 
         # lock the rollout engines to prevent dead lock on broadcast.

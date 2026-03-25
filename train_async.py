@@ -25,8 +25,8 @@ def train(args):
     # always update weight first so that sglang has the loaded weights from training.
     actor_model.update_weights()
 
-    if args.check_weight_update_equal:
-        ray.get(rollout_manager.check_weights.remote(action="compare"))
+    if args.check_weight_update_equal or args.enable_weight_checksum_checker:
+        actor_model.check_weights()
 
     # async train loop.
     rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
@@ -65,6 +65,8 @@ def train(args):
             rollout_data_curr_ref = ray.get(x) if (x := rollout_data_next_future) is not None else None
             rollout_data_next_future = None
             actor_model.update_weights()
+            if args.check_weight_update_equal or args.enable_weight_checksum_checker:
+                actor_model.check_weights()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             ray.get(rollout_manager.eval.remote(rollout_id))
