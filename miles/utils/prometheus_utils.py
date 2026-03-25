@@ -2,6 +2,9 @@ import logging
 import time
 
 import ray
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+from miles.utils.misc import get_current_node_ip
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +27,21 @@ def init_prometheus(args, start_server: bool = False):
     global _collector_handle
 
     if start_server:
-        _collector_handle = ray.remote(_PrometheusCollector).options(name=_COLLECTOR_ACTOR_NAME).remote(args)
+        current_node_id = ray.get_runtime_context().get_node_id()
+        _collector_handle = (
+            ray.remote(_PrometheusCollector)
+            .options(
+                name=_COLLECTOR_ACTOR_NAME,
+                # Hard-pin: the HTTP server must bind on the driver node where
+                # the Prometheus scraper expects it.  Driver node failure kills
+                # the entire Ray job anyway, so soft fallback adds no value.
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node_id=current_node_id,
+                    soft=False,
+                ),
+            )
+            .remote(args)
+        )
         ray.get(_collector_handle.ping.remote())
         logger.info("Prometheus collector actor created")
     else:
@@ -70,7 +87,9 @@ class _PrometheusCollector:
 
         port = args.prometheus_port
         start_http_server(port)
-        logger.info("Prometheus metrics server started on " f"port {port}, run_name={self._run_name}")
+
+        bind_ip = get_current_node_ip()
+        logger.info("Prometheus metrics server started on %s:%d, run_name=%s", bind_ip, port, self._run_name)
 
     def update(self, metrics: dict):
         """Set gauge values for all numeric metrics."""
