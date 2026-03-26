@@ -14,7 +14,7 @@ from tqdm import tqdm
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 from ..megatron_to_hf import convert_to_hf
-from .common import all_gather_param, compute_tensor_checksums, named_params_and_buffers
+from .common import all_gather_param, compute_tensor_checksums, dispatch_weight_check, named_params_and_buffers
 
 
 class UpdateWeightFromDistributed:
@@ -143,20 +143,10 @@ class UpdateWeightFromDistributed:
         dist.barrier(group=get_gloo_group())
 
     def check_weights(self, action: str) -> None:
-        if self.args.enable_weight_checksum_checker and self._last_checksums:
-            if dist.get_rank() == 0:
-                # Send the entire dictionary in one Ray RPC call to ensure a single summary log.
-                ray.get(
-                    [
-                        engine.check_weights.remote(
-                            action="compare_checksum", payload={"checksums": self._last_checksums}
-                        )
-                        for engine in self.rollout_engines
-                    ]
-                )
-        else:
-            if dist.get_rank() == 0:
-                ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+        if dist.get_rank() != 0:
+            return
+        checksums = self._last_checksums if self.args.enable_weight_checksum_checker else None
+        dispatch_weight_check(self.rollout_engines, action, checksums)
 
     def _update_weight_from_distributed(
         self,

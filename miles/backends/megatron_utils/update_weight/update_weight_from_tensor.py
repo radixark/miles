@@ -14,7 +14,7 @@ from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, build_lo
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import compute_tensor_checksums
+from .common import compute_tensor_checksums, dispatch_weight_check
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed import (
     connect_rollout_engines_from_distributed,
@@ -280,26 +280,16 @@ class UpdateWeightFromTensor:
         return all_refs, long_lived_tensors
 
     def check_weights(self, action: str) -> None:
-        if self.args.enable_weight_checksum_checker and self._last_checksums:
-            if dist.get_rank() == 0:
-                target_engines = list(self.rollout_engines)
-                if self.use_distribute:
-                    target_engines.extend(self.distributed_rollout_engines)
-                # One request per update cycle to keep logs clean and minimize network overhead.
-                ray.get(
-                    [
-                        engine.check_weights.remote(
-                            action="compare_checksum", payload={"checksums": self._last_checksums}
-                        )
-                        for engine in target_engines
-                    ]
-                )
-        else:
-            if dist.get_rank() == 0:
-                target_engines = list(self.rollout_engines)
-                if self.use_distribute:
-                    target_engines.extend(self.distributed_rollout_engines)
-                ray.get([engine.check_weights.remote(action=action) for engine in target_engines])
+        if dist.get_rank() != 0:
+            return
+        checksums = self._last_checksums if self.args.enable_weight_checksum_checker else None
+        dispatch_weight_check(self._target_engines(), action, checksums)
+
+    def _target_engines(self) -> list[ActorHandle]:
+        target_engines = list(self.rollout_engines)
+        if self.use_distribute:
+            target_engines.extend(self.distributed_rollout_engines)
+        return target_engines
 
 
 def _send_to_colocated_engine(

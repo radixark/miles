@@ -5,10 +5,12 @@ import re
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
 
+import ray
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.utils.types import ParamInfo
@@ -22,6 +24,22 @@ def compute_tensor_checksums(named_tensors: Sequence[tuple[str, torch.Tensor]]) 
         name: hashlib.sha256(tensor.detach().cpu().contiguous().view(torch.uint8).numpy()).hexdigest()
         for name, tensor in named_tensors
     }
+
+
+def dispatch_weight_check(
+    rollout_engines: Sequence[ActorHandle],
+    action: str,
+    checksums: dict[str, str] | None,
+) -> None:
+    if checksums:
+        ray.get(
+            [
+                engine.check_weights.remote(action="compare_checksum", payload={"checksums": checksums})
+                for engine in rollout_engines
+            ]
+        )
+        return
+    ray.get([engine.check_weights.remote(action=action) for engine in rollout_engines])
 
 
 def _gather_with_stride(
