@@ -71,8 +71,10 @@ def start_sglang_server(
     ]
     if enable_deterministic_inference:
         cmd.append("--enable-deterministic-inference")
-        # trtllm_mha (default on Blackwell) does not support deterministic inference;
-        # fall back to flashinfer automatically.
+        # SGLang bug: _get_default_attn_backend() sets attention_backend="trtllm_mha"
+        # before _handle_deterministic_inference() runs, so the None-check there is
+        # bypassed and it raises ValueError instead of auto-selecting flashinfer.
+        # Upstream fix: https://github.com/sgl-project/sglang/pull/21450
         major, _ = torch.cuda.get_device_capability()
         if major >= 10:
             cmd.extend(["--attention-backend", "flashinfer"])
