@@ -21,6 +21,7 @@ ARG ENABLE_CUDA_13=0
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
 ARG WHEELS_TAG=cu129-x86_64
+ARG GITHUB_TOKEN=""
 
 # ======================================== Setup =============================================
 
@@ -43,9 +44,11 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # ====================================== Download pre-built wheels ============================================
 
 RUN mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
-    | python3 -c "import sys, json, subprocess; \
-[subprocess.run(['curl', '-fSL', '-o', '/tmp/wheels/' + a['name'], a['browser_download_url']], check=True) \
+    export GH_TOKEN="${GITHUB_TOKEN}" && \
+    curl -sL -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    | python3 -c "import sys, json, subprocess, os; \
+token = os.environ.get('GH_TOKEN', ''); \
+[subprocess.run(['curl', '-fSL', '-H', 'Authorization: token ' + token, '-H', 'Accept: application/octet-stream', '-o', '/tmp/wheels/' + a['name'], a['url']], check=True) \
  for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.whl')]" && \
     ls -lh /tmp/wheels/
 
@@ -68,7 +71,7 @@ RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install nvidia-mathdx==25.6.0 && \
-      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.10.0"; \
+      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.12.0"; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
     fi

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import IO
 
 import requests
+import torch
 
 from miles.utils.http_utils import find_available_port
 
@@ -70,6 +71,13 @@ def start_sglang_server(
     ]
     if enable_deterministic_inference:
         cmd.append("--enable-deterministic-inference")
+        # SGLang bug: _get_default_attn_backend() sets attention_backend="trtllm_mha"
+        # before _handle_deterministic_inference() runs, so the None-check there is
+        # bypassed and it raises ValueError instead of auto-selecting flashinfer.
+        # Upstream fix: https://github.com/sgl-project/sglang/pull/21450
+        major, _ = torch.cuda.get_device_capability()
+        if major >= 10:
+            cmd.extend(["--attention-backend", "flashinfer"])
     if extra_args:
         cmd.extend(extra_args)
 
