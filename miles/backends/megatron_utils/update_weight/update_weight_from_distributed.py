@@ -145,8 +145,12 @@ class UpdateWeightFromDistributed:
     def check_weights(self, action: str) -> None:
         if dist.get_rank() != 0:
             return
-        checksums = self._last_checksums if self.args.enable_weight_checksum_checker else None
-        dispatch_weight_check(self.rollout_engines, action, checksums)
+        dispatch_weight_check(
+            self.rollout_engines,
+            action,
+            self.args.enable_weight_checksum_checker,
+            self._last_checksums,
+        )
 
     def _update_weight_from_distributed(
         self,

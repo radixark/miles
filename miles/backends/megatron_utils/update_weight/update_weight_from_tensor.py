@@ -282,8 +282,12 @@ class UpdateWeightFromTensor:
     def check_weights(self, action: str) -> None:
         if dist.get_rank() != 0:
             return
-        checksums = self._last_checksums if self.args.enable_weight_checksum_checker else None
-        dispatch_weight_check(self._target_engines(), action, checksums)
+        dispatch_weight_check(
+            self._target_engines(),
+            action,
+            self.args.enable_weight_checksum_checker,
+            self._last_checksums,
+        )
 
     def _target_engines(self) -> list[ActorHandle]:
         target_engines = list(self.rollout_engines)

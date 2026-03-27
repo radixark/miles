@@ -529,13 +529,9 @@ class RolloutManager:
         if srv:
             srv.num_new_engines = 0
 
-    def check_weights(self, action: str, payload: dict | None = None):
+    def check_weights(self, action: str):
         return ray.get(
-            [
-                engine.check_weights.remote(action=action, payload=payload)
-                for engine in self.rollout_engines
-                if engine is not None
-            ]
+            [engine.check_weights.remote(action=action) for engine in self.rollout_engines if engine is not None]
         )
 
     def _get_rollout_data(self, rollout_id):

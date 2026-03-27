@@ -29,9 +29,11 @@ def compute_tensor_checksums(named_tensors: Sequence[tuple[str, torch.Tensor]]) 
 def dispatch_weight_check(
     rollout_engines: Sequence[ActorHandle],
     action: str,
+    use_checksum: bool,
     checksums: dict[str, str] | None,
 ) -> None:
-    if checksums:
+    if use_checksum:
+        assert checksums, "Checksum checker is enabled but no checksums were produced."
         ray.get(
             [
                 engine.check_weights.remote(action="compare_checksum", payload={"checksums": checksums})
