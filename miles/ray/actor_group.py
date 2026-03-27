@@ -86,7 +86,7 @@ class RayTrainGroup:
         TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
 
         # Create worker actors
-        self._actor_handlers = []
+        self._actor_handles = []
         master_addr, master_port = None, None
         for rank in range(world_size):
             actor = TrainRayActor.options(
@@ -99,43 +99,43 @@ class RayTrainGroup:
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
-            self._actor_handlers.append(actor)
+            self._actor_handles.append(actor)
 
     def async_init(self, args, role, with_ref=False):
         """
         Allocate GPU resourced and initialize model, optimzier, local ckpt, etc.
         """
         self.args = args
-        return [actor.init.remote(args, role, with_ref=with_ref) for actor in self._actor_handlers]
+        return [actor.init.remote(args, role, with_ref=with_ref) for actor in self._actor_handles]
 
     def async_train(self, rollout_id, rollout_data_ref):
         """Do one rollout training"""
-        return [actor.train.remote(rollout_id, rollout_data_ref) for actor in self._actor_handlers]
+        return [actor.train.remote(rollout_id, rollout_data_ref) for actor in self._actor_handles]
 
     def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
-        return ray.get([actor.save_model.remote(rollout_id, force_sync=force_sync) for actor in self._actor_handlers])
+        return ray.get([actor.save_model.remote(rollout_id, force_sync=force_sync) for actor in self._actor_handles])
 
     def update_weights(self):
         """Broadcast weights from rank 0 to all other ranks."""
-        return ray.get([actor.update_weights.remote() for actor in self._actor_handlers])
+        return ray.get([actor.update_weights.remote() for actor in self._actor_handles])
 
     def onload(self):
-        return ray.get([actor.wake_up.remote() for actor in self._actor_handlers])
+        return ray.get([actor.wake_up.remote() for actor in self._actor_handles])
 
     def offload(self):
-        return ray.get([actor.sleep.remote() for actor in self._actor_handlers])
+        return ray.get([actor.sleep.remote() for actor in self._actor_handles])
 
     def clear_memory(self):
-        return ray.get([actor.clear_memory.remote() for actor in self._actor_handlers])
+        return ray.get([actor.clear_memory.remote() for actor in self._actor_handles])
 
     def connect(self, critic_group):
         return ray.get(
             [
                 actor.connect_actor_critic.remote(critic)
-                for actor, critic in zip(self._actor_handlers, critic_group._actor_handlers, strict=False)
+                for actor, critic in zip(self._actor_handles, critic_group._actor_handles, strict=False)
             ]
         )
 
     def set_rollout_manager(self, rollout_manager):
-        return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handlers])
+        return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handles])
