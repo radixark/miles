@@ -77,9 +77,12 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
         "self_attention.linear_q_down_proj.weight",
         "self_attention.linear_q_up_proj.weight",
         "self_attention.linear_kv_down_proj.weight",
-        "self_attention.linear_kv_up_proj.weight",
-        "self_attention.wq_b.weight",
-        "self_attention.wk.weight",
+        # "self_attention.linear_kv_up_proj.weight",
+        # skip kv_b_proj to support both non-absorbed and absorbed MLA paths with consistent accuracy.
+        # indexer
+        # "self_attention.wq_b.weight",
+        # "self_attention.wk.weight",
+        # skip indexer weights for now
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:

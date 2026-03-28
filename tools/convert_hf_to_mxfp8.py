@@ -1,9 +1,11 @@
 """
 python tools/convert_hf_to_mxfp8.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR]
+                                    [--extra-skip-weight-substrings ...]
 
-Convert a BF16/FP16 HF safetensors checkpoint to MXFP8 with UE8M0 scales.
-The scale layout mirrors sglang _quantize_and_swizzle_with_triton_kernel,
-but keeps the scales in unswizzled group layout for serialization.
+Convert an HF safetensors checkpoint to MXFP8 with UE8M0 scales.
+Supported input checkpoint types:
+  1) BF16/FP16/FP32 checkpoints
+  2) Block-scaled FP8 checkpoints with UE8M0 scales and block size [128, 128]
 """
 
 import argparse
@@ -19,7 +21,7 @@ import torch
 from tqdm import tqdm
 
 try:
-    from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
+    from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant, mxfp8_group_quantize
 except ImportError as exc:
     raise ImportError(
         "Missing sglang dependency: mxfp8_group_quantize must be importable from sglang.srt.layers.quantization.fp8_utils."
@@ -35,19 +37,95 @@ SKIP_WEIGHT_SUBSTRINGS = (
     "lm_head",
     "eh_proj",
     "weights_proj",
+    ".indexer.",
+    ".kv_b_proj.",
 )
+
+SOURCE_FP8_BLOCK_SIZE = [128, 128]
+TARGET_MXFP8_BLOCK_SIZE = [1, 32]
+SOURCE_FP8_SCALE_KEY_SUFFIX = ".weight_scale_inv"
+SOURCE_FP8_DTYPES = (torch.float8_e4m3fn,) + ((torch.float8_e4m3fnuz,) if hasattr(torch, "float8_e4m3fnuz") else ())
+
+
+def _is_source_block_fp8_ue8m0_checkpoint(cfg: dict) -> bool:
+    qcfg = cfg.get("quantization_config", {}) if isinstance(cfg, dict) else {}
+    return (
+        qcfg.get("quant_method") == "fp8"
+        and list(qcfg.get("weight_block_size", [])) == SOURCE_FP8_BLOCK_SIZE
+        and qcfg.get("scale_fmt") == "ue8m0"
+    )
+
+
+def _is_bf16_source_checkpoint(cfg: dict) -> bool:
+    qcfg = cfg.get("quantization_config", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(qcfg, dict) or not qcfg:
+        return True
+    return qcfg.get("quant_method") in (None, "", "bf16")
+
+
+def _load_source_scale_u8(
+    weights: dict[str, torch.Tensor],
+    weight_key: str,
+    weight: torch.Tensor,
+    source_scale_index: dict[str, str],
+    input_path: str,
+    device: str,
+    current_filename: str,
+) -> tuple[torch.Tensor, torch.Tensor | None, str]:
+    scale_key = weight_key.replace(".weight", SOURCE_FP8_SCALE_KEY_SUFFIX)
+    scale_file = source_scale_index[scale_key]
+    if scale_file == current_filename and scale_key in weights:
+        scale = weights[scale_key]
+    else:
+        with safetensors.safe_open(os.path.join(input_path, scale_file), framework="pt", device=device) as f:
+            scale = f.get_tensor(scale_key)
+
+    if scale.dtype == torch.uint8:
+        scale_u8 = scale
+    else:
+        assert scale.dtype == torch.float32
+        scale_u8 = None
+        n, k = weight.shape[-2], weight.shape[-1]
+        n_tiles = (n + SOURCE_FP8_BLOCK_SIZE[0] - 1) // SOURCE_FP8_BLOCK_SIZE[0]
+        k_tiles = (k + SOURCE_FP8_BLOCK_SIZE[1] - 1) // SOURCE_FP8_BLOCK_SIZE[1]
+        scale_fp32 = scale[..., :n_tiles, :k_tiles].contiguous()
+        bits = scale_fp32.contiguous().view(torch.int32)
+        mantissa_all_zero = not torch.any((bits & 0x007FFFFF) != 0).item()
+        non_negative = not torch.any(bits < 0).item()
+        if mantissa_all_zero and non_negative:
+            scale_u8 = ((bits >> 23) & 0xFF).to(torch.uint8)
+        return scale_fp32, scale_u8, scale_key
+
+    n, k = weight.shape[-2], weight.shape[-1]
+    n_tiles = (n + SOURCE_FP8_BLOCK_SIZE[0] - 1) // SOURCE_FP8_BLOCK_SIZE[0]
+    k_tiles = (k + SOURCE_FP8_BLOCK_SIZE[1] - 1) // SOURCE_FP8_BLOCK_SIZE[1]
+    scale_u8 = scale_u8[..., :n_tiles, :k_tiles].contiguous()
+    scale_fp32 = (scale_u8.to(torch.int32) << 23).view(torch.float32)
+    return scale_fp32, scale_u8, scale_key
+
+
+def _source_fp8_to_mxfp8_scale_u8(weight: torch.Tensor, source_scale_u8: torch.Tensor) -> torch.Tensor:
+    n, k = weight.shape[-2], weight.shape[-1]
+    mxfp8_scale_u8 = source_scale_u8.repeat_interleave(SOURCE_FP8_BLOCK_SIZE[0], dim=-2).repeat_interleave(
+        SOURCE_FP8_BLOCK_SIZE[1] // TARGET_MXFP8_BLOCK_SIZE[1], dim=-1
+    )
+    return mxfp8_scale_u8[..., :n, : (k // TARGET_MXFP8_BLOCK_SIZE[1])].contiguous()
 
 
 def should_quantize(
     name: str,
     weight: torch.Tensor,
     skip_weight_substrings=SKIP_WEIGHT_SUBSTRINGS,
+    allow_source_fp8: bool = False,
 ) -> bool:
+    allowed_dtypes = (torch.float16, torch.bfloat16, torch.float32)
+    if allow_source_fp8:
+        allowed_dtypes += SOURCE_FP8_DTYPES
     if not name.endswith(".weight"):
         return False
     if any(substr in name for substr in skip_weight_substrings):
         return False
-    if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+    if weight.dtype not in allowed_dtypes:
         return False
     if weight.dim() < 2:
         return False
@@ -101,10 +179,10 @@ def process_file(
     device: str,
     num_hidden_layers: int,
     num_layers_at_end_in_bf16: int,
+    source_is_block_fp8_ue8m0: bool,
+    extra_skip_weight_substrings: tuple[str, ...],
+    source_scale_index: dict[str, str],
 ) -> None:
-    if not filename.endswith(".safetensors"):
-        return
-
     weights: dict[str, torch.Tensor] = {}
     q_weights: dict[str, torch.Tensor] = {}
 
@@ -114,29 +192,83 @@ def process_file(
 
     modules_to_not_convert: list[str] = []
     tail_start_idx = max(0, num_hidden_layers - num_layers_at_end_in_bf16)
-    num_maybe_mtp_layers = 1
-    dynamic_skip_layer_prefixes: set[str] = {
-        f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers + num_maybe_mtp_layers)
-    }
+    dynamic_skip_layer_prefixes: set[str] = {f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)}
+
+    if num_layers_at_end_in_bf16 > 0:
+        modules_to_not_convert.extend(sorted(dynamic_skip_layer_prefixes))
 
     dynamic_skip_substrings = (
         *SKIP_WEIGHT_SUBSTRINGS,
+        *extra_skip_weight_substrings,
         *sorted(dynamic_skip_layer_prefixes),
     )
 
     for key, tensor in weights.items():
-        if should_quantize(
+        if not key.endswith(".weight"):
+            continue
+
+        should_quant = should_quantize(
             key,
             tensor,
             skip_weight_substrings=dynamic_skip_substrings,
-        ):
-            qweight, scale = quantize_mxfp8(tensor)
-            q_weights[key] = qweight
-            q_weights[key.replace(".weight", ".weight_scale_inv")] = scale
+            allow_source_fp8=source_is_block_fp8_ue8m0,
+        )
+
+        if should_quant:
+            if source_is_block_fp8_ue8m0 and tensor.dtype in SOURCE_FP8_DTYPES:
+                source_scale_fp32, source_scale_u8, scale_key = _load_source_scale_u8(
+                    weights,
+                    key,
+                    tensor,
+                    source_scale_index=source_scale_index,
+                    input_path=input_path,
+                    device=device,
+                    current_filename=filename,
+                )
+                if source_scale_u8 is not None:
+                    qweight = tensor.contiguous()
+                    scale = _source_fp8_to_mxfp8_scale_u8(tensor, source_scale_u8)
+                else:
+                    # dequant to fp32, requant to mxfp8
+                    weight_fp32 = block_quant_dequant(
+                        tensor, source_scale_fp32, SOURCE_FP8_BLOCK_SIZE, torch.float32
+                    ).contiguous()
+                    qweight, scale = quantize_mxfp8(weight_fp32)
+                q_weights[key] = qweight
+                q_weights[scale_key] = scale
+            else:
+                qweight, scale = quantize_mxfp8(tensor)
+                q_weights[key] = qweight
+                q_weights[key.replace(".weight", SOURCE_FP8_SCALE_KEY_SUFFIX)] = scale
         else:
-            if key.endswith(".weight"):
+            if ".experts." not in key:
                 modules_to_not_convert.append(key.replace(".weight", ""))
-            q_weights[key] = tensor
+            if source_is_block_fp8_ue8m0 and tensor.dtype in SOURCE_FP8_DTYPES:
+                source_scale_fp32, _, _ = _load_source_scale_u8(
+                    weights,
+                    key,
+                    tensor,
+                    source_scale_index=source_scale_index,
+                    input_path=input_path,
+                    device=device,
+                    current_filename=filename,
+                )
+                q_weights[key] = block_quant_dequant(
+                    tensor,
+                    source_scale_fp32,
+                    SOURCE_FP8_BLOCK_SIZE,
+                    torch.bfloat16,
+                ).contiguous()
+            else:
+                q_weights[key] = tensor
+
+    for key, tensor in weights.items():
+        if key.endswith(".weight"):
+            continue
+        # For source FP8 checkpoints, do not copy original block-scale tensors.
+        if source_is_block_fp8_ue8m0 and key.endswith(SOURCE_FP8_SCALE_KEY_SUFFIX):
+            continue
+        q_weights[key] = tensor
 
     safetensors.torch.save_file(q_weights, os.path.join(output_path, filename), metadata={"format": "pt"})
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
@@ -147,6 +279,7 @@ def convert_mxfp8(
     save_dir: str,
     device: str,
     num_layers_at_end_in_bf16: int = 0,
+    extra_skip_weight_substrings: tuple[str, ...] = (),
 ) -> None:
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
@@ -155,12 +288,30 @@ def convert_mxfp8(
     with open(config_path) as f:
         cfg = json.load(f)
     num_hidden_layers = int(cfg["num_hidden_layers"])
+    if _is_source_block_fp8_ue8m0_checkpoint(cfg):
+        source_is_block_fp8_ue8m0 = True
+    elif _is_bf16_source_checkpoint(cfg):
+        source_is_block_fp8_ue8m0 = False
+    else:
+        raise ValueError(
+            "Unsupported source quantization_config. "
+            "Only BF16/FP16/FP32 sources and "
+            "{quant_method=fp8, weight_block_size=[128, 128], scale_fmt=ue8m0} sources are supported."
+        )
 
     for filename in os.listdir(input_path):
         if not filename.endswith(".safetensors") and not os.path.isdir(os.path.join(input_path, filename)):
             shutil.copyfile(os.path.join(input_path, filename), os.path.join(output_path, filename))
 
-    safetensors_files = [f for f in os.listdir(input_path) if f.endswith(".safetensors")]
+    index_path = os.path.join(input_path, "model.safetensors.index.json")
+    with open(index_path) as f:
+        weight_map = json.load(f)["weight_map"]
+    safetensors_files = sorted(set(weight_map.values()))
+    source_scale_index: dict[str, str] = {}
+    if source_is_block_fp8_ue8m0:
+        source_scale_index = {
+            key: filename for key, filename in weight_map.items() if key.endswith(SOURCE_FP8_SCALE_KEY_SUFFIX)
+        }
 
     result_collector = ConversionResult()
     for filename in tqdm(safetensors_files, desc="Processing files"):
@@ -172,6 +323,9 @@ def convert_mxfp8(
             device,
             num_hidden_layers,
             num_layers_at_end_in_bf16,
+            source_is_block_fp8_ue8m0,
+            extra_skip_weight_substrings,
+            source_scale_index,
         )
         gc.collect()
         if torch.cuda.is_available():
@@ -181,7 +335,7 @@ def convert_mxfp8(
         "activation_scheme": "dynamic",
         "fmt": "e4m3",
         "quant_method": "mxfp8",
-        "weight_block_size": [1, 32],
+        "weight_block_size": TARGET_MXFP8_BLOCK_SIZE,
         "scale_fmt": "ue8m0",
     }
     if len(result_collector.modules_to_not_convert) > 0:
@@ -226,6 +380,13 @@ def main() -> None:
         default=0,
         help="Keep last N decoder layers in BF16 and do not quantize them.",
     )
+    parser.add_argument(
+        "--extra-skip-weight-substrings",
+        type=str,
+        nargs="*",
+        default=(),
+        help="Extra substrings for weight names to skip quantization (e.g. .shared_experts.).",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -254,6 +415,9 @@ def main() -> None:
         args.save_dir,
         str(device),
         num_layers_at_end_in_bf16=args.num_layers_at_end_in_bf16,
+        extra_skip_weight_substrings=tuple(
+            s.strip() for s in args.extra_skip_weight_substrings if isinstance(s, str) and s.strip()
+        ),
     )
 
 
