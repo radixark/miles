@@ -17,6 +17,7 @@ from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.router.router import MilesRouter
 from miles.utils.async_utils import run
+from miles.utils.chat_template_utils import try_get_fixed_chat_template
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
 from miles.utils.test_utils import mock_tools
@@ -155,6 +156,7 @@ def make_args(
     generate_tool_call_parser: str = "qwen25",
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
     rollout_max_context_len: int | None = None,
+    chat_template_path: str | None = None,
 ) -> Namespace:
     argv = [
         "pytest",
@@ -181,6 +183,8 @@ def make_args(
         "--rollout-max-response-len",
         "16",
     ]
+    if chat_template_path:
+        argv.extend(["--chat-template-path", chat_template_path])
     if use_rollout_routing_replay:
         argv.append("--use-rollout-routing-replay")
     if sglang_speculative_algorithm:
@@ -212,7 +216,15 @@ def make_args(
 
 
 @contextmanager
-def with_miles_router(backend_url: str, model_name: str):
+def with_miles_router(
+    backend_url: str,
+    model_name: str,
+    *,
+    use_rollout_routing_replay: bool = False,
+    chat_template_path: str | None = None,
+):
+    if chat_template_path is None:
+        chat_template_path = try_get_fixed_chat_template(model_name)
     router_args = SimpleNamespace(
         miles_router_max_connections=10,
         miles_router_timeout=30,
@@ -220,6 +232,9 @@ def with_miles_router(backend_url: str, model_name: str):
         rollout_health_check_interval=60,
         miles_router_health_check_failure_threshold=3,
         hf_checkpoint=model_name,
+        chat_template_path=chat_template_path,
+        tito_model="default",
+        use_rollout_routing_replay=use_rollout_routing_replay,
     )
     router = MilesRouter(router_args)
 
@@ -259,8 +274,15 @@ def generation_env(request, variant):
             ),
         )
 
+    fixed_template = try_get_fixed_chat_template(model_name)
+
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
-        with with_miles_router(mock_server.url, model_name) as router_port:
+        with with_miles_router(
+            mock_server.url,
+            model_name,
+            use_rollout_routing_replay=args_kwargs.get("use_rollout_routing_replay", False),
+            chat_template_path=fixed_template,
+        ) as router_port:
             _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
             other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
             args = make_args(
@@ -268,6 +290,7 @@ def generation_env(request, variant):
                 router_port=router_port,
                 model_name=model_name,
                 custom_generate_function_path=custom_generate_function_path,
+                chat_template_path=fixed_template,
                 **other_args_kwargs,
             )
             if variant.startswith("agentic_tool_call"):

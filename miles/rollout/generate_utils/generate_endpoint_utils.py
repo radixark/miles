@@ -16,7 +16,7 @@ from miles.utils.types import Sample
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
-    if state.processor:
+    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
         processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
 
@@ -96,13 +96,13 @@ async def update_sample_from_response(
             sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = _get_rollout_topk_from_response(args, output, sample, "routed_experts")
+    sample.rollout_routed_experts = get_rollout_topk_from_response(args, output, sample, "routed_experts")
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
 
 
-def _get_rollout_topk_from_response(args, output, sample, key):
+def get_rollout_topk_from_response(args, output, sample, key):
     info = output["meta_info"].get(key)
     if info is None:
         return None
