@@ -76,6 +76,10 @@ class Qwen3NextBridge(Qwen2MoEBridge):
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
     def _build_config(self):
+        mtp_args = {}
+        if hasattr(self.hf_config, "num_nextn_predict_layers"):
+            mtp_args["mtp_num_layers"] = self.hf_config.num_nextn_predict_layers
+
         return self._build_base_config(
             use_cpu_initialization=False,
             # MoE specific
@@ -98,4 +102,47 @@ class Qwen3NextBridge(Qwen2MoEBridge):
             # Qwen3 Next specific
             attention_output_gate=True,
             moe_shared_expert_gate=True,
+            **mtp_args,
         )
+
+    def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
+        if "mtp" in mcore_weights_name:
+            return self._convert_mtp_param(mcore_weights_name)
+        return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+
+    def _convert_mtp_param(self, name: str) -> list[str]:
+        """Convert MTP layer parameters from MCore to HF format.
+
+        Megatron MTP names:  mtp.layers.{idx}.{enorm,hnorm,eh_proj,final_layernorm,...}
+        HF/SGLang MTP names: mtp.{fc,pre_fc_norm_embedding,pre_fc_norm_hidden,norm,...}
+                             mtp.layers.{idx}.{decoder layer components}
+        """
+        parts = name.split(".")
+        mtp_layer_idx = parts[2]  # mtp.layers.{idx}
+
+        direct_mappings = {
+            f"mtp.layers.{mtp_layer_idx}.enorm.weight": "mtp.pre_fc_norm_embedding.weight",
+            f"mtp.layers.{mtp_layer_idx}.hnorm.weight": "mtp.pre_fc_norm_hidden.weight",
+            f"mtp.layers.{mtp_layer_idx}.eh_proj.weight": "mtp.fc.weight",
+            f"mtp.layers.{mtp_layer_idx}.final_layernorm.weight": "mtp.norm.weight",
+        }
+
+        if name in direct_mappings:
+            return [direct_mappings[name]]
+
+        if "transformer_layer" in name:
+            proxy_name = name.replace(
+                f"mtp.layers.{mtp_layer_idx}.transformer_layer",
+                f"decoder.layers.{mtp_layer_idx}",
+            )
+
+            if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
+                convert_names = super()._weight_name_mapping_attention(proxy_name)
+            elif "mlp" in proxy_name or "pre_mlp_layernorm" in proxy_name:
+                convert_names = super()._weight_name_mapping_mlp(proxy_name)
+            else:
+                raise NotImplementedError(f"Unsupported transformer component in MTP: {name}")
+
+            return [cn.replace(f"model.layers.{mtp_layer_idx}", f"mtp.layers.{mtp_layer_idx}") for cn in convert_names]
+
+        raise NotImplementedError(f"Unsupported MTP parameter name: {name}")

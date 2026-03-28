@@ -55,6 +55,7 @@ class RunRequest(BaseModel):
 
     instance_id: str = ""
     agent_name: str = "mini-swe-agent"
+    max_seq_len: int | None = None
 
     model_config = {"extra": "allow"}
 
@@ -72,6 +73,7 @@ def get_semaphore() -> asyncio.Semaphore:
 
 
 _TIMEOUT_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "EnvironmentStartTimeoutError"}
+_OUTPUT_LIMIT_EXCEPTIONS = {"MaxSeqLenExceededError"}
 
 _HOST_PROCESS_AGENTS = {"terminus-2", "terminus-1", "terminus"}
 
@@ -84,7 +86,9 @@ def _extract_exit_status(result) -> str:
     if exc is not None:
         exc_type = getattr(exc, "exception_type", "")
         if exc_type in _TIMEOUT_EXCEPTIONS:
-            return "LimitsExceeded"
+            return "TimeLimitExceeded"
+        if exc_type in _OUTPUT_LIMIT_EXCEPTIONS:
+            return "SequenceLengthLimitExceeded"
         return "AgentError"
     if getattr(result, "verifier_result", None) is not None:
         return "Submitted"
@@ -200,6 +204,9 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
                 "input_cost_per_token": 0.0,
                 "output_cost_per_token": 0.0,
             }
+
+        if request.max_seq_len is not None:
+            agent_kwargs["max_seq_len"] = request.max_seq_len
 
         if is_host_agent:
             agent_kwargs["api_base"] = request.base_url

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SessionRecord(BaseModel):
@@ -13,3 +13,4 @@ class SessionRecord(BaseModel):
 class GetSessionResponse(BaseModel):
     session_id: str
     records: list[SessionRecord]
+    metadata: dict = Field(default_factory=dict)
