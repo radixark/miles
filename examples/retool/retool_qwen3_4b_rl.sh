@@ -100,7 +100,7 @@ WANDB_ARGS=(
    --use-wandb
    --wandb-project miles-dev-retool-v2
    --wandb-group retool-v1-qwen3-4b-sft-new
-   --wandb-key a37f4796e6205800c4212556a38e1319b5f144b7
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(

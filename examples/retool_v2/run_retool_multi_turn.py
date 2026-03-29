@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Literal
-
+import os
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -36,9 +36,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.ref_load = "/root/models/Qwen3-4B_torch_dist"
 
 
-## TODO: Delete in the future
 def _get_wandb_args() -> str:
-    WANDB_API_KEY = "a37f4796e6205800c4212556a38e1319b5f144b7"
+    WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
     return (
         "--use-wandb "
         f"--wandb-project {WANDB_PROJECT} "
