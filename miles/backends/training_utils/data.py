@@ -24,8 +24,8 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
     rollout_data = process_rollout_data(
         args,
         rollout_data_ref,
-        parallel_state.dp_rank,
-        parallel_state.dp_size,
+        parallel_state.intra_dp_rank,
+        parallel_state.intra_dp_size,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
@@ -342,8 +342,8 @@ def get_data_iterator(
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
     """
-    dp_size = parallel_state.dp_size
-    dp_group = parallel_state.dp_group
+    dp_size = parallel_state.intra_dp_size
+    dp_group = parallel_state.intra_dp_group
     vpp_size = parallel_state.vpp_size
     microbatch_group_size_per_vp_stage = parallel_state.microbatch_group_size_per_vp_stage
 

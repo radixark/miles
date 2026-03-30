@@ -35,16 +35,16 @@ def gather_log_data(
     batch sizes. Returns the reduced dict on the DP source rank; returns None on others.
     """
 
-    if parallel_state.dp_cp_rank == 0:
-        dp_size = parallel_state.dp_cp_size
+    if parallel_state.intra_dp_cp_rank == 0:
+        dp_size = parallel_state.intra_dp_cp_size
 
         gathered_log_dict = [None] * dp_size
         # Not sure if this will be a performance bottleneck.
         dist.gather_object(
             log_dict,
             gathered_log_dict,
-            dst=parallel_state.dp_cp_src_rank,
-            group=parallel_state.dp_cp_group_gloo,
+            dst=parallel_state.intra_dp_cp_src_rank,
+            group=parallel_state.intra_dp_cp_group_gloo,
         )
 
         reduced_log_dict = {
@@ -62,8 +62,8 @@ def gather_log_data(
         dist.gather_object(
             log_dict,
             None,
-            dst=parallel_state.dp_cp_src_rank,
-            group=parallel_state.dp_cp_group_gloo,
+            dst=parallel_state.intra_dp_cp_src_rank,
+            group=parallel_state.intra_dp_cp_group_gloo,
         )
         return None
 
@@ -324,7 +324,7 @@ def log_perf_data(rollout_id: int, args: Namespace, parallel_state: ParallelStat
         rollout_id=rollout_id,
         args=args,
         is_primary_rank=(
-            parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage and parallel_state.dp_cp_rank == 0
+            parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage and parallel_state.intra_dp_cp_rank == 0
         ),
         compute_total_fwd_flops=lambda seq_lens: calculate_fwd_flops(seqlens=seq_lens, args=args)
         / dist.get_world_size()
@@ -379,7 +379,7 @@ def aggregate_train_losses(
 
     assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
 
-    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.dp_cp_group)
+    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp_group)
 
     loss_reduced = {}
     values = values.tolist()

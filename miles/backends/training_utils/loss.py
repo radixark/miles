@@ -437,7 +437,7 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
             assert (
                 all_advs.size() == all_masks.size()
             ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-            dp_group = parallel_state.dp_group
+            dp_group = parallel_state.intra_dp_group
 
             whitened_advs_flat = distributed_masked_whiten(
                 all_advs,
@@ -916,9 +916,9 @@ def loss_function(
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
-            loss = loss * num_microbatches / global_batch_size * parallel_state.dp_cp_size
+            loss = loss * num_microbatches / global_batch_size * parallel_state.intra_dp_cp_size
         else:
-            loss = loss / global_batch_size * parallel_state.dp_size
+            loss = loss / global_batch_size * parallel_state.intra_dp_size
     else:
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp_size
