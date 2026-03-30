@@ -16,19 +16,18 @@ logger = logging.getLogger(__name__)
 def create_megatron_parallel_state() -> ParallelState:
     vpp_size, microbatch_group_size_per_vp_stage = _compute_vpp_fields()
 
-    return ParallelState(
-        intra_dp=GroupInfo(
-            rank=mpu.get_data_parallel_rank(with_context_parallel=False),
-            size=mpu.get_data_parallel_world_size(with_context_parallel=False),
-            group=mpu.get_data_parallel_group(with_context_parallel=False),
-        ),
-        intra_dp_cp=GroupInfo(
+    def _create_intra_dp(with_context_parallel: bool):
+        return GroupInfo(
             rank=mpu.get_data_parallel_rank(with_context_parallel=True),
             size=mpu.get_data_parallel_world_size(with_context_parallel=True),
             group=mpu.get_data_parallel_group(with_context_parallel=True),
             gloo_group=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
             src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
-        ),
+        )
+
+    return ParallelState(
+        intra_dp=_create_intra_dp(with_context_parallel=False),
+        intra_dp_cp=_create_intra_dp(with_context_parallel=True),
         cp=GroupInfo(
             rank=mpu.get_context_parallel_rank(),
             size=mpu.get_context_parallel_world_size(),
