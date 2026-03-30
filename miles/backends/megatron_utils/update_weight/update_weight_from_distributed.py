@@ -8,6 +8,8 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from ray import ObjectRef
+
+from miles.backends.training_utils.parallel import get_parallel_state
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
