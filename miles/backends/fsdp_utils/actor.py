@@ -634,7 +634,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 cu_seqlens = batch["cu_seqlens"]
                 if not cu_seqlens.is_cuda:
                     cu_seqlens = cu_seqlens.cuda()
-                update_ring_flash_attn_params(cu_seqlens, self.cp.group)
+                update_ring_flash_attn_params(cu_seqlens, self.cp_group)
 
             input_ids = torch.chunk(input_ids, self.parallel_state.cp.size, dim=1)[self.parallel_state.cp.rank]
             position_ids = torch.chunk(position_ids, self.parallel_state.cp.size, dim=1)[self.parallel_state.cp.rank]
