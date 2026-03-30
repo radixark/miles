@@ -22,7 +22,6 @@ class GroupInfo:
     size: int
     group: dist.ProcessGroup | None
     gloo_group: dist.ProcessGroup | None = None
-    src_rank: int | None = None
 
     def __post_init__(self) -> None:
         self._verify_group(self.group, "group")
