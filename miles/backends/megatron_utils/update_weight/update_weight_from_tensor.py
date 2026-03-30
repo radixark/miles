@@ -8,11 +8,10 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from ray import ObjectRef
-
-from miles.backends.training_utils.parallel import get_parallel_state
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, build_lora_sync_config, is_lora_weight_name
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer

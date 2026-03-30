@@ -7,7 +7,6 @@ from contextlib import nullcontext
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig
