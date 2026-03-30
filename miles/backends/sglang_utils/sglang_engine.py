@@ -594,6 +594,9 @@ def _compute_server_args(
     if sglang_overrides:
         kwargs.update(sglang_overrides)
 
+    if args.offload_rollout and "weight" in args.offload_rollout_level and args.sglang_ep_size > 1:
+        kwargs["enable_weights_cpu_backup"] = True
+
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
         kwargs["load_balance_method"] = "round_robin"
