@@ -41,7 +41,7 @@ class RayTrainGroup:
         self.role = role
 
         # Allocate the GPUs for actors w/o instantiating them
-        self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
+        self._actor_handles = self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
 
     def _allocate_gpus_for_actor(self, pg, num_gpus_per_actor):
         world_size = self._num_nodes * self._num_gpus_per_node
@@ -89,7 +89,7 @@ class RayTrainGroup:
         TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
 
         # Create worker actors
-        self._actor_handles = []
+        actor_handles = []
         master_addr, master_port = None, None
         for rank in range(world_size):
             actor = TrainRayActor.options(
@@ -102,7 +102,9 @@ class RayTrainGroup:
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
-            self._actor_handles.append(actor)
+            actor_handles.append(actor)
+
+        return actor_handles
 
     def async_init(self, args, role, with_ref=False):
         """
