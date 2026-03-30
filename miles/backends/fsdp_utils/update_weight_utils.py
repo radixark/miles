@@ -118,7 +118,7 @@ class UpdateWeightFromTensor(UpdateWeight):
                 self._ipc_gather_group = new_group
                 self._ipc_engine = engine
                 # Calculate TP rank within this SGLang engine group
-                self.tp_rank = dist.get_rank() - start_rank
+                self.tp.rank = dist.get_rank() - start_rank
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
         monkey_patch_torch_reductions()

@@ -676,7 +676,7 @@ def train(
                     rollout_id=rollout_id,
                     step_id=step_id,
                     role=role,
-                    rank=parallel_state.intra_dp_rank,
+                    rank=parallel_state.intra_dp.rank,
                 )
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
@@ -738,7 +738,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
     """
-    should_log = get_parallel_state().intra_dp_cp_rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
+    should_log = get_parallel_state().intra_dp_cp.rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
 
     try:
         from megatron.bridge import AutoBridge

@@ -8,7 +8,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 
-from ..training_utils.parallel import ParallelState
+from ..training_utils.parallel import GroupInfo, ParallelState
 
 logger = logging.getLogger(__name__)
 
@@ -17,20 +17,28 @@ def create_megatron_parallel_state() -> ParallelState:
     vpp_size, microbatch_group_size_per_vp_stage = _compute_vpp_fields()
 
     return ParallelState(
-        intra_dp_rank=mpu.get_data_parallel_rank(with_context_parallel=False),
-        intra_dp_cp_src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
-        intra_dp_size=mpu.get_data_parallel_world_size(with_context_parallel=False),
-        cp_rank=mpu.get_context_parallel_rank(),
-        cp_size=mpu.get_context_parallel_world_size(),
-        intra_dp_cp_rank=mpu.get_data_parallel_rank(with_context_parallel=True),
-        intra_dp_cp_size=mpu.get_data_parallel_world_size(with_context_parallel=True),
-        intra_dp_group=mpu.get_data_parallel_group(with_context_parallel=False),
-        intra_dp_cp_group=mpu.get_data_parallel_group(with_context_parallel=True),
-        intra_dp_cp_group_gloo=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
-        cp_group=mpu.get_context_parallel_group(),
-        tp_size=mpu.get_tensor_model_parallel_world_size(),
-        tp_rank=mpu.get_tensor_model_parallel_rank(),
-        tp_group=mpu.get_tensor_model_parallel_group(),
+        intra_dp=GroupInfo(
+            rank=mpu.get_data_parallel_rank(with_context_parallel=False),
+            size=mpu.get_data_parallel_world_size(with_context_parallel=False),
+            group=mpu.get_data_parallel_group(with_context_parallel=False),
+        ),
+        intra_dp_cp=GroupInfo(
+            rank=mpu.get_data_parallel_rank(with_context_parallel=True),
+            size=mpu.get_data_parallel_world_size(with_context_parallel=True),
+            group=mpu.get_data_parallel_group(with_context_parallel=True),
+            gloo_group=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
+            src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
+        ),
+        cp=GroupInfo(
+            rank=mpu.get_context_parallel_rank(),
+            size=mpu.get_context_parallel_world_size(),
+            group=mpu.get_context_parallel_group(),
+        ),
+        tp=GroupInfo(
+            rank=mpu.get_tensor_model_parallel_rank(),
+            size=mpu.get_tensor_model_parallel_world_size(),
+            group=mpu.get_tensor_model_parallel_group(),
+        ),
         is_pp_last_stage=mpu.is_pipeline_last_stage(),
         vpp_size=vpp_size,
         microbatch_group_size_per_vp_stage=microbatch_group_size_per_vp_stage,
