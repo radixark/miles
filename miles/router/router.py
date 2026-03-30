@@ -4,6 +4,7 @@ import json
 import logging
 
 import httpx
+import setproctitle
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -18,6 +19,9 @@ def run_router(args):
     """
     Run the Miles router with the specified configuration.
     """
+    # Visible to `pkill -9 miles`; without this the daemon inherits "python".
+    setproctitle.setproctitle("miles-router")
+
     # Initialize the router with tokenizer and lazy worker initialization
     miles_router = MilesRouter(args, verbose=False)
 

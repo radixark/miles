@@ -10,6 +10,7 @@ import json
 import logging
 
 import httpx
+import setproctitle
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -81,6 +82,9 @@ class SessionServer:
 
 def run_session_server(args, backend_url: str):
     """Entry point to start the standalone session server as a subprocess."""
+    # Visible to `pkill -9 miles`; without this the daemon inherits "python".
+    setproctitle.setproctitle("miles-session-server")
+
     server = SessionServer(args, backend_url)
     logger.info(
         "[session-server] Starting on %s:%s, proxying to %s",
