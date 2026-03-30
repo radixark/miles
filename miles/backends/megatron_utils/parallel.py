@@ -18,11 +18,11 @@ def create_megatron_parallel_state() -> ParallelState:
 
     def _create_intra_dp(with_context_parallel: bool):
         return GroupInfo(
-            rank=mpu.get_data_parallel_rank(with_context_parallel=True),
-            size=mpu.get_data_parallel_world_size(with_context_parallel=True),
-            group=mpu.get_data_parallel_group(with_context_parallel=True),
-            gloo_group=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
-            src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
+            rank=mpu.get_data_parallel_rank(with_context_parallel=with_context_parallel),
+            size=mpu.get_data_parallel_world_size(with_context_parallel=with_context_parallel),
+            group=mpu.get_data_parallel_group(with_context_parallel=with_context_parallel),
+            gloo_group=mpu.get_data_parallel_group_gloo(with_context_parallel=with_context_parallel),
+            src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=with_context_parallel),
         )
 
     return ParallelState(
