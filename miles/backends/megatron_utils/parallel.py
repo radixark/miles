@@ -22,6 +22,7 @@ def create_megatron_parallel_state() -> ParallelState:
             size=mpu.get_data_parallel_world_size(with_context_parallel=with_context_parallel),
             group=mpu.get_data_parallel_group(with_context_parallel=with_context_parallel),
             gloo_group=mpu.get_data_parallel_group_gloo(with_context_parallel=with_context_parallel),
+            src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=with_context_parallel),
         )
 
     return ParallelState(
