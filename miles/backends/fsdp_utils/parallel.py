@@ -47,7 +47,6 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
             size=world_size,
             group=dist.group.WORLD,
             gloo_group=get_gloo_group(),
-            src_rank=dp_rank // world_size,
         ),
         cp=GroupInfo(
             rank=cp_rank,
