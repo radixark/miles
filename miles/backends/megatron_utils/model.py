@@ -738,9 +738,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
     """
-    should_log = (
-        get_parallel_state().intra_dp_cp_rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
-    )
+    should_log = get_parallel_state().intra_dp_cp_rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
 
     try:
         from megatron.bridge import AutoBridge

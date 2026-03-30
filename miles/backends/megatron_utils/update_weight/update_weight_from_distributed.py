@@ -8,11 +8,10 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from ray import ObjectRef
-
-from miles.backends.training_utils.parallel import get_parallel_state
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 from ..megatron_to_hf import convert_to_hf
@@ -62,9 +61,7 @@ class UpdateWeightFromDistributed:
         # For TP:
         #   1. AllGather parameters to rank 0
         #   2. Broadcast parameters from rank 0 to all sglang engines
-        self._is_pp_src_rank = (
-            get_parallel_state().intra_dp_cp_rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
-        )
+        self._is_pp_src_rank = get_parallel_state().intra_dp_cp_rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
         pp_rank = mpu.get_pipeline_model_parallel_rank()
         if self._is_pp_src_rank:
             self._group_name = f"miles-pp_{pp_rank}"
