@@ -178,6 +178,7 @@ def process_file(
     result_collector: ConversionResult,
     device: str,
     num_hidden_layers: int,
+    num_layers_at_start_in_bf16: int,
     num_layers_at_end_in_bf16: int,
     source_is_block_fp8_ue8m0: bool,
     extra_skip_weight_substrings: tuple[str, ...],
@@ -191,10 +192,13 @@ def process_file(
             weights[key] = f.get_tensor(key)
 
     modules_to_not_convert: list[str] = []
+    head_end_idx = max(0, num_layers_at_start_in_bf16)
     tail_start_idx = max(0, num_hidden_layers - num_layers_at_end_in_bf16)
-    dynamic_skip_layer_prefixes: set[str] = {f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)}
+    dynamic_skip_layer_prefixes: set[str] = {}
+    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(0, head_end_idx)})
+    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)})
 
-    if num_layers_at_end_in_bf16 > 0:
+    if num_layers_at_end_in_bf16 > 0 or num_layers_at_start_in_bf16 > 0:
         modules_to_not_convert.extend(sorted(dynamic_skip_layer_prefixes))
 
     dynamic_skip_substrings = (
@@ -278,6 +282,7 @@ def convert_mxfp8(
     model_dir: str,
     save_dir: str,
     device: str,
+    num_layers_at_start_in_bf16: int = 0,
     num_layers_at_end_in_bf16: int = 0,
     extra_skip_weight_substrings: tuple[str, ...] = (),
 ) -> None:
@@ -322,6 +327,7 @@ def convert_mxfp8(
             result_collector,
             device,
             num_hidden_layers,
+            num_layers_at_start_in_bf16,
             num_layers_at_end_in_bf16,
             source_is_block_fp8_ue8m0,
             extra_skip_weight_substrings,
@@ -375,6 +381,12 @@ def main() -> None:
         help="Torch device to run quantization on (default: cuda).",
     )
     parser.add_argument(
+        "--num-layers-at-start-in-bf16",
+        type=int,
+        default=0,
+        help="Keep first N decoder layers in BF16 and do not quantize them.",
+    )
+    parser.add_argument(
         "--num-layers-at-end-in-bf16",
         type=int,
         default=0,
@@ -414,6 +426,7 @@ def main() -> None:
         args.model_dir,
         args.save_dir,
         str(device),
+        num_layers_at_start_in_bf16=args.num_layers_at_start_in_bf16,
         num_layers_at_end_in_bf16=args.num_layers_at_end_in_bf16,
         extra_skip_weight_substrings=tuple(
             s.strip() for s in args.extra_skip_weight_substrings if isinstance(s, str) and s.strip()
