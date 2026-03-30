@@ -11,6 +11,8 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 
+from miles.backends.training_utils.parallel import get_parallel_state
+
 logger = logging.getLogger(__name__)
 
 LORA_ADAPTER_NAME = "miles_lora"
@@ -272,7 +274,7 @@ def save_lora_checkpoint(
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    is_dp_rank_0 = mpu.get_data_parallel_rank() == 0
+    is_dp_rank_0 = get_parallel_state().dp_rank == 0
     tp_rank = mpu.get_tensor_model_parallel_rank()
     pp_rank = mpu.get_pipeline_model_parallel_rank()
 

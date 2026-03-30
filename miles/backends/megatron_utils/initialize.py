@@ -8,7 +8,7 @@ from megatron.core.config import set_experimental_flag
 from megatron.core.num_microbatches_calculator import init_num_microbatches_calculator
 from megatron.training.global_vars import _build_tokenizer, set_args
 
-from miles.backends.training_utils.parallel import set_parallel_state
+from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 
 from .parallel import create_megatron_parallel_state
 
@@ -27,7 +27,7 @@ def _set_random_seed(
     seed = seed_ + (100 * mpu.get_pipeline_model_parallel_rank())
     # Ensure different data parallel ranks get different seeds
     if data_parallel_random_init:
-        seed = seed + (10 * mpu.get_data_parallel_rank(with_context_parallel=False))
+        seed = seed + (10 * get_parallel_state().dp_rank)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -113,7 +113,7 @@ def init(args):
 # TODO shall we use a simpler method to determine which rank to init wandb?
 def is_megatron_main_rank():
     return (
-        mpu.get_data_parallel_rank(with_context_parallel=True) == 0
+        get_parallel_state().dp_cp_rank == 0
         and mpu.get_tensor_model_parallel_rank() == 0
         and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
     )

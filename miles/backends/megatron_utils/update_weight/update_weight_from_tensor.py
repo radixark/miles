@@ -8,6 +8,8 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from ray import ObjectRef
+
+from miles.backends.training_utils.parallel import get_parallel_state
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, build_lora_sync_config, is_lora_weight_name
@@ -113,7 +115,7 @@ class UpdateWeightFromTensor:
             self.distributed_rollout_engines = rollout_engines[colocate_engine_nums:]
             distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
             self._is_distributed_src_rank = (
-                mpu.get_data_parallel_rank(with_context_parallel=True) == 0
+                get_parallel_state().dp_cp_rank == 0
                 and mpu.get_tensor_model_parallel_rank() == 0
                 and mpu.get_pipeline_model_parallel_rank() == 0
             )
