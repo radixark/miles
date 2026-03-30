@@ -9,6 +9,11 @@ except Exception:
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config["quant_method"] == "mxfp8"
 
+    if getattr(args, "extra_high_precision_layers", False):
+        for layer_name in getattr(args, "extra_high_precision_layers_megatron", ()):
+            if layer_name in megatron_name:
+                return converted_named_params
+
     decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
     match = re.search(decoder_layers_pattern, megatron_name)
 
@@ -81,12 +86,9 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
         "self_attention.linear_q_down_proj.weight",
         "self_attention.linear_q_up_proj.weight",
         "self_attention.linear_kv_down_proj.weight",
-        # "self_attention.linear_kv_up_proj.weight",
-        # skip kv_b_proj to support both non-absorbed and absorbed MLA paths with consistent accuracy.
-        # indexer
-        # "self_attention.wq_b.weight",
-        # "self_attention.wk.weight",
-        # skip indexer weights for now
+        "self_attention.linear_kv_up_proj.weight",
+        "self_attention.wq_b.weight",
+        "self_attention.wk.weight",
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
