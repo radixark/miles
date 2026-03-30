@@ -43,7 +43,7 @@ def gather_log_data(
         dist.gather_object(
             log_dict,
             gathered_log_dict,
-            dst=0,
+            dst=dist.get_global_rank(parallel_state.intra_dp_cp.gloo_group, 0),
             group=parallel_state.intra_dp_cp.gloo_group,
         )
 
@@ -62,7 +62,7 @@ def gather_log_data(
         dist.gather_object(
             log_dict,
             None,
-            dst=0,
+            dst=dist.get_global_rank(parallel_state.intra_dp_cp.gloo_group, 0),
             group=parallel_state.intra_dp_cp.gloo_group,
         )
         return None
