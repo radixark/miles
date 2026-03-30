@@ -35,16 +35,16 @@ def gather_log_data(
     batch sizes. Returns the reduced dict on the DP source rank; returns None on others.
     """
 
-    if parallel_state.intra_dp_cp.rank == 0:
-        dp_size = parallel_state.intra_dp_cp.size
+    if parallel_state.intra_dp_cp_rank == 0:
+        dp_size = parallel_state.intra_dp_cp_size
 
         gathered_log_dict = [None] * dp_size
         # Not sure if this will be a performance bottleneck.
         dist.gather_object(
             log_dict,
             gathered_log_dict,
-            dst=parallel_state.intra_dp_cp.src_rank,
-            group=parallel_state.intra_dp_cp.gloo_group,
+            dst=parallel_state.intra_dp_cp_src_rank,
+            group=parallel_state.intra_dp_cp_group_gloo,
         )
 
         reduced_log_dict = {
@@ -62,8 +62,8 @@ def gather_log_data(
         dist.gather_object(
             log_dict,
             None,
-            dst=parallel_state.intra_dp_cp.src_rank,
-            group=parallel_state.intra_dp_cp.gloo_group,
+            dst=parallel_state.intra_dp_cp_src_rank,
+            group=parallel_state.intra_dp_cp_group_gloo,
         )
         return None
 
@@ -110,8 +110,8 @@ def log_rollout_data(
     - Non-tensor lists are averaged elementwise.
     - Scalars are converted to Python numbers.
     """
-    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
-        cp_size = parallel_state.cp.size
+    if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
+        cp_size = parallel_state.cp_size
         log_dict = {}
         response_lengths = rollout_data["response_lengths"]
         loss_masks = rollout_data["loss_masks"]
@@ -198,8 +198,8 @@ def log_rollout_data(
         log_passrate(rollout_id, args, rollout_data)
 
     if args.log_correct_samples:
-        if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
-            cp_size = parallel_state.cp.size
+        if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
+            cp_size = parallel_state.cp_size
             log_dict = {}
             response_lengths = rollout_data["response_lengths"]
             loss_masks = rollout_data["loss_masks"]
@@ -265,7 +265,7 @@ def log_multi_turn_data(
     Operates only on PP last stage and TP rank 0. Uses GPU tensors when available
     to compute statistics without host transfers.
     """
-    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
+    if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
         log_dict = {}
         for key, val in rollout_data.items():
             if key == "loss_masks":
@@ -304,7 +304,7 @@ def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch, p
     `raw_reward` is reshaped to `[group_number, group_size]`, then pass@k is
     estimated per problem and averaged.
     """
-    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
+    if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
         log_dict = {}
         for key, val in rollout_data.items():
             if key != "raw_reward":
@@ -324,7 +324,7 @@ def log_perf_data(rollout_id: int, args: Namespace, parallel_state: ParallelStat
         rollout_id=rollout_id,
         args=args,
         is_primary_rank=(
-            parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage and parallel_state.intra_dp_cp.rank == 0
+            parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage and parallel_state.intra_dp_cp_rank == 0
         ),
         compute_total_fwd_flops=lambda seq_lens: calculate_fwd_flops(seqlens=seq_lens, args=args)
         / dist.get_world_size()
@@ -379,14 +379,14 @@ def aggregate_train_losses(
 
     assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
 
-    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp.group)
+    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp_group)
 
     loss_reduced = {}
     values = values.tolist()
     num_samples_or_tokens = values[0]
 
     for key, value in zip(keys, values[1:], strict=False):
-        loss_reduced[key] = value * parallel_state.cp.size / num_samples_or_tokens
+        loss_reduced[key] = value * parallel_state.cp_size / num_samples_or_tokens
 
     return loss_reduced
 

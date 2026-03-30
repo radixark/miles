@@ -27,7 +27,7 @@ def _set_random_seed(
     seed = seed_ + (100 * mpu.get_pipeline_model_parallel_rank())
     # Ensure different data parallel ranks get different seeds
     if data_parallel_random_init:
-        seed = seed + (10 * get_parallel_state().intra_dp.rank)
+        seed = seed + (10 * get_parallel_state().intra_dp_rank)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -113,7 +113,7 @@ def init(args):
 # TODO shall we use a simpler method to determine which rank to init wandb?
 def is_megatron_main_rank():
     return (
-        get_parallel_state().intra_dp_cp.rank == 0
+        get_parallel_state().intra_dp_cp_rank == 0
         and mpu.get_tensor_model_parallel_rank() == 0
         and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
     )

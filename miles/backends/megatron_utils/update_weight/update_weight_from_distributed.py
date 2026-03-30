@@ -61,7 +61,7 @@ class UpdateWeightFromDistributed:
         # For TP:
         #   1. AllGather parameters to rank 0
         #   2. Broadcast parameters from rank 0 to all sglang engines
-        self._is_pp_src_rank = get_parallel_state().intra_dp_cp.rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
+        self._is_pp_src_rank = get_parallel_state().intra_dp_cp_rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
         pp_rank = mpu.get_pipeline_model_parallel_rank()
         if self._is_pp_src_rank:
             self._group_name = f"miles-pp_{pp_rank}"

@@ -274,7 +274,7 @@ def save_lora_checkpoint(
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    is_dp_rank_0 = get_parallel_state().intra_dp.rank == 0
+    is_dp_rank_0 = get_parallel_state().intra_dp_rank == 0
     tp_rank = mpu.get_tensor_model_parallel_rank()
     pp_rank = mpu.get_pipeline_model_parallel_rank()
 
