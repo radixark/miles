@@ -1,8 +1,7 @@
 import torch
-from megatron.core.transformer.enums import AttnBackend
-
 from mbridge.core import register_model
 from mbridge.models import DeepseekV3Bridge
+from megatron.core.transformer.enums import AttnBackend
 
 
 @register_model("glm4_moe_lite")

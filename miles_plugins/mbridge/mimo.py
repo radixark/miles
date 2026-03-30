@@ -1,10 +1,9 @@
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 
 import torch
-from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
-
 from mbridge.core import register_model
 from mbridge.models import Qwen2Bridge
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
 
 
 @register_model("mimo")

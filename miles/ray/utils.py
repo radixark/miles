@@ -3,8 +3,8 @@ import os
 
 import ray
 import torch
-from miles.ray.ray_actor import RayActor
 
+from miles.ray.ray_actor import RayActor
 
 # Refer to
 # https://github.com/ray-project/ray/blob/161849364a784442cc659fb9780f1a6adee85fce/python/ray/_private/accelerators/nvidia_gpu.py#L95-L96

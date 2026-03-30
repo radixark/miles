@@ -1,7 +1,8 @@
 import os
+
+import torch
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-import torch
 
 # Get CUDA arch list
 arch_list = []
