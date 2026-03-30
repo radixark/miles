@@ -63,7 +63,7 @@ def compute_model_hashes_by_layer(model: Sequence[DDP]) -> dict[str, str]:
 def _hash_file_path(base_dir: str | Path, iteration: int) -> Path:
     tp_rank = mpu.get_tensor_model_parallel_rank()
     pp_rank = mpu.get_pipeline_model_parallel_rank()
-    dp_rank = get_parallel_state().intra_dp_cp_rank
+    dp_rank = get_parallel_state().intra_dp_cp.rank
     cp_rank = mpu.get_context_parallel_rank()
     base = Path(base_dir)
     iter_dir = base if base.name.startswith("iter_") else base / f"iter_{int(iteration):07d}"

@@ -74,7 +74,7 @@ def get_responses(
 
     logits = logits.div(args.rollout_temperature)
 
-    cp_size = parallel_state.cp_size
+    cp_size = parallel_state.cp.size
     end = 0
     seq_start = 0
     for i, (tokens, total_length, response_length) in enumerate(
@@ -95,7 +95,7 @@ def get_responses(
             # DSA: global concat then contiguous CP split. Each rank owns logits for
             # global positions [chunk_start, chunk_end).
             logits_local_len = logits.size(0)
-            cp_rank = parallel_state.cp_rank
+            cp_rank = parallel_state.cp.rank
             chunk_start = cp_rank * logits_local_len
             chunk_end = chunk_start + logits_local_len
 
@@ -189,7 +189,7 @@ def get_log_probs_and_entropy(
         log_prob, entropy = calculate_log_probs_and_entropy(
             logits_chunk,
             tokens_chunk,
-            parallel_state.tp_group,
+            parallel_state.tp.group,
             with_entropy=with_entropy,
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
@@ -339,7 +339,7 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
         old_rewards = rewards
         rewards = []
         kl_coef = -args.kl_coef
-        cp_rank = parallel_state.cp_rank
+        cp_rank = parallel_state.cp.rank
         for reward, k in zip(old_rewards, kl, strict=False):
             k *= kl_coef
             if cp_rank == 0:
@@ -395,7 +395,7 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
     # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.
     if args.normalize_advantages:
         all_advs = torch.cat(advantages)
-        cp_size = parallel_state.cp_size
+        cp_size = parallel_state.cp.size
         if cp_size == 1:
             all_masks = torch.cat(loss_masks)
         else:
@@ -437,7 +437,7 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
             assert (
                 all_advs.size() == all_masks.size()
             ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-            dp_group = parallel_state.intra_dp_group
+            dp_group = parallel_state.intra_dp.group
 
             whitened_advs_flat = distributed_masked_whiten(
                 all_advs,
@@ -909,19 +909,19 @@ def loss_function(
     # the CP gather's backward (reduce-scatter) is not called, deadlocking other CP
     # ranks that call it. Adding this zero loss forces autograd to traverse the full
     # graph on every rank without changing gradient values.
-    if parallel_state.cp_size > 1 and args.allgather_cp:
+    if parallel_state.cp.size > 1 and args.allgather_cp:
         loss = loss + 0 * logits.sum()
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
-            loss = loss * num_microbatches / global_batch_size * parallel_state.intra_dp_cp_size
+            loss = loss * num_microbatches / global_batch_size * parallel_state.intra_dp_cp.size
         else:
-            loss = loss / global_batch_size * parallel_state.intra_dp_size
+            loss = loss / global_batch_size * parallel_state.intra_dp.size
     else:
         if apply_megatron_loss_scaling:
-            loss = loss * parallel_state.cp_size
+            loss = loss * parallel_state.cp.size
 
     return (
         loss,

@@ -114,7 +114,7 @@ class UpdateWeightFromTensor:
             self.distributed_rollout_engines = rollout_engines[colocate_engine_nums:]
             distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
             self._is_distributed_src_rank = (
-                get_parallel_state().intra_dp_cp_rank == 0
+                get_parallel_state().intra_dp_cp.rank == 0
                 and mpu.get_tensor_model_parallel_rank() == 0
                 and mpu.get_pipeline_model_parallel_rank() == 0
             )

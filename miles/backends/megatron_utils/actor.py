@@ -82,7 +82,7 @@ class MegatronTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         self.train_parallel_config = {
-            "dp_size": get_parallel_state().intra_dp_size,
+            "dp_size": get_parallel_state().intra_dp.size,
         }
         dist.barrier(group=get_gloo_group())
 
@@ -227,8 +227,8 @@ class MegatronTrainRayActor(TrainRayActor):
         for iterator in data_iterator:
             iterator.reset()
 
-        tp_rank = self.parallel_state.tp_rank
-        tp_size = self.parallel_state.tp_size
+        tp_rank = self.parallel_state.tp.rank
+        tp_size = self.parallel_state.tp.size
         qkv_format = self.args.qkv_format
 
         def pad_func(data, pad):
@@ -265,7 +265,7 @@ class MegatronTrainRayActor(TrainRayActor):
             else:
                 replay_data = [slice_with_cp(r, pad_func, self.parallel_state, qkv_format) for r in replay_data]
                 replay_data = torch.cat(replay_data, dim=0)
-                pad_size = self.parallel_state.tp_size * self.args.data_pad_size_multiplier
+                pad_size = self.parallel_state.tp.size * self.args.data_pad_size_multiplier
                 pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
                 if pad != 0:
                     replay_data = pad_func(replay_data, pad)
