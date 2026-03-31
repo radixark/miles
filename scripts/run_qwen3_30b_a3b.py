@@ -13,6 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
+    colocate: bool = True
     hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
@@ -178,7 +179,7 @@ def execute(args: ScriptArgs):
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--colocate "
+        f"{'--colocate ' if args.colocate else ''} "
         "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
