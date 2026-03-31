@@ -155,7 +155,7 @@ def execute_train(
                         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                     }
                 ),
-                "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
