@@ -68,6 +68,7 @@ def prepare(args: ScriptArgs):
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"--num-layers-at-start-in-bf16 {args.num_layers_at_start_in_bf16} "
             f"--num-layers-at-end-in-bf16 {args.num_layers_at_end_in_bf16} "
+            f"{args.extra_args} "
         )
 
     if args.rollout_int4:

@@ -397,7 +397,7 @@ def main() -> None:
         default=(),
         help="Extra substrings for weight names to skip quantization (e.g. .shared_experts.).",
     )
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available, cannot run MXFP8 quantization.")
