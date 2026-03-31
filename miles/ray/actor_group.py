@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import ray
@@ -104,41 +105,48 @@ class RayTrainGroup:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
             self._actor_handles.append(actor)
 
-    def async_init(self, args, role, with_ref=False):
+    async def init(self, args, role, with_ref=False):
         """
         Allocate GPU resourced and initialize model, optimzier, local ckpt, etc.
         """
         self.args = args
-        return [actor.init.remote(args, role, with_ref=with_ref) for actor in self._actor_handles]
+        refs = [actor.init.remote(args, role, with_ref=with_ref) for actor in self._actor_handles]
+        return await asyncio.gather(*refs)
 
-    def async_train(self, rollout_id, rollout_data_ref):
+    async def train(self, rollout_id, rollout_data_ref):
         """Do one rollout training"""
-        return [actor.train.remote(rollout_id, rollout_data_ref) for actor in self._actor_handles]
+        refs = [actor.train.remote(rollout_id, rollout_data_ref) for actor in self._actor_handles]
+        await asyncio.gather(*refs)
 
-    def save_model(self, rollout_id, force_sync=False):
+    async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
-        return ray.get([actor.save_model.remote(rollout_id, force_sync=force_sync) for actor in self._actor_handles])
+        refs = [actor.save_model.remote(rollout_id, force_sync=force_sync) for actor in self._actor_handles]
+        return await asyncio.gather(*refs)
 
-    def update_weights(self):
+    async def update_weights(self):
         """Broadcast weights from rank 0 to all other ranks."""
-        return ray.get([actor.update_weights.remote() for actor in self._actor_handles])
+        refs = [actor.update_weights.remote() for actor in self._actor_handles]
+        return await asyncio.gather(*refs)
 
-    def onload(self):
-        return ray.get([actor.wake_up.remote() for actor in self._actor_handles])
+    async def onload(self):
+        refs = [actor.wake_up.remote() for actor in self._actor_handles]
+        return await asyncio.gather(*refs)
 
-    def offload(self):
-        return ray.get([actor.sleep.remote() for actor in self._actor_handles])
+    async def offload(self):
+        refs = [actor.sleep.remote() for actor in self._actor_handles]
+        return await asyncio.gather(*refs)
 
-    def clear_memory(self):
-        return ray.get([actor.clear_memory.remote() for actor in self._actor_handles])
+    async def clear_memory(self):
+        refs = [actor.clear_memory.remote() for actor in self._actor_handles]
+        return await asyncio.gather(*refs)
 
-    def connect(self, critic_group):
-        return ray.get(
-            [
-                actor.connect_actor_critic.remote(critic)
-                for actor, critic in zip(self._actor_handles, critic_group._actor_handles, strict=False)
-            ]
-        )
+    async def connect(self, critic_group):
+        refs = [
+            actor.connect_actor_critic.remote(critic)
+            for actor, critic in zip(self._actor_handles, critic_group._actor_handles, strict=False)
+        ]
+        return await asyncio.gather(*refs)
 
-    def set_rollout_manager(self, rollout_manager):
-        return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handles])
+    async def set_rollout_manager(self, rollout_manager):
+        refs = [actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handles]
+        return await asyncio.gather(*refs)
