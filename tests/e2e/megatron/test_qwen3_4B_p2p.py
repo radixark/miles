@@ -30,7 +30,7 @@ def execute():
         "--global-batch-size 32 "
         "--balance-data "
     )
-    # Training parallellism settings
+
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
@@ -68,6 +68,8 @@ def execute():
         "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     )
 
+    ci_args = "--ci-test "
+
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
@@ -75,7 +77,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node 4 "
+        "--actor-num-gpus-per-node 4 "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
         "--check-weight-update-equal "
         "--update-weight-transfer-mode p2p "
@@ -89,6 +91,7 @@ def execute():
         f"{U.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{sglang_args} "
+        f"{ci_args} "
         f"{misc_args} "
     )
 
