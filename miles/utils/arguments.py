@@ -1889,7 +1889,7 @@ def miles_validate_args(args):
     )
 
     # always true on offload for colocate at the moment.
-    if getattr(args, "update_weight_transfer_mode", "broadcast") == "p2p":
+    if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
             "P2P weight transfer mode is not compatible with --colocate. "
             "Please use broadcast mode or disable colocate."
