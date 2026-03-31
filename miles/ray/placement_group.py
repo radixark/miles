@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import socket
 
@@ -130,7 +131,7 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
     )
 
 
-def create_training_models(args, pgs, rollout_manager):
+async def create_training_models(args, pgs, rollout_manager):
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
@@ -144,25 +145,23 @@ def create_training_models(args, pgs, rollout_manager):
             num_gpus_per_node=args.critic_num_gpus_per_node,
             pg=pgs["critic"],
         )
-        critic_init_handle = critic_model.async_init(args, role="critic", with_ref=False)
+        critic_init_task = asyncio.create_task(critic_model.init(args, role="critic", with_ref=False))
     else:
         critic_model = None
 
-    start_rollout_ids = ray.get(
-        actor_model.async_init(args, role="actor", with_ref=args.kl_coef != 0 or args.use_kl_loss)
-    )
+    start_rollout_ids = list(await actor_model.init(args, role="actor", with_ref=args.kl_coef != 0 or args.use_kl_loss))
 
     assert len(set(start_rollout_ids)) == 1
     if args.start_rollout_id is None:
         args.start_rollout_id = start_rollout_ids[0]
 
     if args.use_critic:
-        ray.get(critic_init_handle)
-        actor_model.connect(critic_model)
+        await critic_init_task
+        await actor_model.connect(critic_model)
 
-    actor_model.set_rollout_manager(rollout_manager)
+    await actor_model.set_rollout_manager(rollout_manager)
     if args.rollout_global_dataset:
-        ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
+        await rollout_manager.load.remote(args.start_rollout_id - 1)
 
     return actor_model, critic_model
 
