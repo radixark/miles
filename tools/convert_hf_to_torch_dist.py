@@ -21,23 +21,6 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import print_memory
 
 
-def _get_hf_weight_names(checkpoint_path: str) -> set[str]:
-    index_path = os.path.join(checkpoint_path, "model.safetensors.index.json")
-    if os.path.exists(index_path):
-        with open(index_path) as f:
-            index = json.load(f)
-        return set(index.get("weight_map", {}).keys())
-
-    single_file = os.path.join(checkpoint_path, "model.safetensors")
-    if os.path.exists(single_file):
-        from safetensors import safe_open
-
-        with safe_open(single_file, framework="pt") as f:
-            return set(f.keys())
-
-    return set()
-
-
 def _load_hf_config_with_fallback(checkpoint_path: str):
     """Load HF config with fallback for model types unknown to transformers."""
     try:
@@ -63,29 +46,6 @@ def _load_hf_config_with_fallback(checkpoint_path: str):
             fix_dtype(config_dict["text_config"])
             ns.text_config = type("TextConfig", (), config_dict["text_config"])()
         return ns
-
-
-def _patch_bridge_for_tied_lm_head(bridge, hf_model_path: str):
-    """If lm_head is absent in HF weights, fallback output_layer to embeddings."""
-    direct_mapping = getattr(bridge, "_DIRECT_MAPPING", None)
-    if not isinstance(direct_mapping, dict):
-        return
-
-    output_key = "output_layer.weight"
-    if direct_mapping.get(output_key) != "lm_head.weight":
-        return
-
-    hf_weight_names = _get_hf_weight_names(hf_model_path)
-    if "lm_head.weight" in hf_weight_names:
-        return
-
-    embedding_key = direct_mapping.get("embedding.word_embeddings.weight")
-    if embedding_key and embedding_key in hf_weight_names:
-        direct_mapping[output_key] = embedding_key
-        print(
-            f"[Patch] lm_head.weight not found in {hf_model_path}; "
-            f"fallback map output_layer.weight -> {embedding_key}"
-        )
 
 
 def patch_weight_to_mcore_format_preserve_fp32():
@@ -203,7 +163,6 @@ def main():
     except (ValueError, KeyError):
         # Fallback for configs with model_type unknown to installed transformers.
         bridge = AutoBridge.from_config(_load_hf_config_with_fallback(hf_model_path))
-    _patch_bridge_for_tied_lm_head(bridge, hf_model_path)
 
     # Patch to preserve FP32 precision for _keep_fp32 params
     patch_weight_to_mcore_format_preserve_fp32()
