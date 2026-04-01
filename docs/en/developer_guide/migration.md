@@ -2,65 +2,51 @@
 
 ## Async Train Loop (since feat/refactor_dp/7)
 
-`RayTrainGroup` methods and the train loop are now fully async. If you have custom train loops based on `train.py` or `train_async.py`, apply the following changes.
+`RayTrainGroup` and the train loops are now async. Two mechanical changes:
 
-### Entry Point
+### 1. Make the train function async
 
 ```python
-# Before
-def train(args):
-    ...
+# Before                          # After
+def train(args):                  async def train(args):
+    ...                               ...
 
-if __name__ == "__main__":
-    train(parse_args())
-
-# After
-async def train(args):
-    ...
-
-if __name__ == "__main__":
-    asyncio.run(train(parse_args()))
+if __name__ == "__main__":        if __name__ == "__main__":
+    train(parse_args())               asyncio.run(train(parse_args()))
 ```
 
-### RayTrainGroup API
+### 2. Apply two rules to every call
 
-| Before (sync) | After (async) |
-|---|---|
-| `refs = group.async_init(args, role, ...)` | `results = await group.init(args, role, ...)` |
-| `ray.get(refs)` | *(already awaited inside `init`)* |
-| `refs = group.async_train(rollout_id, data)` | `await group.train(rollout_id, data)` |
-| `ray.get(refs)` | *(already awaited inside `train`)* |
-| `group.save_model(rollout_id)` | `await group.save_model(rollout_id)` |
-| `group.update_weights()` | `await group.update_weights()` |
-| `group.onload()` | `await group.onload()` |
-| `group.offload()` | `await group.offload()` |
-| `group.connect(critic)` | `await group.connect(critic)` |
-| `group.set_rollout_manager(mgr)` | `await group.set_rollout_manager(mgr)` |
-
-### Ray ObjectRef
-
-`ray.get(ref)` becomes `await ref` (Ray ObjectRef is natively awaitable):
+**Rule A — Group methods:** drop the `async_` prefix, add `await`.
 
 ```python
-# Before
-rollout_data = ray.get(rollout_manager.generate.remote(rollout_id))
-
-# After
-rollout_data = await rollout_manager.generate.remote(rollout_id)
+ray.get(group.async_init(...))  →  await group.init(...)
+ray.get(group.async_train(...)) →  await group.train(...)
+group.save_model(...)           →  await group.save_model(...)
+group.update_weights()          →  await group.update_weights()
+# Same for offload, onload, clear_memory, connect, set_rollout_manager
 ```
 
-### Actor/Critic Parallel Training
+**Rule B — Ray ObjectRef:** replace `ray.get(ref)` with `await ref`.
+
+```python
+ray.get(rollout_manager.generate.remote(id))  →  await rollout_manager.generate.remote(id)
+```
+
+### Actor/critic parallelism
+
+The old pattern dispatched Ray RPCs eagerly via `async_train` (sync function returning ObjectRefs). The new equivalent uses `asyncio.create_task` to run the critic coroutine concurrently:
 
 ```python
 # Before
-critic_handle = critic_model.async_train(rollout_id, data)
-ray.get(actor_model.async_train(rollout_id, data))
-ray.get(critic_handle)
+handle = critic.async_train(...)        # .remote() calls dispatched immediately
+ray.get(actor.async_train(...))
+ray.get(handle)
 
 # After
-critic_task = asyncio.create_task(critic_model.train(rollout_id, data))
-await actor_model.train(rollout_id, data)
-await critic_task
+task = asyncio.create_task(critic.train(...))  # coroutine scheduled, runs on next yield
+await actor.train(...)                          # actor runs, critic starts at first await
+await task
 ```
 
 ### Setup
@@ -68,9 +54,5 @@ await critic_task
 `create_training_models` is now async:
 
 ```python
-# Before
-actor_model, critic_model = create_training_models(args, pgs, rollout_manager)
-
-# After
-actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
+actor, critic = await create_training_models(args, pgs, rollout_manager)
 ```
