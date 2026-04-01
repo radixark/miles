@@ -19,5 +19,13 @@ def configure_logger(prefix: str = ""):
         force=True,
     )
 
-    # Crash immediately on unawaited coroutines instead of silently dropping them
+    configure_raise_unawaited_coroutine()
+
+
+def configure_raise_unawaited_coroutine() -> None:
+    """Turn 'coroutine was never awaited' warnings into errors.
+
+    Python emits RuntimeWarning when a coroutine is called but never awaited.
+    By default this is easy to miss. This makes it crash immediately.
+    """
     warnings.filterwarnings("error", category=RuntimeWarning, message="coroutine .* was never awaited")
