@@ -10,7 +10,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
 class RayTrainGroup:
     """
-    A group of ray actors with async methods.
+    A group of ray actors
 
     Args:
         args (Namespace): Arguments for the actor group.
@@ -105,7 +105,9 @@ class RayTrainGroup:
             self._actor_handles.append(actor)
 
     async def init(self, args, role, with_ref=False):
-        """Allocate GPU resources and initialize model, optimizer, local ckpt, etc."""
+        """
+        Allocate GPU resourced and initialize model, optimzier, local ckpt, etc.
+        """
         self.args = args
         return await self._broadcast("init", args, role, with_ref=with_ref)
 
