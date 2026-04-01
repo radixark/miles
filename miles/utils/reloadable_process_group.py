@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
-from miles.utils.memory_utils import print_memory
+from miles.utils.memory_utils import available_memory, clear_memory, print_memory
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +275,9 @@ def reload_process_groups():
 @contextmanager
 def _wrap_low_level_call():
     try:
+        mem_info = available_memory()
+        if mem_info["free_GB"] < 3:
+            clear_memory()
         yield
     except Exception as e:
         mem_info = print_memory("after torch distributed error")
