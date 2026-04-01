@@ -75,7 +75,6 @@ def execute(args: ScriptArgs):
         "--rollout-shuffle "
         "--num-rollout 3000 "
         "--rollout-batch-size 8 "
-        "--over-sampling-batch-size 2 "
         "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         "--rollout-max-response-len 8192 "
