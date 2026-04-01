@@ -10,8 +10,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
 class RayTrainGroup:
     """
-    A group of ray actors
-    Functions start with 'async' should return list of object refs
+    A group of ray actors with async methods.
 
     Args:
         args (Namespace): Arguments for the actor group.
