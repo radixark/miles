@@ -43,7 +43,6 @@ ray.get(actor.async_train(...))
 ray.get(handle)
 
 # After
-from miles.utils.async_utils import eager_create_task
 task = await eager_create_task(critic.train(...))
 await actor.train(...)
 await task
