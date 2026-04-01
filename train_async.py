@@ -1,7 +1,7 @@
 import asyncio
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
-from miles.utils.async_utils import dispatch_async_task
+from miles.utils.async_utils import eager_create_task
 from miles.utils.arguments import parse_args
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
@@ -41,7 +41,7 @@ async def train(args):
             rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
 
         if args.use_critic:
-            critic_task = await dispatch_async_task(critic_model.train(rollout_id, rollout_data_curr_ref))
+            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
             if rollout_id >= args.num_critic_only_steps:
                 await actor_model.train(rollout_id, rollout_data_curr_ref)
             await critic_task

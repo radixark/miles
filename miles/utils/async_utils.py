@@ -3,7 +3,7 @@ import threading
 from collections.abc import Coroutine
 from typing import TypeVar
 
-__all__ = ["get_async_loop", "run", "dispatch_async_task"]
+__all__ = ["get_async_loop", "run", "eager_create_task"]
 
 _T = TypeVar("_T")
 
@@ -40,7 +40,7 @@ def run(coro):
     return get_async_loop().run(coro)
 
 
-async def dispatch_async_task(coro: Coroutine[object, object, _T]) -> asyncio.Task[_T]:
+async def eager_create_task(coro: Coroutine[object, object, _T]) -> asyncio.Task[_T]:
     """Create a task and yield so it starts executing immediately.
 
     Unlike bare ``asyncio.create_task``, this ensures the task's first code

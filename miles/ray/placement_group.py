@@ -7,7 +7,7 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy, PlacementGroupSchedulingStrategy
 from ray.util.state import list_nodes
 
-from miles.utils.async_utils import dispatch_async_task
+from miles.utils.async_utils import eager_create_task
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
@@ -147,7 +147,7 @@ async def create_training_models(args, pgs, rollout_manager):
             num_gpus_per_node=args.critic_num_gpus_per_node,
             pg=pgs["critic"],
         )
-        critic_init_task = await dispatch_async_task(critic_model.init(args, role="critic", with_ref=False))
+        critic_init_task = await eager_create_task(critic_model.init(args, role="critic", with_ref=False))
     else:
         critic_model = None
 
