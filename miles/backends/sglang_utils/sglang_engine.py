@@ -328,6 +328,15 @@ class SGLangEngine(RayActor):
             payload,
         )
 
+    def abort_all(self):
+        """Abort all pending requests on the server."""
+        if self.node_rank != 0:
+            return
+        try:
+            requests.post(f"http://{self.server_host}:{self.server_port}/abort_request", json={"abort_all": True})
+        except Exception as e:
+            logger.warning(f"Error aborting requests: {e}")
+
     def flush_cache(self):
         """Flush the cache of the server."""
         if self.node_rank != 0:
