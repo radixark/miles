@@ -1,7 +1,5 @@
 import asyncio
 
-import ray
-
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.arguments import parse_args
 from miles.utils.logging_utils import configure_logger
