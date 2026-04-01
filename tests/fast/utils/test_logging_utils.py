@@ -40,6 +40,7 @@ class TestDestroyedPendingTaskRaises:
     @pytest.mark.asyncio
     async def test_task_lost_reference_raises(self):
         """A task whose reference is lost while still pending should raise."""
+
         async def slow():
             await asyncio.sleep(100)
 
@@ -59,6 +60,7 @@ class TestDestroyedPendingTaskRaises:
     @pytest.mark.asyncio
     async def test_task_cancelled_before_gc_no_error(self):
         """A task that is cancelled before losing reference should NOT raise."""
+
         async def slow():
             await asyncio.sleep(100)
 
