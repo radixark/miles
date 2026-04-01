@@ -1,6 +1,6 @@
 # Migration Guide
 
-## Async Train Loop (since feat/refactor_dp/7)
+## Train Loop: from Sync to Async
 
 `RayTrainGroup` and the train loops are now async. Two mechanical changes:
 
