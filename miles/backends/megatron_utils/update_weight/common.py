@@ -35,10 +35,7 @@ def dispatch_weight_check(
     if use_checksum:
         assert checksums, "Checksum checker is enabled but no checksums were produced."
         ray.get(
-            [
-                engine.check_weights.remote(action="compare_checksum", payload={"checksums": checksums})
-                for engine in rollout_engines
-            ]
+            [engine.check_weights.remote(action="compare_checksum", checksums=checksums) for engine in rollout_engines]
         )
         return
     ray.get([engine.check_weights.remote(action=action) for engine in rollout_engines])

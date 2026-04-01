@@ -416,10 +416,10 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str, payload: dict | None = None):
+    def check_weights(self, action: str, checksums: dict[str, str] | None = None):
         data = {"action": action}
-        if payload is not None:
-            data.update(payload)
+        if checksums is not None:
+            data["checksums"] = checksums
         return self._make_request("weights_checker", data)
 
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
