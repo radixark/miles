@@ -2,9 +2,17 @@
 
 ## Train Loop: from Sync to Async
 
-`RayTrainGroup` and the train loops are now async. Two mechanical changes:
+### Why
 
-### 1. Make the train function async
+The train loop (`train.py`, `train_async.py`) and `RayTrainGroup` now use Python async/await instead of sync `ray.get()`.
+
+The sync `ray.get(list_of_refs)` pattern is all-or-nothing: if any ref fails, the entire call throws with no way to know which actor failed. This blocks fault tolerance features like per-cell error handling, retry, and graceful degradation. Python async is fundamentally more expressive — `asyncio.gather` with per-cell error handling, `create_task` for concurrent dispatch, and structured control flow for recovery logic all become natural.
+
+This is a breaking change for users with custom `train.py` / `train_async.py` scripts. The migration is mechanical — see below.
+
+### How to migrate
+
+**1. Make the train function async:**
 
 ```python
 # Before                          # After
@@ -15,10 +23,9 @@ if __name__ == "__main__":        if __name__ == "__main__":
     train(parse_args())               asyncio.run(train(parse_args()))
 ```
 
-### 2. Apply two rules to every call
+**2. Apply two mechanical rules to every call:**
 
-**Rule A — Group methods:** drop the `async_` prefix, add `await`.
-
+Rule A — `RayTrainGroup` methods: drop the `async_` prefix, add `await`.
 ```python
 ray.get(group.async_init(...))  →  await group.init(...)
 ray.get(group.async_train(...)) →  await group.train(...)
@@ -27,31 +34,29 @@ group.update_weights()          →  await group.update_weights()
 # Same for offload, onload, clear_memory, connect, set_rollout_manager
 ```
 
-**Rule B — Ray ObjectRef:** replace `ray.get(ref)` with `await ref`.
-
+Rule B — `ray.get(ref)` on Ray ObjectRef: replace with `await ref`.
 ```python
 ray.get(rollout_manager.generate.remote(id))  →  await rollout_manager.generate.remote(id)
 ```
 
-### Actor/critic parallelism
-
-The old pattern dispatched Ray RPCs eagerly via `async_train` (sync function returning ObjectRefs). The new equivalent uses `asyncio.create_task` to run the critic coroutine concurrently:
+**3. Actor/critic parallelism:** replace the dispatch-handle pattern with `eager_create_task` + `await`.
 
 ```python
 # Before
-handle = critic.async_train(...)        # .remote() calls dispatched immediately
-ray.get(actor.async_train(...))
-ray.get(handle)
+handle = critic.async_train(...)        # dispatches .remote() immediately
+ray.get(actor.async_train(...))         # dispatches + waits
+ray.get(handle)                         # waits for critic
 
 # After
-task = asyncio.create_task(critic.train(...))  # coroutine scheduled, runs on next yield
-await actor.train(...)                          # actor runs, critic starts at first await
+from miles.utils.async_utils import eager_create_task
+task = await eager_create_task(critic.train(...))  # dispatches .remote() eagerly
+await actor.train(...)
 await task
 ```
 
-### Setup
+`eager_create_task` is used instead of bare `asyncio.create_task` to ensure the critic's Ray RPCs are dispatched before the actor starts — needed because actor and critic participate in the same distributed collective (`sync_actor_critic_data`).
 
-`create_training_models` is now async:
+**4. `create_training_models` is now async:**
 
 ```python
 actor, critic = await create_training_models(args, pgs, rollout_manager)
