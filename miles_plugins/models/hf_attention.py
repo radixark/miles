@@ -10,6 +10,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.module import MegatronModule
 
 
+# Common fallback path for HF config loading; may be migrated elsewhere later.
 def _load_hf_config(checkpoint_path):
     """Load HF config with fallback for unsupported model types."""
     try:
