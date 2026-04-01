@@ -18,9 +18,11 @@ async def _dummy_coroutine():
 @pytest.fixture(autouse=True)
 def _setup_warning_filter():
     """Activate the filter before each test, restore original filters after."""
+    original_hook = sys.unraisablehook
     with warnings.catch_warnings():
         configure_strict_async_warnings()
         yield
+    sys.unraisablehook = original_hook
 
 
 def _run_snippet(code: str) -> subprocess.CompletedProcess:
@@ -85,7 +87,7 @@ class TestUnawaitedCoroutineCrashesProcess:
 
 class TestCorrectUsageNoError:
     def test_properly_awaited_coroutine(self):
-        result = asyncio.get_event_loop().run_until_complete(_dummy_coroutine())
+        result = asyncio.run(_dummy_coroutine())
         assert result == 42
 
     @pytest.mark.asyncio
