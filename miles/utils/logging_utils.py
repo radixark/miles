@@ -19,13 +19,15 @@ def configure_logger(prefix: str = ""):
         force=True,
     )
 
-    configure_raise_unawaited_coroutine()
+    configure_strict_async_warnings()
 
 
-def configure_raise_unawaited_coroutine() -> None:
-    """Turn 'coroutine was never awaited' warnings into errors.
+def configure_strict_async_warnings() -> None:
+    """Turn common async misuse warnings into errors.
 
-    Python emits RuntimeWarning when a coroutine is called but never awaited.
-    By default this is easy to miss. This makes it crash immediately.
+    Catches two silent-failure patterns:
+    - Coroutine called but never awaited (silently dropped)
+    - asyncio.Task created but reference lost (silently GC'd and cancelled)
     """
     warnings.filterwarnings("error", category=RuntimeWarning, message="coroutine .* was never awaited")
+    warnings.filterwarnings("error", category=RuntimeWarning, message=".*Task.*was destroyed but it is pending")
