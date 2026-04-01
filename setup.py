@@ -39,10 +39,7 @@ setup(
     extras_require={
         "fsdp": [
             "torch>=2.0",
-        ],
-        "test": [
-            "pytest-asyncio",
-        ],
+        ]
     },
     python_requires=">=3.10",
     classifiers=[
