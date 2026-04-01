@@ -39,22 +39,20 @@ Rule B — `ray.get(ref)` on Ray ObjectRef: replace with `await ref`.
 ray.get(rollout_manager.generate.remote(id))  →  await rollout_manager.generate.remote(id)
 ```
 
-**3. Actor/critic parallelism:** replace the dispatch-handle pattern with `eager_create_task` + `await`.
+**3. Dispatch handles:** replace `handle = group.async_fn(...)` with `task = await eager_create_task(group.fn(...))`.
 
 ```python
 # Before
-handle = critic.async_train(...)        # dispatches .remote() immediately
-ray.get(actor.async_train(...))         # dispatches + waits
-ray.get(handle)                         # waits for critic
+handle = critic.async_train(...)
+ray.get(actor.async_train(...))
+ray.get(handle)
 
 # After
 from miles.utils.async_utils import eager_create_task
-task = await eager_create_task(critic.train(...))  # dispatches .remote() eagerly
+task = await eager_create_task(critic.train(...))
 await actor.train(...)
 await task
 ```
-
-`eager_create_task` is used instead of bare `asyncio.create_task` to ensure the critic's Ray RPCs are dispatched before the actor starts — needed because actor and critic participate in the same distributed collective (`sync_actor_critic_data`).
 
 **4. `create_training_models` is now async:**
 
