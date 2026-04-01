@@ -45,8 +45,6 @@ async def eager_create_task(coro: Coroutine[object, object, _T]) -> asyncio.Task
 
     Unlike bare ``asyncio.create_task``, this ensures the task's first code
     (including any ``.remote()`` calls) runs before the caller continues.
-    Needed when the dispatched task and the caller participate in the same
-    distributed collective (e.g. ``sync_actor_critic_data``).
     """
     task = asyncio.create_task(coro)
     await asyncio.sleep(0)
