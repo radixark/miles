@@ -1,5 +1,4 @@
 import gc
-import json
 import os
 import shutil
 from functools import wraps
@@ -19,33 +18,7 @@ from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import print_memory
-
-
-def _load_hf_config_with_fallback(checkpoint_path: str):
-    """Load HF config with fallback for model types unknown to transformers."""
-    try:
-        from transformers import AutoConfig
-
-        return AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=True)
-    except (ValueError, KeyError):
-        config_path = os.path.join(checkpoint_path, "config.json")
-        with open(config_path) as f:
-            config_dict = json.load(f)
-
-        dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
-
-        def fix_dtype(d):
-            if "torch_dtype" in d:
-                d["torch_dtype"] = dtype_map.get(d["torch_dtype"], d["torch_dtype"])
-            if "dtype" in d:
-                d["dtype"] = dtype_map.get(d["dtype"], d["dtype"])
-
-        fix_dtype(config_dict)
-        ns = type("HFConfig", (), config_dict)()
-        if "text_config" in config_dict:
-            fix_dtype(config_dict["text_config"])
-            ns.text_config = type("TextConfig", (), config_dict["text_config"])()
-        return ns
+from miles_plugins.models.hf_attention import _load_hf_config
 
 
 def patch_weight_to_mcore_format_preserve_fp32():
@@ -128,6 +101,7 @@ def get_args():
 def main():
     if torch.version.hip:
         import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
+
         from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
 
         filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
@@ -162,7 +136,7 @@ def main():
         bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
     except (ValueError, KeyError):
         # Fallback for configs with model_type unknown to installed transformers.
-        bridge = AutoBridge.from_config(_load_hf_config_with_fallback(hf_model_path))
+        bridge = AutoBridge.from_config(_load_hf_config(hf_model_path))
 
     # Patch to preserve FP32 precision for _keep_fp32 params
     patch_weight_to_mcore_format_preserve_fp32()
