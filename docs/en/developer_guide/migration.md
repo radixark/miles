@@ -23,20 +23,15 @@ if __name__ == "__main__":        if __name__ == "__main__":
     train(parse_args())               asyncio.run(train(parse_args()))
 ```
 
-**2. Apply two mechanical rules to every call:**
+**2. `ray.get(x)` → `await x`, and drop the `async_` prefix on group methods:**
 
-Rule A — `RayTrainGroup` methods: drop the `async_` prefix, add `await`.
 ```python
-ray.get(group.async_init(...))  →  await group.init(...)
-ray.get(group.async_train(...)) →  await group.train(...)
-group.save_model(...)           →  await group.save_model(...)
-group.update_weights()          →  await group.update_weights()
-# Same for offload, onload, clear_memory, connect, set_rollout_manager
-```
-
-Rule B — `ray.get(ref)` on Ray ObjectRef: replace with `await ref`.
-```python
-ray.get(rollout_manager.generate.remote(id))  →  await rollout_manager.generate.remote(id)
+ray.get(group.async_init(...))               →  await group.init(...)
+ray.get(group.async_train(...))              →  await group.train(...)
+group.save_model(...)                        →  await group.save_model(...)
+group.update_weights()                       →  await group.update_weights()
+ray.get(rollout_manager.generate.remote(id)) →  await rollout_manager.generate.remote(id)
+# Same pattern for offload, onload, clear_memory, connect, set_rollout_manager
 ```
 
 **3. Dispatch handles:** replace `handle = group.async_fn(...)` with `task = await eager_create_task(group.fn(...))`.
