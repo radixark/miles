@@ -1,6 +1,7 @@
 """Tests for configure_strict_async_warnings."""
 
 import asyncio
+import gc
 import warnings
 
 import pytest
@@ -20,24 +21,55 @@ def _setup_warning_filter():
         yield
 
 
-class TestUnawaitedCoroutineFilterCatchesWarning:
-    def test_matching_warning_becomes_error(self):
-        """The filter turns coroutine-never-awaited warnings into errors."""
+class TestUnawaitedCoroutineRaises:
+    def test_unawaited_coroutine_raises(self):
+        """Calling an async function without await should raise."""
         with pytest.raises(RuntimeWarning, match="coroutine .* was never awaited"):
-            warnings.warn("coroutine 'foo' was never awaited", RuntimeWarning, stacklevel=2)
+            _dummy_coroutine()  # not awaited
+            gc.collect()
 
-    def test_partial_match_also_caught(self):
+    def test_unawaited_coroutine_del_and_gc(self):
+        """Assigning then deleting an unawaited coroutine should raise."""
         with pytest.raises(RuntimeWarning, match="coroutine .* was never awaited"):
-            warnings.warn(
-                "coroutine 'MyClass.some_method' was never awaited", RuntimeWarning, stacklevel=2
-            )
+            _coro = _dummy_coroutine()  # noqa: F841
+            del _coro
+            gc.collect()
 
 
-class TestDestroyedTaskFilterCatchesWarning:
-    def test_matching_warning_becomes_error(self):
-        """The filter turns destroyed-pending-task warnings into errors."""
+class TestDestroyedPendingTaskRaises:
+    @pytest.mark.asyncio
+    async def test_task_lost_reference_raises(self):
+        """A task whose reference is lost while still pending should raise."""
+
+        async def slow():
+            await asyncio.sleep(100)
+
         with pytest.raises(RuntimeWarning, match="Task.*was destroyed but it is pending"):
-            warnings.warn("Task was destroyed but it is pending!", RuntimeWarning, stacklevel=2)
+            _task = asyncio.create_task(slow())  # noqa: F841
+            del _task
+            gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_task_completed_before_gc_no_error(self):
+        """A task that completes before losing reference should NOT raise."""
+        task = asyncio.create_task(_dummy_coroutine())
+        await task
+        del task
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_task_cancelled_before_gc_no_error(self):
+        """A task that is cancelled before losing reference should NOT raise."""
+
+        async def slow():
+            await asyncio.sleep(100)
+
+        task = asyncio.create_task(slow())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        del task
+        gc.collect()
 
 
 class TestCorrectUsageNoError:
