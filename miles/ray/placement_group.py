@@ -146,6 +146,7 @@ async def create_training_models(args, pgs, rollout_manager):
             pg=pgs["critic"],
         )
         critic_init_task = asyncio.create_task(critic_model.init(args, role="critic", with_ref=False))
+        await asyncio.sleep(0)  # ensure critic .remote() dispatched before actor
     else:
         critic_model = None
 

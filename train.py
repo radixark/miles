@@ -81,6 +81,7 @@ async def train(args):
 
         if args.use_critic:
             critic_task = asyncio.create_task(critic_model.train(rollout_id, rollout_data_ref))
+            await asyncio.sleep(0)  # ensure critic .remote() dispatched before actor (sync_actor_critic_data needs both)
             if rollout_id >= args.num_critic_only_steps:
                 await actor_model.train(rollout_id, rollout_data_ref)
             await critic_task
