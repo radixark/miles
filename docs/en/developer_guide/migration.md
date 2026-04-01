@@ -2,13 +2,12 @@
 
 ## Train Loop: from Sync to Async
 
-### Why
+### What is Changed
 
 The train loop (`train.py`, `train_async.py`) and `RayTrainGroup` now use Python async/await instead of sync `ray.get()`.
 
-The sync `ray.get(list_of_refs)` pattern is all-or-nothing: if any ref fails, the entire call throws with no way to know which actor failed. This blocks fault tolerance features like per-cell error handling, retry, and graceful degradation. Python async is fundamentally more expressive — `asyncio.gather` with per-cell error handling, `create_task` for concurrent dispatch, and structured control flow for recovery logic all become natural.
+### Why it is Changed
 
-This is a breaking change for users with custom `train.py` / `train_async.py` scripts. The migration is mechanical — see below.
 
 ### How to migrate
 
