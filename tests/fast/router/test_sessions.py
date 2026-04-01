@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from miles.router.router import MilesRouter
+from miles.rollout.session.session_server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
@@ -14,7 +14,7 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 @pytest.fixture(scope="class")
 def router_env():
-    """Create a MilesRouter with session routes and a mock backend."""
+    """Create a standalone SessionServer with session routes and a mock backend."""
 
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
@@ -37,23 +37,18 @@ def router_env():
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
         with with_mock_server(process_fn=process_fn) as backend:
             args = SimpleNamespace(
-                miles_router_max_connections=10,
                 miles_router_timeout=30,
-                miles_router_middleware_paths=[],
-                rollout_health_check_interval=60,
-                miles_router_health_check_failure_threshold=3,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
                 chat_template_path=None,
                 trajectory_manager="single_user_turn_trajectory",
             )
-            router = MilesRouter(args)
+            server_obj = SessionServer(args, backend_url=backend.url)
 
             port = find_available_port(31000)
-            server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
+            server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
             server.start()
 
             url = f"http://127.0.0.1:{port}"
-            requests.post(f"{url}/add_worker", json={"url": backend.url}, timeout=5.0)
 
             try:
                 yield SimpleNamespace(url=url)

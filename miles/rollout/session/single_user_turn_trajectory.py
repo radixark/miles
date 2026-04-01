@@ -5,8 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, computed_field
 
-from miles.router.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.router.session.session_types import SessionRecord
+from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.session_types import SessionRecord
 from miles.utils.chat_template_utils import apply_chat_template, assert_messages_append_only, message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 

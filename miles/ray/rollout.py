@@ -26,7 +26,14 @@ from miles.rollout.inference_rollout.compatibility import call_rollout_function,
 from miles.utils import dumper_utils, tracking_utils
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
-from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client, is_port_available
+from miles.utils.http_utils import (
+    _wrap_ipv6,
+    find_available_port,
+    get_host_info,
+    init_http_client,
+    is_port_available,
+    wait_for_server_ready,
+)
 from miles.utils.iter_utils import group_by
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
@@ -362,6 +369,7 @@ class RolloutManager:
         else:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
+            _start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -948,8 +956,7 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
     )
     process.daemon = True
     process.start()
-    time.sleep(3)
-    assert process.is_alive()
+    wait_for_server_ready(router_ip, router_port, process, timeout=30)
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
 
@@ -1084,6 +1091,43 @@ def _resolve_sglang_config(args) -> SglangConfig:
 # ---------------------------------------------------------------------------
 # Logging / metrics helpers (unchanged)
 # ---------------------------------------------------------------------------
+
+
+def _start_session_server(args):
+    """Start a standalone session server when ``--use-session-server`` is set.
+
+    The session server runs as a separate process with its own port and proxies
+    inference requests directly to SGLang worker engines.  It is always started
+    as a standalone process regardless of whether ``--use-miles-router`` is active.
+    """
+    if not getattr(args, "use_session_server", False):
+        return
+
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    if not hf_checkpoint:
+        raise ValueError("--use-session-server requires --hf-checkpoint to be set.")
+
+    if getattr(args, "session_server_ip", None) is None:
+        args.session_server_ip = args.sglang_router_ip
+    if getattr(args, "session_server_port", None) is None:
+        args.session_server_port = find_available_port(random.randint(5000, 6000))
+
+    ip, port = args.session_server_ip, args.session_server_port
+    if not is_port_available(port):
+        raise RuntimeError(
+            f"Port {port} is already in use — a stale session server may still be running. "
+            f"Run 'pkill -9 python' to kill it, then retry."
+        )
+
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+
+    from miles.rollout.session.session_server import run_session_server
+
+    process = multiprocessing.Process(target=run_session_server, args=(args, router_url))
+    process.daemon = True
+    process.start()
+    wait_for_server_ready(ip, port, process, timeout=30)
+    logger.info(f"Session server launched at {ip}:{port}")
 
 
 def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):

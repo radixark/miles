@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.router.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.router.session.session_types import SessionRecord
-from miles.router.session.single_user_turn_trajectory import SingleUserTurnTrajectoryManager
+from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.session_types import SessionRecord
+from miles.rollout.session.single_user_turn_trajectory import SingleUserTurnTrajectoryManager
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 
@@ -534,7 +534,7 @@ class TestComputeSessionMismatch:
         sid = manager.create_session()
         assert manager.compute_session_mismatch(sid) is None
 
-    @patch("miles.router.session.single_user_turn_trajectory.apply_chat_template")
+    @patch("miles.rollout.session.single_user_turn_trajectory.apply_chat_template")
     def test_returns_empty_list_when_no_mismatch(self, mock_template, manager: SingleUserTurnTrajectoryManager):
         sid = manager.create_session()
         manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11])
@@ -551,7 +551,7 @@ class TestComputeSessionMismatch:
         assert result == []
         mock_comparator.compare_sequences.assert_called_once_with([1, 2, 3, 10, 11], [1, 2, 3, 10, 11])
 
-    @patch("miles.router.session.single_user_turn_trajectory.apply_chat_template")
+    @patch("miles.rollout.session.single_user_turn_trajectory.apply_chat_template")
     def test_returns_mismatch_dicts(self, mock_template, manager: SingleUserTurnTrajectoryManager):
         sid = manager.create_session()
         manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11])
@@ -572,7 +572,7 @@ class TestComputeSessionMismatch:
         result = manager.compute_session_mismatch(sid)
         assert result == [{"position": 2, "detail": "mismatch"}]
 
-    @patch("miles.router.session.single_user_turn_trajectory.apply_chat_template")
+    @patch("miles.rollout.session.single_user_turn_trajectory.apply_chat_template")
     def test_raises_tokenization_error_on_exception(self, mock_template, manager: SingleUserTurnTrajectoryManager):
         sid = manager.create_session()
         manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11])
@@ -582,7 +582,7 @@ class TestComputeSessionMismatch:
         with pytest.raises(TokenizationError, match="tokenizer failed"):
             manager.compute_session_mismatch(sid)
 
-    @patch("miles.router.session.single_user_turn_trajectory.apply_chat_template")
+    @patch("miles.rollout.session.single_user_turn_trajectory.apply_chat_template")
     def test_uses_tools_from_last_record(self, mock_template, manager: SingleUserTurnTrajectoryManager):
         sid = manager.create_session()
         manager.update_pretokenized_state(sid, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10])
