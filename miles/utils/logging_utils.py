@@ -1,7 +1,14 @@
 import logging
+import os
+import re
+import sys
 import warnings
 
 _LOGGER_CONFIGURED = False
+
+logger = logging.getLogger(__name__)
+
+_FATAL_ASYNC_PATTERN = "coroutine .* was never awaited"
 
 
 # ref: SGLang
@@ -23,11 +30,24 @@ def configure_logger(prefix: str = ""):
 
 
 def configure_strict_async_warnings() -> None:
-    """Turn common async misuse warnings into errors.
+    """Turn unawaited-coroutine warnings into fatal errors.
 
-    Catches two silent-failure patterns:
-    - Coroutine called but never awaited (silently dropped)
-    - asyncio.Task created but reference lost (silently GC'd and cancelled)
+    Python emits RuntimeWarning when a coroutine is called but never awaited.
+    The warning fires inside __del__, so the resulting exception is swallowed
+    by sys.unraisablehook. We override the hook to hard-exit the process.
     """
-    warnings.filterwarnings("error", category=RuntimeWarning, message="coroutine .* was never awaited")
-    warnings.filterwarnings("error", category=RuntimeWarning, message=".*Task.*was destroyed but it is pending")
+    warnings.filterwarnings("error", category=RuntimeWarning, message=_FATAL_ASYNC_PATTERN)
+
+    _original_hook = sys.unraisablehook
+
+    def _crash_on_async_misuse(unraisable):
+        if isinstance(unraisable.exc_value, RuntimeWarning) and re.search(
+            _FATAL_ASYNC_PATTERN, str(unraisable.exc_value)
+        ):
+            msg = f"Fatal async misuse, aborting: {unraisable.exc_value}"
+            logger.error(msg)
+            print(msg, file=sys.stderr, flush=True)
+            os._exit(1)
+        _original_hook(unraisable)
+
+    sys.unraisablehook = _crash_on_async_misuse

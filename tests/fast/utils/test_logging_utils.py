@@ -1,7 +1,9 @@
 """Tests for configure_strict_async_warnings."""
 
 import asyncio
-import gc
+import subprocess
+import sys
+import textwrap
 import warnings
 
 import pytest
@@ -21,55 +23,58 @@ def _setup_warning_filter():
         yield
 
 
-class TestUnawaitedCoroutineRaises:
-    def test_unawaited_coroutine_raises(self):
-        """Calling an async function without await should raise."""
-        with pytest.raises(RuntimeWarning, match="coroutine .* was never awaited"):
-            _dummy_coroutine()  # not awaited
+def _run_snippet(code: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+class TestUnawaitedCoroutineCrashesProcess:
+    def test_unawaited_coroutine_exits_with_code_1(self):
+        result = _run_snippet("""
+            import gc
+            from miles.utils.logging_utils import configure_strict_async_warnings
+            configure_strict_async_warnings()
+
+            async def foo(): pass
+            foo()
             gc.collect()
+            print("should not reach here")
+        """)
+        assert result.returncode == 1
+        assert "should not reach here" not in result.stdout
+        assert "Fatal async misuse" in result.stderr
 
-    def test_unawaited_coroutine_del_and_gc(self):
-        """Assigning then deleting an unawaited coroutine should raise."""
-        with pytest.raises(RuntimeWarning, match="coroutine .* was never awaited"):
-            _coro = _dummy_coroutine()  # noqa: F841
-            del _coro
+    def test_unawaited_coroutine_del_exits_with_code_1(self):
+        result = _run_snippet("""
+            import gc
+            from miles.utils.logging_utils import configure_strict_async_warnings
+            configure_strict_async_warnings()
+
+            async def foo(): pass
+            c = foo()
+            del c
             gc.collect()
+            print("should not reach here")
+        """)
+        assert result.returncode == 1
+        assert "should not reach here" not in result.stdout
+        assert "coroutine" in result.stderr
 
+    def test_awaited_coroutine_no_crash(self):
+        result = _run_snippet("""
+            import asyncio
+            from miles.utils.logging_utils import configure_strict_async_warnings
+            configure_strict_async_warnings()
 
-class TestDestroyedPendingTaskRaises:
-    @pytest.mark.asyncio
-    async def test_task_lost_reference_raises(self):
-        """A task whose reference is lost while still pending should raise."""
-
-        async def slow():
-            await asyncio.sleep(100)
-
-        with pytest.raises(RuntimeWarning, match="Task.*was destroyed but it is pending"):
-            _task = asyncio.create_task(slow())  # noqa: F841
-            del _task
-            gc.collect()
-
-    @pytest.mark.asyncio
-    async def test_task_completed_before_gc_no_error(self):
-        """A task that completes before losing reference should NOT raise."""
-        task = asyncio.create_task(_dummy_coroutine())
-        await task
-        del task
-        gc.collect()
-
-    @pytest.mark.asyncio
-    async def test_task_cancelled_before_gc_no_error(self):
-        """A task that is cancelled before losing reference should NOT raise."""
-
-        async def slow():
-            await asyncio.sleep(100)
-
-        task = asyncio.create_task(slow())
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        del task
-        gc.collect()
+            async def foo(): return 42
+            print(asyncio.run(foo()))
+        """)
+        assert result.returncode == 0
+        assert "42" in result.stdout
 
 
 class TestCorrectUsageNoError:
