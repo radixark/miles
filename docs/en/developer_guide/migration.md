@@ -23,7 +23,7 @@ if __name__ == "__main__":        if __name__ == "__main__":
     train(parse_args())               asyncio.run(train(parse_args()))
 ```
 
-**2. `ray.get(x)` → `await x`, and drop the `async_` prefix on group methods:**
+**2. `ray.get(x)` → `await x`, drop the `async_` prefix, and add `await` on group methods that previously had none:**
 
 ```python
 ray.get(group.async_init(...))               →  await group.init(...)
