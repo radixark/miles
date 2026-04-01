@@ -14,6 +14,11 @@ from .math_utils import extract_answer as extract_boxed_answer
 from .math_utils import grade_answer_verl
 
 
+def _resolve_rm_type(args, sample: Sample) -> str:
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+    return (metadata.get("rm_type") or args.rm_type or "").strip()
+
+
 async def remote_rm(args, sample: Sample):
     payload = {
         "prompt": sample.prompt,
@@ -33,7 +38,7 @@ async def async_rm(args, sample: Sample, **kwargs):
         return await rm_function(args, sample, **kwargs)
 
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    rm_type = (metadata.get("rm_type") or args.rm_type or "").strip()
+    rm_type = _resolve_rm_type(args, sample)
     response = sample.response
     label = sample.label
     if rm_type.startswith("boxed_"):
@@ -60,6 +65,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         return compute_ifbench_reward(response, label, metadata=metadata)
     elif rm_type == "random":
         return random.randint(0, 1)
+    elif rm_type == "ocr":
+        from .ocr import ocr_rm
+
+        return await ocr_rm(args, sample)
     elif rm_type:
         raise NotImplementedError(f"Rule-based RM for {rm_type} is not implemented.")
     else:
@@ -75,6 +84,12 @@ async def batched_async_rm(
         # Ensure the custom reward function is implemented in batch mode
         rm_function = load_function(args.custom_rm_path)
         return await rm_function(args, samples, **kwargs)
+
+    if samples and all(_resolve_rm_type(args, sample) == "ocr" for sample in samples):
+        from .ocr import batched_ocr_rm
+
+        return await batched_ocr_rm(args, samples)
+
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)
     return rewards

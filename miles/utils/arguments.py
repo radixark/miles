@@ -1333,6 +1333,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="URL for the reward model service for --rm-type remote_rm, e.g. http://localhost:8000",
             )
             parser.add_argument(
+                "--ocr-num-workers",
+                type=int,
+                default=4,
+                help="Number of Ray OCR actors used when --rm-type ocr.",
+            )
+            parser.add_argument(
                 "--custom-rm-path",
                 type=str,
                 default=None,

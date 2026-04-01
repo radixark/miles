@@ -26,7 +26,7 @@ from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.tracking_utils import init_tracking
-from miles.utils.types import Sample
+from miles.utils.types import Sample, sample_effective_response_length
 
 from ..utils.metric_utils import has_repetition
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
@@ -35,6 +35,15 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _is_ocr_rm_type(rm_type: str | None) -> bool:
+    if rm_type is None:
+        return False
+    value = rm_type.strip()
+    if value.startswith("boxed_"):
+        value = value[len("boxed_") :]
+    return value == "ocr"
 
 
 @ray.remote
@@ -83,6 +92,12 @@ class RolloutManager:
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+
+        if _is_ocr_rm_type(getattr(self.args, "rm_type", None)):
+            from miles.rollout.rm_hub.ocr import init_ocr_pool
+
+            init_ocr_pool(self.args)
+            logger.info("Pre-initialized OCR reward actor pool in RolloutManager.")
 
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
@@ -360,8 +375,8 @@ class RolloutManager:
         assert len(rewards) == len(samples)
 
         train_data = {
-            "tokens": [sample.tokens for sample in samples],
-            "response_lengths": [sample.response_length for sample in samples],
+            "tokens": [getattr(sample, "tokens", []) for sample in samples],
+            "response_lengths": [int(getattr(sample, "response_length", 0)) for sample in samples],
             # some reward model, e.g. remote rm, may return multiple rewards,
             # we could use key to select the reward.
             "rewards": rewards,
@@ -389,15 +404,15 @@ class RolloutManager:
         # TODO: compress the loss mask
         loss_masks = []
         for sample in samples:
-            # always instantiate loss_mask if not provided
-            if sample.loss_mask is None:
-                sample.loss_mask = [1] * sample.response_length
-
-            assert (
-                len(sample.loss_mask) == sample.response_length
-            ), f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
-            if sample.remove_sample:
-                sample.loss_mask = [0] * sample.response_length
+            rl = int(getattr(sample, "response_length", 0))
+            lm = getattr(sample, "loss_mask", None)
+            if lm is None:
+                lm = [1] * rl
+                sample.loss_mask = lm
+            assert len(lm) == rl, f"loss mask length {len(lm)} != response length {rl}"
+            if getattr(sample, "remove_sample", False):
+                lm = [0] * rl
+                sample.loss_mask = lm
             loss_masks.append(sample.loss_mask)
         train_data["loss_masks"] = loss_masks
 
@@ -419,8 +434,10 @@ class RolloutManager:
         if samples[0].train_metadata is not None:
             train_data["metadata"] = [sample.train_metadata for sample in samples]
 
-        if samples[0].multimodal_train_inputs is not None:
-            train_data["multimodal_train_inputs"] = [sample.multimodal_train_inputs for sample in samples]
+        if getattr(samples[0], "multimodal_train_inputs", None) is not None:
+            train_data["multimodal_train_inputs"] = [
+                getattr(sample, "multimodal_train_inputs", None) for sample in samples
+            ]
 
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
@@ -788,14 +805,9 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
 
 
 def compute_metrics_from_samples(args, samples):
-    response_lengths = [sample.effective_response_length for sample in samples]
-
     log_dict = {}
-    log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
-    log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
-    log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
     return log_dict
 
 
@@ -826,8 +838,7 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
             rollout_time - mean_non_generation_time
         )
 
-    token_perf([sample.response_length for sample in samples], non_generation_time, key="")
-    token_perf([sample.effective_response_length for sample in samples], non_generation_time, key="effective_")
+    # token_perf
 
     return log_dict
 
@@ -847,27 +858,6 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
 
     return {f"zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
-
-
-def _compute_spec_metrics(args, all_samples: list[Sample]):
-    if args.sglang_speculative_algorithm is None:
-        return {}
-    num_samples = len(all_samples)
-    metrics = {}
-    metrics["spec_accept_rate"] = sum(sample.spec_info.spec_accept_rate for sample in all_samples) / num_samples
-    metrics["spec_accept_length"] = sum(sample.spec_info.spec_accept_length for sample in all_samples) / num_samples
-    return metrics
-
-
-def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
-    num_samples = len(all_samples)
-    metrics = {}
-    total_cached_tokens = sum(sample.prefix_cache_info.cached_tokens for sample in all_samples)
-    total_prompt_tokens = sum(sample.prefix_cache_info.total_prompt_tokens for sample in all_samples)
-
-    metrics["prefix_cache_hit_rate"] = total_cached_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0
-    metrics["avg_cached_tokens_per_sample"] = total_cached_tokens / num_samples
-    return metrics
 
 
 def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
