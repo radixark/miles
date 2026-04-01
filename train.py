@@ -3,8 +3,8 @@ import asyncio
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
-from miles.utils.async_utils import eager_create_task
 from miles.utils.arguments import parse_args
+from miles.utils.async_utils import eager_create_task
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils import init_tracking
