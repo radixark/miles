@@ -37,15 +37,10 @@ ray.get(rollout_manager.generate.remote(id)) →  await rollout_manager.generate
 **3. Dispatch handles:** replace `handle = group.async_fn(...)` with `task = await eager_create_task(group.fn(...))`.
 
 ```python
-# Before
-handle = critic.async_train(...)
-ray.get(actor.async_train(...))
-ray.get(handle)
-
-# After
-task = await eager_create_task(critic.train(...))
-await actor.train(...)
-await task
+# Before                                          # After
+handle = critic.async_train(...)                   task = await eager_create_task(critic.train(...))
+ray.get(actor.async_train(...))                    await actor.train(...)
+ray.get(handle)                                    await task
 ```
 
 **4. `create_training_models` is now async:**
