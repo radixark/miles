@@ -56,9 +56,9 @@ def verify_megatron_parallel_state(
         config = get_model_config(model_to_check)
         expected = config.microbatch_group_size_per_vp_stage
         actual = parallel_state.microbatch_group_size_per_vp_stage
-        assert actual == expected, (
-            f"microbatch_group_size_per_vp_stage mismatch: ParallelState has {actual}, model config has {expected}"
-        )
+        assert (
+            actual == expected
+        ), f"microbatch_group_size_per_vp_stage mismatch: ParallelState has {actual}, model config has {expected}"
 
 
 def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> PackedSeqParams:
