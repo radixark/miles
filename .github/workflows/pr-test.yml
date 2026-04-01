@@ -159,6 +159,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -270,6 +271,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -381,6 +383,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -492,6 +495,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -603,6 +607,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -714,6 +719,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -825,6 +831,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -936,6 +943,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -1047,6 +1055,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -1158,6 +1167,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -1269,6 +1279,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -1335,6 +1346,7 @@ jobs:
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute
@@ -1446,6 +1458,7 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 
 
       - name: Execute

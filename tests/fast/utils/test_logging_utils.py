@@ -87,7 +87,7 @@ class TestUnawaitedCoroutineCrashesProcess:
 
 class TestCorrectUsageNoError:
     def test_properly_awaited_coroutine(self):
-        result = asyncio.get_event_loop().run_until_complete(_dummy_coroutine())
+        result = asyncio.run(_dummy_coroutine())
         assert result == 42
 
     @pytest.mark.asyncio
