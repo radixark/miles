@@ -8,6 +8,7 @@ The train loop (`train.py`, `train_async.py`) and `RayTrainGroup` now use Python
 
 ### Why it is Changed
 
+Python async is more expressive than sync code with `ray.get`. As a concrete example, in fault tolerance, we need to capture ray actor results and do retries when calling `actor_model.train`, while still allowing it to be overlapped freely with `critic_model.train`. This is hard to achieve without Python async.
 
 ### How to migrate
 
