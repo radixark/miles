@@ -1,4 +1,5 @@
 import logging
+import warnings
 
 _LOGGER_CONFIGURED = False
 
@@ -17,3 +18,6 @@ def configure_logger(prefix: str = ""):
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
     )
+
+    # Crash immediately on unawaited coroutines instead of silently dropping them
+    warnings.filterwarnings("error", category=RuntimeWarning, message="coroutine .* was never awaited")
