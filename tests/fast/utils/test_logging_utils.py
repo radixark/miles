@@ -34,7 +34,8 @@ def _run_snippet(code: str) -> subprocess.CompletedProcess:
 
 class TestUnawaitedCoroutineCrashesProcess:
     def test_unawaited_coroutine_exits_with_code_1(self):
-        result = _run_snippet("""
+        result = _run_snippet(
+            """
             import gc
             from miles.utils.logging_utils import configure_strict_async_warnings
             configure_strict_async_warnings()
@@ -43,13 +44,15 @@ class TestUnawaitedCoroutineCrashesProcess:
             foo()
             gc.collect()
             print("should not reach here")
-        """)
+        """
+        )
         assert result.returncode == 1
         assert "should not reach here" not in result.stdout
         assert "Fatal async misuse" in result.stderr
 
     def test_unawaited_coroutine_del_exits_with_code_1(self):
-        result = _run_snippet("""
+        result = _run_snippet(
+            """
             import gc
             from miles.utils.logging_utils import configure_strict_async_warnings
             configure_strict_async_warnings()
@@ -59,20 +62,23 @@ class TestUnawaitedCoroutineCrashesProcess:
             del c
             gc.collect()
             print("should not reach here")
-        """)
+        """
+        )
         assert result.returncode == 1
         assert "should not reach here" not in result.stdout
         assert "coroutine" in result.stderr
 
     def test_awaited_coroutine_no_crash(self):
-        result = _run_snippet("""
+        result = _run_snippet(
+            """
             import asyncio
             from miles.utils.logging_utils import configure_strict_async_warnings
             configure_strict_async_warnings()
 
             async def foo(): return 42
             print(asyncio.run(foo()))
-        """)
+        """
+        )
         assert result.returncode == 0
         assert "42" in result.stdout
 
