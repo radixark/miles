@@ -108,11 +108,11 @@ class TestOtherWarningsUnaffected:
             warnings.simplefilter("always")
             configure_strict_async_warnings()
             with pytest.warns(RuntimeWarning, match="test warning"):
-                warnings.warn("test warning", RuntimeWarning)
+                warnings.warn("test warning", RuntimeWarning, stacklevel=2)
 
     def test_deprecation_warning_not_raised(self):
         with warnings.catch_warnings():
             warnings.simplefilter("always")
             configure_strict_async_warnings()
             with pytest.warns(DeprecationWarning):
-                warnings.warn("old stuff", DeprecationWarning)
+                warnings.warn("old stuff", DeprecationWarning, stacklevel=2)
