@@ -10,6 +10,7 @@ Python equivalent of run.sh. Usage:
 
 import os
 import socket
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -30,8 +31,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     # Paths
-    base_dir: str = "/root/shared"
+    skip_prepare: bool = False
+    base_dir: str = ""
     model_name: str = "GLM-4.7-Flash"
+    hf_checkpoint: str = "zai-org/GLM-4.7-Flash"
+    ref_load: str = "/root/GLM-4.7-Flash_torch_dist"
+    save_dir: str = "/root/GLM-4.7-Flash_agent_v2/"
+    max_seq_len: int = 16384
     prompt_data: str = "/root/swe_train.jsonl"
 
     # Agent settings
@@ -40,8 +46,36 @@ class ScriptArgs(U.ExecuteTrainConfig):
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())
-    miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())
+    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
+    miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())  # cluster/pod IP
+
+    # W&B settings
+    wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
+    wandb_project: str = os.environ.get("WANDB_PROJECT", "glm47-flash-agentic")
+    wandb_team: str = os.environ.get("WANDB_TEAM", "")
+    wandb_run_name: str = "glm47-flash-swe-tito"
+
+    # Prometheus settings
+    use_prometheus: bool = True
+    prometheus_port: int = 9090
+    prometheus_run_name: str = "glm47-flash-swe-tito"
+
+
+def cleanup():
+    """Kill old Ray jobs and stale processes to free GPU resources."""
+    my_pid = os.getpid()
+    ppid = os.getppid()
+    print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
+    targets = ["sglang", "train.py", "MegatronTrain"]
+    for t in targets:
+        # Show what would be killed
+        result = subprocess.run(f"pgrep -af '{t}' 2>/dev/null || true", shell=True, capture_output=True, text=True)
+        if result.stdout.strip():
+            print(f"  pgrep -f '{t}' matches: {result.stdout.strip()}")
+        cmd = f"pgrep -f '{t}' | grep -v '^{my_pid}$' | grep -v '^{ppid}$' | xargs -r kill -9 2>/dev/null || true"
+        subprocess.run(cmd, shell=True)
+    subprocess.run("sleep 5", shell=True)
+    print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
 def prepare(args: ScriptArgs):
@@ -57,14 +91,10 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
-    hf_checkpoint = f"{args.base_dir}/{args.model_name}"
-    ref_load_path = f"{args.base_dir}/{args.model_name}_torch_dist"
-    save_path = f"{args.base_dir}/{args.model_name}_agent_v2/"
-
     ckpt_args = (
-        f"--hf-checkpoint {hf_checkpoint} "
-        f"--ref-load {ref_load_path} "
-        f"--save {save_path} "
+        f"--hf-checkpoint {args.hf_checkpoint} "
+        f"--ref-load {args.ref_load} "
+        f"--save {args.save_dir} "
         "--save-interval 100 "
     )
 
@@ -74,11 +104,12 @@ def execute(args: ScriptArgs):
         "--metadata-key metadata "
         "--rollout-shuffle "
         "--num-rollout 3000 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 2 "
+        "--n-samples-per-prompt 4 "
         "--rollout-temperature 0.8 "
         "--rollout-max-response-len 8192 "
-        "--global-batch-size 64 "
+        f"--max-seq-len {args.max_seq_len} "
+        "--global-batch-size 8 "
         "--balance-data "
     )
 
@@ -124,7 +155,7 @@ def execute(args: ScriptArgs):
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--use-miles-router "
-        "--sglang-router-port 30000 "
+        "--sglang-router-port 31000 "
         # TODO: speculative decoding has issue, need to fix later
     )
 
@@ -137,6 +168,7 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--chat-template-path autofix "
         "--use-session-server "
+        "--session-server-port 30000 "
     )
 
     misc_args = (
@@ -153,7 +185,24 @@ def execute(args: ScriptArgs):
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
-    wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id)
+    wandb_args = ""
+    if args.wandb_key:
+        wandb_args = (
+            "--use-wandb "
+            f"--wandb-project {args.wandb_project} "
+            f"--wandb-group {args.wandb_run_name} "
+            f"--wandb-key {args.wandb_key} "
+        )
+        if args.wandb_team:
+            wandb_args += f"--wandb-team {args.wandb_team} "
+
+    prometheus_args = ""
+    if args.use_prometheus:
+        prometheus_args = (
+            "--use-prometheus "
+            f"--prometheus-port {args.prometheus_port} "
+            f"--prometheus-run-name {args.prometheus_run_name} "
+        )
 
     train_args = (
         f"{ckpt_args}"
@@ -161,6 +210,7 @@ def execute(args: ScriptArgs):
         f"{optimizer_args}"
         f"{grpo_args}"
         f"{wandb_args}"
+        f"{prometheus_args}"
         f"{perf_args}"
         f"{sglang_args}"
         f"{agent_args}"
@@ -192,7 +242,9 @@ def execute(args: ScriptArgs):
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    prepare(args)
+    cleanup()
+    if not args.skip_prepare:
+        prepare(args)
     execute(args)
 
 
