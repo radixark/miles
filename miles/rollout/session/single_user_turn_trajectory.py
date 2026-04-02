@@ -12,6 +12,11 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 logger = logging.getLogger(__name__)
 
 
+# TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
+#  raise this limit or make it configurable and remove the restriction.
+MAX_ASSISTANT_ROLLBACK_STEPS = 1
+
+
 def _assert_no_user_after_assistant(messages: list[dict[str, Any]]) -> None:
     """Assert no user message appears after the first assistant message."""
     seen_assistant = False
@@ -36,10 +41,6 @@ class SingleUserTurnTrajectory:
 
     Concurrency contract: all mutating methods must be called under ``self.lock``.
     """
-
-    # TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
-    #  raise this limit or make it configurable and remove the restriction.
-    MAX_ASSISTANT_ROLLBACK_STEPS = 1
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
@@ -212,10 +213,10 @@ class SingleUserTurnTrajectory:
             )
 
         discard_count = self.num_assistant - (checkpoint_index + 1)
-        if discard_count > self.MAX_ASSISTANT_ROLLBACK_STEPS:
+        if discard_count > MAX_ASSISTANT_ROLLBACK_STEPS:
             raise MessageValidationError(
                 f"rollback failed: discard_count={discard_count} exceeds "
-                f"max_assistant_rollback_steps={self.MAX_ASSISTANT_ROLLBACK_STEPS} "
+                f"max_assistant_rollback_steps={MAX_ASSISTANT_ROLLBACK_STEPS} "
                 f"(stored has {len(stored)} messages, "
                 f"request has {len(request_messages)} messages)"
             )
