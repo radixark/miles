@@ -61,14 +61,18 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     if max_seq_len is not None:
         metadata = {**metadata, "max_seq_len": max_seq_len}
 
-    agent_metadata = await custom_agent_function(
-        base_url=tracer.base_url,
-        prompt=input.sample.prompt,
-        request_kwargs=build_chat_request_kwargs(input.sampling_params),
-        metadata=metadata,
-    )
-
-    records, session_metadata = await tracer.collect_records()
+    agent_metadata = None
+    try:
+        agent_metadata = await custom_agent_function(
+            base_url=tracer.base_url,
+            prompt=input.sample.prompt,
+            request_kwargs=build_chat_request_kwargs(input.sampling_params),
+            metadata=metadata,
+        )
+    except Exception as e:
+        logger.warning(f"Agent function failed for session {tracer.session_id}: {e}")
+    finally:
+        records, session_metadata = await tracer.collect_records()
 
     if not records:
         logger.warning("No model calls recorded for sample")
