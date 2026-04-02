@@ -43,11 +43,30 @@ class _MockTITOTokenizer(TITOTokenizer):
         return list(pretokenized_token_ids)
 
 
+def _make_registry(allowed_append_roles: list[str] | None = None) -> SessionRegistry:
+    args = SimpleNamespace()
+    mock_tito = _MockTITOTokenizer(
+        tokenizer=None, assistant_start_str="<|im_start|>assistant", allowed_append_roles=allowed_append_roles
+    )
+    return SessionRegistry(args, tokenizer=None, tito_tokenizer=mock_tito)
+
+
 @pytest.fixture
 def registry():
-    args = SimpleNamespace()
-    mock_tito = _MockTITOTokenizer(tokenizer=None, assistant_start_str="<|im_start|>assistant")
-    return SessionRegistry(args, tokenizer=None, tito_tokenizer=mock_tito)
+    """Default registry: only tool messages allowed after assistant."""
+    return _make_registry()
+
+
+@pytest.fixture
+def registry_with_system():
+    """Registry that allows both tool and system in appended messages."""
+    return _make_registry(allowed_append_roles=["tool", "system"])
+
+
+@pytest.fixture
+def registry_with_user():
+    """Registry that allows tool and user in appended messages."""
+    return _make_registry(allowed_append_roles=["tool", "user"])
 
 
 class TestSessionCRUD:
@@ -220,16 +239,6 @@ class TestSingleUserTurnPretokenized:
         with pytest.raises(MessageValidationError, match="role=.assistant.*allowed="):
             session.prepare_pretokenized(bad_messages, tito_tokenizer=registry.tito_tokenizer)
 
-    def test_user_after_assistant_raises(self, registry: SessionRegistry):
-        """prepare raises when user message appears after assistant."""
-        sid = registry.create_session()
-        session = registry.get_session(sid)
-        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
-
-        bad_messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "second"}]
-        with pytest.raises(MessageValidationError, match="user message at index 4.*after the first assistant"):
-            session.prepare_pretokenized(bad_messages, tito_tokenizer=registry.tito_tokenizer)
-
     def test_session_not_found_raises(self, registry: SessionRegistry):
         with pytest.raises(SessionNotFoundError, match="session not found"):
             registry.get_session("nonexistent")
@@ -245,48 +254,8 @@ class TestSingleUserTurnPretokenized:
         result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert result == {"input_ids": [1, 2, 10]}
 
-    def test_append_system_message_allowed(self, registry: SessionRegistry):
-        """Appending a system message after tool messages is allowed (e.g. retry prompt)."""
-        sid = registry.create_session()
-        session = registry.get_session(sid)
-        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
-
-        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
-        assert result is not None
-        assert result["input_ids"] == [1, 2, 3, 10, 11]
-
-    def test_append_system_then_assistant_trajectory(self, registry: SessionRegistry):
-        """Full trajectory with a retry system message between tool-call turns."""
-        sid = registry.create_session()
-        session = registry.get_session(sid)
-
-        # Turn 1: [sys, user] -> assistant(tool_call)
-        t1_msgs = [SYS_MSG, USER_MSG]
-        session.update_pretokenized_state(t1_msgs, ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
-
-        # Turn 2: append tool + system_retry -> assistant(tool_call)
-        t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
-        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
-        assert result is not None
-
-        session.update_pretokenized_state(
-            t2_msgs,
-            ASSISTANT_MSG_2,
-            [1, 2, 3, 10, 11, 20, 21, 22],
-            [30, 31],
-            max_trim_tokens=0,
-        )
-
-        assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2]
-
-        # Turn 3: append tool after the second assistant
-        t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2, TOOL_MSG_2]
-        result = session.prepare_pretokenized(t3_msgs, tito_tokenizer=registry.tito_tokenizer)
-        assert result is not None
-
     def test_multiple_system_messages_at_start(self, registry: SessionRegistry):
-        """Multiple system messages before the user message are allowed."""
+        """Multiple system messages before the user message are allowed (part of stored prefix)."""
         sid = registry.create_session()
         session = registry.get_session(sid)
         extra_sys = {"role": "system", "content": "Extra instructions."}
@@ -302,15 +271,153 @@ class TestSingleUserTurnPretokenized:
         assert result is not None
         assert result["input_ids"] == [1, 2, 3, 4, 10, 11]
 
-    def test_not_append_only_rejects_user_message(self, registry: SessionRegistry):
-        """Appending a user message (not tool/system) is rejected."""
+
+# ---------------------------------------------------------------------------
+# TestAppendRole* — allowed_append_roles policy tests
+#
+# Each class tests one configuration: tool-only (default), tool+system,
+# tool+user.  Tests verify which roles are accepted / rejected.
+# ---------------------------------------------------------------------------
+
+
+class TestAppendRoleToolOnly:
+    """Default config: allowed_append_roles=['tool']."""
+
+    def test_tool_append_allowed(self, registry: SessionRegistry):
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
-        bad = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
-        with pytest.raises(MessageValidationError, match="user message at index 4.*after the first assistant"):
-            session.prepare_pretokenized(bad, tito_tokenizer=registry.tito_tokenizer)
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+        assert result is not None
+
+    def test_system_append_rejected(self, registry: SessionRegistry):
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
+        with pytest.raises(MessageValidationError, match="role='system'.*allowed="):
+            session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+
+    def test_user_append_rejected(self, registry: SessionRegistry):
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
+        with pytest.raises(MessageValidationError, match="role='user'.*allowed="):
+            session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+
+
+class TestAppendRoleToolSystem:
+    """Config: allowed_append_roles=['tool', 'system']."""
+
+    def test_tool_append_allowed(self, registry_with_system: SessionRegistry):
+        sid = registry_with_system.create_session()
+        session = registry_with_system.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_system.tito_tokenizer)
+        assert result is not None
+
+    def test_system_append_allowed(self, registry_with_system: SessionRegistry):
+        sid = registry_with_system.create_session()
+        session = registry_with_system.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_system.tito_tokenizer)
+        assert result is not None
+        assert result["input_ids"] == [1, 2, 3, 10, 11]
+
+    def test_system_then_assistant_trajectory(self, registry_with_system: SessionRegistry):
+        """Full trajectory with a retry system message between tool-call turns."""
+        sid = registry_with_system.create_session()
+        session = registry_with_system.get_session(sid)
+
+        t1_msgs = [SYS_MSG, USER_MSG]
+        session.update_pretokenized_state(t1_msgs, ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+
+        t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
+        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
+        assert result is not None
+
+        session.update_pretokenized_state(
+            t2_msgs, ASSISTANT_MSG_2, [1, 2, 3, 10, 11, 20, 21, 22], [30, 31], max_trim_tokens=0
+        )
+        assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2]
+
+        t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2, TOOL_MSG_2]
+        result = session.prepare_pretokenized(t3_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
+        assert result is not None
+
+    def test_user_append_rejected(self, registry_with_system: SessionRegistry):
+        sid = registry_with_system.create_session()
+        session = registry_with_system.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
+        with pytest.raises(MessageValidationError, match="role='user'.*allowed="):
+            session.prepare_pretokenized(messages, tito_tokenizer=registry_with_system.tito_tokenizer)
+
+
+class TestAppendRoleToolUser:
+    """Config: allowed_append_roles=['tool', 'user']."""
+
+    def test_tool_append_allowed(self, registry_with_user: SessionRegistry):
+        sid = registry_with_user.create_session()
+        session = registry_with_user.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_user.tito_tokenizer)
+        assert result is not None
+
+    def test_user_append_allowed(self, registry_with_user: SessionRegistry):
+        sid = registry_with_user.create_session()
+        session = registry_with_user.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "follow-up"}]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_user.tito_tokenizer)
+        assert result is not None
+
+    def test_user_then_assistant_trajectory(self, registry_with_user: SessionRegistry):
+        """Full trajectory: tool → user follow-up → assistant → tool → final."""
+        sid = registry_with_user.create_session()
+        session = registry_with_user.get_session(sid)
+
+        # Turn 1: [sys, user] -> assistant(tool_call)
+        t1_msgs = [SYS_MSG, USER_MSG]
+        session.update_pretokenized_state(t1_msgs, ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+
+        # Turn 2: append tool + user follow-up -> assistant(tool_call)
+        follow_up = {"role": "user", "content": "Also check Shanghai."}
+        t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, follow_up]
+        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry_with_user.tito_tokenizer)
+        assert result is not None
+
+        session.update_pretokenized_state(
+            t2_msgs, ASSISTANT_MSG_2, [1, 2, 3, 10, 11, 20, 21, 22], [30, 31], max_trim_tokens=0
+        )
+        assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, follow_up, ASSISTANT_MSG_2]
+
+        # Turn 3: append tool after the second assistant
+        t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, follow_up, ASSISTANT_MSG_2, TOOL_MSG_2]
+        result = session.prepare_pretokenized(t3_msgs, tito_tokenizer=registry_with_user.tito_tokenizer)
+        assert result is not None
+
+    def test_system_append_rejected(self, registry_with_user: SessionRegistry):
+        sid = registry_with_user.create_session()
+        session = registry_with_user.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
+        with pytest.raises(MessageValidationError, match="role='system'.*allowed="):
+            session.prepare_pretokenized(messages, tito_tokenizer=registry_with_user.tito_tokenizer)
 
 
 class TestRollback:
@@ -417,23 +524,23 @@ class TestRollback:
         assert session.token_ids == [1, 2, 3, 10, 11, 40, 41, 50, 51]
         assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool, ASSISTANT_MSG_FINAL]
 
-    def test_rollback_fewer_messages_than_stored(self, registry: SessionRegistry):
+    def test_rollback_fewer_messages_than_stored(self, registry_with_system: SessionRegistry):
         """Rollback triggered when request has strictly fewer messages than stored."""
-        sid = registry.create_session()
-        session = registry.get_session(sid)
+        sid = registry_with_system.create_session()
+        session = registry_with_system.get_session(sid)
 
         # Turn 1: [sys, user] -> asst1
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
 
         # Turn 2: [sys, user, asst1, tool1] -> asst2
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         session.update_pretokenized_state(t2_msgs, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
         # stored messages: [sys, user, asst1, tool1, asst2] (5 messages)
 
         # Agent retries with only [sys, user, asst1, sys_retry] (4 messages)
         retry_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, RETRY_SYS_MSG]
-        result = session.prepare_pretokenized(retry_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = session.prepare_pretokenized(retry_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert result is not None
 
         assert session.num_assistant == 1
