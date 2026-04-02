@@ -33,6 +33,7 @@ def _assert_no_user_after_assistant(messages: list[dict[str, Any]]) -> None:
                 f"invalid message structure: user message at index {i} " f"appears after the first assistant message"
             )
 
+
 @dataclass
 class SingleUserTurnTrajectory:
     """State for a single-user-turn trajectory.
