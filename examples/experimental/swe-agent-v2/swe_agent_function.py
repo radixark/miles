@@ -10,8 +10,8 @@ Task-type agnostic — the server + Harbor task directory handle all
 differentiation (environment, grading harness, agent selection).
 """
 
-import logging
 import asyncio
+import logging
 import os
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -66,7 +66,7 @@ async def run(
             timeout=3600,  # 1 hour max per trial
         )
     except asyncio.TimeoutError:
-        logger.error(f"Agent server call timed out after 3600s")
+        logger.error("Agent server call timed out after 3600s")
         return None
     except Exception as e:
         logger.error(f"Agent server call failed: {e}")
