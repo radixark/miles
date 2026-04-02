@@ -127,6 +127,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             )
             post_process_weights(
                 rollout_engines=self.rollout_engines,
+                post_process_quantization=True,
                 post_load_weights=True,
             )
         super()._finalize_and_resume_engines()
