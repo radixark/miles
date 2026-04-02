@@ -33,6 +33,7 @@ def setup_session_routes(app, backend, args):
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
         tokenizer_type=getattr(args, "tito_model", "default"),
+        allowed_append_roles=getattr(args, "tito_allowed_append_roles", None),
     )
 
     registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
