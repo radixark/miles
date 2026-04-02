@@ -13,6 +13,7 @@ try:
 except ImportError:
     pq = None
 
+from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
@@ -20,6 +21,25 @@ from .timer import Timer
 __all__ = ["Dataset"]
 
 logger = logging.getLogger(__name__)
+
+
+def _is_deepseek_v32_tokenizer(tokenizer) -> bool:
+    name_or_path = str(getattr(tokenizer, "name_or_path", "")).lower()
+    return "deepseek-v3.2" in name_or_path or "deepseek_v32" in name_or_path
+
+
+def _try_encode_deepseek_v32_messages(prompt, tokenizer):
+    if not _is_deepseek_v32_tokenizer(tokenizer):
+        raise ValueError("DeepSeek-v3.2 fallback is only available for DeepSeek-v3.2 tokenizers.")
+
+    from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+
+    return encode_messages(
+        prompt,
+        thinking_mode="thinking",
+        drop_thinking=True,
+        add_default_bos_token=True,
+    )
 
 
 def read_file(path):
@@ -94,7 +114,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
             from miles.utils.processing_utils import process_vision_info
 
             multimodal_inputs = process_vision_info(sample.prompt, processor)
-            processor_output = processor(text=sample.prompt, **multimodal_inputs)
+            processor_output = call_processor(processor, sample.prompt, multimodal_inputs)
             input_ids = processor_output["input_ids"][0]
             if len(input_ids) <= max_length:
                 filtered_samples.append(sample)
@@ -200,13 +220,19 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                output_prompt = tokenizer.apply_chat_template(
-                    prompt,
-                    tools=tools,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    **(apply_chat_template_kwargs or {}),
-                )
+                try:
+                    output_prompt = tokenizer.apply_chat_template(
+                        prompt,
+                        tools=tools,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        **(apply_chat_template_kwargs or {}),
+                    )
+                except ValueError as e:
+                    # DeepSeek-v3.2 checkpoints do not ship a Jinja chat template.
+                    if "tokenizer.chat_template is not set" not in str(e):
+                        raise
+                    output_prompt = _try_encode_deepseek_v32_messages(prompt, tokenizer)
             else:
                 output_prompt = prompt
 
