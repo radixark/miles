@@ -45,6 +45,12 @@ SOURCE_FP8_SCALE_KEY_SUFFIX = ".weight_scale_inv"
 SOURCE_FP8_DTYPES = (torch.float8_e4m3fn,) + ((torch.float8_e4m3fnuz,) if hasattr(torch, "float8_e4m3fnuz") else ())
 
 
+def _strip_weight_suffix(weight_key: str) -> str:
+    if not weight_key.endswith(".weight"):
+        raise ValueError(f"Expected key ending with '.weight', got: {weight_key}")
+    return weight_key[: -len(".weight")]
+
+
 def _is_source_block_fp8_ue8m0_checkpoint(cfg: dict) -> bool:
     qcfg = cfg.get("quantization_config", {}) if isinstance(cfg, dict) else {}
     return (
@@ -70,7 +76,7 @@ def _load_source_scale_u8(
     device: str,
     current_filename: str,
 ) -> tuple[torch.Tensor, torch.Tensor | None, str]:
-    scale_key = weight_key.replace(".weight", SOURCE_FP8_SCALE_KEY_SUFFIX)
+    scale_key = _strip_weight_suffix(weight_key) + SOURCE_FP8_SCALE_KEY_SUFFIX
     scale_file = source_scale_index[scale_key]
     if scale_file == current_filename and scale_key in weights:
         scale = weights[scale_key]
@@ -241,10 +247,10 @@ def process_file(
             else:
                 qweight, scale = quantize_mxfp8(tensor)
                 q_weights[key] = qweight
-                q_weights[key.replace(".weight", SOURCE_FP8_SCALE_KEY_SUFFIX)] = scale
+                q_weights[_strip_weight_suffix(key) + SOURCE_FP8_SCALE_KEY_SUFFIX] = scale
         else:
             if ".experts." not in key:
-                modules_to_not_convert.append(key.replace(".weight", ""))
+                modules_to_not_convert.append(_strip_weight_suffix(key))
             if source_is_block_fp8_ue8m0 and tensor.dtype in SOURCE_FP8_DTYPES:
                 source_scale_fp32, _, _ = _load_source_scale_u8(
                     weights,
