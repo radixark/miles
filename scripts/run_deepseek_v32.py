@@ -48,6 +48,43 @@ class ScriptArgs(U.ExecuteTrainConfig):
         pass
 
 
+def _process_glm_checkpoint(checkpoint_dir: Path):
+    """Patch GLM checkpoint config + tokenizer files for Megatron conversion."""
+    config_path = checkpoint_dir / "config.json"
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    if config.get("model_type") != "deepseek_v32":
+        config["architectures"] = ["DeepseekV32ForCausalLM"]
+        config["auto_map"] = {
+            "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
+            "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
+        }
+        config["model_type"] = "deepseek_v32"
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    # GLM checkpoints ship a custom tokenizer class ("TokenizersBackend"),
+    # which Megatron conversion cannot import in this environment.
+    tokenizer_config_path = checkpoint_dir / "tokenizer_config.json"
+    if tokenizer_config_path.exists():
+        with open(tokenizer_config_path) as f:
+            tokenizer_config = json.load(f)
+
+        tokenizer_config["tokenizer_class"] = "PreTrainedTokenizerFast"
+        # HF fast tokenizer expects a dict for this field.
+        if isinstance(tokenizer_config.get("extra_special_tokens"), list):
+            tokenizer_config["extra_special_tokens"] = {}
+
+        with open(tokenizer_config_path, "w") as f:
+            json.dump(tokenizer_config, f, indent=2, ensure_ascii=False)
+        print(f"Patched {config_path} and {tokenizer_config_path}")
+    else:
+        print(f"Patched {config_path} (no tokenizer_config.json found)")
+
+
 def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
     """Patch checkpoint so AutoConfig can resolve DeepSeek v3.2."""
     config_path = checkpoint_dir / "config.json"
@@ -58,8 +95,11 @@ def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
     with open(config_path) as f:
         config = json.load(f)
 
-    if config["model_type"] not in ["deepseek_v32", "glm_moe_dsa"]:
+    if config.get("model_type") not in ["deepseek_v32", "glm_moe_dsa"]:
         return
+
+    config.setdefault("rope_interleave", True)
+    config.setdefault("indexer_rope_interleave", False)
 
     config["architectures"] = ["DeepseekV32ForCausalLM"]
     config["auto_map"] = {
@@ -89,19 +129,18 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
     _patch_deepseek_v32_checkpoint(source_checkpoint)
 
-    if args.rollout_mxfp8:
-        U.exec_command(
-            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
-            f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
-            f"{args.extra_args} "
-        )
-        _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
-
     U.fp8_cast_bf16(
         path_src=f"{args.model_dir}/{args.model_name}",
         path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
     _patch_deepseek_v32_checkpoint(bf16_checkpoint)
+    if args.rollout_mxfp8:
+        U.exec_command(
+            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name}-bf16 "
+            f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
+            f"{args.extra_args} "
+        )
+        _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
 
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -203,6 +242,7 @@ def execute(args: ScriptArgs):
     misc_env_vars = {
         "SGLANG_NSA_FORCE_MLA": "1",
         "INDEXER_ROPE_NEOX_STYLE": "0",
+        "SGLANG_NSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
     }
 
     if args.train_mxfp8:
