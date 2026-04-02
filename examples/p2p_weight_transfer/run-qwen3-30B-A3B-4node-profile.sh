@@ -25,7 +25,7 @@ export PYTHONBUFFERED=16
 # ---------------------------------------------------------------------------
 if [ $# -lt 3 ]; then
     echo "Usage: $0 <MODE> <NODE_RANK> <HEAD_NODE_IP>"
-    echo "  MODE         : p2p | p2p"
+    echo "  MODE         : broadcast | p2p"
     echo "  NODE_RANK    : 0 (head) | 1,2,3 (workers)"
     echo "  HEAD_NODE_IP : IP of the head node"
     exit 1
