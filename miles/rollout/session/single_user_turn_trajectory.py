@@ -140,15 +140,40 @@ class SingleUserTurnTrajectory:
     ) -> None:
         """Detect if *request_messages* diverges from stored history and roll back.
 
+        In agentic workflows the agent may retry from an earlier point — for
+        example, re-running a tool call with different arguments.  When that
+        happens the new request shares a common prefix with the stored messages
+        but diverges before the end.  This method truncates session state back
+        to the last assistant checkpoint within the matching prefix.
+
         Only a single-step rollback is allowed (controlled by
         ``MAX_ASSISTANT_ROLLBACK_STEPS``).  Discarding exactly one assistant
-        message means the agent is retrying from the latest checkpoint —
+        message means the agent is retrying from the preceding checkpoint —
         the request shares the stored prefix up to that assistant and then
         continues with whatever the agent chooses (same or different tool
         result, additional messages, etc.).  Any request that would need to
         discard more than one assistant (i.e. jump back across multiple
         turns) is rejected with ``MessageValidationError`` and no state is
         modified.
+
+        Example — agent retries after the first tool call::
+
+            stored:  [sys, user, assistant₁, tool₁, assistant₂]
+                      ───────────────────── ▲
+                      checkpoint 0 (assistant₁)   checkpoint 1 (assistant₂)
+
+            request: [sys, user, assistant₁, tool₁_different, ...]
+                                             ↑ diverges here (index 3)
+
+            match_len = 3  (sys, user, assistant₁ all match)
+            Last assistant in matched prefix → assistant₁ (checkpoint 0)
+            discard_count = 2 - 1 = 1  (≤ MAX_ASSISTANT_ROLLBACK_STEPS)
+
+            After rollback:
+              messages           = [sys, user, assistant₁]
+              trajectory_token_ids = [checkpoint_0_ids]
+              records              = [record_0]
+              num_assistant        = 1
 
         No rollback occurs when:
         - The stored history is empty.
