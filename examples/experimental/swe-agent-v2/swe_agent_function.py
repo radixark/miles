@@ -11,6 +11,7 @@ differentiation (environment, grading harness, agent selection).
 """
 
 import logging
+import asyncio
 import os
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -60,7 +61,13 @@ async def run(
         request["max_seq_len"] = int(max_seq_len)
 
     try:
-        response = await post(f"{agent_server_url}/run", request)
+        response = await asyncio.wait_for(
+            post(f"{agent_server_url}/run", request),
+            timeout=3600,  # 1 hour max per trial
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Agent server call timed out after 3600s")
+        return None
     except Exception as e:
         logger.error(f"Agent server call failed: {e}")
         return None
