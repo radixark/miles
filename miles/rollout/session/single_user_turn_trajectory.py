@@ -84,7 +84,7 @@ class SingleUserTurnTrajectory:
                 self.messages, request_messages, tito_tokenizer.allowed_append_roles
             )
         except ValueError as e:
-            raise MessageValidationError(str(e)) from e
+            raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
 
         merged = tito_tokenizer.merge_tokens(
             old_messages=self.messages,
