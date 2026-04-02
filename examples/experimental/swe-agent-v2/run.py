@@ -11,6 +11,7 @@ Python equivalent of run.sh. Usage:
 import os
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -32,7 +33,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # Paths
     skip_prepare: bool = False
-    base_dir: str = ""
+    base_dir: str = "/root"
     model_name: str = "GLM-4.7-Flash"
     hf_checkpoint: str = "zai-org/GLM-4.7-Flash"
     ref_load: str = "/root/GLM-4.7-Flash_torch_dist"
@@ -67,14 +68,13 @@ def cleanup():
     ppid = os.getppid()
     print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
     targets = ["sglang", "train.py", "MegatronTrain"]
+    exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
     for t in targets:
-        # Show what would be killed
-        result = subprocess.run(f"pgrep -af '{t}' 2>/dev/null || true", shell=True, capture_output=True, text=True)
-        if result.stdout.strip():
-            print(f"  pgrep -f '{t}' matches: {result.stdout.strip()}")
-        cmd = f"pgrep -f '{t}' | grep -v '^{my_pid}$' | grep -v '^{ppid}$' | xargs -r kill -9 2>/dev/null || true"
-        subprocess.run(cmd, shell=True)
-    subprocess.run("sleep 5", shell=True)
+        subprocess.run(
+            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
+            shell=True,
+        )
+    time.sleep(5)
     print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
@@ -85,7 +85,7 @@ def prepare(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         dir_dst=args.base_dir,
-        hf_checkpoint=f"{args.base_dir}/{args.model_name}",
+        hf_checkpoint=args.hf_checkpoint,
         megatron_path=args.megatron_path,
     )
 
