@@ -42,10 +42,6 @@ class SingleUserTurnTrajectory:
     Concurrency contract: all mutating methods must be called under ``self.lock``.
     """
 
-    # TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
-    #  raise this limit or make it configurable and remove the restriction.
-    MAX_ASSISTANT_ROLLBACK_STEPS = 1
-
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     messages: list[dict[str, Any]] = field(default_factory=list)
