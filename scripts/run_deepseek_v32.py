@@ -8,26 +8,39 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 
+_DEEPSEEK_V32_CONFIG_SHIM = """from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
+
+
+class DeepseekV32Config(DeepseekV3Config):
+    model_type = "deepseek_v32"
+"""
+
+_DEEPSEEK_V32_MODELING_SHIM = """from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3ForCausalLM
+
+
+class DeepseekV32ForCausalLM(DeepseekV3ForCausalLM):
+    pass
+"""
+
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
-    model_org: str = "zianglih"
-    model_name: str = "DeepSeek-V3.2-6layer"
-    megatron_model_type: str = "deepseek-v32-6layer"
+    model_org: str = "Pinaster"
+    model_name: str = "DeepSeek-V3.2-5layer"
+    megatron_model_type: str = "deepseek-v32-5layer"
     num_gpus_per_node: int | None = 8
     actor_num_gpus_per_node: int | None = 4
     rollout_num_gpus: int | None = 4
     hardware: Literal["B200", "B300", "GB200", "GB300"] = "B200"
-    enable_eval: bool = True
+    enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     rollout_mxfp8: bool = False
     train_mxfp8: bool = False
-    num_layers_at_start_in_bf16: int = 0
-    num_layers_at_end_in_bf16: int = 0
     enable_mis: bool = False
     tis_use_rs: bool = True
 
@@ -35,9 +48,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         pass
 
 
-def _process_deepseek_v32_checkpoint(args: ScriptArgs):
-    """Patch checkpoint config so HF auto classes resolve to DeepSeek-v3.2."""
-    config_path = Path(args.model_dir) / args.model_name / "config.json"
+def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
+    """Patch checkpoint so AutoConfig can resolve DeepSeek v3.2."""
+    config_path = checkpoint_dir / "config.json"
     if not config_path.exists():
         print(f"Warning: {config_path} not found, skipping checkpoint processing")
         return
@@ -45,14 +58,7 @@ def _process_deepseek_v32_checkpoint(args: ScriptArgs):
     with open(config_path) as f:
         config = json.load(f)
 
-    if (
-        config.get("model_type") == "deepseek_v32"
-        and config.get("architectures") == ["DeepseekV32ForCausalLM"]
-        and isinstance(config.get("auto_map"), dict)
-        and config["auto_map"].get("AutoConfig") == "configuration_deepseek_v32.DeepseekV32Config"
-        and config["auto_map"].get("AutoModelForCausalLM") == "modeling_deepseek_v32.DeepseekV32ForCausalLM"
-    ):
-        print("Checkpoint already patched, skipping")
+    if config["model_type"] not in ["deepseek_v32", "glm_moe_dsa"]:
         return
 
     config["architectures"] = ["DeepseekV32ForCausalLM"]
@@ -64,34 +70,46 @@ def _process_deepseek_v32_checkpoint(args: ScriptArgs):
 
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-    print(f"Patched {config_path}")
+
+    (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
+    (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
+    print(f"Patched DeepSeek v3.2 files in {checkpoint_dir}")
 
 
 def prepare(args: ScriptArgs):
+    source_checkpoint = Path(args.model_dir) / args.model_name
+    mxfp8_checkpoint = Path(args.model_dir) / f"{args.model_name}-MXFP8"
+    bf16_checkpoint = Path(args.model_dir) / f"{args.model_name}-bf16"
+
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
-    _process_deepseek_v32_checkpoint(args)
+    _patch_deepseek_v32_checkpoint(source_checkpoint)
 
     if args.rollout_mxfp8:
         U.exec_command(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
-            f"--num-layers-at-start-in-bf16 {args.num_layers_at_start_in_bf16} "
-            f"--num-layers-at-end-in-bf16 {args.num_layers_at_end_in_bf16} "
             f"{args.extra_args} "
         )
+        _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
+
+    U.fp8_cast_bf16(
+        path_src=f"{args.model_dir}/{args.model_name}",
+        path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
+    )
+    _patch_deepseek_v32_checkpoint(bf16_checkpoint)
 
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=4,
+        num_gpus_per_node=args.actor_num_gpus_per_node,
         # To support multi-node training, for simplicity, we put model into shared folder
         dir_dst=args.model_dir,
-        hf_checkpoint=f"{args.model_dir}/{args.model_name}",
+        hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
         megatron_path=args.megatron_path,
     )
 
@@ -180,7 +198,7 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {args.rollout_num_gpus} "
         "--use-fault-tolerance "
-        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
+        # f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {
         "SGLANG_NSA_FORCE_MLA": "1",
@@ -200,13 +218,6 @@ def execute(args: ScriptArgs):
                     # --moe-router-padding-for-quantization
                 )
 
-    if args.train_mxfp8 and (args.num_layers_at_start_in_bf16 > 0 or args.num_layers_at_end_in_bf16 > 0):
-        misc_args += (
-            "--first-last-layers-bf16 "
-            f"--num-layers-at-start-in-bf16 {args.num_layers_at_start_in_bf16} "
-            f"--num-layers-at-end-in-bf16 {args.num_layers_at_end_in_bf16} "
-        )
-
     match args.hardware:
         case "B200" | "B300" | "GB200" | "GB300":
             perf_args += (
@@ -223,30 +234,41 @@ def execute(args: ScriptArgs):
                 "--sglang-attention-backend nsa "
                 "--sglang-nsa-decode-backend flashmla_sparse "
                 "--sglang-nsa-prefill-backend flashmla_sparse "
+                "--sglang-kv-cache-dtype bf16 "
+                # NSA KV cache requires page_size=64 on CUDA.
+                "--sglang-page-size 64 "
             )
 
             if args.rollout_mxfp8:
-                sglang_world_size = 1
-                sglang_attn_tp_size = 1
+                sglang_world_size = 2
                 sglang_decode_max_bs = 256
                 sglang_args += (
-                    "--sglang-enable-dp-attention "
-                    f"--rollout-num-gpus-per-engine 1 "
+                    f"--rollout-num-gpus-per-engine {sglang_world_size} "
                     "--sglang-fp8-gemm-backend flashinfer_trtllm "
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
-                    f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
-                    f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+                    f"--sglang-tp-size {sglang_world_size} "
+                    f"--sglang-dp-size {sglang_world_size} "
+                    "--sglang-enable-dp-attention "
+                    # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+                    # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
-                    "--sglang-moe-dense-tp-size 1 "
+                    # "--sglang-moe-dense-tp-size 1 "
                 )
-                misc_args += (
-                    "--extra-high-precision-layers .kv_b_proj. "
-                    "--extra-high-precision-layers-megatron .linear_kv_up_proj .linear_k_up_proj .linear_v_up_proj "
-                )
+
+                default_extra_high_precision_layers = [".kv_b_proj."]
+                default_extra_high_precision_layers_megatron = [
+                    ".linear_kv_up_proj",
+                    ".linear_k_up_proj",
+                    ".linear_v_up_proj",
+                ]
+                if "--extra-high-precision-layers" not in args.extra_args:
+                    misc_args += (
+                        f"--extra-high-precision-layers {' '.join(default_extra_high_precision_layers)} "
+                        f"--extra-high-precision-layers-megatron {' '.join(default_extra_high_precision_layers_megatron)} "
+                    )
                 optimizer_args += (
                     "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
                 )
-                misc_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
                 te_precision_config_text = """
 configs:
   bf16:
@@ -269,7 +291,8 @@ matchers:
     pattern: "*.self_attention.linear_v_up_proj"
     config: "bf16"
 """.strip()
-                misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
+                if "--te-precision-config-file" not in args.extra_args:
+                    misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 1 " "--sglang-cuda-graph-max-bs 256 "
         case _:
