@@ -17,15 +17,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_gpus_per_node: int | None = 4
     rollout_num_gpus: int | None = 4
     hardware: Literal["B200", "B300", "GB200", "GB300"] = "B200"
-    enable_eval: bool = True
+    enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     rollout_mxfp8: bool = False
     train_mxfp8: bool = False
-    num_layers_at_start_in_bf16: int = 0
-    num_layers_at_end_in_bf16: int = 0
     enable_mis: bool = False
     tis_use_rs: bool = True
 
@@ -45,15 +43,13 @@ def prepare(args: ScriptArgs):
         U.exec_command(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
-            f"--num-layers-at-start-in-bf16 {args.num_layers_at_start_in_bf16} "
-            f"--num-layers-at-end-in-bf16 {args.num_layers_at_end_in_bf16} "
             f"{args.extra_args} "
         )
 
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.num_gpus_per_node,
+        num_gpus_per_node=args.actor_num_gpus_per_node,
         # To support multi-node training, for simplicity, we put model into shared folder
         dir_dst=args.model_dir,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}",
@@ -141,10 +137,11 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         "--attention-backend auto "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
+        f"--rollout-num-gpus {args.rollout_num_gpus} "
         "--use-fault-tolerance "
-        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
+        # f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
 
@@ -161,13 +158,6 @@ def execute(args: ScriptArgs):
                     # --moe-router-padding-for-quantization
                 )
 
-    if args.train_mxfp8 and (args.num_layers_at_start_in_bf16 > 0 or args.num_layers_at_end_in_bf16 > 0):
-        misc_args += (
-            "--first-last-layers-bf16 "
-            f"--num-layers-at-start-in-bf16 {args.num_layers_at_start_in_bf16} "
-            f"--num-layers-at-end-in-bf16 {args.num_layers_at_end_in_bf16} "
-        )
-
     match args.hardware:
         case "B200" | "B300" | "GB200" | "GB300":
             perf_args += (
@@ -180,17 +170,19 @@ def execute(args: ScriptArgs):
             )
             sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mla "
             if args.rollout_mxfp8:
-                sglang_world_size = 1
-                sglang_attn_tp_size = 1
+                sglang_world_size = 2
                 sglang_decode_max_bs = 256
                 sglang_args += (
                     "--sglang-enable-dp-attention "
-                    f"--rollout-num-gpus-per-engine 1 "
+                    f"--rollout-num-gpus-per-engine {sglang_world_size} "
                     "--sglang-fp8-gemm-backend flashinfer_trtllm "
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
-                    f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
-                    f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+                    f"--sglang-tp-size {sglang_world_size} "
+                    f"--sglang-dp-size {sglang_world_size} "
+                    "--sglang-enable-dp-attention "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+                    # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                 )
                 misc_args += (
                     "--extra-high-precision-layers .kv_b_proj. "
