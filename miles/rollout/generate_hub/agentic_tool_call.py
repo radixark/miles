@@ -70,9 +70,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             metadata=metadata,
         )
     except Exception as e:
-        logger.warning(f"Agent function failed for session {tracer.session_id}: {e}")
-    finally:
-        records, session_metadata = await tracer.collect_records()
+        logger.warning(f"Agent function failed for session {tracer.session_id}: {e}", exc_info=True)
+
+    records, session_metadata = await tracer.collect_records()
 
     if not records:
         logger.warning("No model calls recorded for sample")
