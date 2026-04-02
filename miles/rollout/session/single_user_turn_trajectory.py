@@ -32,11 +32,14 @@ class SingleUserTurnTrajectory:
     Tracks the full message history and accumulated token IDs for one session.
     The typical message sequence is: [system?, user, assistant, tool, assistant, tool, …],
     but the agent may retry from an earlier point (e.g. re-running a tool call),
-    in which case the session is rolled back to the last matching assistant
-    checkpoint and re-extended from there.
+    in which case the session is rolled back at most one assistant step.
 
     Concurrency contract: all mutating methods must be called under ``self.lock``.
     """
+
+    # TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
+    #  raise this limit or make it configurable and remove the restriction.
+    MAX_ASSISTANT_ROLLBACK_STEPS = 1
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
@@ -70,7 +73,7 @@ class SingleUserTurnTrajectory:
 
         # 1. Reject multi-turn (user after assistant) — single-user-turn only.
         _assert_no_user_after_assistant(request_messages)
-        # 2. Detect agent retries and roll back to the last matching checkpoint.
+        # 2. Detect agent retries and roll back (at most one assistant step).
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
         # 3. Confirm the (possibly rolled-back) stored messages are a prefix of request.
         try:
@@ -137,29 +140,15 @@ class SingleUserTurnTrajectory:
     ) -> None:
         """Detect if *request_messages* diverges from stored history and roll back.
 
-        In agentic workflows the agent may retry from an earlier point — for
-        example, re-running a tool call with different arguments.  When that
-        happens the new request shares a common prefix with the stored messages
-        but diverges before the end.  This method truncates session state back
-        to the last assistant checkpoint within the matching prefix.
-
-        Example — agent retries after the first tool call::
-
-            stored:  [sys, user, assistant₁, tool₁, assistant₂]
-                      ───────────────────── ▲
-                      checkpoint 0 (assistant₁)   checkpoint 1 (assistant₂)
-
-            request: [sys, user, assistant₁, tool₁_different, ...]
-                                             ↑ diverges here (index 3)
-
-            match_len = 3  (sys, user, assistant₁ all match)
-            Last assistant in matched prefix → assistant₁ (checkpoint 0)
-
-            After rollback:
-              messages           = [sys, user, assistant₁]
-              trajectory_token_ids = [checkpoint_0_ids]
-              records              = [record_0]
-              num_assistant        = 1
+        Only a single-step rollback is allowed (controlled by
+        ``MAX_ASSISTANT_ROLLBACK_STEPS``).  Discarding exactly one assistant
+        message means the agent is retrying from the latest checkpoint —
+        the request shares the stored prefix up to that assistant and then
+        continues with whatever the agent chooses (same or different tool
+        result, additional messages, etc.).  Any request that would need to
+        discard more than one assistant (i.e. jump back across multiple
+        turns) is rejected with ``MessageValidationError`` and no state is
+        modified.
 
         No rollback occurs when:
         - The stored history is empty.
@@ -197,12 +186,23 @@ class SingleUserTurnTrajectory:
                 f"request has {len(request_messages)} messages)"
             )
 
+        discard_count = self.num_assistant - (checkpoint_index + 1)
+        if discard_count > self.MAX_ASSISTANT_ROLLBACK_STEPS:
+            raise MessageValidationError(
+                f"rollback failed: discard_count={discard_count} exceeds "
+                f"max_assistant_rollback_steps={self.MAX_ASSISTANT_ROLLBACK_STEPS} "
+                f"(stored has {len(stored)} messages, "
+                f"request has {len(request_messages)} messages)"
+            )
+
         logger.info(
-            "Rolling back session: stored %d messages / %d checkpoints -> " "checkpoint %d (messages[:%d])",
+            "Rolling back session: stored %d messages / %d checkpoints -> "
+            "checkpoint %d (messages[:%d]), discarding %d assistant(s)",
             len(stored),
             self.num_assistant,
             checkpoint_index,
             rollback_msg_end,
+            discard_count,
         )
 
         self.messages = stored[:rollback_msg_end]

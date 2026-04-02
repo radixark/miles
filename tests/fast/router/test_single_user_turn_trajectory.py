@@ -347,14 +347,12 @@ class TestRollback:
         assert session.token_ids == [1, 2, 3, 10, 11]
         assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1]
 
-    def test_rollback_preserves_prefix_tokens(self, registry: SessionRegistry):
-        """After rollback, token_ids equals the checkpoint's tokens."""
+    def test_multi_step_rollback_raises(self, registry: SessionRegistry):
+        """Rollback that discards >1 assistant raises MessageValidationError and leaves state unchanged."""
         sid = registry.create_session()
         session = registry.get_session(sid)
 
-        t1_msgs = [SYS_MSG, USER_MSG]
-        t1_tokens = [1, 2, 3, 10, 11]
-        session.update_pretokenized_state(t1_msgs, ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
         session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
@@ -368,16 +366,26 @@ class TestRollback:
             t3_msgs, ASSISTANT_MSG_FINAL, [1, 2, 3, 10, 11, 20, 21, 30, 31, 40], [50, 51], max_trim_tokens=0
         )
 
-        assert len(session.trajectory_token_ids) == 3
+        assert session.num_assistant == 3
 
-        # Rollback to checkpoint 0 (first assistant)
+        # Snapshot state before attempted rollback
+        prev_messages = list(session.messages)
+        prev_token_ids = list(session.trajectory_token_ids)
+        prev_records = list(session.records)
+        prev_num_assistant = session.num_assistant
+
+        # Attempt rollback to checkpoint 0 (discard 2 assistants) — should fail
         new_tool = {"role": "tool", "content": '{"alt": true}', "tool_call_id": "call_1"}
-        session.prepare_pretokenized(
-            [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool], tito_tokenizer=registry.tito_tokenizer
-        )
+        with pytest.raises(MessageValidationError, match="exceeds max_assistant_rollback_steps"):
+            session.prepare_pretokenized(
+                [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool], tito_tokenizer=registry.tito_tokenizer
+            )
 
-        assert session.token_ids == t1_tokens
-        assert session.num_assistant == 1
+        # State must be unchanged
+        assert session.messages == prev_messages
+        assert session.trajectory_token_ids == prev_token_ids
+        assert session.records == prev_records
+        assert session.num_assistant == prev_num_assistant
 
     def test_rollback_then_continue_full_trajectory(self, registry: SessionRegistry):
         """Rollback and then complete a full new trajectory from the checkpoint."""
