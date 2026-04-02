@@ -31,7 +31,7 @@ P2P mode addresses this by having each training rank transfer only the specific 
 
 All the following settings are tested under h100-80g clusters.
 
-### Single node： Qwen3-4B
+### Single node: Qwen3-4B
 `tests/e2e/megatron/test_qwen3_4B_p2p.py`
 ### Multi node: Qwen3-30B-A3B P2P Weight Transfer (4 nodes)
 
