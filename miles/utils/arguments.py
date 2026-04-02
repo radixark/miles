@@ -1787,6 +1787,16 @@ def miles_validate_args(args):
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
     args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
 
+    if "user" in args.tito_allowed_append_roles:
+        logger.warning(
+            "--tito-allowed-append-roles includes 'user'. "
+            "Incremental tokenization assumes appended messages do not change how "
+            "earlier turns render, which may not hold for user messages on "
+            "context-sensitive chat templates (e.g. last_query_index logic, "
+            "thinking-token trimming). This can cause input_ids to diverge from "
+            "the canonical template output. Use at your own risk."
+        )
+
     if args.chat_template_path == "autofix":
         from miles.utils.chat_template_utils import try_get_fixed_chat_template
 
