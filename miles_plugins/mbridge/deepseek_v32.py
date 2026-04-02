@@ -23,6 +23,9 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
         Our training uses last half for rope while DeepSeek uses first half,
         so we swap the two halves.
         """
+        if not self.hf_config.indexer_rope_interleave:
+            return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+
         if "self_attention.wq_b.weight" in mcore_weights_name:
             hf_names = self._weight_name_mapping_mcore_to_hf(mcore_weights_name)
             wq_b = mcore_weights
@@ -51,6 +54,9 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
 
         The swap operation is its own inverse: swap the two halves back.
         """
+        if not self.hf_config.indexer_rope_interleave:
+            return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+
         if "self_attention.wq_b.weight" in mcore_weights_name:
             wq_b = hf_weights[0]
             wq_b = wq_b.view(-1, 128, wq_b.shape[-1])  # hard code 128
