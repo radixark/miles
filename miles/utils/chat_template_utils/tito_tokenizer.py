@@ -76,9 +76,7 @@ class TITOTokenizer:
         self.tokenizer = tokenizer
         self.chat_template_kwargs = chat_template_kwargs or {}
         self._assistant_start_str = assistant_start_str
-        self.allowed_append_roles: list[str] = (
-            list(allowed_append_roles) if allowed_append_roles is not None else ["tool"]
-        )
+        self.allowed_append_roles: list[str] = allowed_append_roles if allowed_append_roles is not None else ["tool"]
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -280,7 +278,7 @@ def get_tito_tokenizer(
     tokenizer_type: TITOTokenizerType | str = TITOTokenizerType.DEFAULT,
     chat_template_kwargs: dict[str, Any] | None = None,
     assistant_start_str: str | None = None,
-    allowed_append_roles: set[str] | list[str] | None = None,
+    allowed_append_roles: list[str] | None = None,
 ) -> TITOTokenizer:
     """Create a ``TITOTokenizer`` instance.
 
@@ -293,7 +291,7 @@ def get_tito_tokenizer(
             segments (e.g. ``"<|im_start|>assistant"``).  Auto-detected from
             the chat template by default; pass explicitly to override.
         allowed_append_roles: Roles allowed in appended messages.  Defaults to
-            ``frozenset({"tool"})``.  Passed to
+            ``["tool"]``.  Passed to
             ``assert_messages_append_only_with_allowed_role``.
     """
     if tokenizer is None:
