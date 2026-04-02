@@ -592,15 +592,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "The path must be accessible on all Ray worker nodes "
                 "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
             )
-            parser.add_argument(
-                "--tito-model",
-                type=str,
-                default="default",
-                choices=[t.value for t in TITOTokenizerType],
-                help="TITO tokenizer type for pretokenized prefix reuse. "
-                "Controls how token IDs are computed for messages appended after "
-                "the pretokenized prefix in multi-turn agentic sessions.",
-            )
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--label-key", type=str, default=None, help="JSON dataset key")
             parser.add_argument(
@@ -1569,6 +1560,37 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_session_arguments(parser):
+            parser.add_argument(
+                "--use-session-server",
+                action="store_true",
+                default=False,
+                help="Start a standalone session server for TITO/session support. "
+                "Requires --hf-checkpoint and --chat-template-path to also be set.",
+            )
+            parser.add_argument(
+                "--session-server-ip",
+                type=str,
+                default=None,
+                help="IP address of the standalone session server. Defaults to sglang-router-ip.",
+            )
+            parser.add_argument(
+                "--session-server-port",
+                type=int,
+                default=None,
+                help="Port of the standalone session server. Auto-allocated if not set.",
+            )
+            parser.add_argument(
+                "--tito-model",
+                type=str,
+                default="default",
+                choices=[t.value for t in TITOTokenizerType],
+                help="TITO tokenizer type for pretokenized prefix reuse. "
+                "Controls how token IDs are computed for messages appended after "
+                "the pretokenized prefix in multi-turn agentic sessions.",
+            )
+            return parser
+
         def add_user_provided_function_arguments(parser):
             args_partial, _ = parser.parse_known_args()
             for path in [
@@ -1608,6 +1630,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
