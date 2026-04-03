@@ -14,8 +14,10 @@ import pytest
 import requests
 
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
+from miles.rollout.session.session_server import SessionServer
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
+from miles.utils.chat_template_utils import try_get_fixed_chat_template
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, with_mock_server
@@ -97,6 +99,35 @@ def _write_jsonl(path: str, rows: list[dict]) -> None:
 DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
+@contextmanager
+def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornThreadServer]:
+    """Start a SessionServer for agentic variants that need TITO session tracking."""
+    from types import SimpleNamespace
+
+    session_args = SimpleNamespace(
+        miles_router_timeout=30,
+        hf_checkpoint=args.hf_checkpoint,
+        chat_template_path=getattr(args, "chat_template_path", None)
+        or try_get_fixed_chat_template(args.hf_checkpoint),
+        tito_model=getattr(args, "tito_model", "default"),
+        use_rollout_routing_replay=getattr(args, "use_rollout_routing_replay", False),
+    )
+    session_server = SessionServer(session_args, backend_url=backend_url)
+    port = find_available_port(31000)
+    server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
+    try:
+        server.start()
+        args.session_server_ip = "127.0.0.1"
+        args.session_server_port = port
+        yield server
+    finally:
+        server.stop()
+
+
+def _needs_session_server(extra_argv: list[str] | None) -> bool:
+    return extra_argv is not None and "--custom-agent-function-path" in extra_argv
+
+
 @pytest.fixture
 def rollout_env(tmp_path, request) -> RolloutEnv:
     config = request.param
@@ -121,7 +152,12 @@ def rollout_env(tmp_path, request) -> RolloutEnv:
             )
             r.raise_for_status()
 
-            data_source = RolloutDataSourceWithBuffer(args)
-            yield RolloutEnv(args=args, data_source=data_source, mock_server=mock_server)
+            if _needs_session_server(config.extra_argv):
+                with _with_session_server(args, router_server.url):
+                    data_source = RolloutDataSourceWithBuffer(args)
+                    yield RolloutEnv(args=args, data_source=data_source, mock_server=mock_server)
+            else:
+                data_source = RolloutDataSourceWithBuffer(args)
+                yield RolloutEnv(args=args, data_source=data_source, mock_server=mock_server)
 
     SingletonMeta.clear_all_instances()
