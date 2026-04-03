@@ -914,25 +914,42 @@ def loss_function(
     if parallel_state.cp_size > 1 and args.allgather_cp:
         loss = loss + 0 * logits.sum()
 
-    # Here we need to divide by cp_size because to cancel the multiply in Megatron.
+    # Resolve effective loss mode: --loss-agg-mode takes precedence over --calculate-per-token-loss
+    loss_agg_mode = getattr(args, "loss_agg_mode", None)
+    if loss_agg_mode is None:
+        loss_agg_mode = "token-sum" if args.calculate_per_token_loss else "sample-mean"
+    uses_token_normalization = loss_agg_mode in ("token-mean", "token-sum")
+
+    # Scale loss for distributed training.
+    # - sample-mean: divide by global_batch_size (number of samples)
+    # - token-mean/token-sum: use num_tokens as normalizer
+    #   For Megatron: the external normalizer handles division by num_tokens.
+    #   For FSDP (apply_megatron_loss_scaling=False): token-mean explicitly
+    #   divides by num_tokens here since FSDP ignores the returned normalizer.
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
-    if not args.calculate_per_token_loss:
+    if not uses_token_normalization:
+        # sample-mean path
         if apply_megatron_loss_scaling:
             loss = loss * num_microbatches / global_batch_size * parallel_state.dp_cp_size
         else:
             loss = loss / global_batch_size * parallel_state.dp_size
     else:
         if apply_megatron_loss_scaling:
+            # Megatron normalizes externally via num_tokens normalizer
             loss = loss * parallel_state.cp_size
+        elif loss_agg_mode == "token-mean":
+            # FSDP: normalize by num_tokens explicitly (FSDP ignores the normalizer)
+            loss = loss / torch.clamp_min(num_tokens, 1) * parallel_state.dp_size
+        # token-sum on FSDP: no normalization (raw sum, legacy behavior)
 
     return (
         loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
+        torch.tensor(num_tokens if uses_token_normalization else 1, device=logits.device),
         {
             "keys": list(log.keys()),
             "values": torch.tensor(
                 [
-                    num_samples if not args.calculate_per_token_loss else num_tokens,
+                    num_samples if not uses_token_normalization else num_tokens,
                 ]
                 + list(log.values()),
                 device=logits.device,

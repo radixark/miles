@@ -800,9 +800,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 choices=["sample-mean", "token-mean", "token-sum"],
                 help=(
-                    "Loss aggregation mode. 'sample-mean' (default): per-sample token-mean then sum. "
-                    "'token-mean': masked sum / total masked tokens * dp_size (equal weight per token). "
-                    "'token-sum': raw masked sum (legacy, same as --calculate-per-token-loss). "
+                    "Loss aggregation mode. Takes precedence over --calculate-per-token-loss. "
+                    "'sample-mean' (default): per-sample token-mean, then sum across samples. "
+                    "'token-mean': masked sum / total tokens — every token contributes equally. "
+                    "On Megatron backend this is equivalent to --calculate-per-token-loss; "
+                    "on FSDP backend this adds explicit normalization that FSDP otherwise skips. "
+                    "'token-sum': raw masked sum with no local normalization (same as --calculate-per-token-loss). "
                     "If not set, falls back to --calculate-per-token-loss behavior."
                 ),
             )

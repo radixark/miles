@@ -67,14 +67,15 @@ def get_sum_of_sample_mean(
 
     Modes (selected by loss_agg_mode, falls back to calculate_per_token_loss):
       - "sample-mean" (default): per-sample token-mean, then sum across samples.
-      - "token-mean": masked sum / total masked tokens * dp_size.
-        Every token contributes equally regardless of sequence length.
-      - "token-sum": raw masked sum (no normalization), legacy calculate_per_token_loss=True.
+      - "token-mean": raw masked sum (same reducer as token-sum). The per-token
+        normalization is handled downstream in loss_function, which divides by
+        num_tokens. This is needed for the FSDP backend where the external
+        normalizer is not used. On Megatron, --calculate-per-token-loss already
+        achieves the same effect via the external normalizer.
+      - "token-sum": raw masked sum, legacy calculate_per_token_loss=True.
     """
     if loss_agg_mode is None:
         loss_agg_mode = "token-sum" if calculate_per_token_loss else "sample-mean"
-
-    total_mask_tokens = sum(loss_mask.sum() for loss_mask in loss_masks)
 
     cp_size = parallel_state.cp_size
     if cp_size == 1:
@@ -94,15 +95,6 @@ def get_sum_of_sample_mean(
                     for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
                 ]
             )
-
-        def sum_of_token_mean(x: torch.Tensor) -> torch.Tensor:
-            raw = sum(
-                [
-                    (x_i * loss_mask_i).sum()
-                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
-                ]
-            )
-            return raw / torch.clamp_min(total_mask_tokens, 1)
 
     else:
         cp_chunk_lengths = []
@@ -140,20 +132,9 @@ def get_sum_of_sample_mean(
                 ]
             )
 
-        def sum_of_token_mean(x: torch.Tensor) -> torch.Tensor:
-            raw = sum(
-                [
-                    (x_i * chunked_loss_mask).sum()
-                    for x_i, chunked_loss_mask in zip(
-                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, strict=False
-                    )
-                ]
-            )
-            return raw / torch.clamp_min(total_mask_tokens, 1)
-
-    if loss_agg_mode == "token-mean":
-        return sum_of_token_mean
-    elif loss_agg_mode == "token-sum":
+    # token-mean uses the same raw-sum reducer as token-sum; the per-token
+    # normalization is handled in loss_function (needed for FSDP backend).
+    if loss_agg_mode in ("token-mean", "token-sum"):
         return sum_of_token
     else:
         return sum_of_sample_mean
