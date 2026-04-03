@@ -4,10 +4,12 @@ import re
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
 
+import ray
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.utils.types import ParamInfo
@@ -252,3 +254,45 @@ def _named_params_and_buffers_global(
                 layer_idx, rest = match.groups()
                 layer_idx = int(layer_idx) + layer_offset
                 yield f"module.module.decoder.layers.{layer_idx}.{rest}", buffer
+
+
+def collect_named_tensors_for_weight_transfer(
+    args: Namespace,
+    model: Sequence[torch.nn.Module],
+    convert_to_global_name: bool = True,
+    translate_gpu_to_cpu: bool = False,
+    is_expert: bool = False,
+) -> Iterator[tuple[str, torch.Tensor]]:
+
+    for name, tensor in named_params_and_buffers(
+        args,
+        model,
+        convert_to_global_name,
+        translate_gpu_to_cpu,
+    ):
+        if is_expert == (".experts." in name):
+            yield name, tensor
+
+
+def post_process_weights(
+    rollout_engines: Sequence[ActorHandle],
+    restore_weights_before_load: bool = False,
+    post_process_quantization: bool = False,
+    post_load_weights: bool = False,
+):
+    """
+    Trigger post-process on all rollout engines,
+    including:
+        - int4/fp4 quantization
+        - post_load_weights (should be enabled when using p2p weights updating)
+    """
+    ray.get(
+        [
+            engine.post_process_weights.remote(
+                restore_weights_before_load=restore_weights_before_load,
+                post_process_quantization=post_process_quantization,
+                post_load_weights=post_load_weights,
+            )
+            for engine in rollout_engines
+        ]
+    )

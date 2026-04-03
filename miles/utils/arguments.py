@@ -479,6 +479,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
                 help="Address and ports of the external engines.",
             )
+            parser.add_argument(
+                "--update-weight-transfer-mode",
+                choices=["broadcast", "p2p"],
+                default="broadcast",
+                help="The method to transfer weights to remote rollout engines during update weight.",
+            )
+            parser.add_argument(
+                "--p2p-transfer-num-workers",
+                type=int,
+                default=4,
+                help="Number of thread pool workers for P2P weight transfer.",
+            )
+            parser.add_argument(
+                "--p2p-transfer-timeout",
+                type=float,
+                default=30.0,
+                help="Timeout in seconds for each P2P transfer operation.",
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
@@ -573,15 +591,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "in agentic workflows (e.g. tool-call trajectories). "
                 "The path must be accessible on all Ray worker nodes "
                 "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
-            )
-            parser.add_argument(
-                "--tito-model",
-                type=str,
-                default="default",
-                choices=[t.value for t in TITOTokenizerType],
-                help="TITO tokenizer type for pretokenized prefix reuse. "
-                "Controls how token IDs are computed for messages appended after "
-                "the pretokenized prefix in multi-turn agentic sessions.",
             )
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--label-key", type=str, default=None, help="JSON dataset key")
@@ -1551,6 +1560,45 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_session_arguments(parser):
+            parser.add_argument(
+                "--use-session-server",
+                action="store_true",
+                default=False,
+                help="Start a standalone session server for TITO/session support. "
+                "Requires --hf-checkpoint and --chat-template-path to also be set.",
+            )
+            parser.add_argument(
+                "--session-server-ip",
+                type=str,
+                default=None,
+                help="IP address of the standalone session server. Defaults to sglang-router-ip.",
+            )
+            parser.add_argument(
+                "--session-server-port",
+                type=int,
+                default=None,
+                help="Port of the standalone session server. Auto-allocated if not set.",
+            )
+            parser.add_argument(
+                "--tito-model",
+                type=str,
+                default="default",
+                choices=[t.value for t in TITOTokenizerType],
+                help="TITO tokenizer type for pretokenized prefix reuse. "
+                "Controls how token IDs are computed for messages appended after "
+                "the pretokenized prefix in multi-turn agentic sessions.",
+            )
+            parser.add_argument(
+                "--tito-allowed-append-roles",
+                nargs="+",
+                default=["tool"],
+                choices=["tool", "user", "system"],
+                help="Message roles allowed to be appended after the pretokenized "
+                "assistant prefix in TITO sessions (default: tool).",
+            )
+            return parser
+
         def add_user_provided_function_arguments(parser):
             args_partial, _ = parser.parse_known_args()
             for path in [
@@ -1590,6 +1638,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
@@ -1724,6 +1773,20 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
+    raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
+    args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
+
+    if "user" in args.tito_allowed_append_roles:
+        logger.warning(
+            "--tito-allowed-append-roles includes 'user'. "
+            "Incremental tokenization assumes appended messages do not change how "
+            "earlier turns render, which may not hold for user messages on "
+            "context-sensitive chat templates (e.g. last_query_index logic, "
+            "thinking-token trimming). This can cause input_ids to diverge from "
+            "the canonical template output. Use at your own risk."
+        )
 
     if args.chat_template_path == "autofix":
         from miles.utils.chat_template_utils import try_get_fixed_chat_template
@@ -1871,6 +1934,15 @@ def miles_validate_args(args):
     )
 
     # always true on offload for colocate at the moment.
+    if args.update_weight_transfer_mode == "p2p":
+        assert not args.colocate, (
+            "P2P weight transfer mode is not compatible with --colocate. "
+            "Please use broadcast mode or disable colocate."
+        )
+        assert (
+            getattr(args, "prefill_num_servers", None) is None
+        ), "P2P weight transfer mode has not been tested when PD is enabled."
+
     if args.colocate:
         if args.offload_train is None:
             args.offload_train = True

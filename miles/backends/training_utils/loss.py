@@ -913,6 +913,7 @@ def loss_function(
         loss = loss + 0 * logits.sum()
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
+    assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:

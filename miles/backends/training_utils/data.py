@@ -350,6 +350,7 @@ def get_data_iterator(
     cp_size = parallel_state.cp.size
 
     num_local_samples = len(rollout_data["total_lengths"])
+    assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
     global_batch_size = rollout_data.get("dynamic_global_batch_size", args.global_batch_size)
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
