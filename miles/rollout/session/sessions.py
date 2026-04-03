@@ -44,11 +44,15 @@ def setup_session_routes(app, backend, args):
     async def debug_request_logger(request: Request, call_next):
         client = request.client
         client_info = f"{client.host}:{client.port}" if client else "unknown"
-        logger.info(f"[session-server] REQUEST ARRIVED: {request.method} {request.url.path} from={client_info} inflight_chat={_inflight_chat['count']}")
+        logger.info(
+            f"[session-server] REQUEST ARRIVED: {request.method} {request.url.path} from={client_info} inflight_chat={_inflight_chat['count']}"
+        )
         t0 = time.time()
         response = await call_next(request)
         elapsed = time.time() - t0
-        logger.info(f"[session-server] REQUEST DONE: {request.method} {request.url.path} status={response.status_code} elapsed={elapsed:.3f}s from={client_info}")
+        logger.info(
+            f"[session-server] REQUEST DONE: {request.method} {request.url.path} status={response.status_code} elapsed={elapsed:.3f}s from={client_info}"
+        )
         return response
 
     @app.exception_handler(SessionError)
@@ -87,7 +91,9 @@ def setup_session_routes(app, backend, args):
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
         session.closing = True
-        logger.info(f"[session-server] DELETE waiting for lock: session={session_id} lock_locked={session.lock.locked()}")
+        logger.info(
+            f"[session-server] DELETE waiting for lock: session={session_id} lock_locked={session.lock.locked()}"
+        )
         await session.lock.acquire()
         logger.info(f"[session-server] DELETE acquired lock: session={session_id}")
         try:

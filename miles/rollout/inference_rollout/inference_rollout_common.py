@@ -71,13 +71,13 @@ async def generate_and_rm(
         return sample
 
     # generate
-    logger.info(f"[sample={getattr(sample, "index", "?")}] Waiting for semaphore...")
+    logger.info(f"[sample={getattr(sample, 'index', '?')}] Waiting for semaphore...")
     async with state.generate_fn_semaphore:
         if state.aborted:
             sample.status = Sample.Status.ABORTED
             return sample
 
-        logger.info(f"[sample={getattr(sample, "index", "?")}] Acquired semaphore, calling generate_function")
+        logger.info(f"[sample={getattr(sample, 'index', '?')}] Acquired semaphore, calling generate_function")
         output = await state.generate_function(
             GenerateFnInput(
                 state=state,
@@ -87,7 +87,7 @@ async def generate_and_rm(
             )
         )
         sample = output.samples
-        logger.info(f"[sample={getattr(sample, "index", "?")}] generate_function returned")
+        logger.info(f"[sample={getattr(sample, 'index', '?')}] generate_function returned")
 
     # TODO change to `if not args.group_rm: do reward model` for more clarity after the refactor below
     # for the rm that need the whole group, we will not do the rm here
@@ -112,7 +112,7 @@ async def generate_and_rm(
         if sample.reward is None:
             sample.reward = await async_rm(args, sample)
 
-    logger.info(f"[sample={getattr(sample, "index", "?")}] generate_and_rm complete")
+    logger.info(f"[sample={getattr(sample, 'index', '?')}] generate_and_rm complete")
     return sample
 
 
@@ -124,7 +124,9 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    logger.info(f"[group] Starting group with {len(group)} samples, indices={[getattr(s, "index", "?") for s in group]}")
+    logger.info(
+        f"[group] Starting group with {len(group)} samples, indices={[getattr(s, 'index', '?') for s in group]}"
+    )
     tasks = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()

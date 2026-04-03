@@ -23,8 +23,8 @@ Agent function contract:
 """
 
 import argparse
-import time
 import logging
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -97,7 +97,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         max_trim_tokens=session_metadata.get("max_trim_tokens", 0),
     )
 
-    logger.info(f"[session={tracer.session_id}] compute_samples done: {len(samples)} samples, total_time={time.monotonic()-_t0:.1f}s")
+    logger.info(
+        f"[session={tracer.session_id}] compute_samples done: {len(samples)} samples, total_time={time.monotonic()-_t0:.1f}s"
+    )
     for s in samples:
         s.metadata.update(agent_metadata or {})
 
