@@ -117,6 +117,23 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             return self.hf_config.text_config
         return self.hf_config
 
+    def _is_tied_word_embeddings(self) -> bool:
+        tie_word_embeddings = getattr(self.hf_config, "tie_word_embeddings", None)
+        if tie_word_embeddings is None and hasattr(self.hf_config, "text_config"):
+            tie_word_embeddings = getattr(self.hf_config.text_config, "tie_word_embeddings", None)
+        return bool(tie_word_embeddings)
+
+    def _adjust_mapping_for_shared_weights(self):
+        self._DIRECT_MAPPING = dict(self._DIRECT_MAPPING)
+        if self._is_tied_word_embeddings():
+            embed_key = self._DIRECT_MAPPING["embedding.word_embeddings.weight"]
+            self._DIRECT_MAPPING["output_layer.weight"] = embed_key
+
+    def _get_hf_shared_weight_keys(self) -> list[str]:
+        if self._is_tied_word_embeddings():
+            return [self._DIRECT_MAPPING["embedding.word_embeddings.weight"]]
+        return []
+
     def _supports_transformer_config_kwarg(self, kwarg_name: str) -> bool:
         """Check whether the current TransformerConfig accepts a given kwarg."""
         transformer_config_class = getattr(self, "TransformerConfigClass", None)
