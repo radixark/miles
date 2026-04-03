@@ -20,10 +20,6 @@ class RayTrainGroup:
             If none, create new placement group automatically. Defaults to None.
         num_gpus_per_actor (float, optional): Number of gpus allocated for each actor.
             If < 1.0, multiple models can share same gpu. Defaults to 1.
-        resources (Dict[str, float], optional): Custom resources to allocate for each actor.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
-        num_resources_per_node (int, optional): Number of custom resources to allocate for each node.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
     """
 
     def __init__(
@@ -41,7 +37,7 @@ class RayTrainGroup:
         self.role = role
 
         # Allocate the GPUs for actors w/o instantiating them
-        self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
+        self._actor_handles = self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
 
     def _allocate_gpus_for_actor(self, pg, num_gpus_per_actor):
         world_size = self._num_nodes * self._num_gpus_per_node
@@ -89,7 +85,7 @@ class RayTrainGroup:
         TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
 
         # Create worker actors
-        self._actor_handles = []
+        actor_handles = []
         master_addr, master_port = None, None
         for rank in range(world_size):
             actor = TrainRayActor.options(
@@ -102,13 +98,15 @@ class RayTrainGroup:
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
-            self._actor_handles.append(actor)
+            actor_handles.append(actor)
+
+        return actor_handles
 
     def async_init(self, args, role, with_ref=False):
         """
-        Allocate GPU resourced and initialize model, optimzier, local ckpt, etc.
+        Allocate GPU resourced and initialize model, optimizer, local ckpt, etc.
         """
-        self.args = args
+        assert args is self.args
         return [actor.init.remote(args, role, with_ref=with_ref) for actor in self._actor_handles]
 
     def async_train(self, rollout_id, rollout_data_ref):
