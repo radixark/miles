@@ -7,7 +7,6 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-from transformers import AutoConfig
 from transformers.activations import ACT2FN
 
 try:
@@ -16,11 +15,7 @@ try:
 except ImportError:
     pass
 
-from .hf_attention import HuggingfaceAttention
-
-
-def _load_hf_config(hf_checkpoint):
-    return AutoConfig.from_pretrained(hf_checkpoint, trust_remote_code=True)
+from .hf_attention import HuggingfaceAttention, _load_hf_config
 
 
 def _get_text_config(hf_config):
@@ -132,6 +127,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             initial_state=None,
             output_final_state=False,
             use_qk_l2norm_in_kernel=True,
+            cu_seqlens=cu_seqlens,
         )
 
         z_shape_og = z.shape
@@ -208,6 +204,14 @@ def get_qwen3_5_spec(args, config, vp_stage):
 
     hf_config = _load_hf_config(args.hf_checkpoint)
     text_config = _get_text_config(hf_config)
+
+    # Compute layer_types if the config class doesn't expose it
+    if not hasattr(text_config, "layer_types"):
+        interval = getattr(text_config, "full_attention_interval", 4)
+        n = text_config.num_hidden_layers
+        text_config.layer_types = [
+            "full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)
+        ]
 
     for layer_id in range(num_layers_to_build):
         if text_config.layer_types[layer_id + offset] == "linear_attention":

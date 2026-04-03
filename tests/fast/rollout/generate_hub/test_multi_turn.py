@@ -677,7 +677,7 @@ class TestAgentNoRecords:
             GenerateEnv,
             extra_argv_for_variant,
             make_args,
-            with_miles_router,
+            with_session_server,
         )
         from miles.utils.misc import SingletonMeta
         from miles.utils.test_utils.mock_sglang_server import with_mock_server
@@ -688,16 +688,18 @@ class TestAgentNoRecords:
             model_name=MODEL_NAME,
             process_fn=lambda _: ProcessResult(text="unused", finish_reason="stop"),
         ) as mock_server:
-            with with_miles_router(mock_server.url, MODEL_NAME) as router_port:
+            with with_session_server(mock_server.url, MODEL_NAME) as session_port:
                 noop_argv = extra_argv_for_variant(
                     agentic_variant,
                     custom_agent_function_path="miles.utils.test_utils.mock_tools.run_agentic_noop",
                 )
                 args = make_args(
                     variant=agentic_variant,
-                    router_port=router_port,
+                    router_port=session_port,
                     extra_argv=noop_argv,
                 )
+                args.session_server_ip = "127.0.0.1"
+                args.session_server_port = session_port
                 env = GenerateEnv(args=args, mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 

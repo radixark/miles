@@ -4,12 +4,12 @@ import json
 import logging
 
 import httpx
+import setproctitle
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
-from miles.router.session.sessions import setup_session_routes
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,9 @@ def run_router(args):
     """
     Run the Miles router with the specified configuration.
     """
+    # Visible to `pkill -9 miles`; without this the daemon inherits "python".
+    setproctitle.setproctitle("miles-router")
+
     # Initialize the router with tokenizer and lazy worker initialization
     miles_router = MilesRouter(args, verbose=False)
 
@@ -69,8 +72,6 @@ class MilesRouter:
         # sglang-router api
         self.app.post("/add_worker")(self.add_worker)
         self.app.get("/list_workers")(self.list_workers)
-        # Session routes - must be registered before catch-all
-        setup_session_routes(self.app, self)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
 
@@ -132,10 +133,10 @@ class MilesRouter:
 
     async def proxy(self, request: Request, path: str):
         """Proxy all other requests to the SGLang router"""
-        result = await self._do_proxy(request, path)
-        return self._build_proxy_response(result)
+        result = await self.do_proxy(request, path)
+        return self.build_proxy_response(result)
 
-    async def _do_proxy(
+    async def do_proxy(
         self,
         request: Request,
         path: str,
@@ -165,11 +166,12 @@ class MilesRouter:
         finally:
             self._finish_url(worker_url)
 
-    def _build_proxy_response(self, result: dict) -> Response:
+    def build_proxy_response(self, result: dict) -> Response:
         """Build HTTP response from proxy result."""
         content = result["response_body"]
         status_code = result["status_code"]
         headers = result["headers"]
+        headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
         content_type = headers.get("content-type", "")
         try:
             data = json.loads(content)

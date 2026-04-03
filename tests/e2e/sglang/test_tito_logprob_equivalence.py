@@ -21,9 +21,6 @@ Requires 1 GPU.
 import json
 import os
 from dataclasses import dataclass
-
-import pytest
-
 import miles.utils.external_utils.command_utils as U
 
 # ---------------------------------------------------------------------------
@@ -126,7 +123,9 @@ def execute():
         "tests.e2e.sglang.utils.session_tool_agent.run_agent "
     )
 
-    router_args = "--use-miles-router " "--chat-template-path autofix " f"--tito-model {cfg.tito_model} "
+    router_args = (
+        "--use-miles-router " "--use-session-server " "--chat-template-path autofix " f"--tito-model {cfg.tito_model} "
+    )
     if ENABLE_R3:
         router_args += "--use-rollout-routing-replay "
 
@@ -158,7 +157,6 @@ def execute():
     )
 
 
-@pytest.mark.system
 def test_tito_logprob_equivalence():
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):

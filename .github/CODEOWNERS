@@ -6,5 +6,6 @@
 /miles/backends/sglang_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu
 /miles/ray/ @fzyzcjy @yueming-yuan @maocheng23
 /miles/rollout/ @fzyzcjy @yueming-yuan @guapisolo
+/miles/rollout/session/ @fzyzcjy @yueming-yuan @guapisolo @maocheng23
 /miles/router/ @fzyzcjy @yueming-yuan @guapisolo
 /miles/utils/ @fzyzcjy @yueming-yuan @guapisolo @maocheng23

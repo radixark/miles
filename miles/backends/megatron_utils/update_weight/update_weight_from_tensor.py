@@ -15,11 +15,11 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
+from .common import post_process_weights
 from .hf_weight_iterator_base import HfWeightIteratorBase
-from .update_weight_from_distributed import (
+from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
-    post_process_weights,
     update_weights_from_distributed,
 )
 
@@ -180,9 +180,9 @@ class UpdateWeightFromTensor:
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
             if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
                 post_process_weights(
+                    rollout_engines=self.rollout_engines,
                     restore_weights_before_load=True,
                     post_process_quantization=False,
-                    rollout_engines=self.rollout_engines,
                 )
         dist.barrier(group=get_gloo_group())
 
@@ -212,9 +212,9 @@ class UpdateWeightFromTensor:
                 "mxfp8",
             ]:
                 post_process_weights(
+                    rollout_engines=self.rollout_engines,
                     restore_weights_before_load=False,
                     post_process_quantization=True,
-                    rollout_engines=self.rollout_engines,
                 )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
