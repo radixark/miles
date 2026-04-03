@@ -794,6 +794,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
+            parser.add_argument(
+                "--loss-agg-mode",
+                type=str,
+                default=None,
+                choices=["sample-mean", "token-mean", "token-sum"],
+                help=(
+                    "Loss aggregation mode. 'sample-mean' (default): per-sample token-mean then sum. "
+                    "'token-mean': masked sum / total masked tokens * dp_size (equal weight per token). "
+                    "'token-sum': raw masked sum (legacy, same as --calculate-per-token-loss). "
+                    "If not set, falls back to --calculate-per-token-loss behavior."
+                ),
+            )
             reset_arg(parser, "--lr", type=float, default=1e-6)
 
             parser.add_argument("--num-critic-only-steps", type=int, default=0, help="Number of critic only steps")

@@ -645,6 +645,7 @@ def policy_loss_function(
             args.calculate_per_token_loss,
             args.qkv_format,
             max_seq_lens,
+            loss_agg_mode=getattr(args, "loss_agg_mode", None),
         )
 
     # Determine pg_loss reducer: use custom if specified, otherwise default
@@ -878,6 +879,7 @@ def loss_function(
         args.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens", None),
+        loss_agg_mode=getattr(args, "loss_agg_mode", None),
     )
 
     match args.loss_type:

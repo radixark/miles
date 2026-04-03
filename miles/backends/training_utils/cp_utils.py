@@ -60,10 +60,22 @@ def get_sum_of_sample_mean(
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    loss_agg_mode: str | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """
-    Calculate correct sample mean for CP
+    Returns a loss reduction callable.
+
+    Modes (selected by loss_agg_mode, falls back to calculate_per_token_loss):
+      - "sample-mean" (default): per-sample token-mean, then sum across samples.
+      - "token-mean": masked sum / total masked tokens * dp_size.
+        Every token contributes equally regardless of sequence length.
+      - "token-sum": raw masked sum (no normalization), legacy calculate_per_token_loss=True.
     """
+    if loss_agg_mode is None:
+        loss_agg_mode = "token-sum" if calculate_per_token_loss else "sample-mean"
+
+    total_mask_tokens = sum(loss_mask.sum() for loss_mask in loss_masks)
+
     cp_size = parallel_state.cp_size
     if cp_size == 1:
 
@@ -82,6 +94,15 @@ def get_sum_of_sample_mean(
                     for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
                 ]
             )
+
+        def sum_of_token_mean(x: torch.Tensor) -> torch.Tensor:
+            raw = sum(
+                [
+                    (x_i * loss_mask_i).sum()
+                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=False)
+                ]
+            )
+            return raw / torch.clamp_min(total_mask_tokens, 1)
 
     else:
         cp_chunk_lengths = []
@@ -119,7 +140,23 @@ def get_sum_of_sample_mean(
                 ]
             )
 
-    return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
+        def sum_of_token_mean(x: torch.Tensor) -> torch.Tensor:
+            raw = sum(
+                [
+                    (x_i * chunked_loss_mask).sum()
+                    for x_i, chunked_loss_mask in zip(
+                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, strict=False
+                    )
+                ]
+            )
+            return raw / torch.clamp_min(total_mask_tokens, 1)
+
+    if loss_agg_mode == "token-mean":
+        return sum_of_token_mean
+    elif loss_agg_mode == "token-sum":
+        return sum_of_token
+    else:
+        return sum_of_sample_mean
 
 
 def all_gather_with_cp(
