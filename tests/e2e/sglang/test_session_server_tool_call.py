@@ -147,7 +147,6 @@ def execute():
     )
 
 
-@pytest.mark.system
 def test_session_server_tool_call():
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):

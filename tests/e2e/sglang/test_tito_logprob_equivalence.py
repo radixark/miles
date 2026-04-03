@@ -160,7 +160,6 @@ def execute():
     )
 
 
-@pytest.mark.system
 def test_tito_logprob_equivalence():
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):

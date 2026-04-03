@@ -127,7 +127,6 @@ def load_raw_export_module():
     return module
 
 
-@pytest.mark.unit
 def test_mtp_moe_expert_mapping_uses_individual_hf_weights():
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
@@ -142,7 +141,6 @@ def test_mtp_moe_expert_mapping_uses_individual_hf_weights():
     assert fc2_names == ["mtp.layers.0.mlp.experts.42.down_proj.weight"]
 
 
-@pytest.mark.unit
 def test_mtp_dense_mlp_mapping_still_uses_dense_hf_weights():
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
@@ -154,7 +152,6 @@ def test_mtp_dense_mlp_mapping_still_uses_dense_hf_weights():
     assert fc2_names == ["mtp.layers.0.mlp.down_proj.weight"]
 
 
-@pytest.mark.unit
 def test_mtp_block_spec_uses_current_transformer_layer_spec():
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
@@ -168,7 +165,6 @@ def test_mtp_block_spec_uses_current_transformer_layer_spec():
     assert result["mtp_block_spec"] == ("mtp-spec", "REAL_LAYER_SPEC_VP3")
 
 
-@pytest.mark.unit
 def test_eh_proj_keeps_column_order_when_loading_to_mcore():
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
@@ -179,7 +175,6 @@ def test_eh_proj_keeps_column_order_when_loading_to_mcore():
     assert torch.equal(converted, weight)
 
 
-@pytest.mark.unit
 def test_build_config_enables_gated_attention_when_transformer_config_supports_it():
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
@@ -197,7 +192,6 @@ def test_build_config_enables_gated_attention_when_transformer_config_supports_i
     assert config["attention_output_gate"] is True
 
 
-@pytest.mark.unit
 def test_raw_qwen3_5_mtp_export_keeps_eh_proj_column_order():
     module = load_raw_export_module()
 
