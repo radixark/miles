@@ -11,6 +11,7 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
 
 from .mixin import DistBucketedWeightUpdateMixin
@@ -76,7 +77,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
     def _is_source(self):
         """If it's the source gpu that broadcasting weights to rollout side"""
         return (
-            mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
+            get_parallel_state().intra_dp_cp_rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
         )
 
     def _update_weight_implementation(
