@@ -30,6 +30,7 @@ from ..training_utils.log_utils import (
     log_train_step,
 )
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from ..training_utils.parallel import set_parallel_state
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
@@ -62,11 +63,12 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # Setup ParallelState for both CP and non-CP cases
         self.parallel_state = create_fsdp_parallel_state(args)
+        set_parallel_state(self.parallel_state)
 
         torch.manual_seed(args.seed)
 
         self.train_parallel_config = {
-            "dp_size": self.parallel_state.dp_size,
+            "dp_size": self.parallel_state.intra_dp.size,
         }
 
         if self.args.debug_rollout_only:
@@ -488,7 +490,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         rollout_id=rollout_id,
                         step_id=step_id,
                         role="actor",
-                        rank=self.parallel_state.dp_cp_rank,
+                        rank=self.parallel_state.intra_dp_cp.rank,
                     )
 
                 loss_dict = aggregate_train_losses(losses_reduced, self.parallel_state)
@@ -627,15 +629,15 @@ class FSDPTrainRayActor(TrainRayActor):
         input_ids = batch["tokens"]
         position_ids = batch["position_ids"]
 
-        if self.parallel_state.cp_size > 1:
+        if self.parallel_state.cp.size > 1:
             if "cu_seqlens" in batch:
                 cu_seqlens = batch["cu_seqlens"]
                 if not cu_seqlens.is_cuda:
                     cu_seqlens = cu_seqlens.cuda()
                 update_ring_flash_attn_params(cu_seqlens, self.cp_group)
 
-            input_ids = torch.chunk(input_ids, self.parallel_state.cp_size, dim=1)[self.parallel_state.cp_rank]
-            position_ids = torch.chunk(position_ids, self.parallel_state.cp_size, dim=1)[self.parallel_state.cp_rank]
+            input_ids = torch.chunk(input_ids, self.parallel_state.cp.size, dim=1)[self.parallel_state.cp.rank]
+            position_ids = torch.chunk(position_ids, self.parallel_state.cp.size, dim=1)[self.parallel_state.cp.rank]
 
         model_args = {
             "input_ids": input_ids,

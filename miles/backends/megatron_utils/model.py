@@ -28,7 +28,7 @@ from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.loss import loss_function
-from ..training_utils.parallel import ParallelState
+from ..training_utils.parallel import ParallelState, get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
     check_model_hashes,
@@ -676,7 +676,7 @@ def train(
                     rollout_id=rollout_id,
                     step_id=step_id,
                     role=role,
-                    rank=mpu.get_data_parallel_rank(),
+                    rank=parallel_state.intra_dp.rank,
                 )
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
@@ -738,9 +738,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
     """
-    should_log = (
-        mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
-    )
+    should_log = get_parallel_state().intra_dp_cp.rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
 
     try:
         from megatron.bridge import AutoBridge

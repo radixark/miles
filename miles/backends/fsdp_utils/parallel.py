@@ -7,7 +7,7 @@ from torch.distributed.device_mesh import init_device_mesh
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from ..training_utils.parallel import ParallelState
+from ..training_utils.parallel import GroupInfo, ParallelState
 
 logger = logging.getLogger(__name__)
 
@@ -37,20 +37,27 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         logger.info(f"[Rank {rank}] Pure DP mode (cp_size=1)")
 
     parallel_state = ParallelState(
-        dp_rank=dp_rank,
-        dp_src_rank=dp_rank // world_size,
-        dp_size=world_size // cp_size,
-        cp_rank=cp_rank,
-        cp_size=cp_size,
-        dp_cp_rank=rank,
-        dp_cp_size=world_size,
-        dp_group=mesh.get_group("dp"),
-        dp_cp_group=dist.group.WORLD,
-        dp_cp_group_gloo=get_gloo_group(),
-        cp_group=mesh.get_group("cp"),
-        tp_size=1,
-        tp_rank=0,
-        tp_group=dist.new_group([rank]),
+        intra_dp=GroupInfo(
+            rank=dp_rank,
+            size=world_size // cp_size,
+            group=mesh.get_group("dp"),
+        ),
+        intra_dp_cp=GroupInfo(
+            rank=rank,
+            size=world_size,
+            group=dist.group.WORLD,
+            gloo_group=get_gloo_group(),
+        ),
+        cp=GroupInfo(
+            rank=cp_rank,
+            size=cp_size,
+            group=mesh.get_group("cp"),
+        ),
+        tp=GroupInfo(
+            rank=0,
+            size=1,
+            group=dist.new_group([rank]),
+        ),
     )
 
     parallel_state.dp_mesh = mesh["dp"]

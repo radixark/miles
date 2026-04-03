@@ -91,25 +91,32 @@ _TITO_MODELS: dict[str, tuple[str, type[TITOTokenizer]]] = {
 }
 
 
+# TODO: "user" is intentionally excluded — the dummy-prefix diff in
+# tokenize_additional_non_assistant assumes appended messages don't change how
+# earlier turns render, which breaks for user messages on context-sensitive
+# templates (e.g. Qwen3's last_query_index).  Only tool and system are safe.
+_TOOL_AND_SYSTEM = ["tool", "system"]
+
+
 @pytest.fixture(params=list(_TITO_MODELS.keys()))
 def tito(request) -> TITOTokenizer:
     model_id, cls = _TITO_MODELS[request.param]
-    return cls(_get_tokenizer(model_id))
+    return cls(_get_tokenizer(model_id), allowed_append_roles=_TOOL_AND_SYSTEM)
 
 
 @pytest.fixture
 def qwen3_tito() -> Qwen3TITOTokenizer:
-    return Qwen3TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"))
+    return Qwen3TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"), allowed_append_roles=_TOOL_AND_SYSTEM)
 
 
 @pytest.fixture
 def glm47_tito() -> GLM47TITOTokenizer:
-    return GLM47TITOTokenizer(_get_tokenizer("zai-org/GLM-4.7-Flash"))
+    return GLM47TITOTokenizer(_get_tokenizer("zai-org/GLM-4.7-Flash"), allowed_append_roles=_TOOL_AND_SYSTEM)
 
 
 @pytest.fixture
 def default_tito() -> TITOTokenizer:
-    return TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"))
+    return TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"), allowed_append_roles=_TOOL_AND_SYSTEM)
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +288,7 @@ class TestMergeTokensBoundary:
 # 8 trajectories × ~14 splits × 2 models = 28 test cases currently.
 #
 # Validation tests use a single trajectory since the validation logic
-# (assert_messages_append_only) is model/trajectory-independent.
+# (assert_messages_append_only_with_allowed_role) is model/trajectory-independent.
 # ---------------------------------------------------------------------------
 
 
@@ -299,7 +306,7 @@ class TestTokenizeAdditional:
         incremental = tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
         assert len(incremental) > 0
 
-    # -- Append-only validation (assert_messages_append_only is called internally) --
+    # -- Append-only validation (assert_messages_append_only_with_allowed_role is called internally) --
 
     def test_rejects_prefix_mutation(self, qwen3_tito: Qwen3TITOTokenizer):
         """Modifying an existing message in new_messages raises ValueError."""
