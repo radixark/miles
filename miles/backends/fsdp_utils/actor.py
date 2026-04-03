@@ -30,6 +30,7 @@ from ..training_utils.log_utils import (
     log_train_step,
 )
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from ..training_utils.parallel import set_parallel_state
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
@@ -62,11 +63,12 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # Setup ParallelState for both CP and non-CP cases
         self.parallel_state = create_fsdp_parallel_state(args)
+        set_parallel_state(self.parallel_state)
 
         torch.manual_seed(args.seed)
 
         self.train_parallel_config = {
-            "dp_size": self.parallel_state.dp_size,
+            "dp_size": self.parallel_state.intra_dp_size,
         }
 
         if self.args.debug_rollout_only:
@@ -488,7 +490,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         rollout_id=rollout_id,
                         step_id=step_id,
                         role="actor",
-                        rank=self.parallel_state.dp_cp_rank,
+                        rank=self.parallel_state.intra_dp_cp_rank,
                     )
 
                 loss_dict = aggregate_train_losses(losses_reduced, self.parallel_state)

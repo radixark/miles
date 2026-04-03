@@ -7,7 +7,6 @@ from contextlib import nullcontext
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig
@@ -31,11 +30,12 @@ from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
+from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
-from .parallel import create_megatron_parallel_state
+from .parallel import verify_megatron_parallel_state
 from .replay_utils import get_register_replay_list_func
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
@@ -83,7 +83,7 @@ class MegatronTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         self.train_parallel_config = {
-            "dp_size": mpu.get_data_parallel_world_size(with_context_parallel=False),
+            "dp_size": get_parallel_state().intra_dp_size,
         }
         dist.barrier(group=get_gloo_group())
 
@@ -94,7 +94,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 torch_memory_saver.memory_margin_bytes = x
 
         if self.args.debug_rollout_only:
-            self.parallel_state = create_megatron_parallel_state(model=None)
+            self.parallel_state = get_parallel_state()
             return 0
 
         if role == "critic":
@@ -111,7 +111,8 @@ class MegatronTrainRayActor(TrainRayActor):
             args, role
         )
 
-        self.parallel_state = create_megatron_parallel_state(model=self.model)
+        self.parallel_state = get_parallel_state()
+        verify_megatron_parallel_state(self.parallel_state, self.model)
 
         if role == "critic":
             if self.args.offload_train:
