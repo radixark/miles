@@ -32,6 +32,8 @@ MODEL_ARGS=(
    --untie-embeddings-and-output-weights
    --vocab-size 151936
 
+   # Base-family Qwen3-30B-A3B checkpoints use rotary base 1000000.
+   # Instruct-2507 and Thinking-2507 should source dedicated wrappers.
    --rotary-base "${MODEL_ARGS_ROTARY_BASE:-1000000}"
 
    # moe
