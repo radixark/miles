@@ -62,24 +62,25 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     if max_seq_len is not None:
         metadata = {**metadata, "max_seq_len": max_seq_len}
 
+    log_prefix = f"[session={tracer.session_id}]"
     agent_metadata = None
-    _t0 = time.monotonic()
+    t_start = time.monotonic()
     try:
-        logger.info(f"[session={tracer.session_id}] Starting agent function call")
+        logger.debug(f"{log_prefix} Starting agent function call")
         agent_metadata = await custom_agent_function(
             base_url=tracer.base_url,
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),
             metadata=metadata,
         )
-        logger.info(f"[session={tracer.session_id}] Agent function returned in {time.monotonic()-_t0:.1f}s")
+        logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
     except Exception as e:
-        logger.warning(f"Agent function failed for session {tracer.session_id}: {e}", exc_info=True)
+        logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
 
     finally:
-        logger.info(f"[session={tracer.session_id}] Calling collect_records...")
+        logger.debug(f"{log_prefix} Calling collect_records...")
         records, session_metadata = await tracer.collect_records()
-        logger.info(f"[session={tracer.session_id}] collect_records done: {len(records)} records")
+        logger.debug(f"{log_prefix} collect_records done: {len(records)} records")
 
     if not records:
         logger.warning("No model calls recorded for sample")
@@ -87,7 +88,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
-    logger.info(f"[session={tracer.session_id}] Computing samples from {len(records)} records...")
+    logger.debug(f"{log_prefix} Computing samples from {len(records)} records...")
     samples = compute_samples_from_openai_records(
         input.args,
         input.sample,
@@ -97,8 +98,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         max_trim_tokens=session_metadata.get("max_trim_tokens", 0),
     )
 
-    logger.info(
-        f"[session={tracer.session_id}] compute_samples done: {len(samples)} samples, total_time={time.monotonic()-_t0:.1f}s"
+    logger.debug(
+        f"{log_prefix} compute_samples done: {len(samples)} samples, total_time={time.monotonic()-t_start:.1f}s"
     )
     for s in samples:
         s.metadata.update(agent_metadata or {})
