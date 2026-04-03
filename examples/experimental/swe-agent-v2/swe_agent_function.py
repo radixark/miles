@@ -10,6 +10,7 @@ Task-type agnostic — the server + Harbor task directory handle all
 differentiation (environment, grading harness, agent selection).
 """
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -60,7 +61,13 @@ async def run(
         request["max_seq_len"] = int(max_seq_len)
 
     try:
-        response = await post(f"{agent_server_url}/run", request)
+        response = await asyncio.wait_for(
+            post(f"{agent_server_url}/run", request),
+            timeout=3600,  # 1 hour max per trial
+        )
+    except asyncio.TimeoutError:
+        logger.error("Agent server call timed out after 3600s")
+        return None
     except Exception as e:
         logger.error(f"Agent server call failed: {e}")
         return None

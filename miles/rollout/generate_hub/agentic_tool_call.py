@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    assert getattr(input.args, "session_server_ip", None) and getattr(input.args, "session_server_port", None), (
+        "agentic_tool_call.generate requires session_server_ip/session_server_port. "
+        "Pass --use-session-server to start the session server."
+    )
     tracer = await OpenAIEndpointTracer.create(input.args)
 
     custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
@@ -57,12 +61,16 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     if max_seq_len is not None:
         metadata = {**metadata, "max_seq_len": max_seq_len}
 
-    agent_metadata = await custom_agent_function(
-        base_url=tracer.base_url,
-        prompt=input.sample.prompt,
-        request_kwargs=build_chat_request_kwargs(input.sampling_params),
-        metadata=metadata,
-    )
+    agent_metadata = None
+    try:
+        agent_metadata = await custom_agent_function(
+            base_url=tracer.base_url,
+            prompt=input.sample.prompt,
+            request_kwargs=build_chat_request_kwargs(input.sampling_params),
+            metadata=metadata,
+        )
+    except Exception as e:
+        logger.warning(f"Agent function failed for session {tracer.session_id}: {e}", exc_info=True)
 
     records, session_metadata = await tracer.collect_records()
 

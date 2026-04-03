@@ -1,7 +1,12 @@
 import asyncio
+import logging
 import threading
 from collections.abc import Coroutine
 from typing import TypeVar
+
+
+logger = logging.getLogger(__name__)
+
 
 __all__ = ["get_async_loop", "run", "eager_create_task"]
 
@@ -49,3 +54,15 @@ async def eager_create_task(coro: Coroutine[object, object, _T]) -> asyncio.Task
     task = asyncio.create_task(coro)
     await asyncio.sleep(0)
     return task
+
+
+class AsyncioGatherUtils:
+    @staticmethod
+    def has_error(outputs):
+        return any(isinstance(output, BaseException) for output in outputs)
+
+    @staticmethod
+    def log_error(outputs, debug_name: str):
+        for i, output in enumerate(outputs):
+            if isinstance(output, BaseException):
+                logger.warning(f"{debug_name} error index={i}", exc_info=output)
