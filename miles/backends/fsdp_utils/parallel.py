@@ -38,7 +38,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
 
     parallel_state = ParallelState(
         dp_rank=dp_rank,
-        dp_src_rank=dp_rank // world_size,
+        dp_cp_src_rank=dp_rank // world_size,
         dp_size=world_size // cp_size,
         cp_rank=cp_rank,
         cp_size=cp_size,

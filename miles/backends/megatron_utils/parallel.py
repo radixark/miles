@@ -31,7 +31,7 @@ def create_megatron_parallel_state(
 
     parallel_state = ParallelState(
         dp_rank=mpu.get_data_parallel_rank(with_context_parallel=False),
-        dp_src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
+        dp_cp_src_rank=mpu.get_data_parallel_src_rank(with_context_parallel=True),
         dp_size=mpu.get_data_parallel_world_size(with_context_parallel=False),
         cp_rank=mpu.get_context_parallel_rank(),
         cp_size=mpu.get_context_parallel_world_size(),

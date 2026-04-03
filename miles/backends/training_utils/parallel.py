@@ -9,7 +9,7 @@ class ParallelState:
     """
 
     dp_rank: int
-    dp_src_rank: int
+    dp_cp_src_rank: int
     dp_size: int
     cp_rank: int
     cp_size: int

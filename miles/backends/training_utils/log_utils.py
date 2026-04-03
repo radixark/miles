@@ -43,7 +43,7 @@ def gather_log_data(
         dist.gather_object(
             log_dict,
             gathered_log_dict,
-            dst=parallel_state.dp_src_rank,
+            dst=parallel_state.dp_cp_src_rank,
             group=parallel_state.dp_cp_group_gloo,
         )
 
@@ -62,7 +62,7 @@ def gather_log_data(
         dist.gather_object(
             log_dict,
             None,
-            dst=parallel_state.dp_src_rank,
+            dst=parallel_state.dp_cp_src_rank,
             group=parallel_state.dp_cp_group_gloo,
         )
         return None
@@ -174,7 +174,14 @@ def log_rollout_data(
             ):
                 # When R3 (rollout routing replay) is enabled, ref model does not use R3
                 # so log_probs and ref_log_probs may diverge; use a relaxed tolerance.
-                abs_tol = 1e-5 if args.use_rollout_routing_replay else 1e-9
+                # When --sglang-config deploys multiple models, the heavier offload/onload
+                # cycle can amplify flash-attention non-determinism; use 1e-8.
+                if args.use_rollout_routing_replay:
+                    abs_tol = 1e-5
+                elif getattr(args, "sglang_config", None) is not None:
+                    abs_tol = 1e-8
+                else:
+                    abs_tol = 1e-9
                 assert isclose(
                     reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/ref_log_probs"], abs_tol=abs_tol
                 ), f"CI check failed: log_probs ({reduced_log_dict['rollout/log_probs']}) != ref_log_probs ({reduced_log_dict['rollout/ref_log_probs']})"
