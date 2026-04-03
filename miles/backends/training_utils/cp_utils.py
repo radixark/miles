@@ -60,11 +60,24 @@ def get_sum_of_sample_mean(
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    loss_agg_mode: str | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """
-    Calculate correct sample mean for CP
+    Returns a loss reduction callable.
+
+    Modes (selected by loss_agg_mode, falls back to calculate_per_token_loss):
+      - "sample-mean" (default): per-sample token-mean, then sum across samples.
+      - "token-mean": raw masked sum (same reducer as token-sum). The per-token
+        normalization is handled downstream in loss_function, which divides by
+        num_tokens. This is needed for the FSDP backend where the external
+        normalizer is not used. On Megatron, --calculate-per-token-loss already
+        achieves the same effect via the external normalizer.
+      - "token-sum": raw masked sum, legacy calculate_per_token_loss=True.
     """
-    cp_size = parallel_state.cp.size
+    if loss_agg_mode is None:
+        loss_agg_mode = "token-sum" if calculate_per_token_loss else "sample-mean"
+
+    cp_size = parallel_state.cp_size
     if cp_size == 1:
 
         def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
@@ -119,7 +132,12 @@ def get_sum_of_sample_mean(
                 ]
             )
 
-    return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
+    # token-mean uses the same raw-sum reducer as token-sum; the per-token
+    # normalization is handled in loss_function (needed for FSDP backend).
+    if loss_agg_mode in ("token-mean", "token-sum"):
+        return sum_of_token
+    else:
+        return sum_of_sample_mean
 
 
 def all_gather_with_cp(
