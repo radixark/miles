@@ -7,7 +7,7 @@ from argparse import Namespace
 from copy import deepcopy
 
 from miles.rollout.generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
-from miles.router.session.session_types import GetSessionResponse, SessionRecord
+from miles.rollout.session.session_types import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -22,10 +22,17 @@ class OpenAIEndpointTracer:
 
     @staticmethod
     async def create(args: Namespace):
-        router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-        response = await post(f"{router_url}/sessions", {}, action="post")
+        session_ip = getattr(args, "session_server_ip", None)
+        session_port = getattr(args, "session_server_port", None)
+        if not session_ip or not session_port:
+            raise RuntimeError(
+                "session_server_ip/session_server_port are not set. "
+                "Pass --use-session-server to start the session server."
+            )
+        session_url = f"http://{session_ip}:{session_port}"
+        response = await post(f"{session_url}/sessions", {}, action="post")
         session_id = response["session_id"]
-        return OpenAIEndpointTracer(router_url=router_url, session_id=session_id)
+        return OpenAIEndpointTracer(router_url=session_url, session_id=session_id)
 
     async def collect_records(self) -> tuple[list[SessionRecord], dict]:
         try:

@@ -10,12 +10,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-import requests
-
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
-from miles.router.router import MilesRouter
+from miles.rollout.session.session_server import SessionServer
 from miles.utils.async_utils import run
 from miles.utils.chat_template_utils import try_get_fixed_chat_template
 from miles.utils.http_utils import find_available_port, init_http_client
@@ -216,7 +214,13 @@ def make_args(
 
 
 @contextmanager
-def with_miles_router(
+def _noop_port(port: int):
+    """No-op context manager that just yields the given port."""
+    yield port
+
+
+@contextmanager
+def with_session_server(
     backend_url: str,
     model_name: str,
     *,
@@ -225,25 +229,18 @@ def with_miles_router(
 ):
     if chat_template_path is None:
         chat_template_path = try_get_fixed_chat_template(model_name)
-    router_args = SimpleNamespace(
-        miles_router_max_connections=10,
+    args = SimpleNamespace(
         miles_router_timeout=30,
-        miles_router_middleware_paths=[],
-        rollout_health_check_interval=60,
-        miles_router_health_check_failure_threshold=3,
         hf_checkpoint=model_name,
         chat_template_path=chat_template_path,
         tito_model="default",
         use_rollout_routing_replay=use_rollout_routing_replay,
     )
-    router = MilesRouter(router_args)
+    session_server = SessionServer(args, backend_url=backend_url)
 
     port = find_available_port(31000)
-    server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
+    server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     server.start()
-
-    url = f"http://127.0.0.1:{port}"
-    requests.post(f"{url}/add_worker", json={"url": backend_url})
 
     try:
         yield port
@@ -276,24 +273,36 @@ def generation_env(request, variant):
 
     fixed_template = try_get_fixed_chat_template(model_name)
 
+    is_agentic = variant.startswith("agentic_tool_call")
+
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
-        with with_miles_router(
-            mock_server.url,
-            model_name,
-            use_rollout_routing_replay=args_kwargs.get("use_rollout_routing_replay", False),
-            chat_template_path=fixed_template,
-        ) as router_port:
+        # Agentic variants need a SessionServer for TITO session tracking;
+        # non-agentic variants talk directly to the mock sglang server.
+        if is_agentic:
+            cm = with_session_server(
+                mock_server.url,
+                model_name,
+                use_rollout_routing_replay=args_kwargs.get("use_rollout_routing_replay", False),
+                chat_template_path=fixed_template,
+            )
+        else:
+            cm = _noop_port(mock_server.port)
+
+        with cm as server_port:
             _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
             other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
             args = make_args(
                 variant=variant,
-                router_port=router_port,
+                router_port=server_port,
                 model_name=model_name,
                 custom_generate_function_path=custom_generate_function_path,
                 chat_template_path=fixed_template,
                 **other_args_kwargs,
             )
-            if variant.startswith("agentic_tool_call"):
+            if is_agentic:
+                # Point session server address to the SessionServer we just started
+                args.session_server_ip = "127.0.0.1"
+                args.session_server_port = server_port
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
                 mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)

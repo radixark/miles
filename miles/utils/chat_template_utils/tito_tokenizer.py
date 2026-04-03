@@ -17,7 +17,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only
+from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 _DUMMY_USER: dict[str, Any] = {"role": "user", "content": "dummy"}
@@ -71,10 +71,12 @@ class TITOTokenizer:
         tokenizer: Any,
         chat_template_kwargs: dict[str, Any] | None = None,
         assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
     ):
         self.tokenizer = tokenizer
         self.chat_template_kwargs = chat_template_kwargs or {}
         self._assistant_start_str = assistant_start_str
+        self.allowed_append_roles: list[str] = allowed_append_roles if allowed_append_roles is not None else ["tool"]
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -96,12 +98,13 @@ class TITOTokenizer:
 
         Only handles tool responses, system injections, etc. — never an
         assistant message.  Validates that *new_messages* is an append-only
-        extension of *old_messages* via ``assert_messages_append_only``.
+        extension of *old_messages* via
+        ``assert_messages_append_only_with_allowed_role``.
 
         Args:
             old_messages: Previously stored messages (prefix).
             new_messages: Full new message list (must be a superset of
-                *old_messages* with only tool/system messages appended).
+                *old_messages* with only allowed-role messages appended).
             tools: Tool definitions in OpenAI format (may vary per call).
 
         Returns:
@@ -109,7 +112,7 @@ class TITOTokenizer:
             when merged with pretokenized prefix via ``merge_tokens``,
             form the full prompt token IDs.
         """
-        assert_messages_append_only(old_messages, new_messages)
+        assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
         appended_messages = new_messages[len(old_messages) :]
 
         dummy_assistant = _build_dummy_assistant(appended_messages)
@@ -172,8 +175,14 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         tokenizer: Any,
         chat_template_kwargs: dict[str, Any] | None = None,
         assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
     ):
-        super().__init__(tokenizer, chat_template_kwargs, assistant_start_str or self._default_assistant_start_str)
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            allowed_append_roles=allowed_append_roles,
+        )
         nl_ids = tokenizer.encode("\n", add_special_tokens=False)
         assert len(nl_ids) == 1, f"Expected single newline token, got {nl_ids}"
         self._newline_id: int = nl_ids[0]
@@ -219,8 +228,14 @@ class GLM47TITOTokenizer(TITOTokenizer):
         tokenizer: Any,
         chat_template_kwargs: dict[str, Any] | None = None,
         assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
     ):
-        super().__init__(tokenizer, chat_template_kwargs, assistant_start_str or self._default_assistant_start_str)
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            allowed_append_roles=allowed_append_roles,
+        )
         self._observation_id: int = tokenizer.convert_tokens_to_ids("<|observation|>")
         self._user_id: int = tokenizer.convert_tokens_to_ids("<|user|>")
         self._ambiguous_boundary_ids: set[int] = {self._observation_id, self._user_id}
@@ -263,6 +278,7 @@ def get_tito_tokenizer(
     tokenizer_type: TITOTokenizerType | str = TITOTokenizerType.DEFAULT,
     chat_template_kwargs: dict[str, Any] | None = None,
     assistant_start_str: str | None = None,
+    allowed_append_roles: list[str] | None = None,
 ) -> TITOTokenizer:
     """Create a ``TITOTokenizer`` instance.
 
@@ -274,6 +290,9 @@ def get_tito_tokenizer(
         assistant_start_str: Decoded text prefix identifying assistant content
             segments (e.g. ``"<|im_start|>assistant"``).  Auto-detected from
             the chat template by default; pass explicitly to override.
+        allowed_append_roles: Roles allowed in appended messages.  Defaults to
+            ``["tool"]``.  Passed to
+            ``assert_messages_append_only_with_allowed_role``.
     """
     if tokenizer is None:
         raise ValueError("tokenizer must not be None")
@@ -283,4 +302,6 @@ def get_tito_tokenizer(
     kwargs: dict[str, Any] = {"chat_template_kwargs": chat_template_kwargs}
     if assistant_start_str is not None:
         kwargs["assistant_start_str"] = assistant_start_str
+    if allowed_append_roles is not None:
+        kwargs["allowed_append_roles"] = allowed_append_roles
     return cls(tokenizer, **kwargs)

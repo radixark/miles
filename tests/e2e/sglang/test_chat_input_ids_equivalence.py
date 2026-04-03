@@ -28,7 +28,6 @@ def _build_messages() -> list[dict]:
     ]
 
 
-@pytest.mark.system
 def test_generate_and_chat_completions_equivalence(sglang_server):
     """The /generate (token) and /v1/chat/completions (message) endpoints
     must produce identical output given the same prompt."""
