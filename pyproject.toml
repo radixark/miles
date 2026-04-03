@@ -58,3 +58,4 @@ norecursedirs = [
     "{arch}",
 ]
 asyncio_mode = "auto"
+# NOTE: we do not use pytest markers currently. tests are mainly separated by folders, i.e. tests/fast vs tests/e2e
