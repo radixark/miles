@@ -8,6 +8,7 @@ omegaconf
 pillow
 pybase64
 pylatexenc
+pytest-asyncio
 pyyaml
 qwen_vl_utils # for VLM
 ray[default]
