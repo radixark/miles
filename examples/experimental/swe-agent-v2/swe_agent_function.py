@@ -68,6 +68,9 @@ async def run(
     except asyncio.TimeoutError:
         logger.error("Agent server call timed out after 3600s")
         return None
+    except asyncio.CancelledError:
+        logger.warning("Agent server call cancelled (sibling task failure?)")
+        return None
     except Exception as e:
         logger.error(f"Agent server call failed: {e}")
         return None

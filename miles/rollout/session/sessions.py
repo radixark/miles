@@ -37,6 +37,20 @@ def setup_session_routes(app, backend, args):
 
     registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
 
+    # --- DEBUG: track in-flight chat_completions ---
+    _inflight_chat = {"count": 0}
+
+    @app.middleware("http")
+    async def debug_request_logger(request: Request, call_next):
+        client = request.client
+        client_info = f"{client.host}:{client.port}" if client else "unknown"
+        logger.info(f"[session-server] REQUEST ARRIVED: {request.method} {request.url.path} from={client_info} inflight_chat={_inflight_chat['count']}")
+        t0 = time.time()
+        response = await call_next(request)
+        elapsed = time.time() - t0
+        logger.info(f"[session-server] REQUEST DONE: {request.method} {request.url.path} status={response.status_code} elapsed={elapsed:.3f}s from={client_info}")
+        return response
+
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
         return JSONResponse(status_code=exc.status_code, content={"error": str(exc)})
@@ -48,6 +62,7 @@ def setup_session_routes(app, backend, args):
 
     @app.get("/sessions/{session_id}")
     async def get_session(session_id: str):
+        logger.info(f"[session-server] GET handler entered: session={session_id}")
         session = registry.get_session(session_id)
         metadata = {}
         try:
@@ -67,11 +82,14 @@ def setup_session_routes(app, backend, args):
 
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: str):
+        logger.info(f"[session-server] DELETE handler entered: session={session_id}")
         session = registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
         session.closing = True
+        logger.info(f"[session-server] DELETE waiting for lock: session={session_id} lock_locked={session.lock.locked()}")
         await session.lock.acquire()
+        logger.info(f"[session-server] DELETE acquired lock: session={session_id}")
         try:
             registry.remove_session(session_id)
         finally:
@@ -80,6 +98,7 @@ def setup_session_routes(app, backend, args):
 
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):
+        _inflight_chat["count"] += 1
         """Proxy a chat completion through SGLang with TITO token tracking.
 
         Flow: prepare pretokenized input_ids (if not first turn) → inject
@@ -184,6 +203,7 @@ def setup_session_routes(app, backend, args):
                 response=response,
             )
             session.append_record(record)
+            _inflight_chat["count"] -= 1
             return backend.build_proxy_response(result)
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
