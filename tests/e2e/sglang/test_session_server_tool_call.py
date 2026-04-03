@@ -11,9 +11,6 @@ Requires 1 GPU.
 import json
 import os
 from dataclasses import dataclass
-
-import pytest
-
 import miles.utils.external_utils.command_utils as U
 
 # ---------------------------------------------------------------------------
