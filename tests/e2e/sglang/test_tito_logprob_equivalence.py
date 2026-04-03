@@ -21,9 +21,6 @@ Requires 1 GPU.
 import json
 import os
 from dataclasses import dataclass
-
-import pytest
-
 import miles.utils.external_utils.command_utils as U
 
 # ---------------------------------------------------------------------------
@@ -160,7 +157,6 @@ def execute():
     )
 
 
-@pytest.mark.system
 def test_tito_logprob_equivalence():
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):

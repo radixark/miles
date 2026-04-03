@@ -726,6 +726,11 @@ class RolloutManager:
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+        # Pass dynamic global_batch_size to training side
+        assert self.args.use_dynamic_global_batch_size == hasattr(self, "_dynamic_global_batch_size")
+        if hasattr(self, "_dynamic_global_batch_size"):
+            train_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
+
         return train_data
 
     def set_train_parallel_config(self, config: dict):
@@ -774,13 +779,11 @@ class RolloutManager:
             for key in [
                 "raw_reward",
                 "total_lengths",
+                "dynamic_global_batch_size",
             ]:
                 if key not in data:
                     continue
                 rollout_data[key] = data[key]
-            # Pass dynamic global_batch_size to training side
-            if hasattr(self, "_dynamic_global_batch_size"):
-                rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
             rollout_data_refs.append(Box(ray.put(rollout_data)))
         return rollout_data_refs
 

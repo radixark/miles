@@ -17,8 +17,8 @@ def get_logits_and_tokens_offset_with_cp(
     """
     All offsets start from the begining of the prompt.
     """
-    cp_rank = parallel_state.cp_rank
-    cp_size = parallel_state.cp_size
+    cp_rank = parallel_state.cp.rank
+    cp_size = parallel_state.cp.size
     assert cp_size > 1
 
     prompt_length = total_length - response_length
@@ -152,8 +152,8 @@ def all_gather_with_cp(
     Gather tensors across all ranks in the context parallel group.
     The first dimension of the output tensor will be the `response_length`.
     """
-    cp_group = parallel_state.cp_group
-    cp_size = parallel_state.cp_size
+    cp_group = parallel_state.cp.group
+    cp_size = parallel_state.cp.size
 
     if cp_size == 1:
         return tensor
@@ -208,8 +208,8 @@ def slice_with_cp(
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
 ) -> torch.Tensor:
-    cp_rank = parallel_state.cp_rank
-    cp_size = parallel_state.cp_size
+    cp_rank = parallel_state.cp.rank
+    cp_size = parallel_state.cp.size
 
     if qkv_format == "bshd":
         assert max_seq_len is not None
@@ -275,8 +275,8 @@ def _allgather_cp_redistribute(
         response_lengths: Response segment lengths per sample.
         max_seq_lens: Optional padded max sequence lengths per sample.
     """
-    cp_group = parallel_state.cp_group
-    cp_rank = parallel_state.cp_rank
+    cp_group = parallel_state.cp.group
+    cp_rank = parallel_state.cp.rank
 
     logits_local_len = logits.size(1)  # logits shape: [1, T_local, ...]
     chunk_start = cp_rank * logits_local_len
@@ -340,7 +340,7 @@ def slice_log_prob_with_cp(
 ) -> list[float] | torch.Tensor:
     assert len(log_prob) == response_length
 
-    cp_size = parallel_state.cp_size
+    cp_size = parallel_state.cp.size
 
     if cp_size == 1:
         return log_prob
