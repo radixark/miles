@@ -1,10 +1,17 @@
 """E2E session stress tests.
 
-Contract under test (with session.lock / session.closing):
-- Requests within the same session are serialized via session.lock.
+Contract under test (with split-lock / session.closing):
+- Phase 1 (prepare) and Phase 3 (state update) hold session.lock briefly;
+  Phase 2 (proxy to SGLang) does NOT hold the lock.
+- Concurrent same-session requests can overlap at the backend (Phase 2),
+  but state updates (Phase 3) are serialized; stale-update guard
+  (expected_num_assistant check) ensures only one concurrent writer wins.
 - Different sessions can run in parallel (no global lock).
 - Per-session clients can run turn-by-turn without idle gaps while global load stays parallel.
-- Delete marks session.closing=True, waits for session.lock, then removes.
+- Delete marks session.closing=True, acquires session.lock, then removes.
+  Because the lock is not held during Phase 2, delete can proceed while a
+  chat request is mid-proxy; the chat's Phase 3 will see closing=True and
+  skip the state update gracefully.
 - Chat requests to a closing session get 404 immediately (pre-lock check).
 - Chat requests arriving while delete waits for lock get 404 (double-check after lock).
 - Concurrent deletes on the same session: second delete gets 404.
@@ -87,9 +94,17 @@ def _chat(url: str, session_id: str, payload: dict, timeout: float = 20.0) -> re
 
 
 class TestSessionConcurrencyContracts:
-    def test_same_session_requests_are_serialized(self):
+    def test_same_session_concurrent_requests_reach_backend(self):
+        """With the split-lock, same-session requests CAN overlap at the backend.
+
+        Phase 2 (proxy) runs without the lock, so concurrent requests are not
+        serialized at the backend level.  Phase 3 state updates are still
+        serialized; the stale-update guard ensures only one writer wins per
+        generation, so no state corruption occurs.
+        """
+
         def process_fn(prompt: str) -> ProcessResult:
-            return ProcessResult(text="serialized-ok", finish_reason="stop")
+            return ProcessResult(text="concurrent-ok", finish_reason="stop")
 
         with _router_env(process_fn, latency=0.2) as env:
             session_id = _create_session(env.url)
@@ -113,9 +128,11 @@ class TestSessionConcurrencyContracts:
                 futures = [pool.submit(_chat, env.url, session_id, retry_payload) for _ in range(4)]
                 responses = [f.result(timeout=30.0) for f in futures]
 
+            # All requests should succeed (200) — no 500s.
             assert all(resp.status_code == 200 for resp in responses)
             assert len(env.backend.request_log) == 4
-            assert env.backend.max_concurrent == 1
+            # With split-lock, concurrent backend access is expected (not == 1).
+            assert env.backend.max_concurrent >= 1
 
     def test_different_sessions_can_run_in_parallel(self):
         def process_fn(prompt: str) -> ProcessResult:
@@ -174,7 +191,13 @@ class TestSessionConcurrencyContracts:
             assert len(env.backend.request_log) == num_sessions * turns_per_session
             assert env.backend.max_concurrent >= 4
 
-    def test_delete_waits_for_inflight_then_removes_session(self):
+    def test_delete_can_proceed_while_chat_is_mid_proxy(self):
+        """With split-lock, delete can acquire the lock while chat is in Phase 2.
+
+        The inflight chat's Phase 3 sees session.closing=True and skips
+        state update gracefully.  Both chat and delete complete without error.
+        """
+
         def process_fn(prompt: str) -> ProcessResult:
             return ProcessResult(text="slow-turn", finish_reason="stop")
 
@@ -182,7 +205,7 @@ class TestSessionConcurrencyContracts:
             session_id = _create_session(env.url)
             payload = {"messages": [{"role": "user", "content": "slow-turn-0"}]}
 
-            with ThreadPoolExecutor(max_workers=1) as pool:
+            with ThreadPoolExecutor(max_workers=2) as pool:
                 inflight = pool.submit(_chat, env.url, session_id, payload, 30.0)
 
                 # Wait until the first request has reached backend before deleting.
@@ -194,16 +217,12 @@ class TestSessionConcurrencyContracts:
                 else:
                     raise AssertionError("in-flight request did not reach backend in time")
 
-                t0 = time.perf_counter()
                 delete_resp = requests.delete(f"{env.url}/sessions/{session_id}", timeout=30.0)
-                delete_elapsed = time.perf_counter() - t0
-
                 inflight_resp = inflight.result(timeout=30.0)
 
+            # Chat returns 200 (backend responded); delete returns 204.
             assert inflight_resp.status_code == 200
             assert delete_resp.status_code == 204
-            # Delete should wait for in-flight request to drain.
-            assert delete_elapsed >= 0.2
             # Session is gone after delete.
             post_delete = _chat(env.url, session_id, payload, timeout=10.0)
             assert post_delete.status_code == 404
@@ -212,14 +231,14 @@ class TestSessionConcurrencyContracts:
 class TestClosingRaceConditions:
     """Tests for race conditions around session.closing flag."""
 
-    def test_chat_during_delete_wait_returns_404(self):
-        """Chat requests arriving while delete is waiting for the lock get 404.
+    def test_chat_during_delete_returns_404(self):
+        """Chat requests arriving after delete sets closing=True get 404.
 
         Timeline:
-        1. Chat A starts (holds session.lock, slow backend)
-        2. Delete arrives, sets session.closing=True, waits for session.lock
+        1. Chat A starts, acquires lock (Phase 1), releases it, proxying (Phase 2)
+        2. Delete arrives, sets session.closing=True, acquires lock, removes session
         3. Chat B arrives, sees session.closing=True, returns 404 immediately
-        4. Chat A finishes, delete acquires lock, removes session
+        4. Chat A's Phase 3 sees closing=True, skips state update, returns 200
         """
 
         def process_fn(prompt: str) -> ProcessResult:
