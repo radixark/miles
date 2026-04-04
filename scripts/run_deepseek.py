@@ -38,7 +38,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(
-        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
     match args.task:
         case "dapo_aime":
