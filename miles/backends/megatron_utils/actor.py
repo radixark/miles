@@ -113,7 +113,7 @@ class MegatronTrainRayActor(TrainRayActor):
         from megatron.core import mpu
 
         if mpu.get_context_parallel_world_size() > 1:
-            from miles_plugins.models.hf_attention import setup_hybrid_cp
+            from miles.backends.training_utils.cp_utils import setup_hybrid_cp
 
             cp_group = mpu.get_context_parallel_group()
             cp_rank = mpu.get_context_parallel_rank()

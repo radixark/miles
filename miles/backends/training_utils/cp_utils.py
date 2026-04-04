@@ -1,10 +1,14 @@
+import logging
 from collections.abc import Callable
 
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 import torch.nn.functional as F
 
 from .parallel import get_parallel_state
+
+logger = logging.getLogger(__name__)
 
 
 def get_logits_and_tokens_offset_with_cp(
@@ -336,3 +340,28 @@ def slice_log_prob_with_cp(
         return chunk_1 + chunk_2
     else:
         return torch.cat([chunk_1, chunk_2], dim=0)
+
+
+def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+    """Configure GatedDeltaNet modules for native fla CP instead of all-gather duplication.
+
+    Walks the model tree looking for HuggingfaceAttention submodules that have a
+    ``linear_attn`` child (i.e. DeltaNet layers). For each one it sets the CP
+    metadata so that ``_build_cp_context`` produces a valid context, and flips
+    ``use_native_cp`` so the parent skips the all-gather path.
+    """
+    from miles_plugins.models.hf_attention import HuggingfaceAttention
+
+    count = 0
+    for module in model.modules():
+        if isinstance(module, HuggingfaceAttention):
+            linear_attn = getattr(module, "linear_attn", None)
+            if linear_attn is not None:
+                linear_attn.cp_group = cp_group
+                linear_attn.cp_rank = cp_rank
+                linear_attn.cp_world_size = cp_world_size
+                module.use_native_cp = True
+                count += 1
+
+    if count > 0:
+        logger.info(f"Configured hybrid CP on {count} DeltaNet modules (fla native state passing)")
