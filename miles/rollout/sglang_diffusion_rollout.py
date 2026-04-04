@@ -87,7 +87,7 @@ class GenerateState(metaclass=SingletonMeta):
         # Merged into request ``extra_sampling_params``; may include per-call ``seed`` (stripped in ``generate``).
         self.extra_sampling_params: dict[str, Any] = {}
         sampling_seed_base = args.rollout_seed
-        self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.rollout_num_outputs_per_prompt)]
+        self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.n_samples_per_prompt)]
 
         self.dp_counts = [0] * (args.sglang_dp_size or 1)
         self.dp_rank = 0
@@ -126,38 +126,22 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
-async def generate_microgroup(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
+async def generate_microgroup(args: Namespace, microgroup: list[Sample], sampling_params: dict[str, Any]) -> list[Sample]:
     """Generate using traditional SGLang router with token-based workflow"""
-    # if args.ci_test:
-    #     assert isinstance(sample.prompt, str)
 
     state = GenerateState(args)
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/rollout/images"
 
-    # Prepare payload for sglang server
-    payload = build_rollout_images_payload(args, sample, seed=sampling_params["seed"], num_outputs_per_prompt=sampling_params["num_outputs_per_prompt"])
+    # Prepare payload for sglang-diffusion server
+    # SGL-D TODO: support seed list for multiple samples in one request
+    # currently only support assigning the first seed, SGL-D generates samples with seed, seed+1, seed+2, ...
+    payload = build_rollout_images_payload(args, microgroup[0].prompt, seed=sampling_params["rollout_first_seed"], num_outputs_per_prompt=len(microgroup))
 
 
     output = await post(url, payload)
 
     # Get diffusion response and log probs
-    if "output_token_logprobs" in output["meta_info"]:
-        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-    else:
-        new_response_tokens, new_response_log_probs = [], []
-
-    # Update sample with response
-    sample.response += output["text"]
-
-    if sample.rollout_log_probs is None:
-        sample.rollout_log_probs = []
-    sample.rollout_log_probs += new_response_log_probs
-
-    # Need to design and implement diffusion meta info
-    sample.update_from_meta_info(args, output["meta_info"])
-
-    return sample
+    return [apply_rollout_image_response(sample, response) for sample, response in zip(microgroup, output)]
 
 
 async def generate_and_rm_microgroup(
@@ -166,32 +150,27 @@ async def generate_and_rm_microgroup(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> list[Sample]:
-
-    # For samples with existing response, check if they're complete
-    if sample.status == Sample.Status.COMPLETED or sample.status == Sample.Status.TRUNCATED:
-        assert sample.response is not None
-        if not args.group_rm:
-            assert sample.reward is not None
-        return sample
+    return_microgroup = []
 
     state = GenerateState(args)
 
     # generate
     async with state.semaphore:
         if state.aborted:
-            sample.status = Sample.Status.ABORTED
-            return sample
+            for sample in microgroup:
+                sample.status = Sample.Status.ABORTED
+            return microgroup
 
         with state.dp_rank_context() as _:
             if args.custom_generate_function_path is not None:
                 custom_generate_func = load_function(args.custom_generate_function_path)
                 # if signature has evaluation, pass evaluation
                 if "evaluation" in inspect.signature(custom_generate_func).parameters:
-                    sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
+                    microgroup = await custom_generate_func(args, microgroup, sampling_params, evaluation=evaluation)
                 else:
-                    sample = await custom_generate_func(args, sample, sampling_params)
+                    microgroup = await custom_generate_func(args, microgroup, sampling_params)
             else:
-                sample = await generate_microgroup(args, sample, sampling_params)
+                microgroup = await generate_microgroup(args, microgroup, sampling_params)
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
@@ -229,13 +208,15 @@ async def generate_and_rm_group(
 
     tasks = []
     for idx in range(0, len(group), args.diffusion_microgroup_size):
-        microgroup = group[idx:idx + args.diffusion_microgroup_size]
+        microgroup = group[idx:min(idx + args.diffusion_microgroup_size, len(group))]
         current_sampling_params = sampling_params.copy()
+        current_sampling_params["rollout_first_seed"] = state.group_sampling_seeds[idx]
         tasks.append(
             asyncio.create_task(generate_and_rm_microgroup(args, microgroup, current_sampling_params, evaluation=evaluation))
         )
 
-    group = await asyncio.gather(*tasks)
+    microgroups = await asyncio.gather(*tasks)
+    group = [sample for microgroup in microgroups for sample in microgroup]
 
     # for the rm that need the whole group, we will do the rm here
     if not state.aborted and args.group_rm:

@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from miles.utils.diffusion_rollout_response import decode_tensor_base64
+
 
 import torch
 
@@ -11,47 +13,37 @@ import torch
 class LazyTensor(ABC):
     """Deferred load: **base64 ``str``** matching :func:`~miles.utils.diffusion_rollout_response.tensor_to_base64`.
 
-    Public API: :meth:`resolve` → **CPU** :class:`torch.Tensor`.
+    Public API: :meth:`resolve` → **CPU** :class:`torch.Tensor` (idempotent: decodes at most once, then returns cache).
     """
 
-    @abstractmethod
+    def __init__(self) -> None:
+        self.tensor: torch.Tensor | None = None
+
     def resolve(self) -> torch.Tensor:
-        """Materialize to a CPU tensor."""
+        """Materialize to a CPU tensor; repeated calls return the same tensor."""
+        if self.tensor is not None:
+            self.tensor = self._resolve_tensor()
+        return self.tensor
+    
+    @abstractmethod
+    def _resolve_tensor(self) -> torch.Tensor:
         raise NotImplementedError
 
 
-@dataclass
 class SafetensorsBase64LazyTensor(LazyTensor):
-    """Tensor wire: base64 of safetensors (default key ``"t"``) or ``torch.save`` bytes."""
+    """Lazy tensor from rollout wire: base64-encoded safetensors blob (default tensor key ``\"t\"`` in :func:`~miles.utils.diffusion_rollout_response.decode_tensor_base64`)."""
 
-    b64: str
-    tensor_key: str | None = None
+    def __init__(self, b64: str) -> None:
+        super().__init__()
+        self.b64: str | None = b64
 
-    def resolve(self) -> torch.Tensor:
-        from miles.utils.diffusion_rollout_response import decode_tensor_base64
-
-        return decode_tensor_base64(self.b64, tensor_key=self.tensor_key)
-
-
-def safetensors_b64_lazy_tensor(b64: str, *, tensor_key: str | None = None) -> SafetensorsBase64LazyTensor:
-    """Construct the only supported :class:`LazyTensor` implementation."""
-    return SafetensorsBase64LazyTensor(b64=b64, tensor_key=tensor_key)
-
+    def _resolve_tensor(self) -> torch.Tensor:
+        if not self.b64:
+            raise ValueError("SafetensorsBase64LazyTensor: b64 must be a non-empty str")
+        return decode_tensor_base64(self.b64).detach().cpu()
 
 # Tensor field: either deferred safetensors+b64 or already materialized (e.g. after ``resolve()``).
 RolloutTensorRef = LazyTensor | torch.Tensor
-
-
-def resolve_maybe_lazy(value: RolloutTensorRef | None) -> torch.Tensor | None:
-    """If ``value`` is :class:`LazyTensor`, call :meth:`LazyTensor.resolve`; else CPU-copy tensor."""
-    if value is None:
-        return None
-    if isinstance(value, LazyTensor):
-        return value.resolve()
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu()
-    raise TypeError(type(value))
-
 
 @dataclass
 class RolloutDebugTensors:
@@ -119,7 +111,6 @@ class Sample:
     class Status(Enum):
         PENDING = "pending"
         COMPLETED = "completed"
-        TRUNCATED = "truncated"
         ABORTED = "aborted"
         # Indicates a recoverable or non-critical failure during generation (e.g., tool call failure,
         # external API error, parsing err"""  """or). Unlike ABORTED, FAILED samples may still contain partial
