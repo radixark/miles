@@ -2,6 +2,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -24,13 +26,13 @@ def _resolve_rotary_base(script_relpath: str) -> str:
     return args[rotary_base_index + 1]
 
 
-def test_base_helper_uses_base_checkpoint_rotary_base():
-    assert _resolve_rotary_base("scripts/models/qwen3-30B-A3B.sh") == "1000000"
-
-
-def test_instruct_2507_helper_uses_2507_rotary_base():
-    assert _resolve_rotary_base("scripts/models/qwen3-30B-A3B-Instruct-2507.sh") == "10000000"
-
-
-def test_thinking_2507_helper_uses_2507_rotary_base():
-    assert _resolve_rotary_base("scripts/models/qwen3-30B-A3B-Thinking-2507.sh") == "10000000"
+@pytest.mark.parametrize(
+    ("script_relpath", "expected_rotary_base"),
+    [
+        ("scripts/models/qwen3-30B-A3B.sh", "1000000"),
+        ("scripts/models/qwen3-30B-A3B-Instruct-2507.sh", "10000000"),
+        ("scripts/models/qwen3-30B-A3B-Thinking-2507.sh", "10000000"),
+    ],
+)
+def test_model_helpers_set_correct_rotary_base(script_relpath: str, expected_rotary_base: str):
+    assert _resolve_rotary_base(script_relpath) == expected_rotary_base
