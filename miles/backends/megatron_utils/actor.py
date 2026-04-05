@@ -74,9 +74,8 @@ class MegatronTrainRayActor(TrainRayActor):
         unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
         if unsupported and args.use_pytorch_profiler:
             raise NotImplementedError(
-                f"--profile-target {' '.join(sorted(_unsupported))} is not supported for Megatron backend"
+                f"--profile-target {' '.join(sorted(unsupported))} is not supported for Megatron backend"
             )
-
         self.prof = TrainProfiler(args)
 
         # read config and tokenizer serialized to prevent concurrent writing bug.
