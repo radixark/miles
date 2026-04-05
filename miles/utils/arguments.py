@@ -2088,6 +2088,7 @@ def hf_validate_args(args, hf_config):
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
 
+    is_moe = hasattr(hf_config, "num_experts") or hasattr(hf_config, "moe_intermediate_size")
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
@@ -2102,6 +2103,8 @@ def hf_validate_args(args, hf_config):
         ("rope_theta", "rotary_base", equal),
     ]:
         if hasattr(hf_config, hf_config_name):
+            if is_moe and hf_config_name == "intermediate_size":
+                continue
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
                 errors.append(
                     f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "
