@@ -46,7 +46,7 @@ RUN mkdir -p /tmp/wheels && \
     curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys, json, subprocess; \
 [subprocess.run(['curl', '-fSL', '-o', '/tmp/wheels/' + a['name'], a['browser_download_url']], check=True) \
- for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.whl')]" && \
+ for a in json.load(sys.stdin)['assets'] if a['name'].endswith(('.whl', '.tar.gz'))]" && \
     ls -lh /tmp/wheels/
 
 # ====================================== Python dependencies ============================================
@@ -124,5 +124,13 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
 
 # int4_qat
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
+
+# ====================================== Install sgl-model-gateway ============================================
+
+# Install pre-built sgl-model-gateway wheel and binary from miles-wheels release
+# To rebuild: python build_sglang_gateway.py (in miles-wheels repo)
+RUN pip install --force-reinstall /tmp/wheels/sglang_router-*.whl && \
+    tar xzf /tmp/wheels/sgl-model-gateway-linux-*.tar.gz -C /usr/local/bin/ && \
+    chmod +x /usr/local/bin/sgl-model-gateway
 
 RUN rm -rf /tmp/wheels
