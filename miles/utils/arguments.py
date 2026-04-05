@@ -2093,12 +2093,11 @@ def hf_validate_args(args, hf_config):
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
 
-    # For MoE models, ffn_hidden_size maps to moe_intermediate_size, not intermediate_size
-    is_moe = hasattr(hf_config, "num_experts") or hasattr(hf_config, "moe_intermediate_size")
-    checks = [
+    for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
+        ("intermediate_size", "ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",
@@ -2106,10 +2105,7 @@ def hf_validate_args(args, hf_config):
             equal,
         ),
         ("rope_theta", "rotary_base", equal),
-    ]
-    if not is_moe:
-        checks.insert(3, ("intermediate_size", "ffn_hidden_size", equal))
-    for hf_config_name, megatron_config_name, compare_fn in checks:
+    ]:
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
                 errors.append(
