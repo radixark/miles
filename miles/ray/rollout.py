@@ -941,7 +941,7 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
         router_args.log_level = "warn"
         router_args.request_timeout_secs = args.sglang_router_request_timeout_secs
 
-        if hasattr(args, "sglang_router_policy") and args.sglang_router_policy:
+        if args.sglang_router_policy:
             router_args.policy = args.sglang_router_policy
 
         if has_pd_disaggregation:
