@@ -1678,12 +1678,7 @@ def parse_args(add_custom_arguments=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         if args.hf_checkpoint:
-            try:
-                hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-            except (ValueError, KeyError):
-                from miles_plugins.models.hf_attention import _load_hf_config
-
-                hf_config = _load_hf_config(args.hf_checkpoint)
+            hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
             hf_validate_args(args, hf_config)
 
         args.rank = 0
