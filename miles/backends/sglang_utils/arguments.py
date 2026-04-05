@@ -141,7 +141,7 @@ def validate_args(args):
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 
-    if getattr(args, "sglang_router_policy", None):
+    if args.sglang_router_policy:
         from miles.utils.environ import enable_experimental_rollout_refactor
 
         assert not enable_experimental_rollout_refactor(), (
