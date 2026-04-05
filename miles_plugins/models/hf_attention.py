@@ -70,7 +70,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
 
     # Subclasses set this to True when the underlying module handles CP natively
     # (e.g. via fla's state-passing CP for DeltaNet), bypassing the all-gather.
-    use_native_cp: bool = False
+    hybrid_cp: bool = False
 
     def __init__(
         self,
@@ -119,7 +119,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
                 group=mpu.get_tensor_model_parallel_group(),
             )
 
-        if mpu.get_context_parallel_world_size() > 1 and not self.use_native_cp:
+        if mpu.get_context_parallel_world_size() > 1 and not self.hybrid_cp:
             cp_size = mpu.get_context_parallel_world_size()
             # Use custom all-gather whose backward returns local gradient
             # instead of reduce-scatter, since the computation is duplicated.
@@ -154,7 +154,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
 
         output = output.permute(1, 0, 2)  # [seq_len, bsz, hidden_dim]
 
-        if mpu.get_context_parallel_world_size() > 1 and not self.use_native_cp:
+        if mpu.get_context_parallel_world_size() > 1 and not self.hybrid_cp:
             cp_rank = mpu.get_context_parallel_rank()
             output_list = []
             for i in range(len(cu_seqlens) - 1):

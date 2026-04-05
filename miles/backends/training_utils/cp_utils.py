@@ -348,7 +348,7 @@ def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int,
     Walks the model tree looking for HuggingfaceAttention submodules that have a
     ``linear_attn`` child (i.e. DeltaNet layers). For each one it sets the CP
     metadata so that ``_build_cp_context`` produces a valid context, and flips
-    ``use_native_cp`` so the parent skips the all-gather path.
+    ``hybrid_cp`` so the parent skips the all-gather path.
     """
     from miles_plugins.models.hf_attention import HuggingfaceAttention
 
@@ -360,7 +360,7 @@ def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int,
                 linear_attn.cp_group = cp_group
                 linear_attn.cp_rank = cp_rank
                 linear_attn.cp_world_size = cp_world_size
-                module.use_native_cp = True
+                module.hybrid_cp = True
                 count += 1
 
     if count > 0:
