@@ -71,8 +71,8 @@ class MegatronTrainRayActor(TrainRayActor):
         if self._is_main_rank:
             init_tracking(args, primary=False)
 
-        _unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
-        if _unsupported and args.use_pytorch_profiler:
+        unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
+        if unsupported and args.use_pytorch_profiler:
             raise NotImplementedError(
                 f"--profile-target {' '.join(sorted(_unsupported))} is not supported for Megatron backend"
             )
