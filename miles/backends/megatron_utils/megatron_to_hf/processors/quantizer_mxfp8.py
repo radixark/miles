@@ -30,9 +30,7 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
     # Skip quantization for BF16 tail of main decoder layers.
     if getattr(args, "first_last_layers_bf16", False):
-        assert hasattr(args, "num_layers"), "Expected args.num_layers to be set for BF16 head/tail."
         num_layers = int(args.num_layers)
-        assert num_layers > 0, "Expected args.num_layers > 0 for BF16 head/tail."
         num_layers_at_start_in_bf16 = int(getattr(args, "num_layers_at_start_in_bf16", 0))
         num_layers_at_end_in_bf16 = int(getattr(args, "num_layers_at_end_in_bf16", 0))
         assert num_layers_at_start_in_bf16 < num_layers, "Expected num_layers_at_start_in_bf16 < num_layers"
