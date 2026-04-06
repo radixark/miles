@@ -162,6 +162,7 @@ class DistBucketedWeightUpdateMixin:
                 post_process_quantization=True,
                 post_load_weights=post_load_weights,
             )
+            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
 
     @torch.no_grad()
     def update_weights(self) -> None:
