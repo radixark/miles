@@ -175,7 +175,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
             parser.add_argument(
-                "--extra-high-precision-layers",
+                "--extra-high-precision-layers-hf",
                 type=str,
                 nargs="*",
                 default=(),

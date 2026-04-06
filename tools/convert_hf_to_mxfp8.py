@@ -1,6 +1,6 @@
 """
 python tools/convert_hf_to_mxfp8.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR]
-                                    [--extra-high-precision-layers ...]
+                                    [--extra-high-precision-layers-hf ...]
 
 Convert an HF safetensors checkpoint to MXFP8 with UE8M0 scales.
 Supported input checkpoint types:
@@ -185,7 +185,7 @@ def process_file(
     num_layers_at_start_in_bf16: int,
     num_layers_at_end_in_bf16: int,
     source_is_block_fp8_ue8m0: bool,
-    extra_high_precision_layers: tuple[str, ...],
+    extra_high_precision_layers_hf: tuple[str, ...],
     source_scale_index: dict[str, str],
 ) -> None:
     weights: dict[str, torch.Tensor] = {}
@@ -207,7 +207,7 @@ def process_file(
 
     dynamic_skip_substrings = (
         *SKIP_WEIGHT_SUBSTRINGS,
-        *extra_high_precision_layers,
+        *extra_high_precision_layers_hf,
         *sorted(dynamic_skip_layer_prefixes),
     )
 
@@ -288,7 +288,7 @@ def convert_mxfp8(
     device: str,
     num_layers_at_start_in_bf16: int = 0,
     num_layers_at_end_in_bf16: int = 0,
-    extra_high_precision_layers: tuple[str, ...] = (),
+    extra_high_precision_layers_hf: tuple[str, ...] = (),
 ) -> None:
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
@@ -334,7 +334,7 @@ def convert_mxfp8(
             num_layers_at_start_in_bf16,
             num_layers_at_end_in_bf16,
             source_is_block_fp8_ue8m0,
-            extra_high_precision_layers,
+            extra_high_precision_layers_hf,
             source_scale_index,
         )
         gc.collect()
@@ -397,7 +397,7 @@ def main() -> None:
         help="Keep last N decoder layers in BF16 and do not quantize them.",
     )
     parser.add_argument(
-        "--extra-high-precision-layers",
+        "--extra-high-precision-layers-hf",
         type=str,
         nargs="*",
         default=(),
@@ -432,8 +432,8 @@ def main() -> None:
         str(device),
         num_layers_at_start_in_bf16=args.num_layers_at_start_in_bf16,
         num_layers_at_end_in_bf16=args.num_layers_at_end_in_bf16,
-        extra_high_precision_layers=tuple(
-            s.strip() for s in args.extra_high_precision_layers if isinstance(s, str) and s.strip()
+        extra_high_precision_layers_hf=tuple(
+            s.strip() for s in args.extra_high_precision_layers_hf if isinstance(s, str) and s.strip()
         ),
     )
 
