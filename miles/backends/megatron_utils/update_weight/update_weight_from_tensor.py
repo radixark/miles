@@ -205,7 +205,6 @@ class UpdateWeightFromTensor:
 
         dist.barrier(group=get_gloo_group())
 
-        # int4/fp4 post_process, mxfp8 post-process (swizzle MoE scales).
         if rank == 0:
             # `post_process_quantization` is related to the `process_weights_after_loading`
             # in the sglang rollout side, which should always be invoked after weight
