@@ -16,6 +16,34 @@ from miles.utils.types import ParamInfo
 
 logger = logging.getLogger(__name__)
 
+try:
+    from megatron.core.fp8_utils import dequantize_fp8_tensor, is_float8tensor
+except ImportError:
+    dequantize_fp8_tensor = None
+
+    def is_float8tensor(_tensor: torch.Tensor) -> bool:
+        return False
+
+
+def _dequantize_for_export(name: str, param: torch.Tensor) -> torch.Tensor:
+    """
+    Return a dense tensor suitable for weight export.
+
+    With --fp8-param-gather, TE params can be QuantizedTensor/MXFP8Tensor.
+    Those tensors must be dequantized before HF conversion/export.
+    """
+    tensor = param.data if hasattr(param, "data") else param
+
+    # Fast path for non-fp8 params.
+    if not (is_float8tensor(param) or is_float8tensor(tensor)):
+        return tensor
+
+    fp8_tensor = param if is_float8tensor(param) else tensor
+    try:
+        return dequantize_fp8_tensor(fp8_tensor)
+    except Exception as e:
+        raise RuntimeError(f"Failed to dequantize fp8 parameter before export: {name}") from e
+
 
 def _gather_with_stride(
     param_partitions: list[torch.Tensor], partition_dim: int, partition_stride: int
@@ -55,9 +83,10 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
     if "expert_bias" in name:
         return param
 
+    export_param = _dequantize_for_export(name, param)
     assert hasattr(param, "tensor_model_parallel"), f"{name} does not have tensor_model_parallel attribute"
     if not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
-        return param.data
+        return export_param
 
     if ".experts." in name:
         tp_size = mpu.get_expert_tensor_parallel_world_size()
@@ -66,8 +95,8 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
         tp_size = mpu.get_tensor_model_parallel_world_size()
         tp_group = mpu.get_tensor_model_parallel_group()
 
-    param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
-    dist.all_gather(param_partitions, param.data, group=tp_group)
+    param_partitions = [torch.empty_like(export_param) for _ in range(tp_size)]
+    dist.all_gather(param_partitions, export_param, group=tp_group)
     partition_dim = param.partition_dim
     partition_stride = param.partition_stride
 
@@ -90,12 +119,13 @@ def all_gather_params_async(
     handles = []
 
     for info, param in param_infos_and_params:
+        export_param = _dequantize_for_export(info.name, param)
         # Prepare async all_gather
         if "expert_bias" in info.name:
-            gather_tasks.append((info, param, None, None, None, None))
+            gather_tasks.append((info, export_param, None, None, None, None))
             handles.append(None)
         elif not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
-            gather_tasks.append((info, param.data, None, None, None, None))
+            gather_tasks.append((info, export_param, None, None, None, None))
             handles.append(None)
         else:
             # Start async all_gather
@@ -106,8 +136,8 @@ def all_gather_params_async(
                 tp_size = mpu.get_tensor_model_parallel_world_size()
                 tp_group = mpu.get_tensor_model_parallel_group()
 
-            param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
-            handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
+            param_partitions = [torch.empty_like(export_param) for _ in range(tp_size)]
+            handle = dist.all_gather(param_partitions, export_param, group=tp_group, async_op=True)
             gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
             handles.append(handle)
 
@@ -201,7 +231,7 @@ def _named_params_and_buffers_global(
             if not name.startswith("module.module."):
                 name = "module." + name
 
-            decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
+            decoder_layers_pattern = r"module\.module\.(?:language_model\.)?decoder\.layers\.(\d+)\.(.+)"
             match = re.match(decoder_layers_pattern, name)
             if not match:
                 # MTP (Multi-Token Prediction) layers for speculative decoding
@@ -246,7 +276,7 @@ def _named_params_and_buffers_global(
             if not name.startswith("module.module."):
                 name = "module." + name
 
-            decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
+            decoder_layers_pattern = r"module\.module\.(?:language_model\.)?decoder\.layers\.(\d+)\.(.+)"
             match = re.match(decoder_layers_pattern, name)
             if not match:
                 yield name, buffer
