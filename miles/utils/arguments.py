@@ -442,6 +442,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Interval for updating the weights",
             )
             parser.add_argument(
+                "--pause-generation-mode",
+                type=str,
+                choices=["abort", "retract", "in_place"],
+                default="retract",
+                help=(
+                    "How SGLang pauses in-flight requests during weight updates. "
+                    "'abort' immediately terminates all requests (previous default). "
+                    "'retract' moves running requests back to the waiting queue and "
+                    "recomputes KV cache after update. "
+                    "'in_place' freezes requests and resumes with existing KV cache."
+                ),
+            )
+            parser.add_argument(
                 "--keep-old-actor",
                 action="store_true",
                 help="Whether to keep the rollout model on training process",
