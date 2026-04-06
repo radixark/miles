@@ -33,74 +33,49 @@ All the following settings are tested under h100-80g clusters.
 
 ### Single node: Qwen3-4B
 `tests/e2e/megatron/test_qwen3_4B_p2p.py`
-### Multi node: Qwen3-30B-A3B P2P Weight Transfer (4 nodes)
+### Multi node
 
-#### Files
+Each multi-node example ships a **prepare** script (download model/datasets, convert checkpoint) and a **run** script (launch Ray jobs). All scripts accept three positional arguments:
 
-* `examples/p2p_weight_transfer/prepare-qwen3-30B-A3B.sh`: download model/datasets and convert checkpoint.
-* `examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh`: 4-node launch script (`broadcast` or `p2p` mode).
+| Argument | Description |
+|---|---|
+| `MODE` | `broadcast` or `p2p` |
+| `NODE_RANK` | `0` (head node) or `1..N` (worker nodes) |
+| `HEAD_NODE_IP` | IP address of the head node |
 
-#### Quick Start
+#### Qwen3-30B-A3B (4 nodes)
 
-1. Prepare checkpoints (run on a single node).
+| Script | Description |
+|---|---|
+| `examples/p2p_weight_transfer/prepare-qwen3-30B-A3B.sh` | Prepare: download model/datasets, convert checkpoint |
+| `examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh` | Run: 4-node launch (`broadcast` or `p2p`) |
 
 ```bash
+# 1. Prepare (single node)
 bash examples/p2p_weight_transfer/prepare-qwen3-30B-A3B.sh
-```
 
-2. Launch Ray jobs on each node.
-
-```bash
-# On NODE 0 (head node)
-bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 0 $HEAD_NODE_IP
-
-# On NODE 1-3 (worker nodes)
-bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 1 $HEAD_NODE_IP
+# 2. Launch on each node
+bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 0 $HEAD_NODE_IP  # head
+bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 1 $HEAD_NODE_IP  # worker
 bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 2 $HEAD_NODE_IP
 bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 3 $HEAD_NODE_IP
 ```
 
-The script accepts three positional arguments:
+#### Qwen3-235B-A22B (16 nodes)
 
-| Argument | Description |
+| Script | Description |
 |---|---|
-| `MODE` | `broadcast` or `p2p` |
-| `NODE_RANK` | `0` (head node) or `1,2,3` (worker nodes) |
-| `HEAD_NODE_IP` | IP address of the head node |
-
-### Multi node: Qwen3-235B-A22B P2P Weight Transfer (16 nodes)
-
-#### Files
-
-* `examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh`: download model/datasets and convert checkpoint.
-* `examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh`: 16-node launch script (`broadcast` or `p2p` mode).
-
-#### Quick Start
-
-1. Prepare checkpoints (run on a single node).
+| `examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh` | Prepare: download model/datasets, convert checkpoint |
+| `examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh` | Run: 16-node launch (`broadcast` or `p2p`) |
 
 ```bash
+# 1. Prepare (single node)
 bash examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh
-```
 
-2. Launch Ray jobs on each node.
-
-```bash
-# On NODE 0 (head node)
-bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 0 $HEAD_NODE_IP
-
-# On NODE 1-15 (worker nodes)
-bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 1 $HEAD_NODE_IP
-bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 2 $HEAD_NODE_IP
+# 2. Launch on each node
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 0 $HEAD_NODE_IP   # head
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 1 $HEAD_NODE_IP   # worker
 ...
 bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 15 $HEAD_NODE_IP
 ```
-
-The script accepts three positional arguments:
-
-| Argument | Description |
-|---|---|
-| `MODE` | `broadcast` or `p2p` |
-| `NODE_RANK` | `0` (head node) or `1..15` (worker nodes) |
-| `HEAD_NODE_IP` | IP address of the head node |
 
