@@ -67,3 +67,40 @@ The script accepts three positional arguments:
 | `MODE` | `broadcast` or `p2p` |
 | `NODE_RANK` | `0` (head node) or `1,2,3` (worker nodes) |
 | `HEAD_NODE_IP` | IP address of the head node |
+
+### Multi node: Qwen3-235B-A22B P2P Weight Transfer (16 nodes)
+
+#### Files
+
+* `examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh`: download model/datasets and convert checkpoint.
+* `examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh`: 16-node launch script (`broadcast` or `p2p` mode).
+
+#### Quick Start
+
+1. Prepare checkpoints (run on a single node).
+
+```bash
+bash examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh
+```
+
+2. Launch Ray jobs on each node.
+
+```bash
+# On NODE 0 (head node)
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 0 $HEAD_NODE_IP
+
+# On NODE 1-15 (worker nodes)
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 1 $HEAD_NODE_IP
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 2 $HEAD_NODE_IP
+...
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 15 $HEAD_NODE_IP
+```
+
+The script accepts three positional arguments:
+
+| Argument | Description |
+|---|---|
+| `MODE` | `broadcast` or `p2p` |
+| `NODE_RANK` | `0` (head node) or `1..15` (worker nodes) |
+| `HEAD_NODE_IP` | IP address of the head node |
+
