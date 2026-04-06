@@ -19,6 +19,7 @@ from tqdm import tqdm
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..common import post_process_weights
+from ..delta_filter import DeltaWeightFilter
 from .mixin import DistBucketedWeightUpdateMixin
 from .p2p_transfer_utils import (
     P2PTransferManager,
@@ -65,6 +66,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._model_registered = False
         self._tensor_update_pending: dict[str, int] = {}
 
+        self._delta_filter = DeltaWeightFilter(
+            enabled=getattr(args, "delta_weight_update", False),
+        )
         self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
         self.transfer_manager = P2PTransferManager(
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
@@ -115,9 +119,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._model_registered = True
 
     def _finalize_and_resume_engines(self):
-        # The `update_weight_version` here is necessary because the engine was not aware that the write has happened
-        # After p2p transfering, some models (like the ones with Deepseek-arch) of rollout side should invoke
-        # `post_load_weights` to re-generate the params which are not registered as `model.named_parameters()`
+        self._delta_filter.step_done()
         if dist.get_rank() == 0:
             ray.get(
                 [
@@ -143,7 +145,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         """
         if not self._is_source or not converted_named_tensors:
             return
-        # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
+        converted_named_tensors[:] = self._delta_filter.filter(converted_named_tensors)
+        if not converted_named_tensors:
+            return
         transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
 
         if transfer_ready_params and ready_hf_tensors:

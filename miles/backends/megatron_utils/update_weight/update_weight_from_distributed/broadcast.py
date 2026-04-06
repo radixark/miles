@@ -14,6 +14,7 @@ from tqdm import tqdm
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
 
+from ..delta_filter import DeltaWeightFilter
 from .mixin import DistBucketedWeightUpdateMixin
 
 
@@ -42,6 +43,9 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self._delta_filter = DeltaWeightFilter(
+            enabled=getattr(args, "delta_weight_update", False),
+        )
 
     def connect_rollout_engines(
         self,
@@ -73,6 +77,10 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 self.args, self._group_name, rollout_engines
             )
 
+    def _finalize_and_resume_engines(self) -> None:
+        self._delta_filter.step_done()
+        super()._finalize_and_resume_engines()
+
     @property
     def _is_source(self):
         """If it's the source gpu that broadcasting weights to rollout side"""
@@ -81,8 +89,12 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
     ) -> None:
-        """Lock → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
-        # lock the rollout engines to prevent dead lock on broadcast.
+        """Lock → delta-filter → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
+        converted_named_tensors[:] = self._delta_filter.filter(converted_named_tensors)
+        if not converted_named_tensors:
+            if pbar:
+                pbar.update(1)
+            return
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
         refs = update_weights_from_distributed(

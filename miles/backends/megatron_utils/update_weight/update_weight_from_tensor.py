@@ -16,6 +16,7 @@ from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import post_process_weights
+from .delta_filter import DeltaWeightFilter
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -65,6 +66,9 @@ class UpdateWeightFromTensor:
         )
 
         self._lora_config = build_lora_sync_config(args) if self.is_lora else None
+        self._delta_filter = DeltaWeightFilter(
+            enabled=getattr(args, "delta_weight_update", False) and not self.is_lora,
+        )
         # Create IPC gather groups within megatron.
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = start_rank + self.args.rollout_num_gpus_per_engine
@@ -190,11 +194,15 @@ class UpdateWeightFromTensor:
 
         sync_chunk_count = 0
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
+            hf_named_tensors = self._delta_filter.filter(hf_named_tensors)
+            if not hf_named_tensors:
+                continue
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
             results = ray.get(refs)
             _check_weight_sync_results(results, is_lora=self.is_lora)
             del long_lived_tensors
             sync_chunk_count += 1
+        self._delta_filter.step_done()
 
         if self.is_lora and sync_chunk_count == 0:
             raise RuntimeError(
