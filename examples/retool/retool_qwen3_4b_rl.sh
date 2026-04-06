@@ -134,8 +134,7 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}:/root/miles\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"DEPRECATED_MEGATRON_COMPATIBLE\": \"1\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
 }"
 

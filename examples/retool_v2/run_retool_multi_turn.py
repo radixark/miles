@@ -193,7 +193,6 @@ def execute(args: ScriptArgs):
         megatron_model_type=megatron_model_type,
         extra_env_vars={
             "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-            "DEPRECATED_MEGATRON_COMPATIBLE": "1",
             "PYTHONPATH": "/root/Megatron-LM/:/root/miles",
         },
     )
