@@ -8,6 +8,11 @@ import torch.nn.functional as F
 
 from .parallel import get_parallel_state
 
+try:
+    from fla.ops.cp import build_cp_context as _fla_build_cp_context
+except ImportError:
+    _fla_build_cp_context = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -342,14 +347,46 @@ def slice_log_prob_with_cp(
         return torch.cat([chunk_1, chunk_2], dim=0)
 
 
+def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: torch.device):
+    """Build fla CP context for a GatedDeltaNet module from packed sequence boundaries.
+
+    Args:
+        module: GDN module with ``cp_group`` / ``cp_world_size`` / ``conv_kernel_size``.
+        cu_seqlens: Global packed sequence boundaries (e.g. ``packed_seq_params.cu_seqlens_q``).
+        device: Target device.
+
+    Returns ``None`` when CP is not configured on the module (``cp_group`` not set).
+    Raises ``RuntimeError`` if hybrid CP is configured but ``fla.ops.cp`` is missing.
+    """
+    cp_group = getattr(module, "cp_group", None)
+    if cp_group is None:
+        return None
+    if _fla_build_cp_context is None:
+        raise RuntimeError(
+            "Hybrid CP requires fla.ops.cp (flash-linear-attention >= 0.4.2) " "but it could not be imported."
+        )
+    if cu_seqlens is None or cu_seqlens.numel() < 2:
+        raise ValueError(f"Hybrid CP requires valid cu_seqlens (at least 2 elements) but got {cu_seqlens}")
+    return _fla_build_cp_context(
+        cu_seqlens=cu_seqlens.to(device=device, dtype=torch.int32),
+        group=cp_group,
+        conv1d_kernel_size=module.conv_kernel_size,
+    )
+
+
 def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
     """Configure GatedDeltaNet modules for native fla CP instead of all-gather duplication.
 
     Walks the model tree looking for HuggingfaceAttention submodules that have a
     ``linear_attn`` child (i.e. DeltaNet layers). For each one it sets the CP
-    metadata so that ``_build_cp_context`` produces a valid context, and flips
+    metadata so that ``build_gdn_cp_context`` produces a valid context, and flips
     ``hybrid_cp`` so the parent skips the all-gather path.
     """
+    if _fla_build_cp_context is None:
+        raise RuntimeError(
+            "setup_hybrid_cp requires fla.ops.cp (flash-linear-attention >= 0.4.2) "
+            "but it could not be imported. Cannot enable hybrid CP without the fla CP backend."
+        )
     from miles_plugins.models.hf_attention import HuggingfaceAttention
 
     count = 0

@@ -18,11 +18,7 @@ try:
 except ImportError:
     pass
 
-try:
-    from fla.ops.cp import FLACPContext, build_cp_context
-except ImportError:
-    FLACPContext = None
-    build_cp_context = None
+from miles.backends.training_utils.cp_utils import build_gdn_cp_context
 
 from .hf_attention import HuggingfaceAttention
 
@@ -80,19 +76,6 @@ class Qwen3NextGatedDeltaNet(nn.Module):
 
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
-    def _build_cp_context(self, local_seq_len: int, device: torch.device):
-        """Build fla CP context from the local (sharded) sequence length."""
-        cp_group = getattr(self, "cp_group", None)
-        if cp_group is None or build_cp_context is None:
-            return None
-        global_seq_len = local_seq_len * self.cp_world_size
-        global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
-        return build_cp_context(
-            cu_seqlens=global_cu_seqlens,
-            group=cp_group,
-            conv1d_kernel_size=self.conv_kernel_size,
-        )
-
     def fix_query_key_value_ordering(self, mixed_qkvz, mixed_ba):
         """
         Derives `query`, `key` and `value` tensors from `mixed_qkvz` and `mixed_ba`.
@@ -127,7 +110,7 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor = None,
     ):
-        cp_context = self._build_cp_context(hidden_states.shape[1], hidden_states.device)
+        cp_context = build_gdn_cp_context(self, cu_seqlens, hidden_states.device)
 
         projected_states_qkvz = self.in_proj_qkvz(hidden_states)
         projected_states_ba = self.in_proj_ba(hidden_states)
