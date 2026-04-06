@@ -1,6 +1,7 @@
+import os
 from dataclasses import dataclass, field
 from typing import Literal
-import os
+
 import typer
 
 import miles.utils.external_utils.command_utils as U
