@@ -1,4 +1,5 @@
 accelerate
+aiohttp
 blobfile
 datasets
 httpx[http2]
