@@ -192,6 +192,12 @@ class ServerGroup:
                 logical_engine_id = rank // engine_nnodes
                 logical_engine_groups.setdefault(logical_engine_id, []).append((rank, engine))
 
+            def node_hosts_for_group(ranks_and_engines):
+                """Comma-separated node IPs for a logical engine group (multi-node TP only)."""
+                if engine_nnodes <= 1:
+                    return None
+                return ",".join(addr_and_ports[r]["host"] for r, _ in ranks_and_engines)
+
             seed_logical_engine_id = min(logical_engine_groups.keys())
             follower_logical_engine_ids = set(logical_engine_groups.keys()) - {seed_logical_engine_id}
             seed_ranks = logical_engine_groups[seed_logical_engine_id]
@@ -201,12 +207,18 @@ class ServerGroup:
             ), f"Seed loading: seed engine group {seed_logical_engine_id} has {len(seed_ranks)} ranks, expected {engine_nnodes}"
 
             seed_head_rank = seed_ranks[0][0]
+            seed_node_hosts = node_hosts_for_group(seed_ranks)
             logger.info(
                 f"Seed loading: initializing seed engine {seed_logical_engine_id} "
                 f"(ranks {[r for r, _ in seed_ranks]}) with {engine_nnodes} node(s) — loads from disk"
             )
             seed_handles = [
-                engine.init.remote(**(addr_and_ports[rank]), router_ip=self.router_ip, router_port=self.router_port)
+                engine.init.remote(
+                    **(addr_and_ports[rank]),
+                    router_ip=self.router_ip,
+                    router_port=self.router_port,
+                    node_hosts=seed_node_hosts,
+                )
                 for rank, engine in seed_ranks
             ]
             ray.get(seed_handles)
@@ -215,13 +227,16 @@ class ServerGroup:
             seed_port = addr_and_ports[seed_head_rank]["port"]
             follower_handles = []
             for logical_engine_id in follower_logical_engine_ids:
-                for rank, engine in logical_engine_groups[logical_engine_id]:
+                follower_ranks = logical_engine_groups[logical_engine_id]
+                follower_node_hosts = node_hosts_for_group(follower_ranks)
+                for rank, engine in follower_ranks:
                     logger.info(f"Seed loading: actor {rank} will load from seed at {seed_host}:{seed_port}")
                     follower_handles.append(
                         engine.init.remote(
                             **(addr_and_ports[rank]),
                             router_ip=self.router_ip,
                             router_port=self.router_port,
+                            node_hosts=follower_node_hosts,
                             seed_instance_ip=seed_host,
                             seed_instance_service_port=seed_port,
                         )
