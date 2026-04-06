@@ -674,8 +674,9 @@ def _compute_server_args(
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
-    # Override load_format for follower engines that load from a seed
-    if seed_instance_ip is not None and seed_instance_service_port is not None:
+    # Override load_format for follower engines that load from a seed.
+    is_follower = seed_instance_ip is not None and seed_instance_service_port is not None
+    if is_follower:
         kwargs["load_format"] = "remote_instance"
         kwargs["remote_instance_weight_loader_seed_instance_ip"] = seed_instance_ip
         kwargs["remote_instance_weight_loader_seed_instance_service_port"] = seed_instance_service_port
@@ -683,7 +684,6 @@ def _compute_server_args(
         kwargs["remote_instance_weight_loader_start_seed_via_transfer_engine"] = True
 
     unused_keys = set(kwargs.keys())
-    is_follower = seed_instance_ip is not None and seed_instance_service_port is not None
     for attr in dataclasses.fields(ServerArgs):
         if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
             continue
