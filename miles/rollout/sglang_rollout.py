@@ -304,10 +304,11 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    # Generate a unique session_id for each sample in the group
-    for sample in group:
-        if sample.session_id is None:
-            sample.session_id = str(uuid.uuid4())
+    # Generate a unique session_id for each sample in the group (consistent hashing only)
+    if args.sglang_router_policy == "consistent_hashing":
+        for sample in group:
+            if sample.session_id is None:
+                sample.session_id = str(uuid.uuid4())
 
     tasks = []
     for idx, sample in enumerate(group):
