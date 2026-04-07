@@ -9,7 +9,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.generate_utils.openai_endpoint_utils import compute_samples_from_openai_records
+from miles.rollout.generate_utils.openai_endpoint_utils import (
+    OpenAIEndpointTracer,
+    compute_samples_from_openai_records,
+)
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.session_types import SessionRecord
 from miles.utils.types import Sample
@@ -80,6 +83,33 @@ def _make_record(
             ]
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_create_fetches_session_server_instance_id(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        calls.append((action, url))
+        if action == "get":
+            assert url == "http://127.0.0.1:12345/health"
+            return {"status": "ok", "session_server_instance_id": "server-instance-123"}
+        assert action == "post"
+        assert url == "http://127.0.0.1:12345/sessions"
+        return {"session_id": "session-123"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_port=12345)
+    tracer = await OpenAIEndpointTracer.create(args)
+
+    assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
+    assert tracer.session_server_instance_id == "server-instance-123"
+    assert args.session_server_instance_id == "server-instance-123"
+    assert calls == [
+        ("get", "http://127.0.0.1:12345/health"),
+        ("post", "http://127.0.0.1:12345/sessions"),
+    ]
 
 
 # ── test: compute_samples_from_openai_records ────────────────────────
