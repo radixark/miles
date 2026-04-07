@@ -2,6 +2,7 @@
 
 # Qwen3.5-35B-A3B with CP=2 EP=8
 # Requires: flash-linear-attention>=0.4.2 for native fla CP on GDN layers
+# pip install transformers==5.2.0
 
 # for rerun the task
 pkill -9 sglang
