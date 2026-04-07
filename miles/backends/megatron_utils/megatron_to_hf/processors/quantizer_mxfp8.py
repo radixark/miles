@@ -1,9 +1,18 @@
+import logging
 import re
+from functools import partial
+
 
 try:
+    from sglang.srt.layers.quantization.fp8_utils import flashinfer_mxfp8_quantize
+
+    mxfp8_quantize = partial(flashinfer_mxfp8_quantize, is_sf_swizzled_layout=False)
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("flashinfer_mxfp8_quantize not available; falling back to Triton.")
     from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
-except Exception:
-    mxfp8_group_quantize = None
+
+    mxfp8_quantize = mxfp8_group_quantize
 
 
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
@@ -99,15 +108,13 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
 
 def _quantize_param(name, weight):
-    if mxfp8_group_quantize is None:
-        raise RuntimeError("MXFP8 quantization requires sglang fp8_utils.mxfp8_group_quantize.")
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     weight = weight.contiguous()
     k = weight.shape[-1]
     if k % 32 != 0:
         raise ValueError(f"Last dim {k} must be divisible by 32 for MXFP8.")
     weight_flat = weight.view(-1, k).contiguous()
-    qweight, scale = mxfp8_group_quantize(weight_flat)
+    qweight, scale = mxfp8_quantize(weight_flat)
     qweight = qweight.view_as(weight)
     scale = scale.view(*weight.shape[:-1], k // 32).contiguous()
     scale_name = name.replace(".weight", ".weight_scale_inv")
