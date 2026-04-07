@@ -69,8 +69,4 @@
 
 14. **NCCL error: `Failed to bind NVLink SHARP (NVLS) Multicast memory ... CUDA error 2 'out of memory'` in colocate mode.**
 
-    This happens when SGLang keeps piecewise CUDA graph communication resources alive in colocate mode, and Megatron later fails to initialize NCCL NVLS on the same GPUs.
-
-    Fix: add `--sglang-disable-piecewise-cuda-graph` to your training command. This avoids the extra piecewise CUDA graph capture and prevents SGLang from retaining those communication resources before Megatron training starts.
-
     This issue has been observed on H100 with Qwen3-30B-A3B in colocate mode, especially on the non-DeepEP path.
