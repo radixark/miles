@@ -86,11 +86,11 @@ def test_cp_forward_backward(rank, world_size):
     full_hidden_cp = torch.randn(batch, total_seq_len, 256, device=device, dtype=dtype)
     local_hidden = full_hidden_cp[:, start:end, :].clone().contiguous().requires_grad_(True)
 
-    # Local cu_seqlens for the chunk
-    local_cu = torch.tensor([0, local_seq_len], dtype=torch.int32, device=device)
+    # Global cu_seqlens (build_gdn_cp_context expects global boundaries)
+    global_cu = torch.tensor([0, total_seq_len], dtype=torch.int32, device=device)
 
     # Forward with CP
-    cp_out = model_cp(local_hidden, cu_seqlens=local_cu)
+    cp_out = model_cp(local_hidden, cu_seqlens=global_cu)
     cp_loss = cp_out.sum()
 
     # Reduce loss across ranks to match reference
