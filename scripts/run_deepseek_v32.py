@@ -122,23 +122,6 @@ def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
     (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
     (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
 
-    # tokenizer_config_path = checkpoint_dir / "tokenizer_config.json"
-    # if tokenizer_config_path.exists():
-    #     with open(tokenizer_config_path) as f:
-    #         tokenizer_config = json.load(f)
-
-    #     need_rewrite = False
-    #     if tokenizer_config.get("tokenizer_class") == "TokenizersBackend":
-    #         tokenizer_config["tokenizer_class"] = "PreTrainedTokenizerFast"
-    #         need_rewrite = True
-    #     if isinstance(tokenizer_config.get("extra_special_tokens"), list):
-    #         tokenizer_config["extra_special_tokens"] = {}
-    #         need_rewrite = True
-
-    #     if need_rewrite:
-    #         with open(tokenizer_config_path, "w") as f:
-    #             json.dump(tokenizer_config, f, indent=2, ensure_ascii=False)
-
     print(f"Patched DeepSeek v3.2 files in {checkpoint_dir}")
 
 
@@ -176,12 +159,6 @@ def _prepare_mxfp8_ckpt(args: ScriptArgs):
 def _prepare_megatron_ckpt(args: ScriptArgs):
 
     if args.use_single_node:
-        # extra_args = (
-        #     f"--tensor-model-parallel-size {args.actor_num_gpus_per_node} "
-        #     f"--expert-model-parallel-size {args.actor_num_gpus_per_node} "
-        #     "--pipeline-model-parallel-size 1 "
-        #     "--expert-tensor-parallel-size 1 "
-        # )
         U.convert_checkpoint(
             model_name=args.model_name,
             megatron_model_type=args.megatron_model_type,
