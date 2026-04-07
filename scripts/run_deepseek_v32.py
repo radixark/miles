@@ -7,6 +7,7 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
+app = typer.Typer()
 
 _DEEPSEEK_V32_CONFIG_SHIM = """from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 
@@ -27,25 +28,32 @@ class DeepseekV32ForCausalLM(DeepseekV3ForCausalLM):
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
-    model_org: str = "Pinaster"
-    model_name: str = "DeepSeek-V3.2-5layer"
-    megatron_model_type: str = "deepseek-v32-5layer"
-    num_gpus_per_node: int | None = 8
-    actor_num_gpus_per_node: int | None = 4
-    rollout_num_gpus: int | None = 4
+    model_org: str = "deepseek-ai"
+    model_name: str = "DeepSeek-V3.2"
+    megatron_model_type: str = "deepseek-v32"
+    use_single_node: bool = False
+    num_gpus_per_node: int = 8
+    actor_num_nodes: int | None = None
+    actor_num_gpus_per_node: int | None = 8
+    rollout_num_gpus: int | None = None
     hardware: Literal["B200", "B300", "GB200", "GB300"] = "B200"
     enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
+    model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     rollout_mxfp8: bool = False
     train_mxfp8: bool = False
+    fp8_param_gather: bool = False
     enable_mis: bool = False
     tis_use_rs: bool = True
 
     def __post_init__(self):
-        pass
+        if self.use_single_node:
+            self.actor_num_nodes = 1
+            self.actor_num_gpus_per_node = 4
+            self.rollout_num_gpus = 4
 
 
 def _process_glm_checkpoint(checkpoint_dir: Path):
@@ -113,14 +121,29 @@ def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
 
     (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
     (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
+
+    # tokenizer_config_path = checkpoint_dir / "tokenizer_config.json"
+    # if tokenizer_config_path.exists():
+    #     with open(tokenizer_config_path) as f:
+    #         tokenizer_config = json.load(f)
+
+    #     need_rewrite = False
+    #     if tokenizer_config.get("tokenizer_class") == "TokenizersBackend":
+    #         tokenizer_config["tokenizer_class"] = "PreTrainedTokenizerFast"
+    #         need_rewrite = True
+    #     if isinstance(tokenizer_config.get("extra_special_tokens"), list):
+    #         tokenizer_config["extra_special_tokens"] = {}
+    #         need_rewrite = True
+
+    #     if need_rewrite:
+    #         with open(tokenizer_config_path, "w") as f:
+    #             json.dump(tokenizer_config, f, indent=2, ensure_ascii=False)
+
     print(f"Patched DeepSeek v3.2 files in {checkpoint_dir}")
 
 
-def prepare(args: ScriptArgs):
+def _prepare_download(args: ScriptArgs):
     source_checkpoint = Path(args.model_dir) / args.model_name
-    mxfp8_checkpoint = Path(args.model_dir) / f"{args.model_name}-MXFP8"
-    bf16_checkpoint = Path(args.model_dir) / f"{args.model_name}-bf16"
-
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(
         f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
@@ -129,11 +152,18 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
     _patch_deepseek_v32_checkpoint(source_checkpoint)
 
+
+def _prepare_bf16_ckpt(args: ScriptArgs):
+    bf16_checkpoint = Path(args.model_dir) / f"{args.model_name}-bf16"
     U.fp8_cast_bf16(
         path_src=f"{args.model_dir}/{args.model_name}",
         path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
     )
     _patch_deepseek_v32_checkpoint(bf16_checkpoint)
+
+
+def _prepare_mxfp8_ckpt(args: ScriptArgs):
+    mxfp8_checkpoint = Path(args.model_dir) / f"{args.model_name}-MXFP8"
     if args.rollout_mxfp8:
         U.exec_command(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name}-bf16 "
@@ -142,18 +172,71 @@ def prepare(args: ScriptArgs):
         )
         _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
 
-    U.convert_checkpoint(
-        model_name=args.model_name,
-        megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.actor_num_gpus_per_node,
-        # To support multi-node training, for simplicity, we put model into shared folder
-        dir_dst=args.model_dir,
-        hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
-        megatron_path=args.megatron_path,
-    )
+
+def _prepare_megatron_ckpt(args: ScriptArgs):
+
+    if args.use_single_node:
+        # extra_args = (
+        #     f"--tensor-model-parallel-size {args.actor_num_gpus_per_node} "
+        #     f"--expert-model-parallel-size {args.actor_num_gpus_per_node} "
+        #     "--pipeline-model-parallel-size 1 "
+        #     "--expert-tensor-parallel-size 1 "
+        # )
+        U.convert_checkpoint(
+            model_name=args.model_name,
+            megatron_model_type=args.megatron_model_type,
+            num_gpus_per_node=args.actor_num_gpus_per_node,
+            # To support multi-node training, for simplicity, we put model into shared folder
+            dir_dst=args.model_dir,
+            hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
+            megatron_path=args.megatron_path,
+        )
+
+    else:
+        extra_args = (
+            "--tensor-model-parallel-size 4 "
+            "--expert-model-parallel-size 32 "
+            "--pipeline-model-parallel-size 4 "
+            "--decoder-last-pipeline-num-layers 13 "
+            "--expert-tensor-parallel-size 1 "
+        )
+        multinode = True
+        num_nodes = args.actor_num_nodes
+
+        U.convert_checkpoint(
+            model_name=args.model_name,
+            megatron_model_type=args.megatron_model_type,
+            num_gpus_per_node=args.actor_num_gpus_per_node,
+            multinode=multinode,
+            num_nodes=num_nodes,
+            extra_args=extra_args,
+            # To support multi-node training, for simplicity, we put model into shared folder
+            dir_dst=args.model_dir,
+            hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
+            megatron_path=args.megatron_path,
+        )
 
 
-def execute(args: ScriptArgs):
+def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
+    if args.use_single_node:
+        return
+    torch_dist_dst = f"{args.model_local_dir}/{args.model_name}_torch_dist"
+    if not (skip_existing and Path(torch_dist_dst).exists()):
+        U.rsync_simple(
+            path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
+            path_dst=torch_dist_dst,
+        )
+
+    hf_name = f"{args.model_name}-{'MXFP8' if args.rollout_mxfp8 else ''}"
+    hf_dst = f"{args.model_local_dir}/{hf_name}"
+    if not (skip_existing and Path(hf_dst).exists()):
+        U.rsync_simple(
+            path_src=f"{args.model_dir}/{hf_name}",
+            path_dst=hf_dst,
+        )
+
+
+def _execute_train(args: ScriptArgs):
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
@@ -203,6 +286,8 @@ def execute(args: ScriptArgs):
         # "--micro-batch-size 1 "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 32768 "
+        "--data-pad-size-multiplier 4096 "
+        "--log-probs-chunk-size 1024 "
     )
 
     grpo_args = (
@@ -232,7 +317,9 @@ def execute(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
-        f"--actor-num-nodes 1 "
+        "--allgather-cp "
+        f"--update-weight-buffer-size {2 * 1024 ** 3} "
+        f"--actor-num-nodes {args.actor_num_nodes} "
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {args.rollout_num_gpus} "
@@ -243,6 +330,8 @@ def execute(args: ScriptArgs):
         "SGLANG_NSA_FORCE_MLA": "1",
         "INDEXER_ROPE_NEOX_STYLE": "0",
         "SGLANG_NSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
+        "NVSHMEM_DISABLE_NCCL": "1",
+        "NVTE_BACKWARD_OVERRIDE": "dequantized",
     }
 
     if args.train_mxfp8:
@@ -253,24 +342,55 @@ def execute(args: ScriptArgs):
                     "--bf16 "
                     "--fp8-format e4m3 "
                     "--fp8-recipe mxfp8 "
-                    # "--fp8-param-gather "
-                    # "--reuse-grad-buf-for-mxfp8-param-ag "
                     # --moe-router-padding-for-quantization
                 )
+                if args.fp8_param_gather:
+                    raise NotImplementedError("FP8 param gather is not supported yet.")
+                    misc_args += (
+                        "--fp8-param-gather "
+                        "--reuse-grad-buf-for-mxfp8-param-ag "
+                        "--overlap-param-gather "
+                        "--overlap-grad-reduce "
+                    )
+                    optimizer_args += (
+                        "--use-precision-aware-optimizer "
+                        # "--offload-optimizer-states "
+                    )
+                else:
+                    optimizer_args += (
+                        "--optimizer-cpu-offload "
+                        "--overlap-cpu-optimizer-d2h-h2d "
+                        "--use-precision-aware-optimizer "
+                    )
+    else:
+        optimizer_args += (
+            "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
+        )
 
     match args.hardware:
         case "B200" | "B300" | "GB200" | "GB300":
-            perf_args += (
-                f"--tensor-model-parallel-size {args.actor_num_gpus_per_node} "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                f"--expert-model-parallel-size {args.actor_num_gpus_per_node} "
-                "--expert-tensor-parallel-size 1 "
-            )
+            if args.use_single_node:
+                perf_args += (
+                    f"--tensor-model-parallel-size {args.actor_num_gpus_per_node} "
+                    "--sequence-parallel "
+                    "--pipeline-model-parallel-size 1 "
+                    "--context-parallel-size 1 "
+                    f"--expert-model-parallel-size {args.actor_num_gpus_per_node} "
+                    "--expert-tensor-parallel-size 1 "
+                )
+            else:
+                perf_args += (
+                    "--tensor-model-parallel-size 4 "
+                    "--sequence-parallel "
+                    "--pipeline-model-parallel-size 4 "
+                    "--decoder-last-pipeline-num-layers 13 "
+                    "--context-parallel-size 2 "
+                    "--expert-model-parallel-size 32 "
+                    "--expert-tensor-parallel-size 1 "
+                )
 
             sglang_args = (
-                "--sglang-mem-fraction-static 0.7 "
+                "--sglang-mem-fraction-static 0.8 "
                 "--sglang-attention-backend nsa "
                 "--sglang-nsa-decode-backend flashmla_sparse "
                 "--sglang-nsa-prefill-backend flashmla_sparse "
@@ -280,7 +400,10 @@ def execute(args: ScriptArgs):
             )
 
             if args.rollout_mxfp8:
-                sglang_world_size = 2
+                if args.use_single_node:
+                    sglang_world_size = 2
+                else:
+                    sglang_world_size = 8
                 sglang_decode_max_bs = 256
                 sglang_args += (
                     f"--rollout-num-gpus-per-engine {sglang_world_size} "
@@ -289,6 +412,7 @@ def execute(args: ScriptArgs):
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "
                     "--sglang-enable-dp-attention "
+                    "--sglang-enable-dp-lm-head "
                     # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
@@ -306,9 +430,7 @@ def execute(args: ScriptArgs):
                         f"--extra-high-precision-layers {' '.join(default_extra_high_precision_layers)} "
                         f"--extra-high-precision-layers-megatron {' '.join(default_extra_high_precision_layers_megatron)} "
                     )
-                optimizer_args += (
-                    "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
-                )
+
                 te_precision_config_text = """
 configs:
   bf16:
@@ -380,11 +502,52 @@ tis_batch_normalize: true
     )
 
 
+@app.command()
 @U.dataclass_cli
-def main(args: ScriptArgs):
-    prepare(args)
-    execute(args)
+def full_train(args: ScriptArgs):
+    """Full pipeline: download, cast, convert, copy, train."""
+    _prepare_download(args)
+    _prepare_bf16_ckpt(args)
+    _prepare_mxfp8_ckpt(args)
+    _prepare_megatron_ckpt(args)
+    # _prepare_cp(args, skip_existing=True)
+    _execute_train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare(args: ScriptArgs):
+    """Download model/data and convert to Megatron checkpoints (run on head node)."""
+    _prepare_download(args)
+    _prepare_bf16_ckpt(args)
+    _prepare_mxfp8_ckpt(args)
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_megatron_ckpt(args: ScriptArgs):
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_cp(args: ScriptArgs):
+    """Copy model/checkpoint to local storage (run on each node)."""
+    _prepare_cp(args)
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    """Run training only (assumes prepare and optional prepare-cp are done)."""
+    _execute_train(args)
+
+
+@app.callback()
+def _callback() -> None:
+    pass
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    app()
