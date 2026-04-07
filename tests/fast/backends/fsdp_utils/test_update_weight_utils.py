@@ -42,9 +42,7 @@ def _install_sglang_stubs():
 
 _install_sglang_stubs()
 
-_MODULE_PATH = (
-    Path(__file__).resolve().parents[4] / "miles" / "backends" / "fsdp_utils" / "update_weight_utils.py"
-)
+_MODULE_PATH = Path(__file__).resolve().parents[4] / "miles" / "backends" / "fsdp_utils" / "update_weight_utils.py"
 _SPEC = importlib.util.spec_from_file_location("miles_fsdp_update_weight_utils_test", _MODULE_PATH)
 uw = importlib.util.module_from_spec(_SPEC)
 assert _SPEC is not None and _SPEC.loader is not None
@@ -69,7 +67,9 @@ class _DummyUpdater(uw.UpdateWeight):
         super().__init__(args, model)
         self.updated_buckets = []
 
-    def connect_rollout_engines(self, rollout_engines, rollout_engine_lock, engine_gpu_counts=None, engine_gpu_offsets=None):
+    def connect_rollout_engines(
+        self, rollout_engines, rollout_engine_lock, engine_gpu_counts=None, engine_gpu_offsets=None
+    ):
         self.rollout_engines = rollout_engines
 
     def update_bucket_weights(self, named_tensors, weight_version=None):
