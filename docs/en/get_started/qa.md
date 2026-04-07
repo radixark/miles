@@ -69,8 +69,8 @@
 
 14. **NCCL error: `Failed to bind NVLink SHARP (NVLS) Multicast memory ... CUDA error 2 'out of memory'` in colocate mode.**
 
-    This happens when SGLang's flashinfer allreduce fusion allocates NVLS (NVLink SHARP) multicast handles on the NVSwitch, leaving insufficient handles for Megatron's training NCCL. NVSwitch has a hardware-limited number of multicast handle slots. In colocate mode, SGLang and Megatron share the same GPUs, and SGLang's NVLS handles are not released during sleep.
+    This happens when SGLang keeps piecewise CUDA graph communication resources alive in colocate mode, and Megatron later fails to initialize NCCL NVLS on the same GPUs.
 
-    Fix: add `--sglang-enforce-disable-flashinfer-allreduce-fusion` to your training command. This disables flashinfer's NVLS-based allreduce fusion in SGLang, reserving NVLS handles for Megatron training.
+    Fix: add `--sglang-disable-piecewise-cuda-graph` to your training command. This avoids the extra piecewise CUDA graph capture and prevents SGLang from retaining those communication resources before Megatron training starts.
 
-    This issue has been observed on H100 with Qwen3-30B-A3B in colocate mode.
+    This issue has been observed on H100 with Qwen3-30B-A3B in colocate mode, especially on the non-DeepEP path.
