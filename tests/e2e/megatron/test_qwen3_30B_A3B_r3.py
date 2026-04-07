@@ -97,6 +97,8 @@ def execute():
         f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
         "--sglang-max-running-requests 512 "
         "--sglang-enable-metrics "
+        # required for H100: save NVLS handles for Megatron training NCCL
+        "--sglang-enforce-disable-flashinfer-allreduce-fusion "
     )
 
     if USE_DEEPEP:
