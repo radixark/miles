@@ -54,17 +54,19 @@ logger = logging.getLogger(__name__)
 
 
 def _warn_if_piecewise_cuda_graph_enabled(args, worker_type: str, overrides: dict) -> None:
+    if not args.colocate:
+        return
     piecewise_enabled = overrides.get(
         "enforce_piecewise_cuda_graph",
-        getattr(args, "sglang_enforce_piecewise_cuda_graph", False),
+        args.sglang_enforce_piecewise_cuda_graph,
     ) or not overrides.get(
         "disable_piecewise_cuda_graph",
-        getattr(args, "sglang_disable_piecewise_cuda_graph", True),
+        args.sglang_disable_piecewise_cuda_graph,
     )
     if piecewise_enabled:
         logger.warning(
             "SGLang piecewise CUDA graph is enabled for rollout worker_type='%s'. "
-            "In colocate RL setups this may trigger NCCL NVLS out-of-memory errors during Megatron initialization.",
+            "In colocate mode this may trigger NCCL NVLS out-of-memory errors during Megatron initialization.",
             worker_type,
         )
 

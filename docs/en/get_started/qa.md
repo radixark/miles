@@ -67,6 +67,6 @@
 
     You can try setting the `--no-check-for-nan-in-loss-and-grad` flag to skip the corresponding training steps.
 
-14. **NCCL error: `Failed to bind NVLink SHARP (NVLS) Multicast memory ... CUDA error 2 'out of memory'` in colocate mode.**
+14. **NCCL error: `Failed to bind NVLink SHARP (NVLS) Multicast memory ... CUDA error 2 'out of memory'`.**
 
-    This issue has been observed on H100 with Qwen3-30B-A3B in colocate mode, especially on the non-DeepEP path.
+    This issue has been observed on H100 in colocate mode with piece-wise CUDA graph enabled. Piece-wise CUDA graph is now disabled by default in colocate mode. If you encounter this after explicitly enabling it via `--sglang-enforce-piecewise-cuda-graph`, remove that flag.
