@@ -26,10 +26,7 @@ def _execute_with_cp(cp_size: int):
     assert NUM_GPUS % cp_size == 0
     ep_size = NUM_GPUS // cp_size
 
-    ckpt_args = (
-        f"--hf-checkpoint /root/models/{MODEL_NAME} "
-        f"--ref-load /root/{MODEL_NAME}_torch_dist "
-    )
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -101,11 +98,7 @@ def _execute_with_cp(cp_size: int):
         "--sglang-speculative-num-draft-tokens 3 "
     )
 
-    mtp_args = (
-        "--enable-mtp-training "
-        "--mtp-num-layers 1 "
-        "--mtp-loss-scaling-factor 0.2 "
-    )
+    mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
     ci_args = "--ci-test "
 
