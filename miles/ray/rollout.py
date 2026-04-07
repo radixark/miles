@@ -724,6 +724,9 @@ class RolloutManager:
         if any(sample.multimodal_train_inputs is not None for sample in samples):
             train_data["multimodal_train_inputs"] = [sample.multimodal_train_inputs for sample in samples]
 
+        if any(sample.weight_versions for sample in samples):
+            train_data["weight_versions"] = [sample.weight_versions for sample in samples]
+
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
@@ -771,6 +774,7 @@ class RolloutManager:
                 "rollout_routed_experts",
                 "prompt",
                 "teacher_log_probs",
+                "weight_versions",
             ]:
                 if key not in data:
                     continue
@@ -1201,6 +1205,12 @@ def compute_metrics_from_samples(args, samples):
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
+
+    oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
+    if oldest_versions:
+        log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
+        mixed = sum(1 for s in samples if len(set(s.weight_versions)) > 1)
+        log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
