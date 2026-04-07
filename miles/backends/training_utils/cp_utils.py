@@ -374,19 +374,10 @@ def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: to
     )
 
 
-def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
-    """Configure GatedDeltaNet modules for native fla CP instead of all-gather duplication.
-
-    Walks the model tree looking for HuggingfaceAttention submodules that have a
-    ``linear_attn`` child (i.e. DeltaNet layers). For each one it sets the CP
-    metadata so that ``build_gdn_cp_context`` produces a valid context, and flips
-    ``hybrid_cp`` so the parent skips the all-gather path.
-    """
-    if _fla_build_cp_context is None:
-        raise RuntimeError(
-            "setup_hybrid_cp requires fla.ops.cp (flash-linear-attention >= 0.4.2) "
-            "but it could not be imported. Cannot enable hybrid CP without the fla CP backend."
-        )
+def detect_and_setup_hybrid_cp(
+    model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int
+) -> None:
+    """Scan for GatedDeltaNet modules and configure them for native fla CP."""
     from miles_plugins.models.hf_attention import HuggingfaceAttention
 
     count = 0
@@ -401,4 +392,4 @@ def setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int,
                 count += 1
 
     if count > 0:
-        logger.info(f"Configured hybrid CP on {count} DeltaNet modules (fla native state passing)")
+        logger.info(f"Configured hybrid CP on {count} GDN modules (fla native state passing)")
