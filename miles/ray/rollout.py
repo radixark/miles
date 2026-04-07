@@ -53,24 +53,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def _warn_if_piecewise_cuda_graph_enabled(args, worker_type: str, overrides: dict) -> None:
-    if not args.colocate:
-        return
-    piecewise_enabled = overrides.get(
-        "enforce_piecewise_cuda_graph",
-        args.sglang_enforce_piecewise_cuda_graph,
-    ) or not overrides.get(
-        "disable_piecewise_cuda_graph",
-        args.sglang_disable_piecewise_cuda_graph,
-    )
-    if piecewise_enabled:
-        logger.warning(
-            "SGLang piecewise CUDA graph is enabled for rollout worker_type='%s'. "
-            "In colocate mode this may trigger NCCL NVLS out-of-memory errors during Megatron initialization.",
-            worker_type,
-        )
-
-
 # ---------------------------------------------------------------------------
 # ServerGroup / RolloutServer abstractions
 # ---------------------------------------------------------------------------
@@ -1044,7 +1026,6 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
             overrides = dict(group_cfg.overrides)
             if args.offload_rollout and not needs_offload:
                 overrides.setdefault("enable_memory_saver", False)
-            _warn_if_piecewise_cuda_graph_enabled(args, group_cfg.worker_type, overrides)
             logger.info(
                 f"Engine group '{group_cfg.worker_type}' gpu_offset={gpu_offset} "
                 f"(abs={group_abs_start}): needs_offload={needs_offload}"
