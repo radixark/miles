@@ -49,11 +49,21 @@ async def run(
         netloc = f"{external_host}:{port}" if port else external_host
         session_url = urlunparse(parsed._replace(netloc=netloc))
 
+    if metadata.get("agent_name") == "terminus-2":
+        agent_kwargs = {
+            "parser_name": "xml",
+            "interleaved_thinking": True,
+            "abort_on_response_length_exceeded": True,
+        }
+    else:
+        agent_kwargs = {}
+
     request = {
         **metadata,
         "base_url": session_url,
         "model": f"openai/{model_name}",
         "sampling_params": request_kwargs,
+        "agent_kwargs": agent_kwargs,
     }
 
     max_seq_len = metadata.get("max_seq_len")
