@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import asyncio
 import dataclasses
 import itertools
 import logging
@@ -80,6 +83,7 @@ class ServerGroup:
     model_path: str | None = None
     router_ip: str | None = None
     router_port: int | None = None
+    cell_id: str = ""
 
     @property
     def nodes_per_engine(self):
@@ -372,16 +376,23 @@ class RolloutManager:
             _start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
-
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitors = []
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
+        self._ci_fault_injection_pending = False
+
+    async def init(self):
+        """Start rollout engines, wait for readiness, and launch health monitors."""
+        if self.args.debug_train_only:
+            return
+        init_http_client(self.args)
+        self.servers = start_rollout_servers(self.args, self.pg)
+        if self.args.use_fault_tolerance:
             for srv in self.servers.values():
                 for group in srv.server_groups:
-                    monitor = RolloutHealthMonitor(group, args)
+                    monitor = RolloutHealthMonitor(group, self.args)
                     monitor.start()
                     self._health_monitors.append(monitor)
-            self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
+            self._ci_fault_injection_pending = self.args.ci_test
 
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -404,7 +415,10 @@ class RolloutManager:
             except Exception as e:
                 logger.warning(f"CI Fault Injection failed: {e}")
 
-    def dispose(self):
+    async def dispose(self):
+        self._do_dispose()
+
+    def _do_dispose(self):
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
@@ -437,11 +451,15 @@ class RolloutManager:
         num_new = srv.num_new_engines if srv else 0
         return engines, self.rollout_engine_lock, num_new, gpu_counts, gpu_offsets
 
-    def get_num_rollout_per_epoch(self):
+    async def get_num_rollout_per_epoch(self):
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
     def generate(self, rollout_id):
+        # return await asyncio.to_thread(self._do_generate, rollout_id)
+        return self._do_generate(rollout_id)
+
+    def _do_generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
         self.health_monitoring_resume()
@@ -454,8 +472,11 @@ class RolloutManager:
         return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
 
     def eval(self, rollout_id):
+        # await asyncio.to_thread(self._do_eval, rollout_id)
+        self._do_eval(rollout_id)
+
+    def _do_eval(self, rollout_id):
         if self.args.debug_train_only:
-            # if debug train only, we don't generate evaluation data
             return
         self.health_monitoring_resume()
 
@@ -472,22 +493,25 @@ class RolloutManager:
             self._metric_checker.on_eval(metrics)
 
     def save(self, rollout_id):
+        # await asyncio.to_thread(self.data_source.save, rollout_id)
         self.data_source.save(rollout_id)
 
     def load(self, rollout_id=None):
+        # await asyncio.to_thread(self.data_source.load, rollout_id)
         self.data_source.load(rollout_id)
 
-    def offload(self, tags: list[str] | None = None):
+    async def offload(self, tags: list[str] | None = None):
         self.health_monitoring_pause()
         if tags is not None:
-            handles = [
+            refs = [
                 engine.release_memory_occupation.remote(tags=tags)
                 for engine in self.rollout_engines
                 if engine is not None
             ]
-            return ray.get(handles) if handles else []
+            return list(await asyncio.gather(*refs)) if refs else []
         for srv in self.servers.values():
             srv.offload()
+        return []
 
     def onload(self, tags: list[str] | None = None):
         for srv in self.servers.values():
@@ -538,8 +562,103 @@ class RolloutManager:
         if srv:
             srv.num_new_engines = 0
 
-    def check_weights(self, action: str):
-        return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+    async def check_weights(self, action: str):
+        refs = [engine.check_weights.remote(action=action) for engine in self.rollout_engines]
+        return list(await asyncio.gather(*refs))
+
+    # ------------------------------------------------------------------
+    # Cell-based fault-tolerance APIs (called by FtController via
+    # RayRolloutActuator)
+    # ------------------------------------------------------------------
+    # Design reference (miles-prod PR #1, rl-resilience/dev):
+    #   https://github.com/radixark/miles-prod/blob/bc26ac11/miles/ray/rollout.py#L239
+    #
+    # These two APIs are the public interface for unified fault tolerance.
+    # The FT controller (when active) drives per-cell recovery:
+    #   1. FT controller detects a dead engine via its own health probes
+    #   2. Calls stop_cell(cell_id) to clean up the dead cell
+    #   3. Calls start_cell(cell_id) to restart engines in that cell
+    #   4. get_cell_status(cell_id) returns the current JobStatus
+    #
+    # Because RolloutManager is an async actor, these calls are
+    # non-blocking — the event loop stays responsive while engines
+    # restart in the background.  Multiple cells can recover in
+    # parallel via concurrent start_cell calls.
+    #
+    # This replaces the legacy bulk recover path.  When the FT agent
+    # is active, recover_updatable_engines() is no longer the primary
+    # recovery mechanism — the FT controller calls start_cell/stop_cell
+    # directly.
+    # ------------------------------------------------------------------
+
+    def _find_group_by_cell_id(self, cell_id: str) -> ServerGroup:
+        for srv in self.servers.values():
+            for group in srv.server_groups:
+                if group.cell_id == cell_id:
+                    return group
+        raise ValueError(f"Cell {cell_id!r} not found")
+
+    def list_cells(self) -> list[dict]:
+        """Return a list of cell info dicts for all active server groups."""
+        cells = []
+        for srv in self.servers.values():
+            for group in srv.server_groups:
+                if group.worker_type == "placeholder" or not group.cell_id:
+                    continue
+                cells.append({"cell_id": group.cell_id})
+        return cells
+
+    def start_cell(self, cell_id: str) -> int:
+        """Start (or restart) all dead engines in a cell.
+
+        A "cell" is the atomic fault-tolerance unit mapped to one
+        ServerGroup.  Only engines whose slot is ``None`` (dead) are
+        restarted.
+
+        Returns the number of engines that were newly created.
+        """
+        group = self._find_group_by_cell_id(cell_id)
+        handles, _ = group.start_engines()
+        if handles:
+            ray.get(handles)
+        return group.num_new_engines
+
+    def stop_cell(self, cell_id: str, timeout_seconds: int = 30) -> None:
+        """Stop all engines in a cell by killing the Ray actors."""
+        group = self._find_group_by_cell_id(cell_id)
+        for i, engine in enumerate(group.all_engines):
+            if engine is not None:
+                try:
+                    ray.kill(engine)
+                except Exception:
+                    logger.warning(f"Failed to kill engine {i} in cell {cell_id}", exc_info=True)
+                group.all_engines[i] = None
+
+    def get_cell_status(self, cell_id: str) -> str:
+        """Return the status of a cell: ``running``, ``stopped``, or ``failed``."""
+        group = self._find_group_by_cell_id(cell_id)
+        engines = group.all_engines
+        if not engines:
+            return "stopped"
+        alive = sum(1 for e in engines if e is not None)
+        if alive == len(engines):
+            return "running"
+        if alive == 0:
+            return "stopped"
+        return "failed"
+
+    def get_cell_node_ids(self, cell_id: str) -> list[str]:
+        """Return deduplicated, sorted node IPs for all live engines in a cell."""
+        group = self._find_group_by_cell_id(cell_id)
+        live_engines = [e for e in group.all_engines if e is not None]
+        if not live_engines:
+            return []
+        try:
+            results = ray.get([e._get_current_node_ip_and_free_port.remote() for e in live_engines])
+            return sorted(set(ip for ip, _ in results))
+        except Exception:
+            logger.warning(f"Failed to get node IPs for cell {cell_id}", exc_info=True)
+            return []
 
     def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
@@ -733,7 +852,7 @@ class RolloutManager:
 
         return train_data
 
-    def set_train_parallel_config(self, config: dict):
+    async def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
 
     def _split_train_data_by_dp(self, data, dp_size):
@@ -1045,6 +1164,7 @@ def start_rollout_servers(args, pg) -> dict[str, RolloutServer]:
                 model_path=overrides.get("model_path", args.hf_checkpoint),
                 router_ip=router_ip,
                 router_port=router_port,
+                cell_id=f"{model_cfg.name}-{group_cfg.worker_type}",
             )
             handles, port_cursors = group.start_engines(port_cursors)
             all_init_handles.extend(handles)

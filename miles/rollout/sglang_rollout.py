@@ -2,6 +2,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import uuid
 
 from argparse import Namespace
 from collections.abc import Callable
@@ -298,6 +299,10 @@ async def generate_and_rm_group(
 
     if state.aborted:
         return group
+
+    for sample in group:
+        if sample.session_id is None:
+            sample.session_id = str(uuid.uuid4())
 
     tasks = []
     for idx, sample in enumerate(group):
