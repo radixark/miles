@@ -185,6 +185,8 @@ def _compute_sample_from_openai_record(
         case "abort":
             sample.status = Sample.Status.ABORTED
 
+    sample.prefix_cache_info.add(choice.get("meta_info", {}))
+
     return sample
 
 
