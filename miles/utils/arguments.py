@@ -1948,6 +1948,8 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
+        if args.sglang_enforce_piecewise_cuda_graph:
+            logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
         if not args.sglang_disable_piecewise_cuda_graph:
             args.sglang_disable_piecewise_cuda_graph = True
             logger.info(
