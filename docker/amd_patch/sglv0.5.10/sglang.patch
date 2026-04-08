@@ -1,0 +1,69 @@
+diff --git a/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py b/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py
+index 6e7ea07e7..73b512f51 100644
+--- a/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py
++++ b/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py
+@@ -64,6 +64,7 @@ class CustomAllreduce:
+         group: ProcessGroup,
+         device: Union[int, str, torch.device],
+         max_size=_MAX_CAR_SIZE,
++        enable_register_for_capturing: bool = True,
+     ) -> None:
+         """
+         Args:
+@@ -410,6 +411,8 @@ class CustomAllreduce:
+         if self._IS_CAPTURING:
+             if torch.cuda.is_current_stream_capturing():
+                 if _is_hip:
++                    if self.tms_cudagraph:
++                        return self.all_reduce_unreg(input)
+                     return self.all_reduce_reg(input)
+                 else:
+                     return self.all_reduce(input, registered=not self.tms_cudagraph)
+diff --git a/python/sglang/srt/distributed/parallel_state.py b/python/sglang/srt/distributed/parallel_state.py
+index c3ca1e4f3..2bb763b6a 100644
+--- a/python/sglang/srt/distributed/parallel_state.py
++++ b/python/sglang/srt/distributed/parallel_state.py
+@@ -351,10 +351,12 @@ class GroupCoordinator:
+         if use_custom_allreduce and self.world_size > 1:
+             # Initialize a custom fast all-reduce implementation.
+             try:
++                tms_cudagraph = envs.SGLANG_MEMORY_SAVER_CUDA_GRAPH.get()
+                 CAClass = dispatch_custom_allreduce()
+                 self.ca_comm = CAClass(
+                     group=self.cpu_group,
+                     device=self.device,
++                    enable_register_for_capturing=not tms_cudagraph,
+                 )
+             except Exception as e:
+                 logger.warning(
+diff --git a/python/sglang/srt/layers/quantization/unquant.py b/python/sglang/srt/layers/quantization/unquant.py
+--- a/python/sglang/srt/layers/quantization/unquant.py
++++ b/python/sglang/srt/layers/quantization/unquant.py
+@@ -224,6 +224,16 @@ def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
++def _aiter_moe_supported(layer: torch.nn.Module) -> bool:
++    """Check if aiter CK MoE GEMM supports the layer's GEMM dimensions.
++
++    aiter ck_moe_stage1 requires inter_dim % 64 == 0 (minimum NPerBlock=64).
++    With TP sharding, inter_dim = moe_intermediate_size // tp_size.
++    e.g. Qwen3-30B-A3B: 768 // 8 = 96, which is not divisible by 64.
++    """
++    inter_dim = layer.w2_weight.shape[2]
++    return inter_dim % 64 == 0
++
++
+@@ -227,7 +237,20 @@ def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+     # Skip aiter weight shuffle when using non-auto MoE backend (e.g., triton, triton_kernels)
+     # because aiter CK kernels don't support all GEMM dimensions
+     _should_use_aiter_moe = _use_aiter and get_moe_runner_backend().is_auto()
++    if _should_use_aiter_moe:
++        _should_use_aiter_moe = _aiter_moe_supported(layer)
+     if _should_use_aiter_moe:
+         layer.w13_weight = torch.nn.Parameter(
+             shuffle_weight(layer.w13_weight.data, (16, 16)),
+@@ -389,7 +396,14 @@ def forward_cuda(self, layer, dispatch_output):
+         # Skip aiter fused_moe when using non-auto MoE backend (e.g., triton, triton_kernels)
+         # because aiter CK kernels don't support all GEMM dimensions
+         _should_use_aiter_moe = _use_aiter and get_moe_runner_backend().is_auto()
++        if _should_use_aiter_moe:
++            _should_use_aiter_moe = _aiter_moe_supported(layer)
+         if _should_use_aiter_moe:
