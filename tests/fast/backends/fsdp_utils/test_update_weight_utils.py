@@ -42,7 +42,14 @@ def _install_sglang_stubs():
 
 _install_sglang_stubs()
 
-_MODULE_PATH = Path(__file__).resolve().parents[4] / "miles" / "backends" / "experimental" / "fsdp_utils" / "update_weight_utils.py"
+_MODULE_PATH = (
+    Path(__file__).resolve().parents[4]
+    / "miles"
+    / "backends"
+    / "experimental"
+    / "fsdp_utils"
+    / "update_weight_utils.py"
+)
 _SPEC = importlib.util.spec_from_file_location("miles_fsdp_update_weight_utils_test", _MODULE_PATH)
 uw = importlib.util.module_from_spec(_SPEC)
 assert _SPEC is not None and _SPEC.loader is not None
