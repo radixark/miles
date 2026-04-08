@@ -1671,6 +1671,11 @@ def parse_args(add_custom_arguments=None):
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
 
     backend = parse_args_train_backend()
+    assert backend != "fsdp", (
+        "The FSDP backend has known issues with SGLang v0.5.10 and is not actively maintained in the current version. "
+        "It has been moved to miles.backends.experimental. "
+        "Contributions are welcome if you are interested in improving it."
+    )
     if backend == "megatron":
         from miles.backends.megatron_utils.arguments import parse_args as megatron_parse_args
         from miles.backends.megatron_utils.arguments import set_default_megatron_args
@@ -1685,7 +1690,7 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
-        from miles.backends.fsdp_utils.arguments import load_fsdp_args
+        from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         args.rank = 0  # Primary process rank for wandb initialization

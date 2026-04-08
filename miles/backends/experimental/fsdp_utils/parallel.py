@@ -7,7 +7,7 @@ from torch.distributed.device_mesh import init_device_mesh
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from ..training_utils.parallel import GroupInfo, ParallelState
+from ...training_utils.parallel import GroupInfo, ParallelState
 
 logger = logging.getLogger(__name__)
 
