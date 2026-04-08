@@ -7,6 +7,7 @@ import time
 
 import aiohttp
 
+from miles.rollout.data_source import DataSource
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group
 from miles.utils.async_utils import run
 from miles.utils.types import Sample
@@ -36,6 +37,8 @@ def reset_group_for_retry(group: list[Sample]) -> list[Sample]:
         sample.non_generation_time = 0.0
         sample.spec_info = Sample.SpecInfo()
         sample.prefix_cache_info = Sample.PrefixCacheInfo()
+        sample.remove_sample = False
+        sample.train_metadata = None
     return group
 
 
@@ -72,7 +75,7 @@ _global_worker = None
 _worker_lock = threading.Lock()
 
 
-def get_global_worker(args, data_buffer):
+def get_global_worker(args, data_buffer: DataSource):
     """Get or create global worker"""
     global _global_worker
     with _worker_lock:
@@ -98,7 +101,7 @@ class AsyncRolloutWorker:
     Supports continuous running, independent of rollout function lifecycle
     """
 
-    def __init__(self, args, data_buffer, concurrency=10):
+    def __init__(self, args, data_buffer: DataSource, concurrency=10):
         self.args = args
         self.data_buffer = data_buffer  # Directly save data_buffer reference
         self.concurrency = concurrency
@@ -204,7 +207,7 @@ class AsyncRolloutWorker:
         return self.output_queue.qsize()
 
 
-async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[list[Sample]]:
+async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource) -> list[list[Sample]]:
     """
     Simplified asynchronous rollout generation - using global continuous worker
     """
@@ -348,7 +351,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[lis
     return data
 
 
-def generate_rollout_fully_async(args, rollout_id, data_buffer, evaluation=False):
+def generate_rollout_fully_async(args, rollout_id, data_buffer: DataSource, evaluation=False):
     if evaluation:
         raise ValueError("Evaluation mode not supported in simple async rollout")
 
