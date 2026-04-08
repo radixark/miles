@@ -30,7 +30,7 @@ from ..training_utils.log_utils import (
     log_train_step,
 )
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
-from ..training_utils.parallel import set_parallel_state
+from ..training_utils.parallel import get_parallel_state, set_parallel_state
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
@@ -62,13 +62,12 @@ class FSDPTrainRayActor(TrainRayActor):
             dumper.apply_source_patches()
 
         # Setup ParallelState for both CP and non-CP cases
-        self.parallel_state = create_fsdp_parallel_state(args)
-        set_parallel_state(self.parallel_state)
+        set_parallel_state(create_fsdp_parallel_state(args))
 
         torch.manual_seed(args.seed)
 
         self.train_parallel_config = {
-            "dp_size": self.parallel_state.intra_dp.size,
+            "dp_size": get_parallel_state().intra_dp.size,
         }
 
         if self.args.debug_rollout_only:
@@ -112,10 +111,12 @@ class FSDPTrainRayActor(TrainRayActor):
 
         full_state = model.state_dict()
 
-        model = apply_fsdp2(model, mesh=self.parallel_state.dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args)
+        model = apply_fsdp2(
+            model, mesh=get_parallel_state().dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args
+        )
 
         model = self._fsdp2_load_full_state_dict(
-            model, full_state, self.parallel_state.dp_mesh, cpu_offload=True if self.fsdp_cpu_offload else None
+            model, full_state, get_parallel_state().dp_mesh, cpu_offload=True if self.fsdp_cpu_offload else None
         )
 
         self.model = model
@@ -351,7 +352,6 @@ class FSDPTrainRayActor(TrainRayActor):
                         batch = get_batch(
                             data_iterator,
                             forward_only_keys,
-                            self.parallel_state,
                             self.args.data_pad_size_multiplier,
                             self.args.qkv_format,
                             get_position_ids=True,
@@ -363,7 +363,6 @@ class FSDPTrainRayActor(TrainRayActor):
                         result = get_log_probs_and_entropy(
                             logits=logits,
                             args=self.args,
-                            parallel_state=self.parallel_state,
                             unconcat_tokens=batch["unconcat_tokens"],
                             total_lengths=batch["total_lengths"],
                             response_lengths=batch["response_lengths"],
@@ -407,7 +406,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref, self.parallel_state)
+            rollout_data = get_rollout_data(self.args, rollout_data_ref)
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
@@ -420,7 +419,7 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
-        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, self.parallel_state, rollout_data)
+        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         data_iterator = data_iterator[0]
 
         assert (
@@ -434,9 +433,9 @@ class FSDPTrainRayActor(TrainRayActor):
         actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
         rollout_data.update(actor_results)
 
-        compute_advantages_and_returns(self.args, self.parallel_state, rollout_data)
+        compute_advantages_and_returns(self.args, rollout_data)
 
-        log_rollout_data(rollout_id, self.args, rollout_data, self.parallel_state)
+        log_rollout_data(rollout_id, self.args, rollout_data)
 
         with timer("actor_train"):
             data_iterator.reset()
@@ -464,7 +463,6 @@ class FSDPTrainRayActor(TrainRayActor):
                             "ref_log_probs",
                             "rollout_log_probs",
                         ],
-                        self.parallel_state,
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,
                         get_position_ids=True,
@@ -490,10 +488,10 @@ class FSDPTrainRayActor(TrainRayActor):
                         rollout_id=rollout_id,
                         step_id=step_id,
                         role="actor",
-                        rank=self.parallel_state.intra_dp_cp.rank,
+                        rank=get_parallel_state().intra_dp_cp.rank,
                     )
 
-                loss_dict = aggregate_train_losses(losses_reduced, self.parallel_state)
+                loss_dict = aggregate_train_losses(losses_reduced)
 
                 extra_metrics = {}
                 for param_group_id, param_group in enumerate(self.optimizer.param_groups):
@@ -535,7 +533,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         loss, normalizer, log_dict = loss_function(
             args=self.args,
-            parallel_state=self.parallel_state,
             batch=batch,
             num_microbatches=num_microbatches,
             logits=logits,
@@ -615,9 +612,9 @@ class FSDPTrainRayActor(TrainRayActor):
             full_state = ref_model.state_dict()
 
             # Always use CPUOffloadPolicy for reference, let FSDP2 handle the offload. It is faster than model.cpu().
-            ref_model = apply_fsdp2(ref_model, mesh=self.parallel_state.dp_mesh, cpu_offload=True, args=self.args)
+            ref_model = apply_fsdp2(ref_model, mesh=get_parallel_state().dp_mesh, cpu_offload=True, args=self.args)
             ref_model = self._fsdp2_load_full_state_dict(
-                ref_model, full_state, self.parallel_state.dp_mesh, cpu_offload=True
+                ref_model, full_state, get_parallel_state().dp_mesh, cpu_offload=True
             )
 
             logger.info(f"[Rank {dist.get_rank()}] Reference model created with FSDP2 CPUOffloadPolicy")
@@ -629,15 +626,15 @@ class FSDPTrainRayActor(TrainRayActor):
         input_ids = batch["tokens"]
         position_ids = batch["position_ids"]
 
-        if self.parallel_state.cp.size > 1:
+        if get_parallel_state().cp.size > 1:
             if "cu_seqlens" in batch:
                 cu_seqlens = batch["cu_seqlens"]
                 if not cu_seqlens.is_cuda:
                     cu_seqlens = cu_seqlens.cuda()
                 update_ring_flash_attn_params(cu_seqlens, self.cp_group)
 
-            input_ids = torch.chunk(input_ids, self.parallel_state.cp.size, dim=1)[self.parallel_state.cp.rank]
-            position_ids = torch.chunk(position_ids, self.parallel_state.cp.size, dim=1)[self.parallel_state.cp.rank]
+            input_ids = torch.chunk(input_ids, get_parallel_state().cp.size, dim=1)[get_parallel_state().cp.rank]
+            position_ids = torch.chunk(position_ids, get_parallel_state().cp.size, dim=1)[get_parallel_state().cp.rank]
 
         model_args = {
             "input_ids": input_ids,

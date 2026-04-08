@@ -28,7 +28,7 @@ from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.loss import loss_function
-from ..training_utils.parallel import ParallelState, get_parallel_state
+from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
     check_model_hashes,
@@ -186,7 +186,6 @@ def forward_only(
     model: Sequence[DDP],
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
-    parallel_state: ParallelState,
     store_prefix: str = "",
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
@@ -243,7 +242,6 @@ def forward_only(
                 "response_lengths",
                 "max_seq_lens",
             ],
-            parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -266,7 +264,6 @@ def forward_only(
         return output_tensor, partial(
             f,
             args=args,
-            parallel_state=parallel_state,
             unconcat_tokens=unconcat_tokens,
             total_lengths=total_lengths,
             response_lengths=response_lengths,
@@ -326,7 +323,6 @@ def train_one_step(
     optimizer: MegatronOptimizer,
     opt_param_scheduler: OptimizerParamScheduler,
     num_microbatches: int,
-    parallel_state: ParallelState,
 ) -> tuple[dict[str, float], float]:
     """Execute a single pipeline-parallel training step.
 
@@ -395,7 +391,6 @@ def train_one_step(
                 "rollout_log_probs",
                 "max_seq_lens",
             ],
-            parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -438,9 +433,7 @@ def train_one_step(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        return output_tensor, partial(
-            loss_function, args, parallel_state, batch, num_microbatches, apply_megatron_loss_scaling=True
-        )
+        return output_tensor, partial(loss_function, args, batch, num_microbatches, apply_megatron_loss_scaling=True)
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -491,7 +484,7 @@ def train_one_step(
     dumper_phase_util.finalize(model)
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
-        loss_reduced = aggregate_train_losses(losses_reduced, parallel_state)
+        loss_reduced = aggregate_train_losses(losses_reduced)
         return loss_reduced, grad_norm
     return {}, grad_norm
 
@@ -512,7 +505,6 @@ def train(
     opt_param_scheduler: OptimizerParamScheduler,
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
-    parallel_state: ParallelState,
 ) -> None:
     """Run training over a rollout consisting of multiple steps.
 
@@ -527,6 +519,7 @@ def train(
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
     """
+    parallel_state = get_parallel_state()
     args = get_args()
 
     for iterator in data_iterator:
@@ -606,7 +599,6 @@ def train(
             optimizer,
             opt_param_scheduler,
             num_microbatches[step_id],
-            parallel_state,
         )
 
         if step_id == 0:

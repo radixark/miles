@@ -4,19 +4,19 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from .parallel import ParallelState
+from .parallel import get_parallel_state
 
 
 def get_logits_and_tokens_offset_with_cp(
     total_length: int,
     response_length: int,
-    parallel_state: ParallelState,
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
 ):
     """
     All offsets start from the begining of the prompt.
     """
+    parallel_state = get_parallel_state()
     cp_rank = parallel_state.cp.rank
     cp_size = parallel_state.cp.size
     assert cp_size > 1
@@ -56,7 +56,6 @@ def get_sum_of_sample_mean(
     total_lengths: list[int],
     response_lengths: list[int],
     loss_masks: list[torch.Tensor],
-    parallel_state: ParallelState,
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
@@ -64,6 +63,7 @@ def get_sum_of_sample_mean(
     """
     Calculate correct sample mean for CP
     """
+    parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
     if cp_size == 1:
 
@@ -92,7 +92,7 @@ def get_sum_of_sample_mean(
             max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
             prompt_length = total_length - response_length
             _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                total_length, response_length, parallel_state, qkv_format, max_seq_len
+                total_length, response_length, qkv_format, max_seq_len
             )
             loss_mask_0 = loss_mask[tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length]
             loss_mask_1 = loss_mask[tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length]
@@ -126,7 +126,6 @@ def all_gather_with_cp(
     tensor: torch.Tensor,
     total_length: int,
     response_length: int,
-    parallel_state: ParallelState,
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
 ) -> torch.Tensor:
@@ -134,6 +133,7 @@ def all_gather_with_cp(
     Gather tensors across all ranks in the context parallel group.
     The first dimension of the output tensor will be the `response_length`.
     """
+    parallel_state = get_parallel_state()
     cp_group = parallel_state.cp.group
     cp_size = parallel_state.cp.size
 
@@ -141,7 +141,7 @@ def all_gather_with_cp(
         return tensor
 
     _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
-        total_length, response_length, parallel_state, qkv_format, max_seq_len
+        total_length, response_length, qkv_format, max_seq_len
     )
 
     prompt_length = total_length - response_length
@@ -186,10 +186,10 @@ def all_gather_with_cp(
 def slice_with_cp(
     tokens: torch.Tensor,
     pad_value: tuple[int, float, Callable],
-    parallel_state: ParallelState,
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
 ) -> torch.Tensor:
+    parallel_state = get_parallel_state()
     cp_rank = parallel_state.cp.rank
     cp_size = parallel_state.cp.size
 
@@ -233,7 +233,6 @@ def _allgather_cp_redistribute(
     *,
     logits: torch.Tensor,
     args,
-    parallel_state: ParallelState,
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
@@ -252,11 +251,11 @@ def _allgather_cp_redistribute(
         logits: Model output used only to determine the local sequence length
             (``logits.size(1)``).
         args: Configuration (needs ``qkv_format``).
-        parallel_state: Parallel state with cp_group, cp_rank, etc.
         total_lengths: Total sequence lengths (prompt + response) per sample.
         response_lengths: Response segment lengths per sample.
         max_seq_lens: Optional padded max sequence lengths per sample.
     """
+    parallel_state = get_parallel_state()
     cp_group = parallel_state.cp.group
     cp_rank = parallel_state.cp.rank
 
@@ -304,9 +303,7 @@ def _allgather_cp_redistribute(
         ):
             max_seq_len = max_seq_lens[idx] if max_seq_lens is not None else None
             new_values.append(
-                slice_log_prob_with_cp(
-                    full_resp, total_length, response_length, parallel_state, args.qkv_format, max_seq_len
-                )
+                slice_log_prob_with_cp(full_resp, total_length, response_length, args.qkv_format, max_seq_len)
             )
 
         res[key] = new_values
@@ -316,12 +313,12 @@ def slice_log_prob_with_cp(
     log_prob: list[float] | torch.Tensor,
     total_length: int,
     response_length: int,
-    parallel_state: ParallelState,
     qkv_format: str = "thd",
     max_token_len: int | None = None,
 ) -> list[float] | torch.Tensor:
     assert len(log_prob) == response_length
 
+    parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
 
     if cp_size == 1:
@@ -329,7 +326,7 @@ def slice_log_prob_with_cp(
 
     prompt_length = total_length - response_length
     _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
-        total_length, response_length, parallel_state, qkv_format, max_token_len
+        total_length, response_length, qkv_format, max_token_len
     )
 
     chunk_1 = log_prob[logits_offset[0][0] - (prompt_length - 1) : logits_offset[0][1] - (prompt_length - 1)]
