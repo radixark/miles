@@ -160,6 +160,7 @@ def make_args(
         "pytest",
         "--train-backend",
         "fsdp",
+        "--ci-test",
         "--rollout-batch-size",
         "1",
         "--num-rollout",
