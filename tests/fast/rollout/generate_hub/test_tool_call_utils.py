@@ -15,6 +15,7 @@ TOOL_CALL_TEST_MODELS = [
     "MiniMaxAI/MiniMax-M2.5",
     "internlm/internlm3-8b-instruct",
     "zai-org/GLM-4.7-Flash",
+    "stepfun-ai/Step-3.5-Flash",
     "moonshotai/Kimi-K2-Instruct",
     "moonshotai/Kimi-K2.5",
     "XiaomiMiMo/MiMo-7B-RL",
@@ -23,16 +24,17 @@ TOOL_CALL_TEST_MODELS = [
 
 # Models that fail decode round-trip under transformers>=5.x due to upstream tokenizer issues.
 # These are excluded from TOOL_CALL_TEST_MODELS but listed here for tracking.
-# - DeepSeek-V3/V3.1, step3, Step-3.5-Flash: transformers v5 unified LlamaTokenizer overwrites
-#   their ByteLevel pre_tokenizer/decoder with Metaspace, causing decode(encode(text)) != text.
+# - DeepSeek-V3, step3: transformers v5 unified LlamaTokenizer overwrites their ByteLevel
+#   pre_tokenizer/decoder with Metaspace, causing decode(encode(text)) != text.
 #   See https://github.com/huggingface/transformers/issues/43066
+# - DeepSeek-V3.1: its tool-call chat template concatenates function.arguments as a string,
+#   but our dummy tool-call shape provides a dict, raising TypeError before the round-trip check.
 # - glm-4-9b-chat: v5 removed the legacy _decode special-token segmentation, exposing a bug in
 #   the model's custom convert_tokens_to_string (doesn't handle str-type special tokens).
 TOOL_CALL_KNOWN_FAILURES = [
     "deepseek-ai/DeepSeek-V3",
     "deepseek-ai/DeepSeek-V3.1",
     "stepfun-ai/step3",
-    "stepfun-ai/Step-3.5-Flash",
     "THUDM/glm-4-9b-chat",
 ]
 
