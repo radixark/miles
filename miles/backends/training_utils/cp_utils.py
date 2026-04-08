@@ -376,7 +376,7 @@ def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: to
 
 def detect_and_setup_hybrid_cp(
     model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int
-) -> None:
+) -> int:
     """Scan for GatedDeltaNet modules and configure them for native fla CP."""
     from miles_plugins.models.hf_attention import HuggingfaceAttention
 
@@ -393,3 +393,4 @@ def detect_and_setup_hybrid_cp(
 
     if count > 0:
         logger.info(f"Configured hybrid CP on {count} GDN modules (fla native state passing)")
+    return count

@@ -38,160 +38,112 @@ def _load_hf_config(checkpoint_path):
         return ns
 
 
-def _sub_chunk_location(sub_id, cp_size):
-    """Return (zigzag_rank, half_index) for a given sub-chunk id.
+def _get_cp_sequence_lengths(cu_seqlens, cp_size, local_total_len=None):
+    global_seq_lengths = [(cu_seqlens[i + 1] - cu_seqlens[i]).item() for i in range(len(cu_seqlens) - 1)]
+    local_seq_lengths = []
+    for global_seq_len in global_seq_lengths:
+        if global_seq_len % cp_size != 0:
+            raise ValueError(f"Expected sequence length {global_seq_len} to be divisible by cp_size={cp_size}")
+        local_seq_lengths.append(global_seq_len // cp_size)
 
-    In zigzag layout with N=cp_size ranks and 2N sub-chunks:
-      rank k holds [sub_k, sub_{2N-1-k}]
-    So sub_x lives on rank x (half 0) if x < N, else rank 2N-1-x (half 1).
-    """
-    if sub_id < cp_size:
-        return sub_id, 0
-    return 2 * cp_size - 1 - sub_id, 1
+    if local_total_len is not None and sum(local_seq_lengths) != local_total_len:
+        raise ValueError(f"Expected local total length {local_total_len}, got {sum(local_seq_lengths)}")
 
-
-def _p2p_exchange(send_bufs, send_dsts, recv_bufs, recv_srcs, cp_rank, cp_group):
-    """Exchange multiple buffers via batched async P2P, handling self-sends."""
-    # Handle self-sends as local copies
-    for i, dst in enumerate(send_dsts):
-        if dst == cp_rank:
-            for j, src in enumerate(recv_srcs):
-                if src == cp_rank and recv_bufs[j] is not send_bufs[i]:
-                    recv_bufs[j].copy_(send_bufs[i])
-
-    # Build P2P ops for remote exchanges (use group_peer for group-local ranks)
-    p2p_ops = []
-    for j, src in enumerate(recv_srcs):
-        if src != cp_rank:
-            p2p_ops.append(dist.P2POp(dist.irecv, recv_bufs[j], group_peer=src, group=cp_group))
-    for i, dst in enumerate(send_dsts):
-        if dst != cp_rank:
-            p2p_ops.append(dist.P2POp(dist.isend, send_bufs[i].contiguous(), group_peer=dst, group=cp_group))
-
-    if p2p_ops:
-        reqs = dist.batch_isend_irecv(p2p_ops)
-        for req in reqs:
-            req.wait()
+    return global_seq_lengths, local_seq_lengths
 
 
-class _ZigzagToSequential(torch.autograd.Function):
-    """Convert zigzag CP layout to sequential layout for any CP size.
+def _gather_cp_tensors(x, cp_group):
+    gathered = [torch.empty_like(x) for _ in range(dist.get_world_size(group=cp_group))]
+    dist.all_gather(gathered, x.contiguous(), group=cp_group)
+    return gathered
 
-    Zigzag rank k holds:     [sub_k, sub_{2N-1-k}]
-    Sequential rank j needs: [sub_{2j}, sub_{2j+1}]
-    """
+
+def _zigzag_to_packed_shard_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    """Convert zigzag ring-attn layout to the contiguous packed shard expected by fla CP."""
+    global_seq_lengths, local_seq_lengths = _get_cp_sequence_lengths(cu_seqlens, cp_size, hidden_states.size(0))
+    gathered_by_rank = [
+        gathered.split(local_seq_lengths, dim=0) for gathered in _gather_cp_tensors(hidden_states, cp_group)
+    ]
+
+    full_sequences = []
+    for seq_idx, global_seq_len in enumerate(global_seq_lengths):
+        per_rank = [rank_seqs[seq_idx] for rank_seqs in gathered_by_rank]
+        if global_seq_len % (2 * cp_size) == 0:
+            subchunk_len = global_seq_len // (2 * cp_size)
+            full_seq = torch.cat(
+                [seq[:subchunk_len] for seq in per_rank] + [seq[subchunk_len:] for seq in per_rank][::-1],
+                dim=0,
+            )
+        else:
+            # Final local padding is appended contiguously on each rank, not in zigzag order.
+            full_seq = torch.cat(per_rank, dim=0)
+        full_sequences.append(full_seq)
+
+    full_stream = torch.cat(full_sequences, dim=0) if full_sequences else hidden_states[:0]
+    shard_len = hidden_states.size(0)
+    return full_stream[cp_rank * shard_len : (cp_rank + 1) * shard_len]
+
+
+def _packed_shard_to_zigzag_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    """Convert contiguous packed shard layout back to zigzag ring-attn layout."""
+    global_seq_lengths, local_seq_lengths = _get_cp_sequence_lengths(cu_seqlens, cp_size, hidden_states.size(0))
+    full_stream = torch.cat(_gather_cp_tensors(hidden_states, cp_group), dim=0)
+    full_sequences = full_stream.split(global_seq_lengths, dim=0)
+
+    local_sequences = []
+    for full_seq, global_seq_len, local_seq_len in zip(full_sequences, global_seq_lengths, local_seq_lengths, strict=True):
+        if global_seq_len % (2 * cp_size) == 0:
+            subchunk_len = global_seq_len // (2 * cp_size)
+            parts = full_seq.split(subchunk_len, dim=0)
+            local_sequences.append(torch.cat([parts[cp_rank], parts[2 * cp_size - 1 - cp_rank]], dim=0))
+        else:
+            local_sequences.append(full_seq.split(local_seq_len, dim=0)[cp_rank])
+
+    return torch.cat(local_sequences, dim=0) if local_sequences else hidden_states[:0]
+
+
+class _ZigzagToPackedShard(torch.autograd.Function):
+    """Convert zigzag ring-attn layout to contiguous packed shards for native fla CP."""
 
     @staticmethod
-    def forward(ctx, hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size):
+    def forward(ctx, hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
         ctx.cp_group = cp_group
         ctx.cp_rank = cp_rank
         ctx.cp_size = cp_size
-        ctx.save_for_backward(local_cu_seqlens)
-
-        N = cp_size
-
-        # Split local data into first_half (sub_k) and second_half (sub_{2N-1-k})
-        first_halves, second_halves = [], []
-        for i in range(len(local_cu_seqlens) - 1):
-            start, end = local_cu_seqlens[i].item(), local_cu_seqlens[i + 1].item()
-            mid = (start + end) // 2
-            first_halves.append(hidden_states[start:mid])
-            second_halves.append(hidden_states[mid:end])
-
-        my_bufs = [torch.cat(first_halves, dim=0), torch.cat(second_halves, dim=0)]
-        my_sub_ids = [cp_rank, 2 * N - 1 - cp_rank]
-        send_dsts = [sid // 2 for sid in my_sub_ids]
-
-        # What sequential rank cp_rank needs: sub_{2*cp_rank} and sub_{2*cp_rank+1}
-        need_ids = [2 * cp_rank, 2 * cp_rank + 1]
-        recv_srcs = [_sub_chunk_location(x, N)[0] for x in need_ids]
-        recv_bufs = [torch.empty_like(my_bufs[0]) for _ in range(2)]
-
-        # Handle self-send: if I send to myself, point recv_buf to send_buf
-        for i, dst in enumerate(send_dsts):
-            if dst == cp_rank:
-                for j, src in enumerate(recv_srcs):
-                    if src == cp_rank:
-                        recv_bufs[j] = my_bufs[i]
-
-        _p2p_exchange(my_bufs, send_dsts, recv_bufs, recv_srcs, cp_rank, cp_group)
-
-        return torch.cat(recv_bufs, dim=0)
+        ctx.save_for_backward(cu_seqlens)
+        return _zigzag_to_packed_shard_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
 
     @staticmethod
     def backward(ctx, grad_output):
-        (local_cu_seqlens,) = ctx.saved_tensors
-        # Backward: sequential → zigzag (inverse permutation)
-        result = _sequential_to_zigzag_impl(
-            grad_output, local_cu_seqlens, ctx.cp_group, ctx.cp_rank, ctx.cp_size
-        )
+        (cu_seqlens,) = ctx.saved_tensors
+        result = _packed_shard_to_zigzag_impl(grad_output, cu_seqlens, ctx.cp_group, ctx.cp_rank, ctx.cp_size)
         return result, None, None, None, None
 
 
-def _sequential_to_zigzag_impl(hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size):
-    """Core implementation for sequential → zigzag conversion."""
-    N = cp_size
-    half_len = hidden_states.shape[0] // 2
-
-    seq_bufs = [hidden_states[:half_len], hidden_states[half_len:]]
-    my_seq_sub_ids = [2 * cp_rank, 2 * cp_rank + 1]
-    send_dsts = [_sub_chunk_location(x, N)[0] for x in my_seq_sub_ids]
-
-    # Zigzag rank cp_rank needs sub_{cp_rank} and sub_{2N-1-cp_rank}
-    need_ids = [cp_rank, 2 * N - 1 - cp_rank]
-    recv_srcs = [nid // 2 for nid in need_ids]
-    recv_bufs = [torch.empty_like(seq_bufs[0]) for _ in range(2)]
-
-    for i, dst in enumerate(send_dsts):
-        if dst == cp_rank:
-            for j, src in enumerate(recv_srcs):
-                if src == cp_rank:
-                    recv_bufs[j] = seq_bufs[i]
-
-    _p2p_exchange(seq_bufs, send_dsts, recv_bufs, recv_srcs, cp_rank, cp_group)
-
-    # Reassemble zigzag: [first_half (sub_k), second_half (sub_{2N-1-k})]
-    result = []
-    half_chunk = half_len // max(len(local_cu_seqlens) - 1, 1)
-    offset_0, offset_1 = 0, 0
-    for i in range(len(local_cu_seqlens) - 1):
-        chunk_len = (local_cu_seqlens[i + 1].item() - local_cu_seqlens[i].item()) // 2
-        result.append(recv_bufs[0][offset_0 : offset_0 + chunk_len])
-        result.append(recv_bufs[1][offset_1 : offset_1 + chunk_len])
-        offset_0 += chunk_len
-        offset_1 += chunk_len
-    return torch.cat(result, dim=0)
-
-
-class _SequentialToZigzag(torch.autograd.Function):
-    """Convert sequential CP layout back to zigzag for any CP size."""
+class _PackedShardToZigzag(torch.autograd.Function):
+    """Convert contiguous packed shards back to zigzag ring-attn layout."""
 
     @staticmethod
-    def forward(ctx, hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size):
+    def forward(ctx, hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
         ctx.cp_group = cp_group
         ctx.cp_rank = cp_rank
         ctx.cp_size = cp_size
-        ctx.save_for_backward(local_cu_seqlens)
-        return _sequential_to_zigzag_impl(hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size)
+        ctx.save_for_backward(cu_seqlens)
+        return _packed_shard_to_zigzag_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
 
     @staticmethod
     def backward(ctx, grad_output):
-        (local_cu_seqlens,) = ctx.saved_tensors
-        # Backward: zigzag → sequential
-        result = _ZigzagToSequential.apply(
-            grad_output, local_cu_seqlens, ctx.cp_group, ctx.cp_rank, ctx.cp_size
-        )
+        (cu_seqlens,) = ctx.saved_tensors
+        result = _zigzag_to_packed_shard_impl(grad_output, cu_seqlens, ctx.cp_group, ctx.cp_rank, ctx.cp_size)
         return result, None, None, None, None
 
 
-def _zigzag_to_sequential(hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size):
-    """Convert zigzag CP layout to sequential layout."""
-    return _ZigzagToSequential.apply(hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size)
+def _zigzag_to_packed_shard(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    return _ZigzagToPackedShard.apply(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
 
 
-def _sequential_to_zigzag(hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size):
-    """Convert sequential CP layout back to zigzag layout."""
-    return _SequentialToZigzag.apply(hidden_states, local_cu_seqlens, cp_group, cp_rank, cp_size)
+def _packed_shard_to_zigzag(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    return _PackedShardToZigzag.apply(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
 
 
 class _AllGatherForDuplicatedComputation(torch.autograd.Function):
@@ -277,14 +229,18 @@ class HuggingfaceAttention(MegatronModule, ABC):
 
         if mpu.get_context_parallel_world_size() > 1 and self.hybrid_cp:
             cp_size = mpu.get_context_parallel_world_size()
-            local_cu_seqlens = cu_seqlens // cp_size
-            hidden_states = _zigzag_to_sequential(
-                hidden_states,
-                local_cu_seqlens,
-                mpu.get_context_parallel_group(),
-                mpu.get_context_parallel_rank(),
-                cp_size,
-            )
+            # Native fla CP expects each rank to own a contiguous shard of the
+            # packed global token stream. In allgather-CP mode the data pipeline
+            # already provides that layout, so no extra relayout is
+            # needed here.
+            if not self.args.allgather_cp:
+                hidden_states = _zigzag_to_packed_shard(
+                    hidden_states,
+                    cu_seqlens,
+                    mpu.get_context_parallel_group(),
+                    mpu.get_context_parallel_rank(),
+                    cp_size,
+                )
 
         elif mpu.get_context_parallel_world_size() > 1:
             cp_size = mpu.get_context_parallel_world_size()
@@ -322,13 +278,14 @@ class HuggingfaceAttention(MegatronModule, ABC):
         output = output.permute(1, 0, 2)  # [seq_len, bsz, hidden_dim]
 
         if mpu.get_context_parallel_world_size() > 1 and self.hybrid_cp:
-            output = _sequential_to_zigzag(
-                output,
-                local_cu_seqlens,
-                mpu.get_context_parallel_group(),
-                mpu.get_context_parallel_rank(),
-                cp_size,
-            )
+            if not self.args.allgather_cp:
+                output = _packed_shard_to_zigzag(
+                    output,
+                    cu_seqlens,
+                    mpu.get_context_parallel_group(),
+                    mpu.get_context_parallel_rank(),
+                    cp_size,
+                )
 
         elif mpu.get_context_parallel_world_size() > 1:
             cp_rank = mpu.get_context_parallel_rank()
