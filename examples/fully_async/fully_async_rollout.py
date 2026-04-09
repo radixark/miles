@@ -21,26 +21,6 @@ def group_oldest_weight_version(group: list[Sample]) -> int | None:
     return min(versions) if versions else None
 
 
-def reset_group_for_retry(group: list[Sample]) -> list[Sample]:
-    """Reset generated outputs so the original prompts can be sampled again."""
-    for sample in group:
-        sample.tokens = []
-        sample.multimodal_train_inputs = None
-        sample.response = ""
-        sample.response_length = 0
-        sample.reward = None
-        sample.loss_mask = None
-        sample.weight_versions = []
-        sample.rollout_log_probs = None
-        sample.rollout_routed_experts = None
-        sample.status = Sample.Status.ABORTED
-        sample.non_generation_time = 0.0
-        sample.spec_info = Sample.SpecInfo()
-        sample.prefix_cache_info = Sample.PrefixCacheInfo()
-        sample.remove_sample = False
-        sample.train_metadata = None
-    return group
-
 
 class _CachedWeightVersion:
     """Throttled query for the current engine weight version via /model_info."""
@@ -274,8 +254,8 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource)
 
             if any_aborted:
                 try:
-                    # add back to buffer so it can be retried or handled by buffer policy
-                    group = reset_group_for_retry(group)
+                    for s in group:
+                        s.reset_for_retry()
                     data_buffer.add_samples([group])
                     print(f"Returned aborted group {group_id} to data buffer", flush=True)
                 except Exception as e:
@@ -290,8 +270,8 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource)
                 staleness_values.append(staleness)
                 if staleness > args.max_weight_staleness:
                     try:
-                        # add back to buffer so it can be retried or handled by buffer policy
-                        group = reset_group_for_retry(group)
+                        for s in group:
+                            s.reset_for_retry()
                         data_buffer.add_samples([group])
                     except Exception as e:
                         logger.warning(f"Failed to recycle stale group {group_id}: {e}")
