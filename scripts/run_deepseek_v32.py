@@ -305,10 +305,9 @@ def _execute_train(args: ScriptArgs):
     )
     misc_env_vars = {
         "SGLANG_NSA_FORCE_MLA": "1",
-        "INDEXER_ROPE_NEOX_STYLE": "0",
+        "INDEXER_ROPE_NEOX_STYLE": "1",  # v3.2 uses NeoX (non-interleaved) style; GLM-5 uses interleaved.
         "SGLANG_NSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
         "NVSHMEM_DISABLE_NCCL": "1",
-        "NVTE_BACKWARD_OVERRIDE": "dequantized",
     }
 
     if args.train_mxfp8:
