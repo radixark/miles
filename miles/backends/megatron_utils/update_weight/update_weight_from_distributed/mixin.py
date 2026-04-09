@@ -139,7 +139,7 @@ class DistBucketedWeightUpdateMixin:
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and run pre-process if needed."""
         if dist.get_rank() == 0:
-            mode = getattr(self.args, "pause_generation_mode", "retract")
+            mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
