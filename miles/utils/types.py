@@ -188,6 +188,36 @@ class Sample:
         if self.rollout_routed_experts is not None:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
 
+    def reset_for_retry(self) -> None:
+        """Reset generated outputs so the original prompt can be re-sampled.
+
+        Keeps identity / prompt fields (group_index, index, prompt, label,
+        multimodal_inputs, metadata, generate_function_path, session_id) and
+        restores everything else to dataclass defaults.
+        """
+        self.tokens = []
+        self.multimodal_train_inputs = None
+        self.response = ""
+        self.response_length = 0
+        self.reward = None
+        self.loss_mask = None
+        self.weight_versions = []
+        self.rollout_log_probs = None
+        self.rollout_routed_experts = None
+        self.status = Sample.Status.ABORTED
+        self.non_generation_time = 0.0
+        self.spec_info = Sample.SpecInfo()
+        self.prefix_cache_info = Sample.PrefixCacheInfo()
+        self.remove_sample = False
+        self.train_metadata = None
+
+    @property
+    def oldest_weight_version(self) -> int | None:
+        """Minimum weight version across all turns (generation calls) for this trajectory."""
+        if not self.weight_versions:
+            return None
+        return min(int(v) for v in self.weight_versions)
+
     def update_from_meta_info(self, args, meta_info: dict):
         """
         Update the sample with new information from meta_info returned by the rollout engine.
