@@ -26,6 +26,8 @@ def setup_session_routes(app, backend, args):
         logger.info("[session] Skipping session routes (hf_checkpoint not set).")
         return
 
+    session_server_instance_id = getattr(args, "session_server_instance_id", None)
+
     tokenizer = load_tokenizer(
         hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
     )
@@ -37,6 +39,13 @@ def setup_session_routes(app, backend, args):
     )
 
     registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
+
+    @app.get("/health")
+    async def health():
+        body = {"status": "ok"}
+        if session_server_instance_id is not None:
+            body["session_server_instance_id"] = session_server_instance_id
+        return body
 
     # --- DEBUG: track in-flight chat_completions ---
     _inflight_chat = {"count": 0}
