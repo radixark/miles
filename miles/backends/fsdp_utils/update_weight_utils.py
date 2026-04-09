@@ -49,7 +49,6 @@ class UpdateWeight(abc.ABC):
         self.weight_version += 1
 
         if dist.get_rank() == 0:
-        if dist.get_rank() == 0:
             futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
             futures.extend([engine.flush_cache.remote() for engine in self.rollout_engines])
             ray.get(futures)
