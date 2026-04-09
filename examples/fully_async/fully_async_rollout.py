@@ -21,7 +21,6 @@ def group_oldest_weight_version(group: list[Sample]) -> int | None:
     return min(versions) if versions else None
 
 
-
 class _CachedWeightVersion:
     """Throttled query for the current engine weight version via /model_info."""
 
