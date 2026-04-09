@@ -128,9 +128,7 @@ def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
 def _prepare_download(args: ScriptArgs):
     source_checkpoint = Path(args.model_dir) / args.model_name
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(
-        f"huggingface-cli download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
-    )
+    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
     _patch_deepseek_v32_checkpoint(source_checkpoint)
