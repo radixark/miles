@@ -61,8 +61,16 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = input.sample.metadata
     if max_seq_len is not None:
         metadata = {**metadata, "max_seq_len": max_seq_len}
+    if tracer.session_server_instance_id:
+        metadata = {**metadata, "session_server_instance_id": tracer.session_server_instance_id}
 
     log_prefix = f"[session={tracer.session_id}]"
+
+    session_ip = getattr(input.args, "session_server_ip", None)
+    session_port = getattr(input.args, "session_server_port", None)
+    if session_ip and session_port:
+        metadata = {**metadata, "session_server_id": f"{session_ip}:{session_port}"}
+
     agent_metadata = None
     t_start = time.monotonic()
     try:

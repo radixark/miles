@@ -38,8 +38,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hf_checkpoint: str = "zai-org/GLM-4.7-Flash"
     ref_load: str = "/root/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agent_v2/"
-    max_seq_len: int = 16384
     prompt_data: str = "/root/swe_train.jsonl"
+
+    # Training settings
+    max_seq_len: int = 16384
+    rollout_batch_size: int = 2
+    n_samples_per_prompt: int = 4
+    global_batch_size: int = 8
 
     # Agent settings
     agent_server_url: str = os.environ.get(
@@ -104,12 +109,12 @@ def execute(args: ScriptArgs):
         "--metadata-key metadata "
         "--rollout-shuffle "
         "--num-rollout 3000 "
-        "--rollout-batch-size 2 "
-        "--n-samples-per-prompt 4 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
         "--rollout-max-response-len 8192 "
         f"--max-seq-len {args.max_seq_len} "
-        "--global-batch-size 8 "
+        f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
     )
 

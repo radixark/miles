@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -666,6 +667,29 @@ class TestAgentMetadata:
         for s in samples:
             assert s.metadata.get("instance_id") == "test-123"
             assert "reward" not in s.metadata
+
+    def test_session_server_identity_forwarded_to_agent_metadata(self, variant, generation_env):
+        from miles.utils.test_utils import mock_tools
+
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        _SESSION_KEYS = ("session_server_id", "session_server_instance_id")
+
+        def _echo_session(metadata=None):
+            metadata = metadata or {}
+            return {k: metadata[k] for k in _SESSION_KEYS if k in metadata}
+
+        mock_tools.AGENTIC_RETURN_METADATA = _echo_session
+        try:
+            result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+        finally:
+            mock_tools.AGENTIC_RETURN_METADATA = None
+
+        samples = listify(result.sample)
+        expected_session_server_id = f"127.0.0.1:{generation_env.args.session_server_port}"
+        for s in samples:
+            assert s.metadata["session_server_id"] == expected_session_server_id
+            assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
 
 
 class TestAgentNoRecords:

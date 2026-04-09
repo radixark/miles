@@ -18,7 +18,6 @@ from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from ..common import post_process_weights
 from .mixin import DistBucketedWeightUpdateMixin
 from .p2p_transfer_utils import (
     P2PTransferManager,
@@ -125,11 +124,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                     for engine in self.rollout_engines
                 ]
             )
-            post_process_weights(
-                rollout_engines=self.rollout_engines,
-                post_load_weights=True,
-            )
-        super()._finalize_and_resume_engines()
+        super()._finalize_and_resume_engines(post_load_weights=True)
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
