@@ -386,6 +386,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--max-weight-staleness",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum allowed gap between a group's oldest weight version and the current "
+                    "engine weight version. Groups exceeding this threshold are recycled back to "
+                    "the data buffer instead of being sent to training. Only effective in fully "
+                    "async mode. None (default) disables staleness filtering."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
@@ -440,6 +451,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1,
                 help="Interval for updating the weights",
+            )
+            parser.add_argument(
+                "--pause-generation-mode",
+                type=str,
+                choices=["abort", "retract", "in_place"],
+                default="retract",
+                help=(
+                    "How SGLang pauses in-flight requests during weight updates. "
+                    "'abort' immediately terminates all requests (previous default). "
+                    "'retract' moves running requests back to the waiting queue and "
+                    "recomputes KV cache after update. "
+                    "'in_place' freezes requests and resumes with existing KV cache."
+                ),
             )
             parser.add_argument(
                 "--keep-old-actor",
