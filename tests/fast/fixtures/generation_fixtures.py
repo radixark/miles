@@ -2,6 +2,7 @@
 Fixtures to test custom-generate-function
 """
 
+import uuid
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -235,6 +236,7 @@ def with_session_server(
         chat_template_path=chat_template_path,
         tito_model="default",
         use_rollout_routing_replay=use_rollout_routing_replay,
+        session_server_instance_id=uuid.uuid4().hex,
     )
     session_server = SessionServer(args, backend_url=backend_url)
 

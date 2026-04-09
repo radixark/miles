@@ -58,7 +58,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -132,7 +132,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -170,7 +170,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-unit-test'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -244,7 +244,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -282,7 +282,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-sglang'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -356,7 +356,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -394,7 +394,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -468,7 +468,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -506,7 +506,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -580,7 +580,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -618,7 +618,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -692,7 +692,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -730,7 +730,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -804,7 +804,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -842,7 +842,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -916,7 +916,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -954,7 +954,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -1028,7 +1028,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -1066,7 +1066,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-lora'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -1140,7 +1140,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -1178,7 +1178,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-low-precision'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -1252,7 +1252,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
@@ -1357,7 +1357,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
     runs-on: self-hosted
     container:
-      image: radixark/miles:test-v0.5.10
+      image: radixark/miles:dev
       options: >
         --gpus all
         --ipc=host
@@ -1431,7 +1431,7 @@ jobs:
 
           # Defaults
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles-v0.5.10"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
 
           # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
           resolve_fetch_ref() {
