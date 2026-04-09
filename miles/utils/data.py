@@ -23,25 +23,6 @@ __all__ = ["Dataset"]
 logger = logging.getLogger(__name__)
 
 
-def _is_deepseek_v32_tokenizer(tokenizer) -> bool:
-    name_or_path = str(getattr(tokenizer, "name_or_path", "")).lower()
-    return "deepseek-v3.2" in name_or_path or "deepseek_v32" in name_or_path
-
-
-def _try_encode_deepseek_v32_messages(prompt, tokenizer):
-    if not _is_deepseek_v32_tokenizer(tokenizer):
-        raise ValueError("DeepSeek-v3.2 fallback is only available for DeepSeek-v3.2 tokenizers.")
-
-    from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
-
-    return encode_messages(
-        prompt,
-        thinking_mode="thinking",
-        drop_thinking=True,
-        add_default_bos_token=True,
-    )
-
-
 def read_file(path):
     path, row_slice = _parse_generalized_path(path)
     reader = None
@@ -230,9 +211,20 @@ class Dataset:
                     )
                 except ValueError as e:
                     # DeepSeek-v3.2 checkpoints do not ship a Jinja chat template.
-                    if "tokenizer.chat_template is not set" not in str(e):
+                    if (
+                        "tokenizer.chat_template is not set" in str(e)
+                        and str(getattr(tokenizer, "model_type", "")).lower() == "deepseek_v32"
+                    ):
+                        from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+
+                        output_prompt = encode_messages(
+                            prompt,
+                            thinking_mode="thinking",
+                            drop_thinking=True,
+                            add_default_bos_token=True,
+                        )
+                    else:
                         raise
-                    output_prompt = _try_encode_deepseek_v32_messages(prompt, tokenizer)
             else:
                 output_prompt = prompt
 
