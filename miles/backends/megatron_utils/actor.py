@@ -110,16 +110,12 @@ class MegatronTrainRayActor(TrainRayActor):
             args, role
         )
 
-        from megatron.core import mpu
+        parallel_state = get_parallel_state()
+        if parallel_state.cp.size > 1:
+            from miles_plugins.models.cp_utils import detect_and_setup_hybrid_cp
 
-        cp_world_size = mpu.get_context_parallel_world_size()
-        if cp_world_size > 1:
-            from miles.backends.training_utils.cp_utils import detect_and_setup_hybrid_cp
-
-            cp_group = mpu.get_context_parallel_group()
-            cp_rank = mpu.get_context_parallel_rank()
             for model_chunk in self.model:
-                detect_and_setup_hybrid_cp(model_chunk, cp_group, cp_rank, cp_world_size)
+                detect_and_setup_hybrid_cp(model_chunk, parallel_state.cp.group, parallel_state.cp.rank, parallel_state.cp.size)
 
         verify_megatron_parallel_state(self.model)
 
