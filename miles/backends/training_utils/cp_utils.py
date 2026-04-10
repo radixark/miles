@@ -373,4 +373,3 @@ def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: to
         conv1d_kernel_size=module.conv_kernel_size,
     )
 
-

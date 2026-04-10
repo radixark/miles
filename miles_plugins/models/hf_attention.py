@@ -91,7 +91,9 @@ def _packed_shard_to_zigzag_impl(hidden_states, cu_seqlens, cp_group, cp_rank, c
     full_sequences = full_stream.split(global_seq_lengths, dim=0)
 
     local_sequences = []
-    for full_seq, global_seq_len, local_seq_len in zip(full_sequences, global_seq_lengths, local_seq_lengths, strict=True):
+    for full_seq, global_seq_len, local_seq_len in zip(
+        full_sequences, global_seq_lengths, local_seq_lengths, strict=True
+    ):
         if global_seq_len % (2 * cp_size) == 0:
             subchunk_len = global_seq_len // (2 * cp_size)
             parts = full_seq.split(subchunk_len, dim=0)

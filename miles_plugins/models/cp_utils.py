@@ -8,9 +8,7 @@ from miles_plugins.models.hf_attention import HuggingfaceAttention
 logger = logging.getLogger(__name__)
 
 
-def detect_and_setup_hybrid_cp(
-    model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int
-) -> int:
+def detect_and_setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> int:
     """Scan for GatedDeltaNet modules and configure them for native fla CP."""
     count = 0
     for module in model.modules():

@@ -23,7 +23,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"pip install transformers==5.2.0")
+    U.exec_command("pip install transformers==5.2.0")
     U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
@@ -127,11 +127,7 @@ def execute(args: ScriptArgs):
         "--sglang-mamba-scheduler-strategy extra_buffer "
     )
 
-    mtp_args = (
-        "--enable-mtp-training "
-        "--mtp-num-layers 1 "
-        "--mtp-loss-scaling-factor 0.2 "
-    )
+    mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
     misc_args = (
         "--attention-dropout 0.0 "

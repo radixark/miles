@@ -115,7 +115,9 @@ class MegatronTrainRayActor(TrainRayActor):
             from miles_plugins.models.cp_utils import detect_and_setup_hybrid_cp
 
             for model_chunk in self.model:
-                detect_and_setup_hybrid_cp(model_chunk, parallel_state.cp.group, parallel_state.cp.rank, parallel_state.cp.size)
+                detect_and_setup_hybrid_cp(
+                    model_chunk, parallel_state.cp.group, parallel_state.cp.rank, parallel_state.cp.size
+                )
 
         verify_megatron_parallel_state(self.model)
 
