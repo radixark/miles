@@ -214,12 +214,8 @@ class Sample:
     @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
-        if not self.weight_versions:
-            return None
         numeric = [int(v) for v in self.weight_versions if str(v).isdigit()]
-        if not numeric:
-            return None
-        return min(numeric)
+        return min(numeric) if numeric else None
 
     def update_from_meta_info(self, args, meta_info: dict):
         """
