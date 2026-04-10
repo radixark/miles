@@ -1,10 +1,11 @@
 <% set default_image = 'radixark/miles:dev' %>
 
 <% set fsdp_tests = [
-    {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8},
-    {'test_file': 'e2e/fsdp/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
-    {'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 8},
-    {'test_file': 'e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-4B-fsdp-true-on-policy', 'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-vl-4B-fsdp', 'test_file': 'e2e/fsdp/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-0.6B-fsdp-distributed', 'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-0.6B-megatron-fsdp-align', 'test_file': 'e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-0.6B-fsdp-colocated-2xGPU', 'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
 ] %>
 
 <% set megatron_tests = [
@@ -27,7 +28,6 @@
 <% set short_tests = [
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
-    {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
     {'test_file': 'e2e/sglang_config/test_sglang_config.py', 'num_gpus': 8},
     {'test_file': 'e2e/sglang_config/test_sglang_config_mixed_offload.py', 'num_gpus': 8},
     {'test_file': 'e2e/sglang_config/test_sglang_config_mixed_offload_ft.py', 'num_gpus': 8},
@@ -65,12 +65,6 @@
       'tests': [
         {'test_file': 'fast', 'num_gpus': 0},
         {'test_file': 'utils/test_sglang_config.py', 'num_gpus': 0},
-      ],
-    },
-    'unit-test': {
-      'label': 'run-unit-test',
-      'tests': [
-        {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8}
       ],
     },
     'e2e-test-sglang': {

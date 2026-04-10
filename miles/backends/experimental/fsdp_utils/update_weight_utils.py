@@ -17,7 +17,7 @@ except ImportError:
 
 from sglang.srt.utils import MultiprocessingSerializer
 
-from miles.utils.distributed_utils import init_process_group
+from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 
 try:
@@ -47,6 +47,13 @@ class UpdateWeight(abc.ABC):
 
     def update_weights(self) -> None:
         self.weight_version += 1
+
+        if dist.get_rank() == 0:
+            futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
+            futures.extend([engine.flush_cache.remote() for engine in self.rollout_engines])
+            ray.get(futures)
+        dist.barrier(group=get_gloo_group())
+
         bucket = []
         bucket_size = 0
         for name, param in self.model.state_dict().items():
@@ -72,6 +79,11 @@ class UpdateWeight(abc.ABC):
             del bucket
             bucket = []
             bucket_size = 0
+
+        dist.barrier(group=get_gloo_group())
+        if dist.get_rank() == 0:
+            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+        dist.barrier(group=get_gloo_group())
 
     def wait_and_update_bucket_weights(self, bucket):
         bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
@@ -172,8 +184,13 @@ class UpdateWeightFromTensor(UpdateWeight):
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 result = ray.get(ref)
-                if hasattr(result, "success") and not result.success:
+                if isinstance(result, dict):
+                    success = result.get("success", True)
+                    error_msg = result.get("error_message") or result.get("message", "unknown error")
+                else:
+                    success = getattr(result, "success", True)
                     error_msg = getattr(result, "error_message", "unknown error")
+                if not success:
                     raise RuntimeError(
                         f"Weight sync failed on rollout engine: {error_msg}. " f"Check SGLang version compatibility."
                     )

@@ -60,6 +60,7 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.use_dpsk_v32_encoding = False
     serving.is_gpt_oss = False
     serving.tool_call_parser = None
+    serving.reasoning_parser = None
     return serving
 
 

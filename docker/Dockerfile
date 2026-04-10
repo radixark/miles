@@ -3,10 +3,10 @@
 #
 # 2. radixark/miles:dev-cu13-arm64
 #    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.9-cu130-arm64 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-cu130 \
 #    build-arg:WHEELS_TAG=cu130-aarch64 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.9
+ARG SGLANG_IMAGE_TAG=v0.5.10
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -88,7 +88,7 @@ RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
 # https://github.com/pytorch/pytorch/issues/168167
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \

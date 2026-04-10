@@ -260,8 +260,8 @@ class DownProjFunctionPython(torch.autograd.Function):
 # Import Triton Implementation
 # ============================================================================
 
-from miles.backends.fsdp_utils.kernels.fused_experts import DownProjFunction as DownProjFunctionTriton
-from miles.backends.fsdp_utils.kernels.fused_experts import GateUpProjFunction as GateUpProjFunctionTriton
+from miles.backends.experimental.fsdp_utils.kernels.fused_experts import DownProjFunction as DownProjFunctionTriton
+from miles.backends.experimental.fsdp_utils.kernels.fused_experts import GateUpProjFunction as GateUpProjFunctionTriton
 
 # ============================================================================
 # Test Fixtures and Utilities

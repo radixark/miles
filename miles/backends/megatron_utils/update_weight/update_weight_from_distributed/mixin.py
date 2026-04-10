@@ -139,7 +139,8 @@ class DistBucketedWeightUpdateMixin:
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and run pre-process if needed."""
         if dist.get_rank() == 0:
-            ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
+            mode = self.args.pause_generation_mode
+            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
             # int4/fp4 pre_process
@@ -150,19 +151,18 @@ class DistBucketedWeightUpdateMixin:
                     post_process_quantization=False,
                 )
 
-    def _finalize_and_resume_engines(self) -> None:
+    def _finalize_and_resume_engines(self, post_load_weights: bool = False) -> None:
         """Run post-process if needed and resume rollout engines."""
         if dist.get_rank() == 0:
-            # int4/fp4 post_process, mxfp8 post-process (swizzle MoE scales).
-            if self.quantization_config and self.quantization_config["quant_method"] in [
-                "compressed-tensors",
-                "mxfp8",
-            ]:
-                post_process_weights(
-                    rollout_engines=self.rollout_engines,
-                    restore_weights_before_load=False,
-                    post_process_quantization=True,
-                )
+            # post_process_quantization is related to the process_weights_after_loading
+            # in the sglang rollout side, which should always be invoked after weight
+            # updating.
+            post_process_weights(
+                rollout_engines=self.rollout_engines,
+                restore_weights_before_load=False,
+                post_process_quantization=True,
+                post_load_weights=post_load_weights,
+            )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
 
     @torch.no_grad()
