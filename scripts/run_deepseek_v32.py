@@ -381,7 +381,7 @@ def _execute_train(args: ScriptArgs):
                 sglang_decode_max_bs = 256
                 sglang_args += (
                     f"--rollout-num-gpus-per-engine {sglang_world_size} "
-                    "--sglang-fp8-gemm-backend flashinfer_trtllm "
+                    "--sglang-fp8-gemm-backend flashinfer_cutlass "
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "
@@ -393,15 +393,15 @@ def _execute_train(args: ScriptArgs):
                     # "--sglang-moe-dense-tp-size 1 "
                 )
 
-                default_extra_high_precision_layers = [".kv_b_proj."]
+                default_extra_high_precision_layers_hf = [".kv_b_proj."]
                 default_extra_high_precision_layers_megatron = [
                     ".linear_kv_up_proj",
                     ".linear_k_up_proj",
                     ".linear_v_up_proj",
                 ]
-                if "--extra-high-precision-layers" not in args.extra_args:
+                if "--extra-high-precision-layers-hf" not in args.extra_args:
                     misc_args += (
-                        f"--extra-high-precision-layers {' '.join(default_extra_high_precision_layers)} "
+                        f"--extra-high-precision-layers-hf {' '.join(default_extra_high_precision_layers_hf)} "
                         f"--extra-high-precision-layers-megatron {' '.join(default_extra_high_precision_layers_megatron)} "
                     )
 
@@ -430,7 +430,23 @@ matchers:
                 if "--te-precision-config-file" not in args.extra_args:
                     misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
             else:
-                sglang_args += "--rollout-num-gpus-per-engine 1 " "--sglang-cuda-graph-max-bs 256 "
+                if args.use_single_node:
+                    sglang_world_size = 2
+                else:
+                    sglang_world_size = 8
+                sglang_decode_max_bs = 256
+                sglang_args += (
+                    f"--rollout-num-gpus-per-engine {sglang_world_size} "
+                    "--sglang-moe-runner-backend flashinfer_trtllm_routed "
+                    f"--sglang-tp-size {sglang_world_size} "
+                    f"--sglang-dp-size {sglang_world_size} "
+                    "--sglang-enable-dp-attention "
+                    "--sglang-enable-dp-lm-head "
+                    # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+                    # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    # "--sglang-moe-dense-tp-size 1 "
+                )
         case _:
             raise NotImplementedError
 
