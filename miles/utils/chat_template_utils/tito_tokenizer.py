@@ -180,7 +180,7 @@ class TITOTokenizer:
         """Compute incremental token IDs for non-assistant messages appended
         after the pretokenized prefix.
 
-        Handles tool responses, user follow-ups, and system injections —
+        Handles tool responses, user, and system messages —
         never an assistant message.  Validates that *new_messages* is an
         append-only extension of *old_messages* via
         ``assert_messages_append_only_with_allowed_role``.
