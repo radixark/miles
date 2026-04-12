@@ -313,6 +313,9 @@ def _compute_server_args(args, host, port, nccl_port):
         "host": host,
         "port": port,
         "nccl_port": nccl_port,
+        # Each engine needs a distinct master_port starting hint so that
+        # concurrent settle_port() probes don't race on the same default (30005).
+        "master_port": nccl_port + 10000 if nccl_port is not None else None,
         # parallel — tp_size must match rollout allocation, not user CLI.
         "tp_size": args.rollout_num_gpus_per_engine,
         # Sequence-parallel degree (None = disabled, SGL-D decides internally).

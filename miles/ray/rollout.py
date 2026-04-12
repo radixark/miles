@@ -373,12 +373,14 @@ class RolloutManager:
             # we could use key to select the reward.
             "rewards": rewards,
             "raw_reward": raw_rewards,
-            "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
             "sample_indices": [sample.index for sample in samples],
         }
-        if any(getattr(sample, "reward", None) is None or "ocr" not in sample.reward for sample in samples):
-            raise ValueError("Missing OCR reward in rollout samples; expected reward['ocr'] for all samples.")
-        train_data["reward_ocr"] = [sample.reward["ocr"] for sample in samples]
+        if any(getattr(sample, "reward", None) is None for sample in samples):
+            raise ValueError("Missing reward in rollout samples.")
+        train_data["reward_ocr"] = [
+            sample.reward["ocr"] if isinstance(sample.reward, dict) else float(sample.reward)
+            for sample in samples
+        ]
         if train_data["reward_ocr"]:
             reward_ocr = train_data["reward_ocr"]
             zero_ratio = float(np.mean([1.0 if r == 0.0 else 0.0 for r in reward_ocr]))

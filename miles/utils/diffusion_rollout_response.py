@@ -30,6 +30,8 @@ def _default_deserialize_func(value: Any) -> torch.Tensor | None:
         return None
     if isinstance(value, str):
         return decode_tensor_base64(value).detach().cpu()
+    if isinstance(value, dict) and value.get("__tensor__"):
+        return decode_tensor_base64(value["data"]).detach().cpu()
     raise TypeError(f"Cannot deserialize {type(value)}")
 
 
