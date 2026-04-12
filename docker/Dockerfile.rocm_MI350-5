@@ -96,6 +96,9 @@ RUN rm -rf /root/TransformerEngine && \
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
+RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
+    pip -v install flash-attn==2.8.3 --no-build-isolation
+
 RUN pip install flash-linear-attention==0.4.2
 
 RUN rm -rf /root/Megatron-LM && \
