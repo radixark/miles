@@ -196,8 +196,8 @@ def process_file(
             weights[key] = f.get_tensor(key)
 
     modules_to_not_convert: list[str] = []
-    head_end_idx = max(0, num_layers_at_start_in_bf16)
-    tail_start_idx = max(0, num_hidden_layers - num_layers_at_end_in_bf16)
+    head_end_idx = num_layers_at_start_in_bf16
+    tail_start_idx = num_hidden_layers - num_layers_at_end_in_bf16
     dynamic_skip_layer_prefixes: set[str] = set()
     dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(0, head_end_idx)})
     dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)})
