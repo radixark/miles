@@ -169,8 +169,8 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
 
     else:
         extra_args = (
-            "--tensor-model-parallel-size 4 "
-            "--expert-model-parallel-size 32 "
+            "--tensor-model-parallel-size 2 "
+            "--expert-model-parallel-size 16 "
             "--pipeline-model-parallel-size 4 "
             "--decoder-last-pipeline-num-layers 13 "
             "--expert-tensor-parallel-size 1 "
@@ -354,12 +354,12 @@ def _execute_train(args: ScriptArgs):
                 )
             else:
                 perf_args += (
-                    "--tensor-model-parallel-size 4 "
+                    "--tensor-model-parallel-size 2 "
                     "--sequence-parallel "
                     "--pipeline-model-parallel-size 4 "
                     "--decoder-last-pipeline-num-layers 13 "
-                    "--context-parallel-size 2 "
-                    "--expert-model-parallel-size 32 "
+                    "--context-parallel-size 1 "
+                    "--expert-model-parallel-size 16 "
                     "--expert-tensor-parallel-size 1 "
                 )
 
