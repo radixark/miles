@@ -27,15 +27,31 @@ async def remote_rm(args, sample: Sample):
             return await resp.json()
 
 
+def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
+    """Return (custom_rm_path, rm_type) for a sample.
+
+    For multi-LoRA, reads from the per-adapter config. Otherwise falls
+    back to global args.
+    """
+    if getattr(args, "multi_lora", False):
+        adapter_configs = getattr(args, "adapter_configs", {})
+        adapter_name = getattr(sample, "adapter_name", None)
+        if adapter_name and adapter_name in adapter_configs:
+            cfg = adapter_configs[adapter_name]
+            return cfg.get("custom_rm_path"), (cfg.get("rm_type") or "").strip()
+    return getattr(args, "custom_rm_path", None), (getattr(args, "rm_type", None) or "").strip()
+
+
 async def async_rm(args, sample: Sample, **kwargs):
-    if args.custom_rm_path is not None:
-        rm_function = load_function(args.custom_rm_path)
+    custom_rm_path, rm_type = _resolve_reward_config(args, sample)
+
+    if custom_rm_path is not None:
+        rm_function = load_function(custom_rm_path)
         return await rm_function(args, sample, **kwargs)
 
-    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    rm_type = (metadata.get("rm_type") or args.rm_type or "").strip()
     response = sample.response
     label = sample.label
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     if rm_type.startswith("boxed_"):
         response = extract_boxed_answer(response) or ""
         rm_type = rm_type[len("boxed_") :]
@@ -81,8 +97,7 @@ async def batched_async_rm(
             sample.reward = reward
         return None
 
-    if args.custom_rm_path is not None:
-        # Ensure the custom reward function is implemented in batch mode
+    if args.custom_rm_path is not None and not getattr(args, "multi_lora", False):
         rm_function = load_function(args.custom_rm_path)
         return await rm_function(args, samples, **kwargs)
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]

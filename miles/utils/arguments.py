@@ -1075,6 +1075,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
             )
+            parser.add_argument(
+                "--multi-lora-dir",
+                type=str,
+                default=None,
+                help="Path to multi-LoRA experiment directory containing adapter subdirectories with adapter.yaml files",
+            )
+            parser.add_argument(
+                "--multi-lora-n-adapters",
+                type=int,
+                default=2,
+                help="Maximum number of concurrent adapter slots for multi-LoRA (default: 2)",
+            )
             return parser
 
         def add_router_arguments(parser):
@@ -1889,6 +1901,13 @@ def miles_validate_args(args):
             modules = [m for m in modules if m not in exclude_set]
 
         args.target_modules = modules
+
+    # Multi-LoRA flag — adapter configs are loaded later by the controller
+    args.multi_lora = getattr(args, "multi_lora_dir", None) is not None
+    if args.multi_lora:
+        assert args.lora_rank > 0, "--lora-rank must be set when using --multi-lora-dir"
+        assert args.target_modules is not None, "--target-modules must be set when using --multi-lora-dir"
+        args.megatron_to_hf_mode = "bridge"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

@@ -123,6 +123,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "dynamic_global_batch_size",
                 "weight_versions",
                 "metadata",
+                "n_adapters",
+                "adapter_slots",
             ]:
                 continue
             # Upload per sample mean for each rollout value

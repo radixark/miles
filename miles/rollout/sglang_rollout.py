@@ -15,6 +15,7 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.backends.megatron_utils.multi_lora import is_multi_lora_enabled
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils import dumper_utils
@@ -166,7 +167,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "return_logprob": True,
     }
 
-    if is_lora_enabled(args):
+    if is_multi_lora_enabled(args) and sample.adapter_name is not None:
+        payload["lora_path"] = sample.adapter_name
+    elif is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:

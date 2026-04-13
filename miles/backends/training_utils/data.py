@@ -134,6 +134,7 @@ def get_batch(
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
         tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        sample_token_lengths = [t.size(0) for t in tokens]
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
@@ -160,6 +161,7 @@ def get_batch(
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
+            sample_token_lengths = [t.size(0) for t in tokens]
 
             cu_seqlens = [0]
             for t in tokens:
@@ -184,6 +186,19 @@ def get_batch(
         batch["max_seqlen"] = max_seqlen
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
+
+    # Multi-LoRA: compute per-adapter token counts from post-CP per-sample lengths.
+    # NOTE: allgather CP is not supported — it chunks the global stream across CP ranks
+    # without respecting sample boundaries, which breaks MultiLoRA's adapter routing.
+    adapter_slots = batch.get("adapter_slots")
+    if adapter_slots is not None:
+        n_adapters = data_iterator.rollout_data["n_adapters"]
+        total_tokens = tokens.numel()
+        counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())
+        for slot, length in zip(adapter_slots, sample_token_lengths):
+            counts[slot] += length
+        counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
+        batch["adapter_token_counts"] = counts
 
     batch["tokens"] = tokens
 

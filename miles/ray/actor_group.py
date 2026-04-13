@@ -142,6 +142,9 @@ class RayTrainGroup:
     async def set_rollout_manager(self, rollout_manager):
         await self._broadcast("set_rollout_manager", rollout_manager)
 
+    async def set_multi_lora_controller(self, controller):
+        await self._broadcast("set_multi_lora_controller", controller)
+
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:
         refs = [getattr(actor, method_name).remote(*args, **kwargs) for actor in self._actor_handles]
         return await asyncio.gather(*refs)

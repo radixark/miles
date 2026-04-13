@@ -241,6 +241,7 @@ def forward_only(
                 "total_lengths",
                 "response_lengths",
                 "max_seq_lens",
+                "adapter_slots",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -251,6 +252,12 @@ def forward_only(
         packed_seq_params = get_packed_seq_params(batch, args)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
+
+        if "adapter_token_counts" in batch:
+            from megatron.bridge.peft.multi_lora_layers import set_batch
+
+            set_batch(model, batch["adapter_token_counts"])
+
         output_tensor = model(
             input_ids=tokens,
             position_ids=None,
@@ -390,11 +397,17 @@ def train_one_step(
                 "returns",
                 "rollout_log_probs",
                 "max_seq_lens",
+                "adapter_slots",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+
+        if "adapter_token_counts" in batch:
+            from megatron.bridge.peft.multi_lora_layers import set_batch
+
+            set_batch(model, batch["adapter_token_counts"])
 
         from miles.utils.replay_base import all_replay_managers
 

@@ -727,6 +727,9 @@ class RolloutManager:
         if any(sample.weight_versions for sample in samples):
             train_data["weight_versions"] = [sample.weight_versions for sample in samples]
 
+        if any(sample.adapter_name is not None for sample in samples):
+            train_data["adapter_names"] = [sample.adapter_name for sample in samples]
+
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
@@ -755,6 +758,17 @@ class RolloutManager:
         else:
             partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
+        # Multi-LoRA: resolve adapter names to slot indices and sort partitions.
+        adapter_names = data.get("adapter_names")
+        if adapter_names is not None:
+            active = ray.get(self.args.multi_lora_controller.active_runs.remote())
+            slot_for = {name: cfg["slot"] for name, cfg in active.items()}
+            data["adapter_slots"] = [slot_for[name] for name in adapter_names]
+            partitions = [
+                sorted(p, key=lambda i: slot_for.get(adapter_names[i], 0))
+                for p in partitions
+            ]
+
         rollout_data_refs = []
 
         for i in range(dp_size):
@@ -775,6 +789,7 @@ class RolloutManager:
                 "prompt",
                 "teacher_log_probs",
                 "weight_versions",
+                "adapter_slots",
             ]:
                 if key not in data:
                     continue
@@ -789,6 +804,8 @@ class RolloutManager:
                 if key not in data:
                     continue
                 rollout_data[key] = data[key]
+            if "adapter_slots" in rollout_data:
+                rollout_data["n_adapters"] = self.args.multi_lora_n_adapters
             rollout_data_refs.append(Box(ray.put(rollout_data)))
         return rollout_data_refs
 
@@ -1176,6 +1193,21 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
     return log_dict
 
 
+def _compute_per_adapter_metrics(args, samples: list[Sample]) -> dict:
+    """Compute reward and response length metrics grouped by adapter name."""
+    by_adapter = group_by(samples, lambda s: getattr(s, "adapter_name", None))
+    log_dict = {}
+    for name, adapter_samples in by_adapter.items():
+        if name is None:
+            continue
+        rewards = [s.get_reward_value(args) for s in adapter_samples]
+        response_lengths = [s.effective_response_length for s in adapter_samples]
+        prefix = f"{name}/rollout/"
+        log_dict |= dict_add_prefix(compute_statistics(rewards), f"{prefix}raw_reward/")
+        log_dict |= dict_add_prefix(compute_statistics(response_lengths), f"{prefix}response_len/")
+    return log_dict
+
+
 def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if args.custom_rollout_log_function_path is not None:
         custom_log_func = load_function(args.custom_rollout_log_function_path)
@@ -1188,6 +1220,9 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
     log_dict = {**(rollout_extra_metrics or {})}
     log_dict |= dict_add_prefix(compute_metrics_from_samples(args, samples), "rollout/")
     log_dict |= dict_add_prefix(compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
+
+    if getattr(args, "multi_lora", False):
+        log_dict |= _compute_per_adapter_metrics(args, samples)
     logger.info(f"perf {rollout_id}: {log_dict}")
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step

@@ -35,6 +35,7 @@ from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
+from .multi_lora import is_multi_lora_enabled
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import get_register_replay_list_func
 from .update_weight.common import named_params_and_buffers
@@ -111,9 +112,19 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
-            args, role
-        )
+        if is_multi_lora_enabled(args):
+            import ray
+
+            from .multi_lora import initialize_multi_lora_model_and_optimizer
+
+            adapter_configs = ray.get(self.multi_lora_controller.active_runs.remote())
+            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = (
+                initialize_multi_lora_model_and_optimizer(args, adapter_configs, role)
+            )
+        else:
+            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = (
+                initialize_model_and_optimizer(args, role)
+            )
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -177,9 +188,8 @@ class MegatronTrainRayActor(TrainRayActor):
         # empty cache after initialization
         clear_memory()
 
+        self._switch_model("actor")
         if self.args.offload_train:
-            # recover to actor in the end.
-            self._switch_model("actor")
             self.sleep()
 
         self.rollout_engines = None
@@ -366,6 +376,10 @@ class MegatronTrainRayActor(TrainRayActor):
         return getattr(self.args, f"use_rollout_{m.name}_replay")
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
+        # Track which adapter slots had data this step
+        adapter_slots = rollout_data.get("adapter_slots")
+        self.active_adapter_slots = set(adapter_slots) if adapter_slots is not None else None
+
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
@@ -466,6 +480,23 @@ class MegatronTrainRayActor(TrainRayActor):
 
         log_perf_data(rollout_id, self.args)
 
+        # Multi-LoRA: handle exhausted adapters
+        if is_multi_lora_enabled(self.args):
+            from .update_weight.multi_lora_sync import deregister_adapter
+
+            exhausted = ray.get(self.multi_lora_controller.get_exhausted.remote())
+            for name in exhausted:
+                deregister_adapter(
+                    name=name,
+                    rollout_id=rollout_id,
+                    args=self.args,
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    controller=self.multi_lora_controller,
+                    ipc_engine=self.weight_updater._ipc_engine,
+                    ipc_gather_src=self.weight_updater._ipc_gather_src,
+                )
+
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only:
@@ -480,7 +511,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
             maybe_finalize_async_save(blocking=True)
 
-        save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
+        if is_multi_lora_enabled(self.args):
+            from .update_weight.multi_lora_sync import save_multi_lora_checkpoints
+
+            adapter_configs = ray.get(self.multi_lora_controller.active_runs.remote())
+            save_multi_lora_checkpoints(self.args, self.model, rollout_id, adapter_configs)
+        else:
+            save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
 
         if force_sync and self.args.async_save:
             maybe_finalize_async_save(blocking=True)
@@ -530,7 +567,14 @@ class MegatronTrainRayActor(TrainRayActor):
             torch_memory_saver.resume()
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            if is_multi_lora_enabled(self.args):
+                adapter_configs = ray.get(self.multi_lora_controller.active_runs.remote())
+                self.weight_updater.update_multi_lora_weights(
+                    adapter_configs=adapter_configs,
+                    active_slots=getattr(self, "active_adapter_slots", None),
+                )
+            else:
+                self.weight_updater.update_weights()
             print_memory("after update_weights")
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
@@ -582,6 +626,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag
+
+    def set_multi_lora_controller(self, controller):
+        self.multi_lora_controller = controller
 
     def connect_actor_critic(
         self,
