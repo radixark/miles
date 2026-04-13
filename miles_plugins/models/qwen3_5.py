@@ -75,6 +75,9 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.A_log = nn.Parameter(torch.log(A).to(torch.float32))
         mark_param_dtype(self.A_log, torch.float32)
 
+        # HF stores this norm in fp32, but unlike A_log its precision impact is
+        # negligible and sglang runs it in bf16 on the rollout side — follow
+        # config.dtype (bf16) to stay equivalent to rollout.
         self.norm = FusedRMSNormGated(
             self.head_v_dim,
             eps=self.layer_norm_epsilon,
