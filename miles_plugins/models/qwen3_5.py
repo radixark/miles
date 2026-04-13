@@ -15,6 +15,8 @@ try:
 except ImportError:
     pass
 
+from miles.backends.training_utils.cp_utils import build_gdn_cp_context
+
 from .hf_attention import HuggingfaceAttention, _load_hf_config
 
 
@@ -88,6 +90,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
     ):
         batch_size, seq_len, _ = hidden_states.shape
 
+        cp_context = build_gdn_cp_context(self, cu_seqlens, hidden_states.device)
+
         # Projections (flat layout: [Q_all, K_all, V_all])
         mixed_qkv = self.in_proj_qkv(hidden_states)
         z = self.in_proj_z(hidden_states)
@@ -95,10 +99,12 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        # Convolution on the flat QKV
+        # Convolution on the flat QKV (pass cp_context for boundary handling)
+        conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
         mixed_qkv, _ = self.conv1d(
             x=mixed_qkv,
-            cu_seqlens=cu_seqlens,
+            cu_seqlens=conv_cu_seqlens,
+            cp_context=cp_context,
         )
 
         # Split into Q, K, V (flat split, matching HF layout)
@@ -118,17 +124,29 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        core_attn_out, last_recurrent_state = chunk_gated_delta_rule(
-            query,
-            key,
-            value,
-            g=g,
-            beta=beta,
-            initial_state=None,
-            output_final_state=False,
-            use_qk_l2norm_in_kernel=True,
-            cu_seqlens=cu_seqlens,
-        )
+        if cp_context is not None:
+            core_attn_out, _ = chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cp_context.cu_seqlens,
+                cp_context=cp_context,
+            )
+        else:
+            core_attn_out, _ = chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=None,
+                output_final_state=False,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cu_seqlens,
+            )
 
         z_shape_og = z.shape
         # reshape input data into 2D tensor
