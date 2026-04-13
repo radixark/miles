@@ -15,6 +15,7 @@ try:
 except ImportError:
     pass
 
+from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles.backends.training_utils.cp_utils import build_gdn_cp_context
 
 from .hf_attention import HuggingfaceAttention, _load_hf_config
@@ -71,7 +72,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
 
         A = torch.empty(self.num_v_heads).uniform_(0, 16)
-        self.A_log = nn.Parameter(torch.log(A))
+        self.A_log = nn.Parameter(torch.log(A).to(torch.float32))
+        mark_param_dtype(self.A_log, torch.float32)
 
         self.norm = FusedRMSNormGated(
             self.head_v_dim,
