@@ -116,11 +116,11 @@ pip install harbor
 
 ### Step 4: Prepare data and Harbor task directories
 
-Harbor task directories are prepared on the agent server side using **harbor-private adapters**. Each adapter converts a specific dataset into Harbor's 4-file task format. For example, to prepare SWE-bench tasks:
+Harbor task directories are prepared on the agent server side using **harbor adapters**. Each adapter converts a specific dataset into Harbor's 4-file task format. For example, to prepare SWE-bench tasks:
 
 ```bash
-# On the agent server (CPU machine), inside the harbor-private repo:
-cd $CWD/harbor-private/adapters/swebench && uv sync
+# On the agent server (CPU machine), inside the harbor repo:
+cd $CWD/harbor/adapters/swebench && uv sync
 
 # Generate Harbor task directories for all SWE-bench Verified instances
 uv run run_adapter.py --task-dir $HARBOR_TASKS_DIR --all
@@ -303,7 +303,7 @@ Agent containers need to resolve the Miles container's hostname. Ensure:
 
 ### `TaskNotFound` error
 
-The task directory for the given `instance_id` doesn't exist under `HARBOR_TASKS_DIR`. Run the appropriate harbor-private adapter first (e.g. `adapters/swebench/run_adapter.py` for SWE-bench tasks).
+The task directory for the given `instance_id` doesn't exist under `HARBOR_TASKS_DIR`. Run the appropriate harbor adapter first (e.g. `adapters/swebench/run_adapter.py` for SWE-bench tasks).
 
 ### SGLang engines OOM (`Not enough memory`)
 
