@@ -96,12 +96,11 @@ def format_conversation_with_tools(
 
 def postprocess_predictions(prediction: str):
     """Extract action and content from prediction string"""
-    # Check for Answer: \boxed{...} format (only format we need for math_dapo)
-    # Use a more robust regex that handles nested braces
-    answer_pattern = r"Answer:\s*\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}"
-    answer_match = re.search(answer_pattern, prediction, re.DOTALL)
-    if answer_match:
-        content = answer_match.group(1).strip()
+    # Check for bare \boxed{...} (model may omit "Answer:" prefix)
+    boxed_pattern = r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}"
+    boxed_match = re.search(boxed_pattern, prediction, re.DOTALL)
+    if boxed_match:
+        content = boxed_match.group(1).strip()
         return "answer", content
 
     # Then check for <tool_call> tags (new format from Jinja2 template)
@@ -168,14 +167,17 @@ def postprocess_responses(resp: str) -> str:
             last_match = matches[-1]
             return resp[: last_match.end()]
 
-    # Handle Answer: \boxed{...} format (only format we need for math_dapo)
-    if "Answer:" in resp and "\\boxed{" in resp:
-        # Find the last occurrence of Answer: \boxed{...} with nested braces support
-        answer_pattern = r"Answer:\s*\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}"
-        matches = list(re.finditer(answer_pattern, resp, re.DOTALL))
-        if matches:
-            last_match = matches[-1]
-            return resp[: last_match.end()]
+    # Handle Answer: \boxed{...} or bare \boxed{...}
+    if "\\boxed{" in resp:
+        # Try "Answer: \boxed{...}" first, then bare "\boxed{...}"
+        for pattern in [
+            r"Answer:\s*\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}",
+            r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}",
+        ]:
+            matches = list(re.finditer(pattern, resp, re.DOTALL))
+            if matches:
+                last_match = matches[-1]
+                return resp[: last_match.end()]
 
     return resp
 
@@ -203,7 +205,7 @@ async def execute_predictions(prediction: str) -> str:
         next_obs = (
             "\nMy previous action is invalid. "
             "If I want to execute code, I should put the code between "
-            "<code> and </code>. "
+            "<tool_call> and </tool_call>. "
             "If I want to give the final answer, I should use the format "
             "'Answer: \\boxed{answer}'. Let me try again.\n"
         )
@@ -221,7 +223,12 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
 
     # Set up the initial prompt with system prompt and tools (outside the loop)
     tool_specs = tool_registry.get_tool_specs()
-    prompt = format_conversation_with_tools(prompt=sample.prompt, tools=tool_specs)
+
+    if isinstance(sample.prompt, str):
+        # Already formatted (e.g., by --apply-chat-template), use as-is to avoid double templating
+        prompt = sample.prompt
+    else:
+        prompt = format_conversation_with_tools(prompt=sample.prompt, tools=tool_specs)
 
     prompt_tokens_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
     response = ""
@@ -355,8 +362,7 @@ async def reward_func(args, sample, **kwargs):
     if not isinstance(sample, Sample):
         raise TypeError("Sample must be an instance of Sample class.")
 
-    # Build complete solution string
-    solution_str = sample.prompt + sample.response
+    solution_str = sample.response
 
     # Get ground truth answer - label is a string, not a dict
     ground_truth = sample.label if sample.label is not None else ""

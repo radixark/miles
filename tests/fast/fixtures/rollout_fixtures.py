@@ -43,6 +43,7 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
         "pytest",
         "--train-backend",
         "fsdp",
+        "--ci-test",
         "--rollout-batch-size",
         "1",
         "--n-samples-per-prompt",
