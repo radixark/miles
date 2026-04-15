@@ -232,8 +232,9 @@ run_mode() {
     )
     if [ "$mode" = "p2p" ]; then
         SGLANG_ARGS+=(--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine)
-        # Pin each GPU rank to its own IB HCA to avoid MTT overflow.
-        # Use ibpN (not mlx5_N) — these are the RDMA device names visible inside containers.
+        # Optional: pin each GPU rank to its own IB HCA for optimal RDMA locality.
+        # Not required for correctness — validated that auto-discovery (all NICs) works
+        # without MTT overflow on GLM-5 744B (32 nodes). Kept for potential perf benefit.
         SGLANG_ARGS+=(--sglang-remote-instance-weight-loader-ib-device '{"0":"ibp0","1":"ibp1","2":"ibp2","3":"ibp3","4":"ibp4","5":"ibp5","6":"ibp6","7":"ibp7"}')
     fi
     if [ "$SKIP_VALIDATION" -eq 1 ]; then
