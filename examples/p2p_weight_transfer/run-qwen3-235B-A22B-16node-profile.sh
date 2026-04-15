@@ -54,8 +54,8 @@ NNODES=16
 GPUS_PER_NODE=8
 NUM_TRAIN_GPUS=64     # 8 nodes
 NUM_ROLLOUT_GPUS=64   # 8 nodes
-SKIP_VALIDATION=0
-BUCKET_SIZE_GB=1.0
+SKIP_VALIDATION="${SKIP_VALIDATION:-0}"
+BUCKET_SIZE_GB="${BUCKET_SIZE_GB:-1.0}"
 NO_SAVE_OPTIM=0
 ENABLE_NCCL_NVLS=1
 DECODER_LAST_PIPELINE_NUM_LAYERS=22
@@ -217,6 +217,8 @@ run_mode() {
     fi
     if [ "$mode" = "p2p" ]; then
         MISC_ARGS+=(--update-weight-transfer-mode p2p)
+    else
+        MISC_ARGS+=(--update-weight-transfer-mode broadcast)
     fi
 
     # --- Worker nodes sleep to let head node start first ---
@@ -247,7 +249,8 @@ run_mode() {
     \"RAY_DEBUG\": \"1\",
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${NCCL_NVLS_VAL}\"
+    \"NCCL_NVLS_ENABLE\": \"${NCCL_NVLS_VAL}\",
+    \"MILES_LOG_DIR\": \"${MILES_LOG_DIR:-}\"
   }
 }"
 

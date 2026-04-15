@@ -27,71 +27,98 @@ P2P mode addresses this by having each training rank transfer only the specific 
 
 4. **Synchronization**: Once all RDMA writes are confirmed complete, rollout engines increment their weight version and resume generation for the next training step.
 
+## Supported Model Architectures
+
+P2P weight transfer relies on a unified weight name mapping interface between Megatron and sglang (see [sglang#17326](https://github.com/sgl-project/sglang/pull/17326)). The following sglang model classes are supported:
+
+| sglang Model Class | Model Family | Example Models |
+|---|---|---|
+| `Qwen2ForCausalLM` | Qwen2 (dense) | Qwen2.5-0.5B, Qwen2.5-7B |
+| `Qwen3ForCausalLM` | Qwen3 (dense) | Qwen3-4B, Qwen3-8B |
+| `Qwen3MoeForCausalLM` | Qwen3-MoE | Qwen3-30B-A3B, Qwen3-235B-A22B |
+| `Glm4ForCausalLM` | GLM4 (dense) | GLM-Z1-9B-0414 |
+| `Glm4MoeForCausalLM` | GLM4-MoE | GLM-4.5-Air |
+| `Glm4MoeLiteForCausalLM` | GLM4-MoE | GLM-4.7-9B-Flash |
+| `DeepseekV2ForCausalLM` | DeepSeek V2 | Moonlight-16B-A3B |
+| `DeepseekV3ForCausalLM` | DeepSeek V3 | GLM-5 (744B-A40B) |
+
+## Profiling Results
+
+All profiling is run on H100-80GB clusters with `--check-weight-update-equal` validation enabled.
+Timing measures `update_weights_implementation` (the actual weight transfer), averaged over
+steady-state steps 3–14 (steps 1–2 are warmup).
+
+### Small- to Medium-Scale (1–8 nodes)
+
+| Model Family | Model Name | Total Param | sglang Model Class | Train Config | Inference Config | NCCL (ms) | RDMA (ms) | Delta |
+|---|---|---|---|---|---|---|---|---|
+| GLM4 | GLM-Z1-9B-0414 | 9B | `Glm4ForCausalLM` | TP=2, PP=1, CP=2, EP=1, ETP=1, 1 node | WS=8, EP=1, 1 node | 714.5 | 894.4 | +25.2% |
+| Dpsk-V2 | Moonlight-16B-A3B | 16B(3B) | `DeepseekV2ForCausalLM` | TP=2, PP=1, CP=1, EP=8, ETP=1, 1 node | WS=8, EP=8, 1 node | 3,688 | 1,695.1 | **−54.0%** |
+| GLM4-MoE | GLM-4.7-9B-Flash | 9B | `Glm4MoeLiteForCausalLM` | TP=4, PP=1, CP=1, EP=8, ETP=1, 1 node | WS=4, EP=4, 1 node | 2,525 | 4,218 | +67.0% |
+| Dpsk-V3 | GLM-5_4layer | 4-layer | `DeepseekV3ForCausalLM` | TP=4, PP=1, CP=1, EP=8, ETP=1, 1 node | WS=8, EP=8, 1 node | 678 | 1,309 | +93.0% |
+| Qwen3-MoE | Qwen3-30B-A3B | 30B(3B) | `Qwen3MoeForCausalLM` | TP=4, PP=1, CP=1, EP=8, ETP=1, 2 nodes | WS=8, EP=8, 2 nodes | 2,672 | 2,161 | **−19.1%** |
+| GLM4-MoE | GLM-4.5-Air | 106B(12B) | `Glm4MoeForCausalLM` | TP=1, PP=4, CP=1, EP=8, ETP=1, 4 nodes | WS=8, EP=8, 4 nodes | 6,433.3 | 2,637.2 | **−59.0%** |
+| Qwen3-MoE | Qwen3-235B-A22B | 235B(22B) | `Qwen3MoeForCausalLM` | TP=4, PP=4, CP=2, EP=16, ETP=1, 8 nodes | WS=32, EP=32, 8 nodes | 10,759 | 3,196 | **−70.3%** |
+
+### Large-Scale (16–32 nodes)
+
+| Model Family | Model Name | Total Param | sglang Model Class | Train Config | Inference Config | Nodes | NCCL (s) | RDMA (s) | Post-process (s) | Speedup |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Dpsk-V3 | GLM-5 | 744B(40B) | `DeepseekV3ForCausalLM` | TP=4, PP=4, CP=2, EP=16, ETP=1 | WS=64, EP=64 | 16+16 | 55.44 | 8.32 | 0.04 | **6.7×** |
+| Dpsk-V3 | Kimi K2 | 1T(64B) | `DeepseekV3ForCausalLM` | TP=8, PP=8, CP=4, EP=32, ETP=1 | WS=256, EP=256 | 32+32 | 52.98 | 6.29 | 0.88 | **8.4×** |
+
+> **RDMA** = `update_weights_implementation` steady-state average.
+> **Post-process** = `finalize_and_resume_engines` steady-state average. For P2P mode this
+> includes `post_load_weights` on the rollout GPUs (e.g. FP8 requantization for Kimi K2).
+> **Speedup** = NCCL / RDMA on `update_weights_implementation`.
+
+### Key Takeaways
+
+1. **P2P scales with cluster size.** The benefit grows as more nodes participate:
+   broadcast scales poorly with node count because every rank must receive from rank 0,
+   while P2P uses direct GPU-to-GPU transfers.
+
+2. **6.7× speedup at 16+16 nodes (GLM-5 744B), 8.4× at 32+32 nodes (Kimi K2 1T).**
+   P2P saves ~47s per step on GLM-5 and ~47s per step on Kimi K2, which compounds
+   over thousands of RL iterations.
+
+3. **Crossover around 2+2 nodes.** Qwen3-30B (2+2 nodes) shows a modest 1.24× P2P advantage.
+   Below that, broadcast's simpler control path wins.
+
+4. **Post-process overhead for FP8 models.** Kimi K2 P2P adds 0.88s for
+   `finalize_and_resume_engines`, which runs `post_load_weights` on the rollout GPUs
+   to requantize FP8 weights after RDMA transfer. This is still negligible compared to
+   the ~47s saved on the transfer itself.
+
 ## Examples
 
-All the following settings are tested under h100-80g clusters.
+### CI Test (single-node, Qwen3-4B)
 
-### Single node: Qwen3-4B
-`tests/e2e/megatron/test_qwen3_4B_p2p.py`
-### Multi node
+The P2P weight transfer E2E test validates correctness on a single node using `Qwen3-4B`:
 
-Each multi-node example ships a **prepare** script (download model/datasets, convert checkpoint) and a **run** script (launch Ray jobs). All scripts accept three positional arguments:
-
-| Argument | Description |
-|---|---|
-| `MODE` | `broadcast` or `p2p` |
-| `NODE_RANK` | `0` (head node) or `1..N` (worker nodes) |
-| `HEAD_NODE_IP` | IP address of the head node |
-
-#### Qwen3-30B-A3B (4 nodes)
-
-| Script | Description |
-|---|---|
-| `examples/p2p_weight_transfer/prepare-qwen3-30B-A3B.sh` | Prepare: download model/datasets, convert checkpoint |
-| `examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh` | Run: 4-node launch (`broadcast` or `p2p`) |
-
-```bash
-# 1. Prepare (single node)
-bash examples/p2p_weight_transfer/prepare-qwen3-30B-A3B.sh
-
-# 2. Launch on each node
-bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 0 $HEAD_NODE_IP  # head
-bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 1 $HEAD_NODE_IP  # worker
-bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 2 $HEAD_NODE_IP
-bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 3 $HEAD_NODE_IP
+```python
+# tests/e2e/megatron/test_qwen3_4B_p2p.py
+#
+# Train: 4 GPUs (TP=2, CP=2)
+# Rollout: 4 GPUs (sglang, 2 engines × 2 GPUs each)
+# Flags: --update-weight-transfer-mode p2p --check-weight-update-equal
 ```
 
-#### GLM-4.7-Flash (2 nodes)
+### GLM-4.7-Flash (2 nodes, disaggregated)
 
-| Script | Description |
-|---|---|
-| `examples/p2p_weight_transfer/prepare-glm4.7-flash.sh` | Prepare: install dependencies, download model/datasets, convert checkpoint |
-| `examples/p2p_weight_transfer/run-glm4.7-flash-2node-profile.sh` | Run: 2-node launch (`broadcast` or `p2p`) |
+Each profiling example follows the same pattern: a `prepare` script (download model, convert
+checkpoint) and a `run` script (launch Ray cluster, submit training job).
 
 ```bash
-# 1. Prepare (single node)
-bash examples/p2p_weight_transfer/prepare-glm4.7-flash.sh
+# 1. Prepare (head node does full prepare; workers use --download-only)
+bash examples/p2p_weight_transfer/prepare-glm4.7-flash.sh               # head
+bash examples/p2p_weight_transfer/prepare-glm4.7-flash.sh --download-only  # worker
 
 # 2. Launch on each node
 bash examples/p2p_weight_transfer/run-glm4.7-flash-2node-profile.sh p2p 0 $HEAD_NODE_IP  # head
 bash examples/p2p_weight_transfer/run-glm4.7-flash-2node-profile.sh p2p 1 $HEAD_NODE_IP  # worker
 ```
 
-#### Qwen3-235B-A22B (16 nodes)
-
-| Script | Description |
-|---|---|
-| `examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh` | Prepare: download model/datasets, convert checkpoint |
-| `examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh` | Run: 16-node launch (`broadcast` or `p2p`) |
-
-```bash
-# 1. Prepare (single node)
-bash examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh
-
-# 2. Launch on each node
-bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 0 $HEAD_NODE_IP   # head
-bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 1 $HEAD_NODE_IP   # worker
-...
-bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 15 $HEAD_NODE_IP
-```
-
+All other models (Qwen3-30B, Qwen3-235B, GLM-4.5-Air, GLM-5 variants, Kimi K2) follow the same pattern
+with their respective `prepare-*.sh` and `run-*-profile.sh` scripts under
+`examples/p2p_weight_transfer/`.

@@ -57,8 +57,8 @@ NNODES=4
 GPUS_PER_NODE=8
 NUM_TRAIN_GPUS=16     # 2 nodes
 NUM_ROLLOUT_GPUS=16   # 2 nodes
-SKIP_VALIDATION=0
-BUCKET_SIZE_GB=1.0
+SKIP_VALIDATION="${SKIP_VALIDATION:-0}"
+BUCKET_SIZE_GB="${BUCKET_SIZE_GB:-1.0}"
 NO_SAVE_OPTIM=0
 ENABLE_NCCL_NVLS=0
 
@@ -186,12 +186,16 @@ run_mode() {
         --sglang-mem-fraction-static 0.8
         --sglang-ep-size 8
         --sglang-cuda-graph-bs 1 2 4 8 16
-        --use-miles-router
         --sglang-enable-dp-attention
         --sglang-enable-dp-lm-head
     )
     if [ "$mode" = "p2p" ]; then
         SGLANG_ARGS+=(--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine)
+    fi
+    if [ "$SKIP_VALIDATION" -eq 1 ]; then
+        SGLANG_ARGS+=(--sglang-load-format dummy)
+    else
+        SGLANG_ARGS+=(--sglang-model-loader-extra-config '{"enable_multithread_load":true,"num_threads":8}')
     fi
 
     # --- Misc ---
@@ -206,9 +210,15 @@ run_mode() {
         --actor-num-nodes ${NUM_TRAIN_NODES}
         --actor-num-gpus-per-node ${GPUS_PER_NODE}
         --update-weight-buffer-size ${BUFFER_SIZE}
-        --update-weight-transfer-mode ${MODE}
-        --check-weight-update-equal 
     )
+    if [ "$SKIP_VALIDATION" -eq 0 ]; then
+        MISC_ARGS+=(--check-weight-update-equal)
+    fi
+    if [ "$mode" = "p2p" ]; then
+        MISC_ARGS+=(--update-weight-transfer-mode p2p)
+    else
+        MISC_ARGS+=(--update-weight-transfer-mode broadcast)
+    fi
 
     # --- Worker nodes sleep to let head node start first ---
     if [ "$NODE_RANK" -gt 0 ]; then
@@ -236,7 +246,8 @@ run_mode() {
     \"RAY_DEBUG\": \"1\",
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${NCCL_NVLS_VAL}\"
+    \"NCCL_NVLS_ENABLE\": \"${NCCL_NVLS_VAL}\",
+    \"MILES_LOG_DIR\": \"${MILES_LOG_DIR:-}\"
   }
 }"
 
