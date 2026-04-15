@@ -254,6 +254,12 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     def _weight_to_mcore_format(
         self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
     ) -> tuple[list[str], list[torch.Tensor]]:
+        if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
+            assert len(hf_weights) == 1
+            # Keep A_log in fp32 before TP scatter; this avoids precision loss
+            # from Bridge's global pre-cast to self.dtype.
+            return hf_weights[0].to(dtype=torch.float32).contiguous()
+
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             # merge qkv
             assert len(hf_weights) == 3
