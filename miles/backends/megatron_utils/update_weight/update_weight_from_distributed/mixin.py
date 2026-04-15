@@ -136,7 +136,7 @@ class DistBucketedWeightUpdateMixin:
 
         update_bucket_weight_func(converted_hf_tensors, pbar)
 
-    def _pause_and_prepare_engines(self) -> None:
+    def _pause_and_prepare_engines(self, restore_weights_before_load: bool = False) -> None:
         """Pause rollout engines, flush cache, and run pre-process if needed."""
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
@@ -144,8 +144,9 @@ class DistBucketedWeightUpdateMixin:
             if mode not in ("in_place"):
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
-            # int4/fp4 pre_process
-            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
+            if restore_weights_before_load or (
+                self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]
+            ):
                 post_process_weights(
                     rollout_engines=self.rollout_engines,
                     restore_weights_before_load=True,
