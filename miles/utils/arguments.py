@@ -518,8 +518,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--p2p-transfer-timeout",
                 type=float,
-                default=30.0,
+                default=60.0,
                 help="Timeout in seconds for each P2P transfer operation.",
+            )
+            parser.add_argument(
+                "--update-weight-p2p-ib-device",
+                type=str,
+                default=None,
+                help="InfiniBand device mapping for P2P RDMA weight transfer. "
+                "Accepts a JSON GPU-to-device mapping "
+                '(e.g., \'{"0":"mlx5_1","1":"mlx5_5"}\') '
+                "or a single device name (e.g., mlx5_0). "
+                "Used by both the training side (Mooncake TransferEngine) and "
+                "the sglang rollout side for GPU-affine NIC binding.",
             )
             return parser
 

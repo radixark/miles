@@ -11,6 +11,7 @@ from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
+from sglang.srt.layers.moe.utils import initialize_moe_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
@@ -26,6 +27,7 @@ from .p2p_transfer_utils import (
     create_transfer_engine,
     query_remote_weight_infos,
     register_cpu_memory,
+    maybe_restore_cpu_model_weights,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,7 +107,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
     def _pause_and_prepare_engines(self):
         """Register shared CPU pinned memory with P2P on first call."""
-        super()._pause_and_prepare_engines()
+        super()._pause_and_prepare_engines(restore_weights_before_load=True)
         if not self._is_source:
             return
 
@@ -145,7 +147,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             last_idx = len(self._transfer_engine_meta_list) - 1
             for i, (model_replica, remote_weight_infos) in enumerate(self._transfer_engine_meta_list):
                 model_replica.load_weights(ready_hf_tensors)
-
                 is_last = i == last_idx
                 if is_last:
                     # Last engine rank: fire-and-forget all sessions to background,
@@ -205,7 +206,10 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
 
             # Create ONE transfer engine for all engine ranks
-            self._transfer_engine = create_transfer_engine()
+            self._transfer_engine = create_transfer_engine(
+                gpu_id=torch.cuda.current_device(),
+                ib_device=getattr(self.args, "update_weight_p2p_ib_device", None),
+            )
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
             # in self._transfer_engine_meta_list: tuple of
@@ -251,26 +255,32 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         server_args: ServerArgs,
         first_engine_rank: bool = False,
     ) -> torch.nn.Module:
-        """Create model on GPU (required by sglang), then move to CPU pinned memory for the
-        first engine rank or point all parameters to shared pinned buffers for subsequent ranks."""
+        """Create model directly on CPU pinned memory to avoid GPU OOM.
+
+        For the first engine rank: creates model on CPU and pins memory.
+        For subsequent ranks: points parameters to shared pinned buffers."""
         load_config = LoadConfig(
             load_format="dummy",
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
         server_args_module._global_server_args = server_args
+        initialize_moe_config(server_args)
         with ParallelismContext(parallelism_config):
             model = get_model(
                 model_config=ModelConfig(model_path),
                 load_config=load_config,
-                device_config=DeviceConfig(),
+                device_config=DeviceConfig("cpu"),
             )
+
+        # TODO: Remove once radixark/miles#976 lands — that PR monkey-patches
+        # post_load_weights to no-op so process_weights_after_loading never runs
+        # on the CPU replica, making this undo step unnecessary.
+        maybe_restore_cpu_model_weights(model)
 
         if first_engine_rank:
             for param in model.parameters():
-                cpu_data = param.data.to("cpu", non_blocking=True).pin_memory()
-                param.data = cpu_data
-            torch.cuda.synchronize()
+                param.data = param.data.pin_memory()
         else:
             for name, param in model.named_parameters():
                 assert name in self._shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
