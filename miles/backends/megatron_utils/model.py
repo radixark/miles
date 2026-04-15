@@ -36,6 +36,7 @@ from .ci_utils import (
     compute_model_hashes_by_layer,
     save_model_hashes,
 )
+from .fp32_param_utils import enforce_marked_param_dtypes
 from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
@@ -125,6 +126,9 @@ def setup_model_and_optimizer(
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
+    # Apply parameter-level dtype overrides declared in model definitions.
+    enforce_marked_param_dtypes(model)
+
     # Optimizer
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
@@ -132,6 +136,7 @@ def setup_model_and_optimizer(
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = None
+
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,

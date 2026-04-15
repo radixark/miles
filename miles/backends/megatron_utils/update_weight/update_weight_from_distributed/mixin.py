@@ -141,7 +141,8 @@ class DistBucketedWeightUpdateMixin:
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            if mode not in ("in_place"):
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
             # int4/fp4 pre_process
             if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
