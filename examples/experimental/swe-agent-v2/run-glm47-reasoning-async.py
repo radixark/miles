@@ -132,9 +132,7 @@ def execute(args: ScriptArgs):
             "active NCCL inference. Use broadcast with in_place, or retract with p2p."
         )
 
-    hf_checkpoint = (
-        f"{args.hf_checkpoint}-FP8" if args.rollout_fp8 else args.hf_checkpoint
-    )
+    hf_checkpoint = f"{args.hf_checkpoint}-FP8" if args.rollout_fp8 else args.hf_checkpoint
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load {args.ref_load} "
@@ -187,9 +185,7 @@ def execute(args: ScriptArgs):
     # Training parallelism: TP=4, PP=2, EP chosen as largest divisor of 160 that fits.
     tp, pp = 4, 2
     dp = train_gpus // (tp * pp)
-    assert train_gpus % (tp * pp) == 0, (
-        f"train GPUs ({train_gpus}) must be divisible by TP*PP ({tp * pp})"
-    )
+    assert train_gpus % (tp * pp) == 0, f"train GPUs ({train_gpus}) must be divisible by TP*PP ({tp * pp})"
     num_experts = 160
     ep = max(d for d in range(1, dp + 1) if num_experts % d == 0 and dp % d == 0)
 

@@ -115,9 +115,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
-    hf_checkpoint = (
-        f"{args.hf_checkpoint}-FP8" if args.rollout_fp8 else args.hf_checkpoint
-    )
+    hf_checkpoint = f"{args.hf_checkpoint}-FP8" if args.rollout_fp8 else args.hf_checkpoint
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load {args.ref_load} "
@@ -155,9 +153,7 @@ def execute(args: ScriptArgs):
     tp, pp = 4, 2
     total_gpus = args.num_nodes * args.num_gpus_per_node
     dp = total_gpus // (tp * pp)
-    assert total_gpus % (tp * pp) == 0, (
-        f"total GPUs ({total_gpus}) must be divisible by TP*PP ({tp * pp})"
-    )
+    assert total_gpus % (tp * pp) == 0, f"total GPUs ({total_gpus}) must be divisible by TP*PP ({tp * pp})"
     num_experts = 160
     ep = max(d for d in range(1, dp + 1) if num_experts % d == 0)
 
@@ -203,9 +199,9 @@ def execute(args: ScriptArgs):
     # DP-attention keeps attention within a single node (attn_tp=8).
     sglang_nodes_per_engine = min(4, args.num_nodes)
     sglang_world_size = sglang_nodes_per_engine * args.num_gpus_per_node
-    assert total_gpus % sglang_world_size == 0, (
-        f"total GPUs ({total_gpus}) must be divisible by sglang_world_size ({sglang_world_size})"
-    )
+    assert (
+        total_gpus % sglang_world_size == 0
+    ), f"total GPUs ({total_gpus}) must be divisible by sglang_world_size ({sglang_world_size})"
     sglang_decode_max_bs = 256
     sglang_attn_tp_size = min(args.num_gpus_per_node, sglang_world_size)
     sglang_attn_dp_size = sglang_world_size // sglang_attn_tp_size
