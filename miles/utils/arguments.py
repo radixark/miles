@@ -1576,6 +1576,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             """
             # Custom arguments can be added here
             parser.add_argument(
+                "--freeze-indexer",
+                action="store_true",
+                default=False,
+            )
+            parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,
                 default=None,

@@ -403,6 +403,11 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
         self.weights_proj.weight._skip_gather = True
 
+        if getattr(self.config, "freeze_indexer", False):
+            for module in (self.wq_b, self.wk, self.k_norm, self.weights_proj):
+                for param in module.parameters():
+                    param.requires_grad = False
+
     def get_absorb_query_key_value_tensors(
         self,
         hidden_states,
@@ -629,6 +634,7 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = hf_config.indexer_rope_interleave
+    config.freeze_indexer = args.freeze_indexer
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,
