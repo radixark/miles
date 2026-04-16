@@ -63,7 +63,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         return f"{self.model_name}-bf16"
 
 
-
 @app.command()
 @U.dataclass_cli
 def prepare_single(args: ScriptArgs):
@@ -217,11 +216,14 @@ def train(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
-        "--save-interval 20 "
-        "--save-retain-interval 20 "
     )
+    if not args.gb300:
+        ckpt_args += (
+            f"--load {load_save_path} "
+            f"--save {load_save_path} "
+            "--save-interval 20 "
+            "--save-retain-interval 20 "
+        )
 
     rollout_args = (
         "--label-key label "
@@ -331,7 +333,7 @@ def train(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         # when use tp=4, 4GB will cause wgate and wkv not in same bucket, so change to 8GB
-        f"--update-weight-buffer-size {4 * 1024 ** 3} "
+        f"--update-weight-buffer-size {8 * 1024 ** 3} "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
@@ -348,6 +350,7 @@ def train(args: ScriptArgs):
 
     if args.gb300:
         misc_args += "--train-memory-margin-bytes 3221225472 "
+        misc_args += "--sglang-mem-fraction-static 0.7 "
     else:
         misc_args += "--train-memory-margin-bytes 1073741824 "
 
