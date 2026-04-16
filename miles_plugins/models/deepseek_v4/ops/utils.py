@@ -15,12 +15,13 @@ def wrapped_precompute_freqs_cis(config: TransformerConfig, rope_head_dim: int, 
         beta_slow=config.beta_slow,
     )
 
+    assert config.rotary_scaling_factor in (4, 16), f"Unexpected rotary_scaling_factor: {config.rotary_scaling_factor}"
     assert inputs == dict(
         dim=rope_head_dim,
         seqlen=max_seq_len,
         original_seq_len=65536,
         base=base,
-        factor=4,
+        factor=config.rotary_scaling_factor,
         beta_fast=32,
         beta_slow=1,
     )

@@ -8,10 +8,18 @@ done
 
 printf -v MOE_LAYER_FREQ "[%s]" "$(IFS=', '; echo "${arr[*]}")"
 
-# compress_ratios from config_285B.json: [0, 0, 4, 128, 4, 128, ...]
+# compress_ratios and rope_factor depend on checkpoint version
+DSV4_CKPT_VERSION="${DSV4_CKPT_VERSION:-2601}"
 if [ ${#COMPRESS_RATIOS[@]} -eq 0 ]; then
-  COMPRESS_RATIOS=(0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4)
+  if [ "$DSV4_CKPT_VERSION" = "2604" ]; then
+    COMPRESS_RATIOS=(0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 0)
+    ROTARY_SCALING_FACTOR=16
+  else
+    COMPRESS_RATIOS=(0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4)
+    ROTARY_SCALING_FACTOR=4
+  fi
 fi
+ROTARY_SCALING_FACTOR="${ROTARY_SCALING_FACTOR:-4}"
 
 # DeepSeek V4 285B config
 MODEL_ARGS=(
@@ -37,7 +45,7 @@ MODEL_ARGS=(
     --qk-pos-emb-head-dim 64
     --v-head-dim 512
     --qk-layernorm
-    --rotary-scaling-factor 4
+    --rotary-scaling-factor $ROTARY_SCALING_FACTOR
     --rotary-base 10000
     --original-max-position-embeddings 65536
     --beta-fast 32
