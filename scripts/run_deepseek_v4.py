@@ -39,6 +39,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_training: bool = False
     enable_mis: bool = False
     gb300: bool = False
+    ckpt_version: Literal["2601", "2604"] = "2601"
 
     @property
     def megatron_model_type(self):
@@ -46,6 +47,21 @@ class ScriptArgs(U.ExecuteTrainConfig):
             "DeepSeek-V4-285B": "deepseek-v4-285B",
             "DeepSeek-V4-285B-5layer": "deepseek-v4-285B-5layer",
         }[self.model_name]
+
+    @property
+    def torch_dist_name(self):
+        """Checkpoint-versioned torch_dist directory name."""
+        if self.ckpt_version == "2604":
+            return f"{self.model_name}-2604_torch_dist"
+        return f"{self.model_name}_torch_dist"
+
+    @property
+    def bf16_name(self):
+        """Checkpoint-versioned BF16 directory name."""
+        if self.ckpt_version == "2604":
+            return f"{self.model_name}-2604-bf16"
+        return f"{self.model_name}-bf16"
+
 
 
 @app.command()
@@ -61,7 +77,7 @@ def prepare_single(args: ScriptArgs):
 
     U.fp8_cast_bf16(
         path_src=args.hf_checkpoint,
-        path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
+        path_dst=f"{args.model_dir}/{args.bf16_name}/",
     )
 
 
@@ -85,7 +101,7 @@ def prepare_spmd(args: ScriptArgs):
 
     U.convert_checkpoint(
         model_name=args.model_name,
-        hf_checkpoint=f"{args.model_dir}/{args.model_name}-bf16",
+        hf_checkpoint=f"{args.model_dir}/{args.bf16_name}",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=num_gpus_for_convert,
         multinode=True if args.num_nodes > 1 else False,
@@ -103,8 +119,8 @@ def prepare_cp(args: ScriptArgs):
 
 def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
-        path_dst=f"{args.model_local_dir}/{args.model_name}_torch_dist",
+        path_src=f"{args.model_dir}/{args.torch_dist_name}",
+        path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
     )
     U.rsync_simple(
         path_src=f"{args.model_dir}/{args.model_name}",
@@ -120,7 +136,7 @@ def train(args: ScriptArgs):
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
-        f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
+        f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         "--save-interval 20 "
