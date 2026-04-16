@@ -205,7 +205,10 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
 
             # Create ONE transfer engine for all engine ranks
-            self._transfer_engine = create_transfer_engine()
+            self._transfer_engine = create_transfer_engine(
+                gpu_id=torch.cuda.current_device(),
+                ib_device=getattr(self.args, "update_weight_p2p_ib_device", None),
+            )
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
             # in self._transfer_engine_meta_list: tuple of
