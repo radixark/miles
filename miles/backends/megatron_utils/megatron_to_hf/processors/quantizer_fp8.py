@@ -104,6 +104,9 @@ def _quantize_param(args, name, weight, weight_block_size):
     if weight_block_size is not None:
         if _get_scale_format(args, name, weight_block_size) == "ue8m0":
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
+            # SGLang's weight UPDATE path (load_weights) expects pre-transformed ue8m0.
+            # Unlike initial load (_load_model_weight_or_group_weight_scale which transforms),
+            # weight update does direct param.copy_(loaded_weight) with shape assertion.
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
             if True:  # TODO: add a flag to choose quantize method
@@ -127,7 +130,7 @@ def _get_scale_format(args, name, weight_block_size):
     ):
         return None  # use default fp32 scale format
 
-    if ".experts." not in name:
+    if ".experts." not in name and "shared_experts" not in name:
         # Non-MoE linear weights: ue8m0 when deepgemm is enabled
         return "ue8m0"
 
