@@ -536,7 +536,8 @@ def train(
     # Setup some training config params.
     config = get_model_config(model[0])
     config.grad_scale_func = optimizer.scale_loss
-    config.timers = None
+    from megatron.core.timers import Timers as _MegatronTimers
+    config.timers = _MegatronTimers(log_level=2, log_option="max")
     if isinstance(model[0], DDP) and args.overlap_grad_reduce:
         assert config.no_sync_func is None, (
             "When overlap_grad_reduce is True, config.no_sync_func must be None; "
@@ -606,6 +607,15 @@ def train(
             parallel_state,
         )
         logger.info(f"hi [rank={torch.distributed.get_rank()}] train_one_step {loss_dict=}")
+        # Log Megatron internal timers after each step (local rank only, no collective ops)
+        if config.timers is not None and is_megatron_main_rank():
+            parts = []
+            for name, timer in config.timers._timers.items():
+                if timer._elapsed > 0:
+                    parts.append(f"{name}={timer._elapsed:.2f}s")
+                    timer.reset()
+            if parts:
+                logger.info(f"[Megatron Timers] {' | '.join(parts)}")
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent

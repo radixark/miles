@@ -121,6 +121,12 @@ def execute_train(
         train_script = f"{repo_base_dir}/{train_script}"
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    if external_ray and master_addr == "127.0.0.1":
+        # In external Ray (e.g. rcli/KubeRay), resolve the actual head IP for multi-node NCCL
+        import socket
+        master_addr = socket.gethostbyname(socket.gethostname())
+        os.environ["MASTER_ADDR"] = master_addr
+        print(f"External Ray: resolved MASTER_ADDR to {master_addr}")
 
     print("HACK: disable RAY_DEDUP_LOGS")
     os.environ["RAY_DEDUP_LOGS"] = "0"
@@ -193,10 +199,11 @@ def execute_train(
             if megatron_model_type is not None
             else ""
         )
+        ray_dashboard_port = 8265 if external_ray else 8266
         exec_command(
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
-            f'ray job submit --address="http://127.0.0.1:8266" '
+            f'ray job submit --address="http://127.0.0.1:{ray_dashboard_port}" '
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "

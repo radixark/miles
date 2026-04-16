@@ -10,11 +10,34 @@ from miles.utils.memory_utils import print_memory
 logger = logging.getLogger(__name__)
 
 
+def _should_profile_this_rank(profile_ranks) -> bool:
+    """Check if the current rank should run the profiler based on --profile-ranks."""
+    if profile_ranks is None:
+        return True
+
+    if profile_ranks == ["per_pp_stage"]:
+        from megatron.core import mpu
+
+        return (
+            mpu.get_tensor_model_parallel_rank() == 0
+            and mpu.get_context_parallel_rank() == 0
+            and mpu.get_data_parallel_rank(with_context_parallel=False) == 0
+        )
+    elif not all(r.isdigit() for r in profile_ranks):
+        raise ValueError(f"--profile-ranks value not supported: {profile_ranks}")
+
+    rank = torch.distributed.get_rank()
+    return rank in {int(r) for r in profile_ranks}
+
+
 class TrainProfiler:
     def __init__(self, args):
         self.args = args
         self._torch_profiler_overall = None
         self._memory_profiler_overall = None
+
+        if not _should_profile_this_rank(args.miles_profile_ranks):
+            return
 
         if args.use_pytorch_profiler and ("train_overall" in args.profile_target):
             self._torch_profiler_overall = _create_torch_profiler(args, name="train_overall")

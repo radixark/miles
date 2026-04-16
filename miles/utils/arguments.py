@@ -1299,6 +1299,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Activities to profile. Default: CPU GPU.",
             )
             parser.add_argument(
+                "--miles-profile-ranks",
+                nargs="+",
+                default=None,
+                help="Ranks to run miles TrainProfiler on. A list of rank IDs (e.g. 0 8 16) or a keyword: "
+                "'per_pp_stage' (one rank per pipeline stage, where tp=0 cp=0 dp=0). "
+                "Default: all ranks.",
+            )
+            parser.add_argument(
                 "--memory-recorder",
                 type=str,
                 choices=["torch", "memray"],
