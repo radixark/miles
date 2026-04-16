@@ -2016,7 +2016,11 @@ def hf_validate_args(args, hf_config):
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
-        ("moe_intermediate_size" if hasattr(hf_config, "moe_intermediate_size") else "intermediate_size", "ffn_hidden_size", equal),
+        (
+            "moe_intermediate_size" if hasattr(hf_config, "moe_intermediate_size") else "intermediate_size",
+            "ffn_hidden_size",
+            equal,
+        ),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",

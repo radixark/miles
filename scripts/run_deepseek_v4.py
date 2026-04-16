@@ -213,16 +213,10 @@ def train(args: ScriptArgs):
     print(f"running on {args.num_nodes} nodes")
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
-    ckpt_args = (
-        f"--hf-checkpoint {args.hf_checkpoint} "
-        f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
-    )
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
     if not args.gb300:
         ckpt_args += (
-            f"--load {load_save_path} "
-            f"--save {load_save_path} "
-            "--save-interval 20 "
-            "--save-retain-interval 20 "
+            f"--load {load_save_path} " f"--save {load_save_path} " "--save-interval 20 " "--save-retain-interval 20 "
         )
 
     rollout_args = (
