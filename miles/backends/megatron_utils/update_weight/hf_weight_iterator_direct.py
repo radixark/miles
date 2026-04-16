@@ -1,5 +1,4 @@
 import dataclasses
-import time
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -16,10 +15,6 @@ from ..sglang import monkey_patch_torch_reductions
 from .common import all_gather_params_async, named_params_and_buffers
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
-import logging as _logging
-
-_logger = _logging.getLogger(__name__)
-
 
 class HfWeightIteratorDirect(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
@@ -35,12 +30,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
             megatron_full_params = _get_megatron_full_params(
                 self.args, megatron_local_param_infos, megatron_local_weights
             )
-            if rank == 0:
-                _t0 = time.monotonic()
             hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, megatron_local_param_infos)
-            if rank == 0:
-                torch.cuda.synchronize()
-                _logger.info(f"[WU chunk] convert_to_hf={time.monotonic()-_t0:.2f}s params={len(megatron_local_param_infos)}")
             yield hf_named_tensors
             del megatron_full_params
 
@@ -62,11 +52,7 @@ def _get_megatron_full_params(
     pp_size = mpu.get_pipeline_model_parallel_world_size()
     ep_size = mpu.get_expert_model_parallel_world_size()
     rank = dist.get_rank()
-    _is_rank0 = rank == 0
-
-    # init params (CPU→GPU transfer):
-    if _is_rank0:
-        _t0 = time.monotonic()
+    # init params:
     params = []
     for info in megatron_local_param_infos:
         if dist.get_rank() == info.src_rank:
@@ -79,13 +65,9 @@ def _get_megatron_full_params(
         else:
             params.append(torch.empty(info.shape, dtype=info.dtype, device=torch.cuda.current_device()))
     torch.cuda.synchronize()
-    if _is_rank0:
-        _logger.info(f"[WU chunk] cpu_to_gpu={time.monotonic()-_t0:.2f}s params={len(params)}")
 
     # broadcast params across pp ranks
     if pp_size > 1:
-        if _is_rank0:
-            _t0 = time.monotonic()
         handles = []
         for info, param in zip(megatron_local_param_infos, params, strict=False):
             if info.src_rank in dist.get_process_group_ranks(mpu.get_pipeline_model_parallel_group()):
@@ -96,15 +78,9 @@ def _get_megatron_full_params(
                 )
         for handle in handles:
             handle.wait()
-        if _is_rank0:
-            torch.cuda.synchronize()
-            _logger.info(f"[WU chunk] pp_broadcast={time.monotonic()-_t0:.2f}s ops={len(handles)}")
 
     # broadcast params across ep ranks
     if ep_size > 1:
-        if _is_rank0:
-            _t0 = time.monotonic()
-            _ep_ops = 0
         handles = []
         for info, param in zip(megatron_local_param_infos, params, strict=False):
             if ".experts." in info.name:
@@ -118,13 +94,8 @@ def _get_megatron_full_params(
                         param, src=src_rank, group=mpu.get_expert_model_parallel_group(), async_op=True
                     )
                 )
-                if _is_rank0:
-                    _ep_ops += 1
         for handle in handles:
             handle.wait()
-        if _is_rank0:
-            torch.cuda.synchronize()
-            _logger.info(f"[WU chunk] ep_broadcast={time.monotonic()-_t0:.2f}s ops={_ep_ops}")
 
     # Set tp attrs for all params
     for info, param in zip(megatron_local_param_infos, params, strict=False):
@@ -132,12 +103,7 @@ def _get_megatron_full_params(
             setattr(param, key, value)
 
     # Batch async all_gather for all parameters
-    if _is_rank0:
-        _t0 = time.monotonic()
     gathered_params = all_gather_params_async(args, list(zip(megatron_local_param_infos, params, strict=False)))
-    if _is_rank0:
-        torch.cuda.synchronize()
-        _logger.info(f"[WU chunk] tp_allgather={time.monotonic()-_t0:.2f}s")
 
     return gathered_params
 

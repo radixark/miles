@@ -1,5 +1,4 @@
 import logging
-import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -123,9 +122,6 @@ class UpdateWeightFromTensor:
         self.weight_version += 1
 
         rank = dist.get_rank()
-        _t = _WeightUpdateTimer(enabled=(rank == 0))
-
-        _t.start("pause_flush")
         if rank == 0:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
@@ -136,20 +132,15 @@ class UpdateWeightFromTensor:
                     rollout_engines=self.rollout_engines,
                 )
         dist.barrier(group=get_gloo_group())
-        _t.stop("pause_flush")
 
-        _t.start("weights_getter")
         megatron_local_weights = self.weights_getter()
-        _t.stop("weights_getter")
 
         sync_chunk_count = 0
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
-            _t.start(f"send_chunk_{sync_chunk_count}")
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
             results = ray.get(refs)
             _check_weight_sync_results(results, is_lora=self.is_lora)
             del long_lived_tensors
-            _t.stop(f"send_chunk_{sync_chunk_count}")
             sync_chunk_count += 1
 
         if self.is_lora and sync_chunk_count == 0:
@@ -159,11 +150,8 @@ class UpdateWeightFromTensor:
                 "the Megatron-Bridge or SGLang version is incompatible."
             )
 
-        _t.start("final_barrier")
         dist.barrier(group=get_gloo_group())
-        _t.stop("final_barrier")
 
-        _t.start("post_process")
         # int4/fp4 post_process, mxfp8 post-process (swizzle MoE scales).
         if rank == 0:
             if self.quantization_config and self.quantization_config["quant_method"] in [
@@ -177,9 +165,6 @@ class UpdateWeightFromTensor:
                 )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
-        _t.stop("post_process")
-
-        _t.report()
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         all_refs = []
@@ -251,10 +236,7 @@ def _send_to_colocated_engine(
 ) -> tuple[list[ObjectRef], Any]:
     is_lora = lora_config is not None
     long_live_tensors = []
-    _is_rank0 = dist.get_rank() == 0
 
-    if _is_rank0:
-        _t0 = time.monotonic()
     if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
         converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
     else:
@@ -274,11 +256,7 @@ def _send_to_colocated_engine(
         }
         long_live_tensors.append(flattened_tensor_data)
         serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
-    if _is_rank0:
-        logger.info(f"[WU send] serialize={time.monotonic()-_t0:.2f}s")
 
-    if _is_rank0:
-        _t0 = time.monotonic()
     serialized_named_tensors = (
         [None] * dist.get_world_size(ipc_gather_group) if ipc_gather_src == dist.get_rank() else None
     )
@@ -288,16 +266,17 @@ def _send_to_colocated_engine(
         dst=ipc_gather_src,
         group=ipc_gather_group,
     )
-    if _is_rank0:
-        logger.info(f"[WU send] gloo_gather={time.monotonic()-_t0:.2f}s")
 
-    if _is_rank0:
-        _t0 = time.monotonic()
     refs = []
     if dist.get_rank() == ipc_gather_src:
         if is_lora:
             if lora_loaded:
                 ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
+
+            # (Yusheng) to-do-1: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
+            # currently, we only support 1 type. If there are multiple dtypes, we need to serialize the tensors for each dtype.
+            # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
+            # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
 
             refs.append(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
@@ -317,36 +296,8 @@ def _send_to_colocated_engine(
                     "weight_version": str(weight_version),
                 }
                 refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
-    if _is_rank0:
-        logger.info(f"[WU send] ray_ipc_submit={time.monotonic()-_t0:.2f}s")
 
     return refs, long_live_tensors
-
-
-class _WeightUpdateTimer:
-    """Lightweight wall-clock timer for weight update breakdown."""
-
-    def __init__(self, enabled: bool = True):
-        self._enabled = enabled
-        self._timings: dict[str, float] = {}
-        self._starts: dict[str, float] = {}
-
-    def start(self, name: str):
-        if self._enabled:
-            torch.cuda.synchronize()
-            self._starts[name] = time.monotonic()
-
-    def stop(self, name: str):
-        if self._enabled and name in self._starts:
-            torch.cuda.synchronize()
-            self._timings[name] = time.monotonic() - self._starts.pop(name)
-
-    def report(self):
-        if not self._enabled:
-            return
-        total = sum(self._timings.values())
-        parts = " | ".join(f"{k}={v:.1f}s" for k, v in self._timings.items())
-        logger.info(f"[WeightUpdate Breakdown] total={total:.1f}s | {parts}")
 
 
 def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
