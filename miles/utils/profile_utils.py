@@ -97,7 +97,7 @@ def _create_torch_profiler(args, name):
             repeat=1,
         ),
         on_trace_ready=torch.profiler.tensorboard_trace_handler(
-            args.tensorboard_dir,
+            args.tensorboard_dir or "/cluster_personal/profiler_traces",
             worker_name=f"{name}_rank_{torch.distributed.get_rank()}",
             use_gzip=True,
         ),
