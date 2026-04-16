@@ -128,6 +128,86 @@ def _prepare_cp(args: ScriptArgs):
     )
 
 
+def _get_parallel_config(args: ScriptArgs) -> str:
+    """Return parallel config args for tested GPU configurations.
+
+    Only includes configurations that have been verified to work.
+    Raises NotImplementedError for untested configurations.
+    """
+    total_gpus = args.num_nodes * args.num_gpus_per_node
+
+    # Single-node configs (any GPU count)
+    if args.num_nodes == 1:
+        return (
+            f"--tensor-model-parallel-size {args.num_gpus_per_node} "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 1 "
+            "--context-parallel-size 1 "
+            f"--expert-model-parallel-size {args.num_gpus_per_node} "
+            "--expert-tensor-parallel-size 1 "
+        )
+
+    # GB300: 4 GPUs/node
+    if args.num_gpus_per_node == 4:
+        if total_gpus == 32:  # 8 nodes × 4 GPUs
+            # Verified: TP=8 (spans 2 nodes via MNNVL), PP=4, EP=8
+            # PP layout: 11+11+11+10 = 43 layers (43 not divisible by 4)
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 4 "
+                "--decoder-first-pipeline-num-layers 11 "
+                "--decoder-last-pipeline-num-layers 10 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+        elif total_gpus == 28:  # 7 nodes × 4 GPUs
+            # Verified: TP=4, PP=7, EP=4
+            # PP layout: 7+6+6+6+6+6+6 = 43 layers
+            return (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 7 "
+                "--decoder-first-pipeline-num-layers 7 "
+                "--decoder-last-pipeline-num-layers 6 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 4 "
+                "--expert-tensor-parallel-size 1 "
+            )
+
+    # H200: 8 GPUs/node
+    if args.num_gpus_per_node == 8:
+        if total_gpus == 64:  # 8 nodes × 8 GPUs
+            # PP layout: 4+6+6+6+6+6+6+3 = 43 layers
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 8 "
+                "--decoder-first-pipeline-num-layers 4 "
+                "--decoder-last-pipeline-num-layers 3 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+        elif total_gpus == 56:  # 7 nodes × 8 GPUs
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 7 "
+                "--pipeline-model-parallel-layout 'E,t*4\\|t*7\\|t*7\\|t*7\\|t*7\\|t*7\\|t*4,L' "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+
+    raise NotImplementedError(
+        f"No verified parallel config for {total_gpus} GPUs "
+        f"({args.num_nodes} nodes × {args.num_gpus_per_node} GPUs/node). "
+        f"Add a tested config to _get_parallel_config()."
+    )
+
+
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
@@ -191,78 +271,7 @@ def train(args: ScriptArgs):
                 "--eval-max-response-len 256 "
             )
 
-    if args.num_nodes <= 2:
-        if args.test_pp_single_node:
-            perf_args = (
-                "--tensor-model-parallel-size 2 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 2 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 2 "
-                "--expert-tensor-parallel-size 1 "
-                "--pipeline-model-parallel-layout 'E,t*2\\|t*3,L' "  # TODO: temporarily for pp=2
-            )
-        elif args.test_cp_single_node:
-            perf_args = (
-                "--tensor-model-parallel-size 2 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 2 "
-                "--expert-model-parallel-size 4 "
-                "--expert-tensor-parallel-size 1 "
-            )
-        else:
-            perf_args = (
-                f"--tensor-model-parallel-size {args.num_gpus_per_node} "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                f"--expert-model-parallel-size {args.num_gpus_per_node} "
-                "--expert-tensor-parallel-size 1 "
-            )
-    elif args.num_nodes <= 4:
-        perf_args = (
-            "--tensor-model-parallel-size 4 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 1 "
-            "--expert-model-parallel-size 4 "
-            "--expert-tensor-parallel-size 1 "
-        )
-    elif args.num_nodes <= 6:
-        perf_args = (
-            "--tensor-model-parallel-size 8 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 6 "
-            "--decoder-first-pipeline-num-layers 8 "
-            "--decoder-last-pipeline-num-layers 7 "
-            "--context-parallel-size 1 "
-            "--expert-model-parallel-size 8 "
-            "--expert-tensor-parallel-size 1 "
-        )
-    elif args.num_nodes <= 7:
-        perf_args = (
-            "--tensor-model-parallel-size 8 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 7 "
-            "--pipeline-model-parallel-layout 'E,t*4\\|t*7\\|t*7\\|t*7\\|t*7\\|t*7\\|t*4,L' "
-            "--context-parallel-size 1 "
-            "--expert-model-parallel-size 8 "
-            "--expert-tensor-parallel-size 1 "
-        )
-    elif args.num_nodes <= 8:
-        perf_args = (
-            "--tensor-model-parallel-size 8 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 8 "
-            "--decoder-first-pipeline-num-layers 4 "
-            "--decoder-last-pipeline-num-layers 3 "
-            "--context-parallel-size 1 "
-            "--expert-model-parallel-size 8 "
-            "--expert-tensor-parallel-size 1 "
-        )
-    else:
-        raise NotImplementedError
+    perf_args = _get_parallel_config(args)
 
     perf_args += (
         "--recompute-granularity full "
