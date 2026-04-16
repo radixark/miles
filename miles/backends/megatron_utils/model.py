@@ -36,7 +36,6 @@ from .ci_utils import (
     compute_model_hashes_by_layer,
     save_model_hashes,
 )
-from .fp32_param_utils import enforce_marked_param_dtypes
 from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
@@ -195,9 +194,6 @@ def setup_model_and_optimizer(
             wrap_with_ddp=False,
         )
 
-        # Restore marked fp32 params before DDP/optimizer construction so the
-        # buffer mapping is built against the final runtime dtype.
-        enforce_marked_param_dtypes(model)
         model = _wrap_model_with_ddp(args, model)
 
     # Optimizer
