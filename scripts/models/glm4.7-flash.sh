@@ -38,6 +38,7 @@ MODEL_ARGS=(
     --position-embedding-type rope
     --no-position-embedding
     --normalization RMSNorm
+    --norm-epsilon 1e-5
     --qk-layernorm
     --multi-latent-attention
     --q-lora-rank 768

@@ -21,13 +21,14 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
+from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.loss import loss_function
-from ..training_utils.parallel import ParallelState
+from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
     check_model_hashes,
@@ -35,6 +36,7 @@ from .ci_utils import (
     compute_model_hashes_by_layer,
     save_model_hashes,
 )
+from .fp32_param_utils import enforce_marked_param_dtypes
 from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
@@ -124,6 +126,9 @@ def setup_model_and_optimizer(
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
+    # Apply parameter-level dtype overrides declared in model definitions.
+    enforce_marked_param_dtypes(model)
+
     # Optimizer
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
@@ -131,6 +136,7 @@ def setup_model_and_optimizer(
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = None
+
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,
@@ -185,7 +191,6 @@ def forward_only(
     model: Sequence[DDP],
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
-    parallel_state: ParallelState,
     store_prefix: str = "",
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
@@ -204,12 +209,16 @@ def forward_only(
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
     """
+
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_ONLY)
+
     # reset data iterator
     for iterator in data_iterator:
         iterator.reset()
 
     config = get_model_config(model[0])
 
+    @dumper_phase_util.wrap_forward_step
     def forward_step(
         data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False
     ) -> tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
@@ -238,7 +247,6 @@ def forward_only(
                 "response_lengths",
                 "max_seq_lens",
             ],
-            parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -261,7 +269,6 @@ def forward_only(
         return output_tensor, partial(
             f,
             args=args,
-            parallel_state=parallel_state,
             unconcat_tokens=unconcat_tokens,
             total_lengths=total_lengths,
             response_lengths=response_lengths,
@@ -301,6 +308,8 @@ def forward_only(
     for model_module in model:
         model_module.train()
 
+    dumper_phase_util.finalize(model)
+
     rollout_data = {}
     # Store the results on the last stage
     if mpu.is_pipeline_last_stage():
@@ -319,7 +328,6 @@ def train_one_step(
     optimizer: MegatronOptimizer,
     opt_param_scheduler: OptimizerParamScheduler,
     num_microbatches: int,
-    parallel_state: ParallelState,
 ) -> tuple[dict[str, float], float]:
     """Execute a single pipeline-parallel training step.
 
@@ -340,6 +348,7 @@ def train_one_step(
         Reduced loss dictionary (last stage only) and gradient norm for logging.
     """
     args = get_args()
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD)
 
     # Set grad to zero.
     for model_chunk in model:
@@ -352,6 +361,7 @@ def train_one_step(
         custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
         custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
 
+    @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
         torch.Tensor,
         Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]],
@@ -386,7 +396,6 @@ def train_one_step(
                 "rollout_log_probs",
                 "max_seq_lens",
             ],
-            parallel_state,
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -429,9 +438,7 @@ def train_one_step(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        return output_tensor, partial(
-            loss_function, args, parallel_state, batch, num_microbatches, apply_megatron_loss_scaling=True
-        )
+        return output_tensor, partial(loss_function, args, batch, num_microbatches, apply_megatron_loss_scaling=True)
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -479,8 +486,10 @@ def train_one_step(
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
 
+    dumper_phase_util.finalize(model)
+
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
-        loss_reduced = aggregate_train_losses(losses_reduced, parallel_state)
+        loss_reduced = aggregate_train_losses(losses_reduced)
         return loss_reduced, grad_norm
     return {}, grad_norm
 
@@ -501,7 +510,6 @@ def train(
     opt_param_scheduler: OptimizerParamScheduler,
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
-    parallel_state: ParallelState,
 ) -> None:
     """Run training over a rollout consisting of multiple steps.
 
@@ -516,6 +524,7 @@ def train(
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
     """
+    parallel_state = get_parallel_state()
     args = get_args()
 
     for iterator in data_iterator:
@@ -595,7 +604,6 @@ def train(
             optimizer,
             opt_param_scheduler,
             num_microbatches[step_id],
-            parallel_state,
         )
 
         if step_id == 0:
@@ -665,7 +673,7 @@ def train(
                     rollout_id=rollout_id,
                     step_id=step_id,
                     role=role,
-                    rank=mpu.get_data_parallel_rank(),
+                    rank=parallel_state.intra_dp.rank,
                 )
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
@@ -727,9 +735,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
     """
-    should_log = (
-        mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
-    )
+    should_log = get_parallel_state().intra_dp_cp.rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
 
     try:
         from megatron.bridge import AutoBridge

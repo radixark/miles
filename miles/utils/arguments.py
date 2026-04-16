@@ -10,6 +10,7 @@ from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
@@ -385,6 +386,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--max-weight-staleness",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum allowed gap between a group's oldest weight version and the current "
+                    "engine weight version. Groups exceeding this threshold are recycled back to "
+                    "the data buffer instead of being sent to training. Only effective in fully "
+                    "async mode. None (default) disables staleness filtering."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
@@ -441,6 +453,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Interval for updating the weights",
             )
             parser.add_argument(
+                "--pause-generation-mode",
+                type=str,
+                choices=["abort", "retract", "in_place"],
+                default="retract",
+                help=(
+                    "How SGLang pauses in-flight requests during weight updates. "
+                    "'abort' immediately terminates all requests (previous default). "
+                    "'retract' moves running requests back to the waiting queue and "
+                    "recomputes KV cache after update. "
+                    "'in_place' freezes requests and resumes with existing KV cache."
+                ),
+            )
+            parser.add_argument(
                 "--keep-old-actor",
                 action="store_true",
                 help="Whether to keep the rollout model on training process",
@@ -456,6 +481,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--pin-rollout-manager-to-head",
+                action="store_true",
+                default=False,
+                help=(
+                    "Pin the RolloutManager (and its co-located router process) to the Ray head node. "
+                    "Useful in K8s where the head pod has a stable Service address so that "
+                    "external agent environments can reliably reach the router."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-external",
                 action="store_true",
                 default=False,
@@ -467,6 +502,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 nargs="+",
                 help="Address and ports of the external engines.",
+            )
+            parser.add_argument(
+                "--update-weight-transfer-mode",
+                choices=["broadcast", "p2p"],
+                default="broadcast",
+                help="The method to transfer weights to remote rollout engines during update weight.",
+            )
+            parser.add_argument(
+                "--p2p-transfer-num-workers",
+                type=int,
+                default=4,
+                help="Number of thread pool workers for P2P weight transfer.",
+            )
+            parser.add_argument(
+                "--p2p-transfer-timeout",
+                type=float,
+                default=30.0,
+                help="Timeout in seconds for each P2P transfer operation.",
             )
             return parser
 
@@ -1225,6 +1278,52 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=("Dump all details of training for post-hoc analysis and visualization."),
             )
+            parser.add_argument(
+                "--dumper-enable",
+                action="store_true",
+                default=False,
+                help="Enable sglang dumper for all three phases (sglang inference, "
+                "megatron forward-only, megatron forward-backward). "
+                "Per-phase --dumper-inference/--dumper-fwd-only/--dumper-fwd-bwd can override.",
+            )
+            parser.add_argument(
+                "--dumper-dir",
+                type=str,
+                default="/tmp/dumper",
+                help="Base output directory for sglang dumper. Three subdirs are created: "
+                "inference/, fwd_only/, fwd_bwd/.",
+            )
+            parser.add_argument(
+                "--dumper-inference",
+                nargs="*",
+                default=None,
+                help="SGLang inference phase dumper config as key=value pairs. "
+                "Keys map to DumperConfig fields (e.g. enable=true filter=whatever).",
+            )
+            parser.add_argument(
+                "--dumper-fwd-only",
+                nargs="*",
+                default=None,
+                help="Megatron forward-only phase dumper config as key=value pairs.",
+            )
+            parser.add_argument(
+                "--dumper-fwd-bwd",
+                nargs="*",
+                default=None,
+                help="Megatron forward-backward phase dumper config as key=value pairs.",
+            )
+            parser.add_argument(
+                "--dumper-source-patcher-config-inference",
+                type=str,
+                default=None,
+                help="Path to YAML config file for source patcher applied in SGLang inference engines.",
+            )
+            parser.add_argument(
+                "--dumper-source-patcher-config-train",
+                type=str,
+                default=None,
+                help="Path to YAML config file for source patcher applied in Megatron training actors.",
+            )
             # use together with --record-memory-history and --memory-snapshot-path (defined in Megatron)
             parser.add_argument(
                 "--memory-snapshot-dir",
@@ -1491,6 +1590,45 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_session_arguments(parser):
+            parser.add_argument(
+                "--use-session-server",
+                action="store_true",
+                default=False,
+                help="Start a standalone session server for TITO/session support. "
+                "Requires --hf-checkpoint and --chat-template-path to also be set.",
+            )
+            parser.add_argument(
+                "--session-server-ip",
+                type=str,
+                default=None,
+                help="IP address of the standalone session server. Defaults to sglang-router-ip.",
+            )
+            parser.add_argument(
+                "--session-server-port",
+                type=int,
+                default=None,
+                help="Port of the standalone session server. Auto-allocated if not set.",
+            )
+            parser.add_argument(
+                "--tito-model",
+                type=str,
+                default="default",
+                choices=[t.value for t in TITOTokenizerType],
+                help="TITO tokenizer type for pretokenized prefix reuse. "
+                "Controls how token IDs are computed for messages appended after "
+                "the pretokenized prefix in multi-turn agentic sessions.",
+            )
+            parser.add_argument(
+                "--tito-allowed-append-roles",
+                nargs="+",
+                default=["tool"],
+                choices=["tool", "user", "system"],
+                help="Message roles allowed to be appended after the pretokenized "
+                "assistant prefix in TITO sessions (default: tool).",
+            )
+            return parser
+
         def add_user_provided_function_arguments(parser):
             args_partial, _ = parser.parse_known_args()
             for path in [
@@ -1530,6 +1668,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
@@ -1576,13 +1715,20 @@ def parse_args(add_custom_arguments=None):
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     else:
-        from miles.backends.fsdp_utils.arguments import load_fsdp_args
+        from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+
+        if not args.ci_test:
+            raise ValueError(
+                "The FSDP backend has known issues with SGLang v0.5.10 and is not actively maintained in the current version. "
+                "It has been moved to miles.backends.experimental. "
+                "Contributions are welcome if you are interested in improving it."
+            )
 
     miles_validate_args(args)
 
@@ -1664,6 +1810,20 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
+    raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
+    args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
+
+    if "user" in args.tito_allowed_append_roles:
+        logger.warning(
+            "--tito-allowed-append-roles includes 'user'. "
+            "Incremental tokenization assumes appended messages do not change how "
+            "earlier turns render, which may not hold for user messages on "
+            "context-sensitive chat templates (e.g. last_query_index logic, "
+            "thinking-token trimming). This can cause input_ids to diverge from "
+            "the canonical template output. Use at your own risk."
+        )
 
     if args.chat_template_path == "autofix":
         from miles.utils.chat_template_utils import try_get_fixed_chat_template
@@ -1811,11 +1971,28 @@ def miles_validate_args(args):
     )
 
     # always true on offload for colocate at the moment.
+    if args.update_weight_transfer_mode == "p2p":
+        assert not args.colocate, (
+            "P2P weight transfer mode is not compatible with --colocate. "
+            "Please use broadcast mode or disable colocate."
+        )
+        assert (
+            getattr(args, "prefill_num_servers", None) is None
+        ), "P2P weight transfer mode has not been tested when PD is enabled."
+
     if args.colocate:
         if args.offload_train is None:
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
+        if args.sglang_enforce_piecewise_cuda_graph:
+            logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
+        if not args.sglang_disable_piecewise_cuda_graph:
+            args.sglang_disable_piecewise_cuda_graph = True
+            logger.info(
+                "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
+                "Use --sglang-enforce-piecewise-cuda-graph to override."
+            )
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             logger.info(
                 f"rollout_num_gpus {args.rollout_num_gpus} != actor_num_gpus_per_node {args.actor_num_gpus_per_node} "
@@ -1921,6 +2098,26 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
+    _maybe_apply_dumper_overrides(args)
+
+
+def _maybe_apply_dumper_overrides(args) -> None:
+    if not args.dumper_enable:
+        return
+
+    if args.use_fault_tolerance:
+        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
+        args.use_fault_tolerance = False
+
+    logger.info("Dumper mode: all heartbeat mechanisms disabled")
+    args.router_disable_health_check = True
+    args.rollout_health_check_interval = 1e18
+
+    logger.info("Dumper mode: forced num_rollout=%d, disabled eval and save", args.num_rollout)
+    args.num_rollout = (args.start_rollout_id or 0) + 1
+    args.eval_interval = None
+    args.save_interval = None
+
 
 def hf_validate_args(args, hf_config):
     def equal(x, y):
@@ -1945,6 +2142,9 @@ def hf_validate_args(args, hf_config):
         ("rms_norm_eps", "layernorm_epsilon", equal),
         ("rope_theta", "rotary_base", equal),
     ]:
+        # FIXME: Qwen3.5 transfomers has bug.
+        if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
+            continue
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_names)):
                 errors.append(

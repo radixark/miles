@@ -1,15 +1,17 @@
 <% set default_image = 'radixark/miles:dev' %>
 
 <% set fsdp_tests = [
-    {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8},
-    {'test_file': 'e2e/fsdp/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
-    {'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 8},
-    {'test_file': 'e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-4B-fsdp-true-on-policy', 'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-vl-4B-fsdp', 'test_file': 'e2e/fsdp/test_qwen3_vl_4B_fsdp.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-0.6B-fsdp-distributed', 'test_file': 'e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-0.6B-megatron-fsdp-align', 'test_file': 'e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py', 'num_gpus': 8},
+    {'name': '[FSDP] qwen3-0.6B-fsdp-colocated-2xGPU', 'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
 ] %>
 
 <% set megatron_tests = [
     {'test_file': 'e2e/megatron/test_quick_start_glm4_9B.py', 'num_gpus': 8},
-    {'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1'},
+    {'name': 'qwen3-30B-A3B-deepep-fp8', 'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1'},
+    {'name': 'qwen3-30B-A3B-bridge', 'test_file': 'e2e/megatron/test_qwen3_30B_A3B.py', 'num_gpus': 8, 'use_bridge': '1'},
     {'test_file': 'e2e/megatron/test_qwen3_30B_A3B_r3.py', 'num_gpus': 8, 'use_deepep': '1', 'use_fp8_rollout': '1', 'enable_eval': '0'},
     {'test_file': 'e2e/megatron/test_qwen3_30B_A3B_r3.py', 'num_gpus': 8, 'enable_eval': '0'},
     {'test_file': 'e2e/megatron/test_qwen3_4B_ppo.py', 'num_gpus': 8},
@@ -26,7 +28,6 @@
 <% set short_tests = [
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py', 'num_gpus': 8},
     {'test_file': 'e2e/short/test_qwen2.5_0.5B_gsm8k_short.py', 'num_gpus': 8},
-    {'test_file': 'e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py', 'num_gpus': 8},
     {'test_file': 'e2e/sglang_config/test_sglang_config.py', 'num_gpus': 8},
     {'test_file': 'e2e/sglang_config/test_sglang_config_mixed_offload.py', 'num_gpus': 8},
     {'test_file': 'e2e/sglang_config/test_sglang_config_mixed_offload_ft.py', 'num_gpus': 8},
@@ -66,17 +67,15 @@
         {'test_file': 'utils/test_sglang_config.py', 'num_gpus': 0},
       ],
     },
-    'unit-test': {
-      'label': 'run-unit-test',
-      'tests': [
-        {'test_file': 'e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py', 'num_gpus': 8}
-      ],
-    },
     'e2e-test-sglang': {
       'label': 'run-ci-sglang',
       'test_executor': 'pytest',
       'tests': [
-        {'test_file': 'e2e/sglang_patch/test_chat_input_ids_equivalence.py', 'num_gpus': 1},
+        {'test_file': 'e2e/sglang/test_chat_input_ids_equivalence.py', 'num_gpus': 1},
+        {'test_file': 'e2e/sglang/test_session_server_tool_call.py', 'num_gpus': 1, 'model_family': 'qwen3'},
+        {'test_file': 'e2e/sglang/test_session_server_tool_call.py', 'num_gpus': 1, 'model_family': 'glm47'},
+        {'test_file': 'e2e/sglang/test_tito_logprob_equivalence.py', 'num_gpus': 1, 'model_family': 'qwen3'},
+        {'test_file': 'e2e/sglang/test_tito_logprob_equivalence.py', 'num_gpus': 1, 'model_family': 'glm47'},
       ],
     },
     'e2e-test-short': {
@@ -119,7 +118,7 @@
     },
     'e2e-test-image': {
       'label': 'run-ci-image',
-      'tests': fsdp_tests + megatron_tests + lora_tests + short_tests + precision_tests + ckpt_tests + long_tests,
+      'tests': fsdp_tests + megatron_tests + lora_tests + short_tests + precision_tests + ckpt_tests + long_tests + low_precision_tests,
     },
 } %>
 name: PR Test
@@ -129,7 +128,6 @@ on:
   # push:
   #   branches: [main]
   pull_request:
-    branches: [main]
     types: [synchronize, labeled]
   workflow_dispatch:
     inputs:
@@ -189,8 +187,10 @@ jobs:
       MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
       MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
       MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
+      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
+      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -258,11 +258,13 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 <% else %>
       - name: Install
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          pip install pytest-asyncio --break-system-packages
 <% endif %>
 
       - name: Execute

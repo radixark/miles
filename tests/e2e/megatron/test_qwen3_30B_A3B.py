@@ -8,6 +8,7 @@ TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")
 USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
 USE_FP8_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_FP8_ROLLOUT", "1")))
 USE_INT4_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_INT4_ROLLOUT", "0")))
+USE_BRIDGE = bool(int(os.environ.get("MILES_TEST_USE_BRIDGE", "0")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
@@ -28,16 +29,18 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
+    if not USE_BRIDGE:
+        U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
 
 
 def execute():
+    ref_load = f"/root/models/{MODEL_NAME}" if USE_BRIDGE else f"/root/{MODEL_NAME}_torch_dist"
     if USE_INT4_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load {ref_load} "
     elif USE_FP8_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load {ref_load} "
     else:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {ref_load} "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -132,7 +135,11 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
+        "--train-memory-margin-bytes 1073741824 "
     )
+
+    if USE_BRIDGE:
+        misc_args += "--megatron-to-hf-mode bridge "
 
     if USE_DEEPEP:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "

@@ -56,6 +56,7 @@ def _make_args(**overrides):
         update_weight_buffer_size=1 << 30,
         actor_num_nodes=1,
         actor_num_gpus_per_node=1,
+        pause_generation_mode="retract",
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -210,11 +211,14 @@ class TestUpdateWeightsZeroChunks:
         with pytest.raises(RuntimeError, match="zero chunks"):
             updater.update_weights()
 
+    @patch("miles.backends.megatron_utils.update_weight.common.ray")
     @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
     @patch(f"{_UW_MODULE}.ray")
     @patch(f"{_UW_MODULE}.dist")
     @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_no_raise_for_base_model_zero_chunks(self, mock_iter_base, mock_dist, mock_ray, mock_gloo):
+    def test_no_raise_for_base_model_zero_chunks(
+        self, mock_iter_base, mock_dist, mock_ray, mock_gloo, mock_common_ray
+    ):
         """Base model weight sync with zero chunks is valid (e.g. empty model state)."""
         from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 

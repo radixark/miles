@@ -1,81 +1,22 @@
+"""Integration tests for session HTTP routes (create / get / delete / proxy)."""
+
+import re
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import requests
 
-from miles.router.router import MilesRouter
-from miles.router.session.naive_trajectory import NaiveTrajectoryManager
-from miles.router.session.session_types import SessionRecord
+from miles.rollout.session.session_server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
-@pytest.fixture
-def naive_manager():
-    """Create a NaiveTrajectoryManager with a dummy tokenizer."""
-    args = SimpleNamespace()
-    return NaiveTrajectoryManager(args, tokenizer=None)
-
-
-class TestNaiveTrajectoryManager:
-    def test_create_session(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
-        assert session_id is not None
-        assert len(session_id) == 32
-        assert session_id in naive_manager.sessions
-
-    def test_get_session_records_by_id(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
-        records = naive_manager.get_session_records_by_id(session_id)
-        assert records == []
-
-    def test_get_session_records_by_id_not_found(self, naive_manager: NaiveTrajectoryManager):
-        records = naive_manager.get_session_records_by_id("nonexistent")
-        assert records is None
-
-    def test_delete_session_by_id(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
-        assert naive_manager.delete_session_by_id(session_id) is True
-        assert session_id not in naive_manager.sessions
-        assert naive_manager.delete_session_by_id(session_id) is None
-
-    def test_append_session_record(self, naive_manager: NaiveTrajectoryManager):
-        session_id = naive_manager.create_session()
-        record = SessionRecord(
-            timestamp=0.0,
-            method="POST",
-            path="/v1/chat/completions",
-            status_code=200,
-            request={"messages": [{"role": "user", "content": "hello"}]},
-            response={"choices": []},
-        )
-
-        appended = naive_manager.append_session_record(session_id, record)
-
-        assert appended is True
-        records = naive_manager.get_session_records_by_id(session_id)
-        assert records is not None
-        assert len(records) == 1
-        assert records[0].path == record.path
-
-    def test_append_session_record_missing_session(self, naive_manager: NaiveTrajectoryManager):
-        record = SessionRecord(
-            timestamp=0.0,
-            method="POST",
-            path="/v1/chat/completions",
-            status_code=200,
-            request={},
-            response={},
-        )
-        appended = naive_manager.append_session_record("missing", record)
-        assert appended is None
-
-
 @pytest.fixture(scope="class")
 def router_env():
-    """Create a MilesRouter with session routes and a mock backend."""
+    """Create a standalone SessionServer with session routes and a mock backend."""
 
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
@@ -84,30 +25,33 @@ def router_env():
 
     def patched_chat_response(self, payload: dict) -> dict:
         response = original_chat_response(self, payload)
-        logprobs_content = response["choices"][0]["logprobs"]["content"]
-        for item in logprobs_content:
-            item["token_id"] = self.tokenizer.convert_tokens_to_ids(item["token"])
+        choice = response["choices"][0]
+        logprobs_content = choice["logprobs"]["content"]
+        output_token_logprobs = [
+            (item["logprob"], self.tokenizer.convert_tokens_to_ids(item["token"])) for item in logprobs_content
+        ]
+        choice["meta_info"] = {
+            "output_token_logprobs": output_token_logprobs,
+            "completion_tokens": len(output_token_logprobs),
+        }
         return response
 
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
         with with_mock_server(process_fn=process_fn) as backend:
             args = SimpleNamespace(
-                miles_router_max_connections=10,
                 miles_router_timeout=30,
-                miles_router_middleware_paths=[],
-                rollout_health_check_interval=60,
-                miles_router_health_check_failure_threshold=3,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
-                trajectory_manager="naive_trajectory",
+                chat_template_path=None,
+                trajectory_manager="linear_trajectory",
+                session_server_instance_id=uuid.uuid4().hex,
             )
-            router = MilesRouter(args)
+            server_obj = SessionServer(args, backend_url=backend.url)
 
             port = find_available_port(31000)
-            server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
+            server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
             server.start()
 
             url = f"http://127.0.0.1:{port}"
-            requests.post(f"{url}/add_worker", json={"url": backend.url}, timeout=5.0)
 
             try:
                 yield SimpleNamespace(url=url)
@@ -116,6 +60,19 @@ def router_env():
 
 
 class TestSessionRoutes:
+    def test_health_reports_stable_instance_id(self, router_env):
+        first = requests.get(f"{router_env.url}/health", timeout=5.0)
+        second = requests.get(f"{router_env.url}/health", timeout=5.0)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_body = first.json()
+        second_body = second.json()
+        assert first_body["status"] == "ok"
+        assert second_body["status"] == "ok"
+        assert re.fullmatch(r"[0-9a-f]{32}", first_body["session_server_instance_id"])
+        assert second_body["session_server_instance_id"] == first_body["session_server_instance_id"]
+
     def test_create_session(self, router_env):
         response = requests.post(f"{router_env.url}/sessions", timeout=5.0)
         assert response.status_code == 200
@@ -135,7 +92,7 @@ class TestSessionRoutes:
     def test_get_session_not_found(self, router_env):
         response = requests.get(f"{router_env.url}/sessions/nonexistent", timeout=5.0)
         assert response.status_code == 404
-        assert response.json()["error"] == "session not found"
+        assert response.json()["error"] == "session not found: session_id=nonexistent"
 
     def test_delete_session(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
@@ -149,7 +106,7 @@ class TestSessionRoutes:
     def test_delete_session_not_found(self, router_env):
         response = requests.delete(f"{router_env.url}/sessions/nonexistent", timeout=5.0)
         assert response.status_code == 404
-        assert response.json()["error"] == "session not found"
+        assert response.json()["error"] == "session not found: session_id=nonexistent"
 
 
 class TestSessionProxy:
