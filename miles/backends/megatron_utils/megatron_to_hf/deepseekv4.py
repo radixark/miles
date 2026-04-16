@@ -1,4 +1,12 @@
+import os
 import re
+
+import torch
+
+# Temporary: undo APE column-swap that fp8_cast_bf16.py applied during BF16 conversion.
+# The current torch_dist checkpoint was created with the swap. Once we re-convert without
+# the swap (by setting DSV4_CKPT_VERSION=2604 during fp8_cast_bf16), this can be removed.
+_UNDO_APE_COLUMN_SWAP = os.environ.get("MILES_UNDO_APE_COLUMN_SWAP", "0") == "1"
 
 
 def convert_deepseekv4_to_hf(args, name, param):
@@ -82,6 +90,9 @@ def convert_deepseekv4_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.attn_sink", param)]
 
         elif rest == "self_attention.compressor.ape":
+            if _UNDO_APE_COLUMN_SWAP and param.shape[0] == 4:
+                halves = torch.chunk(param, 2, dim=-1)
+                param = torch.cat([halves[1], halves[0]], dim=-1)
             return [(f"model.layers.{layer_idx}.self_attn.compressor.ape", param)]
         elif rest == "self_attention.compressor.wkv.weight":
             return [(f"model.layers.{layer_idx}.self_attn.compressor.wkv.weight", param)]
@@ -102,6 +113,9 @@ def convert_deepseekv4_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.indexer.weights_proj.weight", param)]
 
         elif rest == "self_attention.indexer.compressor.ape":
+            if _UNDO_APE_COLUMN_SWAP and param.shape[0] == 4:
+                halves = torch.chunk(param, 2, dim=-1)
+                param = torch.cat([halves[1], halves[0]], dim=-1)
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.ape", param)]
         elif rest == "self_attention.indexer.compressor.wkv.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.wkv.weight", param)]
