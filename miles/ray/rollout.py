@@ -369,11 +369,27 @@ class RolloutManager:
 
         raw_t = torch.tensor(raw_rewards, dtype=torch.float)
         norm_t = torch.tensor(rewards, dtype=torch.float)
+
+        # Emit reward distribution stats (raw + normalized) to stdout + wandb.
+        reward_stats = {
+            **_reward_stats_dict(raw_t, "rollout/reward/raw_"),
+            **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
+        }
+        # Per-prompt (group) stats — meaningful for GRPO-style algorithms.
+        if getattr(self.args, "advantage_estimator", None) == "grpo" and self.args.n_samples_per_prompt > 1:
+            groups_raw = raw_t.view(-1, self.args.n_samples_per_prompt)
+            reward_stats["rollout/reward/group_mean_avg"] = float(groups_raw.mean(dim=-1).mean())
+            if groups_raw.shape[-1] > 1:
+                reward_stats["rollout/reward/group_std_avg"] = float(groups_raw.std(dim=-1, unbiased=False).mean())
+
         print(
             f"[reward stats] raw mean={raw_t.mean():.4f} std={raw_t.std():.4f} min={raw_t.min():.4f} max={raw_t.max():.4f} | "
             f"normalized mean={norm_t.mean():.4f} std={norm_t.std():.4f} min={norm_t.min():.4f} max={norm_t.max():.4f}",
             flush=True,
         )
+
+        reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
+        tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
         train_data = {
             # RL
@@ -383,6 +399,10 @@ class RolloutManager:
             # Rollout outputs — training side maps these to model-specific forward() args
             "denoising_env": [sample.denoising_env for sample in samples],
             "dit_trajectory": [sample.dit_trajectory for sample in samples],
+            # Optional per-step rollout debug tensors (when rollout_debug_mode=True):
+            # rollout_variance_noises / rollout_prev_sample_means / rollout_noise_std_devs /
+            # rollout_model_outputs — shape [T, ...], used for train/rollout alignment checks.
+            "rollout_debug_tensors": [sample.rollout_debug_tensors for sample in samples],
             # Bookkeeping
             "sample_indices": [sample.index for sample in samples],
             "prompt": [sample.prompt for sample in samples],
@@ -706,6 +726,20 @@ def compute_metrics_from_samples(args, samples):
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
     return log_dict
+
+
+def _reward_stats_dict(tensor: torch.Tensor, prefix: str) -> dict:
+    """Summarize a flat reward tensor to scalar stats under `<prefix>*`."""
+    if tensor.numel() == 0:
+        return {}
+    return {
+        f"{prefix}mean": float(tensor.mean()),
+        f"{prefix}std": float(tensor.std(unbiased=False)) if tensor.numel() > 1 else 0.0,
+        f"{prefix}min": float(tensor.min()),
+        f"{prefix}max": float(tensor.max()),
+        f"{prefix}median": float(tensor.median()),
+        f"{prefix}num_samples": float(tensor.numel()),
+    }
 
 
 def compute_perf_metrics_from_samples(args, samples, rollout_time):

@@ -308,8 +308,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--diffusion-dtype",
                 type=str,
-                default="fp16",
-                choices=["fp16", "fp32"],
+                default="bf16",
+                choices=["fp16", "bf16", "fp32"],
                 help="dtype for diffusion pipeline weights.",
             )
             parser.add_argument(
@@ -1297,6 +1297,34 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "This is useful for debugging the rollout generation function."
                 ),
             )
+            parser.add_argument(
+                "--debug-disable-weight-sync",
+                action="store_true",
+                default=False,
+                help=(
+                    "Skip weight sync from trainer to rollout engine. "
+                    "Useful to isolate whether update_weights is the source of "
+                    "trainer/rollout log-prob misalignment."
+                ),
+            )
+            parser.add_argument(
+                "--debug-skip-optimizer-step",
+                action="store_true",
+                default=False,
+                help=(
+                    "Skip loss.backward() and optimizer.step() so trainer weights "
+                    "never drift. Used with --debug-disable-weight-sync to measure "
+                    "pure forward-path divergence from the rollout engine."
+                ),
+            )
+            # LoRA
+            parser.add_argument("--use-lora", action="store_true", default=False,
+                help="Use LoRA adapters instead of full finetune.")
+            parser.add_argument("--lora-rank", type=int, default=64)
+            parser.add_argument("--lora-alpha", type=int, default=64)
+            parser.add_argument("--lora-target-modules", type=str, nargs="+", default=None,
+                help="Override LoRA target modules. Default: per-model from TrainPipelineConfig.")
+
             parser.add_argument(
                 "--save-debug-train-data",
                 type=str,

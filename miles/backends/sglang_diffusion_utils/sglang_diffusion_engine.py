@@ -219,6 +219,7 @@ class SGLangDiffusionEngine(RayActor):
         self,
         serialized_named_tensors: list[str],
         load_format: str | None = None,
+        target_modules: list[str] | None = None,
         weight_version: str | None = None,
     ):
         """
@@ -227,11 +228,12 @@ class SGLangDiffusionEngine(RayActor):
         Note: The model should be on GPUs rather than CPU for this functionality to work properly.
         If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
         """
-        # SGL-D TODO: SGLang-Diffusion support update weights from tensor
         payload = {
             "serialized_named_tensors": serialized_named_tensors,
-            "load_format": load_format
+            "load_format": load_format,
         }
+        if target_modules is not None:
+            payload["target_modules"] = target_modules
         if weight_version is not None:
             payload["weight_version"] = weight_version
         return self._make_request(
@@ -269,23 +271,10 @@ class SGLangDiffusionEngine(RayActor):
         return response.json()["weight_version"]
 
     def release_memory_occupation(self):
-        # SGL-D TODO: SGLang-Diffusion support release/resume memory occupation
-        # This function is used by offload/recover
         return self._make_request("release_memory_occupation")
 
-    def resume_memory_occupation(self, tags: list[str] | None = None):
-        # SGL-D TODO: SGLang-Diffusion support resume memory occupation
-        # This function is used by offload/recover
-        return self._make_request(
-            "resume_memory_occupation",
-            {"tags": tags},
-        )
-
-    def check_weights(self, action: str):
-        # SGL-D TODO: SGLang-Diffusion support weights checker
-        # Weight checker supports a series of actions through which user can check weights
-        # e.g. snapshot, compare, reset_tensors, etc.
-        return self._make_request("weights_checker", {"action": action})
+    def resume_memory_occupation(self):
+        return self._make_request("resume_memory_occupation")
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
         # SGL-D TODO: Support weights update group for in-memory weight update

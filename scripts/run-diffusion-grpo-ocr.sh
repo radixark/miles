@@ -19,8 +19,10 @@ pkill -9 python
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CUDA_VISIBLE_DEVICES=4,5
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # WandB: enable if WANDB_API_KEY is present.
 RUN_NAME="diffusion_grpo_$(date +%Y%m%d_%H%M%S)"
+
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
   WANDB_ARGS+=(
@@ -46,16 +48,18 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --hf-checkpoint gpt2 \
   --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
   --input-key input \
-  --rollout-batch-size 8 \
+  --rollout-batch-size 4 \
   --n-samples-per-prompt 8 \
   --num-rollout 100000 \
-  --diffusion-timestep-batch 2 \
+  --diffusion-timestep-batch 10 \
+  --gradient-checkpointing \
   --actor-num-gpus-per-node 2 \
   --rollout-num-gpus 2 \
   --rollout-num-gpus-per-engine 1 \
   --num-gpus-per-node 2 \
   --colocate \
-  --no-offload-rollout \
+  --use-lora \
+  --lora-rank 64 \
   --use-miles-router \
   --sglang-server-concurrency 4 \
   --diffusion-model Qwen/Qwen-Image \
@@ -63,12 +67,15 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --advantage-estimator grpo \
   --globalize-reward-norm \
   --rm-type ocr \
-  --diffusion-dtype fp32 \
+  --diffusion-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-num-batches-per-epoch 8 \
-  --diffusion-guidance-scale 4.5 \
+  --diffusion-guidance-scale 4.0 \
+  --diffusion-true-cfg-scale 4.0 \
   --diffusion-rollout-noise-level 0.7 \
-  --diffusion-height 512 \
-  --diffusion-width 512 \
-  --global-batch-size 64 \
+  --diffusion-height 256 \
+  --diffusion-width 256 \
+  --global-batch-size 32 \
+  --diffusion-rollout-debug-mode \
+  --debug-skip-optimizer-step \
   "${WANDB_ARGS[@]}"

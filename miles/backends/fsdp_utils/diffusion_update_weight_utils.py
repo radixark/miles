@@ -32,6 +32,9 @@ class DiffusionUpdateWeight(abc.ABC):
         self.args = args
         self.model = model
         self.weight_version = 0
+        # Name of the sglang-d pipeline module to target. Defaults to "transformer",
+        # which is the DiT component for diffusers-based pipelines.
+        self.target_module = getattr(args, "diffusion_target_module", "transformer")
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -43,9 +46,17 @@ class DiffusionUpdateWeight(abc.ABC):
 
     def update_weights(self) -> None:
         self.weight_version += 1
+        state_dict = self.model.state_dict()
+        if self.weight_version <= 2 and dist.get_rank() == 0:
+            keys = list(state_dict.keys())
+            print(
+                f"[weight_sync v{self.weight_version}] total={len(keys)} keys, "
+                f"first5={keys[:5]}, last3={keys[-3:]}",
+                flush=True,
+            )
         bucket = []
         bucket_size = 0
-        for name, param in self.model.state_dict().items():
+        for name, param in state_dict.items():
             param_size = param.numel() * param.element_size()
             if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
                 self.wait_and_update_bucket_weights(bucket)
@@ -105,6 +116,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
         monkey_patch_torch_reductions()
         logger.info("Using flattened tensor bucket (diffusion updater)")
+        target_module = self.target_module
         named_tensors_by_dtypes = {}
         for name, tensor in named_tensors:
             dtype = tensor.dtype
@@ -116,9 +128,14 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
         for _dtype, named_tensors in named_tensors_by_dtypes.items():
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
             metadata = flattened_tensor_bucket.get_metadata()
+            # sglang-d WeightsUpdater expects per-module keyed dicts when
+            # load_format="flattened_bucket"; wrap each bucket under the
+            # target module name (default "transformer").
             flattened_tensor_data = {
-                "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-                "metadata": metadata,
+                target_module: {
+                    "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+                    "metadata": metadata,
+                }
             }
             serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
 
@@ -142,7 +159,70 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 kwargs = {
                     "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],
                     "load_format": "flattened_bucket",
+                    "target_modules": [self.target_module],
                     "weight_version": str(weight_version),
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
+
+
+class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
+    """LoRA-aware updater: merges adapters into base before pushing to rollout.
+
+    The rollout engine has no LoRA layers — it receives standard weight keys
+    like ``transformer_blocks.0.attn.to_q.weight``.  We compute ``W_base + αBA/r``
+    on the fly during sync (no in-place mutation of the FSDP model).
+    """
+
+    def __init__(self, args, model):
+        super().__init__(args, model)
+        self._lora_index: dict[str, tuple] = {}
+        for name, module in model.named_modules():
+            if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
+                for adapter in module.lora_A:
+                    self._lora_index[name + ".base_layer.weight"] = (
+                        module.lora_A[adapter],
+                        module.lora_B[adapter],
+                        module.scaling[adapter],
+                    )
+        logger.info(f"LoRA weight sync: {len(self._lora_index)} mergeable layers")
+
+    def _gather_full(self, t: torch.Tensor) -> torch.Tensor:
+        t = t.cuda()
+        if isinstance(t, DTensor):
+            return t.redistribute(placements=[Replicate()] * t.device_mesh.ndim).to_local()
+        return t
+
+    def update_weights(self):
+        self.weight_version += 1
+        deltas = {
+            k: (self._gather_full(B.weight) @ self._gather_full(A.weight)) * s
+            for k, (A, B, s) in self._lora_index.items()
+        }
+
+        bucket, bucket_size = [], 0
+        for name, param in self.model.state_dict().items():
+            if "lora_" in name:
+                continue
+
+            param = param.cuda()
+            if isinstance(param, DTensor):
+                param = param.redistribute(
+                    placements=[Replicate()] * param.device_mesh.ndim,
+                    async_op=True,
+                ).to_local()
+
+            if name in deltas:
+                param = param.wait() if hasattr(param, "wait") else param
+                param = param + deltas[name].to(param.device, param.dtype)
+
+            clean = name.replace(".base_layer", "")
+            sz = param.numel() * param.element_size()
+            if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
+                self.wait_and_update_bucket_weights(bucket)
+                bucket, bucket_size = [], 0
+            bucket.append((clean, param))
+            bucket_size += sz
+
+        if bucket:
+            self.wait_and_update_bucket_weights(bucket)

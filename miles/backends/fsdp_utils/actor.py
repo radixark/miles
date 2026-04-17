@@ -24,7 +24,7 @@ import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register p
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
-from .diffusion_update_weight_utils import DiffusionUpdateWeightFromTensor
+from .diffusion_update_weight_utils import DiffusionUpdateWeightFromTensor, DiffusionUpdateWeightFromTensorLoRA
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,14 @@ class FSDPTrainRayActor(TrainRayActor):
             init_tracking(args, primary=False)
 
         # Load the diffusion pipeline; keep only transformer + scheduler.
-        dtype = torch.float16 if args.diffusion_dtype == "fp16" else torch.float32
+        # Default to bf16 to match sgl-d rollout engine's compute dtype; allow
+        # explicit fp16/fp32 via --diffusion-dtype.
+        if args.diffusion_dtype == "fp16":
+            dtype = torch.float16
+        elif args.diffusion_dtype == "fp32":
+            dtype = torch.float32
+        else:
+            dtype = torch.bfloat16
         pipeline = DiffusionPipeline.from_pretrained(
             args.diffusion_model,
             torch_dtype=dtype,
@@ -71,23 +78,40 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.train_pipeline_config = get_train_pipeline_config(args.diffusion_model)
 
-        model.to(torch.cuda.current_device())
+        if getattr(args, "use_lora", False):
+            from peft import LoraConfig, get_peft_model
+
+            targets = getattr(args, "lora_target_modules", None) or self.train_pipeline_config.lora_target_modules
+            model = get_peft_model(model, LoraConfig(
+                r=getattr(args, "lora_rank", 64),
+                lora_alpha=getattr(args, "lora_alpha", 64),
+                target_modules=targets,
+            ))
+            if dist.get_rank() == 0:
+                model.print_trainable_parameters()
+
         model.train()
 
+        if args.gradient_checkpointing:
+            model.enable_gradient_checkpointing()
+
+        # Move to GPU first, then FSDP shard — FSDP2 shards at init time
+        # and converts params to DTensor. Must be on GPU for NCCL collectives.
+        model.to(torch.cuda.current_device())
         model = apply_fsdp2(
             model,
             mesh=self.parallel_state.dp_mesh,
             cpu_offload=self.fsdp_cpu_offload,
             args=self.args,
         )
+        # Force a sync to ensure sharding is complete and old memory is freed.
+        torch.cuda.synchronize()
+        clear_memory()
         self.model = model
-
-        if args.gradient_checkpointing:
-            self.model.gradient_checkpointing_enable()
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
+                (p for p in self.model.parameters() if p.requires_grad),
                 lr=args.lr,
                 betas=(args.adam_beta1, args.adam_beta2),
                 eps=args.adam_eps,
@@ -102,9 +126,18 @@ class FSDPTrainRayActor(TrainRayActor):
 
         checkpoint_payload = checkpoint.load(self)
 
-        rollout_fn = str(getattr(self.args, "rollout_function_path", ""))
-        self.weight_updater = None
-        if self.args.colocate and "sglang_diffusion_rollout" in rollout_fn:
+        # sglang-d now supports /update_weights_from_tensor (PR #20464).
+        # Allow bypass for alignment debugging: both training and rollout load
+        # from the same HF checkpoint, so in theory no sync is needed until
+        # training actually updates weights.
+        disable_sync = bool(getattr(self.args, "debug_disable_weight_sync", False))
+        if self.args.debug_train_only or disable_sync:
+            self.weight_updater = None
+            if disable_sync and dist.get_rank() == 0:
+                logger.info("[debug] weight sync disabled via --debug-disable-weight-sync")
+        elif getattr(self.args, "use_lora", False):
+            self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.model)
+        else:
             self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.model)
 
         checkpoint.finalize_load(self, checkpoint_payload)
@@ -122,21 +155,18 @@ class FSDPTrainRayActor(TrainRayActor):
 
     @timer
     def sleep(self) -> None:
-        if not self.args.offload_train:
-            return
-        print_memory("before offload DiT")
-        self.model.to("cpu")
-        move_torch_optimizer(self.optimizer, "cpu")
+        if self.args.offload_train:
+            self.model.cpu()
+            move_torch_optimizer(self.optimizer, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
-        print_memory("after offload DiT")
+        print_memory("after sleep DiT")
 
     @timer
     def wake_up(self) -> None:
-        if not self.args.offload_train:
-            return
-        self.model.to(torch.cuda.current_device())
-        move_torch_optimizer(self.optimizer, "cuda")
+        if self.args.offload_train:
+            self.model.cuda()
+            move_torch_optimizer(self.optimizer, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up DiT")
 
@@ -147,6 +177,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def update_weights(self) -> None:  # type: ignore[override]
         if self.args.debug_train_only or self.args.debug_rollout_only:
+            return
+
+        if self.weight_updater is None:
+            dist.barrier(group=get_gloo_group())
             return
 
         rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
@@ -182,6 +216,12 @@ class FSDPTrainRayActor(TrainRayActor):
             reduced["rollout/step"] = compute_rollout_step(self.args, rollout_id)
             reduced["global_step"] = float(step)
             tracking_utils.log(self.args, reduced, step_key="global_step")
+            # Stdout mirror so we can spot misalignment / divergence without wandb.
+            print(
+                f"[train step {int(step)}] rollout={rollout_id} "
+                + " ".join(f"{k}={v:.4f}" for k, v in sorted(reduced.items()) if k not in ("epoch", "rollout/step", "global_step")),
+                flush=True,
+            )
         else:
             dist.gather_object(
                 log_dict,
@@ -191,8 +231,9 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
     def train(self, rollout_id: int, rollout_data_ref) -> None:  # type: ignore[override]
-        if self.args.offload_train:
-            self.wake_up()
+        # Always wake_up: first call moves from CPU to GPU; subsequent calls
+        # are no-ops (offload_train=False) or re-load from CPU (offload_train=True).
+        self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
             # Fetch this DP rank's data directly — already split by
@@ -222,10 +263,15 @@ class FSDPTrainRayActor(TrainRayActor):
         dit_trajectories = rollout_data["dit_trajectory"]
         rewards = torch.tensor(rollout_data["rewards"], device=device, dtype=torch.float32)
         rollout_log_probs_list = rollout_data["rollout_log_probs"]
+        rollout_debug_list = rollout_data.get("rollout_debug_tensors") or [None] * len(denoising_envs)
 
         batch_size = len(denoising_envs)
         guidance_scale = float(getattr(self.args, "diffusion_guidance_scale", 0))
-        use_cfg = guidance_scale > 0
+        true_cfg_scale_arg = getattr(self.args, "diffusion_true_cfg_scale", None)
+        true_cfg_scale = float(true_cfg_scale_arg) if true_cfg_scale_arg is not None else None
+        # Mirror sglang-d: use true_cfg_scale when set, else guidance_scale.
+        cfg_scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
+        use_cfg = cfg_scale > 0
         clip_range = float(getattr(self.args, "diffusion_clip_range", 1e-4))
         adv_clip_max = float(getattr(self.args, "diffusion_adv_clip_max", 5.0))
         noise_level = float(getattr(self.args, "diffusion_rollout_noise_level", 0.7))
@@ -236,10 +282,23 @@ class FSDPTrainRayActor(TrainRayActor):
         advantages = rewards.unsqueeze(1).expand(-1, num_timesteps).clone()
         advantages = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
 
-        # Set up scheduler timesteps/sigmas from the first sample (shared across batch).
-        timesteps_ref = dit_trajectories[0].timesteps.to(device)
-        self.scheduler.set_timesteps(num_timesteps, device=device)
+        # Use rollout's exact timesteps AND derive matching sigmas.
+        # Qwen-Image flow-match uses `use_dynamic_shifting=True` (mu depends on
+        # image resolution), so the rollout's timesteps are post-shift. We can't
+        # just call `set_timesteps(N)` with `use_dynamic_shifting=False`, because
+        # that would produce unshifted sigmas while `scheduler.sigmas[step_index]`
+        # would then disagree with the rollout's std_dev_t / prev_sample_mean.
+        # Flow matching invariant (no invert_sigmas): sigma_i = t_i / num_train_timesteps.
+        timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
+        num_train_timesteps = self.scheduler.config.num_train_timesteps
+        sigmas_ref = timesteps_ref / float(num_train_timesteps)
+        # Append terminal sigma=0 to match FlowMatchEulerDiscreteScheduler.set_timesteps().
+        sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
+
         self.scheduler.timesteps = timesteps_ref
+        self.scheduler.sigmas = sigmas_ref
+        self.scheduler._step_index = None
+        self.scheduler._begin_index = None
 
         trajectories_per_step = max(1, int(getattr(self.args, "diffusion_grad_accum_steps", 1)))
         timestep_batch = int(getattr(self.args, "diffusion_timestep_batch", 1))
@@ -270,25 +329,101 @@ class FSDPTrainRayActor(TrainRayActor):
                     lat_chunk = latents[t_start:t_end]
                     ts_chunk = timesteps_i[t_start:t_end]
 
+                    # sgl-d's Qwen DiT divides timestep by num_train_timesteps
+                    # inside forward; diffusers' Qwen DiT does NOT — so we must
+                    # pre-scale here to land at the same time-embedding input.
+                    # Ref: sglang/.../models/dits/qwen_image.py (`timestep = timestep / 1000`).
+                    ts_chunk_for_model = ts_chunk / float(num_train_timesteps)
+
                     pos_batch = tpc.expand_cond_for_timestep_batch(pos_cond, tb)
+                    if t_start == 0 and i == traj_start:
+                        alloc = torch.cuda.memory_allocated() / 1e9
+                        reserved = torch.cuda.memory_reserved() / 1e9
+                        print(f"[DEBUG] before first forward: allocated={alloc:.2f}GB reserved={reserved:.2f}GB", flush=True)
+                        # Dump DiT input summary so we can see if the forward
+                        # gets the same latent / timestep / cond as rollout.
+                        print(
+                            f"[input align traj=0 chunk_t={t_start}:{t_end}] "
+                            f"lat shape={tuple(lat_chunk.shape)} norm={lat_chunk.float().norm().item():.3f} "
+                            f"ts={ts_chunk.tolist()} "
+                            f"enc_hid shape={tuple(pos_batch.get('encoder_hidden_states', torch.empty(0)).shape)} "
+                            f"enc_hid norm={pos_batch['encoder_hidden_states'].float().norm().item():.3f} "
+                            f"txt_seq_lens={pos_batch.get('txt_seq_lens')} "
+                            f"img_shapes={pos_batch.get('img_shapes')}",
+                            flush=True,
+                        )
+
                     noise_pred_pos = self.model(
                         hidden_states=lat_chunk,
-                        timestep=ts_chunk,
+                        timestep=ts_chunk_for_model,
                         return_dict=False,
                         **pos_batch,
                     )[0]
+                    if t_start == 0 and i == traj_start:
+                        print(
+                            f"[noise_pred_pos traj=0 chunk_t={t_start}:{t_end}] "
+                            f"shape={tuple(noise_pred_pos.shape)} "
+                            f"norm={noise_pred_pos.float().norm().item():.3f} "
+                            f"mean={noise_pred_pos.float().mean().item():.4f} "
+                            f"std={noise_pred_pos.float().std().item():.4f}",
+                            flush=True,
+                        )
+
+                    if t_start == 0 and i == traj_start:
+                        alloc = torch.cuda.memory_allocated() / 1e9
+                        reserved = torch.cuda.memory_reserved() / 1e9
+                        print(f"[DEBUG] after first forward: allocated={alloc:.2f}GB reserved={reserved:.2f}GB", flush=True)
 
                     if use_cfg and neg_cond is not None:
                         neg_batch = tpc.expand_cond_for_timestep_batch(neg_cond, tb)
                         noise_pred_neg = self.model(
                             hidden_states=lat_chunk,
-                            timestep=ts_chunk,
+                            timestep=ts_chunk_for_model,
                             return_dict=False,
                             **neg_batch,
                         )[0]
-                        noise_pred = tpc.cfg_combine(noise_pred_pos, noise_pred_neg, guidance_scale)
+                        noise_pred = tpc.cfg_combine(
+                            noise_pred_pos,
+                            noise_pred_neg,
+                            guidance_scale,
+                            true_cfg_scale=true_cfg_scale,
+                        )
                     else:
                         noise_pred = noise_pred_pos
+
+                    # DEBUG: compare training's noise_pred with rollout's stored
+                    # model_output for the first trajectory / first chunk. If the
+                    # two DiT implementations match numerically, this diff should
+                    # be ~1e-3 (or smaller). Bigger diffs pinpoint a forward-input
+                    # mismatch (latent, timestep, cond_kwargs) rather than SDE math.
+                    if i == traj_start and step_id == 0 and rollout_debug_list[i] is not None:
+                        rdt = rollout_debug_list[i]
+                        if rdt is not None and rdt.rollout_model_outputs is not None:
+                            ro_mo = rdt.rollout_model_outputs.to(device).float()
+                            if t_start == 0:
+                                print(
+                                    f"[rollout_model_outputs] full shape={tuple(ro_mo.shape)} "
+                                    f"norm_overall={ro_mo.norm().item():.3f}",
+                                    flush=True,
+                                )
+                            # Expected shape: (T, C, H, W) or (T, N, C) per trajectory.
+                            # Slice to the current chunk's timesteps.
+                            ro_chunk = ro_mo[t_start:t_end].to(noise_pred.dtype)
+                            if ro_chunk.shape == noise_pred.shape:
+                                diff = (noise_pred - ro_chunk).abs()
+                                print(
+                                    f"[noise_pred align traj=0 chunk_t={t_start}:{t_end}] "
+                                    f"mean={diff.mean().item():.4e} max={diff.max().item():.4e} "
+                                    f"train_norm={noise_pred.norm().item():.3f} "
+                                    f"rollout_norm={ro_chunk.norm().item():.3f}",
+                                    flush=True,
+                                )
+                            else:
+                                print(
+                                    f"[noise_pred align] shape mismatch: "
+                                    f"train={tuple(noise_pred.shape)} vs rollout_chunk={tuple(ro_chunk.shape)}",
+                                    flush=True,
+                                )
 
                     _, log_prob_new, _, _ = sde_step_with_logprob(
                         self.scheduler,
@@ -308,7 +443,8 @@ class FSDPTrainRayActor(TrainRayActor):
                         ratio, 1.0 - clip_range, 1.0 + clip_range
                     )
                     loss = torch.mean(torch.maximum(unclipped, clipped))
-                    loss.backward()
+                    if not getattr(self.args, "debug_skip_optimizer_step", False):
+                        loss.backward()
 
                     with torch.no_grad():
                         log_stats["loss"].append(loss.detach())
@@ -318,12 +454,19 @@ class FSDPTrainRayActor(TrainRayActor):
                         log_stats["clipfrac"].append(
                             torch.mean((torch.abs(ratio - 1.0) > clip_range).float()).detach()
                         )
-                        log_stats["reward_avg"].append(reward_i.detach())
+                        log_stats["log_prob_new_idx_0"].append(log_prob_new[0].detach())
+                        log_stats["log_prob_old_idx_0"].append(old_chunk[0].detach())
+                        log_stats["log_prob_mean_abs_diff"].append(torch.mean(torch.abs(log_prob_new - old_chunk)).detach())
 
             # One optimizer step per step_id.
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-            self.optimizer.step()
-            self.lr_scheduler.step()
+            if not getattr(self.args, "debug_skip_optimizer_step", False):
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                self.optimizer.step()
+                self.lr_scheduler.step()
+            else:
+                # Keep weights frozen so noise_pred / log_prob alignment checks
+                # remain interpretable across iterations.
+                self.optimizer.zero_grad(set_to_none=True)
             self.global_step += 1
 
             reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
@@ -371,14 +514,18 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         if module.__class__.__name__ in layer_cls_to_wrap
     ]
 
-    # Determine precision policy based on args
-    param_dtype = torch.bfloat16
-    reduce_dtype = torch.float32
-
-    if args.fp16:
+    # Determine precision policy. sglang-d rollout runs DiT forward in bf16
+    # (verified from engine log), so mirror that here — fp16 param_dtype
+    # would introduce a training/rollout dtype mismatch and break log-prob
+    # alignment. Use fp32 reduce to avoid low-precision gradient overflow.
+    if getattr(args, "fp16", False):
         param_dtype = torch.float16
+        reduce_dtype = torch.float32
+    else:
+        param_dtype = torch.bfloat16
+        reduce_dtype = torch.float32
 
-    logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
+    logger.info(f"FSDP: wrapping {len(modules)} modules of type {layer_cls_to_wrap}, param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
 
     fsdp_kwargs = {
         "mp_policy": MixedPrecisionPolicy(
