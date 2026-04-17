@@ -217,7 +217,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             # - single CPU replica shared among all sessions
             # - related remote weight info
             self._transfer_engine_meta_list: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]] = []
-
             first_engine_rank = True
             for rank_targets in targets_grouped_by_engine_rank.values():
                 first_target = rank_targets[0]
@@ -257,13 +256,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         server_args: ServerArgs,
         first_engine_rank: bool = False,
     ) -> torch.nn.Module:
-        """Create a CPU model replica for P2P weight staging.
-
-        The replica is created directly on CPU to avoid GPU OOM (the training model
-        already occupies GPU memory). post_load_weights is skipped because it may
-        contain CUDA-only ops (e.g., FP8 requantization) and is unnecessary here —
-        the rollout engine runs post_load_weights on its own GPU after RDMA transfer.
-        """
+        """Create a CPU model replica that loads the right shard and skips post_load_weights."""
         load_config = LoadConfig(
             load_format="dummy",
             model_loader_extra_config=None,
