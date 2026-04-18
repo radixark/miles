@@ -6,12 +6,6 @@ import aiohttp
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
-from .deepscaler import get_deepscaler_rule_based_reward
-from .f1 import f1_score
-from .gpqa import compute_gpqa_reward
-from .math_dapo_utils import compute_score as compute_score_dapo
-from .math_utils import extract_answer as extract_boxed_answer
-from .math_utils import grade_answer_verl
 from .ocr import ocr_rm
 
 
@@ -39,9 +33,6 @@ async def async_rm(args, sample: Sample, **kwargs):
 
     rm_type = _resolve_rm_type(args, sample)
 
-    if rm_type.startswith("boxed_"):
-        response = extract_boxed_answer(response) or ""
-        rm_type = rm_type[len("boxed_") :]
     if rm_type == "remote_rm":
         return await remote_rm(args, sample)
     elif rm_type == "random":
