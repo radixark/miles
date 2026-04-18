@@ -6,7 +6,6 @@ from argparse import Namespace
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from miles.backends.training_utils.parallel import ParallelState
 
 
 @torch.compile(dynamic=True)
@@ -217,7 +216,6 @@ def get_reinforce_plus_plus_returns(
     total_lengths: list[int],
     kl_coef: float,
     gamma: float,
-    parallel_state: ParallelState,
 ) -> list[torch.Tensor]:
     """
     Calculates discounted returns for REINFORCE++ (https://arxiv.org/pdf/2501.03262)
@@ -248,7 +246,7 @@ def get_reinforce_plus_plus_returns(
             # Step 1,2:Gather all chunks and token_offsets from all ranks and reconstruct the full response tensor by splitting and placing each part
             from miles.backends.training_utils.cp_utils import all_gather_with_cp
 
-            full_kl_response = all_gather_with_cp(local_kl_chunk, total_len, response_len, parallel_state)
+            full_kl_response = all_gather_with_cp(local_kl_chunk, total_len, response_len)
         else:
             full_kl_response = local_kl_chunk
 
@@ -268,9 +266,9 @@ def get_reinforce_plus_plus_returns(
 
         # Step 4: Pick up the results corresponding to our local chunk's parts.
         if cp_size > 1:
-            from miles.backends.megatron_utils.cp_utils import slice_log_prob_with_cp
+            from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
 
-            local_returns_chunk = slice_log_prob_with_cp(returns_for_seq, total_len, response_len, parallel_state)
+            local_returns_chunk = slice_log_prob_with_cp(returns_for_seq, total_len, response_len)
         else:
             local_returns_chunk = returns_for_seq
 
@@ -316,7 +314,6 @@ def get_advantages_and_returns(
     rewards: torch.Tensor,
     gamma: float,
     lambd: float,
-    parallel_state: ParallelState,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Function that computes advantages and returns from rewards and values.
     Calculated as in the original PPO paper: https://arxiv.org/abs/1707.06347
@@ -344,8 +341,8 @@ def get_advantages_and_returns(
     if cp_size > 1:
         from miles.backends.training_utils.cp_utils import all_gather_with_cp
 
-        full_rewards = all_gather_with_cp(rewards, total_len, response_len, parallel_state)
-        full_values = all_gather_with_cp(values, total_len, response_len, parallel_state)
+        full_rewards = all_gather_with_cp(rewards, total_len, response_len)
+        full_values = all_gather_with_cp(values, total_len, response_len)
     else:
         full_rewards = rewards
         full_values = values
@@ -362,10 +359,10 @@ def get_advantages_and_returns(
     full_returns = full_advantages + full_values
 
     if cp_size > 1:
-        from miles.backends.megatron_utils.cp_utils import slice_log_prob_with_cp
+        from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
 
-        advantages = slice_log_prob_with_cp(full_advantages, total_len, response_len, parallel_state)
-        returns = slice_log_prob_with_cp(full_returns, total_len, response_len, parallel_state)
+        advantages = slice_log_prob_with_cp(full_advantages, total_len, response_len)
+        returns = slice_log_prob_with_cp(full_returns, total_len, response_len)
     else:
         advantages = full_advantages
         returns = full_returns
@@ -380,7 +377,6 @@ def get_advantages_and_returns_batch(
     rewards_list,
     gamma,
     lambd,
-    parallel_state: ParallelState,
     chunked: bool = True,
 ):
     """
@@ -415,8 +411,8 @@ def get_advantages_and_returns_batch(
             for total_len, resp_len, v, r in zip(
                 total_lengths, response_lengths, values_list, rewards_list, strict=False
             ):
-                full_v = all_gather_with_cp(v, total_len, resp_len, parallel_state)
-                full_r = all_gather_with_cp(r, total_len, resp_len, parallel_state)
+                full_v = all_gather_with_cp(v, total_len, resp_len)
+                full_r = all_gather_with_cp(r, total_len, resp_len)
                 full_values_list.append(full_v)
                 full_rewards_list.append(full_r)
 
@@ -467,8 +463,8 @@ def get_advantages_and_returns_batch(
                 adv_full = adv_row  # shape = [resp_len_i padded to max_len]
                 ret_full = ret_row
 
-                adv_sliced = slice_log_prob_with_cp(adv_full[:resp_len], total_len, resp_len, parallel_state)
-                ret_sliced = slice_log_prob_with_cp(ret_full[:resp_len], total_len, resp_len, parallel_state)
+                adv_sliced = slice_log_prob_with_cp(adv_full[:resp_len], total_len, resp_len)
+                ret_sliced = slice_log_prob_with_cp(ret_full[:resp_len], total_len, resp_len)
 
                 advantages_list.append(adv_sliced)
                 returns_list.append(ret_sliced)

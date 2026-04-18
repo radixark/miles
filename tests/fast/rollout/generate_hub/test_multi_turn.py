@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -667,6 +668,29 @@ class TestAgentMetadata:
             assert s.metadata.get("instance_id") == "test-123"
             assert "reward" not in s.metadata
 
+    def test_session_server_identity_forwarded_to_agent_metadata(self, variant, generation_env):
+        from miles.utils.test_utils import mock_tools
+
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        _SESSION_KEYS = ("session_server_id", "session_server_instance_id")
+
+        def _echo_session(metadata=None):
+            metadata = metadata or {}
+            return {k: metadata[k] for k in _SESSION_KEYS if k in metadata}
+
+        mock_tools.AGENTIC_RETURN_METADATA = _echo_session
+        try:
+            result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+        finally:
+            mock_tools.AGENTIC_RETURN_METADATA = None
+
+        samples = listify(result.sample)
+        expected_session_server_id = f"127.0.0.1:{generation_env.args.session_server_port}"
+        for s in samples:
+            assert s.metadata["session_server_id"] == expected_session_server_id
+            assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
+
 
 class TestAgentNoRecords:
     """When agent makes no model calls, generate should return an ABORTED sample."""
@@ -677,7 +701,7 @@ class TestAgentNoRecords:
             GenerateEnv,
             extra_argv_for_variant,
             make_args,
-            with_miles_router,
+            with_session_server,
         )
         from miles.utils.misc import SingletonMeta
         from miles.utils.test_utils.mock_sglang_server import with_mock_server
@@ -688,16 +712,18 @@ class TestAgentNoRecords:
             model_name=MODEL_NAME,
             process_fn=lambda _: ProcessResult(text="unused", finish_reason="stop"),
         ) as mock_server:
-            with with_miles_router(mock_server.url, MODEL_NAME) as router_port:
+            with with_session_server(mock_server.url, MODEL_NAME) as session_port:
                 noop_argv = extra_argv_for_variant(
                     agentic_variant,
                     custom_agent_function_path="miles.utils.test_utils.mock_tools.run_agentic_noop",
                 )
                 args = make_args(
                     variant=agentic_variant,
-                    router_port=router_port,
+                    router_port=session_port,
                     extra_argv=noop_argv,
                 )
+                args.session_server_ip = "127.0.0.1"
+                args.session_server_port = session_port
                 env = GenerateEnv(args=args, mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 

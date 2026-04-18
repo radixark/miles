@@ -1,12 +1,14 @@
 """Integration tests for session HTTP routes (create / get / delete / proxy)."""
 
+import re
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import requests
 
-from miles.router.router import MilesRouter
+from miles.rollout.session.session_server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
@@ -14,7 +16,7 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 @pytest.fixture(scope="class")
 def router_env():
-    """Create a MilesRouter with session routes and a mock backend."""
+    """Create a standalone SessionServer with session routes and a mock backend."""
 
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
@@ -37,23 +39,19 @@ def router_env():
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
         with with_mock_server(process_fn=process_fn) as backend:
             args = SimpleNamespace(
-                miles_router_max_connections=10,
                 miles_router_timeout=30,
-                miles_router_middleware_paths=[],
-                rollout_health_check_interval=60,
-                miles_router_health_check_failure_threshold=3,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
                 chat_template_path=None,
-                trajectory_manager="single_user_turn_trajectory",
+                trajectory_manager="linear_trajectory",
+                session_server_instance_id=uuid.uuid4().hex,
             )
-            router = MilesRouter(args)
+            server_obj = SessionServer(args, backend_url=backend.url)
 
             port = find_available_port(31000)
-            server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
+            server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
             server.start()
 
             url = f"http://127.0.0.1:{port}"
-            requests.post(f"{url}/add_worker", json={"url": backend.url}, timeout=5.0)
 
             try:
                 yield SimpleNamespace(url=url)
@@ -62,6 +60,19 @@ def router_env():
 
 
 class TestSessionRoutes:
+    def test_health_reports_stable_instance_id(self, router_env):
+        first = requests.get(f"{router_env.url}/health", timeout=5.0)
+        second = requests.get(f"{router_env.url}/health", timeout=5.0)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_body = first.json()
+        second_body = second.json()
+        assert first_body["status"] == "ok"
+        assert second_body["status"] == "ok"
+        assert re.fullmatch(r"[0-9a-f]{32}", first_body["session_server_instance_id"])
+        assert second_body["session_server_instance_id"] == first_body["session_server_instance_id"]
+
     def test_create_session(self, router_env):
         response = requests.post(f"{router_env.url}/sessions", timeout=5.0)
         assert response.status_code == 200

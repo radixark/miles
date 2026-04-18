@@ -4,21 +4,22 @@ Validates the contract between session records, sample construction,
 and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 """
 
-from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.generate_utils.openai_endpoint_utils import compute_samples_from_openai_records
+from miles.rollout.generate_utils.openai_endpoint_utils import (
+    OpenAIEndpointTracer,
+    compute_samples_from_openai_records,
+)
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.router.session.session_types import SessionRecord
+from miles.rollout.session.session_types import SessionRecord
 from miles.utils.types import Sample
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-
-def _mock_args():
-    return Namespace(use_rollout_routing_replay=False)
+_ARGS = SimpleNamespace()
 
 
 def _mock_tokenizer():
@@ -48,6 +49,8 @@ def _make_record(
     output_token_ids: list[int],
     output_log_probs: list[float] | None = None,
     finish_reason: str = "stop",
+    cached_tokens: int | None = None,
+    prompt_tokens: int | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -61,6 +64,14 @@ def _make_record(
     logprobs_content = [
         {"logprob": lp, "token": f"t{tid}"} for tid, lp in zip(output_token_ids, output_log_probs, strict=True)
     ]
+    meta_info = {
+        "output_token_logprobs": output_token_logprobs,
+        "completion_tokens": len(output_token_ids),
+    }
+    if cached_tokens is not None:
+        meta_info["cached_tokens"] = cached_tokens
+    if prompt_tokens is not None:
+        meta_info["prompt_tokens"] = prompt_tokens
     return SessionRecord(
         timestamp=0.0,
         method="POST",
@@ -74,14 +85,38 @@ def _make_record(
                     "message": {"role": "assistant", "content": "response"},
                     "finish_reason": finish_reason,
                     "logprobs": {"content": logprobs_content},
-                    "meta_info": {
-                        "output_token_logprobs": output_token_logprobs,
-                        "completion_tokens": len(output_token_ids),
-                    },
+                    "meta_info": meta_info,
                 }
             ]
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_create_fetches_session_server_instance_id(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        calls.append((action, url))
+        if action == "get":
+            assert url == "http://127.0.0.1:12345/health"
+            return {"status": "ok", "session_server_instance_id": "server-instance-123"}
+        assert action == "post"
+        assert url == "http://127.0.0.1:12345/sessions"
+        return {"session_id": "session-123"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_port=12345)
+    tracer = await OpenAIEndpointTracer.create(args)
+
+    assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
+    assert tracer.session_server_instance_id == "server-instance-123"
+    assert args.session_server_instance_id == "server-instance-123"
+    assert calls == [
+        ("get", "http://127.0.0.1:12345/health"),
+        ("post", "http://127.0.0.1:12345/sessions"),
+    ]
 
 
 # ── test: compute_samples_from_openai_records ────────────────────────
@@ -89,7 +124,6 @@ def _make_record(
 
 class TestComputeSamplesFromRecords:
     def test_single_record_builds_correct_sample(self):
-        args = _mock_args()
         tok = _mock_tokenizer()
         record = _make_record(
             prompt_token_ids=[1, 2, 3],
@@ -98,7 +132,7 @@ class TestComputeSamplesFromRecords:
         )
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, [record], tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
 
         assert len(samples) == 1
         s = samples[0]
@@ -109,7 +143,6 @@ class TestComputeSamplesFromRecords:
         assert s.status == Sample.Status.COMPLETED
 
     def test_multiple_records_produce_multiple_samples(self):
-        args = _mock_args()
         tok = _mock_tokenizer()
         records = [
             _make_record(prompt_token_ids=[1, 2], output_token_ids=[10]),
@@ -117,14 +150,13 @@ class TestComputeSamplesFromRecords:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
 
         assert len(samples) == 2
         assert samples[0].tokens == [1, 2, 10]
         assert samples[1].tokens == [1, 2, 10, 20, 30]
 
     def test_finish_reason_length_gives_truncated(self):
-        args = _mock_args()
         tok = _mock_tokenizer()
         record = _make_record(
             prompt_token_ids=[1, 2],
@@ -133,7 +165,7 @@ class TestComputeSamplesFromRecords:
         )
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, [record], tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
 
         assert samples[0].status == Sample.Status.TRUNCATED
 
@@ -152,7 +184,6 @@ class TestMultiTurnPrefixChain:
 
     def test_two_turn_merge_succeeds(self):
         """Normal two-turn conversation: samples merge without error."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Turn 1: prompt=[1,2,3], model outputs [10,11]
@@ -172,7 +203,7 @@ class TestMultiTurnPrefixChain:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
         merged = merge_samples(samples, tok)
 
         assert merged.tokens == [1, 2, 3, 10, 11, 20, 21, 30, 31]
@@ -182,7 +213,6 @@ class TestMultiTurnPrefixChain:
 
     def test_three_turn_merge_succeeds(self):
         """Three-turn conversation: prefix chain holds across all turns."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         records = [
@@ -204,7 +234,7 @@ class TestMultiTurnPrefixChain:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
         merged = merge_samples(samples, tok)
 
         assert merged.tokens == [1, 2, 10, 20, 30, 40, 50]
@@ -212,7 +242,6 @@ class TestMultiTurnPrefixChain:
 
     def test_prefix_mismatch_raises(self):
         """When the prefix chain is broken, merge_samples must fail."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Turn 2's prompt does NOT start with turn 1's full tokens
@@ -228,7 +257,7 @@ class TestMultiTurnPrefixChain:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
 
         with pytest.raises(AssertionError, match="b.tokens must start with a.tokens"):
             merge_samples(samples, tok)
@@ -295,7 +324,6 @@ class TestTITOTrailingTokenTrim:
 
     def test_three_turn_trim_trailing_stop_tokens(self):
         """Three-turn retry: non-final turns have 1 trailing stop token trimmed."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         #   prompt: [1, 2, 3]  output: [10, STOP]
@@ -312,7 +340,7 @@ class TestTITOTrailingTokenTrim:
         input_sample = _make_input_sample()
 
         samples = compute_samples_from_openai_records(
-            args,
+            _ARGS,
             input_sample,
             records,
             tok,
@@ -333,7 +361,6 @@ class TestTITOTrailingTokenTrim:
 
     def test_no_trim_when_no_trailing_stop(self):
         """When output tokens fully match accumulated, trim_count=0 for all turns."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Two turns, no trailing stop tokens — output aligns perfectly
@@ -348,7 +375,7 @@ class TestTITOTrailingTokenTrim:
         input_sample = _make_input_sample()
 
         samples = compute_samples_from_openai_records(
-            args,
+            _ARGS,
             input_sample,
             records,
             tok,
@@ -364,7 +391,6 @@ class TestTITOTrailingTokenTrim:
 
     def test_single_turn_no_trim(self):
         """Single turn: last turn never trims, even with accumulated_token_ids."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         records = [
@@ -374,7 +400,7 @@ class TestTITOTrailingTokenTrim:
         input_sample = _make_input_sample()
 
         samples = compute_samples_from_openai_records(
-            args,
+            _ARGS,
             input_sample,
             records,
             tok,
@@ -388,7 +414,6 @@ class TestTITOTrailingTokenTrim:
 
     def test_no_accumulated_skips_trimming(self):
         """Without accumulated_token_ids, no trimming is performed at all."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         records = [
@@ -398,7 +423,7 @@ class TestTITOTrailingTokenTrim:
         input_sample = _make_input_sample()
 
         samples = compute_samples_from_openai_records(
-            args,
+            _ARGS,
             input_sample,
             records,
             tok,
@@ -414,7 +439,6 @@ class TestTITOTrailingTokenTrim:
 
     def test_trim_exceeding_max_raises(self):
         """If trailing tokens exceed max_trim_tokens, assert fires."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Output has 2 trailing tokens that don't match, but max_trim_tokens=1
@@ -427,7 +451,7 @@ class TestTITOTrailingTokenTrim:
 
         with pytest.raises(AssertionError, match="trim_count 2 exceeds allowed=1"):
             compute_samples_from_openai_records(
-                args,
+                _ARGS,
                 input_sample,
                 records,
                 tok,
@@ -437,7 +461,6 @@ class TestTITOTrailingTokenTrim:
 
     def test_cursor_covers_entire_accumulated(self):
         """After processing all records, cursor must equal len(accumulated)."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # accumulated is shorter than what records imply — cursor won't reach end
@@ -451,7 +474,7 @@ class TestTITOTrailingTokenTrim:
 
         with pytest.raises(AssertionError, match="cursor .* != len\\(accumulated_token_ids\\)"):
             compute_samples_from_openai_records(
-                args,
+                _ARGS,
                 input_sample,
                 records,
                 tok,
@@ -483,7 +506,6 @@ class TestThinkingTokenPrefixBreak:
     def test_thinking_tokens_break_prefix_chain(self):
         """Demonstrates the failure: model outputs <think>..., but the agent
         strips it from history, so the next prompt doesn't include those tokens."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Turn 1: model generates <think>\nreasoning\n</think>\n then actual response
@@ -513,7 +535,7 @@ class TestThinkingTokenPrefixBreak:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
 
         # sample[0].tokens = [1,2,3] + thinking + [10,11] = [1,2,3, <think>,\n,42,43,\n,</think>,\n, 10,11]
         # sample[1].tokens = [1,2,3, 10,11, 20,21, 30,31]
@@ -523,7 +545,6 @@ class TestThinkingTokenPrefixBreak:
 
     def test_no_thinking_tokens_prefix_chain_holds(self):
         """When thinking is disabled, the same conversation merges fine."""
-        args = _mock_args()
         tok = _mock_tokenizer()
 
         # Same conversation but model output has no thinking prefix
@@ -539,7 +560,69 @@ class TestThinkingTokenPrefixBreak:
         ]
         input_sample = _make_input_sample()
 
-        samples = compute_samples_from_openai_records(args, input_sample, records, tok)
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
         merged = merge_samples(samples, tok)
 
         assert merged.tokens == [1, 2, 3, 10, 11, 20, 21, 30, 31]
+
+
+# ── test: prefix cache info population ────────────────────────────────
+
+
+class TestPrefixCacheInfo:
+    """Validate that prefix cache statistics from meta_info are collected."""
+
+    def test_single_record_with_cache_stats(self):
+        """cached_tokens and prompt_tokens from meta_info populate prefix_cache_info."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            cached_tokens=2,
+            prompt_tokens=3,
+        )
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
+
+        assert samples[0].prefix_cache_info.cached_tokens == 2
+        assert samples[0].prefix_cache_info.total_prompt_tokens == 3
+
+    def test_multi_turn_cache_stats_accumulate_after_merge(self):
+        """After merge_samples, prefix_cache_info sums across turns."""
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(
+                prompt_token_ids=[1, 2, 3],
+                output_token_ids=[10, 11],
+                output_log_probs=[-0.1, -0.2],
+                cached_tokens=0,
+                prompt_tokens=3,
+            ),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+                output_token_ids=[30, 31],
+                output_log_probs=[-0.3, -0.4],
+                cached_tokens=5,
+                prompt_tokens=7,
+            ),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+        merged = merge_samples(samples, tok)
+
+        assert merged.prefix_cache_info.cached_tokens == 0 + 5
+        assert merged.prefix_cache_info.total_prompt_tokens == 3 + 7
+        assert merged.prefix_cache_info.prefix_cache_hit_rate == 5 / 10
+
+    def test_missing_cache_fields_default_to_zero(self):
+        """Records without cached_tokens/prompt_tokens give zero prefix_cache_info (regression)."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+        )
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
+
+        assert samples[0].prefix_cache_info.cached_tokens == 0
+        assert samples[0].prefix_cache_info.total_prompt_tokens == 0

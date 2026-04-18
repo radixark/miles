@@ -44,3 +44,12 @@ repos:
       - id: black
         name: Format code
         additional_dependencies: ['click==8.0.2']
+
+  - repo: local
+    hooks:
+      - id: ban-mpu-get-data-parallel
+        name: Ban direct mpu.get_data_parallel_* calls
+        language: pygrep
+        entry: 'mpu\.get_data_parallel'
+        types: [python]
+        exclude: '(backends/megatron_utils/parallel\.py|tools/convert_to_hf\.py)'

@@ -1,7 +1,16 @@
 import asyncio
+import logging
 import threading
+from collections.abc import Coroutine
+from typing import TypeVar
 
-__all__ = ["get_async_loop", "run"]
+
+logger = logging.getLogger(__name__)
+
+
+__all__ = ["get_async_loop", "run", "eager_create_task"]
+
+_T = TypeVar("_T")
 
 
 # Create a background event loop thread
@@ -34,3 +43,26 @@ def get_async_loop():
 def run(coro):
     """Run a coroutine in the background event loop."""
     return get_async_loop().run(coro)
+
+
+async def eager_create_task(coro: Coroutine[object, object, _T]) -> asyncio.Task[_T]:
+    """Create a task and yield so it starts executing immediately.
+
+    Unlike bare ``asyncio.create_task``, this ensures the task's first code
+    (including any ``.remote()`` calls) runs before the caller continues.
+    """
+    task = asyncio.create_task(coro)
+    await asyncio.sleep(0)
+    return task
+
+
+class AsyncioGatherUtils:
+    @staticmethod
+    def has_error(outputs):
+        return any(isinstance(output, BaseException) for output in outputs)
+
+    @staticmethod
+    def log_error(outputs, debug_name: str):
+        for i, output in enumerate(outputs):
+            if isinstance(output, BaseException):
+                logger.warning(f"{debug_name} error index={i}", exc_info=output)

@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import random
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,14 @@ from miles.rollout.inference_rollout.compatibility import call_rollout_function,
 from miles.utils import dumper_utils, tracking_utils
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
-from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client, is_port_available
+from miles.utils.http_utils import (
+    _wrap_ipv6,
+    find_available_port,
+    get_host_info,
+    init_http_client,
+    is_port_available,
+    wait_for_server_ready,
+)
 from miles.utils.iter_utils import group_by
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
@@ -362,6 +370,7 @@ class RolloutManager:
         else:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
+            _start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -715,8 +724,16 @@ class RolloutManager:
         if any(sample.multimodal_train_inputs is not None for sample in samples):
             train_data["multimodal_train_inputs"] = [sample.multimodal_train_inputs for sample in samples]
 
+        if any(sample.weight_versions for sample in samples):
+            train_data["weight_versions"] = [sample.weight_versions for sample in samples]
+
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
+
+        # Pass dynamic global_batch_size to training side
+        assert self.args.use_dynamic_global_batch_size == hasattr(self, "_dynamic_global_batch_size")
+        if hasattr(self, "_dynamic_global_batch_size"):
+            train_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
 
         return train_data
 
@@ -757,6 +774,7 @@ class RolloutManager:
                 "rollout_routed_experts",
                 "prompt",
                 "teacher_log_probs",
+                "weight_versions",
             ]:
                 if key not in data:
                     continue
@@ -766,13 +784,11 @@ class RolloutManager:
             for key in [
                 "raw_reward",
                 "total_lengths",
+                "dynamic_global_batch_size",
             ]:
                 if key not in data:
                     continue
                 rollout_data[key] = data[key]
-            # Pass dynamic global_batch_size to training side
-            if hasattr(self, "_dynamic_global_batch_size"):
-                rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
             rollout_data_refs.append(Box(ray.put(rollout_data)))
         return rollout_data_refs
 
@@ -861,6 +877,8 @@ def _allocate_rollout_engine_addr_and_ports_normal(
             addr_and_ports[current_rank]["host"] = get_addr()
             addr_and_ports[current_rank]["port"] = get_port()
             addr_and_ports[current_rank]["nccl_port"] = get_port()
+            # Always allocate a unique engine_info_bootstrap_port per engine
+            addr_and_ports[current_rank]["engine_info_bootstrap_port"] = get_port()
 
             if worker_type == "prefill":
                 addr_and_ports[current_rank]["disaggregation_bootstrap_port"] = get_port()
@@ -928,6 +946,9 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
         router_args.log_level = "warn"
         router_args.request_timeout_secs = args.sglang_router_request_timeout_secs
 
+        if args.sglang_router_policy:
+            router_args.policy = args.sglang_router_policy
+
         if has_pd_disaggregation:
             router_args.pd_disaggregation = True
 
@@ -946,8 +967,7 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
     )
     process.daemon = True
     process.start()
-    time.sleep(3)
-    assert process.is_alive()
+    wait_for_server_ready(router_ip, router_port, process, timeout=30)
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
 
@@ -1084,6 +1104,45 @@ def _resolve_sglang_config(args) -> SglangConfig:
 # ---------------------------------------------------------------------------
 
 
+def _start_session_server(args):
+    """Start a standalone session server when ``--use-session-server`` is set.
+
+    The session server runs as a separate process with its own port and proxies
+    inference requests directly to SGLang worker engines.  It is always started
+    as a standalone process regardless of whether ``--use-miles-router`` is active.
+    """
+    if not getattr(args, "use_session_server", False):
+        return
+
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    if not hf_checkpoint:
+        raise ValueError("--use-session-server requires --hf-checkpoint to be set.")
+
+    if getattr(args, "session_server_ip", None) is None:
+        args.session_server_ip = args.sglang_router_ip
+    if getattr(args, "session_server_port", None) is None:
+        args.session_server_port = find_available_port(random.randint(5000, 6000))
+    if getattr(args, "session_server_instance_id", None) is None:
+        args.session_server_instance_id = uuid.uuid4().hex
+
+    ip, port = args.session_server_ip, args.session_server_port
+    if not is_port_available(port):
+        raise RuntimeError(
+            f"Port {port} is already in use — a stale session server may still be running. "
+            f"Run 'pkill -9 python' to kill it, then retry."
+        )
+
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+
+    from miles.rollout.session.session_server import run_session_server
+
+    process = multiprocessing.Process(target=run_session_server, args=(args, router_url))
+    process.daemon = True
+    process.start()
+    wait_for_server_ready(ip, port, process, timeout=30)
+    logger.info(f"Session server launched at {ip}:{port}")
+
+
 def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):
     if args.custom_eval_rollout_log_function_path is not None:
         custom_log_func = load_function(args.custom_eval_rollout_log_function_path)
@@ -1146,6 +1205,12 @@ def compute_metrics_from_samples(args, samples):
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
+
+    oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
+    if oldest_versions:
+        log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
+        mixed = sum(1 for s in samples if len(set(s.weight_versions)) > 1)
+        log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]

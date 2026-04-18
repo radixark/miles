@@ -3,9 +3,11 @@ import socket
 
 import ray
 from ray.util.placement_group import placement_group
-from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy, PlacementGroupSchedulingStrategy
-from ray.util.state import list_nodes
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils.async_utils import eager_create_task
+
+from ..utils.ray_utils import compute_ray_pin_head_options
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
 
@@ -120,22 +122,26 @@ def create_placement_groups(args):
     }
 
 
-def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
+def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool):
     return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
         pg=pg,
         num_gpus_per_actor=0.4,
+        role=role,
+        with_ref=with_ref,
     )
 
 
-def create_training_models(args, pgs, rollout_manager):
+async def create_training_models(args, pgs, rollout_manager):
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
         num_gpus_per_node=args.actor_num_gpus_per_node,
         pg=pgs["actor"],
+        role="actor",
+        with_ref=args.kl_coef != 0 or args.use_kl_loss,
     )
     if args.use_critic:
         critic_model = allocate_train_group(
@@ -143,48 +149,34 @@ def create_training_models(args, pgs, rollout_manager):
             num_nodes=args.critic_num_nodes,
             num_gpus_per_node=args.critic_num_gpus_per_node,
             pg=pgs["critic"],
+            role="critic",
+            with_ref=False,
         )
-        critic_init_handle = critic_model.async_init(args, role="critic", with_ref=False)
+        critic_init_task = await eager_create_task(critic_model.init())
     else:
         critic_model = None
 
-    start_rollout_ids = ray.get(
-        actor_model.async_init(args, role="actor", with_ref=args.kl_coef != 0 or args.use_kl_loss)
-    )
+    start_rollout_ids = await actor_model.init()
 
     assert len(set(start_rollout_ids)) == 1
     if args.start_rollout_id is None:
         args.start_rollout_id = start_rollout_ids[0]
 
     if args.use_critic:
-        ray.get(critic_init_handle)
-        actor_model.connect(critic_model)
+        await critic_init_task
+        await actor_model.connect(critic_model)
 
-    actor_model.set_rollout_manager(rollout_manager)
+    await actor_model.set_rollout_manager(rollout_manager)
     if args.rollout_global_dataset:
-        ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
+        await rollout_manager.load.remote(args.start_rollout_id - 1)
 
     return actor_model, critic_model
 
 
-def _get_head_node_id() -> str:
-    for node in list_nodes():
-        if node.is_head_node:
-            return node.node_id
-    raise RuntimeError("Could not find a head node in the Ray cluster")
-
-
 def create_rollout_manager(args, pg):
-    options = {"num_cpus": 1, "num_gpus": 0}
-    if args.pin_rollout_manager_to_head:
-        head_node_id = _get_head_node_id()
-        options["scheduling_strategy"] = NodeAffinitySchedulingStrategy(
-            node_id=head_node_id,
-            soft=False,
-        )
-        logger.info(f"Pinning RolloutManager to head node {head_node_id}")
-
-    rollout_manager = RolloutManager.options(**options).remote(args, pg)
+    rollout_manager = RolloutManager.options(
+        num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
+    ).remote(args, pg)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
