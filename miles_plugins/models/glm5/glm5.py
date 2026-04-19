@@ -634,7 +634,7 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = hf_config.indexer_rope_interleave
-    config.freeze_indexer = args.freeze_indexer
+    config.freeze_indexer = getattr(args, "freeze_indexer", False)
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,
