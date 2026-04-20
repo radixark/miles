@@ -339,8 +339,7 @@ def _send_to_colocated_engine(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
                     config_dict=lora_config,
-                    serialized_tensors=serialized_named_tensors[0][0], 
-                    # serialized_tensors=[serialized_named_tensors[i][0] for i in range(len(serialized_named_tensors))],
+                    serialized_tensors=serialized_named_tensors[0][0],
                     load_format="flattened_bucket",
                 )
             )
