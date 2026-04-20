@@ -386,6 +386,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--max-weight-staleness",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum allowed gap between a group's oldest weight version and the current "
+                    "engine weight version. Groups exceeding this threshold are recycled back to "
+                    "the data buffer instead of being sent to training. Only effective in fully "
+                    "async mode. None (default) disables staleness filtering."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
@@ -440,6 +451,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1,
                 help="Interval for updating the weights",
+            )
+            parser.add_argument(
+                "--pause-generation-mode",
+                type=str,
+                choices=["abort", "retract", "in_place"],
+                default="retract",
+                help=(
+                    "How SGLang pauses in-flight requests during weight updates. "
+                    "'abort' immediately terminates all requests (previous default). "
+                    "'retract' moves running requests back to the waiting queue and "
+                    "recomputes KV cache after update. "
+                    "'in_place' freezes requests and resumes with existing KV cache."
+                ),
             )
             parser.add_argument(
                 "--keep-old-actor",
@@ -591,15 +615,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "in agentic workflows (e.g. tool-call trajectories). "
                 "The path must be accessible on all Ray worker nodes "
                 "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
-            )
-            parser.add_argument(
-                "--tito-model",
-                type=str,
-                default="default",
-                choices=[t.value for t in TITOTokenizerType],
-                help="TITO tokenizer type for pretokenized prefix reuse. "
-                "Controls how token IDs are computed for messages appended after "
-                "the pretokenized prefix in multi-turn agentic sessions.",
             )
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--label-key", type=str, default=None, help="JSON dataset key")
@@ -1569,6 +1584,45 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_session_arguments(parser):
+            parser.add_argument(
+                "--use-session-server",
+                action="store_true",
+                default=False,
+                help="Start a standalone session server for TITO/session support. "
+                "Requires --hf-checkpoint and --chat-template-path to also be set.",
+            )
+            parser.add_argument(
+                "--session-server-ip",
+                type=str,
+                default=None,
+                help="IP address of the standalone session server. Defaults to sglang-router-ip.",
+            )
+            parser.add_argument(
+                "--session-server-port",
+                type=int,
+                default=None,
+                help="Port of the standalone session server. Auto-allocated if not set.",
+            )
+            parser.add_argument(
+                "--tito-model",
+                type=str,
+                default="default",
+                choices=[t.value for t in TITOTokenizerType],
+                help="TITO tokenizer type for pretokenized prefix reuse. "
+                "Controls how token IDs are computed for messages appended after "
+                "the pretokenized prefix in multi-turn agentic sessions.",
+            )
+            parser.add_argument(
+                "--tito-allowed-append-roles",
+                nargs="+",
+                default=["tool"],
+                choices=["tool", "user", "system"],
+                help="Message roles allowed to be appended after the pretokenized "
+                "assistant prefix in TITO sessions (default: tool).",
+            )
+            return parser
+
         def add_user_provided_function_arguments(parser):
             args_partial, _ = parser.parse_known_args()
             for path in [
@@ -1608,6 +1662,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
@@ -1654,13 +1709,20 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
-        from miles.backends.fsdp_utils.arguments import load_fsdp_args
+        from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+
+        if not args.ci_test:
+            raise ValueError(
+                "The FSDP backend has known issues with SGLang v0.5.10 and is not actively maintained in the current version. "
+                "It has been moved to miles.backends.experimental. "
+                "Contributions are welcome if you are interested in improving it."
+            )
 
     miles_validate_args(args)
 
@@ -1742,6 +1804,20 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
+    raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
+    args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
+
+    if "user" in args.tito_allowed_append_roles:
+        logger.warning(
+            "--tito-allowed-append-roles includes 'user'. "
+            "Incremental tokenization assumes appended messages do not change how "
+            "earlier turns render, which may not hold for user messages on "
+            "context-sensitive chat templates (e.g. last_query_index logic, "
+            "thinking-token trimming). This can cause input_ids to diverge from "
+            "the canonical template output. Use at your own risk."
+        )
 
     if args.chat_template_path == "autofix":
         from miles.utils.chat_template_utils import try_get_fixed_chat_template
@@ -1903,6 +1979,14 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
+        if args.sglang_enforce_piecewise_cuda_graph:
+            logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
+        if not args.sglang_disable_piecewise_cuda_graph:
+            args.sglang_disable_piecewise_cuda_graph = True
+            logger.info(
+                "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
+                "Use --sglang-enforce-piecewise-cuda-graph to override."
+            )
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             logger.info(
                 f"rollout_num_gpus {args.rollout_num_gpus} != actor_num_gpus_per_node {args.actor_num_gpus_per_node} "
@@ -2056,6 +2140,9 @@ def hf_validate_args(args, hf_config):
         ),
         ("rope_theta", "rotary_base", equal),
     ]:
+        # FIXME: Qwen3.5 transfomers has bug.
+        if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
+            continue
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
                 errors.append(

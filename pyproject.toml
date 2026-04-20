@@ -57,13 +57,5 @@ norecursedirs = [
     "venv",
     "{arch}",
 ]
-# markers to select tests, use `pytest --markers` to see all available markers, `pytest -m "<marker>"` to select tests
-markers = [
-    "unit: marks unit test, i.e. testing a single, well isolated functionality (deselect with '-m \"not unit\"')",
-    "integration: marks test checking the elements when integrated into subsystems (deselect with '-m \"not integration\"')",
-    "system: marks test working at the highest integration level (deselect with '-m \"not system\"')",
-    "acceptance: marks test checking whether the developed product/model passes the user defined acceptance criteria (deselect with '-m \"not acceptance\"')",
-    "docs: mark tests related to documentation (deselect with '-m \"not docs\"')",
-    "skipduringci: marks tests that are skipped ci as they are addressed by Jenkins jobs but should be run to test user setups",
-    "pleasefixme: marks tests that are broken and need fixing",
-]
+asyncio_mode = "auto"
+# NOTE: we do not use pytest markers currently. tests are mainly separated by folders, i.e. tests/fast vs tests/e2e

@@ -766,7 +766,7 @@ def cmd_run(
     my_pid = os.getpid()
     my_ppid = os.getppid()
     # Kill stale python/ray but spare this process tree
-    pkill_python = f"pgrep -x python3 python | grep -v -w {my_pid} | grep -v -w {my_ppid} | xargs -r kill -9 || true"
+    pkill_python = f"pgrep -x 'python|python3' | grep -v -w {my_pid} | grep -v -w {my_ppid} | xargs -r kill -9 || true"
     run_cmd("pkill -9 sglang || true", check=False)
     run_cmd("sleep 3", check=False)
     run_cmd("ray stop --force || true", check=False)
@@ -1073,7 +1073,7 @@ def cmd_run(
             f"{model_args_source} && "
             f"ray job submit --address='http://127.0.0.1:8265' "
             f"--runtime-env-json='{runtime_env_json}' "
-            f"-- python3 train.py "
+            f'-- python3 "{MILES_ROOT}/train.py" '
             f"${{MODEL_ARGS[@]}} "
             f"{args_str}",
             check=False,

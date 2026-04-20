@@ -9,7 +9,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.generate_utils.openai_endpoint_utils import compute_samples_from_openai_records
+from miles.rollout.generate_utils.openai_endpoint_utils import (
+    OpenAIEndpointTracer,
+    compute_samples_from_openai_records,
+)
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.session_types import SessionRecord
 from miles.utils.types import Sample
@@ -46,6 +49,8 @@ def _make_record(
     output_token_ids: list[int],
     output_log_probs: list[float] | None = None,
     finish_reason: str = "stop",
+    cached_tokens: int | None = None,
+    prompt_tokens: int | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -59,6 +64,14 @@ def _make_record(
     logprobs_content = [
         {"logprob": lp, "token": f"t{tid}"} for tid, lp in zip(output_token_ids, output_log_probs, strict=True)
     ]
+    meta_info = {
+        "output_token_logprobs": output_token_logprobs,
+        "completion_tokens": len(output_token_ids),
+    }
+    if cached_tokens is not None:
+        meta_info["cached_tokens"] = cached_tokens
+    if prompt_tokens is not None:
+        meta_info["prompt_tokens"] = prompt_tokens
     return SessionRecord(
         timestamp=0.0,
         method="POST",
@@ -72,14 +85,38 @@ def _make_record(
                     "message": {"role": "assistant", "content": "response"},
                     "finish_reason": finish_reason,
                     "logprobs": {"content": logprobs_content},
-                    "meta_info": {
-                        "output_token_logprobs": output_token_logprobs,
-                        "completion_tokens": len(output_token_ids),
-                    },
+                    "meta_info": meta_info,
                 }
             ]
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_create_fetches_session_server_instance_id(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        calls.append((action, url))
+        if action == "get":
+            assert url == "http://127.0.0.1:12345/health"
+            return {"status": "ok", "session_server_instance_id": "server-instance-123"}
+        assert action == "post"
+        assert url == "http://127.0.0.1:12345/sessions"
+        return {"session_id": "session-123"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_port=12345)
+    tracer = await OpenAIEndpointTracer.create(args)
+
+    assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
+    assert tracer.session_server_instance_id == "server-instance-123"
+    assert args.session_server_instance_id == "server-instance-123"
+    assert calls == [
+        ("get", "http://127.0.0.1:12345/health"),
+        ("post", "http://127.0.0.1:12345/sessions"),
+    ]
 
 
 # ── test: compute_samples_from_openai_records ────────────────────────
@@ -527,3 +564,65 @@ class TestThinkingTokenPrefixBreak:
         merged = merge_samples(samples, tok)
 
         assert merged.tokens == [1, 2, 3, 10, 11, 20, 21, 30, 31]
+
+
+# ── test: prefix cache info population ────────────────────────────────
+
+
+class TestPrefixCacheInfo:
+    """Validate that prefix cache statistics from meta_info are collected."""
+
+    def test_single_record_with_cache_stats(self):
+        """cached_tokens and prompt_tokens from meta_info populate prefix_cache_info."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            cached_tokens=2,
+            prompt_tokens=3,
+        )
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
+
+        assert samples[0].prefix_cache_info.cached_tokens == 2
+        assert samples[0].prefix_cache_info.total_prompt_tokens == 3
+
+    def test_multi_turn_cache_stats_accumulate_after_merge(self):
+        """After merge_samples, prefix_cache_info sums across turns."""
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(
+                prompt_token_ids=[1, 2, 3],
+                output_token_ids=[10, 11],
+                output_log_probs=[-0.1, -0.2],
+                cached_tokens=0,
+                prompt_tokens=3,
+            ),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+                output_token_ids=[30, 31],
+                output_log_probs=[-0.3, -0.4],
+                cached_tokens=5,
+                prompt_tokens=7,
+            ),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+        merged = merge_samples(samples, tok)
+
+        assert merged.prefix_cache_info.cached_tokens == 0 + 5
+        assert merged.prefix_cache_info.total_prompt_tokens == 3 + 7
+        assert merged.prefix_cache_info.prefix_cache_hit_rate == 5 / 10
+
+    def test_missing_cache_fields_default_to_zero(self):
+        """Records without cached_tokens/prompt_tokens give zero prefix_cache_info (regression)."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+        )
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
+
+        assert samples[0].prefix_cache_info.cached_tokens == 0
+        assert samples[0].prefix_cache_info.total_prompt_tokens == 0

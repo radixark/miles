@@ -6,10 +6,19 @@ from typing import Any
 
 from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.session_types import SessionRecord
-from miles.utils.chat_template_utils import apply_chat_template, assert_messages_append_only, message_matches
+from miles.utils.chat_template_utils import (
+    apply_chat_template,
+    assert_messages_append_only_with_allowed_role,
+    message_matches,
+)
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 logger = logging.getLogger(__name__)
+
+
+# TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
+#  raise this limit or make it configurable and remove the restriction.
+MAX_ASSISTANT_ROLLBACK_STEPS = 1
 
 
 def _assert_no_user_after_assistant(messages: list[dict[str, Any]]) -> None:
@@ -26,14 +35,13 @@ def _assert_no_user_after_assistant(messages: list[dict[str, Any]]) -> None:
 
 
 @dataclass
-class SingleUserTurnTrajectory:
-    """State for a single-user-turn trajectory.
+class LinearTrajectory:
+    """State for a linear trajectory.
 
     Tracks the full message history and accumulated token IDs for one session.
     The typical message sequence is: [system?, user, assistant, tool, assistant, tool, …],
     but the agent may retry from an earlier point (e.g. re-running a tool call),
-    in which case the session is rolled back to the last matching assistant
-    checkpoint and re-extended from there.
+    in which case the session is rolled back at most one assistant step.
 
     Concurrency contract: all mutating methods must be called under ``self.lock``.
     """
@@ -68,15 +76,16 @@ class SingleUserTurnTrajectory:
         if not self.token_ids:
             return None
 
-        # 1. Reject multi-turn (user after assistant) — single-user-turn only.
-        _assert_no_user_after_assistant(request_messages)
-        # 2. Detect agent retries and roll back to the last matching checkpoint.
+        # 1. Detect agent retries and roll back (at most one assistant step).
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
-        # 3. Confirm the (possibly rolled-back) stored messages are a prefix of request.
+        # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
+        #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
         try:
-            assert_messages_append_only(self.messages, request_messages)
+            assert_messages_append_only_with_allowed_role(
+                self.messages, request_messages, tito_tokenizer.allowed_append_roles
+            )
         except ValueError as e:
-            raise MessageValidationError(str(e)) from e
+            raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
 
         merged = tito_tokenizer.merge_tokens(
             old_messages=self.messages,
@@ -143,6 +152,16 @@ class SingleUserTurnTrajectory:
         but diverges before the end.  This method truncates session state back
         to the last assistant checkpoint within the matching prefix.
 
+        Only a single-step rollback is allowed (controlled by
+        ``MAX_ASSISTANT_ROLLBACK_STEPS``).  Discarding exactly one assistant
+        message means the agent is retrying from the preceding checkpoint —
+        the request shares the stored prefix up to that assistant and then
+        continues with whatever the agent chooses (same or different tool
+        result, additional messages, etc.).  Any request that would need to
+        discard more than one assistant (i.e. jump back across multiple
+        turns) is rejected with ``MessageValidationError`` and no state is
+        modified.
+
         Example — agent retries after the first tool call::
 
             stored:  [sys, user, assistant₁, tool₁, assistant₂]
@@ -154,6 +173,7 @@ class SingleUserTurnTrajectory:
 
             match_len = 3  (sys, user, assistant₁ all match)
             Last assistant in matched prefix → assistant₁ (checkpoint 0)
+            discard_count = 2 - 1 = 1  (≤ MAX_ASSISTANT_ROLLBACK_STEPS)
 
             After rollback:
               messages           = [sys, user, assistant₁]
@@ -197,12 +217,23 @@ class SingleUserTurnTrajectory:
                 f"request has {len(request_messages)} messages)"
             )
 
+        discard_count = self.num_assistant - (checkpoint_index + 1)
+        if discard_count > MAX_ASSISTANT_ROLLBACK_STEPS:
+            raise MessageValidationError(
+                f"rollback failed: discard_count={discard_count} exceeds "
+                f"max_assistant_rollback_steps={MAX_ASSISTANT_ROLLBACK_STEPS} "
+                f"(stored has {len(stored)} messages, "
+                f"request has {len(request_messages)} messages)"
+            )
+
         logger.info(
-            "Rolling back session: stored %d messages / %d checkpoints -> " "checkpoint %d (messages[:%d])",
+            "Rolling back session: stored %d messages / %d checkpoints -> "
+            "checkpoint %d (messages[:%d]), discarding %d assistant(s)",
             len(stored),
             self.num_assistant,
             checkpoint_index,
             rollback_msg_end,
+            discard_count,
         )
 
         self.messages = stored[:rollback_msg_end]
@@ -216,11 +247,11 @@ class SessionRegistry:
 
     Pure CRUD plus read-only computation (compute_session_mismatch).
     Does NOT mutate session state - all mutations are methods on
-    SingleUserTurnTrajectory, called by the route handler under session.lock.
+    LinearTrajectory; called by the route handler under session.lock.
     """
 
     def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer):
-        self.sessions: dict[str, SingleUserTurnTrajectory] = {}
+        self.sessions: dict[str, LinearTrajectory] = {}
         self.args = args
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
@@ -228,10 +259,10 @@ class SessionRegistry:
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = SingleUserTurnTrajectory()
+        self.sessions[session_id] = LinearTrajectory()
         return session_id
 
-    def get_session(self, session_id: str) -> SingleUserTurnTrajectory:
+    def get_session(self, session_id: str) -> LinearTrajectory:
         session = self.sessions.get(session_id)
         if session is None:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
@@ -241,7 +272,7 @@ class SessionRegistry:
         if self.sessions.pop(session_id, None) is None:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-    def compute_session_mismatch(self, session: SingleUserTurnTrajectory) -> list[dict] | None:
+    def compute_session_mismatch(self, session: LinearTrajectory) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template output.
 
         Read-only: does not mutate session state.

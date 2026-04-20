@@ -5,7 +5,7 @@ and validates that the full TITO pretokenization + rollback pipeline
 works end-to-end with real model inference.
 
 Token-level correctness is guaranteed by the server-side prefix check
-in ``SingleUserTurnTrajectoryManager.update_pretokenized_state`` —
+in ``LinearTrajectory.update_pretokenized_state`` —
 if TITO produces wrong tokens, the server raises ``ValueError`` and
 the request fails with HTTP 500, which surfaces here as an assertion
 failure on the response status code.

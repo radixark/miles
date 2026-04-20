@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeMLP
 
-from miles.backends.fsdp_utils.kernels.fused_experts import (
+from miles.backends.experimental.fsdp_utils.kernels.fused_experts import (
     DownProjFunction,
     GateUpProjFunction,
     MoeSumReduceFunction,

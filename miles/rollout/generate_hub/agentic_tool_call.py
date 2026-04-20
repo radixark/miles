@@ -24,6 +24,7 @@ Agent function contract:
 
 import argparse
 import logging
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -60,15 +61,34 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = input.sample.metadata
     if max_seq_len is not None:
         metadata = {**metadata, "max_seq_len": max_seq_len}
+    if tracer.session_server_instance_id:
+        metadata = {**metadata, "session_server_instance_id": tracer.session_server_instance_id}
 
-    agent_metadata = await custom_agent_function(
-        base_url=tracer.base_url,
-        prompt=input.sample.prompt,
-        request_kwargs=build_chat_request_kwargs(input.sampling_params),
-        metadata=metadata,
-    )
+    log_prefix = f"[session={tracer.session_id}]"
 
-    records, session_metadata = await tracer.collect_records()
+    session_ip = getattr(input.args, "session_server_ip", None)
+    session_port = getattr(input.args, "session_server_port", None)
+    if session_ip and session_port:
+        metadata = {**metadata, "session_server_id": f"{session_ip}:{session_port}"}
+
+    agent_metadata = None
+    t_start = time.monotonic()
+    try:
+        logger.debug(f"{log_prefix} Starting agent function call")
+        agent_metadata = await custom_agent_function(
+            base_url=tracer.base_url,
+            prompt=input.sample.prompt,
+            request_kwargs=build_chat_request_kwargs(input.sampling_params),
+            metadata=metadata,
+        )
+        logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
+    except Exception as e:
+        logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
+
+    finally:
+        logger.debug(f"{log_prefix} Calling collect_records...")
+        records, session_metadata = await tracer.collect_records()
+        logger.debug(f"{log_prefix} collect_records done: {len(records)} records")
 
     if not records:
         logger.warning("No model calls recorded for sample")
@@ -76,6 +96,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
+    logger.debug(f"{log_prefix} Computing samples from {len(records)} records...")
     samples = compute_samples_from_openai_records(
         input.args,
         input.sample,
@@ -85,6 +106,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         max_trim_tokens=session_metadata.get("max_trim_tokens", 0),
     )
 
+    logger.debug(
+        f"{log_prefix} compute_samples done: {len(samples)} samples, total_time={time.monotonic()-t_start:.1f}s"
+    )
     for s in samples:
         s.metadata.update(agent_metadata or {})
 

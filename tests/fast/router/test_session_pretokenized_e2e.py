@@ -1,6 +1,6 @@
 """End-to-end tests for pretokenized token injection through the session proxy.
 
-Verifies that SingleUserTurnTrajectoryManager correctly accumulates token state
+Verifies that LinearTrajectory correctly accumulates token state
 across multi-turn tool-call conversations and injects pretokenized_token_ids
 into downstream requests.
 
@@ -65,7 +65,10 @@ WORKING_CONFIGS: dict[str, ModelTemplateConfig] = {
         "Qwen/Qwen3-4B-Thinking-2507",
         try_get_fixed_chat_template("Qwen/Qwen3-4B-Thinking-2507"),
     ),
-    "qwen3.5-native": ModelTemplateConfig("Qwen/Qwen3.5-0.8B", None),
+    "qwen3.5-fixed": ModelTemplateConfig(
+        "Qwen/Qwen3.5-0.8B",
+        try_get_fixed_chat_template("Qwen/Qwen3.5-0.8B"),
+    ),
     "qwen3-next-instruct-native": ModelTemplateConfig("Qwen/Qwen3-Next-80B-A3B-Instruct", None),
     "qwen3-next-thinking-fixed": ModelTemplateConfig(
         "Qwen/Qwen3-Next-80B-A3B-Thinking",

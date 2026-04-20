@@ -9,30 +9,34 @@ pkill -9 python
 sleep 3
 pkill -9 ray
 pkill -9 python
-pkill -9 redis
 
 set -ex
+
+# keep Ray from blanking HIP/CUDA visibility for the job entrypoint.
+export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"}
+export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES:-"1"}
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-if [ "$NVLINK_COUNT" -gt 0 ]; then
-    HAS_NVLINK=1
-else
-    HAS_NVLINK=0
+if [[ -n "${HIP_VISIBLE_DEVICES:-}" ]]; then
+   export CUDA_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES}"
 fi
-echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-30B-A3B.sh"
+NUM_GPUS=${NUM_GPUS:-8}
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+   IFS=',' read -r -a visible_gpu_ids <<< "${CUDA_VISIBLE_DEVICES}"
+   NUM_GPUS=${#visible_gpu_ids[@]}
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
+source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-30B-A3B
-   #--hf-checkpoint /root/Qwen3-30B-A3B-FP8
-   --ref-load /root/Qwen3-30B-A3B_torch_dist
-   --load /root/Qwen3-30B-A3B_miles/
-   --save /root/Qwen3-30B-A3B_miles/
+   --hf-checkpoint /root/Qwen3-4B
+   --ref-load /root/Qwen3-4B_torch_dist
+   --load /root/Qwen3-4B_miles/
+   --save /root/Qwen3-4B_miles/
    --save-interval 20
 )
 
@@ -48,7 +52,6 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 1
-
    --global-batch-size 256
    --balance-data
 )
@@ -62,11 +65,11 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 4
+   --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
-   --expert-model-parallel-size 8
+   --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -75,7 +78,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 20480
+   --max-tokens-per-gpu 9216
 )
 
 GRPO_ARGS=(
@@ -95,23 +98,18 @@ OPTIMIZER_ARGS=(
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
-
-   --optimizer-cpu-offload
-   --overlap-cpu-optimizer-d2h-h2d
-   --use-precision-aware-optimizer
 )
 
 WANDB_ARGS=(
-   #--use-wandb
+   # --use-wandb
    # --wandb-project miles-dev
-   # --wandb-group qwen3-30B-A3B-test
+   # --wandb-group qwen3-4B-test
    # --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
+   --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
 )
 
 MISC_ARGS=(
@@ -127,14 +125,13 @@ MISC_ARGS=(
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
   }
 }"
 
@@ -142,7 +139,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node ${NUM_GPUS} \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

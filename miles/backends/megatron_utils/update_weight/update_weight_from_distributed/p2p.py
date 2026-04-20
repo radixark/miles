@@ -11,6 +11,9 @@ from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
+from sglang.srt.layers.moe import initialize_moe_config
+from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
+from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
@@ -18,7 +21,6 @@ from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from ..common import post_process_weights
 from .mixin import DistBucketedWeightUpdateMixin
 from .p2p_transfer_utils import (
     P2PTransferManager,
@@ -125,11 +127,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                     for engine in self.rollout_engines
                 ]
             )
-            post_process_weights(
-                rollout_engines=self.rollout_engines,
-                post_load_weights=True,
-            )
-        super()._finalize_and_resume_engines()
+        super()._finalize_and_resume_engines(post_load_weights=True)
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
@@ -263,6 +261,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             rl_quant_profile=server_args.rl_quant_profile,
         )
         server_args_module._global_server_args = server_args
+        initialize_moe_config(server_args)
+        initialize_fp8_gemm_config(server_args)
+        initialize_fp4_gemm_config(server_args)
 
         # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
         # because get_model() calls post_load_weights() internally (loader.py:1310)

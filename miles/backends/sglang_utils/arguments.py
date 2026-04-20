@@ -20,29 +20,16 @@ def add_sglang_router_arguments(parser):
         help="Port of the SGLang router",
     )
     parser.add_argument(
+        "--sglang-router-policy",
+        type=str,
+        default=None,
+        help="Routing policy for the SGLang router (e.g., 'consistent_hashing', 'round_robin')",
+    )
+    parser.add_argument(
         "--sglang-router-request-timeout-secs",
         type=int,
         default=14400,
         help="Timeout for requests to the SGLang router in seconds",
-    )
-    parser.add_argument(
-        "--use-session-server",
-        action="store_true",
-        default=False,
-        help="Start a standalone session server for TITO/session support. "
-        "Requires --hf-checkpoint and --chat-template-path to also be set.",
-    )
-    parser.add_argument(
-        "--session-server-ip",
-        type=str,
-        default=None,
-        help="IP address of the standalone session server. Defaults to sglang-router-ip.",
-    )
-    parser.add_argument(
-        "--session-server-port",
-        type=int,
-        default=None,
-        help="Port of the standalone session server. Auto-allocated if not set.",
     )
     return parser
 
@@ -153,6 +140,13 @@ def validate_args(args):
 
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
+
+    if args.sglang_router_policy:
+        from miles.utils.environ import enable_experimental_rollout_refactor
+
+        assert (
+            not enable_experimental_rollout_refactor()
+        ), "--sglang-router-policy is not supported with MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1"
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = _wrap_ipv6(args.sglang_router_ip)

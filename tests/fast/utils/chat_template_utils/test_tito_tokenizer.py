@@ -26,16 +26,18 @@ TestMergeTokensBoundary
     - Default: plain concatenation (no boundary handling).
 
 TestTokenizeAdditional
-    Behavioral tests for tokenize_additional_non_assistant — the dummy-prefix
-    diff that computes incremental token IDs for appended non-assistant messages.
+    Behavioral tests for tokenize_additional_non_assistant — the role-segmented
+    synthetic-prefix diff that computes incremental token IDs for appended
+    non-assistant messages.
 
     ``test_produces_nonempty_incremental`` is parametrized over:
       _TOOL_TRAJECTORIES (trajectory classes) × _TITO_MODELS (qwen3, glm47)
     Split points are auto-detected by _find_tito_splits from message structure,
     so adding a trajectory to _TOOL_TRAJECTORIES automatically extends coverage.
 
-    Remaining tests verify append-only validation (reject prefix mutation,
-    fewer messages, or forbidden roles like assistant).
+    Remaining tests cover segmentation logic, generation-prompt timing,
+    reasoning-content shape, merge structure preservation, and append-only
+    validation (reject prefix mutation, fewer messages, or forbidden roles).
 
 TestFactory
     get_tito_tokenizer factory: string/enum dispatch, invalid input handling.
@@ -43,16 +45,21 @@ TestFactory
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from transformers import AutoTokenizer
 
+from miles.utils.chat_template_utils import MismatchType, apply_chat_template, try_get_fixed_chat_template
 from miles.utils.chat_template_utils.tito_tokenizer import (
     GLM47TITOTokenizer,
     Qwen3TITOTokenizer,
     TITOTokenizer,
     TITOTokenizerType,
+    _build_dummy_assistant,
     get_tito_tokenizer,
 )
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_trajectories import (
     IntermediateSystemTrajectory,
     LongChainTrajectory,
@@ -68,13 +75,19 @@ from miles.utils.test_utils.mock_trajectories import (
 # Tokenizer cache
 # ---------------------------------------------------------------------------
 
-_TOK_CACHE: dict[str, AutoTokenizer] = {}
+_TOK_CACHE: dict[tuple[str, str | None], AutoTokenizer] = {}
 
 
 def _get_tokenizer(model_id: str) -> AutoTokenizer:
-    if model_id not in _TOK_CACHE:
-        _TOK_CACHE[model_id] = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    return _TOK_CACHE[model_id]
+    chat_template_path = try_get_fixed_chat_template(model_id)
+    cache_key = (model_id, chat_template_path)
+    if cache_key not in _TOK_CACHE:
+        _TOK_CACHE[cache_key] = load_tokenizer(
+            model_id,
+            chat_template_path=chat_template_path,
+            trust_remote_code=True,
+        )
+    return _TOK_CACHE[cache_key]
 
 
 # ---------------------------------------------------------------------------
@@ -91,25 +104,28 @@ _TITO_MODELS: dict[str, tuple[str, type[TITOTokenizer]]] = {
 }
 
 
+_ALLOWED_APPEND_ROLES = ["tool", "user", "system"]
+
+
 @pytest.fixture(params=list(_TITO_MODELS.keys()))
 def tito(request) -> TITOTokenizer:
     model_id, cls = _TITO_MODELS[request.param]
-    return cls(_get_tokenizer(model_id))
+    return cls(_get_tokenizer(model_id), allowed_append_roles=_ALLOWED_APPEND_ROLES)
 
 
 @pytest.fixture
 def qwen3_tito() -> Qwen3TITOTokenizer:
-    return Qwen3TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"))
+    return Qwen3TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"), allowed_append_roles=_ALLOWED_APPEND_ROLES)
 
 
 @pytest.fixture
 def glm47_tito() -> GLM47TITOTokenizer:
-    return GLM47TITOTokenizer(_get_tokenizer("zai-org/GLM-4.7-Flash"))
+    return GLM47TITOTokenizer(_get_tokenizer("zai-org/GLM-4.7-Flash"), allowed_append_roles=_ALLOWED_APPEND_ROLES)
 
 
 @pytest.fixture
 def default_tito() -> TITOTokenizer:
-    return TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"))
+    return TITOTokenizer(_get_tokenizer("Qwen/Qwen3-4B"), allowed_append_roles=_ALLOWED_APPEND_ROLES)
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +165,8 @@ def _split_at(traj_cls, pos: int):
     """Split trajectory at *pos* into ``(old_msgs, new_msgs, tools)``.
 
     ``old_msgs = messages[:pos]`` — the pretokenized prefix (ends with assistant turn).
-    ``new_msgs`` extends through all subsequent non-assistant messages (tool/system),
-    stopping before the next assistant turn.
+    ``new_msgs`` extends through all subsequent non-assistant messages
+    (tool/user/system), stopping before the next assistant turn.
     """
     msgs = traj_cls.MESSAGES
     end = pos
@@ -274,14 +290,14 @@ class TestMergeTokensBoundary:
 
 
 # ---------------------------------------------------------------------------
-# TestTokenizeAdditional — incremental tokenization via dummy-prefix diff
+# TestTokenizeAdditional — incremental tokenization via role-segmented synthetic diff
 #
 # test_produces_nonempty_incremental is the scalable core: parametrized over
 # _TRAJ_CASES (trajectories × split points) × tito fixture (models).
 # 8 trajectories × ~14 splits × 2 models = 28 test cases currently.
 #
 # Validation tests use a single trajectory since the validation logic
-# (assert_messages_append_only) is model/trajectory-independent.
+# (assert_messages_append_only_with_allowed_role) is model/trajectory-independent.
 # ---------------------------------------------------------------------------
 
 
@@ -299,7 +315,109 @@ class TestTokenizeAdditional:
         incremental = tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
         assert len(incremental) > 0
 
-    # -- Append-only validation (assert_messages_append_only is called internally) --
+    def test_contiguous_tool_segment_is_tokenized_together(self, qwen3_tito: Qwen3TITOTokenizer):
+        old_msgs, new_msgs, tools = _split_at(MultiToolSingleTurnTrajectory, 3)
+        appended = new_msgs[len(old_msgs) :]
+
+        segments = qwen3_tito._split_appended_segments(appended)
+        assert len(segments) == 1
+        assert [msg["role"] for msg in segments[0]] == ["tool", "tool"]
+
+        incremental = qwen3_tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
+        decoded = qwen3_tito.tokenizer.decode(incremental)
+        assert MultiToolSingleTurnTrajectory.MESSAGES[3]["content"] in decoded
+        assert MultiToolSingleTurnTrajectory.MESSAGES[4]["content"] in decoded
+
+    def test_user_and_system_segments_are_singletons(self, default_tito: TITOTokenizer):
+        appended = [
+            {"role": "system", "content": "Use JSON."},
+            {"role": "user", "content": "Hello"},
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": true}'},
+            {"role": "tool", "tool_call_id": "call_2", "content": '{"ok": false}'},
+            {"role": "user", "content": "Try again"},
+        ]
+
+        segments = default_tito._split_appended_segments(appended)
+        assert [[msg["role"] for msg in segment] for segment in segments] == [
+            ["system"],
+            ["user"],
+            ["tool", "tool"],
+            ["user"],
+        ]
+
+    def test_generation_prompt_is_appended_once_for_full_suffix(self, qwen3_tito: Qwen3TITOTokenizer):
+        old_msgs = list(SingleToolThinkingTrajectory.MESSAGES[:3])
+        new_msgs = old_msgs + [
+            SingleToolThinkingTrajectory.MESSAGES[3],
+            {"role": "user", "content": "Now check Shanghai too."},
+        ]
+        tools = SingleToolThinkingTrajectory.TOOLS
+
+        incremental = qwen3_tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
+        decoded = qwen3_tito.tokenizer.decode(incremental)
+        assert decoded.count(qwen3_tito._assistant_start_str) == 1
+        assert decoded.endswith(
+            qwen3_tito.tokenizer.decode(
+                qwen3_tito._tokenize_rendered_suffix(new_msgs, [], tools=tools, add_generation_prompt=True)
+            )
+        )
+
+    def test_qwen3_tool_dummy_assistant_preserves_reasoning_shape(self):
+        thinking_template_path = (
+            Path(__file__).resolve().parents[4]
+            / "miles/utils/chat_template_utils/templates/qwen3_thinking_2507_and_next_fixed.jinja"
+        )
+        thinking_tito = Qwen3TITOTokenizer(
+            load_tokenizer(
+                "Qwen/Qwen3-4B-Instruct-2507",
+                chat_template_path=str(thinking_template_path),
+                trust_remote_code=True,
+            ),
+            allowed_append_roles=_ALLOWED_APPEND_ROLES,
+        )
+        tool_messages = [SingleToolThinkingTrajectory.MESSAGES[3]]
+        dummy_assistant = _build_dummy_assistant(tool_messages)
+        rendered = thinking_tito._render_messages(
+            [{"role": "system", "content": "dummy system"}, dummy_assistant],
+            add_generation_prompt=False,
+            tools=SingleToolThinkingTrajectory.TOOLS,
+        )
+
+        assert dummy_assistant["reasoning_content"] == " "
+        assert rendered.endswith(
+            '<|im_start|>assistant\n<tool_call>\n{"name": "dummy_func", "arguments": {}}\n</tool_call><|im_end|>\n'
+        )
+
+    @pytest.mark.parametrize(
+        "traj_cls, pos",
+        [
+            pytest.param(SingleToolTrajectory, 3, id="single-tool"),
+            pytest.param(RetrySystemTrajectory, 3, id="tool-plus-system"),
+            pytest.param(IntermediateSystemTrajectory, 3, id="intermediate-system"),
+        ],
+    )
+    def test_qwen3_merge_preserves_non_assistant_structure(self, qwen3_tito: Qwen3TITOTokenizer, traj_cls, pos):
+        """Merged tokens may differ in assistant text, but not in tool/system structure."""
+        old_msgs, new_msgs, tools = _split_at(traj_cls, pos)
+        pretokenized = apply_chat_template(
+            old_msgs,
+            tokenizer=qwen3_tito.tokenizer,
+            tokenize=True,
+            add_generation_prompt=False,
+            tools=tools,
+        )
+        merged = qwen3_tito.merge_tokens(old_msgs, new_msgs, pretokenized, tools)
+        expected = apply_chat_template(
+            new_msgs,
+            tokenizer=qwen3_tito.tokenizer,
+            tokenize=True,
+            add_generation_prompt=True,
+            tools=tools,
+        )
+        mismatches = qwen3_tito.create_comparator().compare_sequences(expected, merged)
+        assert all(m.type == MismatchType.ASSISTANT_TEXT for m in mismatches)
+
+    # -- Append-only validation (assert_messages_append_only_with_allowed_role is called internally) --
 
     def test_rejects_prefix_mutation(self, qwen3_tito: Qwen3TITOTokenizer):
         """Modifying an existing message in new_messages raises ValueError."""
