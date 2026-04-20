@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_PATCH_SIZE = 14
 
 
-_TOKENIZER_CACHE: dict[tuple, object] = {}
+_TOKENIZER_CACHE: dict[tuple, PreTrainedTokenizerBase] = {}
 
 
 def _make_cache_key(name_or_path: str, chat_template_path: str | None, kwargs: dict) -> tuple | None:
@@ -25,7 +25,7 @@ def _make_cache_key(name_or_path: str, chat_template_path: str | None, kwargs: d
     return (name_or_path, chat_template_path, kwargs_items)
 
 
-def load_tokenizer(name_or_path: str, chat_template_path: str = None, **kwargs):
+def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **kwargs) -> PreTrainedTokenizerBase:
     # Cache keyed by (name, chat_template_path, kwargs) — the fast suite creates
     # hundreds of SessionServer / MockSGLangServer fixtures and each previously
     # triggered a fresh AutoTokenizer.from_pretrained, tripping HF Hub rate limits.
