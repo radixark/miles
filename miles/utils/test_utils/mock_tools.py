@@ -3,8 +3,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
-from transformers import AutoTokenizer
-
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
 
 AGENTIC_MAX_TURNS: int | None = None
@@ -142,7 +141,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-_TOKENIZER = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
+_TOKENIZER = load_tokenizer("Qwen/Qwen3-0.6B", trust_remote_code=True)
 
 
 class TwoTurnStub:
