@@ -18,7 +18,7 @@ _TOKENIZER_CACHE: dict[tuple, object] = {}
 
 def _make_cache_key(name_or_path: str, chat_template_path: str | None, kwargs: dict) -> tuple | None:
     try:
-        kwargs_items = tuple(sorted((k, v) for k, v in kwargs.items()))
+        kwargs_items = tuple(sorted(kwargs.items()))
         hash(kwargs_items)
     except TypeError:
         return None
