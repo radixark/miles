@@ -150,8 +150,17 @@ def init_wandb_secondary(args, router_addr=None):
 def _init_wandb_common():
     wandb.define_metric("train/step")
     wandb.define_metric("train/*", step_metric="train/step")
+    # Also register deeper paths explicitly. A single ``rollout/*`` wildcard
+    # is unreliable in wandb's multi-process shared mode: a 3-level key like
+    # ``rollout/reward/raw_mean`` logged from the RolloutManager actor can
+    # bypass the wildcard and fall back to wandb's auto-incrementing internal
+    # commit step for its x-axis, which is what produced the 1, 6, 10 pattern
+    # users were seeing (5 commits for rollout_id=0 including images, 4 per
+    # subsequent rollout).
     wandb.define_metric("rollout/step")
     wandb.define_metric("rollout/*", step_metric="rollout/step")
+    wandb.define_metric("rollout/reward/*", step_metric="rollout/step")
+    wandb.define_metric("rollout/sample_images", step_metric="rollout/step")
     wandb.define_metric("multi_turn/*", step_metric="rollout/step")
     wandb.define_metric("passrate/*", step_metric="rollout/step")
     wandb.define_metric("eval/step")
