@@ -17,33 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
-    generated_output = sample.generated_output
-    if generated_output is None:
-        raise ValueError("generated_output is None")
-    if generated_output.ndim != 4:
-        raise ValueError(
-            f"generated_output must be 4D [C, F, H, W], got {tuple(generated_output.shape)}"
-        )
-
-    frame_chw = generated_output.detach().cpu()[:, 0, :, :]
-    if frame_chw.shape[0] == 1:
-        frame_chw = frame_chw.repeat(3, 1, 1)
-    elif frame_chw.shape[0] > 3:
-        frame_chw = frame_chw[:3]
-    elif frame_chw.shape[0] != 3:
-        raise ValueError(f"generated_output channel dimension must be 1, 3, or >3, got {frame_chw.shape[0]}")
-
+    frame_chw = sample.generated_output.detach().cpu()[:, 0, :, :]
     hwc = frame_chw.float().numpy().transpose(1, 2, 0)
     if float(hwc.max()) <= 1.0 + 1e-3:
         hwc = hwc * 255.0
     return np.ascontiguousarray(hwc.clip(0, 255).astype(np.uint8))
-
-
-def _required_arg(args, name: str) -> str:
-    value = getattr(args, name, None)
-    if value is None or value == "":
-        raise ValueError(f"--{name.replace('_', '-')} must be set when --rm-type pickscore.")
-    return value
 
 
 class PickScoreScorer(torch.nn.Module):
@@ -69,9 +47,6 @@ class PickScoreScorer(torch.nn.Module):
 
     @torch.no_grad()
     def forward(self, prompts: Sequence[str], images: Sequence[Image.Image]) -> list[float]:
-        if len(images) != len(prompts):
-            raise ValueError(f"Images({len(images)}) and prompts({len(prompts)}) must have the same length")
-
         image_inputs = self.processor(
             images=list(images),
             padding=True,
@@ -134,31 +109,17 @@ class AsyncPickScorePool(metaclass=SingletonMeta):
     """Ray actor pool for GPU PickScore reward inference."""
 
     def __init__(self, args) -> None:
-        if not ray.is_initialized():
-            raise RuntimeError("Ray is not initialized. PickScore RM requires Ray for PickScoreRewardActor.")
-
-        num_workers = int(getattr(args, "pickscore_num_workers", 1) or 1)
-        if num_workers <= 0:
-            raise ValueError(f"pickscore_num_workers must be > 0, got {num_workers}")
-
-        num_gpus_per_worker = float(getattr(args, "pickscore_num_gpus_per_worker", 1.0))
-        if num_gpus_per_worker < 0:
-            raise ValueError(f"pickscore_num_gpus_per_worker must be >= 0, got {num_gpus_per_worker}")
-
-        self._batch_size = int(getattr(args, "pickscore_batch_size", 8) or 8)
-        if self._batch_size <= 0:
-            raise ValueError(f"pickscore_batch_size must be > 0, got {self._batch_size}")
-
-        processor_path = _required_arg(args, "pickscore_processor_path")
-        model_path = _required_arg(args, "pickscore_model_path")
+        num_workers = args.pickscore_num_workers
+        num_gpus_per_worker = args.pickscore_num_gpus_per_worker
+        self._batch_size = args.pickscore_batch_size
         self._actors = [
             PickScoreRewardActor.options(
                 num_cpus=1,
                 num_gpus=num_gpus_per_worker,
                 scheduling_strategy="DEFAULT",
             ).remote(
-                processor_path=processor_path,
-                model_path=model_path,
+                processor_path=args.pickscore_processor_path,
+                model_path=args.pickscore_model_path,
             )
             for _ in range(num_workers)
         ]
