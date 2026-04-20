@@ -334,13 +334,20 @@ def train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
+    if args.ckpt_version == "0415":
+        sglang_mode, sglang_submode = "2604", "260415"
+    elif args.ckpt_version == "2604":
+        sglang_mode, sglang_submode = "2604", "260409"
+    else:  # "2601"
+        sglang_mode, sglang_submode = "2601", ""
     extra_env_vars = {
         "SGLANG_HACK_V4_SET_K_AND_S_BACKEND": "triton",
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_SKIP_SECOND_APT_CONVERT": "1",
         "DSV4_CKPT_VERSION": args.ckpt_version,
         "MILES_DSV4_CKPT_VERSION": args.ckpt_version,
-        "SGLANG_DSV4_MODE": args.ckpt_version,
+        "SGLANG_DSV4_MODE": sglang_mode,
+        "SGLANG_DSV4_2604_SUBMODE": sglang_submode,
     }
 
     misc_args = (
