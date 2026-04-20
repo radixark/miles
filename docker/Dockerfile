@@ -46,7 +46,7 @@ RUN mkdir -p /tmp/wheels && \
     curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys, json, subprocess; \
 [subprocess.run(['curl', '-fSL', '-o', '/tmp/wheels/' + a['name'], a['browser_download_url']], check=True) \
- for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.whl')]" && \
+ for a in json.load(sys.stdin)['assets'] if a['name'].endswith(('.whl', '.tar.gz'))]" && \
     ls -lh /tmp/wheels/
 
 # ====================================== Python dependencies ============================================
@@ -124,5 +124,37 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
 
 # int4_qat
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
+
+# ====================================== Install sgl-model-gateway ============================================
+#   SGL_ROUTER_USE_WHEELS=0:
+#     Build from source  https://github.com/radixark/sgl-router-for-miles
+#   SGL_ROUTER_USE_WHEELS=1 (default):
+#     Install the pre-built sgl-model-gateway wheel
+
+ARG SGL_ROUTER_USE_WHEELS=1
+ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
+ARG SGL_ROUTER_BRANCH=main
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    if [ "${SGL_ROUTER_USE_WHEELS}" = "1" ]; then \
+      pip install --force-reinstall /tmp/wheels/sglang_router-*.whl && \
+      tar xzf /tmp/wheels/sgl-model-gateway-linux-*.tar.gz -C /usr/local/bin/ && \
+      chmod +x /usr/local/bin/sgl-model-gateway; \
+    elif [ "${SGL_ROUTER_USE_WHEELS}" = "0" ]; then \
+      git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+      curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+      export PATH="/root/.cargo/bin:${PATH}" && \
+      python3 -m pip install maturin && \
+      cd /build/sgl-model-gateway/bindings/python && \
+      ulimit -n 65536 && \
+      maturin build --release --features vendored-openssl --out /build/gateway_wheels && \
+      cd /build/sgl-model-gateway && \
+      cargo build --release --bin sgl-model-gateway --features vendored-openssl && \
+      cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
+      chmod +x /usr/local/bin/sgl-model-gateway && \
+      pip install --force-reinstall /build/gateway_wheels/sglang_router-*.whl && \
+      rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
+    fi
 
 RUN rm -rf /tmp/wheels

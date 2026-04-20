@@ -11,6 +11,9 @@ from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
+from sglang.srt.layers.moe import initialize_moe_config
+from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
+from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
@@ -259,6 +262,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             rl_quant_profile=server_args.rl_quant_profile,
         )
         server_args_module._global_server_args = server_args
+        initialize_moe_config(server_args)
+        initialize_fp8_gemm_config(server_args)
+        initialize_fp4_gemm_config(server_args)
         with ParallelismContext(parallelism_config):
             model = get_model(
                 model_config=ModelConfig(model_path),
