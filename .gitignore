@@ -193,9 +193,3 @@ _examples_synced/
 .env
 .DS_Store
 .claude/
-
-# Slurm job scripts (local, not tracked)
-scripts/slurm/
-
-# Profiling devlog (local, not tracked)
-devlog-profiling.md
