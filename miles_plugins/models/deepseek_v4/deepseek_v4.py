@@ -124,6 +124,10 @@ class DeepSeekV4Attention(MegatronModule):
             parallel_mode="duplicated",
         )
         self.kv_norm = TENorm(config_no_sp, self.head_dim, eps=self.eps)
+
+        for p in list(self.wq_a.parameters()) + list(self.wkv.parameters()):
+            p.sequence_parallel = False
+
         self.wo_a = ColumnParallelLinear(
             self.n_heads * self.head_dim // self.n_groups,
             self.n_groups * self.o_lora_rank,
