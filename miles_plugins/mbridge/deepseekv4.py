@@ -92,6 +92,11 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         config.dsv4_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
         config.dsv4_compress_rope_theta = getattr(self.hf_config, "compress_rope_theta", 160000)
 
+        config.dsv4_swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
+        if config.dsv4_swiglu_limit > 0:
+            config.bias_activation_fusion = False
+            config.activation_func_clamp_value = config.dsv4_swiglu_limit
+
         config.dsv4_o_groups = getattr(self.hf_config, "o_groups", 8)
         config.dsv4_o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
         config.dsv4_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)
