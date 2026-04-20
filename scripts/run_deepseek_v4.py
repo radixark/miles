@@ -335,6 +335,8 @@ def train(args: ScriptArgs):
         "--router-health-failure-threshold 40 "  # TODO improve
     )
     if args.ckpt_version == "0415":
+        sglang_args += f"--sglang-ep-size {sglang_world_size} "
+    if args.ckpt_version == "0415":
         sglang_mode, sglang_submode = "2604", "260415"
     elif args.ckpt_version == "2604":
         sglang_mode, sglang_submode = "2604", "260409"
