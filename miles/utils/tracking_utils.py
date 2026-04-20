@@ -35,3 +35,15 @@ def log(args, metrics, step_key: str):
             "driver and workers can resolve the miles_prometheus_collector Ray actor."
         )
         prom.update.remote(metrics)
+
+
+def log_per_engine(args, metrics: dict, engine_id: str | int):
+    """Log metrics with an engine_id label for per-engine Grafana views.
+
+    Also logs to the aggregate (label-free) path so existing dashboards
+    continue to work unchanged.
+    """
+    if args.use_prometheus:
+        prom = get_prometheus()
+        if prom is not None:
+            prom.update_with_labels.remote(metrics, {"engine_id": str(engine_id)})

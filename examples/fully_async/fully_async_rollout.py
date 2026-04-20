@@ -7,6 +7,7 @@ import time
 
 import aiohttp
 
+from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.data_source import DataSource
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group
 from miles.utils.async_utils import run
@@ -326,16 +327,34 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource)
             flush=True,
         )
 
+    # Collect fully-async pipeline metrics
+    async_metrics = {}
+    if current_engine_version is not None:
+        async_metrics["async/current_engine_version"] = current_engine_version
+    if staleness_values:
+        async_metrics["async/staleness_mean"] = sum(staleness_values) / len(staleness_values)
+        async_metrics["async/staleness_max"] = max(staleness_values)
+    async_metrics["async/stale_groups_discarded"] = stale_groups_recycled
+    async_metrics["async/queue_depth"] = worker.get_queue_size()
+    async_metrics["async/data_buffer_size"] = (
+        len(getattr(data_buffer, "buffer", [])) if hasattr(data_buffer, "buffer") else 0
+    )
+    aborted_count = sum(
+        1 for gid, grp in completed_groups.items() if any(s.status == Sample.Status.ABORTED for s in grp)
+    )
+    async_metrics["async/aborted_groups"] = aborted_count
+
     data = sorted(data, key=lambda group: group[0].index)
-    return data
+    return data, async_metrics
 
 
 def generate_rollout_fully_async(args, rollout_id, data_buffer: DataSource, evaluation=False):
     if evaluation:
         raise ValueError("Evaluation mode not supported in simple async rollout")
 
-    completed_samples = run(generate_rollout_async(args, rollout_id, data_buffer))
-    return completed_samples
+    result = run(generate_rollout_async(args, rollout_id, data_buffer))
+    samples, async_metrics = result
+    return RolloutFnTrainOutput(samples=samples, metrics=async_metrics)
 
 
 # Register exit cleanup function

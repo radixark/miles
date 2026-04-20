@@ -1216,6 +1216,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Prometheus metrics. Used to distinguish runs in Grafana. "
                 "Defaults to --wandb-group if set.",
             )
+            parser.add_argument(
+                "--peak-gpu-tflops",
+                type=float,
+                default=None,
+                help="Peak BF16 TFLOPS per GPU for MFU computation. "
+                "If not set, auto-detected from GPU model name "
+                "(H100=990, H200=990, B200=2250, A100=312). "
+                "Used to compute perf/train_mfu and perf/rollout_mfu.",
+            )
             return parser
 
         # debug

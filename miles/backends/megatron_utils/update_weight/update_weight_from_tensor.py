@@ -1,4 +1,5 @@
 import logging
+import time as _time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -13,6 +14,7 @@ from ray.actor import ActorHandle
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, build_lora_sync_config, is_lora_weight_name
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.timer import Timer
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import post_process_weights
@@ -172,9 +174,11 @@ class UpdateWeightFromTensor:
         """
         version++, flush caches, process buckets. Progress on rank 0.
         """
+        t_total_start = _time.time()
         self.weight_version += 1
 
         rank = dist.get_rank()
+        t0 = _time.time()
         if rank == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
@@ -186,7 +190,9 @@ class UpdateWeightFromTensor:
                     post_process_quantization=False,
                 )
         dist.barrier(group=get_gloo_group())
+        t_pause = _time.time() - t0
 
+        t0 = _time.time()
         megatron_local_weights = self.weights_getter()
 
         sync_chunk_count = 0
@@ -205,11 +211,10 @@ class UpdateWeightFromTensor:
             )
 
         dist.barrier(group=get_gloo_group())
+        t_gather_transfer = _time.time() - t0
 
+        t0 = _time.time()
         if rank == 0:
-            # `post_process_quantization` is related to the `process_weights_after_loading`
-            # in the sglang rollout side, which should always be invoked after weight
-            # updating.
             post_process_weights(
                 rollout_engines=self.rollout_engines,
                 restore_weights_before_load=False,
@@ -217,6 +222,15 @@ class UpdateWeightFromTensor:
             )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
+        t_postprocess = _time.time() - t0
+
+        t_total = _time.time() - t_total_start
+
+        timer = Timer()
+        timer.add("update_weight", t_total)
+        timer.add("pause_generation", t_pause)
+        timer.add("weight_gather_and_transfer", t_gather_transfer)
+        timer.add("weight_postprocess", t_postprocess)
 
     def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         all_refs = []

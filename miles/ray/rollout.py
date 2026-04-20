@@ -1264,6 +1264,23 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
     token_perf([sample.response_length for sample in samples], non_generation_time, key="")
     token_perf([sample.effective_response_length for sample in samples], non_generation_time, key="effective_")
 
+    # Rollout MFU: forward FLOPs utilization on inference GPUs
+    if args.rollout_num_gpus and rollout_time > 0:
+        try:
+            from miles.utils.flops_utils import calculate_fwd_flops
+            from miles.utils.train_metric_utils import _get_peak_gpu_tflops
+
+            total_lengths = [sample.total_length for sample in samples]
+            fwd_flops = calculate_fwd_flops(seqlens=total_lengths, args=args) / 1e12
+            rollout_tflops = fwd_flops / rollout_time
+            log_dict["rollout_tflops"] = rollout_tflops
+
+            peak_tflops = _get_peak_gpu_tflops(args)
+            if peak_tflops is not None:
+                log_dict["rollout_mfu"] = rollout_tflops / (peak_tflops * args.rollout_num_gpus)
+        except Exception:
+            pass
+
     return log_dict
 
 

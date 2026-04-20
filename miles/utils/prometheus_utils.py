@@ -72,6 +72,10 @@ class _PrometheusCollector:
     Runs on the driver node.  All processes push metrics here via
     ``handle.update.remote(metrics)`` — works across nodes because
     Ray handles the RPC transparently.
+
+    Supports per-engine metrics via ``update_with_labels``.  Each
+    unique combination of (run_name, engine_id, ...) creates a
+    separate time-series, so Grafana can show per-engine breakdowns.
     """
 
     def __init__(self, args):
@@ -82,8 +86,8 @@ class _PrometheusCollector:
         self._run_name = (
             getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None) or "miles_training"
         )
-        self._label_keys = ["run_name"]
-        self._label_vals = [self._run_name]
+        self._base_label_keys = ("run_name",)
+        self._base_label_vals = (self._run_name,)
 
         port = args.prometheus_port
         start_http_server(port)
@@ -91,19 +95,48 @@ class _PrometheusCollector:
         bind_ip = get_current_node_ip()
         logger.info("Prometheus metrics server started on %s:%d, run_name=%s", bind_ip, port, self._run_name)
 
+    def _ensure_gauge(self, safe_key: str, description: str, label_keys: tuple):
+        """Get or create a Gauge with the given label set.
+
+        If a gauge already exists under ``safe_key`` but with **different**
+        label keys (e.g. first call had only ``run_name``, later call adds
+        ``engine_id``), we create a separate gauge with a ``__`` suffix to
+        avoid a ValueError from prometheus_client.
+        """
+        cache_key = (safe_key, label_keys)
+        if cache_key not in self._gauges:
+            try:
+                self._gauges[cache_key] = self._Gauge(safe_key, description, label_keys)
+            except ValueError:
+                suffixed = safe_key + "__" + "_".join(label_keys)
+                self._gauges[cache_key] = self._Gauge(suffixed, description, label_keys)
+        return self._gauges[cache_key]
+
     def update(self, metrics: dict):
-        """Set gauge values for all numeric metrics."""
+        """Set gauge values for all numeric metrics (aggregate, no engine_id)."""
+        label_keys = self._base_label_keys
+        label_vals = self._base_label_vals
         for key, value in metrics.items():
             if not isinstance(value, (int, float)):
                 continue
             safe_key = _METRIC_PREFIX + (key.replace("/", "_").replace("-", "_").replace("@", "_at_"))
-            if safe_key not in self._gauges:
-                self._gauges[safe_key] = self._Gauge(
-                    safe_key,
-                    key,
-                    self._label_keys,
-                )
-            self._gauges[safe_key].labels(*self._label_vals).set(value)
+            gauge = self._ensure_gauge(safe_key, key, label_keys)
+            gauge.labels(*label_vals).set(value)
+
+    def update_with_labels(self, metrics: dict, extra_labels: dict):
+        """Set gauge values tagged with extra labels (e.g. engine_id).
+
+        ``extra_labels`` is merged with the base labels (run_name) so each
+        unique combination produces a separate Prometheus time-series.
+        """
+        label_keys = self._base_label_keys + tuple(sorted(extra_labels.keys()))
+        label_vals = self._base_label_vals + tuple(extra_labels[k] for k in sorted(extra_labels.keys()))
+        for key, value in metrics.items():
+            if not isinstance(value, (int, float)):
+                continue
+            safe_key = _METRIC_PREFIX + (key.replace("/", "_").replace("-", "_").replace("@", "_at_"))
+            gauge = self._ensure_gauge(safe_key, key, label_keys)
+            gauge.labels(*label_vals).set(value)
 
     def ping(self):
         return True

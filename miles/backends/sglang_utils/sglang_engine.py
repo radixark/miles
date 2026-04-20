@@ -674,6 +674,13 @@ def _compute_server_args(
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
         unused_keys.discard(attr.name)
 
+    extra_labels = dict(kwargs.get("extra_metric_labels", None) or {})
+    extra_labels["miles_engine_id"] = str(rank)
+    run_name = getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None)
+    if run_name:
+        extra_labels["miles_run_name"] = run_name
+    kwargs["extra_metric_labels"] = extra_labels
+
     # for compatibility with old args
     if len(unused_keys) > 0:
         logger.info(f"Warning: The following arguments is not supported in the current sglang: {unused_keys}.")

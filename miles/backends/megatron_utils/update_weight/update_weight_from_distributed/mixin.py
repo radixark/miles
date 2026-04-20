@@ -1,3 +1,4 @@
+import time as _time
 from collections.abc import Callable
 
 import ray
@@ -8,6 +9,7 @@ from megatron.core import mpu
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.timer import Timer
 
 from ...megatron_to_hf import convert_to_hf
 from ..common import all_gather_param, collect_named_tensors_for_weight_transfer, post_process_weights
@@ -179,17 +181,32 @@ class DistBucketedWeightUpdateMixin:
         - `_finalize_and_resume_engines`: run post-process, resume rollout
             generation.
         """
+        t_total_start = _time.time()
         self.weight_version += 1
 
+        t0 = _time.time()
         self._pause_and_prepare_engines()
         dist.barrier(group=get_gloo_group())
+        t_pause = _time.time() - t0
 
         pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
+        t0 = _time.time()
         self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
         dist.barrier(group=get_gloo_group())
         self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
         dist.barrier(group=get_gloo_group())
+        t_gather_transfer = _time.time() - t0
 
+        t0 = _time.time()
         self._finalize_and_resume_engines()
         dist.barrier(group=get_gloo_group())
+        t_postprocess = _time.time() - t0
+
+        t_total = _time.time() - t_total_start
+
+        timer = Timer()
+        timer.add("update_weight", t_total)
+        timer.add("pause_generation", t_pause)
+        timer.add("weight_gather_and_transfer", t_gather_transfer)
+        timer.add("weight_postprocess", t_postprocess)
