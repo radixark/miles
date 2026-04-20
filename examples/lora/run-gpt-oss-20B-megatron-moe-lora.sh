@@ -92,7 +92,7 @@ GRPO_ARGS=(
 
 OPTIMIZER_ARGS=(
    --optimizer adam
-   --lr 1e-6
+   --lr 1e-5
    --lr-decay-style constant
    --weight-decay 0.1
    --adam-beta1 0.9
@@ -109,7 +109,8 @@ SGLANG_ARGS=(
    --sglang-dtype bfloat16
    --sglang-decode-log-interval 1000
    --sglang-mem-fraction-static 0.2
-   --sglang-disable-cuda-graph
+   # Note: need to use bf16 ckpt when enable triton moe backend, eg, lmsys/gpt-oss-20b-bf16
+   # mxfp4 currently not supported
    --sglang-moe-runner-backend triton
 )
 
@@ -127,7 +128,7 @@ MISC_ARGS=(
    # Must use --qkv-format bshd for the fused backend to work with this model's attention pattern.
    --qkv-format bshd
    --attention-backend fused
-   --update-weight-buffer-size 4294967296
+   --update-weight-buffer-size 536870912 # 512MB
 )
 
 
