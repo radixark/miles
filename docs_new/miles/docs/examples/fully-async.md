@@ -26,7 +26,7 @@ instead of the sum.
 
 ## Prerequisites
 
-* You completed the [Qwen3-4B](../models/dense/qwen3.md) recipe (or have an
+* You completed the [Qwen3-4B](../models/qwen/qwen3.md) recipe (or have an
   equivalent model + dataset).
 * Comfortable with [Customization](../user-guide/customization.md) — async rollout uses
   a custom rollout function.

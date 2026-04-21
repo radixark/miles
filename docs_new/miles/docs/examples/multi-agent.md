@@ -22,7 +22,7 @@ you can hack on it without pulling in MrlX's full dependency tree.
 
 ## Prerequisites
 
-* You've completed the [Qwen3-30B-A3B](../models/moe/qwen3.md) recipe (the
+* You've completed the [Qwen3-30B-A3B](../models/qwen/qwen3-moe.md) recipe (the
   example uses that model).
 * Familiar with [Customization](../user-guide/customization.md).
 

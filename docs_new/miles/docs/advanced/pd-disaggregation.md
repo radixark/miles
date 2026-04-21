@@ -89,7 +89,7 @@ use RDMA.
 
 ## Pairs nicely with
 
-* [DeepSeek R1 recipe](../models/moe/deepseek.md) — at 671 B scale, PD is a clear
+* [DeepSeek R1 recipe](../models/deepseek/deepseek.md) — at 671 B scale, PD is a clear
   win.
 * [Speculative decoding](speculative-decoding.md) — drafts run on the decode pool, the
   target verifies on the prefill pool.
