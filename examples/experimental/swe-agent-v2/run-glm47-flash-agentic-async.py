@@ -37,6 +37,10 @@ import miles.utils.external_utils.command_utils as U
 SCRIPT_DIR = Path(__file__).resolve().parent
 FULLY_ASYNC_DIR = (Path(__file__).resolve().parent.parent.parent / "fully_async").resolve()
 
+# Cluster-wide GPU-node ceiling for the ckpt-conversion job. Kept below the
+# raw node count so ckpt conversion doesn't starve the rest of the cluster.
+MAX_CONVERT_GPUS = 92
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -110,8 +114,12 @@ def cleanup():
     targets = ["sglang", "train.py", "train_async.py", "MegatronTrain"]
     exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
     for t in targets:
+        # Bracket-wrap the first char so the pgrep pattern doesn't match its
+        # own shell/subprocess command line (which literally contains the
+        # bracketed pattern and thus fails the regex).
+        pattern = f"[{t[0]}]{t[1:]}"
         subprocess.run(
-            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
+            f"pgrep -f '{pattern}' | {exclude} | xargs -r kill 2>/dev/null || true",
             shell=True,
         )
     time.sleep(5)
@@ -120,7 +128,7 @@ def cleanup():
 
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format."""
-    max_convert_nodes = 92 // args.num_gpus_per_node
+    max_convert_nodes = MAX_CONVERT_GPUS // args.num_gpus_per_node
     convert_nodes = min(args.num_nodes, max_convert_nodes)
     U.convert_checkpoint(
         model_name=args.model_name,
