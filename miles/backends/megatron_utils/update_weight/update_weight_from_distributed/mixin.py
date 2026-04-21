@@ -180,16 +180,41 @@ class DistBucketedWeightUpdateMixin:
             generation.
         """
         self.weight_version += 1
+        debug_first_weight_sync = (
+            getattr(self.args, "debug_first_weight_sync", None)
+            and not getattr(self, "_debug_first_weight_sync_done", False)
+            and self.weight_version == 1
+        )
+        if debug_first_weight_sync:
+            from miles.utils.hf_checkpoint_debug import DebugFirstWeightSync
+
+            self._debug_first_weight_sync = DebugFirstWeightSync(
+                output_dir=self.args.debug_first_weight_sync,
+                source_checkpoint=getattr(self.args, "hf_checkpoint", None),
+                write_rank=self._is_source,
+            )
+        elif not hasattr(self, "_debug_first_weight_sync"):
+            self._debug_first_weight_sync = None
 
         self._pause_and_prepare_engines()
         dist.barrier(group=get_gloo_group())
 
         pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-        self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+        def _update_with_debug(converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None) -> None:
+            if self._debug_first_weight_sync is not None:
+                self._debug_first_weight_sync.write_chunk(converted_named_tensors)
+            self._update_weight_implementation(converted_named_tensors, pbar)
+
+        self._gather_and_update_non_expert_weights(_update_with_debug, pbar)
         dist.barrier(group=get_gloo_group())
-        self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+        self._gather_and_update_expert_weights(_update_with_debug, pbar)
         dist.barrier(group=get_gloo_group())
 
         self._finalize_and_resume_engines()
         dist.barrier(group=get_gloo_group())
+        if debug_first_weight_sync and self._debug_first_weight_sync is not None:
+            self._debug_first_weight_sync.finalize_and_compare(group=get_gloo_group())
+            self._debug_first_weight_sync_done = True
+            self._debug_first_weight_sync = None
+            raise RuntimeError("debug-first-weight-sync complete; terminating as requested.")
