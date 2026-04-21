@@ -24,10 +24,33 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
+from sglang.jit_kernel.hadamard import hadamard_transform
+from sglang.srt.layers.attention.nsa.triton_kernel import act_quant
 from transformers import AutoConfig
 
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
+
+
+def _fake_quantize_dequantize_fp8_ste(
+    x: torch.Tensor,
+    block_size: int = 128,
+) -> torch.Tensor:
+    """Apply FP8 quant-dequant in forward while keeping identity gradient (STE)."""
+    if x.size(-1) % block_size != 0:
+        raise ValueError(f"Last dim {x.size(-1)} must be divisible by block_size={block_size}.")
+
+    x_contiguous = x.contiguous()
+
+    with torch.no_grad():
+        x_fp8, x_scale = act_quant(x_contiguous, block_size, scale_fmt="ue8m0")
+        num_groups = x_contiguous.size(-1) // block_size
+        x_dequant = (x_fp8.float().view(-1, num_groups, block_size) * x_scale.float().view(-1, num_groups, 1)).view_as(
+            x_contiguous
+        )
+        x_dequant = x_dequant.to(dtype=x_contiguous.dtype)
+
+    return x_contiguous + (x_dequant - x_contiguous).detach()
 
 
 @dataclass
@@ -136,6 +159,7 @@ class DSAMultiLatentAttention(Attention):
         )
 
         self.index_topk = 2048
+        self.fp8_indexer = bool(getattr(self.config, "fp8_indexer", False))
 
     def forward(
         self,
@@ -581,6 +605,12 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             index_k_pe = fuse_rope(index_k_pe, cu_seqlens_kv, gathered=True, interleaved=False)
             index_key = torch.cat([index_k_pe, index_k_no_pe], dim=-1)
 
+        if self.fp8_indexer:
+            index_query = hadamard_transform(index_query.contiguous(), scale=self.config.index_head_dim**-0.5)
+            index_key = hadamard_transform(index_key.contiguous(), scale=self.config.index_head_dim**-0.5)
+            index_query = _fake_quantize_dequantize_fp8_ste(index_query)
+            index_key = _fake_quantize_dequantize_fp8_ste(index_key)
+
         return query, key, w_vc, index_query, index_key, head_weights
 
     def get_query_key_value_tensors(self):
@@ -635,6 +665,7 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = hf_config.indexer_rope_interleave
     config.freeze_indexer = getattr(args, "freeze_indexer", False)
+    config.fp8_indexer = getattr(args, "fp8_indexer", False)
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,
