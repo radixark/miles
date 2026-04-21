@@ -5,6 +5,7 @@ from functools import partial
 
 try:
     from flashinfer import mxfp8_quantize as flashinfer_mxfp8_quantize
+
     mxfp8_quantize = partial(flashinfer_mxfp8_quantize, is_sf_swizzled_layout=False)
 except ImportError:
     logger = logging.getLogger(__name__)
