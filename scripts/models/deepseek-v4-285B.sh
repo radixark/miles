@@ -23,7 +23,7 @@ ROTARY_SCALING_FACTOR="${ROTARY_SCALING_FACTOR:-4}"
 
 SWIGLU_LIMIT_ARGS=()
 if [ "$DSV4_CKPT_VERSION" = "0415" ]; then
-  SWIGLU_LIMIT_ARGS=(--activation-func-clamp-value 10 --no-bias-swiglu-fusion)
+  SWIGLU_LIMIT_ARGS=(--activation-func-clamp-value 10 --no-bias-swiglu-fusion --no-activation-func-clamp-shared-expert)
 fi
 
 # DeepSeek V4 285B config
