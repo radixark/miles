@@ -76,9 +76,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_health_check_first_wait: int = 1800
 
     # Agent settings
-    agent_server_url: str = os.environ.get(
-        "AGENT_SERVER_URL", "http://ts-egress-aws-agent-server:8080"
-    )
+    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://ts-egress-aws-agent-server:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
@@ -194,9 +192,7 @@ def execute(args: ScriptArgs):
     # EP = largest divisor of 64 that also divides DP.
     tp, pp = 4, 1
     dp = train_gpus // (tp * pp)
-    assert train_gpus % (tp * pp) == 0, (
-        f"train GPUs ({train_gpus}) must be divisible by TP*PP ({tp * pp})"
-    )
+    assert train_gpus % (tp * pp) == 0, f"train GPUs ({train_gpus}) must be divisible by TP*PP ({tp * pp})"
     num_experts = 64
     ep = max(d for d in range(1, dp + 1) if num_experts % d == 0 and dp % d == 0)
 
@@ -251,8 +247,7 @@ def execute(args: ScriptArgs):
     sglang_decode_max_bs = 256
     sglang_attn_tp_size = 4
     assert sglang_world_size % sglang_attn_tp_size == 0, (
-        f"sglang world ({sglang_world_size}) must be divisible by "
-        f"attn_tp_size ({sglang_attn_tp_size})"
+        f"sglang world ({sglang_world_size}) must be divisible by " f"attn_tp_size ({sglang_attn_tp_size})"
     )
     sglang_attn_dp_size = sglang_world_size // sglang_attn_tp_size
 
