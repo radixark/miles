@@ -26,3 +26,72 @@ P2P mode addresses this by having each training rank transfer only the specific 
 3. **P2P transfer**: Instead of a collective broadcast, each source rank writes bucketed weight tensors directly to the destination rollout rank's memory, in a write-only fashion.
 
 4. **Synchronization**: Once all RDMA writes are confirmed complete, rollout engines increment their weight version and resume generation for the next training step.
+
+## Examples
+
+All the following settings are tested under h100-80g clusters.
+
+### Single node: Qwen3-4B
+`tests/e2e/megatron/test_qwen3_4B_p2p.py`
+### Multi node
+
+Each multi-node example ships a **prepare** script (download model/datasets, convert checkpoint) and a **run** script (launch Ray jobs). All scripts accept three positional arguments:
+
+| Argument | Description |
+|---|---|
+| `MODE` | `broadcast` or `p2p` |
+| `NODE_RANK` | `0` (head node) or `1..N` (worker nodes) |
+| `HEAD_NODE_IP` | IP address of the head node |
+
+#### Qwen3-30B-A3B (4 nodes)
+
+| Script | Description |
+|---|---|
+| `examples/p2p_weight_transfer/prepare-qwen3-30B-A3B.sh` | Prepare: download model/datasets, convert checkpoint |
+| `examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh` | Run: 4-node launch (`broadcast` or `p2p`) |
+
+```bash
+# 1. Prepare (single node)
+bash examples/p2p_weight_transfer/prepare-qwen3-30B-A3B.sh
+
+# 2. Launch on each node
+bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 0 $HEAD_NODE_IP  # head
+bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 1 $HEAD_NODE_IP  # worker
+bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 2 $HEAD_NODE_IP
+bash examples/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh p2p 3 $HEAD_NODE_IP
+```
+
+#### GLM-4.7-Flash (2 nodes)
+
+| Script | Description |
+|---|---|
+| `examples/p2p_weight_transfer/prepare-glm4.7-flash.sh` | Prepare: install dependencies, download model/datasets, convert checkpoint |
+| `examples/p2p_weight_transfer/run-glm4.7-flash-2node-profile.sh` | Run: 2-node launch (`broadcast` or `p2p`) |
+
+```bash
+# 1. Prepare (single node)
+bash examples/p2p_weight_transfer/prepare-glm4.7-flash.sh
+
+# 2. Launch on each node
+bash examples/p2p_weight_transfer/run-glm4.7-flash-2node-profile.sh p2p 0 $HEAD_NODE_IP  # head
+bash examples/p2p_weight_transfer/run-glm4.7-flash-2node-profile.sh p2p 1 $HEAD_NODE_IP  # worker
+```
+
+#### Qwen3-235B-A22B (16 nodes)
+
+| Script | Description |
+|---|---|
+| `examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh` | Prepare: download model/datasets, convert checkpoint |
+| `examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh` | Run: 16-node launch (`broadcast` or `p2p`) |
+
+```bash
+# 1. Prepare (single node)
+bash examples/p2p_weight_transfer/prepare-qwen3-235b-A22B.sh
+
+# 2. Launch on each node
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 0 $HEAD_NODE_IP   # head
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 1 $HEAD_NODE_IP   # worker
+...
+bash examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh p2p 15 $HEAD_NODE_IP
+```
+
