@@ -52,6 +52,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hf_checkpoint: str = "/models/zai-org/GLM-4.7-Flash"
     ref_load: str = "/models/zai-org/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agentic_async/"
+    # Directory to dump rollout + training traces (per-rollout .pt files). Empty
+    # means default to ``<save_dir>/traces``; set to ``"disabled"`` to skip.
+    save_traces_dir: str = ""
     prompt_data: str = "/root/swe_train.jsonl"
     max_seq_len: int = 16384
     rollout_max_response_len: int = 8192
@@ -297,6 +300,10 @@ def execute(args: ScriptArgs):
     )
     if args.accumulate_allreduce_grads_in_fp32:
         misc_args += "--accumulate-allreduce-grads-in-fp32 "
+
+    traces_dir = args.save_traces_dir or f"{args.save_dir.rstrip('/')}/traces"
+    if traces_dir != "disabled":
+        misc_args += f"--dump-details {traces_dir} "
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
