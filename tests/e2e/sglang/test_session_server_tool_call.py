@@ -57,11 +57,6 @@ def _get_config() -> ModelConfig:
 def prepare():
     cfg = _get_config()
     U.exec_command("mkdir -p /root/models /root/datasets")
-    if MODEL_FAMILY == "glm47":
-        U.exec_command(
-            "pip install git+https://github.com/huggingface/transformers.git@"
-            "76732b4e7120808ff989edbd16401f61fa6a0afa --break-system-packages"
-        )
     U.exec_command(f"hf download {cfg.model_name} --local-dir /root/models/{cfg.model_name.split('/')[-1]}")
 
     prompts = [
@@ -156,5 +151,3 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute()
-    if MODEL_FAMILY == "glm47":
-        U.exec_command("pip install transformers==4.57.1 --break-system-packages")

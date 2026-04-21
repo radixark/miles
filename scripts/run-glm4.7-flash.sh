@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Notice: run this command to upgrade transformers version which supports glm4.7-flash.
-# pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa
-
 # for rerun the task
 pkill -9 sglang
 sleep 3

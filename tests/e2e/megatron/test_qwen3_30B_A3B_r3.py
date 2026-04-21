@@ -77,7 +77,6 @@ def execute():
         "--eps-clip 4e-4 "
         "--use-tis "
         "--use-rollout-routing-replay "
-        "--use-miles-router "
     )
 
     optimizer_args = (

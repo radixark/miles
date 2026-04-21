@@ -92,6 +92,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -188,7 +189,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 1, "test_file": "e2e/sglang/test_chat_input_ids_equivalence.py"}, {"model_family": "qwen3", "num_gpus": 1, "test_file": "e2e/sglang/test_session_server_tool_call.py"}, {"model_family": "glm47", "num_gpus": 1, "test_file": "e2e/sglang/test_session_server_tool_call.py"}, {"model_family": "qwen3", "num_gpus": 1, "test_file": "e2e/sglang/test_tito_logprob_equivalence.py"}, {"model_family": "glm47", "num_gpus": 1, "test_file": "e2e/sglang/test_tito_logprob_equivalence.py"}]
+        info: [{"num_gpus": 1, "test_file": "e2e/sglang/test_chat_input_ids_equivalence.py"}, {"model_family": "qwen3", "num_gpus": 1, "test_file": "e2e/sglang/test_session_server_tool_call.py"}, {"model_family": "glm47", "num_gpus": 1, "test_file": "e2e/sglang/test_session_server_tool_call.py"}, {"model_family": "qwen3", "num_gpus": 1, "test_file": "e2e/sglang/test_tito_logprob_equivalence.py"}, {"model_family": "glm47", "num_gpus": 1, "test_file": "e2e/sglang/test_tito_logprob_equivalence.py"}, {"model_family": "qwen3_30b_a3b", "num_gpus": 1, "test_file": "e2e/sglang/test_r3_router_equivalence.py"}, {"model_family": "glm47_flash", "num_gpus": 1, "test_file": "e2e/sglang/test_r3_router_equivalence.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -204,6 +205,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -316,6 +318,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -428,6 +431,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -524,7 +528,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/megatron/test_quick_start_glm4_9B.py"}, {"name": "qwen3-30B-A3B-deepep-fp8", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"name": "qwen3-30B-A3B-bridge", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_bridge": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_mimo_7B_mtp_only_grad.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_glm47_flash_r3_mtp.py"}]
+        info: [{"num_gpus": 8, "test_file": "e2e/megatron/test_quick_start_glm4_9B.py"}, {"name": "qwen3-30B-A3B-deepep-fp8", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"name": "qwen3-30B-A3B-bridge", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_bridge": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_mimo_7B_mtp_only_grad.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_glm47_flash_r3_mtp.py"}, {"num_gpus": 8, "test_file": "e2e/lora/test_lora_qwen2.5_0.5B.py"}]
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -540,6 +544,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -652,6 +657,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -764,6 +770,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -876,6 +883,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -988,6 +996,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -1100,6 +1109,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -1212,6 +1222,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
@@ -1279,6 +1290,7 @@ jobs:
       MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
       MILES_TEST_FEW_GPU: '0'
       SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+      ROUTER_EQ_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
 
     steps:
       - name: Checkout repository
