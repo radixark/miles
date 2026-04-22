@@ -194,6 +194,7 @@ def get_log_probs_and_entropy(
             with_entropy=with_entropy,
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
+            vocab_size=getattr(args, "vocab_size", None),
         )
 
         log_probs_list.append(log_prob.squeeze(-1))
@@ -750,14 +751,15 @@ def policy_loss_function(
     if log_probs.numel() == 0:
         loss += 0 * logits.sum()
 
+    train_scored_log_probs = log_probs
     train_rollout_logprob_abs_diff = None
     train_rollout_kl = None
     if "rollout_log_probs" in batch and batch["rollout_log_probs"]:
         rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
-        train_rollout_logprob_abs_diff = sum_of_sample_mean((old_log_probs - rollout_log_probs).abs())
+        train_rollout_logprob_abs_diff = sum_of_sample_mean((train_scored_log_probs - rollout_log_probs).abs())
         # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
         train_rollout_kl = sum_of_sample_mean(
-            compute_approx_kl(rollout_log_probs, old_log_probs, kl_loss_type="low_var_kl")
+            compute_approx_kl(rollout_log_probs, train_scored_log_probs, kl_loss_type="low_var_kl")
         )
 
     reported_loss = {

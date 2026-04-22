@@ -146,6 +146,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable true-on-policy mode.",
             )
             parser.add_argument(
+                "--recompute-logprobs-via-prefill",
+                action="store_true",
+                default=False,
+                help=(
+                    "Recompute rollout logprobs via SGLang prefill instead of decode kernels. "
+                    "Only needed for models whose prefill and decode paths are not numerically identical."
+                ),
+            )
+            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -1869,6 +1878,9 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if args.recompute_logprobs_via_prefill:
+        assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
     # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])

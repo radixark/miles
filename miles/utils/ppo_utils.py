@@ -150,7 +150,19 @@ def compute_policy_loss(
     return pg_losses, clipfrac
 
 
-def compute_log_probs(logits: torch.Tensor, tokens: torch.Tensor, process_group: dist.ProcessGroup | None):
+def compute_log_probs(
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    process_group: dist.ProcessGroup | None,
+    *,
+    true_on_policy_mode: bool = False,
+    vocab_size: int | None = None,
+):
+    if true_on_policy_mode:
+        full_logits = _gather_true_on_policy_full_logits(logits, process_group, vocab_size=vocab_size)
+        log_probs = torch.log_softmax(full_logits, dim=-1)
+        return log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+
     # TODO: when megatron is not installed, fall back to naive implementation
     from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
 
@@ -158,6 +170,41 @@ def compute_log_probs(logits: torch.Tensor, tokens: torch.Tensor, process_group:
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+
+
+def _prepare_true_on_policy_full_logits(
+    logits_or_shards: torch.Tensor | list[torch.Tensor] | tuple[torch.Tensor, ...],
+    *,
+    vocab_size: int | None = None,
+) -> torch.Tensor:
+    if isinstance(logits_or_shards, (list, tuple)):
+        full_logits = torch.cat([shard.contiguous() for shard in logits_or_shards], dim=-1)
+    else:
+        full_logits = logits_or_shards.contiguous()
+
+    if vocab_size is not None and full_logits.size(-1) > vocab_size:
+        full_logits = full_logits[..., :vocab_size]
+
+    return full_logits.float()
+
+
+def _gather_true_on_policy_full_logits(
+    logits: torch.Tensor,
+    process_group: dist.ProcessGroup | None,
+    *,
+    vocab_size: int | None = None,
+) -> torch.Tensor:
+    if process_group is None:
+        return _prepare_true_on_policy_full_logits(logits, vocab_size=vocab_size)
+
+    tp_size = dist.get_world_size(process_group)
+    if tp_size <= 1:
+        return _prepare_true_on_policy_full_logits(logits, vocab_size=vocab_size)
+
+    from megatron.core.tensor_parallel.mappings import all_gather_last_dim_from_tensor_parallel_region
+
+    full_logits = all_gather_last_dim_from_tensor_parallel_region(logits.contiguous(), group=process_group)
+    return _prepare_true_on_policy_full_logits(full_logits, vocab_size=vocab_size)
 
 
 # from https://github.com/volcengine/verl/blob/0bdf7f469854815177e73dcfe9e420836c952e6e/verl/utils/megatron/tensor_parallel.py#L99
@@ -644,10 +691,22 @@ def chunked_gae(
 
 
 def calculate_log_probs_and_entropy(
-    logits, tokens, tp_group, with_entropy: bool = False, chunk_size: int = -1, true_on_policy: bool = False
+    logits,
+    tokens,
+    tp_group,
+    with_entropy: bool = False,
+    chunk_size: int = -1,
+    true_on_policy: bool = False,
+    vocab_size: int | None = None,
 ):
     if true_on_policy:
-        return _calculate_log_probs_and_entropy_true_on_policy(logits, tokens, with_entropy=with_entropy)
+        return _calculate_log_probs_and_entropy_true_on_policy(
+            logits,
+            tokens,
+            tp_group,
+            with_entropy=with_entropy,
+            vocab_size=vocab_size,
+        )
 
     logits = logits.contiguous()
     # TODO: not sure why we need to clone the logits here.
@@ -685,15 +744,20 @@ def calculate_log_probs_and_entropy(
 def _calculate_log_probs_and_entropy_true_on_policy(
     logits: torch.Tensor,
     tokens: torch.Tensor,
+    tp_group: dist.ProcessGroup | None,
     with_entropy: bool = False,
+    vocab_size: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Simple log-prob and entropy computation matching SGLang's inference path.
+    """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
 
     Args:
-        logits: Aligned logits of shape ``[R, V]`` (already response-sliced
-            and temperature-scaled by ``get_responses``).
+        logits: Aligned local logits of shape ``[R, V_local]`` (already
+            response-sliced and temperature-scaled by ``get_responses``).
         tokens: Target tokens of shape ``[R]``.
+        tp_group: Tensor-parallel process group for vocab gather.
         with_entropy: If True, also compute entropy.
+        vocab_size: Real tokenizer vocab size. If provided, padded logits are
+            truncated after the full-vocab gather and before ``log_softmax``.
 
     Returns:
         Tuple of ``(log_probs, entropy)`` where *log_probs* has shape ``[R]``
@@ -704,12 +768,13 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         entropy = logits.new_zeros((0,)) if with_entropy else None
         return log_prob, entropy
 
-    log_probs_full = torch.log_softmax(logits, dim=-1)
+    full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+    log_probs_full = torch.log_softmax(full_logits, dim=-1)
     log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
 
     entropy = None
     if with_entropy:
-        probs = torch.softmax(logits, dim=-1)
+        probs = log_probs_full.exp()
         entropy = -(probs * log_probs_full).sum(dim=-1)
 
     return log_prob, entropy
