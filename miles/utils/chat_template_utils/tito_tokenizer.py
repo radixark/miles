@@ -1,15 +1,20 @@
 """TITO tokenizer — incremental tokenization for pretokenized prefix reuse.
 
 ``TITOTokenizer`` computes incremental token IDs for non-assistant messages
-(tool responses, system injections) that follow the assistant's generated
-token sequence, then merges them with the pretokenized prefix — handling
-model-specific boundary tokens at the junction.
+(tool responses, user follow-ups, system injections) that follow the
+assistant's generated token sequence, then merges them with the pretokenized
+prefix — handling model-specific boundary tokens at the junction.
 
-The default implementation uses a dummy-message diff: it tokenizes a
-synthetic ``[dummy_user, dummy_assistant]`` base with and without the
-appended messages, then takes the suffix difference as the incremental IDs.
-Model-specific subclasses override ``merge_tokens`` to handle boundary
-quirks at the junction.
+The default implementation incrementally tokenizes appended non-assistant turns
+with role-specific synthetic prefixes:
+
+- contiguous ``tool`` runs use ``[dummy_system, dummy_assistant]``
+- each ``user`` or ``system`` message uses ``[dummy_system]``
+
+The appended suffix is processed left-to-right, then the generation prompt for
+the next assistant turn is appended once at the end.  Model-specific
+subclasses only override ``merge_tokens`` for boundary quirks at the prefix
+junction.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from typing import Any
 from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
-_DUMMY_USER: dict[str, Any] = {"role": "user", "content": "dummy"}
+_DUMMY_SYSTEM: dict[str, Any] = {"role": "system", "content": "dummy system"}
 
 
 def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -45,23 +50,12 @@ def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, An
 
 
 # ---------------------------------------------------------------------------
-# Base / default tokenizer (dummy-prefix diff)
+# Base / default tokenizer
 # ---------------------------------------------------------------------------
 
 
 class TITOTokenizer:
-    """Incremental tokenization and prefix merging using dummy-message diff.
-
-    A synthetic base ``[dummy_user, dummy_assistant]`` simulates the assistant
-    turn boundary so that the diff captures the correct turn-transition tokens:
-
-    1. ``tokens_without`` = tokenize(base, add_generation_prompt=False)
-    2. ``tokens_with``    = tokenize(base + appended, add_generation_prompt=True)
-    3. ``incremental_ids  = tokens_with[len(tokens_without):]``
-
-    Subclasses override ``merge_tokens`` to handle model-specific boundary
-    token quirks.
-    """
+    """Incremental tokenization and prefix merging for appended non-assistant turns."""
 
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
@@ -87,6 +81,96 @@ class TITOTokenizer:
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
+    def _render_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        add_generation_prompt: bool,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> str:
+        return apply_chat_template(
+            messages,
+            tokenizer=self.tokenizer,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+            tools=tools,
+            **self.chat_template_kwargs,
+        )
+
+    def _encode_text(self, text: str) -> list[int]:
+        return self.tokenizer.encode(text, add_special_tokens=False)
+
+    def _split_appended_segments(self, appended_messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        segments: list[list[dict[str, Any]]] = []
+        i = 0
+        while i < len(appended_messages):
+            role = appended_messages[i]["role"]
+            # Many templates wrap a contiguous tool-response run as one logical
+            # block, so tool messages are diffed together instead of one-by-one.
+            if role == "tool":
+                j = i + 1
+                while j < len(appended_messages) and appended_messages[j]["role"] == "tool":
+                    j += 1
+                segments.append(appended_messages[i:j])
+                i = j
+                continue
+            if role in {"user", "system"}:
+                segments.append([appended_messages[i]])
+                i += 1
+                continue
+            raise ValueError(f"unsupported appended role for TITO segmentation: {role}")
+
+        return segments
+
+    def _tokenize_rendered_suffix(
+        self,
+        base_messages: list[dict[str, Any]],
+        appended_messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        add_generation_prompt: bool = False,
+    ) -> list[int]:
+        """Render *base_messages* and *base_messages + appended_messages*, return
+        tokens for the suffix.
+
+        When *add_generation_prompt* is True and *appended_messages* is empty,
+        this computes the generation-prompt suffix (the assistant opener tokens).
+        """
+        text_without = self._render_messages(base_messages, add_generation_prompt=False, tools=tools)
+        text_with = self._render_messages(
+            base_messages + appended_messages,
+            add_generation_prompt=add_generation_prompt,
+            tools=tools,
+        )
+        if not text_with.startswith(text_without):
+            roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
+            raise ValueError(f"rendered suffix diff failed for {roles}")
+        return self._encode_text(text_with[len(text_without) :])
+
+    def _tokenize_tool_segment(
+        self,
+        appended_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        # No dummy user to avoid cut think issues.
+        return self._tokenize_rendered_suffix(
+            [_DUMMY_SYSTEM, _build_dummy_assistant(appended_messages)],
+            appended_messages,
+            tools=tools,
+        )
+
+    def _tokenize_user_and_system_segment(
+        self,
+        appended_message: dict[str, Any],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        # User/system single-message appends share one synthetic context.
+        return self._tokenize_rendered_suffix(
+            [_DUMMY_SYSTEM],
+            [appended_message],
+            tools=tools,
+        )
+
     def tokenize_additional_non_assistant(
         self,
         old_messages: list[dict[str, Any]],
@@ -96,9 +180,9 @@ class TITOTokenizer:
         """Compute incremental token IDs for non-assistant messages appended
         after the pretokenized prefix.
 
-        Only handles tool responses, system injections, etc. — never an
-        assistant message.  Validates that *new_messages* is an append-only
-        extension of *old_messages* via
+        Handles tool responses, user, and system messages —
+        never an assistant message.  Validates that *new_messages* is an
+        append-only extension of *old_messages* via
         ``assert_messages_append_only_with_allowed_role``.
 
         Args:
@@ -114,28 +198,28 @@ class TITOTokenizer:
         """
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
         appended_messages = new_messages[len(old_messages) :]
+        incremental: list[int] = []
 
-        dummy_assistant = _build_dummy_assistant(appended_messages)
-        base_messages = [_DUMMY_USER, dummy_assistant]
+        # Incremental non-assistant content is assembled segment-by-segment
+        # using the smallest synthetic context that preserves each role's
+        # boundary tokens.
+        for segment in self._split_appended_segments(appended_messages):
+            role = segment[0]["role"]
+            if role == "tool":
+                incremental.extend(self._tokenize_tool_segment(segment, tools))
+            elif role == "user" or role == "system":
+                incremental.extend(self._tokenize_user_and_system_segment(segment[0], tools))
+            else:
+                raise ValueError(f"unsupported appended role for TITO tokenization: {role}")
 
-        tokens_without = apply_chat_template(
-            base_messages,
-            tokenizer=self.tokenizer,
-            tokenize=True,
-            add_generation_prompt=False,
+        # The next assistant opener depends on the full post-append history, so
+        # it is derived from the real messages once and appended only at the end.
+        return incremental + self._tokenize_rendered_suffix(
+            new_messages,
+            [],
             tools=tools,
-            **self.chat_template_kwargs,
-        )
-        tokens_with = apply_chat_template(
-            base_messages + list(appended_messages),
-            tokenizer=self.tokenizer,
-            tokenize=True,
             add_generation_prompt=True,
-            tools=tools,
-            **self.chat_template_kwargs,
         )
-
-        return list(tokens_with[len(tokens_without) :])
 
     def merge_tokens(
         self,

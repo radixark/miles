@@ -28,11 +28,6 @@ def _get_latest_checkpointed_iteration() -> int:
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    # GLM-4.7-Flash requires a newer transformers version.
-    U.exec_command(
-        "pip install git+https://github.com/huggingface/transformers.git@"
-        "76732b4e7120808ff989edbd16401f61fa6a0afa --break-system-packages"
-    )
     U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command(f"rm -rf /root/models/{MODEL_NAME}_miles")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")

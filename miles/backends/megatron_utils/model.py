@@ -132,6 +132,7 @@ def setup_model_and_optimizer(
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = None
+
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,

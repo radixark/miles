@@ -3,10 +3,10 @@
 #
 # 2. radixark/miles:dev-cu13-arm64
 #    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.9-cu130-arm64 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-cu130 \
 #    build-arg:WHEELS_TAG=cu130-aarch64 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.9
+ARG SGLANG_IMAGE_TAG=v0.5.10
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -46,7 +46,7 @@ RUN mkdir -p /tmp/wheels && \
     curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys, json, subprocess; \
 [subprocess.run(['curl', '-fSL', '-o', '/tmp/wheels/' + a['name'], a['browser_download_url']], check=True) \
- for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.whl')]" && \
+ for a in json.load(sys.stdin)['assets'] if a['name'].endswith(('.whl', '.tar.gz'))]" && \
     ls -lh /tmp/wheels/
 
 # ====================================== Python dependencies ============================================
@@ -63,7 +63,7 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.4.1
+RUN pip install flash-linear-attention==0.4.2
 RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
@@ -83,12 +83,12 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 # RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/yushengsu-thu/Megatron-Bridge.git@merged-megatron-0.16.0rc0-miles --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
 # https://github.com/pytorch/pytorch/issues/168167
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
@@ -124,5 +124,37 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
 
 # int4_qat
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
+
+# ====================================== Install sgl-model-gateway ============================================
+#   SGL_ROUTER_USE_WHEELS=0:
+#     Build from source  https://github.com/radixark/sgl-router-for-miles
+#   SGL_ROUTER_USE_WHEELS=1 (default):
+#     Install the pre-built sgl-model-gateway wheel
+
+ARG SGL_ROUTER_USE_WHEELS=1
+ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
+ARG SGL_ROUTER_BRANCH=main
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    if [ "${SGL_ROUTER_USE_WHEELS}" = "1" ]; then \
+      pip install --force-reinstall /tmp/wheels/sglang_router-*.whl && \
+      tar xzf /tmp/wheels/sgl-model-gateway-linux-*.tar.gz -C /usr/local/bin/ && \
+      chmod +x /usr/local/bin/sgl-model-gateway; \
+    elif [ "${SGL_ROUTER_USE_WHEELS}" = "0" ]; then \
+      git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+      curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+      export PATH="/root/.cargo/bin:${PATH}" && \
+      python3 -m pip install maturin && \
+      cd /build/sgl-model-gateway/bindings/python && \
+      ulimit -n 65536 && \
+      maturin build --release --features vendored-openssl --out /build/gateway_wheels && \
+      cd /build/sgl-model-gateway && \
+      cargo build --release --bin sgl-model-gateway --features vendored-openssl && \
+      cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
+      chmod +x /usr/local/bin/sgl-model-gateway && \
+      pip install --force-reinstall /build/gateway_wheels/sglang_router-*.whl && \
+      rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
+    fi
 
 RUN rm -rf /tmp/wheels

@@ -36,7 +36,7 @@ class SessionServer:
         )
 
         # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
-        self.app.add_event_handler("shutdown", self.client.aclose)
+        self.app.router.on_shutdown.append(self.client.aclose)
 
         setup_session_routes(self.app, self, args)
 

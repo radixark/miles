@@ -18,10 +18,11 @@ _SESSION_REQUEST_TIMEOUT = 120
 
 
 class OpenAIEndpointTracer:
-    def __init__(self, router_url: str, session_id: str):
+    def __init__(self, router_url: str, session_id: str, session_server_instance_id: str | None = None):
         self.router_url = router_url
         self.session_id = session_id
         self.base_url = f"{router_url}/sessions/{session_id}"
+        self.session_server_instance_id = session_server_instance_id
 
     @staticmethod
     async def create(args: Namespace):
@@ -33,9 +34,22 @@ class OpenAIEndpointTracer:
                 "Pass --use-session-server to start the session server."
             )
         session_url = f"http://{session_ip}:{session_port}"
+        session_server_instance_id = None
+        try:
+            health = await post(f"{session_url}/health", {}, action="get")
+            if isinstance(health, dict):
+                session_server_instance_id = health.get("session_server_instance_id")
+                if session_server_instance_id is not None:
+                    args.session_server_instance_id = session_server_instance_id
+        except Exception as e:
+            logger.warning("Failed to get session server health from %s: %s", session_url, e)
         response = await post(f"{session_url}/sessions", {}, action="post")
         session_id = response["session_id"]
-        return OpenAIEndpointTracer(router_url=session_url, session_id=session_id)
+        return OpenAIEndpointTracer(
+            router_url=session_url,
+            session_id=session_id,
+            session_server_instance_id=session_server_instance_id,
+        )
 
     async def collect_records(self) -> tuple[list[SessionRecord], dict]:
         try:
@@ -184,6 +198,10 @@ def _compute_sample_from_openai_record(
             sample.status = Sample.Status.TRUNCATED
         case "abort":
             sample.status = Sample.Status.ABORTED
+
+    sample.prefix_cache_info.add(choice.get("meta_info", {}))
+    if "weight_version" in choice["meta_info"]:
+        sample.weight_versions.append(choice["meta_info"]["weight_version"])
 
     return sample
 
