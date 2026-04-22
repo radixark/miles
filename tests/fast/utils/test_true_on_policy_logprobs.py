@@ -1,9 +1,6 @@
 import torch
 
-from miles.utils.ppo_utils import (
-    _calculate_log_probs_and_entropy_true_on_policy,
-    _prepare_true_on_policy_full_logits,
-)
+from miles.utils.ppo_utils import _calculate_log_probs_and_entropy_true_on_policy, _prepare_true_on_policy_full_logits
 
 
 def test_true_on_policy_logprobs_tp1_truncate_after_real_vocab():
