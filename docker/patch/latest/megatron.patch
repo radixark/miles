@@ -757,27 +757,6 @@ index b267c8a81..83736acdc 100644
      group.add_argument('--openai-gelu', action='store_true',
                         help='Use OpenAIs GeLU implementation. This option'
                         'should not be used unless for backward compatibility'
-diff --git a/megatron/core/transformer/attention.py b/megatron/core/transformer/attention.py
-index bc5e4e2..74e52c8 100644
---- a/megatron/core/transformer/attention.py
-+++ b/megatron/core/transformer/attention.py
-@@ -1491,6 +1491,16 @@ class SelfAttention(Attention):
-         if output_gate:
-             # Gate [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
-             gate = gate.reshape(*gate.shape[:2], -1, self.hidden_size_per_attention_head)
-+            if self.config.num_query_groups < self.world_size:
-+                # gate has the same head layout as query before slicing.
-+                # Apply the same TP slice so gate matches the per-rank query.
-+                idx = get_tensor_model_parallel_rank() % (
-+                    self.world_size // self.config.num_query_groups
-+                )
-+                size = self.num_attention_heads_per_partition // (
-+                    self.world_size // self.config.num_query_groups
-+                )
-+                gate = gate[:, :, idx * size : (idx + 1) * size, :]
-             return query, key, value, gate
-
-         return query, key, value
 diff --git a/megatron/training/tokenizer/tokenizer.py b/megatron/training/tokenizer/tokenizer.py
 index 13b7526ca..6c590f653 100644
 --- a/megatron/training/tokenizer/tokenizer.py
