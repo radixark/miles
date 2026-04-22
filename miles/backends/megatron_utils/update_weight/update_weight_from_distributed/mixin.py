@@ -10,6 +10,7 @@ from ray import ObjectRef
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.timer import timer
 
 from ...lora_utils import LORA_ADAPTER_NAME, _is_adapter_param_name, build_lora_sync_config, is_lora_weight_name
 from ...megatron_to_hf import convert_to_hf
@@ -223,24 +224,26 @@ class DistBucketedWeightUpdateMixin:
         self._pause_and_prepare_engines()
         dist.barrier(group=get_gloo_group())
 
-        # Base weights: skip after first round when LoRA is enabled (frozen base).
-        if not (getattr(self, "is_lora", False) and self._lora_base_synced):
-            pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
+        with timer("update_weights_implementation"):
+            # Base weights: skip after first round when LoRA is enabled (frozen base).
+            if not (getattr(self, "is_lora", False) and self._lora_base_synced):
+                pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-            self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-            dist.barrier(group=get_gloo_group())
-            self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-            dist.barrier(group=get_gloo_group())
+                self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+                dist.barrier(group=get_gloo_group())
+                self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+                dist.barrier(group=get_gloo_group())
 
-        # LoRA adapter weights: every iteration.
-        if getattr(self, "is_lora", False):
-            self._sync_lora_weights()
-            dist.barrier(group=get_gloo_group())
-            if not self._lora_base_synced:
-                self._lora_base_synced = True
+            # LoRA adapter weights: every iteration.
+            if getattr(self, "is_lora", False):
+                self._sync_lora_weights()
+                dist.barrier(group=get_gloo_group())
+                if not self._lora_base_synced:
+                    self._lora_base_synced = True
 
-        self._finalize_and_resume_engines()
-        dist.barrier(group=get_gloo_group())
+        with timer("finalize_and_resume_engines"):
+            self._finalize_and_resume_engines()
+            dist.barrier(group=get_gloo_group())
 
     def _sync_lora_weights(self) -> None:
         """Sync LoRA adapter weights to all rollout engines via Ray RPC.

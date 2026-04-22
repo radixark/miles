@@ -15,7 +15,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import _check_weight_sync_results, post_process_weights
+from .common import post_process_weights
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -190,19 +190,15 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
-        all_refs = []
-        all_long_lived_tensors = []
-        base_ref_count = 0
-
         # For LoRA+distributed: base weights are frozen, skip after first round.
         if not (self.is_lora and self.use_distribute and self._lora_base_synced):
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
-                all_refs.extend(refs)
-                all_long_lived_tensors.append(long_lived_tensors)
-            base_ref_count = len(all_refs)
+                results = ray.get(refs)
+                _check_weight_sync_results(results, is_lora=False)
+                del long_lived_tensors
 
         if self.is_lora:
             lora_sync_chunk_count = 0
@@ -210,8 +206,9 @@ class UpdateWeightFromTensor:
                 megatron_local_weights, weight_type="lora"
             ):
                 refs, long_lived_tensors = self._send_lora_params(hf_named_tensors)
-                all_refs.extend(refs)
-                all_long_lived_tensors.append(long_lived_tensors)
+                results = ray.get(refs)
+                _check_weight_sync_results(results, is_lora=True)
+                del long_lived_tensors
                 lora_sync_chunk_count += 1
 
             if lora_sync_chunk_count == 0:
@@ -223,14 +220,6 @@ class UpdateWeightFromTensor:
 
             if self.use_distribute and not self._lora_base_synced:
                 self._lora_base_synced = True
-
-        # Wait for all engine-side weight loading to complete.
-        if all_refs:
-            all_results = ray.get(all_refs)
-            _check_weight_sync_results(all_results[:base_ref_count], is_lora=False)
-            if self.is_lora:
-                _check_weight_sync_results(all_results[base_ref_count:], is_lora=True)
-            del all_long_lived_tensors
 
         dist.barrier(group=get_gloo_group())
 
@@ -247,24 +236,24 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
     def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+        refs, long_lived_tensors = _send_to_colocated_engine(
+            hf_named_tensors=hf_named_tensors,
+            ipc_engine=self._ipc_engine,
+            ipc_gather_src=self._ipc_gather_src,
+            ipc_gather_group=self._ipc_gather_group,
+            weight_version=self.weight_version,
+        )
         if self.use_distribute and self._is_distributed_src_rank:
-            refs = update_weights_from_distributed(
+            refs_distributed = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
                 self.weight_version,
                 self.distributed_rollout_engines,
                 hf_named_tensors,
             )
-            return refs or [], []
-        else:
-            refs, long_lived_tensors = _send_to_colocated_engine(
-                hf_named_tensors=hf_named_tensors,
-                ipc_engine=self._ipc_engine,
-                ipc_gather_src=self._ipc_gather_src,
-                ipc_gather_group=self._ipc_gather_group,
-                weight_version=self.weight_version,
-            )
-            return refs or [], long_lived_tensors
+            if refs_distributed:
+                refs = (refs or []) + refs_distributed
+        return refs or [], long_lived_tensors
 
     def _send_lora_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         if not any(is_lora_weight_name(n) for n, _ in hf_named_tensors):
