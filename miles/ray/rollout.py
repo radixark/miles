@@ -1289,8 +1289,8 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     # rollout batch size.
     total_groups = len(all_sample_groups)
     if total_groups > 0:
-        log_dict["zero_std/all_zero_percentage"] = 100 * counts.get("0.0", 0) / total_groups
-        log_dict["zero_std/all_one_percentage"] = 100 * counts.get("1.0", 0) / total_groups
+        log_dict["zero_std/all_zero_percentage"] = counts.get("0.0", 0) / total_groups
+        log_dict["zero_std/all_one_percentage"] = counts.get("1.0", 0) / total_groups
 
     return log_dict
 
