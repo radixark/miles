@@ -173,8 +173,10 @@ def get_batch(
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens.append(cu_seqlens[-1] + pad)
 
-            # thd requires the cu_seqlens to be of the origin length
-            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+        # Standard CP shards sequence ownership across ranks. Ulysses keeps the
+        # full sequence on every rank and only shards inside the attention path.
+        cp_scale = parallel_state.effective_cp_size
+        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_scale
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
 

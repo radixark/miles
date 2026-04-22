@@ -74,7 +74,7 @@ def get_sum_of_sample_mean(
     """
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
-    if cp_size == 1:
+    if cp_size == 1 or parallel_state.is_ulysses_cp:
 
         def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             return sum(
@@ -146,7 +146,7 @@ def all_gather_with_cp(
     cp_group = parallel_state.cp.group
     cp_size = parallel_state.cp.size
 
-    if cp_size == 1:
+    if cp_size == 1 or parallel_state.is_ulysses_cp:
         return tensor
 
     _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
@@ -215,7 +215,7 @@ def slice_with_cp(
             tokens = F.pad(tokens, pad_tuple, value=pad_value)
         return tokens
 
-    if cp_size == 1:
+    if cp_size == 1 or parallel_state.is_ulysses_cp:
         if qkv_format == "bshd":
             pad = max_seq_len - tokens.size(0)
             tokens = pad_tokens(tokens, pad)
@@ -330,7 +330,7 @@ def slice_log_prob_with_cp(
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
 
-    if cp_size == 1:
+    if cp_size == 1 or parallel_state.is_ulysses_cp:
         return log_prob
 
     prompt_length = total_length - response_length

@@ -74,7 +74,7 @@ def get_responses(
 
     logits = logits.div(args.rollout_temperature)
 
-    cp_size = parallel_state.cp.size
+    effective_cp_size = parallel_state.effective_cp_size
     end = 0
     seq_start = 0
     for i, (tokens, total_length, response_length) in enumerate(
@@ -82,7 +82,7 @@ def get_responses(
     ):
         max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
 
-        if cp_size == 1:
+        if effective_cp_size == 1:
             if qkv_format == "bshd":
                 end = max_seq_len * i + total_length
                 start = end - response_length
@@ -392,7 +392,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     if args.normalize_advantages:
         all_advs = torch.cat(advantages)
         cp_size = parallel_state.cp.size
-        if cp_size == 1:
+        if cp_size == 1 or parallel_state.is_ulysses_cp:
             all_masks = torch.cat(loss_masks)
         else:
             mask_chunks = []
@@ -906,12 +906,15 @@ def loss_function(
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
-            loss = loss * num_microbatches / global_batch_size * parallel_state.intra_dp_cp.size
+            effective_dp_cp_size = (
+                parallel_state.intra_dp.size if parallel_state.is_ulysses_cp else parallel_state.intra_dp_cp.size
+            )
+            loss = loss * num_microbatches / global_batch_size * effective_dp_cp_size
         else:
             loss = loss / global_batch_size * parallel_state.intra_dp.size
     else:
         if apply_megatron_loss_scaling:
-            loss = loss * parallel_state.cp.size
+            loss = loss * parallel_state.effective_cp_size
 
     return (
         loss,

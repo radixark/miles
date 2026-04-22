@@ -43,6 +43,17 @@ def create_megatron_parallel_state() -> ParallelState:
     )
 
 
+def _extract_cp_comm_type(
+    model: torch.nn.Module | Sequence[torch.nn.Module],
+) -> str | None:
+    model_to_check = model[0] if isinstance(model, Sequence) else model
+    config = get_model_config(model_to_check)
+    cp_comm_type = getattr(config, "cp_comm_type", None)
+    if isinstance(cp_comm_type, list):
+        return cp_comm_type[0]
+    return cp_comm_type
+
+
 def _compute_vpp_fields() -> tuple[int, int | None]:
     vpp_size_value = mpu.get_virtual_pipeline_model_parallel_world_size()
     if vpp_size_value is None or vpp_size_value <= 1:
@@ -56,6 +67,7 @@ def verify_megatron_parallel_state(
 ) -> None:
     """Verify that ParallelState fields match what the model config produces."""
     parallel_state = get_parallel_state()
+    parallel_state.cp_comm_type = _extract_cp_comm_type(model)
     vpp_size_value = mpu.get_virtual_pipeline_model_parallel_world_size()
     if vpp_size_value is not None and vpp_size_value > 1:
         model_to_check = model[0] if isinstance(model, Sequence) else model

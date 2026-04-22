@@ -53,6 +53,23 @@ class ParallelState:
     intra_dp_cp: GroupInfo
     cp: GroupInfo
     tp: GroupInfo
+    cp_comm_type: str | None = None
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1
     microbatch_group_size_per_vp_stage: int | None = None
+
+    @property
+    def cp_mode(self) -> str:
+        if self.cp.size <= 1:
+            return "none"
+        if self.cp_comm_type == "a2a":
+            return "ulysses"
+        return "standard"
+
+    @property
+    def is_ulysses_cp(self) -> bool:
+        return self.cp_mode == "ulysses"
+
+    @property
+    def effective_cp_size(self) -> int:
+        return 1 if self.is_ulysses_cp else self.cp.size
