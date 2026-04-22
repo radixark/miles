@@ -86,7 +86,6 @@ def execute(USE_DEEPEP=False, USE_FP8_ROLLOUT=False):
         "--eps-clip 4e-4 "
         "--use-tis "
         "--use-rollout-routing-replay "
-        "--use-miles-router "
     )
 
     optimizer_args = (

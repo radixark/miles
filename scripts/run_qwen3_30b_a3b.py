@@ -55,7 +55,9 @@ def prepare(args: ScriptArgs):
 
     if args.rollout_mxfp8:
         U.exec_command(
-            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-MXFP8"
+            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
+            f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
+            f"{args.extra_args} "
         )
 
     if args.rollout_int4:

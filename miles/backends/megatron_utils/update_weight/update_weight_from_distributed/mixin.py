@@ -8,6 +8,7 @@ from megatron.core import mpu
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.timer import timer
 
 from ...megatron_to_hf import convert_to_hf
 from ..common import all_gather_param, collect_named_tensors_for_weight_transfer, post_process_weights
@@ -184,12 +185,14 @@ class DistBucketedWeightUpdateMixin:
         self._pause_and_prepare_engines()
         dist.barrier(group=get_gloo_group())
 
-        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
+        with timer("update_weights_implementation"):
+            pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-        self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-        dist.barrier(group=get_gloo_group())
-        self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-        dist.barrier(group=get_gloo_group())
+            self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+            dist.barrier(group=get_gloo_group())
+            self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+            dist.barrier(group=get_gloo_group())
 
-        self._finalize_and_resume_engines()
-        dist.barrier(group=get_gloo_group())
+        with timer("finalize_and_resume_engines"):
+            self._finalize_and_resume_engines()
+            dist.barrier(group=get_gloo_group())
