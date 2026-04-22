@@ -119,6 +119,10 @@ def tokenizer(request) -> AutoTokenizer:
 # Trajectory / kwargs definitions
 # ---------------------------------------------------------------------------
 
+_NO_INTERMEDIATE_SYSTEM_MODELS = {
+    "Qwen/Qwen3.5-4B",
+}
+
 _STANDARD_CASES = [
     pytest.param(SingleToolTrajectory, {}, id="single_tool"),
     pytest.param(MultiTurnTrajectory, {}, id="multi_turn"),
@@ -129,7 +133,7 @@ _STANDARD_CASES = [
     pytest.param(MultiTurnNoToolTrajectory, {}, id="multi_turn_no_tool"),
 ]
 
-# Trajectories with intermediate system messages (Qwen3.5 uses fixed template).
+# Trajectories with intermediate system messages.
 _INTERMEDIATE_SYSTEM_CASES = [
     pytest.param(RetrySystemTrajectory, {}, id="retry_system"),
     pytest.param(IntermediateSystemTrajectory, {}, id="intermediate_system"),
@@ -181,6 +185,8 @@ class TestAlignWithSGLang:
 
     @pytest.mark.parametrize("traj_cls, kwargs", _INTERMEDIATE_SYSTEM_CASES)
     def test_intermediate_system(self, tokenizer, traj_cls, kwargs):
+        if tokenizer.name_or_path in _NO_INTERMEDIATE_SYSTEM_MODELS:
+            pytest.skip(f"{tokenizer.name_or_path} intentionally forbids intermediate system messages")
         _assert_aligned(tokenizer, traj_cls, kwargs)
 
     @pytest.mark.parametrize("traj_cls, kwargs", _THINKING_CASES)
@@ -189,6 +195,8 @@ class TestAlignWithSGLang:
 
     @pytest.mark.parametrize("traj_cls, kwargs", _INTERMEDIATE_SYSTEM_THINKING_CASES)
     def test_intermediate_system_thinking(self, tokenizer, traj_cls, kwargs):
+        if tokenizer.name_or_path in _NO_INTERMEDIATE_SYSTEM_MODELS:
+            pytest.skip(f"{tokenizer.name_or_path} intentionally forbids intermediate system messages")
         _assert_aligned(tokenizer, traj_cls, kwargs)
 
     def test_json_string_arguments(self, tokenizer):

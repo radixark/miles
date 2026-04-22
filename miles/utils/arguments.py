@@ -175,6 +175,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
             parser.add_argument(
+                "--extra-high-precision-layers-hf",
+                type=str,
+                nargs="*",
+                default=(),
+                help=("Extra substrings for HF weight names to skip quantization " "(e.g. .kv_b_proj.)."),
+            )
+            parser.add_argument(
+                "--extra-high-precision-layers-megatron",
+                type=str,
+                nargs="*",
+                default=(),
+                help=(
+                    "Extra substrings for Megatron weight names to skip quantization in Megatron-to-HF paths "
+                    "(e.g. .linear_kv_up_proj.)."
+                ),
+            )
+            parser.add_argument(
                 "--custom-model-provider-path",
                 type=str,
                 default=None,
