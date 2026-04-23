@@ -117,4 +117,4 @@ class TestUpdateWeightFromTensorLoraConfig:
             quantization_config=None,
             is_lora=False,
         )
-        assert updater._lora_config is None
+        assert not hasattr(updater, "_lora_config")
