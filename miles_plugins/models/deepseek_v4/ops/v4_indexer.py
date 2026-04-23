@@ -9,17 +9,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 from .cp_utils import all_gather_cp
-
-try:
-    from fast_hadamard_transform import hadamard_transform
-except ImportError:
-    hadamard_transform = None
-
-
-def rotate_activation(x: torch.Tensor) -> torch.Tensor:
-    assert x.dtype == torch.bfloat16
-    assert hadamard_transform is not None, "fast_hadamard_transform is not installed."
-    return hadamard_transform(x, scale=x.size(-1) ** -0.5)
+from .hadamard import rotate_activation
 
 
 class V4Indexer(MegatronModule):
@@ -98,7 +88,7 @@ class V4Indexer(MegatronModule):
         from .cp_utils import get_freqs_cis_for_cp
         from .kernel.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
         from .qat import fp8_simulate_qat
-        from .ref_model import apply_rotary_emb
+        from .rope import apply_rotary_emb
 
         # =========================================
         # Gather inputs if SP is enabled

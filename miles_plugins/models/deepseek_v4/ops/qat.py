@@ -1,5 +1,5 @@
 import torch
-from .kernel.ref_kernel import act_quant
+from .kernel.act_quant import act_quant
 
 
 def fp8_simulate(x: torch.Tensor, block_size: int):

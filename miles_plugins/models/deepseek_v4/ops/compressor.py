@@ -1,5 +1,4 @@
 import os
-from types import SimpleNamespace
 
 import einops
 import torch
@@ -8,10 +7,24 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.nn import Linear
 
 from .cp_utils import all_gather_cp, get_freqs_cis_for_cp
+from .hadamard import rotate_activation
+from .norm import RMSNorm
 from .qat import fp8_simulate_qat
-from .ref_model import Compressor as CompressorRef
-from .ref_model import RMSNorm, apply_rotary_emb, rotate_activation
+from .rope import apply_rotary_emb
 from .utils import wrapped_precompute_freqs_cis
+
+
+def _overlap_transform(tensor: torch.Tensor, *, compress_ratio: int, head_dim: int, value=0) -> torch.Tensor:
+    """Overlap-transform for compress_ratio=4: for each token group of size ``ratio``,
+    split into (first_half, second_half) halves along ``head_dim`` and re-arrange
+    them across a doubled ratio axis (`2 * ratio`), shifting the first half by one
+    group so that adjacent groups overlap by ``ratio`` positions.
+    """
+    b, s, _, _ = tensor.size()
+    new_tensor = tensor.new_full((b, s, 2 * compress_ratio, head_dim), value)
+    new_tensor[:, :, compress_ratio:] = tensor[:, :, :, head_dim:]
+    new_tensor[:, 1:, :compress_ratio] = tensor[:, :-1, :, :head_dim]
+    return new_tensor
 
 
 class DeepSeekV4Compressor(nn.Module):
@@ -65,11 +78,7 @@ class DeepSeekV4Compressor(nn.Module):
 
     def overlap_transform_raw(self, tensor: torch.Tensor, value=0):
         """Raw overlap transform without CP handling."""
-        return CompressorRef.overlap_transform(
-            self=SimpleNamespace(compress_ratio=self.compress_ratio, head_dim=self.head_dim),
-            tensor=tensor,
-            value=value,
-        )
+        return _overlap_transform(tensor, compress_ratio=self.compress_ratio, head_dim=self.head_dim, value=value)
 
     def overlap_transform_with_cp(self, tensor: torch.Tensor, value=0) -> torch.Tensor:
         """

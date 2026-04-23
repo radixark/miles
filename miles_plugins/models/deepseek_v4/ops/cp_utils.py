@@ -5,8 +5,8 @@ Utility functions for DeepSeek V4 Context Parallelism support.
 import torch
 from torch import Tensor
 
-from .ref_model import get_compress_topk_idxs as get_compress_topk_idxs_ref
-from .ref_model import get_window_topk_idxs as get_window_topk_idxs_ref
+from .topk_idx_ref import get_compress_topk_idxs as get_compress_topk_idxs_ref
+from .topk_idx_ref import get_window_topk_idxs as get_window_topk_idxs_ref
 
 
 def all_gather_cp(tensor: Tensor, dim: int, cp_group: torch.distributed.ProcessGroup) -> Tensor:

@@ -1,5 +1,5 @@
 from megatron.core.transformer import TransformerConfig
-from .ref_model import precompute_freqs_cis
+from .rope import precompute_freqs_cis
 
 
 def wrapped_precompute_freqs_cis(
