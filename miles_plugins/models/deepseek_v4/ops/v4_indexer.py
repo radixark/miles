@@ -9,7 +9,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 from .cp_utils import all_gather_cp
-from .hadamard import rotate_activation
+from .utils import rotate_activation
 
 
 class V4Indexer(MegatronModule):
