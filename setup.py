@@ -21,7 +21,7 @@ class bdist_wheel(_bdist_wheel):
         abi_tag = f"{python_version}"
 
         if platform.system() == "Linux":
-            platform_tag = "manylinux1_x86_64"
+            platform_tag = f"manylinux2014_{platform.machine()}"
         else:
             platform_tag = platform.system().lower()
 
