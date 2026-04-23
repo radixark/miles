@@ -1,29 +1,18 @@
-import os
 import re
 
 import torch
 
-# Temporary: undo APE column-swap that fp8_cast_bf16.py applied during BF16 conversion.
-# The current torch_dist checkpoint was created with the swap. Once we re-convert without
-# the swap (by setting DSV4_CKPT_VERSION=2604 during fp8_cast_bf16), this can be removed.
-_UNDO_APE_COLUMN_SWAP = os.environ.get("MILES_UNDO_APE_COLUMN_SWAP", "0") == "1"
-
-# Mirror SGLang's Compressor.apply_ape_hotfix so the Megatron->SGLang weight update lands
-# in kernel layout. Gate tracks SGLang's condition exactly: apply when hotfix will run there.
-_SGLANG_DSV4_MODE = os.environ.get("SGLANG_DSV4_MODE", "")
-_SGLANG_FIX_APE_2604 = os.environ.get("SGLANG_OPT_FIX_APE_2604", "1") != "0"
-_SGLANG_FUSED_COMPRESS = os.environ.get("SGLANG_OPT_USE_FUSED_PAGED_COMPRESS", "1") != "0"
-_APPLY_APE_HOTFIX_MIRROR = _SGLANG_DSV4_MODE != "2604" or _SGLANG_FIX_APE_2604
-
 
 def _apply_ape_hotfix_mirror(param):
-    # ape: [ratio=4, 2*head_dim] in ckpt layout.
-    # 2604/0415: orders=[0,1]; 2601: orders=[1,0]. cat_dim=0 for fused compress.
+    # Mirror SGLang Compressor.apply_ape_hotfix for the 0415 checkpoint so that the
+    # Megatron -> SGLang weight update lands in kernel layout. Logic: chunk ape on
+    # the last dim (== ``2 * head_dim``), concat the two halves on dim 0, then view
+    # back to ``(ratio=4, head_dim)``. Matches SGLang's default for ``ratio == 4``
+    # under ``SGLANG_DSV4_MODE=2604`` (default) + ``SGLANG_OPT_FIX_APE_2604=True``
+    # (default).
     assert param.shape[0] == 4
-    orders = [0, 1] if _SGLANG_DSV4_MODE == "2604" else [1, 0]
     ape = torch.chunk(param, 2, dim=-1)
-    cat_dim = 0 if _SGLANG_FUSED_COMPRESS else -1
-    return torch.cat([ape[orders[0]], ape[orders[1]]], dim=cat_dim).view(4, -1).contiguous()
+    return torch.cat([ape[0], ape[1]], dim=0).view(4, -1).contiguous()
 
 
 def convert_deepseekv4_to_hf(args, name, param):
@@ -107,10 +96,7 @@ def convert_deepseekv4_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.attn_sink", param)]
 
         elif rest == "self_attention.compressor.ape":
-            if _UNDO_APE_COLUMN_SWAP and param.shape[0] == 4:
-                halves = torch.chunk(param, 2, dim=-1)
-                param = torch.cat([halves[1], halves[0]], dim=-1)
-            if _APPLY_APE_HOTFIX_MIRROR and param.shape[0] == 4:
+            if param.shape[0] == 4:
                 param = _apply_ape_hotfix_mirror(param)
             return [(f"model.layers.{layer_idx}.self_attn.compressor.ape", param)]
         elif rest == "self_attention.compressor.wkv.weight":
@@ -132,10 +118,7 @@ def convert_deepseekv4_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.indexer.weights_proj.weight", param)]
 
         elif rest == "self_attention.indexer.compressor.ape":
-            if _UNDO_APE_COLUMN_SWAP and param.shape[0] == 4:
-                halves = torch.chunk(param, 2, dim=-1)
-                param = torch.cat([halves[1], halves[0]], dim=-1)
-            if _APPLY_APE_HOTFIX_MIRROR and param.shape[0] == 4:
+            if param.shape[0] == 4:
                 param = _apply_ape_hotfix_mirror(param)
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.ape", param)]
         elif rest == "self_attention.indexer.compressor.wkv.weight":
