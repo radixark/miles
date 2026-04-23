@@ -136,6 +136,7 @@ def execute():
         megatron_model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
+            "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
             "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",
         },
     )
