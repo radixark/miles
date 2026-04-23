@@ -6,9 +6,6 @@ import aiohttp
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
-from .ocr import ocr_rm
-
-
 def _resolve_rm_type(args, sample: Sample) -> str:
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     return (metadata.get("rm_type") or args.rm_type or "").strip()
@@ -38,6 +35,8 @@ async def async_rm(args, sample: Sample, **kwargs):
     elif rm_type == "random":
         return random.randint(0, 1)
     elif rm_type == "ocr":
+        from .ocr import ocr_rm
+
         return await ocr_rm(args, sample)
     elif rm_type == "pickscore":
         from .pickscore import pickscore_rm

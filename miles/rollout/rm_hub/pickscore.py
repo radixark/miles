@@ -15,6 +15,12 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
+def _feature_tensor(features):
+    if isinstance(features, torch.Tensor):
+        return features
+    return features.pooler_output
+
+
 def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
     frame_chw = sample.generated_output.detach().cpu()[:, 0, :, :]
     hwc = frame_chw.float().numpy().transpose(1, 2, 0)
@@ -63,10 +69,10 @@ class PickScoreScorer(torch.nn.Module):
         image_inputs = {key: value.to(device=self.device) for key, value in image_inputs.items()}
         text_inputs = {key: value.to(device=self.device) for key, value in text_inputs.items()}
 
-        image_embs = self.model.get_image_features(**image_inputs)
+        image_embs = _feature_tensor(self.model.get_image_features(**image_inputs))
         image_embs = image_embs / image_embs.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
 
-        text_embs = self.model.get_text_features(**text_inputs)
+        text_embs = _feature_tensor(self.model.get_text_features(**text_inputs))
         text_embs = text_embs / text_embs.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
 
         scores = self.model.logit_scale.exp() * (text_embs @ image_embs.T)
