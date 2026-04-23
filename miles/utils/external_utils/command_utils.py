@@ -124,6 +124,7 @@ def execute_train(
     if external_ray and master_addr == "127.0.0.1":
         # In external Ray (e.g. rcli/KubeRay), resolve the actual head IP for multi-node NCCL
         import socket
+
         master_addr = socket.gethostbyname(socket.gethostname())
         os.environ["MASTER_ADDR"] = master_addr
         print(f"External Ray: resolved MASTER_ADDR to {master_addr}")

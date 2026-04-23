@@ -16,7 +16,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
     model_org: str = "deepseek-ai"
-    model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer"] = "DeepSeek-V4-285B"
+    model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-5layer", "DeepSeek-V4-285B-4layer"] = "DeepSeek-V4-285B"
     hf_checkpoint: str | None = None
     num_gpus_per_node: int = 8
     enable_eval: bool = True
@@ -39,27 +39,29 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_training: bool = False
     enable_mis: bool = False
     gb300: bool = False
-    ckpt_version: Literal["2601", "2604"] = "2601"
+    ckpt_version: Literal["2601", "2604", "0415"] = "2601"
+    cp_size: int = 1
 
     @property
     def megatron_model_type(self):
         return {
             "DeepSeek-V4-285B": "deepseek-v4-285B",
             "DeepSeek-V4-285B-5layer": "deepseek-v4-285B-5layer",
+            "DeepSeek-V4-285B-4layer": "deepseek-v4-285B-4layer",
         }[self.model_name]
 
     @property
     def torch_dist_name(self):
         """Checkpoint-versioned torch_dist directory name."""
-        if self.ckpt_version == "2604":
-            return f"{self.model_name}-2604_torch_dist"
+        if self.ckpt_version in ("2604", "0415"):
+            return f"{self.model_name}-{self.ckpt_version}_torch_dist"
         return f"{self.model_name}_torch_dist"
 
     @property
     def bf16_name(self):
         """Checkpoint-versioned BF16 directory name."""
-        if self.ckpt_version == "2604":
-            return f"{self.model_name}-2604-bf16"
+        if self.ckpt_version in ("2604", "0415"):
+            return f"{self.model_name}-{self.ckpt_version}-bf16"
         return f"{self.model_name}-bf16"
 
 
@@ -84,7 +86,7 @@ def prepare_single(args: ScriptArgs):
 @U.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     extra_args = "--tensor-model-parallel-size 1 " "--expert-tensor-parallel-size 1 "
-    if args.num_nodes == 1 and args.model_name == "DeepSeek-V4-285B-5layer":
+    if args.num_nodes == 1 and args.model_name in ("DeepSeek-V4-285B-5layer", "DeepSeek-V4-285B-4layer"):
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
     else:
         extra_args += (
@@ -97,6 +99,8 @@ def prepare_spmd(args: ScriptArgs):
     num_gpus_for_convert = args.num_gpus_per_node
     if args.model_name == "DeepSeek-V4-285B-5layer":
         num_gpus_for_convert = min(num_gpus_for_convert, 5)
+    elif args.model_name == "DeepSeek-V4-285B-4layer":
+        num_gpus_for_convert = min(num_gpus_for_convert, 4)
 
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -107,6 +111,7 @@ def prepare_spmd(args: ScriptArgs):
         extra_args=extra_args,
         dir_dst=f"{args.model_dir}",
         megatron_path=args.megatron_path,
+        dist_name=args.torch_dist_name,
     )
 
 
@@ -149,7 +154,21 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     # GB300: 4 GPUs/node
     if args.num_gpus_per_node == 4:
         if total_gpus == 32:  # 8 nodes × 4 GPUs
-            # Verified: TP=8 (spans 2 nodes via MNNVL), PP=4, EP=8
+            if args.cp_size == 2:
+                # CP=2: TP=4, CP=2, PP=4, EP=4 → 4·2·4 = 32
+                # TP=4 stays within a node; CP=2 spans across nodes via MNNVL.
+                # PP layout: 11+11+11+10 = 43 layers.
+                return (
+                    "--tensor-model-parallel-size 4 "
+                    "--sequence-parallel "
+                    "--pipeline-model-parallel-size 4 "
+                    "--decoder-first-pipeline-num-layers 11 "
+                    "--decoder-last-pipeline-num-layers 10 "
+                    "--context-parallel-size 2 "
+                    "--expert-model-parallel-size 4 "
+                    "--expert-tensor-parallel-size 1 "
+                )
+            # Default: TP=8 (spans 2 nodes via MNNVL), PP=4, EP=8.
             # PP layout: 11+11+11+10 = 43 layers (43 not divisible by 4)
             return (
                 "--tensor-model-parallel-size 8 "
@@ -315,10 +334,22 @@ def train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
+    if args.ckpt_version == "0415":
+        sglang_args += f"--sglang-ep-size {sglang_world_size} "
+    if args.ckpt_version == "0415":
+        sglang_mode, sglang_submode = "2604", "260415"
+    elif args.ckpt_version == "2604":
+        sglang_mode, sglang_submode = "2604", "260409"
+    else:  # "2601"
+        sglang_mode, sglang_submode = "2601", ""
     extra_env_vars = {
         "SGLANG_HACK_V4_SET_K_AND_S_BACKEND": "triton",
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_SKIP_SECOND_APT_CONVERT": "1",
+        "DSV4_CKPT_VERSION": args.ckpt_version,
+        "MILES_DSV4_CKPT_VERSION": args.ckpt_version,
+        "SGLANG_DSV4_MODE": sglang_mode,
+        "SGLANG_DSV4_2604_SUBMODE": sglang_submode,
     }
 
     misc_args = (

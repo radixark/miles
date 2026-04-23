@@ -37,6 +37,14 @@ from .ops.ref_model import apply_rotary_emb
 from .ops.utils import wrapped_precompute_freqs_cis
 from .ops.v4_indexer import V4Indexer
 
+# Checkpoint version: "2601" | "2604" | "0415". Controls per-version forward-pass differences:
+#   - 0415 adds SwiGLU clipping on routed experts (limit=10)
+#   - 0415 uses FP4 activation QAT in DSA indexer q / compressor rotated kv
+#   - 0415 uses compress_rope_theta=160000 (was 40000 on 2604)
+# Default "2604" preserves existing behavior.
+_DSV4_CKPT_VERSION = os.environ.get("MILES_DSV4_CKPT_VERSION", "2604")
+_IS_0415 = _DSV4_CKPT_VERSION == "0415"
+
 
 class DeepSeekV4Attention(MegatronModule):
     def __init__(
@@ -172,7 +180,10 @@ class DeepSeekV4Attention(MegatronModule):
                 self.indexer = None
 
         rope_base = config.dsv4_compress_rope_theta if self.compress_ratio else config.rotary_base
-        freqs_cis = wrapped_precompute_freqs_cis(config, rope_head_dim=self.rope_head_dim, base=rope_base)
+        yarn_disabled = _IS_0415 and not self.compress_ratio
+        freqs_cis = wrapped_precompute_freqs_cis(
+            config, rope_head_dim=self.rope_head_dim, base=rope_base, yarn_disabled=yarn_disabled
+        )
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
     def sharded_state_dict(

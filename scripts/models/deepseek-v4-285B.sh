@@ -11,7 +11,7 @@ printf -v MOE_LAYER_FREQ "[%s]" "$(IFS=', '; echo "${arr[*]}")"
 # compress_ratios and rope_factor depend on checkpoint version
 DSV4_CKPT_VERSION="${DSV4_CKPT_VERSION:-2601}"
 if [ ${#COMPRESS_RATIOS[@]} -eq 0 ]; then
-  if [ "$DSV4_CKPT_VERSION" = "2604" ]; then
+  if [ "$DSV4_CKPT_VERSION" = "2604" ] || [ "$DSV4_CKPT_VERSION" = "0415" ]; then
     COMPRESS_RATIOS=(0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 0)
     ROTARY_SCALING_FACTOR=16
   else
@@ -20,6 +20,11 @@ if [ ${#COMPRESS_RATIOS[@]} -eq 0 ]; then
   fi
 fi
 ROTARY_SCALING_FACTOR="${ROTARY_SCALING_FACTOR:-4}"
+
+SWIGLU_LIMIT_ARGS=()
+if [ "$DSV4_CKPT_VERSION" = "0415" ]; then
+  SWIGLU_LIMIT_ARGS=(--activation-func-clamp-value 10 --no-bias-swiglu-fusion --no-activation-func-clamp-shared-expert)
+fi
 
 # DeepSeek V4 285B config
 MODEL_ARGS=(
@@ -86,4 +91,6 @@ MODEL_ARGS=(
 
     # V4 model spec (plugin)
     --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
+
+    "${SWIGLU_LIMIT_ARGS[@]}"
 )
