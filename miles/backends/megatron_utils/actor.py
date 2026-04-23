@@ -258,21 +258,37 @@ class MegatronTrainRayActor(TrainRayActor):
             replay_data = [pad_func(r, 1) for r in replay_data]
             # TODO: maybe extract a common process function for here and get_batch?
 
+            cp_size = self.parallel_state.cp_size
+            cp_rank = self.parallel_state.cp_rank
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
-                replay_data = [
-                    slice_with_cp(r, pad_func, self.parallel_state, qkv_format, max_seqlen) for r in replay_data
-                ]
+                if self.args.allgather_cp and cp_size > 1:
+                    assert max_seqlen % cp_size == 0
+                    local_len = max_seqlen // cp_size
+                    start = cp_rank * local_len
+                    replay_data = [pad_func(r, max_seqlen - r.size(0))[start : start + local_len] for r in replay_data]
+                else:
+                    replay_data = [
+                        slice_with_cp(r, pad_func, self.parallel_state, qkv_format, max_seqlen) for r in replay_data
+                    ]
                 replay_data = torch.stack(replay_data, dim=0)
                 batch_size, seqlen, num_layers, topk = replay_data.shape
                 replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
             else:
-                replay_data = [slice_with_cp(r, pad_func, self.parallel_state, qkv_format) for r in replay_data]
-                replay_data = torch.cat(replay_data, dim=0)
                 pad_size = self.parallel_state.dp_size * self.args.data_pad_size_multiplier
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
+                if self.args.allgather_cp and cp_size > 1:
+                    replay_data = torch.cat(replay_data, dim=0)
+                    global_pad_size = cp_size * pad_size
+                    pad = (global_pad_size - replay_data.size(0) % global_pad_size) % global_pad_size
+                    if pad != 0:
+                        replay_data = pad_func(replay_data, pad)
+                    replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
+                else:
+                    replay_data = [slice_with_cp(r, pad_func, self.parallel_state, qkv_format) for r in replay_data]
+                    replay_data = torch.cat(replay_data, dim=0)
+                    pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
+                    if pad != 0:
+                        replay_data = pad_func(replay_data, pad)
 
             if self.args.sequence_parallel and if_sp_region:
                 seqlen = replay_data.size(0)
