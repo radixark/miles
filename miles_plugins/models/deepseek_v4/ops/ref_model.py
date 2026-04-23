@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .ref_kernel import hc_split_sinkhorn, sparse_attn
+from .ref_kernel import hc_split_sinkhorn
 
 __all__ = [
     "RMSNorm",
@@ -15,7 +15,6 @@ __all__ = [
     "get_window_topk_idxs",
     "get_compress_topk_idxs",
     "Compressor",
-    "sparse_attn",
     "hc_split_sinkhorn",
 ]
 
