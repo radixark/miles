@@ -102,23 +102,6 @@ def main(fp8_path, bf16_path):
             else:
                 new_state_dict[weight_name] = weight
 
-        # APE column-swap: only needed for 2601 checkpoints where the APE layout
-        # has overlap-first ordering. 2604 and 0415 checkpoints already have the correct layout.
-        ckpt_version = os.environ.get("DSV4_CKPT_VERSION", "2601")
-        ape_swap = ckpt_version == "2601"
-        for weight_name, weight in new_state_dict.items():
-            if weight_name.endswith(".compressor.ape"):
-                if weight.shape[0] == 4 and ape_swap:
-                    ape = torch.chunk(weight, 2, dim=-1)
-                    ape = torch.cat([ape[1], ape[0]], dim=-1)
-                    new_state_dict[weight_name] = ape
-                    print(f"Converted APE (C4): {weight_name}")
-                elif weight.shape[0] == 4:
-                    print(f"Skipped APE conversion (C4, {ckpt_version} mode): {weight_name}")
-                else:
-                    assert weight.shape[0] == 128
-                    print(f"Skipped APE conversion (C128): {weight_name}")
-
         new_safetensor_file = os.path.join(bf16_path, file_name)
         save_file(new_state_dict, new_safetensor_file)
 
