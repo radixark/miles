@@ -10,8 +10,7 @@ from .cp_utils import all_gather_cp, get_freqs_cis_for_cp
 from .hadamard import rotate_activation
 from .norm import RMSNorm
 from .qat import fp8_simulate_qat
-from .rope import apply_rotary_emb
-from .utils import wrapped_precompute_freqs_cis
+from .rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 
 
 def _overlap_transform(tensor: torch.Tensor, *, compress_ratio: int, head_dim: int, value=0) -> torch.Tensor:

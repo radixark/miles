@@ -33,8 +33,7 @@ from .ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from .ops.qat import fp8_simulate_qat
-from .ops.rope import apply_rotary_emb
-from .ops.utils import wrapped_precompute_freqs_cis
+from .ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from .ops.v4_indexer import V4Indexer
 
 # Checkpoint version: "2601" | "2604" | "0415". Controls per-version forward-pass differences:

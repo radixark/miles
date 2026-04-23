@@ -19,7 +19,7 @@ class V4Indexer(MegatronModule):
         super().__init__(config=config)
 
         from .compressor import DeepSeekV4Compressor
-        from .utils import wrapped_precompute_freqs_cis
+        from .rope import wrapped_precompute_freqs_cis
 
         self.hidden_size = config.hidden_size
         self.q_lora_rank = config.q_lora_rank if config.q_lora_rank is not None else config.hidden_size
