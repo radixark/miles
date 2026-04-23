@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .ref_kernel import hc_split_sinkhorn
+from .kernel.ref_kernel import hc_split_sinkhorn
 
 __all__ = [
     "RMSNorm",

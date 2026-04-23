@@ -1,7 +1,7 @@
 import torch
 
-from . import tilelang_sparse_mla_bwd as sparse_mla_bwd
-from . import tilelang_sparse_mla_fwd as sparse_mla_fwd
+from .kernel import tilelang_sparse_mla_bwd as sparse_mla_bwd
+from .kernel import tilelang_sparse_mla_fwd as sparse_mla_fwd
 
 
 def sparse_attn_torch(q, kv, attn_sink, topk_idxs, sm_scale=None):

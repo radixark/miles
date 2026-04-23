@@ -195,7 +195,7 @@ FORWARD_IDS = [f"b{b}_s{s}_h{h}_d{d}_kv{kv}_top{tk}" for b, s, h, d, kv, tk in F
 @pytest.mark.parametrize("batch,seqlen,heads,dim,seqlen_kv,topk", FORWARD_CONFIGS, ids=FORWARD_IDS)
 def test_sparse_mla_forward(batch, seqlen, heads, dim, seqlen_kv, topk):
     """Compare tilelang sparse MLA forward against PyTorch reference."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 
     q, kv, attn_sink, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
     sm_scale = (1.0 / dim) ** 0.5
@@ -219,7 +219,7 @@ def test_sparse_mla_forward(batch, seqlen, heads, dim, seqlen_kv, topk):
 @pytest.mark.parametrize("sink_mode", ["zero", "positive", "negative", "random"])
 def test_attn_sink_modes(sink_mode):
     """Test that attn_sink is correctly incorporated for different value ranges."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 
     batch, seqlen, heads, dim, seqlen_kv, topk = 1, 256, 8, 512, 320, 128
     q, kv, attn_sink, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk, sink_mode=sink_mode)
@@ -239,7 +239,7 @@ def test_attn_sink_modes(sink_mode):
 @requires_tilelang()
 def test_attn_sink_effect():
     """Verify attn_sink actually changes output (not ignored)."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 
     batch, seqlen, heads, dim, seqlen_kv, topk = 1, 128, 8, 512, 160, 64
     q, kv, _, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
@@ -362,7 +362,7 @@ def test_sparse_mla_backward(batch, seqlen, heads, dim, seqlen_kv, topk):
 @requires_tilelang()
 def test_partial_invalid_indices():
     """Test with some indices set to -1 (invalid)."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 
     batch, seqlen, heads, dim, seqlen_kv, topk = 1, 256, 8, 512, 320, 128
     q, kv, attn_sink, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
@@ -389,7 +389,7 @@ def test_partial_invalid_indices():
 @requires_tilelang()
 def test_diff_summary():
     """Print a comprehensive diff summary across all forward configs."""
-    from miles_plugins.models.deepseek_v4.ops.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 
     configs = [
         (1, 128, 8, 512, 160, 64),

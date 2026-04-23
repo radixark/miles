@@ -7,6 +7,7 @@ from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
+
 from .cp_utils import all_gather_cp
 
 try:
@@ -95,9 +96,9 @@ class V4Indexer(MegatronModule):
             topk_indices: [batch, seqlen, index_topk] int64
         """
         from .cp_utils import get_freqs_cis_for_cp
+        from .kernel.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
         from .qat import fp8_simulate_qat
         from .ref_model import apply_rotary_emb
-        from .tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
 
         # =========================================
         # Gather inputs if SP is enabled
