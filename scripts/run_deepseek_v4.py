@@ -328,18 +328,8 @@ def train(args: ScriptArgs):
         "--router-health-failure-threshold 40 "  # TODO improve
     )
     sglang_args += f"--sglang-ep-size {sglang_world_size} "
-    sglang_assert_version = "fp8_v5"
-    if args.model_name == "DeepSeek-V4-285B-4layer":
-        sglang_assert_version = f"{sglang_assert_version}_4layer"
     extra_env_vars = {
-        "SGLANG_HACK_V4_SET_K_AND_S_BACKEND": "triton",
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        "SGLANG_SKIP_SECOND_APT_CONVERT": "1",
-        "DSV4_CKPT_VERSION": "0415",
-        "MILES_DSV4_CKPT_VERSION": "0415",
-        "SGLANG_DSV4_MODE": "2604",
-        "SGLANG_DSV4_2604_SUBMODE": "260415",
-        "SGLANG_HACK_ASSERT_CKPT_VERSION": sglang_assert_version,
         "SGLANG_DSV4_FP4_EXPERTS": "0",
     }
 
