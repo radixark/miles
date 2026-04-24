@@ -117,6 +117,24 @@ def _hf_checkpoint_path(args: ScriptArgs) -> str:
     return args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
 
 
+def _patch_4layer_model_type(args: ScriptArgs):
+    """SGLang's `get_config` fallback for 4-layer ckpts only triggers on `model_type='deepseek_ref'`,
+    but Pinaster/DeepSeek-V4-Flash-FP8-4layer ships with `model_type='deepseek_v4'`. Rewrite the
+    local copy in-place so SGLang's `_load_deepseek_temp_model` is reached. Idempotent / no-op
+    for non-4-layer models. Applies to both the FP8 ckpt and any BF16 sibling already on disk."""
+    if args.model_name != "DeepSeek-V4-Flash-FP8-4layer":
+        return
+    targets = [Path(_hf_checkpoint_path(args)), Path(f"{args.model_dir}/{args.bf16_name}")]
+    for d in targets:
+        cfg = d / "config.json"
+        if not cfg.exists():
+            continue
+        text = cfg.read_text()
+        if '"model_type": "deepseek_v4"' in text:
+            cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
+            print(f"[patch] {cfg}: model_type deepseek_v4 → deepseek_ref")
+
+
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent — huggingface-cli skips existing blobs."""
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
@@ -128,6 +146,7 @@ def _prepare_download(args: ScriptArgs):
             f"huggingface-cli download {args.model_org}/{args.model_name} "
             f"--local-dir {dest}"
         )
+    _patch_4layer_model_type(args)
     _download_dataset(args)
 
 
@@ -307,6 +326,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 def _train(args: ScriptArgs):
     print(f"running on {args.num_nodes} nodes")
+    _patch_4layer_model_type(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
