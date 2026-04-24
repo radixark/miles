@@ -63,7 +63,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    model_local_dir: str = "/root/models"
+    # Defaults to model_dir (resolved in __post_init__). Set explicitly when
+    # multi-node fan-out from shared NFS to per-node local NVMe is needed.
+    model_local_dir: str | None = None
     save_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     enable_r3: bool = True
@@ -84,6 +86,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if not self.model_org:
             self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
+        if self.model_local_dir is None:
+            self.model_local_dir = self.model_dir
 
     @property
     def megatron_model_type(self):
