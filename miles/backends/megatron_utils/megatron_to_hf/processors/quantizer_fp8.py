@@ -4,7 +4,12 @@ import torch
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
-from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
+from ...sglang import (
+    per_block_cast_to_fp8,
+    quant_weight_ue8m0,
+    should_deepgemm_weight_requant_ue8m0,
+    transform_scale_ue8m0,
+)
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -73,13 +78,19 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.linear_q_up_proj.weight",
         "self_attention.linear_kv_down_proj.weight",
         "self_attention.linear_kv_up_proj.weight",
-        # indexer
+        # DSA indexer
         "self_attention.wq_b.weight",
         "self_attention.wk.weight",
         # linear attention
         "self_attention.linear_attn.in_proj_qkv.weight",
         "self_attention.linear_attn.in_proj_z.weight",
         "self_attention.linear_attn.out_proj.weight",
+        # DeepSeek V4 attention
+        "self_attention.wq_a.weight",
+        "self_attention.wkv.weight",
+        "self_attention.wo_b.weight",
+        "self_attention.indexer.linear_wq_b.weight",
+        "self_attention.indexer.linear_wk.weight",
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
@@ -100,7 +111,10 @@ def _quantize_param(args, name, weight, weight_block_size):
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         else:
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
+            if weight_block_size == [128, 128]:
+                qweight, scale = per_block_cast_to_fp8(weight)
+            else:
+                qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
         # per tensor quant
@@ -119,7 +133,6 @@ def _get_scale_format(args, name, weight_block_size):
         return None  # use default fp32 scale format
 
     if ".experts." not in name:
-        # Non-MoE linear weights: ue8m0 when deepgemm is enabled
         return "ue8m0"
 
     # MoE expert weights: only ue8m0 when runner is deep_gemm

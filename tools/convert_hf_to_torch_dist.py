@@ -1,6 +1,7 @@
 import gc
 import os
 import shutil
+from functools import wraps
 
 import torch
 import torch.distributed as dist
@@ -11,12 +12,32 @@ from megatron.training.training import get_model
 
 import miles_plugins.mbridge  # noqa: F401
 from mbridge import AutoBridge
+from mbridge.core.bridge import Bridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import print_memory
+from miles.utils.transformers_patch import with_transformers_patch
 from miles_plugins.models.hf_attention import _load_hf_config
+
+
+def patch_weight_to_mcore_format_preserve_fp32():
+
+    original_method = Bridge._weight_to_mcore_format
+
+    @wraps(original_method)
+    def patched_method(self, mcore_weights_name, hf_weights):
+        original_dtype = getattr(self, "dtype", None)
+        self.dtype = None
+        try:
+            result = original_method(self, mcore_weights_name, hf_weights)
+        finally:
+            self.dtype = original_dtype
+        return result
+
+    Bridge._weight_to_mcore_format = patched_method
+    print("[Patch] Applied patch to preserve FP32 precision in _weight_to_mcore_format")
 
 
 def add_convertion_args(parser):
@@ -53,7 +74,8 @@ def get_args():
     def ceildiv(a, b):
         return -(a // -b)
 
-    if args.pipeline_model_parallel_size == 1 and world_size > 1:
+    tp_cp = args.tensor_model_parallel_size * args.context_parallel_size
+    if args.pipeline_model_parallel_size == 1 and world_size > 1 and world_size % tp_cp != 0:
         pp_size = world_size
         while True:
             args.pipeline_model_parallel_size = pp_size
@@ -107,16 +129,20 @@ def main():
         device_id=torch.device(f"cuda:{local_rank}"),
     )
     args = get_args()
-    init(args)
-    model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
+    with with_transformers_patch():
+        init(args)
+        model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
 
-    # Load model
-    hf_model_path = args.hf_checkpoint
-    try:
-        bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
-    except (ValueError, KeyError):
-        # Fallback for configs with model_type unknown to installed transformers.
-        bridge = AutoBridge.from_config(_load_hf_config(hf_model_path))
+        # Load model
+        hf_model_path = args.hf_checkpoint
+        try:
+            bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
+        except (ValueError, KeyError):
+            # Fallback for configs with model_type unknown to installed transformers.
+            bridge = AutoBridge.from_config(_load_hf_config(hf_model_path))
+
+    # Patch to preserve FP32 precision for _keep_fp32 params
+    patch_weight_to_mcore_format_preserve_fp32()
 
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")

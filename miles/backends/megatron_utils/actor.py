@@ -26,6 +26,7 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
+from ...utils.transformers_patch import with_transformers_patch
 from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
@@ -81,7 +82,8 @@ class MegatronTrainRayActor(TrainRayActor):
         # read config and tokenizer serialized to prevent concurrent writing bug.
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
-                self.hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+                with with_transformers_patch():
+                    self.hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
                 )
@@ -111,9 +113,11 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
+        print_memory("before initialize_model_and_optimizer")
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
+        print_memory("after initialize_model_and_optimizer")
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -200,6 +204,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
+
         destroy_process_groups()
 
         tag = "default" if is_lora_enabled(self.args) else None
@@ -283,19 +288,35 @@ class MegatronTrainRayActor(TrainRayActor):
             replay_data = [pad_func(r, 1) for r in replay_data]
             # TODO: maybe extract a common process function for here and get_batch?
 
+            cp_size = parallel_state.cp.size
+            cp_rank = parallel_state.cp.rank
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
-                replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
+                if self.args.allgather_cp and cp_size > 1:
+                    assert max_seqlen % cp_size == 0
+                    local_len = max_seqlen // cp_size
+                    start = cp_rank * local_len
+                    replay_data = [pad_func(r, max_seqlen - r.size(0))[start : start + local_len] for r in replay_data]
+                else:
+                    replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
                 replay_data = torch.stack(replay_data, dim=0)
                 batch_size, seqlen, num_layers, topk = replay_data.shape
                 replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
             else:
-                replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
-                replay_data = torch.cat(replay_data, dim=0)
                 pad_size = parallel_state.tp.size * self.args.data_pad_size_multiplier
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-                if pad != 0:
+                if self.args.allgather_cp and cp_size > 1:
+                    replay_data = torch.cat(replay_data, dim=0)
+                    global_pad_size = cp_size * pad_size
+                    pad = (global_pad_size - replay_data.size(0) % global_pad_size) % global_pad_size
+                    if pad != 0:
                     replay_data = pad_func(replay_data, pad)
+                    replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
+                else:
+                    replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
+                    replay_data = torch.cat(replay_data, dim=0)
+                    pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
+                    if pad != 0:
+                        replay_data = pad_func(replay_data, pad)
 
             if self.args.sequence_parallel and if_sp_region:
                 seqlen = replay_data.size(0)
@@ -521,6 +542,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             reload_process_groups()
+
+        if isinstance(num_new_engines, tuple):
+            num_new_engines = num_new_engines[0]
 
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(
