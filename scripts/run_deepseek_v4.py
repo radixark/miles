@@ -63,9 +63,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    model_local_dir: str = "/root/local_data"
+    model_local_dir: str = "/root/models"
     save_dir: str = "/root/models"
-    megatron_path: str = "/workspace/Megatron-LM"
+    megatron_path: str = "/root/Megatron-LM"
     enable_r3: bool = True
     enable_rir: bool = False
     test_pp_single_node: bool = False
@@ -411,6 +411,8 @@ def _train(args: ScriptArgs):
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
     }
+    if args.model_name == "DeepSeek-V4-Flash-FP8-4layer":
+        extra_env_vars["SGLANG_APPLY_CONFIG_BACKUP"] = "none"
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -525,7 +527,10 @@ def full_train(args: ScriptArgs):
     else:
         print(f"[full_train] Skipping BF16→torch_dist conversion: {torch_dist_dir} already exists.")
 
-    _prepare_cp(args)
+    if args.model_local_dir != args.model_dir:
+        _prepare_cp(args)
+    else:
+        print(f"[full_train] Skipping rsync: model_local_dir == model_dir ({args.model_dir})")
 
     if args.hf_checkpoint is None:
         args.hf_checkpoint = f"{args.model_local_dir}/{args.model_name}"
