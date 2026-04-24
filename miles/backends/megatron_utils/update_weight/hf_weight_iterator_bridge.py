@@ -1,10 +1,12 @@
 import dataclasses
 
+import torch
+
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
 from miles.utils.iter_utils import chunk_named_params_by_size
 
-from ..megatron_to_hf import postprocess_hf_param
+from ..megatron_to_hf import postprocess_hf_param, postprocess_q_lora_converted_tensors
 from ..misc_utils import strip_param_name_prefix
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -39,25 +41,42 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                 )
 
             # TODO: verify if postprocess_hf_param is needed for LoRA weights
-            named_weights = (
-                (
-                    hf_param_name,
-                    postprocess_hf_param(
+            def _postprocessed_weights():
+                cached_q_lora_tensors = {}
+                for named_weight in named_weights:
+                    if len(named_weight) == 3:
+                        hf_param_name, weight, megatron_param_name = named_weight
+                    elif len(named_weight) == 2:
+                        hf_param_name, weight = named_weight
+                        megatron_param_name = hf_param_name
+                    else:
+                        raise ValueError(f"Unexpected bridge weight tuple: {named_weight!r}")
+
+                    processed_weight = postprocess_hf_param(
                         args=self.args,
                         megatron_param_name=megatron_param_name,
                         hf_param_name=hf_param_name,
                         param=weight,
-                    ),
-                )
-                for hf_param_name, weight, megatron_param_name in named_weights
+                    )
+                    converted_named_params = postprocess_q_lora_converted_tensors(
+                        args=self.args,
+                        converted_named_tensors=[(hf_param_name, processed_weight)],
+                        cached_tensors=cached_q_lora_tensors,
+                    )
+                    for converted_name, converted_weight in converted_named_params:
+                        if weight_type == "base" and is_lora_weight_name(converted_name):
+                            continue
+                        if weight_type == "lora" and not is_lora_weight_name(converted_name):
+                            continue
+                        if torch.cuda.is_available():
+                            target_device = torch.device("cuda", torch.cuda.current_device())
+                            if converted_weight.device != target_device:
+                                converted_weight = converted_weight.to(target_device, non_blocking=True)
+                        yield converted_name, converted_weight
+
+            yield from chunk_named_params_by_size(
+                _postprocessed_weights(), chunk_size=self.args.update_weight_buffer_size
             )
-
-            if weight_type == "base":
-                named_weights = ((n, t) for n, t in named_weights if not is_lora_weight_name(n))
-            elif weight_type == "lora":
-                named_weights = ((n, t) for n, t in named_weights if is_lora_weight_name(n))
-
-            yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
