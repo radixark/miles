@@ -108,32 +108,91 @@ def _get_megatron_full_params(
     return gathered_params
 
 
+# SGLang's DeepSeek-V4 load_weights fuses pairs of bridge-emitted tensors into a
+# single in-model parameter (wq_a + wkv → wqkv_a, compressor.wkv + wgate → wkv_gate,
+# indexer.compressor.wkv + wgate → indexer.compressor.wkv_gate). The fusion cache
+# asserts empty at end of each load_weights() bucket, so both halves must land in
+# the same update bucket — otherwise SGLang raises
+# ``AssertionError: dict_keys(['model.layers.N.self_attn.wqkv_a.weight'])``. This
+# list uses the Megatron-side suffixes (not the HF/SGLang-side names) because the
+# bucketing runs on ParamInfo.name which is pre-bridge.
+_SGLANG_FUSION_PAIR_SUFFIXES = [
+    (".self_attention.wq_a.weight", ".self_attention.wkv.weight", "wqkv_a"),
+    (
+        ".self_attention.compressor.wkv.weight",
+        ".self_attention.compressor.wgate.weight",
+        "compressor_wkv_gate",
+    ),
+    (
+        ".self_attention.indexer.compressor.wkv.weight",
+        ".self_attention.indexer.compressor.wgate.weight",
+        "indexer_compressor_wkv_gate",
+    ),
+]
+
+
+def _sglang_fusion_pair_key(name: str) -> str | None:
+    for f_suffix, s_suffix, marker in _SGLANG_FUSION_PAIR_SUFFIXES:
+        if name.endswith(f_suffix):
+            return name[: -len(f_suffix)] + ":" + marker
+        if name.endswith(s_suffix):
+            return name[: -len(s_suffix)] + ":" + marker
+    return None
+
+
 def _get_megatron_local_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
     """
     Partition params into buckets ≤ update_weight_buffer_size (with TP replication).
+
+    SGLang-fusion pairs (wq_a+wkv, compressor.wkv+wgate, indexer.compressor.wkv+wgate)
+    are held in a pending dict until both halves arrive, then committed atomically
+    so they cannot straddle a bucket boundary.
     """
     param_infos = _get_megatron_local_param_infos(args, model)
-    param_info_buckets = [[]]  # Start with one empty bucket
+    param_info_buckets: list[list[ParamInfo]] = [[]]
     buffer_size = 0  # Track current bucket size in bytes
 
-    for info in param_infos:
+    def _full_size(info: ParamInfo) -> int:
         # Expert params use expert-TP size, others use regular-TP size
         if ".experts." in info.name:
             tp_size = mpu.get_expert_tensor_parallel_world_size()
         else:
             tp_size = mpu.get_tensor_model_parallel_world_size()
-
         # Full param size = shard size × TP replicas (all-gather will reconstruct full param)
-        param_size = info.size * tp_size
+        return info.size * tp_size
 
-        # If adding this param exceeds limit AND current bucket has params: start new bucket
-        if buffer_size + param_size > args.update_weight_buffer_size and len(param_info_buckets[-1]) > 0:
+    def _commit_atomic(items: list[ParamInfo], items_size: int):
+        nonlocal buffer_size
+        # If adding this group would exceed the limit AND the current bucket is
+        # non-empty, start a new bucket so the group lands together.
+        if buffer_size + items_size > args.update_weight_buffer_size and len(param_info_buckets[-1]) > 0:
             param_info_buckets.append([])
             buffer_size = 0
+        param_info_buckets[-1].extend(items)
+        buffer_size += items_size
 
-        # Add param to current bucket and update size
-        param_info_buckets[-1].append(info)
-        buffer_size += param_size
+    pending_groups: dict[str, tuple[list[ParamInfo], int]] = {}
+
+    for info in param_infos:
+        param_size = _full_size(info)
+        key = _sglang_fusion_pair_key(info.name)
+
+        if key is None:
+            _commit_atomic([info], param_size)
+            continue
+
+        items, items_size = pending_groups.pop(key, ([], 0))
+        items.append(info)
+        items_size += param_size
+        # Fusion pairs are exactly 2 members; commit atomically when both arrive.
+        if len(items) >= 2:
+            _commit_atomic(items, items_size)
+        else:
+            pending_groups[key] = (items, items_size)
+
+    # Orphan groups (only one half present — should not happen for a well-formed model).
+    for items, items_size in pending_groups.values():
+        _commit_atomic(items, items_size)
 
     return param_info_buckets
 
