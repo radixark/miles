@@ -171,8 +171,10 @@ RUN pip install --no-deps apache-tvm-ffi==0.1.9
 # ================================================================================
 # Cleanup
 # ================================================================================
-
-RUN rm -rf /root/.cache/pip /tmp/DeepGEMM /tmp/transformers /tmp/fast-hadamard-transform
+# Note: /tmp/transformers and /tmp/fast-hadamard-transform were `pip install -e .`
+# (editable) — their .dist-info points at the source dir, so deleting the source
+# breaks import. Only rm the truly wheel-installed leftovers.
+RUN rm -rf /root/.cache/pip /tmp/DeepGEMM
 """
 
 DOCKERFILE_GB300 = f"""\
@@ -182,15 +184,19 @@ DOCKERFILE_GB300 = f"""\
 # yuemingy/miles-sunrise:gb300 (built from NightFall-nda artifact_cli.py
 # DOCKERFILE_MILES_GB300). We upgrade what the base image ships stale:
 #
-#   Upgrade      | Base image state          | Target (NightFall GB300 preset)
-#   -------------|---------------------------|----------------------------------
-#   cuda-python  | baseline                  | --upgrade
-#   flashinfer-  | 0.6.2 --index-url cu129   | {FLASHINFER_JIT_CACHE_VER} --index-url cu130
-#     jit-cache  |   (cu129 is a bug on cu130)|
-#   DeepGEMM     | not installed             | @{DEEPGEMM_COMMIT} + cutlass symlinks + install.sh
-#   torch_       | @dc6876905 (regresses on   | @{TORCH_MEMORY_SAVER_COMMIT[:7]}
-#     memory_    |   B200: tms_get_            |
-#     saver      |   interesting_region)      |
+#   Upgrade          | Base image state          | Target (NightFall GB300 preset)
+#   -----------------|---------------------------|----------------------------------
+#   cuda-python      | baseline                  | --upgrade
+#   flashinfer-python| 0.6.2                     | {FLASHINFER_JIT_CACHE_VER}
+#   flashinfer-cubin | 0.6.2                     | {FLASHINFER_JIT_CACHE_VER}
+#   flashinfer-      | 0.6.2 --index-url cu129   | {FLASHINFER_JIT_CACHE_VER} --index-url cu130
+#     jit-cache      |   (cu129 is a bug on cu130)|
+#     (jit-cache, python, and cubin must match version; flashinfer's runtime
+#      version check errors out if they differ — RuntimeError at JIT import time.)
+#   DeepGEMM         | not installed             | @{DEEPGEMM_COMMIT} + cutlass symlinks + install.sh
+#   torch_           | @dc6876905 (regresses on   | @{TORCH_MEMORY_SAVER_COMMIT[:7]}
+#     memory_        |   B200: tms_get_            |
+#     saver          |   interesting_region)      |
 #
 # Everything else (apt packages, TE, mbridge, etc.) stays as baked.
 FROM yuemingy/miles-sunrise:gb300
@@ -199,6 +205,9 @@ WORKDIR /root/
 
 # ---------- PART 1: NightFall sglang preset (GB300 branch) upgrades ----------
 RUN pip install cuda-python --upgrade
+# flashinfer {{python,cubin,jit-cache}} must all match 0.6.8 — else JIT import raises
+# `RuntimeError: flashinfer-jit-cache version does not match flashinfer version`.
+RUN pip install flashinfer-python=={FLASHINFER_JIT_CACHE_VER} flashinfer-cubin=={FLASHINFER_JIT_CACHE_VER}
 RUN pip install flashinfer-jit-cache=={FLASHINFER_JIT_CACHE_VER} --index-url https://flashinfer.ai/whl/cu130
 # DeepGEMM (base image lacks it; NightFall preset installs with cutlass symlinks).
 RUN cd /tmp && git clone https://github.com/sgl-project/DeepGEMM.git -b release && \\
