@@ -8,7 +8,6 @@ done
 
 printf -v MOE_LAYER_FREQ "[%s]" "$(IFS=', '; echo "${arr[*]}")"
 
-# 0415-only: compress_ratios + rope_factor + swiglu clamp are fixed.
 if [ ${#COMPRESS_RATIOS[@]} -eq 0 ]; then
   COMPRESS_RATIOS=(0 0 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 128 4 0)
 fi
@@ -16,7 +15,7 @@ ROTARY_SCALING_FACTOR="${ROTARY_SCALING_FACTOR:-16}"
 
 SWIGLU_LIMIT_ARGS=(--activation-func-clamp-value 10 --no-bias-swiglu-fusion --no-activation-func-clamp-shared-expert)
 
-# DeepSeek V4 285B config
+# DeepSeek V4 Flash config
 MODEL_ARGS=(
     --disable-bias-linear
     --num-layers $NLAYERS

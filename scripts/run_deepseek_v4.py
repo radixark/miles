@@ -1,8 +1,34 @@
 """
-This file is in preview, and will be further refined and optimized.
+DeepSeek V4 training script.
+
+Supports:
+  - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
+                                  (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
+                                  Needs >= 7 nodes on H200 / GB300.
+  - DeepSeek-V4-Flash-FP8-4layer  4-layer prune of the above (Pinaster/...) for single-node
+                                  smoke testing. **Cannot generate meaningful output —
+                                  pipeline-only sanity check.**
+
+Usage patterns:
+
+  1. One-shot full pipeline (download + convert + train):
+       python scripts/run_deepseek_v4.py full-train \
+           --model-name DeepSeek-V4-Flash-FP8-4layer \
+           --num-nodes 1 --num-gpus-per-node 8
+
+  2. Individual steps (download → FP8->BF16 → BF16->torch_dist → rsync → train):
+       python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
+       python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
+           --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
+       python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
+           --num-nodes 7
+       python scripts/run_deepseek_v4.py prepare-cp       --model-name DeepSeek-V4-Flash-FP8
+       python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
+           --num-nodes 7 --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 import typer
 
@@ -10,13 +36,26 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
+_DEFAULT_MODEL_ORG = {
+    "DeepSeek-V4-Flash-FP8": "sgl-project",
+    "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",        # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8
+}
+
+_MEGATRON_MODEL_TYPE = {
+    "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
+    "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
+}
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
-    model_org: str = "deepseek-ai"
-    model_name: Literal["DeepSeek-V4-285B", "DeepSeek-V4-285B-4layer"] = "DeepSeek-V4-285B"
+    model_org: str = ""  # filled in from _DEFAULT_MODEL_ORG in __post_init__ if empty
+    model_name: Literal[
+        "DeepSeek-V4-Flash-FP8",
+        "DeepSeek-V4-Flash-FP8-4layer",
+    ] = "DeepSeek-V4-Flash-FP8"
     hf_checkpoint: str | None = None
     num_gpus_per_node: int = 8
     enable_eval: bool = True
@@ -42,12 +81,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     skip_saving: bool = False
     cp_size: int = 1
 
+    def __post_init__(self):
+        if not self.model_org:
+            self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
+
     @property
     def megatron_model_type(self):
-        return {
-            "DeepSeek-V4-285B": "deepseek-v4-285B",
-            "DeepSeek-V4-285B-4layer": "deepseek-v4-285B-4layer",
-        }[self.model_name]
+        return _MEGATRON_MODEL_TYPE[self.model_name]
 
     @property
     def torch_dist_name(self):
@@ -58,10 +98,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
         return f"{self.model_name}-bf16"
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_single(args: ScriptArgs):
-    """This script only needs to be executed on one node."""
+def _download_dataset(args: ScriptArgs):
+    """Download the task-specific dataset(s)."""
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -69,21 +107,58 @@ def prepare_single(args: ScriptArgs):
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 
+
+def _hf_checkpoint_path(args: ScriptArgs) -> str:
+    """Resolve hf_checkpoint path: explicit override wins, else {model_dir}/{model_name}."""
+    return args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
+
+
+def _prepare_download(args: ScriptArgs):
+    """Download HF checkpoint + task dataset. Idempotent — huggingface-cli skips existing blobs."""
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    # Only download if the user has NOT supplied a pre-existing checkpoint dir.
+    # (prepare_single / train with --hf-checkpoint bypass this.)
+    if args.hf_checkpoint is None:
+        dest = f"{args.model_dir}/{args.model_name}"
+        U.exec_command(
+            f"huggingface-cli download {args.model_org}/{args.model_name} "
+            f"--local-dir {dest}"
+        )
+    _download_dataset(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_download(args: ScriptArgs):
+    """Download HF checkpoint + dataset from HuggingFace. Run on one node (shared NFS)."""
+    _prepare_download(args)
+
+
+def _prepare_single(args: ScriptArgs):
+    _download_dataset(args)
+
+    src = _hf_checkpoint_path(args)
     U.fp8_cast_bf16(
-        path_src=args.hf_checkpoint,
+        path_src=src,
         path_dst=f"{args.model_dir}/{args.bf16_name}/",
     )
 
 
 @app.command()
 @U.dataclass_cli
-def prepare_spmd(args: ScriptArgs):
+def prepare_single(args: ScriptArgs):
+    """FP8 → BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
+    _prepare_single(args)
+
+
+def _prepare_spmd(args: ScriptArgs):
+    is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 "
-    if args.num_nodes == 1 and args.model_name == "DeepSeek-V4-285B-4layer":
+    if args.num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         )
-    elif args.num_nodes == 7 and args.model_name == "DeepSeek-V4-285B":
+    elif args.num_nodes == 7 and args.model_name == "DeepSeek-V4-Flash-FP8":
         extra_args += (
             "--tensor-model-parallel-size 4 "
             "--pipeline-model-parallel-size 7 "
@@ -102,7 +177,7 @@ def prepare_spmd(args: ScriptArgs):
         )
 
     num_gpus_for_convert = args.num_gpus_per_node
-    if args.model_name == "DeepSeek-V4-285B-4layer":
+    if is_4layer:
         num_gpus_for_convert = min(num_gpus_for_convert, 4)
 
     U.convert_checkpoint(
@@ -115,6 +190,12 @@ def prepare_spmd(args: ScriptArgs):
         dir_dst=f"{args.model_dir}",
         megatron_path=args.megatron_path,
     )
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_spmd(args: ScriptArgs):
+    _prepare_spmd(args)
 
 
 @app.command()
@@ -220,9 +301,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     )
 
 
-@app.command()
-@U.dataclass_cli
-def train(args: ScriptArgs):
+def _train(args: ScriptArgs):
     print(f"running on {args.num_nodes} nodes")
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
@@ -260,13 +339,13 @@ def train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 3072 "
+                f"--rollout-max-response-len 4096 "
                 """--apply-chat-template-kwargs '{"thinking":true}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 3072 "
+                "--eval-max-response-len 4096 "
             )
         case "gsm8k":
             rollout_args += (
@@ -381,7 +460,6 @@ def train(args: ScriptArgs):
         misc_args += "--use-rollout-routing-replay "
     if args.enable_rir:
         misc_args += "--use-rollout-indexer-replay "
-        misc_args += "--sglang-mem-fraction-static 0.6 "
     if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
@@ -421,6 +499,38 @@ def train(args: ScriptArgs):
         extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
     )
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    """Run training. Assumes data/model/torch_dist are already prepared on {model_local_dir}."""
+    _train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def full_train(args: ScriptArgs):
+    _prepare_download(args)
+
+    bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
+    if not bf16_dir.exists():
+        _prepare_single(args)
+    else:
+        print(f"[full_train] Skipping FP8→BF16 cast: {bf16_dir} already exists.")
+
+    torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
+    if not torch_dist_dir.exists():
+        _prepare_spmd(args)
+    else:
+        print(f"[full_train] Skipping BF16→torch_dist conversion: {torch_dist_dir} already exists.")
+
+    _prepare_cp(args)
+
+    if args.hf_checkpoint is None:
+        args.hf_checkpoint = f"{args.model_local_dir}/{args.model_name}"
+
+    _train(args)
 
 
 if __name__ == "__main__":
