@@ -26,6 +26,7 @@
 11. Rebase stopped on `75b09c798 Fix text-only rollout processor guard`.
 12. Rebase stopped on `c8ab7d4b8 Fix rollout indexer replay shape decoding`.
 13. Rebase stopped on `49ce6ef8d Expose DeepSeek V4 bridge import errors`.
+14. Rebase stopped on `4926137a3 hyper_connection: route MHC through deepseek-ai/TileKernels`.
 
 ## Conflict Notes
 
@@ -114,6 +115,17 @@ Decision:
 
 - Switched DeepSeek-V4 bridge loading from optional `try/except ImportError` to an explicit import, matching the commit's intent to expose broken bridge dependencies immediately.
 - Preserved main's `Qwen3_5Bridge` export while adding `DeepseekV4Bridge` to `__all__`.
+
+### `4926137a3 hyper_connection: route MHC through deepseek-ai/TileKernels`
+
+Conflicted files:
+
+- `miles_plugins/models/deepseek_v4/ops/hyper_connection.py`
+
+Decision:
+
+- Kept the TileKernels-backed Hyper-Connection implementation from the commit and removed the stale import of the local no-grad `hc_split_sinkhorn` helper.
+- The public `HCHeadParams` and `DeepSeekV4HyperConnectionUtil` APIs remain unchanged, so Megatron call sites continue to use the same interface while the implementation routes through `tile_kernels.modeling.mhc.ops`.
 
 ## Fix Notes
 
