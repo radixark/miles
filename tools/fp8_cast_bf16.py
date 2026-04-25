@@ -5,39 +5,21 @@ from argparse import ArgumentParser
 from glob import glob
 
 import torch
-import triton
-import triton.language as tl
 from safetensors.torch import load_file, save_file
 from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
+from tile_kernels.quant import cast_back
 from tqdm import tqdm
 
 
-@triton.jit
-def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
-    pid_m = tl.program_id(axis=0)
-    pid_n = tl.program_id(axis=1)
-    n = tl.cdiv(N, BLOCK_SIZE)
-    offs_m = pid_m * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    offs_n = pid_n * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    offs = offs_m[:, None] * N + offs_n[None, :]
-    mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
-    x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
-    s = tl.load(s_ptr + pid_m * n + pid_n)
-    y = x * s
-    tl.store(y_ptr + offs, y, mask=mask)
-
-
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> torch.Tensor:
+    """Dequantize a 2D FP8 weight matrix back to bf16 using a 128x128 block scale.
+
+    Backed by ``tile_kernels.quant.cast_back`` so it shares the same dequant
+    implementation as the rest of the DeepSeek stack.
+    """
     assert x.is_contiguous() and s.is_contiguous()
     assert x.dim() == 2 and s.dim() == 2
-    M, N = x.size()
-    y = torch.empty_like(x, dtype=torch.get_default_dtype())
-
-    def grid(meta):
-        return (triton.cdiv(M, meta["BLOCK_SIZE"]), triton.cdiv(N, meta["BLOCK_SIZE"]))
-
-    weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
-    return y
+    return cast_back((x, s), fmt='bf16', x_block_size=(block_size, block_size))
 
 
 def main(fp8_path, bf16_path):

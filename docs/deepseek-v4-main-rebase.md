@@ -27,6 +27,7 @@
 12. Rebase stopped on `c8ab7d4b8 Fix rollout indexer replay shape decoding`.
 13. Rebase stopped on `49ce6ef8d Expose DeepSeek V4 bridge import errors`.
 14. Rebase stopped on `4926137a3 hyper_connection: route MHC through deepseek-ai/TileKernels`.
+15. Rebase stopped on `28d42c735 quant: route qat cast-back + fp8_cast_bf16 tool through TileKernels`.
 
 ## Conflict Notes
 
@@ -126,6 +127,17 @@ Decision:
 
 - Kept the TileKernels-backed Hyper-Connection implementation from the commit and removed the stale import of the local no-grad `hc_split_sinkhorn` helper.
 - The public `HCHeadParams` and `DeepSeekV4HyperConnectionUtil` APIs remain unchanged, so Megatron call sites continue to use the same interface while the implementation routes through `tile_kernels.modeling.mhc.ops`.
+
+### `28d42c735 quant: route qat cast-back + fp8_cast_bf16 tool through TileKernels`
+
+Conflicted files:
+
+- `miles_plugins/models/deepseek_v4/ops/qat.py`
+
+Decision:
+
+- Kept the TileKernels QAT cast-back path (`tile_kernels.quant.per_token_cast_back`) while preserving the local `act_quant` cast path.
+- `tools/fp8_cast_bf16.py` applied cleanly to the TileKernels `cast_back` implementation.
 
 ## Fix Notes
 
