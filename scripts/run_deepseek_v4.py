@@ -118,21 +118,16 @@ def _hf_checkpoint_path(args: ScriptArgs) -> str:
 
 
 def _patch_4layer_model_type(args: ScriptArgs):
-    """SGLang's `get_config` fallback for 4-layer ckpts only triggers on `model_type='deepseek_ref'`,
-    but Pinaster/DeepSeek-V4-Flash-FP8-4layer ships with `model_type='deepseek_v4'`. Rewrite the
-    local copy in-place so SGLang's `_load_deepseek_temp_model` is reached. Idempotent / no-op
-    for non-4-layer models. Applies to both the FP8 ckpt and any BF16 sibling already on disk."""
+    """TMP: patch sglang model type."""
     if args.model_name != "DeepSeek-V4-Flash-FP8-4layer":
         return
-    targets = [Path(_hf_checkpoint_path(args)), Path(f"{args.model_dir}/{args.bf16_name}")]
-    for d in targets:
-        cfg = d / "config.json"
-        if not cfg.exists():
-            continue
-        text = cfg.read_text()
-        if '"model_type": "deepseek_v4"' in text:
-            cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
-            print(f"[patch] {cfg}: model_type deepseek_v4 → deepseek_ref")
+    cfg = Path(_hf_checkpoint_path(args)) / "config.json"
+    if not cfg.exists():
+        return
+    text = cfg.read_text()
+    if '"model_type": "deepseek_v4"' in text:
+        cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
+        print(f"[patch] {cfg}: model_type deepseek_v4 → deepseek_ref")
 
 
 def _prepare_download(args: ScriptArgs):
@@ -539,17 +534,21 @@ def train(args: ScriptArgs):
 def full_train(args: ScriptArgs):
     _prepare_download(args)
 
+    # Use sentinel files (not just dir existence) — a failed/killed prior step can leave
+    # an empty stub dir that would otherwise make us skip the regeneration.
     bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
-    if not bf16_dir.exists():
+    bf16_sentinel = bf16_dir / "model.safetensors.index.json"
+    if not bf16_sentinel.exists():
         _prepare_single(args)
     else:
-        print(f"[full_train] Skipping FP8→BF16 cast: {bf16_dir} already exists.")
+        print(f"[full_train] Skipping FP8→BF16 cast: {bf16_sentinel} already exists.")
 
     torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
-    if not torch_dist_dir.exists():
+    torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
+    if not torch_dist_sentinel.exists():
         _prepare_spmd(args)
     else:
-        print(f"[full_train] Skipping BF16→torch_dist conversion: {torch_dist_dir} already exists.")
+        print(f"[full_train] Skipping BF16→torch_dist conversion: {torch_dist_sentinel} already exists.")
 
     if args.model_local_dir != args.model_dir:
         _prepare_cp(args)
