@@ -136,6 +136,34 @@ def get_sum_of_sample_mean(
     return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
 
 
+def get_local_response_loss_masks(
+    total_lengths: list[int],
+    response_lengths: list[int],
+    loss_masks: list[torch.Tensor],
+    qkv_format: str = "thd",
+    max_seq_lens: list[int] | None = None,
+) -> list[torch.Tensor]:
+    """Return response loss masks aligned with this rank's local log-probs."""
+    parallel_state = get_parallel_state()
+    if parallel_state.cp.size == 1:
+        return loss_masks
+
+    local_masks = []
+    for i, (total_length, response_length, loss_mask) in enumerate(
+        zip(total_lengths, response_lengths, loss_masks, strict=False)
+    ):
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        prompt_length = total_length - response_length
+        _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
+            total_length, response_length, qkv_format, max_seq_len
+        )
+        loss_mask_0 = loss_mask[tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length]
+        loss_mask_1 = loss_mask[tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length]
+        local_masks.append(torch.cat([loss_mask_0, loss_mask_1], dim=0))
+
+    return local_masks
+
+
 def all_gather_with_cp(
     tensor: torch.Tensor,
     total_length: int,

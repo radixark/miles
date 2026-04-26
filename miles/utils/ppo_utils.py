@@ -2,12 +2,63 @@
 # and https://github.com/OpenRLHF/OpenRLHF/blob/10c733694ed9fbb78a0a2ff6a05efc7401584d46/openrlhf/trainer/ppo_utils/experience_maker.py
 
 from argparse import Namespace
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
 from miles.backends.training_utils.parallel import get_parallel_state
+
+
+_TOP_LOGPROB_BWD_DUMP_COUNTER = 0
+
+
+def _maybe_dump_top_logprob_backward(name: str, tensor: torch.Tensor) -> None:
+    dump_dir = None
+    try:
+        import os
+
+        dump_dir = os.environ.get("MILES_LOGPROB_BACKWARD_DEBUG_DIR")
+    except Exception:
+        dump_dir = None
+    if not dump_dir or not tensor.requires_grad:
+        return
+
+    def hook(grad: torch.Tensor) -> torch.Tensor:
+        global _TOP_LOGPROB_BWD_DUMP_COUNTER
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        stats = {
+            "rank": rank,
+            "name": name,
+            "shape": tuple(grad.shape),
+            "dtype": str(grad.dtype),
+            "numel": grad.numel(),
+            "finite": torch.isfinite(grad).sum().item(),
+            "nan": torch.isnan(grad).sum().item(),
+            "inf": torch.isinf(grad).sum().item(),
+        }
+        finite = grad[torch.isfinite(grad)]
+        if finite.numel() > 0:
+            finite_f = finite.float()
+            stats.update(
+                {
+                    "max_abs_finite": finite_f.abs().max().item(),
+                    "min_finite": finite_f.min().item(),
+                    "max_finite": finite_f.max().item(),
+                }
+            )
+        else:
+            stats.update({"max_abs_finite": None, "min_finite": None, "max_finite": None})
+        counter = _TOP_LOGPROB_BWD_DUMP_COUNTER
+        _TOP_LOGPROB_BWD_DUMP_COUNTER += 1
+        path = Path(dump_dir) / f"rank_{rank}_{counter:05d}_{name}.pt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"stats": stats, "grad": grad.detach().cpu()}, path)
+        print(f"[MILES_LOGPROB_BACKWARD_DEBUG] {stats} wrote {path}", flush=True)
+        return grad
+
+    tensor.register_hook(hook)
 
 
 @torch.compile(dynamic=True)
@@ -185,7 +236,7 @@ def _prepare_true_on_policy_full_logits(
     if vocab_size is not None and full_logits.size(-1) > vocab_size:
         full_logits = full_logits[..., :vocab_size]
 
-    return full_logits.float()
+    return full_logits
 
 
 def _gather_true_on_policy_full_logits(
@@ -769,8 +820,11 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         return log_prob, entropy
 
     full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+    _maybe_dump_top_logprob_backward("full_logits", full_logits)
     log_probs_full = torch.log_softmax(full_logits, dim=-1)
+    _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
     log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+    _maybe_dump_top_logprob_backward("log_prob", log_prob)
 
     entropy = None
     if with_entropy:

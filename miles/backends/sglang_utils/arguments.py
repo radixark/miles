@@ -137,6 +137,8 @@ def validate_args(args):
     args.sglang_dp_size = args.sglang_data_parallel_size
     args.sglang_pp_size = args.sglang_pipeline_parallel_size
     args.sglang_ep_size = args.sglang_expert_parallel_size
+    if hasattr(args, "sglang_attention_context_parallel_size"):
+        args.sglang_attn_cp_size = args.sglang_attention_context_parallel_size
 
     if args.true_on_policy_mode:
         if getattr(args, "sglang_rl_on_policy_target", None) is None:

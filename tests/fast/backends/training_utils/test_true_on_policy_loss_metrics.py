@@ -44,6 +44,14 @@ def _make_batch(*, old_log_probs: torch.Tensor, rollout_log_probs: torch.Tensor)
     }
 
 
+def _patch_single_rank_masks(monkeypatch):
+    monkeypatch.setattr(
+        loss_utils,
+        "get_local_response_loss_masks",
+        lambda total_lengths, response_lengths, loss_masks, qkv_format="thd", max_seq_lens=None: loss_masks,
+    )
+
+
 @pytest.mark.parametrize(
     ("use_rollout_logprobs", "train_log_probs", "old_log_probs", "rollout_log_probs", "expected_abs_diff"),
     [
@@ -79,6 +87,7 @@ def test_train_rollout_logprob_abs_diff_uses_recomputed_train_logprobs(
         "get_parallel_state",
         lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
     )
+    _patch_single_rank_masks(monkeypatch)
     monkeypatch.setattr(
         loss_utils,
         "get_log_probs_and_entropy",
@@ -105,3 +114,118 @@ def test_train_rollout_logprob_abs_diff_uses_recomputed_train_logprobs(
 
     assert torch.isfinite(loss)
     torch.testing.assert_close(metrics["train_rollout_logprob_abs_diff"], torch.tensor(expected_abs_diff))
+
+
+def test_zero_weighted_entropy_nan_does_not_poison_policy_loss(monkeypatch):
+    args = _make_args(use_rollout_logprobs=False)
+    batch = _make_batch(
+        old_log_probs=torch.tensor([0.10, 0.20], dtype=torch.float32),
+        rollout_log_probs=torch.tensor([0.10, 0.20], dtype=torch.float32),
+    )
+
+    monkeypatch.setattr(
+        loss_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
+    )
+    _patch_single_rank_masks(monkeypatch)
+
+    def fake_get_log_probs_and_entropy(*args, **kwargs):
+        assert kwargs["with_entropy"] is False
+        return {"log_probs": [torch.tensor([0.10, 0.20], dtype=torch.float32)]}
+
+    monkeypatch.setattr(loss_utils, "get_log_probs_and_entropy", fake_get_log_probs_and_entropy)
+    monkeypatch.setattr(
+        loss_utils,
+        "compute_policy_loss",
+        lambda ppo_kl, advantages, eps_clip, eps_clip_high: (
+            torch.zeros_like(ppo_kl),
+            torch.zeros_like(ppo_kl),
+        ),
+    )
+
+    loss, metrics = loss_utils.policy_loss_function(
+        args,
+        batch,
+        logits=torch.zeros((1, 3, 8), dtype=torch.float32),
+        sum_of_sample_mean=lambda tensor: tensor.float().mean(),
+    )
+
+    assert torch.isfinite(loss)
+    torch.testing.assert_close(metrics["entropy_loss"], torch.tensor(0.0))
+
+
+def test_zero_weighted_kl_nan_does_not_poison_policy_loss(monkeypatch):
+    args = _make_args(use_rollout_logprobs=False)
+    args.use_kl_loss = True
+    args.kl_loss_coef = 0.0
+    batch = _make_batch(
+        old_log_probs=torch.tensor([0.10, 0.20], dtype=torch.float32),
+        rollout_log_probs=torch.tensor([0.10, 0.20], dtype=torch.float32),
+    )
+    batch["ref_log_probs"] = [torch.tensor([float("nan"), float("nan")], dtype=torch.float32)]
+
+    monkeypatch.setattr(
+        loss_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
+    )
+    _patch_single_rank_masks(monkeypatch)
+    monkeypatch.setattr(
+        loss_utils,
+        "get_log_probs_and_entropy",
+        lambda *args, **kwargs: {
+            "log_probs": [torch.tensor([0.10, 0.20], dtype=torch.float32)],
+        },
+    )
+    monkeypatch.setattr(
+        loss_utils,
+        "compute_policy_loss",
+        lambda ppo_kl, advantages, eps_clip, eps_clip_high: (
+            torch.zeros_like(ppo_kl),
+            torch.zeros_like(ppo_kl),
+        ),
+    )
+
+    loss, metrics = loss_utils.policy_loss_function(
+        args,
+        batch,
+        logits=torch.zeros((1, 3, 8), dtype=torch.float32),
+        sum_of_sample_mean=lambda tensor: tensor.float().mean(),
+    )
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["kl_loss"])
+
+
+def test_masked_nonfinite_ppo_terms_do_not_poison_policy_loss(monkeypatch):
+    args = _make_args(use_rollout_logprobs=False)
+    batch = _make_batch(
+        old_log_probs=torch.tensor([0.10, float("nan")], dtype=torch.float32),
+        rollout_log_probs=torch.tensor([0.10, float("nan")], dtype=torch.float32),
+    )
+    batch["loss_masks"] = [torch.tensor([1.0, 0.0], dtype=torch.float32)]
+
+    monkeypatch.setattr(
+        loss_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
+    )
+    _patch_single_rank_masks(monkeypatch)
+    monkeypatch.setattr(
+        loss_utils,
+        "get_log_probs_and_entropy",
+        lambda *args, **kwargs: {
+            "log_probs": [torch.tensor([0.10, float("nan")], dtype=torch.float32)],
+        },
+    )
+
+    loss, metrics = loss_utils.policy_loss_function(
+        args,
+        batch,
+        logits=torch.zeros((1, 3, 8), dtype=torch.float32),
+        sum_of_sample_mean=lambda tensor: (tensor * batch["loss_masks"][0]).sum(),
+    )
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["ppo_kl"])

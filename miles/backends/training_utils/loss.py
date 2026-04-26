@@ -1,5 +1,6 @@
 from argparse import Namespace
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -25,6 +26,7 @@ from .cp_utils import (
     _allgather_cp_redistribute,
     all_gather_with_cp,
     get_logits_and_tokens_offset_with_cp,
+    get_local_response_loss_masks,
     get_sum_of_sample_mean,
     slice_loss_masks_for_local_cp,
 )
@@ -50,7 +52,8 @@ def get_responses(
 
     Args:
         logits: Model outputs with shape `[1, T, V]` (policy) or `[1, T, 1]`
-            (value). Must be float32.
+            (value). Standard training uses float32. True-on-policy scoring
+            preserves the rollout engine's logits dtype.
         args: Configuration containing `rollout_temperature` for scaling.
         unconcat_tokens: List of token tensors (prompt+response) per sample.
         total_lengths: Total sequence lengths (prompt+response) per sample.
@@ -64,7 +67,8 @@ def get_responses(
     parallel_state = get_parallel_state()
     qkv_format = args.qkv_format
 
-    assert logits.dtype == torch.float32, f"{logits.dtype}"
+    if not args.true_on_policy_mode:
+        assert logits.dtype == torch.float32, f"{logits.dtype}"
     assert len(logits.shape) == 3, f"{logits.shape}"
 
     if qkv_format == "thd":
@@ -75,6 +79,11 @@ def get_responses(
         logits = logits.view(-1, logits.size(-1))
 
     logits = logits.div(args.rollout_temperature)
+    if args.true_on_policy_mode:
+        if getattr(args, "bf16", False):
+            logits = logits.to(torch.bfloat16)
+        elif getattr(args, "fp16", False):
+            logits = logits.to(torch.float16)
 
     cp_size = parallel_state.cp.size
     end = 0
@@ -88,10 +97,11 @@ def get_responses(
             if qkv_format == "bshd":
                 end = max_seq_len * i + total_length
                 start = end - response_length
+                logits_chunk = logits[start - 1 : end - 1]
             else:
                 end += total_length
                 start = end - response_length
-            logits_chunk = logits[start - 1 : end - 1]
+                logits_chunk = logits[start - 1 : end - 1]
             tokens_chunk = tokens[-response_length:]
         elif args.allgather_cp:
             # DSA: global concat then contiguous CP split. Each rank owns logits for
@@ -553,6 +563,72 @@ def icepop_function(
     return pg_loss, loss_masks, metrics
 
 
+_POLICY_LOSS_DUMP_COUNTER = 0
+
+
+def _maybe_dump_policy_loss_debug(
+    *,
+    args: Namespace,
+    batch: RolloutBatch,
+    train_log_probs: list[torch.Tensor],
+    old_log_probs: list[torch.Tensor],
+    rollout_log_probs: list[torch.Tensor] | None,
+    advantages: list[torch.Tensor],
+    local_loss_masks: list[torch.Tensor],
+    ppo_kl: torch.Tensor,
+    pg_loss: torch.Tensor,
+) -> None:
+    dump_dir = getattr(args, "dump_details", None)
+    if dump_dir is None:
+        return
+
+    global _POLICY_LOSS_DUMP_COUNTER
+    counter = _POLICY_LOSS_DUMP_COUNTER
+    _POLICY_LOSS_DUMP_COUNTER += 1
+
+    rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+    path = Path(dump_dir) / "policy_loss_debug" / f"rank_{rank}_call_{counter}.pt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def to_cpu(tensor: torch.Tensor) -> torch.Tensor:
+        return tensor.detach().float().cpu()
+
+    samples = []
+    for index, train_lp in enumerate(train_log_probs):
+        sample = {
+            "index": index,
+            "total_length": batch["total_lengths"][index],
+            "response_length": batch["response_lengths"][index],
+            "train_log_probs": to_cpu(train_lp),
+            "old_log_probs": to_cpu(old_log_probs[index]),
+            "advantages": to_cpu(advantages[index]),
+            "local_loss_mask": to_cpu(local_loss_masks[index]),
+        }
+        if rollout_log_probs is not None:
+            sample["rollout_log_probs"] = to_cpu(rollout_log_probs[index])
+            if train_lp.shape == rollout_log_probs[index].shape:
+                sample["train_rollout_abs_diff"] = to_cpu((train_lp - rollout_log_probs[index]).abs())
+        samples.append(sample)
+
+    torch.save(
+        {
+            "rank": rank,
+            "call": counter,
+            "samples": samples,
+            "ppo_kl": to_cpu(ppo_kl),
+            "pg_loss": to_cpu(pg_loss),
+            "finite": {
+                "ppo_kl": torch.isfinite(ppo_kl).all().item(),
+                "pg_loss": torch.isfinite(pg_loss).all().item(),
+                "train_log_probs": all(torch.isfinite(t).all().item() for t in train_log_probs),
+                "old_log_probs": all(torch.isfinite(t).all().item() for t in old_log_probs),
+                "advantages": all(torch.isfinite(t).all().item() for t in advantages),
+            },
+        },
+        path,
+    )
+
+
 def policy_loss_function(
     args: Namespace,
     batch: RolloutBatch,
@@ -597,11 +673,13 @@ def policy_loss_function(
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=total_lengths,
         response_lengths=response_lengths,
-        with_entropy=True,
+        with_entropy=args.entropy_coef != 0,
         max_seq_lens=max_seq_lens,
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    train_log_probs_list = log_probs
+    old_log_probs_list = old_log_probs
 
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
     need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"
@@ -647,7 +725,39 @@ def policy_loss_function(
         log_probs = torch.cat(log_probs, dim=0)
         ppo_kl = old_log_probs - log_probs
 
+    local_loss_mask_list = get_local_response_loss_masks(
+        total_lengths,
+        response_lengths,
+        batch["loss_masks"],
+        args.qkv_format,
+        max_seq_lens,
+    )
+    local_loss_masks = torch.cat(local_loss_mask_list, dim=0).to(device=ppo_kl.device)
+    active_tokens = local_loss_masks.bool()
+    ppo_kl = torch.where(
+        active_tokens,
+        torch.nan_to_num(ppo_kl, nan=0.0, posinf=0.0, neginf=0.0),
+        ppo_kl.new_zeros(()),
+    )
+    advantages = torch.where(
+        active_tokens,
+        torch.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0),
+        advantages.new_zeros(()),
+    )
+
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
+
+    _maybe_dump_policy_loss_debug(
+        args=args,
+        batch=batch,
+        train_log_probs=train_log_probs_list,
+        old_log_probs=old_log_probs_list,
+        rollout_log_probs=batch.get("rollout_log_probs"),
+        advantages=batch["advantages"],
+        local_loss_masks=local_loss_mask_list,
+        ppo_kl=ppo_kl,
+        pg_loss=pg_loss,
+    )
 
     if args.use_opsm:
         pg_loss = pg_loss * opsm_mask
@@ -725,11 +835,14 @@ def policy_loss_function(
     ppo_kl = sum_of_sample_mean(ppo_kl)
 
     # entropy loss
-    entropy = log_probs_and_entropy["entropy"]
-    entropy = torch.cat(entropy, dim=0)
-    entropy_loss = sum_of_sample_mean(entropy)
-
-    loss = pg_loss - args.entropy_coef * entropy_loss
+    if args.entropy_coef != 0:
+        entropy = log_probs_and_entropy["entropy"]
+        entropy = torch.cat(entropy, dim=0)
+        entropy_loss = sum_of_sample_mean(entropy)
+        loss = pg_loss - args.entropy_coef * entropy_loss
+    else:
+        entropy_loss = pg_loss.new_zeros(())
+        loss = pg_loss
 
     if args.use_kl_loss:
         ref_log_probs = batch["ref_log_probs"]
@@ -743,9 +856,15 @@ def policy_loss_function(
             kl_loss_type=args.kl_loss_type,
             importance_ratio=importance_ratio,
         )
+        kl = torch.where(
+            active_tokens,
+            torch.nan_to_num(kl, nan=0.0, posinf=0.0, neginf=0.0),
+            kl.new_zeros(()),
+        )
         kl_loss = sum_of_sample_mean(kl)
 
-        loss = loss + args.kl_loss_coef * kl_loss
+        if args.kl_loss_coef != 0:
+            loss = loss + args.kl_loss_coef * kl_loss
 
     # make sure the gradient could backprop correctly.
     if log_probs.numel() == 0:
@@ -756,11 +875,22 @@ def policy_loss_function(
     train_rollout_kl = None
     if "rollout_log_probs" in batch and batch["rollout_log_probs"]:
         rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
-        train_rollout_logprob_abs_diff = sum_of_sample_mean((train_scored_log_probs - rollout_log_probs).abs())
-        # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
-        train_rollout_kl = sum_of_sample_mean(
-            compute_approx_kl(rollout_log_probs, train_scored_log_probs, kl_loss_type="low_var_kl")
+        abs_diff = (train_scored_log_probs - rollout_log_probs).abs()
+        abs_diff = torch.where(
+            active_tokens,
+            torch.nan_to_num(abs_diff, nan=0.0, posinf=0.0, neginf=0.0),
+            abs_diff.new_zeros(()),
         )
+        train_rollout_logprob_abs_diff = sum_of_sample_mean(abs_diff)
+
+        # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
+        rollout_train_kl = compute_approx_kl(rollout_log_probs, train_scored_log_probs, kl_loss_type="low_var_kl")
+        rollout_train_kl = torch.where(
+            active_tokens,
+            torch.nan_to_num(rollout_train_kl, nan=0.0, posinf=0.0, neginf=0.0),
+            rollout_train_kl.new_zeros(()),
+        )
+        train_rollout_kl = sum_of_sample_mean(rollout_train_kl)
 
     reported_loss = {
         "loss": loss.clone().detach(),
@@ -982,7 +1112,12 @@ def loss_function(
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
-            loss = loss * num_microbatches / global_batch_size * parallel_state.intra_dp_cp.size
+            loss_parallel_size = (
+                parallel_state.intra_dp.size
+                if args.true_on_policy_mode and parallel_state.is_ulysses_cp
+                else parallel_state.intra_dp_cp.size
+            )
+            loss = loss * num_microbatches / global_batch_size * loss_parallel_size
         else:
             loss = loss / global_batch_size * parallel_state.intra_dp.size
     else:

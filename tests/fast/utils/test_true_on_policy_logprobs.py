@@ -21,7 +21,7 @@ def test_true_on_policy_logprobs_tp1_truncate_after_real_vocab():
         vocab_size=4,
     )
 
-    expected_log_probs_full = torch.log_softmax(logits[:, :4].float(), dim=-1)
+    expected_log_probs_full = torch.log_softmax(logits[:, :4], dim=-1)
     expected_log_probs = expected_log_probs_full.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
     expected_entropy = -(expected_log_probs_full.exp() * expected_log_probs_full).sum(dim=-1)
 
@@ -54,7 +54,7 @@ def test_true_on_policy_fake_tp_vocab_gather_truncates_before_log_softmax():
         vocab_size=6,
     )
 
-    expected_full_logits = torch.cat([shard_0.float(), shard_1.float()], dim=-1)[:, :6]
+    expected_full_logits = torch.cat([shard_0, shard_1], dim=-1)[:, :6]
     expected_log_probs = torch.log_softmax(expected_full_logits, dim=-1)
     expected_selected = expected_log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
 

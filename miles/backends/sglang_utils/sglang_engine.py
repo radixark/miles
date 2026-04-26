@@ -23,13 +23,17 @@ logger = logging.getLogger(__name__)
 
 def get_base_gpu_id(args, rank):
     num_gpus = min(args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
-    if args.colocate:
+    if getattr(args, "colocate", False):
         start_index = (rank * num_gpus) % args.num_gpus_per_node
     else:
-        num_actor_gpus = 0 if args.debug_rollout_only else args.actor_num_gpus_per_node * args.actor_num_nodes
+        num_actor_gpus = (
+            0
+            if getattr(args, "debug_rollout_only", False)
+            else getattr(args, "actor_num_gpus_per_node", 0) * getattr(args, "actor_num_nodes", 1)
+        )
         start_index = (num_actor_gpus + rank * num_gpus) % args.num_gpus_per_node
-        if args.use_critic:
-            num_critic_gpus = args.critic_num_gpus_per_node * args.critic_num_nodes
+        if getattr(args, "use_critic", False):
+            num_critic_gpus = getattr(args, "critic_num_gpus_per_node", 0) * getattr(args, "critic_num_nodes", 1)
             start_index = (num_actor_gpus + num_critic_gpus + rank * num_gpus) % args.num_gpus_per_node
     return start_index
 
@@ -672,6 +676,9 @@ def _compute_server_args(
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
         unused_keys.discard(attr.name)
+
+    if getattr(args, "sglang_enable_dp_lm_head", False):
+        kwargs["enable_dp_lm_head"] = True
 
     # for compatibility with old args
     if len(unused_keys) > 0:
