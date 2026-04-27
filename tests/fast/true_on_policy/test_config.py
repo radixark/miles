@@ -32,6 +32,10 @@ def test_qwen3_dense_profile_resolves_model_names():
     profile = get_true_on_policy_model_profile("Qwen3-4B")
 
     assert profile.family == "qwen3_dense"
+    assert profile.supported_train_layouts == ("dp", "tp", "pp", "ulysses_cp")
+    assert profile.supported_rollout_layouts == ("dp", "tp")
+    assert profile.required_kernel_contracts == ("qwen3_dense_sglang_math",)
+    assert profile.logprob_contract == "sglang_prefill"
     assert profile.supports_ulysses_cp
     assert profile.supports_tp_invariant
     assert get_megatron_model_type("Qwen3-4B") == "qwen3-4B"
@@ -67,6 +71,13 @@ def test_true_on_policy_target_is_derived_from_train_and_rollout_tp(
 
     assert args.sglang_rl_on_policy_target == expected_target
     assert plan.sglang_target == expected_target
+    assert plan.sglang_args.values == (
+        "--sglang-enable-deterministic-inference",
+        "--sglang-rl-on-policy-target",
+        expected_target,
+        "--sglang-attention-backend",
+        "fa3",
+    )
     assert f"--sglang-rl-on-policy-target {expected_target}" in plan.train_args
 
 
@@ -100,6 +111,59 @@ def test_megatron_true_on_policy_disables_sequence_parallel_and_enables_backend_
     assert plan.env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] == "1"
 
 
+def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(monkeypatch):
+    monkeypatch.delenv("NCCL_ALGO", raising=False)
+
+    args = _args(
+        train_backend="megatron",
+        tensor_model_parallel_size=2,
+        context_parallel_size=4,
+        pipeline_model_parallel_size=1,
+        rollout_num_gpus_per_engine=8,
+        use_sequence_parallel=True,
+    )
+
+    apply_true_on_policy_script_defaults(args)
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert args.use_sequence_parallel is False
+    assert args.sglang_rl_on_policy_target == "fsdp_tp"
+    assert plan.parallel_layout is not None
+    assert plan.parallel_layout.train_tensor_parallel_size == 2
+    assert plan.parallel_layout.train_context_parallel_size == 4
+    assert plan.parallel_layout.rollout_num_gpus_per_engine == 8
+    assert plan.parallel_layout.uses_train_tp
+    assert plan.parallel_layout.uses_ulysses_cp
+    assert plan.parallel_layout.uses_rollout_tp
+    assert plan.kernel_policy is not None
+    assert plan.kernel_policy.tp_invariant_row_linear
+    assert plan.kernel_policy.deterministic_tp_allreduce
+    assert plan.sglang_args.values == (
+        "--sglang-enable-deterministic-inference",
+        "--sglang-rl-on-policy-target",
+        "fsdp_tp",
+        "--sglang-attention-backend",
+        "fa3",
+    )
+    assert plan.megatron_args.values == (
+        "--use-sglang",
+        "--transformer-impl",
+        "local",
+        "--use-cpu-initialization",
+        "--batch-invariant-mode",
+        "--no-bias-swiglu-fusion",
+        "--no-rope-fusion",
+    )
+    assert plan.miles_args.values == ("--deterministic-mode", "--true-on-policy-mode")
+    assert plan.env_vars == {
+        "NCCL_ALGO": "Ring",
+        "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        "ROW_LINEAR_ENABLE_INV": "1",
+        "MEGATRON_USE_DETERMINISTIC_ALLREDUCE": "1",
+    }
+
+
 def test_fsdp_true_on_policy_uses_fsdp_attention_without_megatron_backend_flags():
     args = _args(
         train_backend="fsdp",
@@ -113,6 +177,8 @@ def test_fsdp_true_on_policy_uses_fsdp_attention_without_megatron_backend_flags(
 
     assert args.use_sequence_parallel is True
     assert plan.sglang_target == "fsdp"
+    assert plan.fsdp_args.values == ("--attn-implementation", "flash_attention_3")
+    assert plan.megatron_args.values == ()
     assert "--attn-implementation flash_attention_3" in plan.train_args
     assert "--use-sglang" not in plan.train_args
     assert "ROW_LINEAR_ENABLE_INV" not in plan.env_vars

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -12,6 +13,97 @@ TrainBackend = Literal["fsdp", "megatron"]
 
 
 @dataclass(frozen=True)
+class TrueOnPolicyArgList:
+    """Structured command-line args that stringify only at launch boundaries."""
+
+    values: tuple[str, ...] = ()
+
+    def as_cli_string(self) -> str:
+        if not self.values:
+            return ""
+        return " ".join(shlex.quote(value) for value in self.values) + " "
+
+    def contains(self, flag: str) -> bool:
+        return flag in self.values
+
+
+@dataclass(frozen=True)
+class TrueOnPolicyParallelLayout:
+    """Training and rollout topology relevant to true-on-policy parity."""
+
+    train_tensor_parallel_size: int
+    train_context_parallel_size: int
+    train_pipeline_parallel_size: int
+    rollout_num_gpus_per_engine: int
+
+    @property
+    def uses_train_tp(self) -> bool:
+        return self.train_tensor_parallel_size > 1
+
+    @property
+    def uses_ulysses_cp(self) -> bool:
+        return self.train_context_parallel_size > 1
+
+    @property
+    def uses_train_pp(self) -> bool:
+        return self.train_pipeline_parallel_size > 1
+
+    @property
+    def uses_rollout_tp(self) -> bool:
+        return self.rollout_num_gpus_per_engine > 1
+
+
+@dataclass(frozen=True)
+class TrueOnPolicyKernelPolicy:
+    """Kernel/runtime switches required to keep SGLang and Megatron aligned."""
+
+    deterministic_inference: bool
+    deterministic_training: bool
+    sglang_attention_backend: str
+    megatron_uses_sglang_backend: bool
+    disable_rope_fusion: bool
+    disable_bias_swiglu_fusion: bool
+    batch_invariant_mode: bool
+    tp_invariant_row_linear: bool
+    deterministic_tp_allreduce: bool
+
+    def build_sglang_args(self, target: OnPolicyTarget) -> TrueOnPolicyArgList:
+        values = [
+            "--sglang-rl-on-policy-target",
+            target,
+            "--sglang-attention-backend",
+            self.sglang_attention_backend,
+        ]
+        if self.deterministic_inference:
+            values.insert(0, "--sglang-enable-deterministic-inference")
+        return TrueOnPolicyArgList(tuple(values))
+
+    def build_megatron_args(self) -> TrueOnPolicyArgList:
+        values: list[str] = []
+        if self.megatron_uses_sglang_backend:
+            values.extend(["--use-sglang", "--transformer-impl", "local", "--use-cpu-initialization"])
+        if self.batch_invariant_mode:
+            values.append("--batch-invariant-mode")
+        if self.disable_bias_swiglu_fusion:
+            values.append("--no-bias-swiglu-fusion")
+        if self.disable_rope_fusion:
+            values.append("--no-rope-fusion")
+        return TrueOnPolicyArgList(tuple(values))
+
+    def build_env_vars(self) -> dict[str, str]:
+        env_vars = {
+            "NCCL_ALGO": os.environ.get("NCCL_ALGO", "Ring"),
+            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
+            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        }
+        if self.tp_invariant_row_linear:
+            env_vars["ROW_LINEAR_ENABLE_INV"] = "1"
+        if self.deterministic_tp_allreduce:
+            env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] = "1"
+        return env_vars
+
+
+@dataclass(frozen=True)
 class TrueOnPolicyLaunchPlan:
     """Derived cross-repo launch contract for one true-on-policy run."""
 
@@ -19,8 +111,22 @@ class TrueOnPolicyLaunchPlan:
     model_profile: TrueOnPolicyModelProfile | None = None
     train_backend: TrainBackend | None = None
     sglang_target: OnPolicyTarget | None = None
-    train_args: str = ""
+    parallel_layout: TrueOnPolicyParallelLayout | None = None
+    kernel_policy: TrueOnPolicyKernelPolicy | None = None
+    sglang_args: TrueOnPolicyArgList = field(default_factory=TrueOnPolicyArgList)
+    megatron_args: TrueOnPolicyArgList = field(default_factory=TrueOnPolicyArgList)
+    fsdp_args: TrueOnPolicyArgList = field(default_factory=TrueOnPolicyArgList)
+    miles_args: TrueOnPolicyArgList = field(default_factory=TrueOnPolicyArgList)
     env_vars: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def train_args(self) -> str:
+        return (
+            self.sglang_args.as_cli_string()
+            + self.megatron_args.as_cli_string()
+            + self.fsdp_args.as_cli_string()
+            + self.miles_args.as_cli_string()
+        )
 
 
 @dataclass(frozen=True)
@@ -37,8 +143,18 @@ class TrueOnPolicyConfig:
     sglang_target_override: OnPolicyTarget | None = None
 
     @property
+    def parallel_layout(self) -> TrueOnPolicyParallelLayout:
+        return TrueOnPolicyParallelLayout(
+            train_tensor_parallel_size=self.tensor_model_parallel_size,
+            train_context_parallel_size=self.context_parallel_size,
+            train_pipeline_parallel_size=self.pipeline_model_parallel_size,
+            rollout_num_gpus_per_engine=self.rollout_num_gpus_per_engine,
+        )
+
+    @property
     def requires_tp_invariant_rollout(self) -> bool:
-        return self.tensor_model_parallel_size > 1 or self.rollout_num_gpus_per_engine > 1
+        layout = self.parallel_layout
+        return layout.uses_train_tp or layout.uses_rollout_tp
 
     @property
     def sglang_target(self) -> OnPolicyTarget:
@@ -49,59 +165,64 @@ class TrueOnPolicyConfig:
     def validate(self) -> None:
         if not self.enabled:
             return
+        layout = self.parallel_layout
         if self.train_backend == "megatron" and not self.model_profile.supports_megatron:
             raise ValueError(f"{self.model_profile.family} does not support Megatron true-on-policy")
         if self.train_backend == "fsdp" and not self.model_profile.supports_fsdp:
             raise ValueError(f"{self.model_profile.family} does not support FSDP true-on-policy")
-        if self.context_parallel_size > 1 and not self.model_profile.supports_ulysses_cp:
+        if layout.uses_ulysses_cp and not self.model_profile.supports_ulysses_cp:
             raise ValueError(f"{self.model_profile.family} does not support Ulysses CP true-on-policy")
+        if layout.uses_train_pp and "pp" not in self.model_profile.supported_train_layouts:
+            raise ValueError(f"{self.model_profile.family} does not support PP true-on-policy")
         if self.sglang_target == "fsdp_tp" and not self.model_profile.supports_tp_invariant:
             raise ValueError(f"{self.model_profile.family} does not support TP-invariant true-on-policy")
 
+    def build_kernel_policy(self) -> TrueOnPolicyKernelPolicy:
+        return TrueOnPolicyKernelPolicy(
+            deterministic_inference=True,
+            deterministic_training=True,
+            sglang_attention_backend=self.model_profile.sglang_attention_backend,
+            megatron_uses_sglang_backend=self.train_backend == "megatron",
+            disable_rope_fusion=self.train_backend == "megatron",
+            disable_bias_swiglu_fusion=self.train_backend == "megatron",
+            batch_invariant_mode=self.train_backend == "megatron",
+            tp_invariant_row_linear=self.sglang_target == "fsdp_tp",
+            deterministic_tp_allreduce=self.sglang_target == "fsdp_tp",
+        )
+
     def build_launch_plan(self) -> TrueOnPolicyLaunchPlan:
         self.validate()
-        train_args = (
-            "--sglang-enable-deterministic-inference "
-            f"--sglang-rl-on-policy-target {self.sglang_target} "
-            f"--sglang-attention-backend {self.model_profile.sglang_attention_backend} "
-            "--deterministic-mode "
-            "--true-on-policy-mode "
+        kernel_policy = self.build_kernel_policy()
+        miles_args = TrueOnPolicyArgList(
+            (
+                "--deterministic-mode",
+                "--true-on-policy-mode",
+            )
         )
 
         if self.train_backend == "megatron":
-            train_args += (
-                "--use-sglang "
-                "--transformer-impl local "
-                "--use-cpu-initialization "
-                "--batch-invariant-mode "
-                "--no-bias-swiglu-fusion "
-                "--no-rope-fusion "
-            )
+            megatron_args = kernel_policy.build_megatron_args()
+            fsdp_args = TrueOnPolicyArgList()
         elif self.train_backend == "fsdp":
-            train_args += f"--attn-implementation {self.model_profile.fsdp_attention_implementation} "
+            megatron_args = TrueOnPolicyArgList()
+            fsdp_args = TrueOnPolicyArgList(
+                ("--attn-implementation", self.model_profile.fsdp_attention_implementation)
+            )
         else:
             raise NotImplementedError(f"Unsupported true-on-policy train backend: {self.train_backend}")
-
-        env_vars = {
-            "NCCL_ALGO": os.environ.get("NCCL_ALGO", "Ring"),
-            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-        }
-        if self.sglang_target == "fsdp_tp":
-            env_vars.update(
-                {
-                    "ROW_LINEAR_ENABLE_INV": "1",
-                    "MEGATRON_USE_DETERMINISTIC_ALLREDUCE": "1",
-                }
-            )
 
         return TrueOnPolicyLaunchPlan(
             enabled=True,
             model_profile=self.model_profile,
             train_backend=self.train_backend,
             sglang_target=self.sglang_target,
-            train_args=train_args,
-            env_vars=env_vars,
+            parallel_layout=self.parallel_layout,
+            kernel_policy=kernel_policy,
+            sglang_args=kernel_policy.build_sglang_args(self.sglang_target),
+            megatron_args=megatron_args,
+            fsdp_args=fsdp_args,
+            miles_args=miles_args,
+            env_vars=kernel_policy.build_env_vars(),
         )
 
 

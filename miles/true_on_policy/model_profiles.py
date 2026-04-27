@@ -5,6 +5,9 @@ from typing import Literal
 
 
 ModelFamily = Literal["qwen3_dense", "qwen3_moe", "qwen_next"]
+ParallelLayout = Literal["tp", "pp", "dp", "ulysses_cp"]
+LogprobContract = Literal["sglang_prefill"]
+KernelContract = Literal["qwen3_dense_sglang_math"]
 
 
 @dataclass(frozen=True)
@@ -14,13 +17,23 @@ class TrueOnPolicyModelProfile:
     family: ModelFamily
     model_names: tuple[str, ...]
     megatron_model_types: dict[str, str]
+    supported_train_layouts: tuple[ParallelLayout, ...]
+    supported_rollout_layouts: tuple[ParallelLayout, ...]
+    required_kernel_contracts: tuple[KernelContract, ...]
+    logprob_contract: LogprobContract
     supports_megatron: bool = True
     supports_fsdp: bool = True
-    supports_ulysses_cp: bool = True
-    supports_tp_invariant: bool = True
     sglang_attention_backend: str = "fa3"
     fsdp_attention_implementation: str = "flash_attention_3"
     disable_megatron_sequence_parallel: bool = True
+
+    @property
+    def supports_ulysses_cp(self) -> bool:
+        return "ulysses_cp" in self.supported_train_layouts
+
+    @property
+    def supports_tp_invariant(self) -> bool:
+        return "tp" in self.supported_train_layouts or "tp" in self.supported_rollout_layouts
 
     def megatron_model_type_for(self, model_name: str) -> str:
         try:
@@ -47,6 +60,10 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
         "Qwen3-4B-Base": "qwen3-4B",
         "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
     },
+    supported_train_layouts=("dp", "tp", "pp", "ulysses_cp"),
+    supported_rollout_layouts=("dp", "tp"),
+    required_kernel_contracts=("qwen3_dense_sglang_math",),
+    logprob_contract="sglang_prefill",
 )
 
 

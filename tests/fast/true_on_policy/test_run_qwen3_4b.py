@@ -40,6 +40,57 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
     assert env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] == "1"
 
 
+def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatch):
+    captured = {}
+
+    def fake_execute_train(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(run_qwen3_4b.U, "execute_train", fake_execute_train)
+    monkeypatch.setattr(run_qwen3_4b.U, "get_default_wandb_args", lambda *args, **kwargs: "")
+
+    args = run_qwen3_4b.ScriptArgs(
+        run_id="unit-test-tp2-cp4",
+        model_name="Qwen3-4B",
+        mode="normal",
+        true_on_policy=True,
+        enable_eval=False,
+        use_kl_loss=False,
+        tensor_model_parallel_size=2,
+        context_parallel_size=4,
+        pipeline_model_parallel_size=1,
+        cp_comm_type="a2a",
+        rollout_num_gpus=8,
+        rollout_num_gpus_per_engine=8,
+    )
+
+    assert args.sglang_rl_on_policy_target == "fsdp_tp"
+    assert args.use_sequence_parallel is False
+
+    run_qwen3_4b.execute(args)
+
+    train_args = captured["train_args"]
+    env_vars = captured["extra_env_vars"]
+
+    assert "--tensor-model-parallel-size 2" in train_args
+    assert "--context-parallel-size 4" in train_args
+    assert "--cp-comm-type a2a" in train_args
+    assert "--rollout-num-gpus 8" in train_args
+    assert "--rollout-num-gpus-per-engine 8" in train_args
+    assert "--sglang-rl-on-policy-target fsdp_tp" in train_args
+    assert "--sglang-attention-backend fa3" in train_args
+    assert "--use-sglang" in train_args
+    assert "--batch-invariant-mode" in train_args
+    assert "--no-bias-swiglu-fusion" in train_args
+    assert "--no-rope-fusion" in train_args
+    assert "--sequence-parallel" not in train_args
+    assert env_vars["NCCL_ALGO"] == "Ring"
+    assert env_vars["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] == "0"
+    assert env_vars["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+    assert env_vars["ROW_LINEAR_ENABLE_INV"] == "1"
+    assert env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] == "1"
+
+
 def test_qwen3_script_off_policy_does_not_emit_true_on_policy_contract(monkeypatch):
     captured = {}
 
