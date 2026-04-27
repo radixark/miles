@@ -9,6 +9,7 @@ from miles.true_on_policy import (
     apply_true_on_policy_script_defaults,
     build_true_on_policy_launch_plan,
     get_megatron_model_type,
+    get_true_on_policy_contract,
     get_true_on_policy_model_profile,
 )
 
@@ -32,9 +33,13 @@ def _args(**overrides):
 
 def test_qwen3_dense_profile_resolves_model_names():
     profile = get_true_on_policy_model_profile("Qwen3-4B")
+    contract = get_true_on_policy_contract("qwen3_dense_true_on_policy_v1")
 
     assert profile.family == "qwen3_dense"
     assert profile.contract is QWEN3_DENSE_TRUE_ON_POLICY_V1
+    assert profile.contract is contract
+    assert contract.schema.name == "qwen3_dense_true_on_policy_v1"
+    assert contract.schema.model_family == "qwen3_dense"
     assert profile.supported_train_layouts == ("dp", "tp", "pp", "ulysses_cp")
     assert profile.supported_rollout_layouts == ("dp", "tp")
     assert profile.required_kernel_contracts == ("qwen3_dense_sglang_math",)
@@ -101,6 +106,27 @@ def test_true_on_policy_override_is_preserved_for_expert_debugging():
     assert args.sglang_rl_on_policy_target == "fsdp"
     assert plan.sglang_target == "fsdp"
     assert "ROW_LINEAR_ENABLE_INV" not in plan.env_vars
+
+
+def test_contract_object_owns_miles_kernel_policy_values():
+    args = _args(
+        train_backend="megatron",
+        tensor_model_parallel_size=2,
+        context_parallel_size=1,
+        rollout_num_gpus_per_engine=1,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.kernel_policy is not None
+    assert plan.kernel_policy.contract is QWEN3_DENSE_TRUE_ON_POLICY_V1
+    assert plan.kernel_policy.sglang_attention_backend == "fa3"
+    assert plan.kernel_policy.megatron_uses_sglang_backend
+    assert plan.kernel_policy.disable_rope_fusion
+    assert plan.kernel_policy.disable_bias_swiglu_fusion
+    assert plan.kernel_policy.batch_invariant_mode
+    assert plan.kernel_policy.tp_invariant_row_linear
+    assert plan.kernel_policy.deterministic_tp_allreduce
 
 
 def test_megatron_true_on_policy_disables_sequence_parallel_and_enables_backend_flags():

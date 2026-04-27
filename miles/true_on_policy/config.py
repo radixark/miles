@@ -206,15 +206,10 @@ class TrueOnPolicyConfig:
     def build_kernel_policy(self) -> TrueOnPolicyKernelPolicy:
         return TrueOnPolicyKernelPolicy(
             contract=self.contract,
-            deterministic_inference=True,
-            deterministic_training=True,
-            sglang_attention_backend=self.contract.sglang_attention_backend,
-            megatron_uses_sglang_backend=self.train_backend == "megatron",
-            disable_rope_fusion=self.train_backend == "megatron",
-            disable_bias_swiglu_fusion=self.train_backend == "megatron",
-            batch_invariant_mode=self.train_backend == "megatron",
-            tp_invariant_row_linear=self.sglang_target == "fsdp_tp",
-            deterministic_tp_allreduce=self.sglang_target == "fsdp_tp",
+            **self.contract.kernel_policy_kwargs_for(
+                train_backend=self.train_backend,
+                sglang_target=self.sglang_target,
+            ),
         )
 
     def build_launch_plan(self) -> TrueOnPolicyLaunchPlan:
