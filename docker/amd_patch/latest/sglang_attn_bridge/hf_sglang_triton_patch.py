@@ -36,9 +36,7 @@ class TritonAttnFunction(torch.autograd.Function):
         Returns:
             o: [total, num_heads, D], bf16
         """
-        from sglang.srt.layers.attention.triton_ops.extend_attention import (
-            extend_attention_fwd_unified,
-        )
+        from sglang.srt.layers.attention.triton_ops.extend_attention import extend_attention_fwd_unified
 
         total = B * S
         device = q.device
