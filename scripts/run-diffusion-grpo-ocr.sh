@@ -78,7 +78,8 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type ocr \
-  --diffusion-dtype bf16 \
+  --fsdp-master-dtype fp32 \
+  --diffusion-rollout-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 50 \
   --diffusion-gradient-accumulation-steps 64 \
@@ -91,4 +92,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-height 512 \
   --diffusion-width 512 \
   --global-batch-size 256 \
+  --eval-prompt-data ocr_test "${ROOT_DIR}/data/ocr/test.jsonl" \
+  --eval-interval 50 \
+  --skip-eval-before-train \
   "${WANDB_ARGS[@]}"

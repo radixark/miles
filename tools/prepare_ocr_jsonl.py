@@ -5,15 +5,9 @@ import json
 from pathlib import Path
 
 
-def main() -> int:
-    repo_root = Path(__file__).resolve().parents[1]
-    src = repo_root / "flow_grpo" / "dataset" / "ocr" / "train.txt"
-    dst = repo_root / "data" / "ocr" / "train.jsonl"
-
+def _convert(src: Path, dst: Path) -> None:
     if not src.exists():
         raise FileNotFoundError(f"Missing OCR prompts: {src}")
-
-    # Convert plain text prompts into Miles JSONL format: {"input": "..."} per line.
     dst.parent.mkdir(parents=True, exist_ok=True)
     with src.open("r", encoding="utf-8") as f_in, dst.open("w", encoding="utf-8") as f_out:
         for line in f_in:
@@ -21,8 +15,15 @@ def main() -> int:
             if not prompt:
                 continue
             f_out.write(json.dumps({"input": prompt}, ensure_ascii=True) + "\n")
-
     print(f"Wrote {dst}")
+
+
+def main() -> int:
+    repo_root = Path(__file__).resolve().parents[1]
+    src_dir = repo_root / "flow_grpo" / "dataset" / "ocr"
+    dst_dir = repo_root / "data" / "ocr"
+    _convert(src_dir / "train.txt", dst_dir / "train.jsonl")
+    _convert(src_dir / "test.txt", dst_dir / "test.jsonl")
     return 0
 
 

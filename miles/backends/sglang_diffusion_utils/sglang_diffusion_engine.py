@@ -325,11 +325,11 @@ def _compute_server_args(args, host, port, nccl_port):
         # Force-skip warmup to prevent warmup timeout during RL rollouts.
         "warmup": False,
     }
-    # Mirror the training-side --diffusion-dtype onto SGL-D's compute dtype so
-    # the rollout engine's DiT runs at the same precision as training. This
-    # controls both weight-load dtype (pipeline_config.dit_precision via
+    # Mirror --diffusion-rollout-dtype onto SGL-D's compute dtype so the
+    # rollout engine's DiT runs at the precision the training side casts
+    # inputs to. Controls weight-load dtype (pipeline_config.dit_precision via
     # ServerArgs._adjust_dtype) and DenoisingStage autocast.
-    _dtype = getattr(args, "diffusion_dtype", None)
+    _dtype = getattr(args, "diffusion_rollout_dtype", None)
     if _dtype in ("bf16", "fp16", "fp32"):
         kwargs["dit_dtype"] = _dtype
 

@@ -41,16 +41,6 @@ DATASET_SAMPLE_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
         "default_keys": ("input_key",),
         "arg_attrs": ("eval_input_key", "input_key"),
     },
-    "label_key": {
-        "dataset_keys": ("label_key",),
-        "default_keys": ("label_key",),
-        "arg_attrs": ("eval_label_key", "label_key"),
-    },
-    "tool_key": {
-        "dataset_keys": ("tool_key",),
-        "default_keys": ("tool_key",),
-        "arg_attrs": ("eval_tool_key", "tool_key"),
-    },
     "metadata_key": {
         "dataset_keys": ("metadata_key",),
         "default_keys": ("metadata_key",),
@@ -125,8 +115,6 @@ class EvalDatasetConfig:
             self.name,
             self.path,
             self.input_key,
-            self.label_key,
-            self.tool_key,
             self.metadata_key,
         )
 
