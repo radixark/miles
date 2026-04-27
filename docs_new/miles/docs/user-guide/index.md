@@ -9,12 +9,12 @@ The User Guide is organised as a three-stage journey. Stages 1–2 are enough to
 
 | Stage | You are… | Pages |
 |---|---|---|
-| **1. Understand** | Building a mental model | [Core Concepts](concepts.md) · [Training Backends](usage.md) |
-| **2. Run** | Launching and watching a job | [Training Script Walkthrough](training-script-walkthrough.md) · [Data & Datasets](data.md) · [Monitoring & Logging](monitoring.md) |
-| **3. Extend** | Plugging custom code in | [Customization](customization.md) · [Rollout Endpoints](rollout-endpoints.md) · [Agentic Chat Templates](agentic-chat-template.md) |
+| **Understand** | Building a mental model | [Core Concepts](concepts.md) · [Training Backends](usage.md) |
+| **Run** | Launching and watching a job | [Training Script Walkthrough](training-script-walkthrough.md) · [Data & Datasets](data.md) · [Monitoring & Logging](monitoring.md) |
+| **Extend** | Plugging custom code in | [Customization](customization.md) · [Rollout Endpoints](rollout-endpoints.md) · [Agentic Chat Templates](agentic-chat-template.md) |
 | **Reference** | Looking a flag up | [CLI Reference](cli-reference.md) |
 
-## 1. Understand
+## Understand
 
 <div class="grid cards" markdown>
 
@@ -30,7 +30,7 @@ The User Guide is organised as a three-stage journey. Stages 1–2 are enough to
 
 </div>
 
-## 2. Run
+## Run
 
 <div class="grid cards" markdown>
 
@@ -51,7 +51,7 @@ The User Guide is organised as a three-stage journey. Stages 1–2 are enough to
 
 </div>
 
-## 3. Extend
+## Extend
 
 <div class="grid cards" markdown>
 
