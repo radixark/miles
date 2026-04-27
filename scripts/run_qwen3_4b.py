@@ -107,6 +107,7 @@ def execute(args: ScriptArgs):
     debug_num_rollout = max(2, data_parallel_size)
     debug_global_batch_size = data_parallel_size
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
+    megatron_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
 
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name}{'-FP8' if args.rollout_fp8 else ''} "
@@ -114,7 +115,7 @@ def execute(args: ScriptArgs):
         f"--save-interval {2 if is_debug_mode else 20} "
     )
     if not args.enable_megatron_bridge:
-        ckpt_args += f"--load {load_save_path} "
+        ckpt_args += f"--load {megatron_load_path} "
     if args.use_kl_loss:
         ref_load_path = f"{args.model_dir}/{args.model_name}"
         if args.train_backend == "megatron":

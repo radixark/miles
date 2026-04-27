@@ -73,7 +73,7 @@ async def test_recompute_rollout_logprobs_via_prefill_checks_token_alignment(mon
 
 
 @pytest.mark.asyncio
-async def test_recompute_samples_flushes_once_and_batches_prefill_score(monkeypatch):
+async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(monkeypatch):
     samples = [
         Sample(tokens=[10, 11, 20], response_length=1, status=Sample.Status.COMPLETED),
         Sample(tokens=[10, 11, 21], response_length=1, status=Sample.Status.COMPLETED),
@@ -160,9 +160,10 @@ async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
     assert [call[0] for call in calls] == [
         "http://localhost/flush_cache",
         "http://localhost/generate",
+        "http://localhost/flush_cache",
         "http://localhost/generate",
     ]
     assert calls[1][1]["logprob_start_len"] == 1
     assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 22]]
-    assert calls[2][1]["logprob_start_len"] == 2
-    assert calls[2][1]["input_ids"] == [[10, 11, 12, 21]]
+    assert calls[3][1]["logprob_start_len"] == 2
+    assert calls[3][1]["input_ids"] == [[10, 11, 12, 21]]
