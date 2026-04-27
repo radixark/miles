@@ -69,15 +69,15 @@ PERF_ARGS+=(
 ### 4. Download + convert + run
 
 ```bash
-hf download --repo-type dataset zhuzilin/gsm8k       --local-dir /data/gsm8k
-hf download Qwen/Qwen2.5-0.5B-Instruct               --local-dir /data/Qwen2.5-0.5B-Instruct
+hf download --repo-type dataset openai/gsm8k         --local-dir /root/gsm8k
+hf download Qwen/Qwen2.5-0.5B-Instruct               --local-dir /root/Qwen2.5-0.5B-Instruct
 
 cd /root/miles
 source scripts/models/qwen2.5-0.5B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /data/Qwen2.5-0.5B-Instruct \
-   --save           /data/Qwen2.5-0.5B-Instruct_torch_dist/
+   --hf-checkpoint /root/Qwen2.5-0.5B-Instruct \
+   --save           /root/Qwen2.5-0.5B-Instruct_torch_dist/
 
 bash examples/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
 ```
@@ -87,8 +87,8 @@ bash examples/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
 Run twice, then:
 
 ```bash
-md5sum /data/Qwen2.5-0.5B-Instruct_torch_dist_run1/iter_0000020/*.pt
-md5sum /data/Qwen2.5-0.5B-Instruct_torch_dist_run2/iter_0000020/*.pt
+md5sum /root/Qwen2.5-0.5B-Instruct_torch_dist_run1/iter_0000020/*.pt
+md5sum /root/Qwen2.5-0.5B-Instruct_torch_dist_run2/iter_0000020/*.pt
 ```
 
 The hashes should match exactly. If they don't, something escaped the deterministic

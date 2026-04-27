@@ -64,7 +64,7 @@ trajectories, which empirically stabilises early training when most attempts fai
 ROLLOUT_ARGS=(
    --custom-generate-function-path \
        examples.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
-   --prompt-data /data/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt --label-key label
    --apply-chat-template --rollout-shuffle
    --rm-type deepscaler

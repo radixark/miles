@@ -62,11 +62,10 @@ Trainer stdout looks like:
 | `scripts/run-qwen3-4B.sh` | 8× H100 | Canonical GRPO recipe |
 | `scripts/run-qwen3-4B_4xgpu.sh` | 4× H100 | Half-node variant |
 | `scripts/run-qwen3-4B_4xgpu-radixtree.sh` | 4× H100 | Variant with radix-tree middleware |
-| `scripts/run-qwen3-4B-amd.sh` | 8× MI300X | AMD ROCm variant |
+| `scripts/amd/run-qwen3-4B-amd.sh` | 8× MI300X | AMD ROCm variant |
 | `scripts/run-qwen3-4B-base-sft.sh` | 8× H100 | SFT (OpenHermes) |
 | `scripts/run-qwen3-4B-fsdp.sh` | 8× H100 | FSDP backend, no weight conversion |
 | `scripts/run-qwen3-32B.sh` | 16× H100 | 32 B dense |
-| `scripts/run-qwen3-8B-amd.sh` | 8× MI300X | 8 B on AMD |
 
 For 32 B and above, drive the HF → Megatron converter with `torchrun --nproc-per-node 8`.
 
@@ -97,8 +96,8 @@ Qwen3 ships FP8 checkpoints (`Qwen/Qwen3-4B-FP8`). Swap `--hf-checkpoint`:
 
 ```bash
 CKPT_ARGS=(
-   --hf-checkpoint /data/Qwen3-4B-FP8
-   --ref-load      /data/Qwen3-4B_torch_dist   # BF16-derived dist ckpt
+   --hf-checkpoint /root/Qwen3-4B-FP8
+   --ref-load      /root/Qwen3-4B_torch_dist   # BF16-derived dist ckpt
    ...
 )
 ```

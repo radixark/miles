@@ -27,14 +27,14 @@ Why use Miles for SFT? Two reasons:
 If you don't already have it:
 
 ```bash
-hf download Qwen/Qwen3-4B-Base --local-dir /data/Qwen3-4B-Base
+hf download Qwen/Qwen3-4B-Base --local-dir /root/Qwen3-4B-Base
 
 cd /root/miles
 source scripts/models/qwen3-4B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /data/Qwen3-4B-Base \
-   --save           /data/Qwen3-4B-Base_torch_dist
+   --hf-checkpoint /root/Qwen3-4B-Base \
+   --save           /root/Qwen3-4B-Base_torch_dist
 ```
 
 ### 2. Prepare the dataset
@@ -56,7 +56,7 @@ def convert(sample):
     }
 
 ds = ds.map(convert)
-ds.to_parquet("/data/openhermes2_5.parquet")
+ds.to_parquet("/root/openhermes2_5.parquet")
 ```
 
 ### 3. Run
@@ -76,7 +76,7 @@ Compare to [run-qwen3-4B.sh](../models/qwen/qwen3.md). The deltas:
 - ROLLOUT_ARGS=( ... GRPO knobs, n-samples-per-prompt, ... )
 + SFT_ARGS=(
 +    --rollout-function-path miles.rollout.sft_rollout.generate_rollout
-+    --prompt-data /data/openhermes2_5.parquet
++    --prompt-data /root/openhermes2_5.parquet
 +    --input-key messages
 +    --rollout-shuffle
 +    --num-epoch 3
@@ -138,7 +138,7 @@ Pass multiple `--prompt-data` entries:
 ```bash
 SFT_ARGS+=(
    --prompt-data \
-      hermes  /data/openhermes2_5.parquet \
+      hermes  /root/openhermes2_5.parquet \
       slimorca /data/slimorca.parquet
 )
 ```
@@ -151,10 +151,10 @@ After SFT, point the RL run at the SFT checkpoint:
 
 ```bash
 CKPT_ARGS=(
-   --hf-checkpoint /data/Qwen3-4B-Base
-   --ref-load      /data/Qwen3-4B-Base_torch_dist     # original (anchor)
-   --load          /data/Qwen3-4B-Base_sft/           # SFT output (start point)
-   --save          /data/Qwen3-4B-Base_rl/
+   --hf-checkpoint /root/Qwen3-4B-Base
+   --ref-load      /root/Qwen3-4B-Base_torch_dist     # original (anchor)
+   --load          /root/Qwen3-4B-Base_sft/           # SFT output (start point)
+   --save          /root/Qwen3-4B-Base_rl/
 )
 ```
 

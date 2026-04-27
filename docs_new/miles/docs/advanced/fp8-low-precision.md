@@ -33,11 +33,11 @@ backward pass and master weights stay BF16 — that's what keeps the gradient si
 Cheapest to enable. Useful as a stepping stone.
 
 ```bash
-hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /data/Qwen3-30B-A3B-FP8
+hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/Qwen3-30B-A3B-FP8
 
 CKPT_ARGS=(
-   --hf-checkpoint /data/Qwen3-30B-A3B-FP8        # FP8 weights for SGLang
-   --ref-load      /data/Qwen3-30B-A3B_torch_dist  # BF16 dist for trainer
+   --hf-checkpoint /root/Qwen3-30B-A3B-FP8        # FP8 weights for SGLang
+   --ref-load      /root/Qwen3-30B-A3B_torch_dist  # BF16 dist for trainer
    ...
 )
 ```

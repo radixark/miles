@@ -5,7 +5,7 @@ description: Launch recipes for Llama 3.1 and 3.2 on NVIDIA and AMD.
 
 # Llama 3
 
-Miles supports Llama 3.1-8B and Llama 3.2-3B on both NVIDIA (H100 / H200 / B-series) and AMD MI300X. The NVIDIA path reuses the Qwen3 launch-script template; the AMD path has a dedicated script under `scripts/run-llama3.2-3B-Instruct-amd.sh`.
+Miles supports Llama 3.1-8B and Llama 3.2-3B on both NVIDIA (H100 / H200 / B-series) and AMD MI300X. The launch script is created by copying the Qwen3 template and swapping the `source` line — `scripts/run-qwen3-4B.sh` on NVIDIA, `scripts/amd/run-qwen3-4B-amd.sh` on AMD.
 
 ## Variants
 
@@ -36,7 +36,14 @@ sed -i 's|scripts/models/qwen3-4B.sh|scripts/models/llama3.2-3B-Instruct.sh|' \
 bash scripts/run-llama3.2-3B-Instruct.sh
 ```
 
-On AMD MI300X, skip the copy step and use `scripts/run-llama3.2-3B-Instruct-amd.sh` directly.
+On AMD MI300X, copy from the AMD Qwen3 template instead:
+
+```bash
+cp scripts/amd/run-qwen3-4B-amd.sh scripts/amd/run-llama3.2-3B-Instruct-amd.sh
+sed -i 's|scripts/models/qwen3-4B.sh|scripts/models/llama3.2-3B-Instruct-amd.sh|' \
+   scripts/amd/run-llama3.2-3B-Instruct-amd.sh
+bash scripts/amd/run-llama3.2-3B-Instruct-amd.sh
+```
 
 ## Expected signal
 
@@ -48,11 +55,7 @@ Standard `loss=… reward=…` trainer stdout. Llama is a straightforward dense 
 
 ### Launch scripts
 
-| Script | Platform |
-|---|---|
-| `scripts/run-llama3.2-3B-Instruct-amd.sh` | AMD MI300X |
-
-Miles on NVIDIA uses the Qwen3 / GLM4 script template — copy `run-qwen3-4B.sh` and swap the `source` line to your Llama config.
+Miles ships no pre-built Llama launch script — both NVIDIA and AMD use the Qwen3 / GLM4 script template. Copy `scripts/run-qwen3-4B.sh` (or `scripts/amd/run-qwen3-4B-amd.sh` on AMD) and swap the `source` line to your Llama model config.
 
 ### Parallelism
 
@@ -63,4 +66,4 @@ Miles on NVIDIA uses the Qwen3 / GLM4 script template — copy `run-qwen3-4B.sh`
 
 ### AMD path
 
-Use the ROCm image and `scripts/run-llama3.2-3B-Instruct-amd.sh`. See [Platforms: AMD MI300X](../../platforms/amd.md) for the container setup.
+Use the ROCm image and the AMD copy-from-template snippet shown in the Quick start above. See [Platforms: AMD MI300X](../../platforms/amd.md) for the container setup.

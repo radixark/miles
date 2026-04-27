@@ -19,19 +19,19 @@ Qwen3-Next swaps classical attention for Gated-Delta-Net (GDN). Miles runs it th
 cd /root/miles
 
 # 1. Env — both must be set before launch
-export BASE_FOLDER=/shared/checkpoints   # reachable from every node
+export BASE_DIR=/shared/checkpoints   # reachable from every node
 export MASTER_ADDR=<head node IP>
 
 # 2. Download weights
-hf download Qwen/Qwen3-Next-80B-A3B --local-dir $BASE_FOLDER/Qwen3-Next-80B-A3B
+hf download Qwen/Qwen3-Next-80B-A3B --local-dir $BASE_DIR/Qwen3-Next-80B-A3B
 
 # 3. Convert HF → Megatron dist checkpoint
 source scripts/models/qwen3-next-80B-A3B.sh
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint $BASE_FOLDER/Qwen3-Next-80B-A3B \
-   --save          $BASE_FOLDER/Qwen3-Next-80B-A3B_torch_dist
+   --hf-checkpoint $BASE_DIR/Qwen3-Next-80B-A3B \
+   --save          $BASE_DIR/Qwen3-Next-80B-A3B_torch_dist
 
 # 4. Launch GRPO
 bash scripts/run-qwen3-next-80B-A3B.sh

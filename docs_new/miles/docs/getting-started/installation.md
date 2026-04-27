@@ -19,7 +19,6 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
       --gpus all --ipc=host --shm-size=32g \
       --ulimit memlock=-1 --ulimit stack=67108864 \
       --network=host \
-      -v $HOME/data:/data \
       -it radixark/miles:latest /bin/bash
     ```
 
@@ -33,7 +32,6 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
       --group-add video --ipc=host --shm-size=32g \
       --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
       --privileged \
-      -v $HOME/data:/data \
       -it rlsys/miles:MI350-355-latest /bin/bash
     ```
 

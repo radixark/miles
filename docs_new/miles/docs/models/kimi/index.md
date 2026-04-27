@@ -22,7 +22,7 @@ Moonlight on a single 8× H100 node — the smallest Moonshot recipe and a good 
 ```bash
 cd /root/miles
 hf download moonshotai/Moonlight-16B-A3B --local-dir /root/Moonlight-16B-A3B
-bash scripts/run-moonlight.sh
+bash scripts/run-moonlight-16B-A3B.sh
 ```
 
 See the [Moonlight](moonlight.md) page for the full walkthrough, or [Kimi K2](kimi-k2.md) for the 16-node K2-Thinking recipe (including the one-line `model_type` patch that lets Miles treat K2 as a DeepSeek-V3-shaped architecture).

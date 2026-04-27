@@ -33,7 +33,7 @@ PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    --save          /root/Qwen3-30B-A3B_torch_dist
 
 # 3. Launch GRPO
-bash scripts/run-qwen3-30B-A3B.sh
+python scripts/run_qwen3_30b_a3b.py
 ```
 
 ## Expected signal
@@ -51,7 +51,7 @@ Trainer stdout looks the same as the dense pages (`loss=… reward=… rollout=�
 
 | Script | GPUs | Notes |
 |---|---|---|
-| `scripts/run-qwen3-30B-A3B.sh` | 8× H100 | Canonical recipe, single node |
+| `scripts/run_qwen3_30b_a3b.py` | 8× H100 | Canonical recipe, single node (Python launcher) |
 | `scripts/run-qwen3-235B-A22B.sh` | 32× H100 | Multi-node |
 | `scripts/run-qwen3-235B-A22B-sft.sh` | 32× H100 | SFT variant |
 

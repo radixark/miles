@@ -156,7 +156,6 @@ Every flag Miles accepts. Section headings mirror the launch-script argument gro
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
 | `--rollout-num-gpus-per-engine` | int | `2` | TP size of each SGLang engine. |
 | `--colocate` | flag | off | Share GPUs between actor and rollout. |
-| `--placement-group-strategy` | str | `STRICT_PACK` | Ray placement-group strategy. <!-- TODO(verify): not found in miles source via grep (2026-04); may have been renamed or removed. --> |
 
 ## Model & checkpoints
 
@@ -320,13 +319,11 @@ Common `--sglang-*` flags:
 | `--rollout-health-check-first-wait` | int | `0` | Grace period before heartbeats start. |
 | `--rollout-health-check-interval` | int | `30` | Seconds between heartbeats. |
 | `--rollout-health-check-timeout` | int | `30` | Heartbeat timeout. |
-| `--p2p-weight-sync-retries` | int | `3` | Retry count before falling back to broadcast. <!-- TODO(verify): not found in miles source via grep (2026-04); may be named differently. --> |
 
 ## Async / partial rollout
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--fully-async-rollout` | flag | off | Continuous background worker. <!-- TODO(verify): exact flag name not confirmed via grep; may be `--async-rollout` or similar. --> |
 | `--partial-rollout` | flag | off | Resume aborted rollouts in the next iteration. |
 
 ## Logging
@@ -348,8 +345,6 @@ Common `--sglang-*` flags:
 | `--debug-train-only` | flag | off | Skip SGLang; only spin up Megatron. |
 | `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. |
 | `--load-debug-rollout-data` | path | – | Replay rollouts from disk (implies `--debug-train-only`). |
-| `--debug-determinism` | flag | off | Log per-step hashes. <!-- TODO(verify): not found in miles source via grep (2026-04). --> |
-| `--debug-weight-sync` | int | `0` | Verbose P2P transfer logs. <!-- TODO(verify): not found in miles source via grep (2026-04). --> |
 | `--deterministic-mode` | flag | off | Megatron deterministic mode. |
 
 ## Customisation
