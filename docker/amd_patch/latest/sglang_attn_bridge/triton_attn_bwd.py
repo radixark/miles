@@ -34,10 +34,15 @@ _is_hip = is_hip()
 
 @triton.jit
 def _bwd_preprocess(
-    Out, DO, Delta,
-    stride_obs, stride_oh,
-    stride_dobs, stride_doh,
-    seqlen, headdim,
+    Out,
+    DO,
+    Delta,
+    stride_obs,
+    stride_oh,
+    stride_dobs,
+    stride_doh,
+    seqlen,
+    headdim,
     BLOCK_M: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
 ):
@@ -65,11 +70,16 @@ def _bwd_preprocess(
 
 @triton.jit
 def _compute_lse(
-    Q, K, LSE,
+    Q,
+    K,
+    LSE,
     sm_scale,
-    stride_qbs, stride_qh,
-    stride_kbs, stride_kh,
-    seqlen, headdim,
+    stride_qbs,
+    stride_qh,
+    stride_kbs,
+    stride_kh,
+    seqlen,
+    headdim,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
@@ -133,17 +143,29 @@ def _compute_lse(
 
 @triton.jit
 def _bwd_kernel_dk_dv(
-    Q, K, V, DO,
-    DK, DV,
-    LSE, Delta,
+    Q,
+    K,
+    V,
+    DO,
+    DK,
+    DV,
+    LSE,
+    Delta,
     sm_scale,
-    stride_qbs, stride_qh,
-    stride_kbs, stride_kh,
-    stride_vbs, stride_vh,
-    stride_dobs, stride_doh,
-    stride_dkbs, stride_dkh,
-    stride_dvbs, stride_dvh,
-    seqlen, headdim,
+    stride_qbs,
+    stride_qh,
+    stride_kbs,
+    stride_kh,
+    stride_vbs,
+    stride_vh,
+    stride_dobs,
+    stride_doh,
+    stride_dkbs,
+    stride_dkh,
+    stride_dvbs,
+    stride_dvh,
+    seqlen,
+    headdim,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
@@ -224,16 +246,26 @@ def _bwd_kernel_dk_dv(
 
 @triton.jit
 def _bwd_kernel_dq(
-    Q, K, V, DO,
+    Q,
+    K,
+    V,
+    DO,
     DQ,
-    LSE, Delta,
+    LSE,
+    Delta,
     sm_scale,
-    stride_qbs, stride_qh,
-    stride_kbs, stride_kh,
-    stride_vbs, stride_vh,
-    stride_dobs, stride_doh,
-    stride_dqbs, stride_dqh,
-    seqlen, headdim,
+    stride_qbs,
+    stride_qh,
+    stride_kbs,
+    stride_kh,
+    stride_vbs,
+    stride_vh,
+    stride_dobs,
+    stride_doh,
+    stride_dqbs,
+    stride_dqh,
+    seqlen,
+    headdim,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
@@ -325,7 +357,7 @@ def triton_attention_backward(q, k, v, o, do, B, S, sm_scale=None):
     D = q.shape[2]
     kv_group_num = num_heads // num_kv_heads
 
-    sm_scale = sm_scale or 1.0 / (D ** 0.5)
+    sm_scale = sm_scale or 1.0 / (D**0.5)
 
     BLOCK_HEADDIM = triton.next_power_of_2(D)
     BLOCK_M = 64 if _is_hip else 64
@@ -337,12 +369,20 @@ def triton_attention_backward(q, k, v, o, do, B, S, sm_scale=None):
 
     # For GQA: expand K, V to match num_heads
     if kv_group_num > 1:
-        k_exp = k.view(B, S, num_kv_heads, D).unsqueeze(3).expand(
-            B, S, num_kv_heads, kv_group_num, D
-        ).reshape(B * S, num_heads, D).contiguous()
-        v_exp = v.view(B, S, num_kv_heads, D).unsqueeze(3).expand(
-            B, S, num_kv_heads, kv_group_num, D
-        ).reshape(B * S, num_heads, D).contiguous()
+        k_exp = (
+            k.view(B, S, num_kv_heads, D)
+            .unsqueeze(3)
+            .expand(B, S, num_kv_heads, kv_group_num, D)
+            .reshape(B * S, num_heads, D)
+            .contiguous()
+        )
+        v_exp = (
+            v.view(B, S, num_kv_heads, D)
+            .unsqueeze(3)
+            .expand(B, S, num_kv_heads, kv_group_num, D)
+            .reshape(B * S, num_heads, D)
+            .contiguous()
+        )
     else:
         k_exp = k
         v_exp = v
@@ -370,56 +410,103 @@ def triton_attention_backward(q, k, v, o, do, B, S, sm_scale=None):
         # Step 1: preprocess delta
         grid_pre = (triton.cdiv(S, BLOCK_M), num_heads)
         _bwd_preprocess[grid_pre](
-            o_b, do_b, delta,
-            o_b.stride(0), o_b.stride(1),
-            do_b.stride(0), do_b.stride(1),
-            S, D,
-            BLOCK_M=BLOCK_M, BLOCK_HEADDIM=BLOCK_HEADDIM,
+            o_b,
+            do_b,
+            delta,
+            o_b.stride(0),
+            o_b.stride(1),
+            do_b.stride(0),
+            do_b.stride(1),
+            S,
+            D,
+            BLOCK_M=BLOCK_M,
+            BLOCK_HEADDIM=BLOCK_HEADDIM,
             **extra_kargs,
         )
 
         # Step 2: compute LSE
         grid_lse = (triton.cdiv(S, BLOCK_M), num_heads)
         _compute_lse[grid_lse](
-            q_b, k_b, lse, sm_scale,
-            q_b.stride(0), q_b.stride(1),
-            k_b.stride(0), k_b.stride(1),
-            S, D,
-            BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_HEADDIM=BLOCK_HEADDIM,
-            num_warps=4, num_stages=1,
+            q_b,
+            k_b,
+            lse,
+            sm_scale,
+            q_b.stride(0),
+            q_b.stride(1),
+            k_b.stride(0),
+            k_b.stride(1),
+            S,
+            D,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_HEADDIM=BLOCK_HEADDIM,
+            num_warps=4,
+            num_stages=1,
             **extra_kargs,
         )
 
         # Step 3: compute dK, dV
         grid_kv = (triton.cdiv(S, BLOCK_N), num_heads)
         _bwd_kernel_dk_dv[grid_kv](
-            q_b, k_b, v_b, do_b,
-            dk_b, dv_b, lse, delta, sm_scale,
-            q_b.stride(0), q_b.stride(1),
-            k_b.stride(0), k_b.stride(1),
-            v_b.stride(0), v_b.stride(1),
-            do_b.stride(0), do_b.stride(1),
-            dk_b.stride(0), dk_b.stride(1),
-            dv_b.stride(0), dv_b.stride(1),
-            S, D,
-            BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_HEADDIM=BLOCK_HEADDIM,
-            num_warps=4, num_stages=1,
+            q_b,
+            k_b,
+            v_b,
+            do_b,
+            dk_b,
+            dv_b,
+            lse,
+            delta,
+            sm_scale,
+            q_b.stride(0),
+            q_b.stride(1),
+            k_b.stride(0),
+            k_b.stride(1),
+            v_b.stride(0),
+            v_b.stride(1),
+            do_b.stride(0),
+            do_b.stride(1),
+            dk_b.stride(0),
+            dk_b.stride(1),
+            dv_b.stride(0),
+            dv_b.stride(1),
+            S,
+            D,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_HEADDIM=BLOCK_HEADDIM,
+            num_warps=4,
+            num_stages=1,
             **extra_kargs,
         )
 
         # Step 4: compute dQ
         grid_q = (triton.cdiv(S, BLOCK_M), num_heads)
         _bwd_kernel_dq[grid_q](
-            q_b, k_b, v_b, do_b,
-            dq_b, lse, delta, sm_scale,
-            q_b.stride(0), q_b.stride(1),
-            k_b.stride(0), k_b.stride(1),
-            v_b.stride(0), v_b.stride(1),
-            do_b.stride(0), do_b.stride(1),
-            dq_b.stride(0), dq_b.stride(1),
-            S, D,
-            BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_HEADDIM=BLOCK_HEADDIM,
-            num_warps=4, num_stages=1,
+            q_b,
+            k_b,
+            v_b,
+            do_b,
+            dq_b,
+            lse,
+            delta,
+            sm_scale,
+            q_b.stride(0),
+            q_b.stride(1),
+            k_b.stride(0),
+            k_b.stride(1),
+            v_b.stride(0),
+            v_b.stride(1),
+            do_b.stride(0),
+            do_b.stride(1),
+            dq_b.stride(0),
+            dq_b.stride(1),
+            S,
+            D,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            BLOCK_HEADDIM=BLOCK_HEADDIM,
+            num_warps=4,
+            num_stages=1,
             **extra_kargs,
         )
 

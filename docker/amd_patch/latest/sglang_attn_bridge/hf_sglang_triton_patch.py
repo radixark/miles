@@ -41,9 +41,6 @@ class TritonAttnFunction(torch.autograd.Function):
         )
 
         total = B * S
-        num_heads = q.shape[1]
-        num_kv_heads = k.shape[1]
-        D = q.shape[2]
         device = q.device
 
         o = torch.empty_like(q)
@@ -53,9 +50,16 @@ class TritonAttnFunction(torch.autograd.Function):
         prefix_lens = torch.zeros(B, device=device, dtype=torch.int32)
 
         extend_attention_fwd_unified(
-            q, o, k, v,
-            qo_indptr, kv_indptr, kv_indices, prefix_lens,
-            max_len_extend=S, is_causal=True,
+            q,
+            o,
+            k,
+            v,
+            qo_indptr,
+            kv_indptr,
+            kv_indices,
+            prefix_lens,
+            max_len_extend=S,
+            is_causal=True,
         )
 
         ctx.save_for_backward(q, k, v, o)
@@ -119,9 +123,5 @@ def apply_sglang_triton_attention_patch(model):
     ALL_ATTENTION_FUNCTIONS["triton"] = _sglang_triton_attention
     model.config._attn_implementation = "triton"
 
-    patched = sum(
-        1
-        for _, m in model.named_modules()
-        if hasattr(m, "q_proj") and hasattr(m, "o_proj")
-    )
+    patched = sum(1 for _, m in model.named_modules() if hasattr(m, "q_proj") and hasattr(m, "o_proj"))
     return patched
