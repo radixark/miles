@@ -30,8 +30,10 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
 
     assert "--true-on-policy-mode" in train_args
     assert "--sglang-enable-deterministic-inference" in train_args
+    assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
     assert "--sglang-rl-on-policy-target fsdp_tp" in train_args
     assert "--sglang-attention-backend fa3" in train_args
+    assert "--true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
     assert "--use-sglang" in train_args
     assert "--batch-invariant-mode" in train_args
     assert "--no-rope-fusion" in train_args
@@ -77,6 +79,7 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     assert "--cp-comm-type a2a" in train_args
     assert "--rollout-num-gpus 8" in train_args
     assert "--rollout-num-gpus-per-engine 8" in train_args
+    assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
     assert "--sglang-rl-on-policy-target fsdp_tp" in train_args
     assert "--sglang-attention-backend fa3" in train_args
     assert "--use-sglang" in train_args
@@ -114,6 +117,8 @@ def test_qwen3_script_off_policy_does_not_emit_true_on_policy_contract(monkeypat
     env_vars = captured["extra_env_vars"]
 
     assert "--true-on-policy-mode" not in train_args
+    assert "--sglang-true-on-policy-contract" not in train_args
     assert "--sglang-rl-on-policy-target" not in train_args
+    assert "--true-on-policy-contract" not in train_args
     assert "--use-sglang" not in train_args
     assert "ROW_LINEAR_ENABLE_INV" not in env_vars

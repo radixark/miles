@@ -216,6 +216,7 @@ def test_true_on_policy_args_propagate_to_sglang_server_args(
         true_on_policy_mode=True,
         recompute_logprobs_via_prefill=recompute_logprobs_via_prefill,
         sglang_rl_on_policy_target=None,
+        sglang_true_on_policy_contract="qwen3_dense_true_on_policy_v1",
         sglang_enable_deterministic_inference=False,
         sglang_enable_prefill_only_deterministic_inference=False,
         hf_checkpoint="hf://dummy",
@@ -242,6 +243,7 @@ def test_true_on_policy_args_propagate_to_sglang_server_args(
     assert args.sglang_enable_prefill_only_deterministic_inference is expected_prefill_only
     assert args.sglang_enable_dp_lm_head is expected_dp_lm_head
     assert server_args["rl_on_policy_target"] == expected_target
+    assert server_args["true_on_policy_contract"] == "qwen3_dense_true_on_policy_v1"
     assert server_args["enable_deterministic_inference"] is True
     assert server_args["enable_prefill_only_deterministic_inference"] is expected_prefill_only
     assert server_args["enable_dp_lm_head"] is expected_dp_lm_head

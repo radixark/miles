@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
-
-ModelFamily = Literal["qwen3_dense", "qwen3_moe", "qwen_next"]
-ParallelLayout = Literal["tp", "pp", "dp", "ulysses_cp"]
-LogprobContract = Literal["sglang_prefill"]
-KernelContract = Literal["qwen3_dense_sglang_math"]
+from .contracts import (
+    LogprobContract,
+    ModelFamily,
+    ParallelLayout,
+    QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    TrueOnPolicyContract,
+)
 
 
 @dataclass(frozen=True)
@@ -19,13 +20,29 @@ class TrueOnPolicyModelProfile:
     megatron_model_types: dict[str, str]
     supported_train_layouts: tuple[ParallelLayout, ...]
     supported_rollout_layouts: tuple[ParallelLayout, ...]
-    required_kernel_contracts: tuple[KernelContract, ...]
-    logprob_contract: LogprobContract
+    contract: TrueOnPolicyContract
     supports_megatron: bool = True
     supports_fsdp: bool = True
-    sglang_attention_backend: str = "fa3"
-    fsdp_attention_implementation: str = "flash_attention_3"
-    disable_megatron_sequence_parallel: bool = True
+
+    @property
+    def required_kernel_contracts(self):
+        return self.contract.required_kernel_contracts
+
+    @property
+    def logprob_contract(self) -> LogprobContract:
+        return self.contract.logprob_contract
+
+    @property
+    def sglang_attention_backend(self) -> str:
+        return self.contract.sglang_attention_backend
+
+    @property
+    def fsdp_attention_implementation(self) -> str:
+        return self.contract.fsdp_attention_implementation
+
+    @property
+    def disable_megatron_sequence_parallel(self) -> bool:
+        return self.contract.disable_megatron_sequence_parallel
 
     @property
     def supports_ulysses_cp(self) -> bool:
@@ -62,8 +79,7 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
     },
     supported_train_layouts=("dp", "tp", "pp", "ulysses_cp"),
     supported_rollout_layouts=("dp", "tp"),
-    required_kernel_contracts=("qwen3_dense_sglang_math",),
-    logprob_contract="sglang_prefill",
+    contract=QWEN3_DENSE_TRUE_ON_POLICY_V1,
 )
 
 

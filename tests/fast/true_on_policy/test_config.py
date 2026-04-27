@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from miles.true_on_policy import (
+    QWEN3_DENSE_TRUE_ON_POLICY_V1,
     apply_true_on_policy_script_defaults,
     build_true_on_policy_launch_plan,
     get_megatron_model_type,
@@ -22,6 +23,7 @@ def _args(**overrides):
         "pipeline_model_parallel_size": 1,
         "rollout_num_gpus_per_engine": 1,
         "sglang_rl_on_policy_target": None,
+        "true_on_policy_contract": None,
         "use_sequence_parallel": True,
     }
     values.update(overrides)
@@ -32,6 +34,7 @@ def test_qwen3_dense_profile_resolves_model_names():
     profile = get_true_on_policy_model_profile("Qwen3-4B")
 
     assert profile.family == "qwen3_dense"
+    assert profile.contract is QWEN3_DENSE_TRUE_ON_POLICY_V1
     assert profile.supported_train_layouts == ("dp", "tp", "pp", "ulysses_cp")
     assert profile.supported_rollout_layouts == ("dp", "tp")
     assert profile.required_kernel_contracts == ("qwen3_dense_sglang_math",)
@@ -71,8 +74,11 @@ def test_true_on_policy_target_is_derived_from_train_and_rollout_tp(
 
     assert args.sglang_rl_on_policy_target == expected_target
     assert plan.sglang_target == expected_target
+    assert plan.contract is QWEN3_DENSE_TRUE_ON_POLICY_V1
     assert plan.sglang_args.values == (
         "--sglang-enable-deterministic-inference",
+        "--sglang-true-on-policy-contract",
+        "qwen3_dense_true_on_policy_v1",
         "--sglang-rl-on-policy-target",
         expected_target,
         "--sglang-attention-backend",
@@ -105,6 +111,8 @@ def test_megatron_true_on_policy_disables_sequence_parallel_and_enables_backend_
 
     assert args.use_sequence_parallel is False
     assert "--use-sglang" in plan.train_args
+    assert "--true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
+    assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
     assert "--batch-invariant-mode" in plan.train_args
     assert "--no-rope-fusion" in plan.train_args
     assert plan.env_vars["ROW_LINEAR_ENABLE_INV"] == "1"
@@ -140,12 +148,16 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
     assert plan.kernel_policy.deterministic_tp_allreduce
     assert plan.sglang_args.values == (
         "--sglang-enable-deterministic-inference",
+        "--sglang-true-on-policy-contract",
+        "qwen3_dense_true_on_policy_v1",
         "--sglang-rl-on-policy-target",
         "fsdp_tp",
         "--sglang-attention-backend",
         "fa3",
     )
     assert plan.megatron_args.values == (
+        "--true-on-policy-contract",
+        "qwen3_dense_true_on_policy_v1",
         "--use-sglang",
         "--transformer-impl",
         "local",
@@ -162,6 +174,13 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
         "ROW_LINEAR_ENABLE_INV": "1",
         "MEGATRON_USE_DETERMINISTIC_ALLREDUCE": "1",
     }
+
+
+def test_true_on_policy_contract_override_is_validated():
+    args = _args(true_on_policy_contract="unknown_contract")
+
+    with pytest.raises(ValueError, match="Unsupported true-on-policy contract"):
+        build_true_on_policy_launch_plan(args)
 
 
 def test_fsdp_true_on_policy_uses_fsdp_attention_without_megatron_backend_flags():

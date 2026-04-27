@@ -5,6 +5,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from .contracts import TrueOnPolicyContract, get_true_on_policy_contract
 from .model_profiles import TrueOnPolicyModelProfile, get_true_on_policy_model_profile
 
 
@@ -57,6 +58,7 @@ class TrueOnPolicyParallelLayout:
 class TrueOnPolicyKernelPolicy:
     """Kernel/runtime switches required to keep SGLang and Megatron aligned."""
 
+    contract: TrueOnPolicyContract
     deterministic_inference: bool
     deterministic_training: bool
     sglang_attention_backend: str
@@ -69,6 +71,8 @@ class TrueOnPolicyKernelPolicy:
 
     def build_sglang_args(self, target: OnPolicyTarget) -> TrueOnPolicyArgList:
         values = [
+            "--sglang-true-on-policy-contract",
+            self.contract.name,
             "--sglang-rl-on-policy-target",
             target,
             "--sglang-attention-backend",
@@ -81,7 +85,16 @@ class TrueOnPolicyKernelPolicy:
     def build_megatron_args(self) -> TrueOnPolicyArgList:
         values: list[str] = []
         if self.megatron_uses_sglang_backend:
-            values.extend(["--use-sglang", "--transformer-impl", "local", "--use-cpu-initialization"])
+            values.extend(
+                [
+                    "--true-on-policy-contract",
+                    self.contract.name,
+                    "--use-sglang",
+                    "--transformer-impl",
+                    "local",
+                    "--use-cpu-initialization",
+                ]
+            )
         if self.batch_invariant_mode:
             values.append("--batch-invariant-mode")
         if self.disable_bias_swiglu_fusion:
@@ -109,6 +122,7 @@ class TrueOnPolicyLaunchPlan:
 
     enabled: bool
     model_profile: TrueOnPolicyModelProfile | None = None
+    contract: TrueOnPolicyContract | None = None
     train_backend: TrainBackend | None = None
     sglang_target: OnPolicyTarget | None = None
     parallel_layout: TrueOnPolicyParallelLayout | None = None
@@ -141,6 +155,7 @@ class TrueOnPolicyConfig:
     pipeline_model_parallel_size: int
     rollout_num_gpus_per_engine: int
     sglang_target_override: OnPolicyTarget | None = None
+    contract_override: str | None = None
 
     @property
     def parallel_layout(self) -> TrueOnPolicyParallelLayout:
@@ -162,10 +177,21 @@ class TrueOnPolicyConfig:
             return self.sglang_target_override
         return "fsdp_tp" if self.requires_tp_invariant_rollout else "fsdp"
 
+    @property
+    def contract(self) -> TrueOnPolicyContract:
+        if self.contract_override is not None:
+            return get_true_on_policy_contract(self.contract_override)
+        return self.model_profile.contract
+
     def validate(self) -> None:
         if not self.enabled:
             return
         layout = self.parallel_layout
+        if self.contract.model_family != self.model_profile.family:
+            raise ValueError(
+                f"Contract {self.contract.name!r} is for {self.contract.model_family}, "
+                f"but model profile is {self.model_profile.family}"
+            )
         if self.train_backend == "megatron" and not self.model_profile.supports_megatron:
             raise ValueError(f"{self.model_profile.family} does not support Megatron true-on-policy")
         if self.train_backend == "fsdp" and not self.model_profile.supports_fsdp:
@@ -179,9 +205,10 @@ class TrueOnPolicyConfig:
 
     def build_kernel_policy(self) -> TrueOnPolicyKernelPolicy:
         return TrueOnPolicyKernelPolicy(
+            contract=self.contract,
             deterministic_inference=True,
             deterministic_training=True,
-            sglang_attention_backend=self.model_profile.sglang_attention_backend,
+            sglang_attention_backend=self.contract.sglang_attention_backend,
             megatron_uses_sglang_backend=self.train_backend == "megatron",
             disable_rope_fusion=self.train_backend == "megatron",
             disable_bias_swiglu_fusion=self.train_backend == "megatron",
@@ -206,7 +233,7 @@ class TrueOnPolicyConfig:
         elif self.train_backend == "fsdp":
             megatron_args = TrueOnPolicyArgList()
             fsdp_args = TrueOnPolicyArgList(
-                ("--attn-implementation", self.model_profile.fsdp_attention_implementation)
+                ("--attn-implementation", self.contract.fsdp_attention_implementation)
             )
         else:
             raise NotImplementedError(f"Unsupported true-on-policy train backend: {self.train_backend}")
@@ -214,6 +241,7 @@ class TrueOnPolicyConfig:
         return TrueOnPolicyLaunchPlan(
             enabled=True,
             model_profile=self.model_profile,
+            contract=self.contract,
             train_backend=self.train_backend,
             sglang_target=self.sglang_target,
             parallel_layout=self.parallel_layout,
@@ -247,6 +275,7 @@ def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
         pipeline_model_parallel_size=_get_required_int(args, "pipeline_model_parallel_size"),
         rollout_num_gpus_per_engine=_get_required_int(args, "rollout_num_gpus_per_engine"),
         sglang_target_override=getattr(args, "sglang_rl_on_policy_target", None),
+        contract_override=getattr(args, "true_on_policy_contract", None),
     )
 
 
