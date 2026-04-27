@@ -1,9 +1,13 @@
 from dataclasses import dataclass
-import os
 from typing import Literal
 
 import typer
 
+from miles.true_on_policy import (
+    apply_true_on_policy_script_defaults,
+    build_true_on_policy_launch_plan,
+    get_megatron_model_type,
+)
 import miles.utils.external_utils.command_utils as U
 
 
@@ -47,12 +51,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.cp_comm_type = "all_gather"
 
         if self.train_backend == "megatron":
-            self.megatron_model_type = {
-                "Qwen3-0.6B": "qwen3-0.6B",
-                "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
-                "Qwen3-4B-Base": "qwen3-4B",
-                "Qwen3-4B": "qwen3-4B",
-            }[self.model_name]
+            self.megatron_model_type = get_megatron_model_type(self.model_name)
 
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.tensor_model_parallel_size is None:
@@ -61,14 +60,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.context_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 4
         if self.max_tokens_per_gpu is None:
             self.max_tokens_per_gpu = 32768 if self.train_backend == "fsdp" else 9216
-        if self.sglang_rl_on_policy_target is None and self.true_on_policy:
-            self.sglang_rl_on_policy_target = (
-                "fsdp_tp"
-                if self.tensor_model_parallel_size > 1 or self.rollout_num_gpus_per_engine > 1
-                else "fsdp"
-            )
-        if self.true_on_policy and self.train_backend == "megatron":
-            self.use_sequence_parallel = False
+        apply_true_on_policy_script_defaults(self)
         if self.train_backend == "megatron" and self.enable_megatron_bridge and self.use_kl_loss:
             raise ValueError(
                 "Megatron bridge mode does not provide a Megatron-format ref checkpoint for KL. "
@@ -307,39 +299,9 @@ tis_batch_normalize: true
             "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
-    true_on_policy_args = ""
-    true_on_policy_envs = {}
-    if args.true_on_policy:
-        true_on_policy_args = (
-            "--sglang-enable-deterministic-inference "
-            f"--sglang-rl-on-policy-target {args.sglang_rl_on_policy_target} "
-            "--sglang-attention-backend fa3 "
-            "--deterministic-mode "
-            "--true-on-policy-mode "
-        )
-        if args.train_backend == "megatron":
-            true_on_policy_args += (
-                "--use-sglang "
-                "--transformer-impl local "
-                "--use-cpu-initialization "
-                "--batch-invariant-mode "
-                "--no-bias-swiglu-fusion "
-                "--no-rope-fusion "
-            )
-        if args.train_backend == "fsdp":
-            true_on_policy_args += "--attn-implementation flash_attention_3 "
-        true_on_policy_envs = {
-            "NCCL_ALGO": os.environ.get("NCCL_ALGO", "Ring"),
-            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-        }
-        if args.sglang_rl_on_policy_target == "fsdp_tp":
-            true_on_policy_envs.update(
-                {
-                    "ROW_LINEAR_ENABLE_INV": "1",
-                    "MEGATRON_USE_DETERMINISTIC_ALLREDUCE": "1",
-                }
-            )
+    true_on_policy_plan = build_true_on_policy_launch_plan(args)
+    true_on_policy_args = true_on_policy_plan.train_args
+    true_on_policy_envs = true_on_policy_plan.env_vars
 
     train_args = (
         f"{ckpt_args} "
