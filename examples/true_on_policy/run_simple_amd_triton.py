@@ -108,8 +108,8 @@ def execute():
     true_on_policy_args = (
         "--sglang-enable-deterministic-inference "
         "--sglang-rl-on-policy-target fsdp "
-        "--sglang-attention-backend triton "   # inference side: triton (AMD-compatible)
-        "--attn-implementation triton "        # training side: SGLang Triton bridge
+        "--sglang-attention-backend triton "  # inference side: triton (AMD-compatible)
+        "--attn-implementation triton "  # training side: SGLang Triton bridge
         "--deterministic-mode "
         "--true-on-policy-mode "
     )
