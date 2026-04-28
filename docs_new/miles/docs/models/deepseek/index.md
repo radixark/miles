@@ -16,16 +16,14 @@ Miles ships the canonical 16-node recipe for the largest models it currently tra
 
 ## Fastest path to train
 
-DeepSeek-R1 needs 16 nodes of 8× H100. Before paying the full bill, iterate on the short variants:
+DeepSeek-R1 needs 16 nodes of 8× H100:
 
 ```bash
 cd /root/miles
-bash scripts/models/deepseek-v3-5layer.sh    # smoke test
-bash scripts/models/deepseek-v3-20layer.sh   # short pre-flight
 bash scripts/run-deepseek-r1.sh              # full 16-node run
 ```
 
-See the [DeepSeek R1 / V3](deepseek.md) page for FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), and tuning knobs.
+Short test variants (5- and 20-layer) for smoke / pre-flight runs are orchestrated by `scripts/run_deepseek.py` rather than a bash launcher — see the [DeepSeek R1 / V3](deepseek.md) page for that flow, plus FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), and tuning knobs.
 
 ## Pairs well with
 

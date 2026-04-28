@@ -5,7 +5,7 @@ description: Launch recipe for DeepSeek-R1 and DeepSeek-V3 at 671 B total / 37 B
 
 # DeepSeek R1 / V3
 
-The largest model family Miles ships — 671 B total parameters, 37 B active per token. The canonical recipe is a 16-node run with BF16 training, FP8 block-wise inference, DeepEP, and DAPO-style dynamic sampling. Short test variants (`deepseek-v3-5layer.sh`, `deepseek-v3-20layer.sh`) let you iterate before paying the 16-node bill.
+The largest model family Miles ships — 671 B total parameters, 37 B active per token. The canonical recipe is a 16-node run with BF16 training, FP8 block-wise inference, DeepEP, and DAPO-style dynamic sampling. Short test variants (5- and 20-layer) are orchestrated by `scripts/run_deepseek.py` so you can iterate before paying the 16-node bill.
 
 ## Variants
 
@@ -84,8 +84,8 @@ Standard `loss=… reward=…` trainer stdout. At 671 B scale watch for:
 
 | Script | Entry point |
 |---|---|
-| `scripts/run-deepseek-r1.sh` | Bash launcher (16 nodes) |
-| `scripts/run_deepseek.py` | Python launcher |
+| `scripts/run-deepseek-r1.sh` | Bash launcher for the full 16-node run |
+| `scripts/run_deepseek.py` | Python orchestrator (download / convert / train); required for the 5- and 20-layer short variants |
 
 ### Parallelism (training)
 
