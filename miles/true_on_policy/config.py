@@ -89,7 +89,6 @@ class TrueOnPolicyKernelPolicy:
                 [
                     "--true-on-policy-contract",
                     self.contract.name,
-                    "--use-sglang",
                     "--transformer-impl",
                     "local",
                     "--use-cpu-initialization",
@@ -104,16 +103,11 @@ class TrueOnPolicyKernelPolicy:
         return TrueOnPolicyArgList(tuple(values))
 
     def build_env_vars(self) -> dict[str, str]:
-        env_vars = {
+        return {
             "NCCL_ALGO": os.environ.get("NCCL_ALGO", "Ring"),
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
-        if self.tp_invariant_row_linear:
-            env_vars["ROW_LINEAR_ENABLE_INV"] = "1"
-        if self.deterministic_tp_allreduce:
-            env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] = "1"
-        return env_vars
 
 
 @dataclass(frozen=True)

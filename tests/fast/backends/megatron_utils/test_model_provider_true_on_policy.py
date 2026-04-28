@@ -46,7 +46,7 @@ def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
         return SimpleNamespace(
             hidden_size=2560,
             use_kitchen=False,
-            use_sglang=True,
+            true_on_policy_contract="qwen3_dense_true_on_policy_v1",
             use_kitchen_attention=False,
             kitchen_attention_backend="sdpa",
         )
@@ -76,7 +76,7 @@ def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
 
     assert model.kwargs["transformer_layer_spec"] == "layer-spec"
     assert captured["normalization"] == "RMSNorm"
-    assert captured["use_sglang"] is True
+    assert captured["use_true_on_policy_backend"] is True
     assert captured["use_kitchen"] is False
     assert captured["use_kitchen_attention"] is False
     assert captured["kitchen_attention_backend"] == "sdpa"

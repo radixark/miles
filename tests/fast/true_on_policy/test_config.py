@@ -136,14 +136,14 @@ def test_megatron_true_on_policy_disables_sequence_parallel_and_enables_backend_
     plan = build_true_on_policy_launch_plan(args)
 
     assert args.use_sequence_parallel is False
-    assert "--use-sglang" in plan.train_args
+    assert "--use-sglang" not in plan.train_args
     assert "--true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
     assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
     assert "--recompute-logprobs-via-prefill" in plan.train_args
     assert "--batch-invariant-mode" in plan.train_args
     assert "--no-rope-fusion" in plan.train_args
-    assert plan.env_vars["ROW_LINEAR_ENABLE_INV"] == "1"
-    assert plan.env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] == "1"
+    assert "ROW_LINEAR_ENABLE_INV" not in plan.env_vars
+    assert "MEGATRON_USE_DETERMINISTIC_ALLREDUCE" not in plan.env_vars
 
 
 def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(monkeypatch):
@@ -185,7 +185,6 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
     assert plan.megatron_args.values == (
         "--true-on-policy-contract",
         "qwen3_dense_true_on_policy_v1",
-        "--use-sglang",
         "--transformer-impl",
         "local",
         "--use-cpu-initialization",
@@ -202,8 +201,6 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
         "NCCL_ALGO": "Ring",
         "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
         "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-        "ROW_LINEAR_ENABLE_INV": "1",
-        "MEGATRON_USE_DETERMINISTIC_ALLREDUCE": "1",
     }
 
 

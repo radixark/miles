@@ -37,12 +37,12 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
     assert "--recompute-logprobs-via-prefill" in train_args
     assert "--load /root/models/Qwen3-4B_torch_dist" in train_args
     assert "--save /root/shared_data/unit-test/checkpoints" in train_args
-    assert "--use-sglang" in train_args
+    assert "--use-sglang" not in train_args
     assert "--batch-invariant-mode" in train_args
     assert "--no-rope-fusion" in train_args
     assert "--sequence-parallel" not in train_args
-    assert env_vars["ROW_LINEAR_ENABLE_INV"] == "1"
-    assert env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] == "1"
+    assert "ROW_LINEAR_ENABLE_INV" not in env_vars
+    assert "MEGATRON_USE_DETERMINISTIC_ALLREDUCE" not in env_vars
 
 
 def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatch):
@@ -88,7 +88,7 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     assert "--sglang-rl-on-policy-target fsdp_tp" in train_args
     assert "--sglang-attention-backend fa3" in train_args
     assert "--recompute-logprobs-via-prefill" in train_args
-    assert "--use-sglang" in train_args
+    assert "--use-sglang" not in train_args
     assert "--batch-invariant-mode" in train_args
     assert "--no-bias-swiglu-fusion" in train_args
     assert "--no-rope-fusion" in train_args
@@ -96,8 +96,8 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     assert env_vars["NCCL_ALGO"] == "Ring"
     assert env_vars["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] == "0"
     assert env_vars["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
-    assert env_vars["ROW_LINEAR_ENABLE_INV"] == "1"
-    assert env_vars["MEGATRON_USE_DETERMINISTIC_ALLREDUCE"] == "1"
+    assert "ROW_LINEAR_ENABLE_INV" not in env_vars
+    assert "MEGATRON_USE_DETERMINISTIC_ALLREDUCE" not in env_vars
 
 
 def test_qwen3_script_off_policy_does_not_emit_true_on_policy_contract(monkeypatch):
