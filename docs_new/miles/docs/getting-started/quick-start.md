@@ -12,6 +12,8 @@ For other models, see [Models](../models/index.md).
 
 ## 1. Start the container
 
+On the **host**:
+
 ```bash
 docker pull radixark/miles:latest
 docker run --rm \
@@ -19,9 +21,15 @@ docker run --rm \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --network=host \
   -it radixark/miles:latest /bin/bash
+```
 
+That drops you into a shell inside the container. Refresh the editable install:
+
+```bash
 cd /root/miles && git pull && pip install -e . --no-deps
 ```
+
+Steps 2–4 below all run inside the container.
 
 ## 2. Download model and data
 
