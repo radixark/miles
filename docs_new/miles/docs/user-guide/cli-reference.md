@@ -17,7 +17,7 @@ This page is structured in two passes:
 To regenerate the canonical list from source code:
 
 ```bash
-python -m miles.args --help
+python3 train.py --help
 ```
 
 ---

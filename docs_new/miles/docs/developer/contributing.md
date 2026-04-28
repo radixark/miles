@@ -62,7 +62,7 @@ Before you click "Ready for review":
 - [ ] `pre-commit run --all-files` passes.
 - [ ] You added or updated tests for new behaviour.
 - [ ] You ran `pytest -x` and it's green.
-- [ ] If you touched the launch flags, `python -m miles.args --help` still parses.
+- [ ] If you touched the launch flags, `python3 train.py --help` still parses.
 - [ ] If you added a public flag, it appears in [Server Arguments](../user-guide/cli-reference.md).
 - [ ] If you added a new example, you wrote a real walkthrough (use
   [examples/index](../examples/index.md) as the structural template).
