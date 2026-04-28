@@ -84,18 +84,13 @@ fix before training.
 
 ## Quick health probe
 
+Before submitting a job, sanity-check the node:
+
 ```bash
-python tools/check_hw.py
+nvidia-smi                          # GPUs visible, driver / CUDA versions
+nvidia-smi topo -m                  # NVLink mesh (NV* between every pair)
+ibstat                              # IB ports up (multi-node only)
+python -c "import flash_attn; import transformer_engine"   # kernels importable
 ```
 
-Expected:
-
-```
-✅ 8× NVIDIA H200, NVLink mesh OK
-✅ NCCL 2.20+ detected
-✅ FP8 GEMM available (cuBLASLt)
-✅ FlashAttention-3 importable
-✅ IB present: mlx5_0, mlx5_1, mlx5_2, mlx5_3
-```
-
-If anything's red, fix it before submitting a job — chasing it inside Ray is harder.
+If anything's wrong, fix it here — chasing it inside Ray is harder.
