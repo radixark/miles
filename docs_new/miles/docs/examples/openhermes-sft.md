@@ -160,5 +160,5 @@ CKPT_ARGS=(
 
 ### LoRA SFT
 
-Use the LoRA hooks (`--use-lora --lora-rank 16`) to keep VRAM low when fine-tuning a
+Use the LoRA hooks (`--lora-rank 16`) to keep VRAM low when fine-tuning a
 larger model. See `examples/lora/` in the repo.
