@@ -46,18 +46,20 @@ flowchart TB
 
 ```text
 miles/
-├── algorithms/           # GRPO, PPO, GSPO, REINFORCE++, custom-loss plumbing
 ├── backends/
-│   ├── megatron_utils/   # fp32 markers, optimizer offload helpers
-│   └── fsdp/             # FSDP-flavoured trainer (in progress)
+│   ├── megatron_utils/   # fp32 markers, optimizer offload helpers, weight sync
+│   ├── sglang_utils/     # SGLang glue
+│   ├── training_utils/   # loss / GRPO / PPO / GSPO / REINFORCE++ plumbing
+│   └── experimental/
+│       └── fsdp_utils/   # FSDP-flavoured trainer (in progress)
+├── ray/                  # Ray actors + rollout driver
 ├── rollout/
 │   ├── sglang_rollout.py # default rollout function
 │   ├── data_source.py    # buffer + JSONL loader
 │   ├── filter_hub/       # built-in filters
 │   └── inference_rollout/# experimental refactor
-├── router/               # FastAPI proxy + middleware engine
-├── utils/                # async, types, IO, distributed helpers
-└── args.py               # CLI argument definitions
+├── router/               # FastAPI proxy + middleware engine (router.py)
+└── utils/                # async, types, IO, distributed helpers, arguments.py
 ```
 
 `train.py` and `train_async.py` are the two entry points. They're thin: ~200 lines
@@ -95,12 +97,12 @@ loop and uses a continuously-running worker.
 
 | You want to … | Edit |
 |---|---|
-| Add a new RL algorithm | `miles/algorithms/<name>.py` + `args.py` enum |
+| Add a new RL algorithm | `miles/backends/training_utils/loss.py` + enum in `miles/utils/arguments.py` |
 | Add a new built-in reward type | `miles/rollout/sglang_rollout.py` (rm dispatch) |
 | Add a new built-in filter | `miles/rollout/filter_hub/` |
 | Wrap a new model architecture | `miles_plugins/models/<model>.py` + `mbridge` |
-| Add a new flag | `miles/args.py` |
-| Change weight sync | `miles/router/` and `miles/utils/distributed.py` |
+| Add a new flag | `miles/utils/arguments.py` |
+| Change weight sync | `miles/backends/megatron_utils/update_weight/` and `miles/utils/distributed_utils.py` |
 | Change rollout buffer | `miles/rollout/data_source.py` |
 
 ## Extension points (the right way)
@@ -116,13 +118,14 @@ missing a hook. Open an issue.
 
 ```text
 tests/
-├── unit/             # fast, no GPU
-├── integration/      # spins up Ray + 1 SGLang
-└── slow/             # 8-GPU, gated behind RUN_SLOW=1
+├── fast/             # fast, no GPU
+├── ci/               # CI-gated suite
+├── e2e/              # end-to-end (spins up Ray + SGLang)
+└── utils/            # shared test helpers
 ```
 
-Run `pytest tests/unit` for a quick check; `RUN_SLOW=1 pytest tests/slow` before
-landing anything that touches the train loop.
+Run `pytest tests/fast` for a quick check; run `tests/e2e` before landing anything that
+touches the train loop.
 
 ## Where to look first when reading the code
 
@@ -130,8 +133,8 @@ If you have 30 minutes and want to understand Miles end-to-end:
 
 1. `train.py` — the loop, top-to-bottom.
 2. `miles/rollout/sglang_rollout.py:generate_rollout` — how prompts become samples.
-3. `miles/algorithms/grpo.py` — the loss and advantage computation.
-4. `miles/router/app.py` — the FastAPI proxy.
-5. `miles/utils/distributed.py` — weight sync.
+3. `miles/backends/training_utils/loss.py` — the loss and advantage computation.
+4. `miles/router/router.py` — the FastAPI proxy.
+5. `miles/utils/distributed_utils.py` — weight sync.
 
 That's the spine. Everything else hangs off it.
