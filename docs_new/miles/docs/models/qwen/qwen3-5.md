@@ -1,29 +1,52 @@
 ---
-title: Qwen3.5 (Dense)
-description: Launch recipes for dense Qwen3.5 models with gated attention and FP32 A_log.
+title: Qwen3.5
+description: Launch recipes for Qwen3.5-4B / 9B / 27B with attention-output-gate.
 ---
 
-# Qwen3.5 (Dense)
+# Qwen3.5
 
-Qwen3.5 adds an attention-output gate, a tighter rotary configuration, and keeps `A_log` in FP32. Miles handles all three via the `miles_plugins.models.qwen3_5` spec — no code changes required beyond the launch script.
+Qwen3.5 dense uses the `miles_plugins.models.qwen3_5` spec — attention-output-gate, `--rotary-base 10000000`, `--rotary-percent 0.25`, vocab 248320 (see `scripts/models/qwen3.5-4B.sh`).
 
 ## Variants
 
-| Model | Params | HF ID | Model config |
-|---|---|---|---|
-| Qwen3.5-4B | 4 B | `Qwen/Qwen3.5-4B` | `scripts/models/qwen3.5-4B.sh` |
-| Qwen3.5-9B | 9 B | `Qwen/Qwen3.5-9B` | `scripts/models/qwen3.5-9B.sh` |
-| Qwen3.5-27B | 27 B | `Qwen/Qwen3.5-27B` | `scripts/models/qwen3.5-27B.sh` |
+The launch scripts read the checkpoint from a local path; HF IDs aren't referenced in `scripts/`, so just stage the weights at the path the script expects.
 
-## Quick start (Qwen3.5-4B, 8× H100)
+| Model | Local checkpoint path | Model config |
+|---|---|---|
+| Qwen3.5-4B | `/root/Qwen3.5-4B` | `scripts/models/qwen3.5-4B.sh` |
+| Qwen3.5-9B | `/root/Qwen3.5-9B` | `scripts/models/qwen3.5-9B.sh` |
+| Qwen3.5-27B | `/root/Qwen3.5-27B` | `scripts/models/qwen3.5-27B.sh` |
+
+## Paths the launchers expect
+
+`run-qwen3.5-{4B,9B,27B}.sh` all hard-code `/root/...` paths in `CKPT_ARGS` and `ROLLOUT_ARGS`. Stage these before launching (example shows the 4 B values from `run-qwen3.5-4B.sh:29-60`):
+
+```bash
+CKPT_ARGS=(
+   --hf-checkpoint /root/Qwen3.5-4B
+   --ref-load /root/Qwen3.5-4B_torch_dist
+   --load /root/Qwen3.5-4B_miles/
+   --save /root/Qwen3.5-4B_miles/
+   --save-interval 20
+)
+
+ROLLOUT_ARGS=( --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl ... )
+EVAL_ARGS=(   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl ... )
+```
+
+Swap `4B` → `9B` / `27B` for the other two scripts; everything else is identical (same dataset paths, same `--save-interval 20`).
+
+## Quick start
 
 ```bash
 cd /root/miles
 
-# 1. Download weights
-hf download Qwen/Qwen3.5-4B --local-dir /root/Qwen3.5-4B
+# 1. Stage datasets at the paths the script expects
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
+# Place the model checkpoint at /root/Qwen3.5-4B
 
-# 2. Convert HF → Megatron dist checkpoint
+# 2. Convert HF → Megatron torch_dist  (script then reads /root/Qwen3.5-4B_torch_dist)
 source scripts/models/qwen3.5-4B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
@@ -34,41 +57,38 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 bash scripts/run-qwen3.5-4B.sh
 ```
 
-## Expected signal
+## Launch scripts
 
-Same `loss=… reward=… rollout=… train=…` trainer stdout as the other dense recipes. Specific to Qwen3.5: if you see precision drift or NaNs in the early iterations, check that `A_log` is staying in FP32 through `mark_param_dtype(..., torch.float32)` in the Qwen3.5 bridge — see the tuning knob below.
+All three scripts are 1 node × 8 GPU.
 
----
+| Script | TP | PP | CP | `max_tokens_per_gpu` | SGLang `mem-fraction-static` | CPU Adam |
+|---|---|---|---|---|---|---|
+| `scripts/run-qwen3.5-4B.sh` | 2 | 1 | 1 | 9216 | 0.7 | – |
+| `scripts/run-qwen3.5-9B.sh` | 2 | 1 | 1 | 9216 | 0.6 | – |
+| `scripts/run-qwen3.5-27B.sh` | 4 | 1 | 1 | 8192 | 0.5 | ✓ |
 
-## Deep dive
+Only the 27 B script enables `--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
 
-### Architecture specifics
+## SGLang TP=1 workaround
 
-- Attention output gate enabled (`--attention-output-gate`).
-- Rotary base `10_000_000`, `--rotary-percent 0.25`.
-- Vocab size 248 320.
-- The `A_log` parameter must stay in FP32 — see [Backends Beyond Megatron: fp32 parameter handling](../../advanced/architecture-support.md#mixed-precision-keeping-fp32-parameters-fp32).
+All three scripts pin `--rollout-num-gpus-per-engine 1` with this comment in-source:
 
-### Launch scripts
+```
+# Workaround: SGLang TP>1 produces garbage output for Qwen3.5
+# (https://github.com/sgl-project/sglang/issues/21039)
+# Fixed in sglang main, but miles uses 0.5.9 — keep TP=1 per engine for now.
+```
 
-| Script | GPUs | Notes |
-|---|---|---|
-| `scripts/run-qwen3.5-4B.sh` | 8× H100 | Canonical |
-| `scripts/run-qwen3.5-9B.sh` | 8× H100 | 9 B variant |
-| `scripts/run-qwen3.5-27B.sh` | 16× H100 | 27 B multi-node-friendly |
+If you bump the SGLang version, you can raise this back up.
 
-### Parallelism
+## Architecture notes
 
-| Size | TP | PP | CP | `max_tokens_per_gpu` | GPUs |
-|---|---|---|---|---|---|
-| 4 B | 2 | 1 | 1 | 8192 | 8 |
-| 9 B | 2 | 1 | 2 | 4608 | 8 |
-| 27 B | 4 | 2 | 2 | 4608 | 16 |
+From `scripts/models/qwen3.5-4B.sh` (and analogous configs for 9 B / 27 B):
 
-### Tuning knobs
+- `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — attention-output gate, `A_log` parameter handling
+- `--rotary-base 10000000`, `--rotary-percent 0.25`
+- `--vocab-size 248320`
+- `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`
+- `--attention-output-gate`
 
-| Symptom | Fix |
-|---|---|
-| Precision drift on `A_log` | Confirm `mark_param_dtype(..., torch.float32)` hits the Qwen3.5 bridge |
-| Tokenisation misalignment | Re-run the [chat template verifier](../../user-guide/agentic-chat-template.md) |
-| Train OOM at 27 B | Bump PP to 2, reduce `max-tokens-per-gpu` |
+See [Backends Beyond Megatron](../../advanced/architecture-support.md) for how miles preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.

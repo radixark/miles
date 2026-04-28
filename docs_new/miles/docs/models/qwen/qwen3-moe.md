@@ -1,11 +1,11 @@
 ---
 title: Qwen3 MoE
-description: Launch recipes for Qwen3 30B-A3B and Qwen3 235B-A22B.
+description: Launch recipes for Qwen3-30B-A3B (single node) and Qwen3-235B-A22B (multi-node).
 ---
 
 # Qwen3 MoE
 
-Qwen3's MoE line runs two sizes in Miles: Qwen3-30B-A3B for single-node experimentation and Qwen3-235B-A22B for multi-node frontier runs. Both come with FP8 checkpoints, turnkey EP/DP sharding, and R3 (Rollout Routing Replay) for routing stability.
+Two MoE sizes ship with miles: `Qwen3-30B-A3B` (single-node, Python launcher) and `Qwen3-235B-A22B` (multi-node, bash launcher with FP8 rollout). All values below come straight from `scripts/`.
 
 ## Variants
 
@@ -14,109 +14,111 @@ Qwen3's MoE line runs two sizes in Miles: Qwen3-30B-A3B for single-node experime
 | Qwen3-30B-A3B | 3 B / 30 B | `Qwen/Qwen3-30B-A3B` | `scripts/models/qwen3-30B-A3B.sh` |
 | Qwen3-235B-A22B | 22 B / 235 B | `Qwen/Qwen3-235B-A22B` | `scripts/models/qwen3-235B-A22B.sh` |
 
-FP8 variants (`Qwen/Qwen3-30B-A3B-FP8`, `Qwen/Qwen3-235B-A22B-FP8`) are drop-in replacements for the HF checkpoint path — see [FP8 & Low Precision](../../advanced/fp8-low-precision.md).
+## Quick start
 
-## Quick start (Qwen3-30B-A3B, 8× H100)
+The reference launcher is `scripts/run_qwen3_30b_a3b.py`. It downloads the HF checkpoint, `zhuzilin/dapo-math-17k`, and `zhuzilin/aime-2024`, converts to Megatron `torch_dist`, and submits the training job.
 
 ```bash
 cd /root/miles
+python scripts/run_qwen3_30b_a3b.py
+```
 
-# 1. Download weights
-hf download Qwen/Qwen3-30B-A3B --local-dir /root/Qwen3-30B-A3B
+If you'd rather drive the steps by hand:
 
-# 2. Convert HF → Megatron dist checkpoint (torchrun for the MoE sharding)
+```bash
+hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
+
 source scripts/models/qwen3-30B-A3B.sh
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3-30B-A3B \
-   --save          /root/Qwen3-30B-A3B_torch_dist
-
-# 3. Launch GRPO
-python scripts/run_qwen3_30b_a3b.py
+   --hf-checkpoint /root/models/Qwen3-30B-A3B \
+   --save          /root/models/Qwen3-30B-A3B_torch_dist
 ```
 
-## Expected signal
 
-Trainer stdout looks the same as the dense pages (`loss=… reward=… rollout=… train=…`). MoE-specific signals to watch in wandb / stdout:
+## Cross-node example (Qwen3-235B-A22B, 8 nodes × 8 GPU)
 
-- `router/replay_hit_rate` should climb to ≈ 1.0 within the first few iterations once R3 is active — this confirms the rollout and training routers are in sync.
-- `loss` drifts down, `reward` climbs. If one expert dominates the route (see wandb's expert-load histogram), R3 isn't engaged or `--use-rollout-routing-replay` is missing.
+The bash launcher requires `BASE_FOLDER` (a shared FS reachable from every node) and `MASTER_ADDR`. It defaults to the **FP8** HF checkpoint path:
 
----
+```bash
+export BASE_FOLDER=<shared FS path>
+export MASTER_ADDR=<head node IP>
 
-## Deep dive
+bash scripts/run-qwen3-235B-A22B.sh
+```
 
-### Launch scripts
+Expected paths under `$BASE_FOLDER` (from `run-qwen3-235B-A22B.sh:41–69`):
+
+```
+Qwen3-235B-A22B-FP8/                      --hf-checkpoint
+Qwen3-235B-A22B_torch_dist/               --ref-load
+Qwen3-235B-A22B_miles/                    --load / --save
+dapo-math-17k/dapo-math-17k.jsonl
+aime-2024/aime-2024.jsonl
+```
+
+The script fans out to workers via `ssh` over `/root/mpi_rack_hostfile`.
+
+## Launch scripts
 
 | Script | GPUs | Notes |
 |---|---|---|
-| `scripts/run_qwen3_30b_a3b.py` | 8× H100 | Canonical recipe, single node (Python launcher) |
-| `scripts/run-qwen3-235B-A22B.sh` | 32× H100 | Multi-node |
-| `scripts/run-qwen3-235B-A22B-sft.sh` | 32× H100 | SFT variant |
+| `scripts/run_qwen3_30b_a3b.py` | 8 (1 node) | Canonical Python launcher; supports FP8 / MXFP8 / INT4 rollout, Blackwell hardware, Megatron-bridge mode, MIS |
+| `scripts/run-qwen3-235B-A22B.sh` | 64 (8 nodes × 8) | Multi-node, FP8 HF checkpoint, GSPO advantage, DeepEP `auto`, CPU Adam |
+| `scripts/run-qwen3-235B-A22B-sft.sh` | 32 (4 nodes × 8) | SFT on `${BASE_FOLDER}/openhermes2_5.parquet` |
 
-### Parallelism
+## Parallelism
 
-| Size | TP | EP | PP | CP | `max_tokens_per_gpu` | Nodes |
-|---|---|---|---|---|---|---|
-| 30B-A3B | 4 | 8 | 1 | 1 | 4608 | 1 |
-| 235B-A22B | 8 | 16 | 2 | 2 | 8192 | 4 |
+| Script | Backend | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
+|---|---|---|---|---|---|---|---|---|
+| `run_qwen3_30b_a3b.py` (H100, 1 node) | Megatron | 4 | 1 | 1 | 8 | 1 | 32768 | 8 |
+| `run-qwen3-235B-A22B.sh` | Megatron | 4 | 4 | 2 | 16 | 1 | 16384 | 64 |
+| `run-qwen3-235B-A22B-sft.sh` | Megatron | 4 | 1 | 1 | 32 | 1 | 9216 | 32 |
 
-On a single node, Qwen3-30B-A3B needs CPU Adam to fit the optimiser state:
+`run-qwen3-235B-A22B.sh` additionally sets `--decoder-last-pipeline-num-layers 22` to balance the 235 B layer count across PP=4.
 
-```bash
-OPTIMIZER_ARGS+=(
-   --optimizer-cpu-offload
-   --overlap-cpu-optimizer-d2h-h2d
-   --use-precision-aware-optimizer
-)
-```
+## SGLang flags
 
-Drop those flags once you go multi-node — the distributed optimiser handles the memory pressure.
-
-### SGLang MoE flags
+`run_qwen3_30b_a3b.py` (H100, 1 node, BF16 rollout):
 
 ```bash
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.7
-   --sglang-enable-ep-moe
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
-)
+--rollout-num-gpus-per-engine 8
+--sglang-mem-fraction-static 0.7
+--sglang-cuda-graph-max-bs 512
 ```
 
-For multi-node (e.g. 24 GPUs), add redundant experts:
+`run-qwen3-235B-A22B.sh`:
 
 ```bash
-SGLANG_ARGS+=(
-   --sglang-enable-dp-attention
-   --sglang-dp-size 3
-   --sglang-moe-dense-tp-size 1
-   --sglang-enable-dp-lm-head
-   --sglang-ep-num-redundant-experts 16
-)
+--rollout-num-gpus-per-engine 32
+--sglang-mem-fraction-static 0.7
+--sglang-enable-dp-attention
+--sglang-dp-size 4
+--sglang-ep-size 32
+--sglang-enable-dp-lm-head
+--sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
+--sglang-moe-a2a-backend deepep
+--sglang-deepep-mode auto
 ```
 
-### R3 (Rollout Routing Replay)
+The 235 B script uses GSPO (`--advantage-estimator gspo`, `--eps-clip 4e-4`, `--use-kl-loss` commented out). The 30 B Python launcher uses GRPO with `--eps-clip 0.2 --eps-clip-high 0.28`.
 
-Enable R3 for stable MoE training:
+## CPU Adam
+
+Both `run_qwen3_30b_a3b.py` (H100, 1 node) and `run-qwen3-235B-A22B.sh` enable:
 
 ```bash
-GRPO_ARGS+=(
-   --use-miles-router
-   --use-rollout-routing-replay
-   --use-tis
-)
-SGLANG_ARGS+=( --sglang-use-miles-router )
+--optimizer-cpu-offload
+--overlap-cpu-optimizer-d2h-h2d
+--use-precision-aware-optimizer
 ```
 
-See [Miles Router (R3)](../../advanced/miles-router.md) for the rationale and tuning.
+`run_qwen3_30b_a3b.py` removes them when running on Blackwell (`B200/B300/GB200/GB300`) per the hardware match in the launcher.
 
-### Tuning knobs
+## Pairs well with
 
-| Symptom | Fix |
-|---|---|
-| OOM in optimiser | Add CPU Adam flags (single-node only) |
-| OOM in rollout | Drop `--sglang-mem-fraction-static` to 0.6 |
-| One expert dominating routes | Confirm R3 is active (`router/replay_hit_rate ≈ 1.0`) |
-| Train slower than rollout | Disable CPU offload (multi-node), raise `max-tokens-per-gpu` |
+- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [Miles Router (R3)](../../advanced/miles-router.md) — opt-in via `run_qwen3_30b_a3b.py --enable-mis` (TIS / RS) for routing-stability experiments; not on by default in either launcher.

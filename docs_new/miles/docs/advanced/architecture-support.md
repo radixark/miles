@@ -145,6 +145,6 @@ rounded — a subtle, painful trap.
 
 ## When NOT
 
-* Production-frozen architectures (LLaMA, Qwen3 standard, GLM4) — Megatron's native is
+* Production-frozen architectures (Qwen3 standard, GLM4) — Megatron's native is
   faster.
 * Anything where TP inside the new module is critical.

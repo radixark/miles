@@ -23,7 +23,7 @@ cd /root/miles
 bash scripts/run-deepseek-r1.sh              # full 16-node run
 ```
 
-Short test variants (5- and 20-layer) for smoke / pre-flight runs are orchestrated by `scripts/run_deepseek.py` rather than a bash launcher — see the [DeepSeek R1 / V3](deepseek.md) page for that flow, plus FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), and tuning knobs.
+See the [DeepSeek R1 / V3](deepseek.md) page for the full flow — FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), per-arg walkthrough, and the alternate Python launcher (`scripts/run_deepseek.py`).
 
 ## Pairs well with
 

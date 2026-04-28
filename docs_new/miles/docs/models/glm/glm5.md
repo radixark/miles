@@ -1,107 +1,105 @@
 ---
 title: GLM5
-description: Launch recipe for GLM5 744B-A40B — Zhipu's frontier-scale MoE (16 nodes, 40 B active).
+description: Launch recipe for GLM-5 (744B-A40B) — Python launcher, 16+ node config.
 ---
 
-# GLM5 744B-A40B
+# GLM5
 
-GLM5 is Zhipu's frontier-scale MoE: 744 B total parameters, 40 B active per token, 256 routed experts. Miles ships a 16-node launcher plus 4-layer / 20-layer smoke-test configs for iterating on code changes before paying the 16-node bill.
+`scripts/run_glm5_744b_a40b.py` is the launcher for the full GLM-5 model.
 
-## Architecture
+## Architecture (from `scripts/models/glm5-744B-A40B.sh`)
 
 | Property | Value |
 |---|---|
-| Total params | 744 B |
-| Active per token | 40 B |
-| Routed experts | 256 |
-| Active experts | 8 |
+| Layers | 3 dense + 75 MoE = 78 |
+| Routed experts | 256, top-8 |
 | Shared experts | 1 |
-| MoE layers | 75 (3 dense heads) |
-| Hidden size | 6144 |
+| Hidden / FFN | 6144 / 12288 (dense) · 2048 (MoE FFN per expert) |
 | Heads | 64 |
+| Attention | MLA (`--q-lora-rank 2048`, `--kv-lora-rank 512`, `--qk-head-dim 192`, `--v-head-dim 256`, `--qk-pos-emb-head-dim 64`) |
+| Vocab | 154880 |
+| RoPE base | 1000000 |
+| Spec | `--spec miles_plugins.models.glm5.glm5 get_glm5_spec` |
+| Router | sigmoid score, pre-softmax, expert bias, `seq_aux_loss`, topk-scaling 2.5 |
 
-Full config in `scripts/models/glm5-744B-A40B.sh`. Short test variants (`glm5-744B-A40B_4layer.sh`, `glm5-744B-A40B_20layer.sh`) are available for quick smoke tests.
+## Variant (per the launcher's `__post_init__`)
 
-## Quick start (16 nodes × 8 H100)
+| `--model-name` | HF org | Megatron model type |
+|---|---|---|
+| `GLM-5` | `zai-org` | `glm5-744B-A40B` |
 
-```bash
-cd /root/miles
+## Hardware
 
-# 1. Env (shared FS required)
-export BASE_DIR=/shared/glm5
-export MASTER_ADDR=<head node IP>
+The launcher's docstring says it's tested on **H200 / B200 / GB300**. The dataclass restricts `--hardware` to `{H200, B200, GB300}`.
 
-# 2. Download weights once on shared FS
-hf download zai-org/GLM5-744B-A40B --local-dir $BASE_DIR/GLM5-744B-A40B
+## Subcommands
 
-# 3. Convert HF → Megatron dist (run on each of 4 nodes with NODE_RANK=0..3)
-source scripts/models/glm5-744B-A40B.sh
-PYTHONPATH=/root/Megatron-LM torchrun \
-   --nproc-per-node 8 \
-   --master-addr ${MASTER_ADDR} --master-port 12345 \
-   --nnodes=4 --node-rank ${NODE_RANK} \
-   tools/convert_hf_to_torch_dist.py \
-   ${MODEL_ARGS[@]} \
-   --hf-checkpoint $BASE_DIR/GLM5-744B-A40B \
-   --save          $BASE_DIR/GLM5-744B-A40B_torch_dist
-
-# 4. Launch (Python entrypoint)
-python scripts/run_glm5_744b_a40b.py
-```
-
-## Expected signal
-
-Standard trainer stdout. Frontier-scale-specific:
-
-- Plan for ~1.4 TB host RAM per node when CPU Adam is enabled. If RAM is tight, scale up parallelism until the distributed optimiser holds the state.
-- Checkpoint writes at 744 B can saturate most filesystems — raise `--save-interval` if your FS is the bottleneck.
-
----
-
-## Deep dive
-
-### Launch scripts
-
-| Script | Notes |
-|---|---|
-| `scripts/run_glm5_744b_a40b.py` | Python launcher |
-
-### Parallelism
-
-| TP | EP | PP | CP | `max_tokens_per_gpu` | Nodes |
-|---|---|---|---|---|---|
-| 8 | 32 | 4 | 4 | 16 384 | 16 |
-
-### Unified FP8 + R3
-
-Production runs of GLM5 enable:
+`scripts/run_glm5_744b_a40b.py` is a Typer app with four subcommands (verbatim from the file):
 
 ```bash
-GRPO_ARGS+=(
-   --use-miles-router
-   --use-rollout-routing-replay
-   --use-tis
-)
-SGLANG_ARGS+=(
-   --sglang-use-miles-router
-   --sglang-fp8-quantization-method per-tensor
-)
-PERF_ARGS+=(
-   --fp8-format hybrid
-   --fp8-amax-history-len 1024
-)
+# Full pipeline: download, convert, copy, train
+python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes <N>
+
+# Just download model + datasets and convert to Megatron
+python scripts/run_glm5_744b_a40b.py prepare    --model-name GLM-5 --num-nodes <N>
+
+# Copy converted checkpoint from shared NFS to local disk (run on every node)
+python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5 --num-nodes <N>
+
+# Train only (assumes prepare/prepare-cp done)
+python scripts/run_glm5_744b_a40b.py train      --model-name GLM-5 --num-nodes <N>
 ```
 
-See [FP8 & Low Precision](../../advanced/fp8-low-precision.md) and [Miles Router (R3)](../../advanced/miles-router.md) for the end-to-end configuration.
-
-### Smoke tests
-
-Before committing to a 16-node run, use the shortened configs to iterate:
+## Quick start (16+ nodes)
 
 ```bash
-# 4-layer smoke test
-source scripts/models/glm5-744B-A40B_4layer.sh
-
-# 20-layer smoke test
-source scripts/models/glm5-744B-A40B_20layer.sh
+python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes 16
 ```
+
+The launcher patches `config.json` to set `model_type=deepseek_v32` (`_process_glm_checkpoint`) before conversion — GLM-5 is loaded through the DeepseekV32 architecture path.
+
+## Parallelism (verbatim from `_execute_train`, `--num-nodes ≥ 16` branch)
+
+| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` |
+|---|---|---|---|---|---|---|
+| 4 | 4 | 2 | 32 | 1 | 18 | 16384 |
+
+Plus `--use-dynamic-batch-size`, `--data-pad-size-multiplier 4096`, `--log-probs-chunk-size 1024`, `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1`.
+
+## Optional features
+
+The launcher exposes these as flags:
+
+- `--fp8-rollout` — runs `tools/convert_hf_to_fp8.py --strategy block --block-size 128 128` and feeds the FP8 directory to SGLang (Megatron stays BF16)
+- `--enable-mtp` — adds SGLang EAGLE speculative decoding (`--sglang-speculative-{algorithm,num-steps,eagle-topk,num-draft-tokens}`)
+- `--enable-pd` (default `True` for ≥1 node) — enables prefill/decode disaggregation; with PD the launcher uses larger SGLang world sizes (16 for `<16` nodes, 64 for `≥16` nodes)
+- `--enable-optimizer-offload` — adds `--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`
+- `--use-deepep` (default `True`) — enables Megatron-side DeepEP (`--moe-enable-deepep --moe-token-dispatcher-type flex`); falls back to `alltoall`. Forced off on GB300.
+
+## SGLang (always-on flags)
+
+```bash
+--sglang-mem-fraction-static 0.70
+--sglang-enable-dp-attention
+--sglang-ep-size <world_size>
+--sglang-dp-size <world_size>
+--sglang-moe-dense-tp-size 1
+--sglang-enable-dp-lm-head
+
+# DSA / NSA attention
+--sglang-page-size 64
+--sglang-nsa-decode-backend flashmla_sparse
+--sglang-nsa-prefill-backend flashmla_sparse
+--sglang-attention-backend nsa
+
+--sglang-max-running-requests 512
+--sglang-watchdog-timeout 3600
+```
+
+GRPO with `--eps-clip 0.2 --eps-clip-high 0.28`. R3 (`--use-miles-router` etc.) is **not** enabled by default.
+
+## Pairs well with
+
+- [PD Disaggregation](../../advanced/pd-disaggregation.md) — on by default for `num_nodes ≥ 1`.
+- [FP8 & Low Precision](../../advanced/fp8-low-precision.md) — opt-in via `--fp8-rollout`.
+- [Speculative Decoding](../../advanced/speculative-decoding.md) — opt-in via `--enable-mtp`.
