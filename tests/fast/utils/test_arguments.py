@@ -238,11 +238,11 @@ def test_true_on_policy_args_propagate_to_sglang_server_args(
         port=30000,
     )
 
-    assert args.sglang_rl_on_policy_target == expected_target
+    assert args.sglang_rl_on_policy_target is None
     assert args.sglang_enable_deterministic_inference is True
     assert args.sglang_enable_prefill_only_deterministic_inference is expected_prefill_only
     assert args.sglang_enable_dp_lm_head is expected_dp_lm_head
-    assert server_args["rl_on_policy_target"] == expected_target
+    assert server_args["rl_on_policy_target"] is None
     assert server_args["true_on_policy_contract"] == "qwen3_dense_true_on_policy_v1"
     assert server_args["enable_deterministic_inference"] is True
     assert server_args["enable_prefill_only_deterministic_inference"] is expected_prefill_only

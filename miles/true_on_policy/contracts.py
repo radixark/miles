@@ -6,7 +6,6 @@ from .schema import (
     KernelContract,
     LogprobContract,
     ModelFamily,
-    ParallelLayout,
     QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
     TrueOnPolicyContractName,
     TrueOnPolicyContractSchema,

@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from .contracts import (
     LogprobContract,
     ModelFamily,
-    ParallelLayout,
     QWEN3_DENSE_TRUE_ON_POLICY_V1,
     TrueOnPolicyContract,
 )
+
+ParallelLayout = str
 
 
 @dataclass(frozen=True)

@@ -69,12 +69,10 @@ class TrueOnPolicyKernelPolicy:
     tp_invariant_row_linear: bool
     deterministic_tp_allreduce: bool
 
-    def build_sglang_args(self, target: OnPolicyTarget) -> TrueOnPolicyArgList:
+    def build_sglang_args(self) -> TrueOnPolicyArgList:
         values = [
             "--sglang-true-on-policy-contract",
             self.contract.name,
-            "--sglang-rl-on-policy-target",
-            target,
             "--sglang-attention-backend",
             self.sglang_attention_backend,
         ]
@@ -148,7 +146,6 @@ class TrueOnPolicyConfig:
     context_parallel_size: int
     pipeline_model_parallel_size: int
     rollout_num_gpus_per_engine: int
-    sglang_target_override: OnPolicyTarget | None = None
     contract_override: str | None = None
 
     @property
@@ -167,8 +164,6 @@ class TrueOnPolicyConfig:
 
     @property
     def sglang_target(self) -> OnPolicyTarget:
-        if self.sglang_target_override is not None:
-            return self.sglang_target_override
         return "fsdp_tp" if self.requires_tp_invariant_rollout else "fsdp"
 
     @property
@@ -236,7 +231,7 @@ class TrueOnPolicyConfig:
             sglang_target=self.sglang_target,
             parallel_layout=self.parallel_layout,
             kernel_policy=kernel_policy,
-            sglang_args=kernel_policy.build_sglang_args(self.sglang_target),
+            sglang_args=kernel_policy.build_sglang_args(),
             megatron_args=megatron_args,
             fsdp_args=fsdp_args,
             miles_args=miles_args,
@@ -264,7 +259,6 @@ def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
         context_parallel_size=_get_required_int(args, "context_parallel_size"),
         pipeline_model_parallel_size=_get_required_int(args, "pipeline_model_parallel_size"),
         rollout_num_gpus_per_engine=_get_required_int(args, "rollout_num_gpus_per_engine"),
-        sglang_target_override=getattr(args, "sglang_rl_on_policy_target", None),
         contract_override=getattr(args, "true_on_policy_contract", None),
     )
 
@@ -283,7 +277,6 @@ def apply_true_on_policy_script_defaults(args: Any) -> None:
         return
 
     config.validate()
-    args.sglang_rl_on_policy_target = config.sglang_target
     if (
         args.train_backend == "megatron"
         and config.model_profile.disable_megatron_sequence_parallel
