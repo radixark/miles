@@ -79,22 +79,16 @@ you lose the speedup.
 ## Tunable knobs
 
 ```bash
---p2p-bucket-size-mb 64        # bucket size for RDMA writes
---p2p-num-streams 4            # parallel CUDA streams for transfer
---p2p-weight-sync-retries 3    # retries on failure (then falls back to broadcast)
+--p2p-transfer-num-workers 4           # thread-pool workers for P2P writes (default 4)
+--p2p-transfer-timeout 30              # per-transfer timeout in seconds (default 30)
+--update-weight-buffer-size 536870912  # bytes per update-weight buffer (default 512 MiB)
+--update-weights-interval 1            # rollouts between weight syncs (default 1)
 ```
 
 ## What you should see
 
-```text
-weight_sync/mode               = p2p
-weight_sync/bytes              = 670_512_341_504
-weight_sync/duration_s         = 6.4
-weight_sync/effective_bw_gbps  = 105
-```
-
-If `mode` says `broadcast`, P2P initialisation failed silently — usually a missing IB
-device. Check `--debug-weight-sync 1` for the per-rank error.
+If P2P fails to initialise, Miles silently falls back to broadcast — usually a missing
+IB device. Re-run with `NCCL_DEBUG=INFO` for the per-rank diagnostics.
 
 ## When NOT to use P2P
 

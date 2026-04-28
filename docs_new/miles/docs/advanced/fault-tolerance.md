@@ -74,12 +74,9 @@ with the async worker.
 
 ## Weight sync retry
 
-[P2P weight transfer](p2p-weight-transfer.md) is idempotent. If a NCCL connection drops
-mid-sync:
-
-* The trainer retries up to `--p2p-weight-sync-retries` times (default 3).
-* Each retry uses a fresh NCCL group.
-* If all retries fail, the trainer falls back to file-based sync (slower but reliable).
+[P2P weight transfer](p2p-weight-transfer.md) is idempotent. Each transfer is bounded
+by `--p2p-transfer-timeout` (default 30s); on timeout the trainer falls back to the
+broadcast path automatically.
 
 ## Recommended starting config for production
 
@@ -90,7 +87,6 @@ TRAIN_ARGS+=(
    --rollout-health-check-interval 60
    --save-interval 20
    --partial-rollout
-   --p2p-weight-sync-retries 5
 )
 ```
 
