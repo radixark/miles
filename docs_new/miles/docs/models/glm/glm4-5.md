@@ -1,123 +1,120 @@
 ---
 title: GLM4.5
-description: Launch recipe for GLM4.5 106B-A12B and 355B-A32B — multi-node MoE with R3 and unified FP8.
+description: Launch recipes for GLM-4.5 (355B-A32B) — bash launcher and Python launcher.
 ---
 
 # GLM4.5
 
-GLM4.5 is Zhipu's MoE line: 106 B-A12B for two-node experimentation and 355 B-A32B for eight-node frontier runs. Miles's canonical recipe enables R3 (Rollout Routing Replay) and unified FP8 by default, and the 355 B can also run under INT4 QAT to fit on a single H200 node.
+GLM4.5 is Zhipu's MoE line: 106 B-A12B for two-node experimentation and 355 B-A32B for eight-node frontier runs. `scripts/` ships two launchers for the 355 B-A32B model and a model config for 106 B-A12B:
+
+- `scripts/run-glm4.5-355B-A32B.sh` — canonical 8-node × 8-GPU bash launcher (FP8 HF checkpoint, GSPO, EAGLE speculative).
+- `scripts/run_glm45_355b_a32b.py` — Typer-based Python launcher (GRPO, supports `--rollout-fp8`, `--enable-mtp`, `--dynamic-sampling`, `--enable-mis`).
+- `scripts/models/glm4.5-106B-A12B.sh` — model config only, no `run-glm4.5-106B-A12B.sh` launcher exists.
 
 ## Variants
 
 | Model | Active / Total | HF ID | Model config |
 |---|---|---|---|
-| GLM4.5-106B-A12B | 12 B / 106 B | `zai-org/GLM4.5-106B-A12B` | `scripts/models/glm4.5-106B-A12B.sh` |
-| GLM4.5-355B-A32B | 32 B / 355 B | `zai-org/GLM-4.5` | `scripts/models/glm4.5-355B-A32B.sh` |
+| GLM-4.5-355B-A32B | 32 B / 355 B | `zai-org/GLM-4.5` | `scripts/models/glm4.5-355B-A32B.sh` |
+| GLM4.5-106B-A12B | 12 B / 106 B | — | `scripts/models/glm4.5-106B-A12B.sh` |
 
-## Quick start (GLM4.5-355B-A32B, 8 nodes × 8 H100)
+
+## Required env (bash launcher)
+
+`run-glm4.5-355B-A32B.sh` reads:
+
+- `BASE_DIR` — shared FS reachable from every node, holds the staged checkpoint and datasets
+- `MASTER_ADDR` — the script overrides it to `${MLP_WORKER_0_HOST}` at L144, so this comes from the cluster orchestrator
+
+
+## Paths the bash launcher expects
+
+From `run-glm4.5-355B-A32B.sh:29-61`:
+
+```bash
+CKPT_ARGS=(
+   --hf-checkpoint $BASE_DIR/GLM-4.5-355B-A32B
+   --ref-load $BASE_DIR/GLM-4.5-355B-A32B_torch_dist/
+)
+
+ROLLOUT_ARGS=(
+   --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
+   ...
+   --rollout-stop-token-ids 151329 151336 151338
+)
+
+EVAL_ARGS=(
+   --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl
+   ...
+)
+```
+
+Note: the bash launcher does **not** set `--load`/`--save` in `CKPT_ARGS` — `--load` defaults to the value of `--ref-load`.
+
+## Quick start (bash launcher, 8 nodes × 8 GPU)
 
 ```bash
 cd /root/miles
+export BASE_DIR=...      # shared FS
+# MASTER_ADDR is overridden to MLP_WORKER_0_HOST inside the script
 
-# 1. Env (BASE_DIR must be on a shared FS reachable from every node)
-export BASE_DIR=/shared/glm4-5
-export MASTER_ADDR=<head node IP>
-
-# 2. Download weights once on the shared FS
-hf download zai-org/GLM-4.5 --local-dir $BASE_DIR/GLM-4.5-355B-A32B
-
-# 3. Convert HF → Megatron dist (run on each of the 2 nodes with NODE_RANK=0..1)
-source scripts/models/glm4.5-355B-A32B.sh
-PYTHONPATH=/root/Megatron-LM torchrun \
-   --nproc-per-node 8 \
-   --master-addr ${MASTER_ADDR} --master-port 12345 \
-   --nnodes=2 --node-rank ${NODE_RANK} \
-   tools/convert_hf_to_torch_dist.py \
-   ${MODEL_ARGS[@]} \
-   --hf-checkpoint $BASE_DIR/GLM-4.5-355B-A32B \
-   --save          $BASE_DIR/GLM-4.5-355B-A32B_torch_dist
-
-# 4. Launch — node 0 runs the script; other nodes attach to the Ray cluster
 bash scripts/run-glm4.5-355B-A32B.sh
 ```
 
-On every non-head node, attach to the Ray cluster:
+The script handles the Ray fan-out itself via the `ssh` loop over `/root/mpi_rack_hostfile`. You need to have already produced `$BASE_DIR/GLM-4.5-355B-A32B_torch_dist/` (run `tools/convert_hf_to_torch_dist.py` over the appropriate parallelism — the bash launcher doesn't do this for you).
+
+## Quick start (Python launcher)
+
+`scripts/run_glm45_355b_a32b.py` automates the full flow (download → optional `tools/convert_hf_to_fp8.py` → `convert_checkpoint` → `rsync` to `model_local_dir` → submit). Note `_execute_train` asserts `args.hardware != "H100"` (L100), so this Python launcher is for Blackwell hardware.
 
 ```bash
-ray start --address=${MASTER_ADDR}:6379 \
-          --num-gpus 8 \
-          --node-ip-address ${WORKER_IP} \
-          --disable-usage-stats
+cd /root/miles
+python scripts/run_glm45_355b_a32b.py train --hardware GB300
 ```
 
-## Expected signal
+## Parallelism
 
-Standard `loss=… reward=…` trainer stdout. MoE-specific signals:
 
-- `router/replay_hit_rate` climbs to ≈ 1.0 quickly once R3 is engaged.
-- FP8 runs keep trainer-step time within ~15% of BF16 at 355 B scale; larger gaps usually indicate `--fp8-amax-history-len` is too short or `--sglang-fp8-quantization-method` is misconfigured.
+| Source | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
+|---|---|---|---|---|---|---|---|
+| `run-glm4.5-355B-A32B.sh` | 8 | 4 | 2 | 16 | 1 | 16384 | 64 (8 × 8) |
+| `run_glm45_355b_a32b.py` (`num_nodes ≤ 4`, debug) | 4 | 1 | 1 | 4 | 1 | 16384 | up to 32 |
+| `run_glm45_355b_a32b.py` (`num_nodes == 8`) | 4 | 8 | 2 | 8 | 1 | 16384 | 64 |
 
----
+## Algorithms
 
-## Deep dive
-
-### Launch scripts
-
-| Script | GPUs | Notes |
+| Source | Advantage | Notable flags |
 |---|---|---|
-| `scripts/run-glm4.5-355B-A32B.sh` | 64× H100 | 8 nodes × 8 GPUs |
-| `scripts/run_glm45_355b_a32b.py` | — | Programmatic entrypoint |
+| `run-glm4.5-355B-A32B.sh` | GSPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis`, `--use-kl-loss`|
+| `run_glm45_355b_a32b.py` | GRPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis`, `--use-kl-loss`|
 
-??? tip "Fan-out from node 0"
-    Append this loop at the end of the head launch script and the head will SSH out to workers:
+Neither launcher enables `--use-miles-router` / `--use-rollout-routing-replay` by default. The Python launcher exposes `--enable-mis` (TIS/RS config) as an opt-in.
 
-    ```bash
-    for WORKER_IP in $(awk '{print $1}' $BASE_DIR/mpi_hostfile); do
-      [[ "$WORKER_IP" == "$MASTER_ADDR" ]] && continue
-      ssh root@"${WORKER_IP}" \
-        "pkill -9 sglang ; ray stop --force ; pkill -9 python ; \
-         ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 \
-                   --node-ip-address ${WORKER_IP} --disable-usage-stats" &
-    done
-    wait
-    ```
-
-### Parallelism
-
-| Model | TP | EP | PP | CP | `max_tokens_per_gpu` | GPUs |
-|---|---|---|---|---|---|---|
-| 106B-A12B | 4 | 8 | 2 | 2 | 16 384 | 16 |
-| 355B-A32B | 8 | 16 | 4 | 2 | 16 384 | 64 |
-
-### Unified FP8 + R3 (recommended for production)
+## SGLang flags
 
 ```bash
-GRPO_ARGS+=(
-   --use-miles-router
-   --use-rollout-routing-replay
-   --use-tis
-)
-SGLANG_ARGS+=(
-   --sglang-use-miles-router
-   --sglang-fp8-quantization-method per-tensor
-)
-PERF_ARGS+=(
-   --fp8-format hybrid
-   --fp8-amax-history-len 1024
+SGLANG_ARGS=(
+   --rollout-num-gpus-per-engine 32
+   --sglang-mem-fraction-static 0.7
+   --sglang-enable-dp-attention
+   --sglang-dp-size 4
+   --sglang-ep-size 32
+   --sglang-enable-dp-lm-head
+   --sglang-moe-dense-tp-size 1
+
+   # mtp / EAGLE
+   --sglang-speculative-algorithm EAGLE
+   --sglang-speculative-num-steps 1
+   --sglang-speculative-eagle-topk 1
+   --sglang-speculative-num-draft-tokens 2
+   --sglang-enable-draft-weights-cpu-backup
 )
 ```
 
-See [FP8 & Low Precision](../../advanced/fp8-low-precision.md).
+Megatron side: `--moe-token-dispatcher-type flex`, `--moe-enable-deepep`. CPU Adam (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`) is on.
 
-### INT4 QAT alternative
+## Pairs well with
 
-To fit the 355 B variant on a single H200 node, see [INT4 QAT](../../advanced/int4-qat.md).
-
-### Tuning knobs
-
-| Symptom | Fix |
-|---|---|
-| NCCL hang during weight sync | Set `NCCL_TIMEOUT=900`, enable `NCCL_DEBUG=INFO` |
-| Expert imbalance | Confirm R3 is on |
-| OOM mid-train | Drop `max-tokens-per-gpu` to 12 288 |
-| Checkpoint write saturating GPFS | Raise `--save-interval`, switch FS |
+- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [INT4 QAT](../../advanced/int4-qat.md)
+- [Miles Router (R3)](../../advanced/miles-router.md) — opt-in via `--enable-mis` on the Python launcher; not on by default in either launcher.

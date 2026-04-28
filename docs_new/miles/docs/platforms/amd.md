@@ -112,7 +112,7 @@ PYTORCH_NO_HIP_MEMORY_CACHING=0
 | Context parallel | ✅ | ⚠️ Some configurations broken |
 | Deterministic mode | ✅ | ⚠️ MIOpen workspace tweaks needed |
 
-For the workloads on the supported list (GRPO on Qwen3 / GLM4 / Llama3 dense, MoE up
+For the workloads on the supported list (GRPO on Qwen3 / GLM4 dense, MoE up
 to ~30B), the AMD path is production-ready.
 
 ## Known issues / open work
