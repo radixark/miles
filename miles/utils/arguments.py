@@ -258,11 +258,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Device for diffusion rollout, e.g. cuda or cpu. Defaults to auto.",
             )
             parser.add_argument(
-                "--diffusion-dtype",
+                "--fsdp-master-dtype",
+                type=str,
+                default="fp32",
+                choices=["fp16", "bf16", "fp32"],
+                help=(
+                    "dtype for the FSDP-wrapped master copy of the model. "
+                    "Loaded at this dtype, sharded at this dtype, optimizer state "
+                    "lives at this precision. fp32 (default) gives proper "
+                    "mixed-precision training when paired with a lower "
+                    "--diffusion-rollout-dtype."
+                ),
+            )
+            parser.add_argument(
+                "--diffusion-rollout-dtype",
                 type=str,
                 default="bf16",
                 choices=["fp16", "bf16", "fp32"],
-                help="dtype for diffusion pipeline weights.",
+                help=(
+                    "dtype for the rollout-side DiT compute (sglang-d engine + the "
+                    "training-side input cast that matches rollout for log-prob "
+                    "alignment + FSDP's MixedPrecisionPolicy.param_dtype)."
+                ),
             )
             parser.add_argument(
                 "--diffusion-num-steps",

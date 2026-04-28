@@ -81,7 +81,8 @@ fi
   --pickscore-batch-size "${SMOKE_PICKSCORE_BATCH_SIZE}" \
   --pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --pickscore-model-path yuvalkirstain/PickScore_v1 \
-  --diffusion-dtype bf16 \
+  --fsdp-master-dtype fp32 \
+  --diffusion-rollout-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-guidance-scale 4.0 \
   --diffusion-true-cfg-scale 4.0 \
@@ -95,4 +96,7 @@ fi
   --diffusion-ignore-last 1 \
   --diffusion-rollout-debug-mode \
   --debug-skip-optimizer-step \
+  --eval-prompt-data ocr_test "${ROOT_DIR}/data/ocr/test.jsonl" \
+  --eval-interval 1 \
+  --skip-eval-before-train \
   "${WANDB_ARGS[@]}"

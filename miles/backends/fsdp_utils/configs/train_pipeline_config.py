@@ -47,6 +47,7 @@ class TrainPipelineConfig(abc.ABC):
     """Base class. Subclass per model family."""
 
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
+    optimizer_state_allowed_missing: list[str] = []
 
     def prepare_trajectory(
         self,

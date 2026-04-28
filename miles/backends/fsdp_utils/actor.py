@@ -57,15 +57,11 @@ class FSDPTrainRayActor(TrainRayActor):
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
 
-        # Load the diffusion pipeline; keep only transformer + scheduler.
-        # --diffusion-dtype controls the training-side DiT compute precision.
-        # Must match the rollout engine's compute dtype for clean log-prob
-        # alignment; pass the same value to sglang-d via sglang_dit_dtype.
-        dtype = _resolve_compute_dtype(args.diffusion_dtype)
-        self._compute_dtype = dtype
+        self._master_dtype = _resolve_dtype(args.fsdp_master_dtype)
+        self._rollout_dtype = _resolve_dtype(args.diffusion_rollout_dtype)
         pipeline = DiffusionPipeline.from_pretrained(
             args.diffusion_model,
-            torch_dtype=dtype,
+            torch_dtype=self._master_dtype,
             trust_remote_code=True,
         )
         model = pipeline.transformer
@@ -387,8 +383,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     # as that dtype. Without explicit cast here, FSDP MixedPrecision
                     # only casts params but leaves fp32 inputs → first matmul runs
                     # at higher precision than rollout → systematic noise_pred drift.
-                    # When diffusion_dtype=fp32, this is a no-op (inputs already fp32).
-                    _dt = self._compute_dtype
+                    # When rollout_dtype=fp32, this is a no-op (inputs already fp32).
+                    _dt = self._rollout_dtype
                     _cast = lambda d: {k: v.to(_dt) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
                     noise_pred_pos = self.model(
                         hidden_states=lat_chunk.to(_dt),
@@ -535,8 +531,7 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def _resolve_compute_dtype(name: str) -> torch.dtype:
-    """Map --diffusion-dtype string to torch.dtype. Single source of truth."""
+def _resolve_dtype(name: str) -> torch.dtype:
     if name == "fp16":
         return torch.float16
     if name == "fp32":
@@ -552,7 +547,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         mesh: Optional DeviceMesh for FSDP. If None, uses all ranks.
         cpu_offload: If True, offload parameters, gradients, and optimizer states
             to CPU. The optimizer step will run on CPU. (Default: False)
-        args: Arguments containing precision settings (--diffusion-dtype, --fp16)
+        args: Arguments containing precision settings (--diffusion-rollout-dtype, --fsdp-master-dtype, --fp16)
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -569,8 +564,8 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         if module.__class__.__name__ in layer_cls_to_wrap
     ]
 
-    diffusion_dtype = getattr(args, "diffusion_dtype", None) if args is not None else None
-    param_dtype = _resolve_compute_dtype(diffusion_dtype)
+    rollout_dtype_name = getattr(args, "diffusion_rollout_dtype", None) if args is not None else None
+    param_dtype = _resolve_dtype(rollout_dtype_name)
     reduce_dtype = torch.float32
 
     logger.info(f"FSDP: wrapping {len(modules)} modules of type {layer_cls_to_wrap}, param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")

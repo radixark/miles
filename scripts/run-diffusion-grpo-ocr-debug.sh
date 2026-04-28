@@ -88,7 +88,8 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type ocr \
-  --diffusion-dtype bf16 \
+  --fsdp-master-dtype fp32 \
+  --diffusion-rollout-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-guidance-scale 4.0 \
   --diffusion-true-cfg-scale 4.0 \
@@ -101,4 +102,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --global-batch-size 8 \
   --diffusion-debug-mode \
   --debug-skip-optimizer-step \
+  --eval-prompt-data ocr_test "${ROOT_DIR}/data/ocr/test.jsonl" \
+  --eval-interval 50 \
+  --skip-eval-before-train \
   "${WANDB_ARGS[@]}"

@@ -9,40 +9,65 @@ from typing import Any
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
+from torch.distributed.checkpoint.state_dict import StateDictOptions, get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
 logger = logging.getLogger(__name__)
 
 
-class ModelState(Stateful):
-    """Wrapper for model state only."""
+def _is_lora_param_name(name: str) -> bool:
+    return "lora_" in name
 
-    def __init__(self, model):
+
+class ModelState(Stateful):
+    """Wrapper for model state. ``lora_only=True`` saves/loads only LoRA
+    adapter weights; base weights come from ``args.hf_checkpoint`` on init."""
+
+    def __init__(self, model, lora_only: bool = False):
         self.model = model
+        self.lora_only = lora_only
 
     def state_dict(self):
         model_state_dict, _ = get_state_dict(self.model, optimizers=[])
+        if self.lora_only:
+            model_state_dict = {k: v for k, v in model_state_dict.items() if _is_lora_param_name(k)}
         return {"model": model_state_dict}
 
     def load_state_dict(self, state_dict):
-        set_state_dict(self.model, optimizers=[], model_state_dict=state_dict["model"], optim_state_dict=None)
+        options = StateDictOptions(strict=False) if self.lora_only else None
+        set_state_dict(
+            self.model,
+            optimizers=[],
+            model_state_dict=state_dict["model"],
+            optim_state_dict=None,
+            options=options,
+        )
 
 
 class OptimizerState(Stateful):
     """Wrapper for optimizer state only."""
 
-    def __init__(self, model, optimizer):
+    def __init__(self, model, optimizer, allowed_missing: list[str] | None = None):
         self.model = model
         self.optimizer = optimizer
+        self.allowed_missing = tuple(allowed_missing or ())
 
     def state_dict(self):
         _, optimizer_state_dict = get_state_dict(self.model, optimizers=self.optimizer)
+        if self.allowed_missing:
+            optimizer_state_dict["state"] = {
+                param_name: param_state
+                for param_name, param_state in optimizer_state_dict["state"].items()
+                if not any(pattern in param_name for pattern in self.allowed_missing)
+            }
         return {"optim": optimizer_state_dict}
 
     def load_state_dict(self, state_dict):
         set_state_dict(
-            self.model, optimizers=self.optimizer, model_state_dict=None, optim_state_dict=state_dict["optim"]
+            self.model,
+            optimizers=self.optimizer,
+            model_state_dict=None,
+            optim_state_dict=state_dict["optim"],
         )
 
 
@@ -108,8 +133,8 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
         return None
 
-    # Load model weights (always)
-    model_state = ModelState(actor.model)
+    lora_only = bool(getattr(actor.args, "use_lora", False))
+    model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
 
     try:
@@ -122,7 +147,8 @@ def load(actor: Any) -> dict[str, Any] | None:
     # Load optimizer state (optional)
     load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
     if load_optimizer and optimizer_dir.exists():
-        optimizer_state = OptimizerState(actor.model, actor.optimizer)
+        allowed_missing = getattr(getattr(actor, "train_pipeline_config", None), "optimizer_state_allowed_missing", [])
+        optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
         optim_state_dict = {"optim_state": optimizer_state}
         try:
             dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
@@ -209,15 +235,16 @@ def save(actor: Any, iteration: int) -> None:
         lr_scheduler_dir.mkdir(parents=True, exist_ok=True)
     dist.barrier()
 
-    # Save model weights
-    model_state = ModelState(actor.model)
+    lora_only = bool(getattr(actor.args, "use_lora", False))
+    model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
     dcp.save(state_dict, checkpoint_id=str(model_dir))
 
     # Save optimizer state (skip if --no-save-optim is set)
     save_optimizer_state = not getattr(actor.args, "no_save_optim", False)
     if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
-        optimizer_state = OptimizerState(actor.model, actor.optimizer)
+        allowed_missing = getattr(getattr(actor, "train_pipeline_config", None), "optimizer_state_allowed_missing", [])
+        optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
         optim_state_dict = {"optim_state": optimizer_state}
         dcp.save(optim_state_dict, checkpoint_id=str(optimizer_dir))
 

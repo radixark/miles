@@ -138,7 +138,7 @@ def _get_device(args: Namespace) -> torch.device:
 
 
 def _get_dtype(args: Namespace) -> torch.dtype:
-    dtype = getattr(args, "diffusion_dtype", "fp16")
+    dtype = getattr(args, "diffusion_rollout_dtype", "fp16")
     if dtype == "fp32":
         return torch.float32
     return torch.float16
@@ -457,7 +457,6 @@ def generate_rollout(
             data={
                 "diffusion_eval": {
                     "rewards": [sample.reward for sample in flat],
-                    "truncated": [sample.status == Sample.Status.TRUNCATED for sample in flat],
                     "samples": flat,
                 }
             }

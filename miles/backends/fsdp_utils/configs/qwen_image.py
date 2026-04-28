@@ -18,6 +18,13 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         "txt_mlp.net.0.proj", "txt_mlp.net.2",
     ]
 
+    # Last-block text-branch outputs are discarded by parent transformer.forward.
+    optimizer_state_allowed_missing = [
+        "transformer_blocks.59.attn.to_add_out.",
+        "transformer_blocks.59.txt_norm2.",
+        "transformer_blocks.59.txt_mlp.",
+    ]
+
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
         if cond is None:
             return {}
