@@ -71,10 +71,10 @@ ray stop && ray start --head --port=6379
 
 ## Verify
 
-Run the import check and confirm the GPUs are visible:
+Confirm Miles imports and the GPUs are visible:
 
 ```bash
-python -c "from miles import __version__; print('Miles', __version__)"
+python -c "import miles; print('Miles import OK')"
 nvidia-smi
 ```
 
