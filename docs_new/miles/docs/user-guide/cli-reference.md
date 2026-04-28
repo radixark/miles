@@ -17,7 +17,7 @@ This page is structured in two passes:
 To regenerate the canonical list from source code:
 
 ```bash
-python -m miles.args --help
+python3 train.py --help
 ```
 
 ---
@@ -34,7 +34,7 @@ throughput.
 | `--actor-num-nodes` | `1` | Total nodes for the actor. |
 | `--actor-num-gpus-per-node` | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
-| `--rollout-num-gpus-per-engine` | `2` | TP size of each SGLang engine. |
+| `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 
 Decide colocate vs. disaggregate first; everything else follows from that choice. See
@@ -75,10 +75,10 @@ then push up until you OOM.
 
 | Flag | Default | What |
 |---|---|---|
-| `--advantage-estimator` | `grpo` | `grpo` / `gspo` / `ppo` / `reinforce++` / `reinforce++_baseline` / `on_policy_distillation` |
+| `--advantage-estimator` | `grpo` | `grpo` / `gspo` / `ppo` / `reinforce_plus_plus` / `reinforce_plus_plus_baseline` / `on_policy_distillation` |
 | `--use-kl-loss` | off | Compute KL against the reference model. |
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 = monitor only). |
-| `--kl-loss-type` | `low_var_kl` | `kl`, `abs_kl`, `low_var_kl`, `mse_kl`. |
+| `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | `0.0` | Entropy bonus weight. |
 | `--eps-clip` | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | `0.28` | DAPO-style asymmetric high clip. |
@@ -154,7 +154,7 @@ Every flag Miles accepts. Section headings mirror the launch-script argument gro
 | `--actor-num-nodes` | int | `1` | Total nodes for actor training. |
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
-| `--rollout-num-gpus-per-engine` | int | `2` | TP size of each SGLang engine. |
+| `--rollout-num-gpus-per-engine` | int | `1` | TP size of each SGLang engine. |
 | `--colocate` | flag | off | Share GPUs between actor and rollout. |
 
 ## Model & checkpoints
@@ -237,10 +237,10 @@ Every flag Miles accepts. Section headings mirror the launch-script argument gro
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce++`, `reinforce++_baseline`, `on_policy_distillation` |
+| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` |
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 = monitor). |
-| `--kl-loss-type` | enum | `low_var_kl` | `kl`, `abs_kl`, `low_var_kl`, `mse_kl`. |
+| `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | float | `0.0` | Entropy bonus weight. |
 | `--eps-clip` | float | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | float | – | Asymmetric high clip. |

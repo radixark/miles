@@ -13,19 +13,18 @@ contributions of every size — bug reports, doc fixes, new model recipes, full 
 ```text
 miles/
 ├── miles/                    # the package itself
-│   ├── backends/             # Megatron / FSDP integration
+│   ├── backends/             # Megatron, SGLang, training (loss / GRPO / PPO / ...), experimental FSDP
+│   ├── ray/                  # Ray actors + rollout driver
 │   ├── rollout/              # rollout / data source / filters
-│   ├── algorithms/           # GRPO, PPO, GSPO, REINFORCE++, ...
 │   ├── router/               # Miles Router (FastAPI proxy)
-│   ├── utils/
-│   └── ...
+│   └── utils/                # async, types, IO, distributed helpers, arguments.py
 ├── miles_plugins/            # opt-in model wrappers (Qwen3Next, etc.)
 ├── examples/                 # the recipes documented in this site
 ├── scripts/
 │   ├── models/               # per-model MODEL_ARGS bash files
 │   └── run-*.sh              # canonical launch scripts
 ├── tools/                    # ckpt converters, calibrators, debug tools
-├── tests/                    # pytest suite
+├── tests/                    # pytest suite (fast / ci / e2e / utils)
 ├── docker/                   # Dockerfiles
 └── docs/                     # the source of this site
 ```
@@ -62,7 +61,7 @@ Before you click "Ready for review":
 - [ ] `pre-commit run --all-files` passes.
 - [ ] You added or updated tests for new behaviour.
 - [ ] You ran `pytest -x` and it's green.
-- [ ] If you touched the launch flags, `python -m miles.args --help` still parses.
+- [ ] If you touched the launch flags, `python3 train.py --help` still parses.
 - [ ] If you added a public flag, it appears in [Server Arguments](../user-guide/cli-reference.md).
 - [ ] If you added a new example, you wrote a real walkthrough (use
   [examples/index](../examples/index.md) as the structural template).

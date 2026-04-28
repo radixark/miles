@@ -71,23 +71,14 @@ ray stop && ray start --head --port=6379
 
 ## Verify
 
-Run the import check and the hardware probe:
+Confirm Miles imports and the GPUs are visible:
 
 ```bash
-python -c "from miles import __version__; print('Miles', __version__)"
-python tools/check_hw.py
+python -c "import miles; print('Miles import OK')"
+nvidia-smi
 ```
 
-Expected output on an 8× H200 node:
-
-```text
-Miles 0.1.0
-✅ 8× NVIDIA H200, NVLink mesh OK
-✅ NCCL 2.20+ detected
-✅ FP8 GEMM available (cuBLASLt)
-```
-
-If any check fails, see [Debugging](../developer/debug.md) or the [FAQ](../faq.md).
+If either command fails, see [Debugging](../developer/debug.md) or the [FAQ](../faq.md).
 
 ## Hardware requirements
 
