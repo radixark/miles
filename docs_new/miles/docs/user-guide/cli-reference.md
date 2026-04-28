@@ -75,7 +75,7 @@ then push up until you OOM.
 
 | Flag | Default | What |
 |---|---|---|
-| `--advantage-estimator` | `grpo` | `grpo` / `gspo` / `ppo` / `reinforce++` / `reinforce++_baseline` / `on_policy_distillation` |
+| `--advantage-estimator` | `grpo` | `grpo` / `gspo` / `ppo` / `reinforce_plus_plus` / `reinforce_plus_plus_baseline` / `on_policy_distillation` |
 | `--use-kl-loss` | off | Compute KL against the reference model. |
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 = monitor only). |
 | `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
@@ -237,7 +237,7 @@ Every flag Miles accepts. Section headings mirror the launch-script argument gro
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce++`, `reinforce++_baseline`, `on_policy_distillation` |
+| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` |
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 = monitor). |
 | `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
