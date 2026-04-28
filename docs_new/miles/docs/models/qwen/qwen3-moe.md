@@ -5,31 +5,52 @@ description: Launch recipes for Qwen3-30B-A3B (single node) and Qwen3-235B-A22B 
 
 # Qwen3 MoE
 
-Two MoE sizes ship with miles: `Qwen3-30B-A3B` (single-node, Python launcher) and `Qwen3-235B-A22B` (multi-node, bash launcher with FP8 rollout). All values below come straight from `scripts/`.
+## 1. Model Introduction
 
-## Variants
+[Qwen3 MoE](https://github.com/QwenLM/Qwen3) is the Mixture-of-Experts branch of the Qwen3 series, available in two sizes: 30 B-A3B (single-node) and 235 B-A22B (multi-node).
 
-| Model | Active / Total | HF ID | Model config |
-|---|---|---|---|
-| Qwen3-30B-A3B | 3 B / 30 B | `Qwen/Qwen3-30B-A3B` | `scripts/models/qwen3-30B-A3B.sh` |
-| Qwen3-235B-A22B | 22 B / 235 B | `Qwen/Qwen3-235B-A22B` | `scripts/models/qwen3-235B-A22B.sh` |
+**Key highlights:**
 
-## Quick start
+- **Sparse MoE architecture**: 30 B / 3 B-active and 235 B / 22 B-active variants, scaling capacity without proportional compute cost.
+- **Strong reasoning and coding**: shares the Qwen3 generation's improvements in instruction following, math, and tool usage.
+- **Long-context capability**: 256 K-token context inherited from the Qwen3 series.
+- **Flexible scaling**: 30 B fits a single 8-GPU node; 235 B is the canonical multi-node target with FP8 rollout.
 
-The reference launcher is `scripts/run_qwen3_30b_a3b.py`. It downloads the HF checkpoint, `zhuzilin/dapo-math-17k`, and `zhuzilin/aime-2024`, converts to Megatron `torch_dist`, and submits the training job.
+## 2. Supported Variants
+
+| Model | Active / Total | HF ID |
+|---|---|---|
+| Qwen3-30B-A3B | 3 B / 30 B | [Qwen/Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B) |
+| Qwen3-235B-A22B | 22 B / 235 B | [Qwen/Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B) |
+
+## 3. Environment Setup
+
+### 3.1 Required env vars
+
+The 235 B bash launcher requires:
 
 ```bash
-cd /root/miles
-python scripts/run_qwen3_30b_a3b.py
+export BASE_FOLDER=<shared FS path, reachable from every node>
+export MASTER_ADDR=<head node IP>
 ```
 
-If you'd rather drive the steps by hand:
+The 30 B Python launcher reads no env vars — pass options via the Typer CLI.
+
+### 3.2 Download model + datasets
 
 ```bash
+# 30 B (single node)
 hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 
+# 235 B (multi-node, FP8 by default)
+hf download Qwen/Qwen3-235B-A22B-FP8 --local-dir $BASE_FOLDER/Qwen3-235B-A22B-FP8
+```
+
+### 3.3 HF → Megatron `torch_dist` conversion
+
+```bash
 source scripts/models/qwen3-30B-A3B.sh
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
@@ -38,39 +59,29 @@ PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    --save          /root/models/Qwen3-30B-A3B_torch_dist
 ```
 
+Drive the conversion across more GPUs / nodes for the 235 B variant; the launcher reads `$BASE_FOLDER/Qwen3-235B-A22B_torch_dist/` as `--ref-load`.
 
-## Cross-node example (Qwen3-235B-A22B, 8 nodes × 8 GPU)
+## 4. Launch
 
-The bash launcher requires `BASE_FOLDER` (a shared FS reachable from every node) and `MASTER_ADDR`. It defaults to the **FP8** HF checkpoint path:
+### 4.1 Quick start
 
 ```bash
-export BASE_FOLDER=<shared FS path>
-export MASTER_ADDR=<head node IP>
+# 30 B (1 node × 8 GPU) — Python launcher handles download + conversion + submit
+cd /root/miles
+python scripts/run_qwen3_30b_a3b.py
 
+# 235 B (8 nodes × 8 GPU)
+export BASE_FOLDER=...; export MASTER_ADDR=...
 bash scripts/run-qwen3-235B-A22B.sh
 ```
 
-Expected paths under `$BASE_FOLDER` (from `run-qwen3-235B-A22B.sh:41–69`):
+### 4.2 Multi-node fan-out
 
-```
-Qwen3-235B-A22B-FP8/                      --hf-checkpoint
-Qwen3-235B-A22B_torch_dist/               --ref-load
-Qwen3-235B-A22B_miles/                    --load / --save
-dapo-math-17k/dapo-math-17k.jsonl
-aime-2024/aime-2024.jsonl
-```
+`run-qwen3-235B-A22B.sh` ssh-fans-out to workers via `/root/mpi_rack_hostfile` itself; you only need the env vars set on the head node. The 30 B launcher is single-node.
 
-The script fans out to workers via `ssh` over `/root/mpi_rack_hostfile`.
+## 5. Recipe Configuration
 
-## Launch scripts
-
-| Script | GPUs | Notes |
-|---|---|---|
-| `scripts/run_qwen3_30b_a3b.py` | 8 (1 node) | Canonical Python launcher; supports FP8 / MXFP8 / INT4 rollout, Blackwell hardware, Megatron-bridge mode, MIS |
-| `scripts/run-qwen3-235B-A22B.sh` | 64 (8 nodes × 8) | Multi-node, FP8 HF checkpoint, GSPO advantage, DeepEP `auto`, CPU Adam |
-| `scripts/run-qwen3-235B-A22B-sft.sh` | 32 (4 nodes × 8) | SFT on `${BASE_FOLDER}/openhermes2_5.parquet` |
-
-## Parallelism
+### 5.1 Parallelism
 
 | Script | Backend | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|---|---|
@@ -78,9 +89,14 @@ The script fans out to workers via `ssh` over `/root/mpi_rack_hostfile`.
 | `run-qwen3-235B-A22B.sh` | Megatron | 4 | 4 | 2 | 16 | 1 | 16384 | 64 |
 | `run-qwen3-235B-A22B-sft.sh` | Megatron | 4 | 1 | 1 | 32 | 1 | 9216 | 32 |
 
-`run-qwen3-235B-A22B.sh` additionally sets `--decoder-last-pipeline-num-layers 22` to balance the 235 B layer count across PP=4.
+`run-qwen3-235B-A22B.sh` sets `--decoder-last-pipeline-num-layers 22` to balance the layer count across PP=4.
 
-## SGLang flags
+### 5.2 Algorithm
+
+- **30 B Python launcher**: GRPO with `--eps-clip 0.2 --eps-clip-high 0.28`.
+- **235 B bash launcher**: GSPO (`--advantage-estimator gspo`, `--eps-clip 4e-4`); `--use-kl-loss` is commented out.
+
+### 5.3 Rollout & SGLang
 
 `run_qwen3_30b_a3b.py` (H100, 1 node, BF16 rollout):
 
@@ -104,11 +120,9 @@ The script fans out to workers via `ssh` over `/root/mpi_rack_hostfile`.
 --sglang-deepep-mode auto
 ```
 
-The 235 B script uses GSPO (`--advantage-estimator gspo`, `--eps-clip 4e-4`, `--use-kl-loss` commented out). The 30 B Python launcher uses GRPO with `--eps-clip 0.2 --eps-clip-high 0.28`.
+### 5.4 Optimizer
 
-## CPU Adam
-
-Both `run_qwen3_30b_a3b.py` (H100, 1 node) and `run-qwen3-235B-A22B.sh` enable:
+Both `run_qwen3_30b_a3b.py` (H100, 1 node) and `run-qwen3-235B-A22B.sh` enable CPU Adam:
 
 ```bash
 --optimizer-cpu-offload
@@ -118,7 +132,13 @@ Both `run_qwen3_30b_a3b.py` (H100, 1 node) and `run-qwen3-235B-A22B.sh` enable:
 
 `run_qwen3_30b_a3b.py` removes them when running on Blackwell (`B200/B300/GB200/GB300`) per the hardware match in the launcher.
 
-## Pairs well with
+### 5.5 Notable quirks
+
+- **30 B Python launcher** supports FP8 / MXFP8 / INT4 rollout, Blackwell hardware, Megatron-bridge mode, and MIS via Typer flags.
+- **235 B defaults to FP8 HF checkpoint** — the BF16 directory is available as a commented alternative in `CKPT_ARGS`.
+- **R3 not on by default**; opt-in via `run_qwen3_30b_a3b.py --enable-mis` (TIS / RS) for routing-stability experiments.
+
+## 6. Pairs Well With
 
 - [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
-- [Miles Router (R3)](../../advanced/miles-router.md) — opt-in via `run_qwen3_30b_a3b.py --enable-mis` (TIS / RS) for routing-stability experiments; not on by default in either launcher.
+- [Miles Router (R3)](../../advanced/miles-router.md)

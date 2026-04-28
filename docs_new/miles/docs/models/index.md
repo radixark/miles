@@ -22,17 +22,14 @@ them.
 
 ## How a recipe is structured
 
-Every recipe page has the same shape:
+Every recipe page follows the same six sections:
 
-1. **Supported variants** — which sizes + checkpoints this family covers.
-2. **Model configuration** — the `MODEL_ARGS` sourced from `scripts/models/<family>.sh`.
-3. **Download + convert** — the exact commands for weights + datasets.
-4. **Parallelism** — recommended TP / PP / EP / CP per size.
-5. **Launch** — the `scripts/run-<family>.sh` invocation with any env vars required.
-6. **Knobs to tune** — what to adjust first when the run is slow or unstable.
-
-Dense pages are short; MoE pages go into extra detail on EP, expert balance, and R3
-(see [Miles Router](../advanced/miles-router.md)).
+1. **Model Introduction** — what the model is and why miles supports it.
+2. **Supported Variants** — model sizes + HF links.
+3. **Environment Setup** — env vars, downloads, and HF → Megatron conversion.
+4. **Launch** — the `scripts/run-<family>.sh` (or `run_<family>.py`) invocation.
+5. **Recipe Configuration** — parallelism, algorithm, rollout/SGLang, optimizer.
+6. **Pairs Well With** — links to the advanced features that complement this recipe.
 
 ## Adding a new model
 

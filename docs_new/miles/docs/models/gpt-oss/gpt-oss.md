@@ -5,97 +5,75 @@ description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, d
 
 # GPT-OSS 20B
 
-Two launchers ship in `scripts/`:
+## 1. Model Introduction
 
-- `scripts/run-gpt-oss-20b-bf16.sh` — Megatron BF16 path on 8 GPU. Uses `--megatron-to-hf-mode bridge` (mbridge) so it loads the HF checkpoint directly — no `tools/convert_hf_to_torch_dist.py` step.
-- `scripts/run-gptoss-20b-fsdp.sh` — FSDP path on 4 GPU. The script first runs an inline Python snippet that downloads `openai/gpt-oss-20b` and dequantises its MXFP4 weights to BF16, saving to `/root/models/gpt-oss-20b-bf16`.
+[GPT-OSS](https://huggingface.co/openai/gpt-oss-20b) is OpenAI's open-weight language model, designed for reasoning, agentic tasks, and developer use cases. miles supports the 20 B variant.
 
+**Key highlights:**
 
-## Variant
+- **Configurable reasoning effort**: low / medium / high reasoning effort selectable per request.
+- **Full chain-of-thought**: the reasoning trace is exposed and trainable.
+- **MXFP4 native weights**: the HF checkpoint ships in MXFP4 (post-trained) — the FSDP launcher dequantises to BF16 first; the BF16 launcher uses mbridge to load HF directly.
+- **Sink attention**: requires `--qkv-format bshd` on the Megatron path, which precludes dynamic batch sizing.
 
-| HF ID | Local path (BF16 launcher) | Local path (FSDP launcher) |
-|---|---|---|
-| `openai/gpt-oss-20b` | `$BASE_DIR/gpt-oss-20b` (script hardcodes `BASE_DIR=/root/shared`) | `/root/models/gpt-oss-20b-bf16` (produced by the script's inline `convert_model.py`) |
+## 2. Supported Variants
 
-The HF ID `openai/gpt-oss-20b` is from `run-gptoss-20b-fsdp.sh:18`.
+| Model | HF ID |
+|---|---|
+| gpt-oss-20b | [openai/gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b) |
 
-## Quick start (Megatron BF16, 1 node × 8 GPU)
+## 3. Environment Setup
+
+### 3.1 Download model + datasets
 
 ```bash
-cd /root/miles
-# Stage everything under /root/shared (the script's hardcoded BASE_DIR)
+# Megatron BF16 path — stage everything under /root/shared (script's hardcoded BASE_DIR)
 hf download openai/gpt-oss-20b --local-dir /root/shared/gpt-oss-20b
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/shared/dapo-math-17k
 
-bash scripts/run-gpt-oss-20b-bf16.sh
+# FSDP path — script downloads + dequantises automatically; only the dataset is needed
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 ```
 
-No `convert_hf_to_torch_dist.py` step — the launcher's `CKPT_ARGS` includes `--megatron-to-hf-mode bridge` and points `--hf-checkpoint` directly at the HF directory.
+### 3.2 HF → Megatron `torch_dist` conversion
 
-## Quick start (FSDP, 1 node × 4 GPU)
+**N/A** — the Megatron BF16 launcher loads the HF checkpoint directly via `--megatron-to-hf-mode bridge` (mbridge); the FSDP launcher loads HF directly. There is no `convert_hf_to_torch_dist.py` step for either path.
+
+The FSDP launcher additionally runs an inline `convert_model.py` snippet that downloads `openai/gpt-oss-20b` and dequantises its MXFP4 weights to BF16, saving to `/root/models/gpt-oss-20b-bf16`.
+
+## 4. Launch
+
+### 4.1 Quick start
 
 ```bash
+# Megatron BF16 (1 node × 8 GPU)
 cd /root/miles
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
+bash scripts/run-gpt-oss-20b-bf16.sh
 
-# The script downloads openai/gpt-oss-20b itself, dequantises MXFP4 → BF16,
-# and writes /root/models/gpt-oss-20b-bf16 before launching.
+# FSDP (1 node × 4 GPU; restricts to GPUs 4-7 via CUDA_VISIBLE_DEVICES)
 bash scripts/run-gptoss-20b-fsdp.sh
 ```
 
-The script restricts to GPUs 4–7 via `CUDA_VISIBLE_DEVICES=4,5,6,7` and starts Ray with `--num-gpus 4`.
+## 5. Recipe Configuration
 
-## Paths the launchers expect
+### 5.1 Parallelism
 
-`run-gpt-oss-20b-bf16.sh:23-47` (BASE_DIR is hardcoded in the script):
+| Launcher | TP | PP | CP | EP | expert-TP | `micro-batch-size` | GPUs |
+|---|---|---|---|---|---|---|---|
+| `run-gpt-oss-20b-bf16.sh` (Megatron) | 8 | 1 | 1 | 8 | 1 | 1 | 8 (1 × 8) |
+| `run-gptoss-20b-fsdp.sh` (FSDP) | 1 | – | – | – | – | – | 4 |
 
-```bash
-BASE_DIR=/root/shared
+`--use-dynamic-batch-size` is **not** used on the Megatron BF16 path — the script's comment explains: `--qkv-format bshd` (required for sink attention with TE) is incompatible with dynamic batch size. Only `--micro-batch-size 1` is set. `--sequence-parallel` is on (required for TP + EP).
 
-CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/gpt-oss-20b
-   # --hf-checkpoint $BASE_DIR/gpt-oss-20b-BF16
-   --megatron-to-hf-mode bridge
-   # --save $BASE_DIR/gpt-oss-20b-BF16
-   # --save-interval 50
-)
+The FSDP variant passes `--train-backend fsdp --bf16 --attn-implementation eager` to `train.py`.
 
-ROLLOUT_ARGS=( --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
-               --rm-type math ... )
-```
+### 5.2 Algorithm
 
-`run-gptoss-20b-fsdp.sh:53-71`:
+Both scripts use GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --entropy-coef 0.00`. **`--use-kl-loss` is commented out in both scripts** (the BF16 script's comment notes "need gpt oss ckpt conversion" before KL can be enabled).
 
-```bash
-CKPT_ARGS=(
-   --hf-checkpoint /root/models/gpt-oss-20b-bf16
-)
+Note that `--rm-type` differs: `math` for the Megatron BF16 path, `deepscaler` for FSDP.
 
-ROLLOUT_ARGS=( --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
-               --rm-type deepscaler ... )
-```
-
-Note the `--rm-type` differs: `math` for the Megatron BF16 path, `deepscaler` for FSDP. Neither launcher writes `--save`/`--load`/`--save-interval`.
-
-## Parallelism (Megatron BF16)
-
-| TP | PP | CP | EP | expert-TP | `micro-batch-size` | GPUs |
-|---|---|---|---|---|---|---|
-| 8 | 1 | 1 | 8 | 1 | 1 | 8 (1 × 8) |
-
-`--use-dynamic-batch-size` is **not** used here — the script's comment explains it: `--qkv-format bshd` (required for sink attention with TE) is incompatible with dynamic batch size. So only `--micro-batch-size 1` is set.
-
-`--sequence-parallel` is on (required for TP + EP).
-
-## FSDP shape
-
-| `--rollout-num-gpus-per-engine` | `--sglang-tensor-parallel-size` | dtype | GPUs |
-|---|---|---|---|
-| 4 | 1 | bfloat16 | 4 |
-
-Plus `--train-backend fsdp --bf16 --attn-implementation eager` passed directly to `train.py`.
-
-## SGLang flags
+### 5.3 Rollout & SGLang
 
 `run-gpt-oss-20b-bf16.sh`:
 
@@ -119,13 +97,11 @@ SGLANG_ARGS=(
 )
 ```
 
-## Algorithm
-
-Both scripts use GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --entropy-coef 0.00`. **`--use-kl-loss` is commented out in both scripts** (the BF16 script's comment notes "need gpt oss ckpt conversion" before KL can be enabled).
+### 5.4 Optimizer
 
 The Megatron BF16 launcher enables CPU Adam (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`); the FSDP launcher does not.
 
-## Megatron BF16 attention quirks
+### 5.5 Notable quirks
 
 `MISC_ARGS` in the BF16 script:
 
@@ -137,3 +113,10 @@ The Megatron BF16 launcher enables CPU Adam (`--optimizer-cpu-offload --overlap-
 ```
 
 `--qkv-format bshd` is mandated by the sink-attention pattern; in turn it precludes `--use-dynamic-batch-size`. Don't toggle either flag without the other.
+
+Neither launcher writes `--save`/`--load`/`--save-interval`.
+
+## 6. Pairs Well With
+
+- [Backends Beyond Megatron](../../advanced/architecture-support.md) — the FSDP variant.
+- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)

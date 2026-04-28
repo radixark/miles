@@ -5,26 +5,44 @@ description: Launch recipe for DeepSeek-R1 / DeepSeek-V3 (671 B total / 37 B act
 
 # DeepSeek R1 / V3
 
-DeepSeek-V3 holds 671 B total / 37 B active. The canonical recipe is a 16-node × 8 H100 run with BF16 training, FP8 (128×128 block-wise) inference, DeepEP, and DAPO-style dynamic sampling. Max response length 32 K. CPU Adam is enabled to save GPU memory — each node holds ~1.4–1.5 TB of optimiser state in host RAM.
+## 1. Model Introduction
 
-For SGLang: EP64 + DP-attention (DP8) + DeepEP. For Megatron: TP8, PP4, EP32, CP4.
+[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) is a large-scale Mixture-of-Experts language model from DeepSeek, and [DeepSeek-R1](https://huggingface.co/deepseek-ai/DeepSeek-R1) is the reasoning-tuned variant built on the same architecture. Both expose the same Megatron-side definition in miles and share the launch recipe on this page.
 
-## Variants
+**Key highlights:**
 
-| Model | Active / Total | HF ID | Model config |
-|---|---|---|---|
-| DeepSeek-V3 | 37 B / 671 B | `deepseek-ai/DeepSeek-V3` | `scripts/models/deepseek-v3.sh` |
-| DeepSeek-R1 | 37 B / 671 B | `deepseek-ai/DeepSeek-R1` | `scripts/models/deepseek-v3.sh` |
+- **Fine-grained MoE architecture**: 671 B total / 37 B active per token, 256 routed experts with top-8 plus 1 shared expert, sigmoid router with bias.
+- **MLA attention**: Multi-head Latent Attention with q-LoRA rank 1536, keeping the KV cache compact under long contexts.
+- **Long-context capability**: trained at 32 K response length in this recipe; supports extended reasoning and agent-style workflows.
+- **Strong reasoning and coding**: R1 in particular targets mathematical reasoning and step-by-step inference; V3 is the general-purpose base.
 
-## Environment setup
+## 2. Supported Variants
 
-Download the HF checkpoint to a directory accessible by all machines (referred to as `$BASE_DIR` from here on):
+| Model | Active / Total | HF ID |
+|---|---|---|
+| DeepSeek-V3 | 37 B / 671 B | [deepseek-ai/DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) |
+| DeepSeek-R1 | 37 B / 671 B | [deepseek-ai/DeepSeek-R1](https://huggingface.co/deepseek-ai/DeepSeek-R1) |
+
+## 3. Environment Setup
+
+### 3.1 Required env vars
+
+```bash
+export BASE_DIR=<shared FS path, reachable from every node>
+export MASTER_ADDR=<head node IP>
+```
+
+### 3.2 Download model + datasets
 
 ```bash
 hf download deepseek-ai/DeepSeek-R1 --local-dir $BASE_DIR/DeepSeek-R1
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir $BASE_DIR/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir $BASE_DIR/rl_data/aime-2024
 ```
 
-The HF checkpoint ships in block-quantised FP8 — first cast it to a BF16 HF checkpoint:
+### 3.3 HF → Megatron `torch_dist` conversion
+
+The HF checkpoint ships in block-quantised FP8 — first cast it to BF16:
 
 ```bash
 cd miles/
@@ -33,7 +51,7 @@ python tools/fp8_cast_bf16.py \
    --output-bf16-hf-path $BASE_DIR/DeepSeek-R1-bf16/
 ```
 
-Then convert the BF16 HF checkpoint to Megatron `torch_dist` format. Run the following on **4 separate nodes** (`NODE_RANK=0..3`); `MASTER_ADDR` is the IP of node 0:
+Then convert BF16 HF → Megatron `torch_dist`. Run on **4 separate nodes** (`NODE_RANK=0..3`); `MASTER_ADDR` is the IP of node 0:
 
 ```bash
 cd miles/
@@ -54,9 +72,9 @@ PYTHONPATH=/root/Megatron-LM/ torchrun \
    --save $BASE_DIR/DeepSeek-R1_torch_dist/
 ```
 
-After this step `$BASE_DIR/DeepSeek-R1_torch_dist/` is what `run-deepseek-r1.sh` will pass as `--ref-load`.
+## 4. Launch
 
-## Executing the training
+### 4.1 Quick start
 
 On node 0:
 
@@ -65,6 +83,8 @@ cd miles/
 bash scripts/run-deepseek-r1.sh
 ```
 
+### 4.2 Multi-node fan-out
+
 On every other node, join the Ray cluster:
 
 ```bash
@@ -72,7 +92,7 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 \
           --node-ip-address ${WORKER_IP} --disable-usage-stats
 ```
 
-Alternatively, if you have an MPI-style hostfile (each line is `ip slot=8`), you can append a loop after the `ray start --head` line in `scripts/run-deepseek-r1.sh` to ssh out and attach all workers from node 0:
+Alternatively, with an MPI-style hostfile (each line `ip slot=8`), append a loop after `ray start --head` in `scripts/run-deepseek-r1.sh` to ssh out from node 0:
 
 ```bash
 for WORKER_IP in $(awk '{print $1}' $BASE_DIR/mpi_hostfile); do
@@ -87,37 +107,54 @@ done
 wait
 ```
 
-## Parameter walkthrough
+`scripts/run_deepseek.py` is an alternative Python entry point (in preview) that wraps download + FP8→BF16 cast + `torch_dist` conversion + `train.py` submission behind a Typer CLI.
 
-All values below are taken directly from `scripts/run-deepseek-r1.sh`.
+## 5. Recipe Configuration
 
-### Model config
+All values below come straight from `scripts/run-deepseek-r1.sh`.
 
-```bash
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/deepseek-v3.sh"
-```
+### 5.1 Parallelism
 
-The launcher sources `scripts/models/deepseek-v3.sh`, which exposes `MODEL_ARGS` — the Megatron-side architectural definition of DeepSeek-V3 / R1 (61 layers, hidden 7168, 256 experts, top-k 8, MLA with q-LoRA rank 1536, sigmoid router with bias, MoE shared-expert intermediate 2048, etc.). Megatron can't read these from the HF checkpoint, so the model config is shipped in `scripts/models/`.
-
-### CKPT_ARGS
+| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` | Nodes × GPUs |
+|---|---|---|---|---|---|---|---|
+| 8 | 4 | 4 | 32 | 1 | 13 | 16384 | 16 × 8 = 128 |
 
 ```bash
-CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/DeepSeek-R1/
-   #--hf-checkpoint $BASE_DIR/DeepSeek-R1-bf16/
-   --ref-load $BASE_DIR/DeepSeek-R1_torch_dist/
-   --load $BASE_DIR/DeepSeek-R1_miles/
-   --save $BASE_DIR/DeepSeek-R1_miles/
-   --save-interval 20
+PERF_ARGS=(
+   --tensor-model-parallel-size 8
+   --sequence-parallel
+   --pipeline-model-parallel-size 4
+   --context-parallel-size 4
+   --expert-model-parallel-size 32
+   --expert-tensor-parallel-size 1
+   --decoder-last-pipeline-num-layers 13
+
+   --recompute-granularity full
+   --recompute-method uniform
+   --recompute-num-layers 1
+
+   --use-dynamic-batch-size
+   --max-tokens-per-gpu 16384
 )
 ```
 
-`--hf-checkpoint` is the FP8 HF dir (also where the tokenizer is read from). `--ref-load` is the torch_dist directory you produced earlier. `--load` defaults to `--ref-load` when empty. miles performs online quantisation against the quantisation config in the HF checkpoint — with the FP8 checkpoint shown here, weights are block-wise quantised before being passed to SGLang.
+DeepSeek-R1 has 61 layers, which doesn't divide evenly into PP=4 — `--decoder-last-pipeline-num-layers 13` puts the extra layers on the last stage. With `--use-dynamic-batch-size`, miles packs samples up to `--max-tokens-per-gpu`; under CP=4, a CP group shares a `CP × max-tokens-per-gpu` budget. miles always trains with data packing and per-token loss, so dynamic batch size doesn't change the loss.
 
-### ROLLOUT_ARGS
+### 5.2 Algorithm
+
+GRPO with DAPO-style dynamic sampling:
 
 ```bash
+GRPO_ARGS=(
+   --advantage-estimator grpo
+   --use-kl-loss
+   --kl-loss-coef 0.00
+   --kl-loss-type low_var_kl
+   --entropy-coef 0.00
+   --eps-clip 0.2
+   --eps-clip-high 0.28
+)
+
 ROLLOUT_ARGS=(
    --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
@@ -139,79 +176,9 @@ ROLLOUT_ARGS=(
 )
 ```
 
-`--over-sampling-batch-size 256` paired with the `check_reward_nonzero_std` filter is the DAPO-style dynamic-sampling setup: oversample, then drop prompts whose reward distribution has zero variance.
+`--use-kl-loss` is enabled but the coefficient is 0 — to drop the reference model entirely, remove `--use-kl-loss`. `--over-sampling-batch-size 256` paired with `check_reward_nonzero_std` is the DAPO-style setup: oversample, then drop prompts whose reward distribution has zero variance.
 
-### EVAL_ARGS
-
-```bash
-EVAL_ARGS=(
-   --eval-interval 20
-   --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl
-   --n-samples-per-eval-prompt 8
-   --eval-max-response-len 32768
-   --eval-top-p 1
-)
-```
-
-### PERF_ARGS
-
-```bash
-PERF_ARGS=(
-   --tensor-model-parallel-size 8
-   --sequence-parallel
-   --pipeline-model-parallel-size 4
-   --context-parallel-size 4
-   --expert-model-parallel-size 32
-   --expert-tensor-parallel-size 1
-   --decoder-last-pipeline-num-layers 13
-
-   --recompute-granularity full
-   --recompute-method uniform
-   --recompute-num-layers 1
-
-   --use-dynamic-batch-size
-   --max-tokens-per-gpu 16384
-)
-```
-
-DeepSeek-R1 has 61 layers, which doesn't divide evenly into PP=4 — `--decoder-last-pipeline-num-layers 13` puts the extra layers on the last stage. With `--use-dynamic-batch-size`, miles packs samples up to `--max-tokens-per-gpu`; with CP=4, a CP group shares a `CP × max-tokens-per-gpu` budget. miles always trains with data packing and per-token loss, so dynamic batch size doesn't change the loss.
-
-### GRPO_ARGS
-
-```bash
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-)
-```
-
-`--use-kl-loss` is enabled but the coefficient is 0 — to drop the reference model entirely, remove `--use-kl-loss`.
-
-### OPTIMIZER_ARGS
-
-```bash
-OPTIMIZER_ARGS=(
-   --optimizer adam
-   --lr 1e-6
-   --lr-decay-style constant
-   --weight-decay 0.1
-   --adam-beta1 0.9
-   --adam-beta2 0.98
-
-   --optimizer-cpu-offload
-   --overlap-cpu-optimizer-d2h-h2d
-   --use-precision-aware-optimizer
-)
-```
-
-`--optimizer-cpu-offload` puts the Adam state on host RAM (~1.4–1.5 TB / 8-GPU node). If a node runs out of host memory, add more nodes to widen parallelism rather than swapping.
-
-### SGLANG_ARGS
+### 5.3 Rollout & SGLang
 
 ```bash
 SGLANG_ARGS=(
@@ -234,65 +201,45 @@ SGLANG_ARGS=(
 )
 ```
 
-`--rollout-num-gpus-per-engine 64` corresponds to SGLang's `tp_size`. Other SGLang options are passed through with a `--sglang-` prefix. To exploit large-EP inference, the recipe sets EP64, DP-attention with DP8, and DeepEP `auto`. `--sglang-server-concurrency` is a miles-specific knob to keep the SGLang HTTP server from being swamped — default 512, raised to 1024 here so each of the 8 DP ranks gets 128 concurrent requests.
+`--rollout-num-gpus-per-engine 64` corresponds to SGLang's `tp_size`. To exploit large-EP inference, the recipe sets EP64, DP-attention with DP8, and DeepEP `auto`. `--sglang-server-concurrency` is a miles-specific knob to keep the SGLang HTTP server from being swamped — default 512, raised to 1024 here so each of the 8 DP ranks gets 128 concurrent requests.
 
-### MISC_ARGS
+Megatron side enables DeepEP as well:
 
 ```bash
 MISC_ARGS=(
-   --attention-dropout 0.0
-   --hidden-dropout 0.0
-   --accumulate-allreduce-grads-in-fp32
-   --attention-softmax-in-fp32
-   --attention-backend flash
-
-   # use deepep for megatron
    --moe-enable-deepep
    --moe-token-dispatcher-type flex
+   ...
 )
 ```
 
-DeepEP is enabled on the Megatron side here as well (`--moe-enable-deepep`, `--moe-token-dispatcher-type flex`).
-
-### Job submit
+### 5.4 Optimizer
 
 ```bash
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 \
-   --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+OPTIMIZER_ARGS=(
+   --optimizer adam
+   --lr 1e-6
+   --lr-decay-style constant
+   --weight-decay 0.1
+   --adam-beta1 0.9
+   --adam-beta2 0.98
 
-ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{
-     "env_vars": {
-        "no_proxy": "localhost,127.0.0.1,0.0.0.0,${MASTER_ADDR}",
-        "MASTER_ADDR": "${MASTER_ADDR}",
-        "PYTHONPATH": "/root/Megatron-LM/",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-        "LD_LIBRARY_PATH": "/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/sgl-workspace/nvshmem/install/lib/"
-     }
-   }' \
-   -- python3 train.py \
-   --actor-num-nodes 16 \
-   --actor-num-gpus-per-node 8 \
-   --colocate \
-   ${MODEL_ARGS[@]} \
-   ${CKPT_ARGS[@]} \
-   ${ROLLOUT_ARGS[@]} \
-   ${OPTIMIZER_ARGS[@]} \
-   ${GRPO_ARGS[@]} \
-   ${WANDB_ARGS[@]} \
-   ${PERF_ARGS[@]} \
-   ${EVAL_ARGS[@]} \
-   ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   --optimizer-cpu-offload
+   --overlap-cpu-optimizer-d2h-h2d
+   --use-precision-aware-optimizer
+)
 ```
 
-`--actor-num-nodes 16 --actor-num-gpus-per-node 8` is what defines the 16-node × 8-GPU footprint. `--colocate` runs actor and rollout on the same GPUs.
+`--optimizer-cpu-offload` puts the Adam state on host RAM (~1.4–1.5 TB / 8-GPU node). If a node runs out of host memory, add more nodes to widen parallelism rather than swapping.
 
-## Python launcher
+### 5.5 Notable quirks
 
-`scripts/run_deepseek.py` is an alternative entry point (in preview). It wraps download + FP8→BF16 cast + torch_dist conversion + `train.py` submission behind a Typer CLI, defaults to `deepseek-ai/DeepSeek-V3`.
+- **Online FP8 quantisation against the HF config**: `--hf-checkpoint` points at the FP8 HF directory (also where the tokenizer is read from). miles applies the quantisation config from the HF checkpoint, so weights are block-wise quantised before being passed to SGLang. The BF16 HF directory is available as a commented alternative in `CKPT_ARGS`.
+- **`--decoder-last-pipeline-num-layers 13`** is mandatory under PP=4 (61 layers don't divide evenly).
+- **CKPT_ARGS** point at `$BASE_DIR/DeepSeek-R1_miles/` for both `--load` and `--save`; `--load` defaults to `--ref-load` when empty, so first run reads from `torch_dist`.
+- **`--colocate`** runs actor and rollout on the same GPUs (16 nodes × 8 GPU = 128 GPUs total via `--actor-num-nodes 16 --actor-num-gpus-per-node 8`).
 
-## Pairs well with
+## 6. Pairs Well With
 
 - [PD Disaggregation](../../advanced/pd-disaggregation.md)
 - [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
