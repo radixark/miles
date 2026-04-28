@@ -37,57 +37,52 @@ In our measurements:
 | FP8 unified, 2 nodes | 2 × 800 GB | 5 s | 1.6× |
 | **INT4 QAT, 1 node** | 8 × 130 GB | 2 s | **2.1×** |
 
-## Enabling QAT
-
-```bash
-PERF_ARGS+=(
-   --quant-mode int4-w4a16
-   --quant-group-size 128
-   --quant-act-format bf16
-   --quant-fwd-only        # weights INT4, grads BF16
-)
-
-SGLANG_ARGS+=(
-   --sglang-quantization w4a16
-   --sglang-w4a16-group-size 128
-)
-```
-
 ## Calibration
 
-QAT works best when warm-started from a calibrated INT4 checkpoint. The Miles repo ships
-the calibration script:
+Convert a BF16 HuggingFace checkpoint to INT4 with `tools/convert_hf_to_int4.py`
+(GPTQ via `llmcompressor`):
 
 ```bash
-python tools/calibrate_w4a16.py \
-   --model-dir /root/MyModel \
-   --output     /root/MyModel-w4a16/ \
-   --calib-data /root/calibration_set.jsonl \
-   --num-samples 512
+python tools/convert_hf_to_int4.py \
+   --input-dir  /root/MyModel \
+   --output-dir /root/MyModel-INT4 \
+   --data-dir   /root/calibration_dataset \
+   --quant-type W4A16 \
+   --num-calibration-samples 256 \
+   --quant-group-size 128
 ```
 
-The output is a HuggingFace checkpoint with per-group INT4 weights and per-group
-scales. Point `--hf-checkpoint` at it.
+The output is a HuggingFace directory with per-group INT4 weights and scales. Point
+`--hf-checkpoint` at it; SGLang autodetects the quantisation at load time.
+
+## Enabling QAT
+
+QAT is currently driven by environment variables passed through Ray's runtime env
+rather than CLI flags. The canonical recipe is
+[`examples/low_precision/run-qwen3-30B-A3B-int4.sh`](https://github.com/radixark/miles/blob/main/examples/low_precision/run-qwen3-30B-A3B-int4.sh):
+
+```bash
+RUNTIME_ENV_JSON='{
+  "env_vars": {
+    "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
+    "OPEN_TRAINING_INT4_GROUP_SIZE": "128"
+  }
+}'
+
+ray job submit --address="http://127.0.0.1:8265" \
+   --runtime-env-json="${RUNTIME_ENV_JSON}" \
+   -- python3 train.py ...
+```
+
+Pair the INT4 `--hf-checkpoint` with a BF16 `--ref-load` torch_dist directory so the
+KL anchor stays full precision.
 
 ## Tuning knobs
 
 | Symptom | Try |
 |---|---|
-| Eval reward drops > 5% vs BF16 | Drop `--quant-group-size` to 64 |
-| Calibration eval slow | Lower `--num-samples` to 256 |
-| Activation outliers | Add `--quant-act-clip 4.0` to clip extremes |
+| Eval reward drops > 5% vs BF16 | Lower `OPEN_TRAINING_INT4_GROUP_SIZE` (e.g. 64), or recalibrate with more samples |
 | Slower than BF16 (!) | Confirm `--sglang-cuda-graph-bs` covers your batch sizes |
-
-## Numerical sanity checks
-
-```text
-quant/qat_eval_reward_delta_vs_bf16    < 0.02
-quant/expert_routing_overlap           > 0.95
-quant/per_layer_weight_quant_mse       < 1e-4
-```
-
-If the reward delta is > 2%, the calibration set isn't representative — extend it with
-samples from your target distribution.
 
 ## Pairs nicely with
 
