@@ -34,7 +34,7 @@ throughput.
 | `--actor-num-nodes` | `1` | Total nodes for the actor. |
 | `--actor-num-gpus-per-node` | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
-| `--rollout-num-gpus-per-engine` | `2` | TP size of each SGLang engine. |
+| `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 
 Decide colocate vs. disaggregate first; everything else follows from that choice. See
@@ -154,7 +154,7 @@ Every flag Miles accepts. Section headings mirror the launch-script argument gro
 | `--actor-num-nodes` | int | `1` | Total nodes for actor training. |
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
-| `--rollout-num-gpus-per-engine` | int | `2` | TP size of each SGLang engine. |
+| `--rollout-num-gpus-per-engine` | int | `1` | TP size of each SGLang engine. |
 | `--colocate` | flag | off | Share GPUs between actor and rollout. |
 
 ## Model & checkpoints
