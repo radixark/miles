@@ -5,63 +5,78 @@ description: Launch recipes for GLM-Z1-9B-0414. The 32 B model config ships with
 
 # GLM4
 
-`scripts/` contains two GLM4 launchers, both targeting `GLM-Z1-9B-0414`:
+## 1. Model Introduction
 
-- `scripts/run-glm4-9B.sh` — canonical 8-GPU recipe (4 actor + 4 rollout, non-colocate).
-- `scripts/run-glm4-9B-4xgpu-radixtree.sh` — 4-GPU smoke-test recipe (`CUDA_VISIBLE_DEVICES=0,1,2,3`).
+[GLM-Z1-9B-0414](https://huggingface.co/zai-org/GLM-Z1-9B-0414) is a dense reasoning-tuned model from Zhipu AI's GLM-4 series, sized for single-node experimentation.
 
-## Variants
+**Key highlights:**
 
-| Model | HF ID | Model config | Has launcher? |
-|---|---|---|---|
-| GLM-Z1-9B-0414 | `zai-org/GLM-Z1-9B-0414` (per upstream) — script reads `/root/GLM-Z1-9B-0414` | `scripts/models/glm4-9B.sh` | ✓ `run-glm4-9B.sh` |
+- **Dense 9 B architecture**: fits comfortably on a single 8-GPU node.
+- **Reasoning-tuned**: post-trained for step-by-step reasoning under the GLM-Z1 line.
+- **Compatible RL recipe**: GRPO with DAPO-style rollout, drop-in replacement for other dense Qwen / LLaMA-class workloads.
 
+## 2. Supported Variants
 
-## Paths the launcher expects
+| Model | HF ID |
+|---|---|
+| GLM-Z1-9B-0414 | [zai-org/GLM-Z1-9B-0414](https://huggingface.co/zai-org/GLM-Z1-9B-0414) |
 
-From `run-glm4-9B.sh:29-62`:
+## 3. Environment Setup
+
+### 3.1 Download model + datasets
 
 ```bash
-CKPT_ARGS=(
-   --hf-checkpoint /root/GLM-Z1-9B-0414/
-   --ref-load /root/GLM-Z1-9B-0414_torch_dist
-   --load /root/GLM-Z1-9B-0414_miles/
-   --save /root/GLM-Z1-9B-0414_miles/
-   --save-interval 20
-)
-
-ROLLOUT_ARGS=( --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl ... )
-EVAL_ARGS=(   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl ... )
+hf download zai-org/GLM-Z1-9B-0414 --local-dir /root/GLM-Z1-9B-0414
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
 ```
 
-## Quick start (8 GPU)
+### 3.2 HF → Megatron `torch_dist` conversion
 
 ```bash
 cd /root/miles
-
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
-# Place the model checkpoint at /root/GLM-Z1-9B-0414
-
 source scripts/models/glm4-9B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/GLM-Z1-9B-0414 \
    --save          /root/GLM-Z1-9B-0414_torch_dist
-
-bash scripts/run-glm4-9B.sh
 ```
 
-## Parallelism
+## 4. Launch
+
+### 4.1 Quick start
+
+```bash
+cd /root/miles
+bash scripts/run-glm4-9B.sh                    # 8 GPU
+# or:
+bash scripts/run-glm4-9B-4xgpu-radixtree.sh    # 4 GPU smoke test
+```
+
+## 5. Recipe Configuration
+
+### 5.1 Parallelism
 
 | Script | TP | PP | CP | EP | `max_tokens_per_gpu` | actor / rollout GPUs | Total |
 |---|---|---|---|---|---|---|---|
 | `run-glm4-9B.sh` | 2 | 1 | 2 | 1 | 4608 | 4 / 4 (non-colocate) | 8 |
 | `run-glm4-9B-4xgpu-radixtree.sh` | 2 | 1 | 1 | 1 | 2304 | 4 / 2 | 4 |
 
-Both scripts use GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --use-kl-loss --kl-loss-coef 0.00`. `run-glm4-9B-4xgpu-radixtree.sh` also has a commented-out `# --use-miles-router` line in `SGLANG_ARGS`.
+### 5.2 Algorithm
 
-## SGLang flags (from the scripts)
+GRPO across both scripts:
+
+```bash
+GRPO_ARGS=(
+   --advantage-estimator grpo
+   --use-kl-loss
+   --kl-loss-coef 0.00
+   --eps-clip 0.2
+   --eps-clip-high 0.28
+)
+```
+
+### 5.3 Rollout & SGLang
 
 ```bash
 # run-glm4-9B.sh
@@ -72,6 +87,20 @@ SGLANG_ARGS=(
 # run-glm4-9B-4xgpu-radixtree.sh
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
-   # --use-miles-router
+   # --use-miles-router        # commented out by default
 )
 ```
+
+### 5.4 Optimizer
+
+CPU Adam is not enabled in either launcher.
+
+### 5.5 Notable quirks
+
+- `run-glm4-9B-4xgpu-radixtree.sh` ships a commented `--use-miles-router` line — uncomment to enable R3 on the smoke-test recipe.
+- `run-glm4-9B.sh` runs actor and rollout on disjoint GPUs (non-colocate).
+
+## 6. Pairs Well With
+
+- [Miles Router (R3)](../../advanced/miles-router.md)
+- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)

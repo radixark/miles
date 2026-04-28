@@ -5,71 +5,79 @@ description: Launch recipes for GLM-4.7-Flash — compact MLA + MoE with R3 enab
 
 # GLM4.7 Flash
 
-GLM-4.7-Flash (`zai-org/GLM-4.7-Flash`) is the compact end of Zhipu's MoE line: 64 routed experts, top-4 routing, MLA attention. Both miles launchers (`scripts/run-glm4.7-flash.sh` and `scripts/run_glm47_flash.py`) target a single 8-GPU node and **enable R3 by default** (`--use-miles-router --use-rollout-routing-replay`).
+## 1. Model Introduction
 
-## Architecture
+[GLM-4.7-Flash](https://huggingface.co/zai-org/GLM-4.7-Flash) is a lightweight, high-speed MoE model in the GLM-4.7 series from Zhipu AI, designed for single-GPU-node deployment.
 
-| Property | Value |
-|---|---|
-| Layers | 1 dense + 46 MoE = 47 |
-| Routed experts | 64, top-4 |
-| Shared experts | 1 (`--moe-shared-expert-intermediate-size = 1 × moe_ffn_hidden`) |
-| Hidden / FFN | 2048 / 10240 (dense) · 1536 (MoE FFN per expert) |
-| Heads | 20 (`--num-attention-heads 20`) |
-| Attention | MLA (`--multi-latent-attention`, `--q-lora-rank 768`, `--kv-lora-rank 512`, `--qk-head-dim 192`, `--v-head-dim 256`, `--qk-pos-emb-head-dim 64`) |
-| Vocab | 154880 |
-| RoPE base | 1000000 |
-| MTP | `--mtp-num-layers 1` (baked into the model config) |
-| Router | sigmoid score, pre-softmax, expert bias, `seq_aux_loss`, topk-scaling 1.8 |
+**Key highlights:**
 
-## Variants & launchers
+- **Compact MoE architecture**: 30 B total / 3 B active, sparse activation for efficient inference.
+- **MLA attention**: Multi-head Latent Attention with q-LoRA rank 768 and kv-LoRA rank 512.
+- **MTP head + EAGLE speculative**: built-in `--mtp-num-layers 1` and EAGLE rollout enabled by default.
+- **R3 on by default**: both miles launchers enable `--use-miles-router --use-rollout-routing-replay` out of the box.
 
-| Launcher | HF ID | Default hardware | Datasets |
-|---|---|---|---|
-| `scripts/run-glm4.7-flash.sh` (bash) | `zai-org/GLM-4.7-Flash` | uses `BASE_DIR=/root/shared` (hardcoded L29) | `$BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl`, `$BASE_DIR/aime-2024/aime-2024.jsonl` |
-| `scripts/run_glm47_flash.py` (Python, Typer) | `zai-org/GLM-4.7-Flash` | `H200` (only literal allowed in the dataclass) | downloads `zhuzilin/dapo-math-17k`, `zhuzilin/aime-2024` automatically |
+## 2. Supported Variants
 
-## Quick start (bash launcher, 1 node × 8 GPU)
+| Model | Active / Total | HF ID |
+|---|---|---|
+| GLM-4.7-Flash | 3 B / 30 B | [zai-org/GLM-4.7-Flash](https://huggingface.co/zai-org/GLM-4.7-Flash) |
+
+## 3. Environment Setup
+
+### 3.1 Download model + datasets
 
 ```bash
-cd /root/miles
-# Stage everything under /root/shared/ (the script's hardcoded BASE_DIR)
 hf download zai-org/GLM-4.7-Flash --local-dir /root/shared/GLM-4.7-Flash
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/shared/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/shared/aime-2024
+```
 
+The bash launcher hardcodes `BASE_DIR=/root/shared` (L29). The Python launcher downloads `zhuzilin/dapo-math-17k` and `zhuzilin/aime-2024` automatically.
+
+### 3.2 HF → Megatron `torch_dist` conversion
+
+```bash
+cd /root/miles
 source scripts/models/glm4.7-flash.sh
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/shared/GLM-4.7-Flash \
    --save          /root/shared/GLM-4.7-Flash_torch_dist
-
-bash scripts/run-glm4.7-flash.sh
 ```
 
-## Quick start (Python launcher, H200)
+The Python launcher does the conversion automatically.
 
-`scripts/run_glm47_flash.py` does the download + checkpoint conversion automatically:
+## 4. Launch
+
+### 4.1 Quick start
 
 ```bash
+# Bash launcher (1 node × 8 GPU)
 cd /root/miles
+bash scripts/run-glm4.7-flash.sh
+
+# Python launcher (H200 only — `hardware` literal in the dataclass)
 python scripts/run_glm47_flash.py
 ```
 
-Defaults (see `ScriptArgs`): `model_org=zai-org`, `model_name=GLM-4.7-Flash`, `num_gpus_per_node=8`, `hardware=H200`, `data_dir=/root/datasets`, `model_dir=/root/models`.
+Defaults of the Python launcher (see `ScriptArgs`): `model_org=zai-org`, `model_name=GLM-4.7-Flash`, `num_gpus_per_node=8`, `hardware=H200`, `data_dir=/root/datasets`, `model_dir=/root/models`.
 
-## Parallelism
+## 5. Recipe Configuration
 
-Both launchers ship the same shape:
+### 5.1 Parallelism
 
 | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|
 | 4 | 1 | 1 | 8 | 1 | 32768 | 8 (1 × 8) |
 
-`--rollout-num-gpus-per-engine 4` (TP must divide 20 attention heads, so TP=4). The bash launcher's `SGLANG_ARGS` keeps `--sglang-enable-dp-attention` / `--sglang-dp-size` commented out; the in-source comment notes that DP-attention requires `tp_size % dp_size == 0`.
+`--rollout-num-gpus-per-engine 4` (TP must divide 20 attention heads, so TP=4). The bash launcher's `SGLANG_ARGS` keeps `--sglang-enable-dp-attention` / `--sglang-dp-size` commented out — the in-source comment notes that DP-attention requires `tp_size % dp_size == 0`.
 
-## SGLang flags
+### 5.2 Algorithm
+
+GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --use-kl-loss --kl-loss-coef 0.00`.
+
+### 5.3 Rollout & SGLang
 
 ```bash
 SGLANG_ARGS=(
@@ -88,9 +96,22 @@ SGLANG_ARGS=(
 )
 ```
 
-CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`). Megatron-side DeepEP / `flex` dispatcher are commented out by default.
+### 5.4 Optimizer
 
-## Pairs well with
+CPU Adam on:
 
-- [Miles Router (R3)](../../advanced/miles-router.md) — already on; this is the rationale.
+```bash
+--optimizer-cpu-offload
+--overlap-cpu-optimizer-d2h-h2d
+--use-precision-aware-optimizer
+```
+
+### 5.5 Notable quirks
+
+- Megatron-side DeepEP / `flex` dispatcher are commented out by default in this recipe.
+- R3 (`--use-miles-router --use-rollout-routing-replay`) is enabled by default — atypical for the rest of the model lineup.
+
+## 6. Pairs Well With
+
+- [Miles Router (R3)](../../advanced/miles-router.md) — already on by default.
 - [FP8 & Low Precision](../../advanced/fp8-low-precision.md)

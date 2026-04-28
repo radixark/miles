@@ -5,55 +5,56 @@ description: Single-node GRPO + EAGLE speculative recipe with online MTP trainin
 
 # MiMo 7B
 
-MiMo 7B is Xiaomi's dense RL model with a built-in MTP (Multi-Token Prediction) layer. The MTP layer makes MiMo a convenient target for EAGLE-style speculative rollout with online MTP-SFT — one recipe exercises both the training path and the rollout speedup. The reference launcher is `scripts/run-mimo-7B-rl-eagle.sh`: 1 node × 8 GPU, GRPO + EAGLE speculative rollout, online MTP-SFT.
+## 1. Model Introduction
 
-## Variant
+[MiMo-7B-RL](https://huggingface.co/XiaomiMiMo/MiMo-7B-RL) is Xiaomi's dense reasoning RL model with a built-in MTP (Multi-Token Prediction) layer.
 
-| Local checkpoint path | Model config |
+**Key highlights:**
+
+- **Dense 7 B with built-in MTP head**: a convenient target for EAGLE-style speculative rollout with online MTP-SFT.
+- **Strong reasoning**: matches o1-mini on math and code reasoning at 7 B scale.
+- **Single-node recipe**: full RL flow fits on 1 × 8 GPU.
+- **Online MTP training**: the recipe trains the MTP head jointly with the policy via `--enable-mtp-training`.
+
+## 2. Supported Variants
+
+| Model | HF ID |
 |---|---|
-| `/root/MiMo-7B-RL` | `scripts/models/mimo-7B-rl.sh` |
+| MiMo-7B-RL | [XiaomiMiMo/MiMo-7B-RL](https://huggingface.co/XiaomiMiMo/MiMo-7B-RL) |
 
-The launcher only references the local path; the HF repo isn't named in `scripts/`, so stage your checkpoint at `/root/MiMo-7B-RL` before launch.
+## 3. Environment Setup
 
-## Paths the launcher expects
-
-From `run-mimo-7B-rl-eagle.sh:30-62`:
+### 3.1 Download model + datasets
 
 ```bash
-CKPT_ARGS=(
-   --hf-checkpoint /root/MiMo-7B-RL
-   --ref-load /root/MiMo-7B-RL_torch_dist
-   --load /root/MiMo-7B-RL-mtp_miles/
-   --save /root/MiMo-7B-RL-mtp_miles/
-   --save-interval 2000
-)
-
-ROLLOUT_ARGS=( --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
-               --rm-type deepscaler ... )
-EVAL_ARGS=(   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl ... )
+hf download XiaomiMiMo/MiMo-7B-RL --local-dir /root/MiMo-7B-RL
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
 ```
 
-Note: `--save-interval` is **2000** here (much larger than the 20 used in most other launchers), and the actor save dir has a `-mtp` suffix.
-
-## Quick start (1 node × 8 GPU)
+### 3.2 HF → Megatron `torch_dist` conversion
 
 ```bash
 cd /root/miles
-
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
-# Place the model checkpoint at /root/MiMo-7B-RL
-
 source scripts/models/mimo-7B-rl.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/MiMo-7B-RL \
    --save          /root/MiMo-7B-RL_torch_dist
+```
 
+## 4. Launch
+
+### 4.1 Quick start
+
+```bash
+cd /root/miles
 bash scripts/run-mimo-7B-rl-eagle.sh
 ```
 
-## Parallelism
+## 5. Recipe Configuration
+
+### 5.1 Parallelism
 
 | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|
@@ -61,7 +62,34 @@ bash scripts/run-mimo-7B-rl-eagle.sh
 
 `--use-dynamic-batch-size` + `--sequence-parallel` on; `--micro-batch-size` is commented out.
 
-## SGLang flags (EAGLE speculative)
+### 5.2 Algorithm
+
+GRPO baseline:
+
+```bash
+GRPO_ARGS=(
+   --advantage-estimator grpo
+   --use-kl-loss
+   --kl-loss-coef 0.00
+   --kl-loss-type low_var_kl
+   --entropy-coef 0.00
+   --eps-clip 0.2
+   --eps-clip-high 0.28
+)
+```
+
+Plus online MTP training:
+
+```bash
+SPEC_ARGS=(
+   --enable-mtp-training
+   --mtp-loss-scaling-factor 0.2
+)
+```
+
+`--mtp-num-layers 1` lives in `MODEL_ARGS`, so you get it for free when you source the model config.
+
+### 5.3 Rollout & SGLang
 
 ```bash
 SGLANG_ARGS=(
@@ -79,37 +107,17 @@ SGLANG_ARGS=(
 )
 ```
 
-`--rollout-num-gpus-per-engine 1` is intentional — one SGLang engine per GPU. The fa3 attention backend is chosen because flashinfer was hitting IMAs (in-source comment).
+`--rollout-num-gpus-per-engine 1` is intentional — one SGLang engine per GPU. The `fa3` attention backend is chosen because flashinfer was hitting IMAs (in-source comment).
 
-## Online MTP training
+### 5.4 Optimizer
 
-```bash
-SPEC_ARGS=(
-   --enable-mtp-training
-   --mtp-loss-scaling-factor 0.2
-)
-```
+CPU Adam is **not** enabled.
 
-Plus the model-config side: `--mtp-num-layers 1` (lives in `MODEL_ARGS`, so you get it for free when you source the model config).
+### 5.5 Notable quirks
 
-## Algorithm
+- `--save-interval` is **2000** here (much larger than the 20 used in most other launchers); the actor save dir has a `-mtp` suffix (`/root/MiMo-7B-RL-mtp_miles/`).
+- R3 is **not** enabled.
 
-GRPO baseline:
-
-```bash
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-)
-```
-
-CPU Adam is **not** enabled. R3 is **not** enabled.
-
-## Pairs well with
+## 6. Pairs Well With
 
 - [Speculative Decoding](../../advanced/speculative-decoding.md)

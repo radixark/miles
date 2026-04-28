@@ -11,28 +11,28 @@ them.
 
 ## By family
 
-| Family | Class | Sizes |
-|---|---|---|
-| **DeepSeek** | MoE | 37 B / 671 B |
-| **Qwen** | Dense & MoE | 0.6 B – 235 B |
-| **GLM** | Dense & MoE | 9 B – 744 B | 
-| **Kimi** | MoE | 3 B / 16 B, 32 B / 1 T |
-| **MiMo** | Dense | 7 B | 
-| **GPT-OSS** | Dense | 20 B | 
+Each model name links to its recipe page.
+
+| Family | Models |
+|---|---|
+| **DeepSeek** | [DeepSeek-V4](deepseek/deepseek-v4.md), [DeepSeek-V3](deepseek/deepseek.md), [DeepSeek-R1](deepseek/deepseek.md) |
+| **Qwen** | [Qwen3.6](qwen/qwen3-6.md), [Qwen3.6 MoE](qwen/qwen3-6-moe.md), [Qwen3.5-4B / 9B / 27B](qwen/qwen3-5.md), [Qwen3.5-35B-A3B](qwen/qwen3-5-moe.md), [Qwen3-Next-80B-A3B-Thinking](qwen/qwen3-next.md), [Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B](qwen/qwen3.md), [Qwen3-30B-A3B / 235B-A22B](qwen/qwen3-moe.md) |
+| **GLM** | [GLM-5.1](glm/glm5.md), [GLM-5](glm/glm5.md), [GLM-4.7-Flash](glm/glm4-7-flash.md), [GLM-4.5](glm/glm4-5.md), [GLM-Z1-9B-0414](glm/glm4.md) |
+| **Kimi** | [Kimi-K2.6](kimi/kimi-k2.5.md), [Kimi-K2.5](kimi/kimi-k2.5.md), [Kimi-K2-Instruct / Thinking](kimi/kimi-k2.md), [Moonlight-16B-A3B](kimi/moonlight.md) |
+| **Nemotron** | [Nemotron-3-super](nemotron/nemotron-3-super.md) |
+| **MiMo** | [MiMo-7B-RL](mimo/mimo.md) |
+| **GPT-OSS** | [gpt-oss-20b](gpt-oss/gpt-oss.md) |
 
 ## How a recipe is structured
 
-Every recipe page has the same shape:
+Every recipe page follows the same six sections:
 
-1. **Supported variants** — which sizes + checkpoints this family covers.
-2. **Model configuration** — the `MODEL_ARGS` sourced from `scripts/models/<family>.sh`.
-3. **Download + convert** — the exact commands for weights + datasets.
-4. **Parallelism** — recommended TP / PP / EP / CP per size.
-5. **Launch** — the `scripts/run-<family>.sh` invocation with any env vars required.
-6. **Knobs to tune** — what to adjust first when the run is slow or unstable.
-
-Dense pages are short; MoE pages go into extra detail on EP, expert balance, and R3
-(see [Miles Router](../advanced/miles-router.md)).
+1. **Model Introduction** — what the model is and why miles supports it.
+2. **Supported Variants** — model sizes + HF links.
+3. **Environment Setup** — env vars, downloads, and HF → Megatron conversion.
+4. **Launch** — the `scripts/run-<family>.sh` (or `run_<family>.py`) invocation.
+5. **Recipe Configuration** — parallelism, algorithm, rollout/SGLang, optimizer.
+6. **Pairs Well With** — links to the advanced features that complement this recipe.
 
 ## Adding a new model
 

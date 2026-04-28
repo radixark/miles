@@ -5,79 +5,92 @@ description: Launch recipes for Kimi-K2-Instruct and Kimi-K2-Thinking — 32 nod
 
 # Kimi K2
 
-Kimi K2 is Moonshot's 1 T-parameter MoE — 32 B active per token, 61 layers, Instruct and Thinking variants. Miles treats it as a DeepSeek-V3-shaped architecture (one `sed` away), converts on 4 nodes, and trains on 16. K2-Thinking is also the canonical target for INT4 QAT. `scripts/` ships two K2 launchers:
+## 1. Model Introduction
 
-- `scripts/run-kimi-k2-Instruct.sh` — sources `scripts/models/kimi-k2.sh`, GRPO baseline.
-- `scripts/run-kimi-k2-Thinking.sh` — sources `scripts/models/kimi-k2-thinking.sh`, GRPO + `--use-tis`, defaults to a pre-staged FP8 HF checkpoint.
+[Kimi-K2](https://moonshotai.github.io/Kimi-K2/) is a state-of-the-art MoE language model from Moonshot AI with 32 B activated parameters and 1 T total parameters.
 
-Both launchers submit to an **already-running Ray cluster** (`ray job submit ...`); neither runs `ray start --head` itself.
+**Key highlights:**
 
-## Architecture
+- **Trillion-parameter MoE**: 1 T total / 32 B active per token, 61 layers (1 dense + the rest MoE), MLA attention shaped like DeepSeek-V3.
+- **Instruct and Thinking variants**: Instruct is the general-purpose chat / agentic post-train; Thinking adds step-by-step reasoning with a 256 K context and ships in native INT4.
+- **DeepSeek-V3-shaped architecture**: miles loads it through the DeepSeek-V3 path (one `sed` away), reusing the conversion + parallelism plumbing.
+- **INT4 QAT target**: Kimi-K2-Thinking is the canonical reference recipe for INT4 QAT in miles.
 
-| Property | Value |
-|---|---|
-| Layers | 61 |
-| First-K dense layers | 1 (rest are MoE per `MOE_LAYER_FREQ`) |
-| Hidden / FFN | 7168 / 18432 |
-| Attention | MLA (DeepSeek-V3 shape) |
+## 2. Supported Variants
 
-Full `MODEL_ARGS` are in `scripts/models/kimi-k2.sh` (Instruct) and `scripts/models/kimi-k2-thinking.sh` (Thinking).
+| Model | Active / Total | HF ID |
+|---|---|---|
+| Kimi-K2-Instruct | 32 B / 1 T | [moonshotai/Kimi-K2-Instruct](https://huggingface.co/moonshotai/Kimi-K2-Instruct) |
+| Kimi-K2-Thinking | 32 B / 1 T | [moonshotai/Kimi-K2-Thinking](https://huggingface.co/moonshotai/Kimi-K2-Thinking) |
 
-## Required env
+## 3. Environment Setup
 
-`BASE_DIR` and `MASTER_ADDR` are referenced but never set inside the scripts — export them yourself before launch.
-
-## Paths the launchers expect
-
-`run-kimi-k2-Instruct.sh:29-68`:
+### 3.1 Required env vars
 
 ```bash
-CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/Kimi-K2-Instruct/
-   # --hf-checkpoint $BASE_DIR/Kimi-K2-bf16/
-   --ref-load $BASE_DIR/Kimi-K2_torch_dist/
-   --load $BASE_DIR/Kimi-K2_miles/
-   --save $BASE_DIR/Kimi-K2_miles/
-   --save-interval 20
-)
-
-ROLLOUT_ARGS=( --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl ...
-               --rm-type math ... )
-EVAL_ARGS=(   --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl ... )
-```
-
-`run-kimi-k2-Thinking.sh:29-68`:
-
-```bash
-CKPT_ARGS=(
-   # --hf-checkpoint $BASE_DIR/Kimi-K2-Thinking-bf16/
-   --hf-checkpoint $BASE_DIR/Kimi-K2-Thinking-fp8/
-   --ref-load $BASE_DIR/Kimi-K2-Thinking_torch_dist/
-   --load $BASE_DIR/Kimi-K2-Thinking_miles/
-   --save $BASE_DIR/Kimi-K2-Thinking_miles/
-   --save-interval 20
-)
-
-EVAL_ARGS=(   --eval-prompt-data aime $BASE_DIR/aime-2024.jsonl ... )
-```
-
-Note the differences: Instruct loads the BF16 HF checkpoint by default (FP8 commented out) and reads eval data from `$BASE_DIR/rl_data/`; Thinking loads the FP8 HF checkpoint by default and reads eval data from `$BASE_DIR/`.
-
-## Quick start (32 nodes × 8 GPU)
-
-```bash
-export BASE_DIR=<shared FS path>
+export BASE_DIR=<shared FS path, reachable from every node>
 export MASTER_ADDR=<head node IP>
+```
 
-# Bring up Ray on every node first (the launcher only does `ray job submit`)
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats   # head
-ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP}    # each worker
+Both are referenced but never set inside the scripts — export them yourself before launch.
 
-# Stage data + (already-converted) torch_dist checkpoint under $BASE_DIR before launch.
+### 3.2 Download model + datasets
+
+```bash
+hf download moonshotai/Kimi-K2-Instruct --local-dir $BASE_DIR/Kimi-K2-Instruct
+# or, for Thinking (FP8 by default):
+hf download moonshotai/Kimi-K2-Thinking --local-dir $BASE_DIR/Kimi-K2-Thinking-fp8
+
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir $BASE_DIR/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir $BASE_DIR/rl_data/aime-2024
+```
+
+### 3.3 HF → Megatron `torch_dist` conversion
+
+Convert across 4 nodes (mirror the DeepSeek-V3 procedure):
+
+```bash
+cd /root/miles
+source scripts/models/kimi-k2.sh   # or kimi-k2-thinking.sh
+PYTHONPATH=/root/Megatron-LM/ torchrun \
+   --nproc-per-node 8 \
+   --master-addr ${MASTER_ADDR} --master-port 12345 \
+   --nnodes=4 --node-rank ${NODE_RANK} \
+   tools/convert_hf_to_torch_dist.py \
+   ${MODEL_ARGS[@]} \
+   --hf-checkpoint $BASE_DIR/Kimi-K2-Instruct/ \
+   --save          $BASE_DIR/Kimi-K2_torch_dist/
+```
+
+## 4. Launch
+
+### 4.1 Quick start
+
+```bash
+cd /root/miles
+export BASE_DIR=...; export MASTER_ADDR=...
+
 bash scripts/run-kimi-k2-Thinking.sh   # or run-kimi-k2-Instruct.sh
 ```
 
-## Parallelism (identical for both)
+Both launchers submit to an **already-running Ray cluster** (`ray job submit ...`); neither runs `ray start --head` itself.
+
+### 4.2 Multi-node fan-out
+
+Bring up Ray on every node before launching:
+
+```bash
+# head
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+# each worker
+ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP}
+```
+
+## 5. Recipe Configuration
+
+### 5.1 Parallelism
+
+Identical for both Instruct and Thinking:
 
 | TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` | Nodes × GPUs |
 |---|---|---|---|---|---|---|---|
@@ -85,18 +98,16 @@ bash scripts/run-kimi-k2-Thinking.sh   # or run-kimi-k2-Instruct.sh
 
 Both scripts pass `--actor-num-nodes 32 --actor-num-gpus-per-node 8 --colocate --update-weight-buffer-size $((4*512*1024*1024))` to `train.py`.
 
-## Algorithm differences
+### 5.2 Algorithm
 
-| Script | Advantage | TIS | Other |
-|---|---|---|---|
-| Instruct | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | – | – |
-| Thinking | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | `--use-tis` | – |
+| Script | Advantage | TIS |
+|---|---|---|
+| Instruct | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | – |
+| Thinking | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | `--use-tis` |
 
 Both use `--use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl --entropy-coef 0.00`.
 
-## Rollout shape
-
-Both:
+Rollout shape (both):
 
 ```bash
 --rm-type math
@@ -111,9 +122,11 @@ Both:
 --balance-data
 ```
 
-DAPO-style dynamic sampling is on by default in both K2 scripts. `--global-batch-size 1024` is commented out.
+DAPO-style dynamic sampling is on by default in both scripts.
 
-## SGLang flags (identical for both)
+### 5.3 Rollout & SGLang
+
+Identical for both:
 
 ```bash
 SGLANG_ARGS=(
@@ -136,11 +149,24 @@ SGLANG_ARGS=(
 )
 ```
 
-CPU Adam is enabled in both (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`).
-
 Megatron-side `--moe-enable-deepep` and `--moe-token-dispatcher-type flex` are **on** in the Instruct script but **commented out** in the Thinking script.
 
-## Pairs well with
+### 5.4 Optimizer
+
+CPU Adam is enabled in both:
+
+```bash
+--optimizer-cpu-offload
+--overlap-cpu-optimizer-d2h-h2d
+--use-precision-aware-optimizer
+```
+
+### 5.5 Notable quirks
+
+- Instruct loads the BF16 HF checkpoint by default (FP8 commented out) and reads eval data from `$BASE_DIR/rl_data/`; Thinking loads the FP8 HF checkpoint by default and reads eval data from `$BASE_DIR/`.
+- `--global-batch-size 1024` is commented out in both scripts.
+
+## 6. Pairs Well With
 
 - [PD Disaggregation](../../advanced/pd-disaggregation.md)
 - [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
