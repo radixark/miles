@@ -3,11 +3,11 @@ title: GLM5
 description: Launch recipe for GLM-5 (744B-A40B) — Python launcher, 16+ node config.
 ---
 
-# GLM5
+# GLM5 / GLM5.1
 
 ## 1. Model Introduction
 
-[GLM-5](https://huggingface.co/zai-org/GLM-5) is the most powerful language model in Zhipu AI's GLM series, scaling to 744 B parameters (40 B active) and integrating DeepSeek Sparse Attention (DSA) for long-context efficiency.
+[GLM-5](https://huggingface.co/zai-org/GLM-5) is the most powerful language model in Zhipu AI's GLM series, scaling to 744 B parameters (40 B active) and integrating DeepSeek Sparse Attention (DSA) for long-context efficiency. [GLM-5.1](https://huggingface.co/zai-org/GLM-5.1) is the next-generation model for agentic engineering on top of GLM-5, sharing the same model architectures,
 
 **Key highlights:**
 
@@ -20,6 +20,7 @@ description: Launch recipe for GLM-5 (744B-A40B) — Python launcher, 16+ node c
 
 | Model | Active / Total | HF ID |
 |---|---|---|
+| GLM-5.1 | 40 B / 744 B | [zai-org/GLM-5](https://huggingface.co/zai-org/GLM-5.1) |
 | GLM-5 | 40 B / 744 B | [zai-org/GLM-5](https://huggingface.co/zai-org/GLM-5) |
 
 ## 3. Environment Setup
