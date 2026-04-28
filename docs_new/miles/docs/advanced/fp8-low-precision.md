@@ -49,14 +49,13 @@ introduces drift on MoE — fix it with R3 + TIS.
 
 ```bash
 SGLANG_ARGS+=(
-   --sglang-fp8-quantization-method per-tensor
-   --sglang-use-miles-router
+   --use-miles-router
 )
 
 PERF_ARGS+=(
-   --fp8-format hybrid
-   --fp8-amax-history-len 1024
-   --fp8-margin 0
+   --transformer-impl transformer_engine
+   --fp8-format e4m3
+   --fp8-recipe blockwise
 )
 
 GRPO_ARGS+=(
@@ -70,28 +69,18 @@ What each flag does:
 
 | Flag | Effect |
 |---|---|
-| `--sglang-fp8-quantization-method per-tensor` | Match Megatron's quantisation |
-| `--fp8-format hybrid` | E4M3 forward, E5M2 backward |
-| `--fp8-amax-history-len 1024` | Track scaling stats over 1024 steps |
-| `--fp8-margin 0` | No scale margin — must match SGLang |
+| `--fp8-format e4m3` | Forward FP8 format used by Transformer Engine |
+| `--fp8-recipe blockwise` | Block-wise quantisation recipe (matches SGLang's block-wise serve) |
 | `--use-rollout-routing-replay` | R3 (essential for MoE) |
 | `--use-tis` | Truncated importance sampling guard |
 
+The canonical recipe is [`examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh) — also enable `NVTE_FP8_BLOCK_SCALING_FP32_SCALES` in the Ray runtime env to use FP32 scales.
+
 ### 3. Block-wise FP8 (DeepSeek-style)
 
-For models like DeepSeek-R1 that ship 128×128 block-wise FP8 weights:
-
-```bash
-SGLANG_ARGS+=(
-   --sglang-fp8-quantization-method block-wise
-   --sglang-fp8-block-size 128 128
-)
-
-PERF_ARGS+=(
-   --fp8-format hybrid
-   --fp8-block-size 128 128
-)
-```
+For models like DeepSeek-R1 that ship 128×128 block-wise FP8 weights, the same
+`--fp8-recipe blockwise` recipe applies — point `--hf-checkpoint` at the block-wise
+FP8 directory and let SGLang autodetect.
 
 ## Hardware support
 
@@ -117,9 +106,9 @@ loss/policy_kl                 stable
 If `forward_logprob_mse` is non-zero, your trainer's FP8 quantisation is not matching
 SGLang's. Common causes:
 
-* Different `quantization-method` (per-tensor vs. block-wise).
-* Margin mismatch — Megatron's `--fp8-margin` must match SGLang's.
-* Block size mismatch.
+* `--fp8-recipe` doesn't match what SGLang loaded (e.g. trainer on `blockwise` while
+  the served checkpoint was per-tensor quantised, or vice versa).
+* Trainer running BF16 because `--transformer-impl transformer_engine` was omitted.
 
 ## When to NOT use FP8
 
