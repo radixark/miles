@@ -130,6 +130,15 @@ def main() -> int:
         help="Driver schedule cycles per sample (default 3).  Drop to 2 for "
         "tighter-context models (e.g. Qwen3 32K with 4K response budget).",
     )
+    parser.add_argument(
+        "--assistant-text-threshold",
+        type=float,
+        default=0.05,
+        help="Soft threshold for assistant_text mismatch ratio.  Default 0.05.  "
+        "Raise to 1.0 for families whose upstream sglang reasoning parser "
+        "is known to roundtrip imperfectly (e.g. nemotron_3 keeps a trailing "
+        "newline in reasoning_content) — hard mismatches still gate.",
+    )
 
     args = parser.parse_args()
 
@@ -172,6 +181,7 @@ def main() -> int:
             num_gpus=args.num_gpus,
             n_samples_per_prompt=args.n_samples,
             cycles=args.cycles,
+            assistant_text_threshold=args.assistant_text_threshold,
         )
     except Exception as e:
         print()
