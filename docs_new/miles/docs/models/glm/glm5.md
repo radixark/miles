@@ -1,13 +1,13 @@
 ---
 title: GLM5
-description: Launch recipe for GLM-5 — Python launcher with full / 4-layer / 20-layer variants and 1 / 6 / 16+ node configs.
+description: Launch recipe for GLM-5 (744B-A40B) — Python launcher, 16+ node config.
 ---
 
 # GLM5
 
-GLM5 is Zhipu's frontier-scale MoE: 744 B total parameters, 40 B active per token, 256 routed experts. Miles ships a 16-node launcher plus 4-layer / 20-layer smoke-test configs for iterating on code changes before paying the 16-node bill. `scripts/run_glm5_744b_a40b.py` is the launcher, which drives the full GLM-5 model plus two pruned smoke-test variants.
+`scripts/run_glm5_744b_a40b.py` is the launcher for the full GLM-5 model.
 
-## Architecture
+## Architecture (from `scripts/models/glm5-744B-A40B.sh`)
 
 | Property | Value |
 |---|---|
@@ -22,20 +22,11 @@ GLM5 is Zhipu's frontier-scale MoE: 744 B total parameters, 40 B active per toke
 | Spec | `--spec miles_plugins.models.glm5.glm5 get_glm5_spec` |
 | Router | sigmoid score, pre-softmax, expert bias, `seq_aux_loss`, topk-scaling 2.5 |
 
-Pruned model configs:
-
-- `scripts/models/glm5-744B-A40B_4layer.sh` — single-node smoke test
-- `scripts/models/glm5-744B-A40B_20layer.sh` — multi-node smoke test
-
-## Variants (per the launcher's `__post_init__`)
+## Variant (per the launcher's `__post_init__`)
 
 | `--model-name` | HF org | Megatron model type |
 |---|---|---|
 | `GLM-5` | `zai-org` | `glm5-744B-A40B` |
-| `GLM-5_4layer` | `Pinaster` | `glm5-744B-A40B_4layer` |
-| `GLM-5_20layer` | `Pinaster` | `glm5-744B-A40B_20layer` |
-
-
 
 ## Hardware
 
@@ -47,40 +38,19 @@ The launcher's docstring says it's tested on **H200 / B200 / GB300**. The datacl
 
 ```bash
 # Full pipeline: download, convert, copy, train
-python scripts/run_glm5_744b_a40b.py full-train --model-name <name> --num-nodes <N>
+python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes <N>
 
 # Just download model + datasets and convert to Megatron
-python scripts/run_glm5_744b_a40b.py prepare    --model-name <name> --num-nodes <N>
+python scripts/run_glm5_744b_a40b.py prepare    --model-name GLM-5 --num-nodes <N>
 
 # Copy converted checkpoint from shared NFS to local disk (run on every node)
-python scripts/run_glm5_744b_a40b.py prepare-cp --model-name <name> --num-nodes <N>
+python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5 --num-nodes <N>
 
 # Train only (assumes prepare/prepare-cp done)
-python scripts/run_glm5_744b_a40b.py train      --model-name <name> --num-nodes <N>
+python scripts/run_glm5_744b_a40b.py train      --model-name GLM-5 --num-nodes <N>
 ```
 
-## Quick start (single-node smoke test)
-
-```bash
-ray stop --force && pkill -9 -f sglang || true && sleep 3
-ray start --head --port=6378 --dashboard-port=8266
-
-python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1
-```
-
-(For the 4-layer single-node case, `__post_init__` forces `enable_pd=False` and `mode="debug_minimal"`.)
-
-## Quick start (multi-node 20-layer test)
-
-Run from the head node after starting Ray on every node:
-
-```bash
-python scripts/run_glm5_744b_a40b.py prepare    --model-name GLM-5_20layer --num-nodes 6
-python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5_20layer --num-nodes 6   # on every node
-python scripts/run_glm5_744b_a40b.py train      --model-name GLM-5_20layer --num-nodes 6
-```
-
-## Quick start (full GLM-5, 16+ nodes)
+## Quick start (16+ nodes)
 
 ```bash
 python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes 16
@@ -88,15 +58,13 @@ python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes 1
 
 The launcher patches `config.json` to set `model_type=deepseek_v32` (`_process_glm_checkpoint`) before conversion — GLM-5 is loaded through the DeepseekV32 architecture path.
 
-## Parallelism (verbatim from `_execute_train`)
+## Parallelism (verbatim from `_execute_train`, `--num-nodes ≥ 16` branch)
 
-| `--num-nodes` | TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` |
-|---|---|---|---|---|---|---|---|
-| 1 (`GLM-5_4layer`) | 4 | 1 | 1 | 8 (= `num_gpus_per_node`) | 1 | — | 2048 |
-| 6 (`GLM-5_20layer`) | 4 | 3 | 1 | 16 | 1 | 6 | 2048 |
-| ≥16 (`GLM-5`) | 4 | 4 | 2 | 32 | 1 | 18 | 16384 |
+| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` |
+|---|---|---|---|---|---|---|
+| 4 | 4 | 2 | 32 | 1 | 18 | 16384 |
 
-All cases use `--use-dynamic-batch-size`, `--data-pad-size-multiplier 4096`, `--log-probs-chunk-size 1024`, `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1`.
+Plus `--use-dynamic-batch-size`, `--data-pad-size-multiplier 4096`, `--log-probs-chunk-size 1024`, `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1`.
 
 ## Optional features
 
