@@ -459,6 +459,50 @@ class GLM47TITOTokenizer(TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
+# Nemotron 3 implementation
+# ---------------------------------------------------------------------------
+
+
+class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
+    """NVIDIA Nemotron 3 family: ``<|im_end|>\\n`` message boundaries.
+
+    Inherits Qwen3's boundary handling — Nemotron 3 emits the same
+    ``<|im_end|>\\n`` after every message and the model stops at
+    ``<|im_end|>`` without the trailing newline.
+
+    No fixed jinja is shipped — HF native template is append-only when
+    ``truncate_history_thinking=False``.  Multi-user-turn surfaces
+    auto-merge that kwarg via ``extra_kwargs`` below; ``{tool}``-only does
+    not need it (no user-turn boundary to truncate across).
+
+    The plain-text assistant turn does not roundtrip cleanly under
+    sglang's upstream ``nemotron_3`` reasoning parser (it keeps a trailing
+    ``\\n`` in ``reasoning_content``), so step-4 ``assistant_text`` soft
+    assertion is expected to fail until the parser is patched upstream —
+    out of scope for this family registration.
+    """
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"truncate_history_thinking": False},
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user", "system"}),
+            template=None,
+            extra_kwargs={"truncate_history_thinking": False},
+        ),
+    )
+
+    _default_assistant_start_str: str = "<|im_start|>assistant\n"
+
+
+# ---------------------------------------------------------------------------
 # Enum + Registry + Factory
 # ---------------------------------------------------------------------------
 
@@ -469,6 +513,7 @@ class TITOTokenizerType(str, Enum):
     QWEN35 = "qwen35"
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
+    NEMOTRON3 = "nemotron3"
 
 
 _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
@@ -477,6 +522,7 @@ _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
     TITOTokenizerType.QWEN35: Qwen35TITOTokenizer,
     TITOTokenizerType.QWENNEXT: QwenNextTITOTokenizer,
     TITOTokenizerType.GLM47: GLM47TITOTokenizer,
+    TITOTokenizerType.NEMOTRON3: Nemotron3TITOTokenizer,
 }
 
 
