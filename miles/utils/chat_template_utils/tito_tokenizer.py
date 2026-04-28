@@ -503,6 +503,53 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
+# Kimi K2 implementation
+# ---------------------------------------------------------------------------
+
+
+class Kimi25TITOTokenizer(TITOTokenizer):
+    """Moonshot Kimi K2.5: ``<|im_end|>`` boundary (no trailing newline).
+
+    K2.5 has no kwarg escape hatch for the "drop reasoning of prior assistants
+    once a new non-tool-call assistant arrives" behavior.  Ships a
+    bundled fixed jinja that wraps the ``last_non_tool_call_assistant_msg``
+    loop in ``{%- if not preserve_thinking -%}`` so multi-user-turn rollout
+    can pass ``preserve_thinking=True`` to keep history append-only.  Only the
+    ``{tool, user}`` surface is registered (per current onboarding scope).
+    """
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="kimi_k25_fixed.jinja",
+            extra_kwargs={"preserve_thinking": True},
+        ),
+    )
+
+    _default_assistant_start_str: str = "<|im_assistant|>"
+
+
+class Kimi26TITOTokenizer(TITOTokenizer):
+    """Moonshot Kimi K2.6: same boundary as K2.5 + native ``preserve_thinking`` kwarg.
+
+    K2.6's HF-native template already carries the ``preserve_thinking`` gate
+    that K2.5 needs patched in.  No bundled fixed
+    template required; ``{tool, user}`` row registers ``template=None`` and
+    auto-merges ``preserve_thinking=True`` for multi-user-turn rollout.
+    """
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"preserve_thinking": True},
+        ),
+    )
+
+    _default_assistant_start_str: str = "<|im_assistant|>"
+
+
+# ---------------------------------------------------------------------------
 # Enum + Registry + Factory
 # ---------------------------------------------------------------------------
 
@@ -514,6 +561,8 @@ class TITOTokenizerType(str, Enum):
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
     NEMOTRON3 = "nemotron3"
+    KIMI25 = "kimi25"
+    KIMI26 = "kimi26"
 
 
 _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
@@ -523,6 +572,8 @@ _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
     TITOTokenizerType.QWENNEXT: QwenNextTITOTokenizer,
     TITOTokenizerType.GLM47: GLM47TITOTokenizer,
     TITOTokenizerType.NEMOTRON3: Nemotron3TITOTokenizer,
+    TITOTokenizerType.KIMI25: Kimi25TITOTokenizer,
+    TITOTokenizerType.KIMI26: Kimi26TITOTokenizer,
 }
 
 
