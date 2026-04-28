@@ -6,8 +6,7 @@ title: Miles Documentation
 
 Miles is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. It
 couples [SGLang](https://github.com/sgl-project/sglang) for high-throughput rollout with
-[Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and [FSDP](https://docs.pytorch.org/docs/stable/fsdp.html)
-for scalable training, and ships the precision, stability, and observability features
+[Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for scalable training, and ships the precision, stability, and observability features
 needed to run RL at trillion-parameter scale.
 
 
