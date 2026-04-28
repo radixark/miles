@@ -290,7 +290,7 @@ ray job submit --address="http://127.0.0.1:8265" \
 
 ## Python launcher
 
-`scripts/run_deepseek.py` is an alternative entry point (in preview). It wraps download + FP8→BF16 cast + torch_dist conversion + `train.py` submission behind a Typer CLI, defaults to `deepseek-ai/DeepSeek-V3`, and supports the `*Nlayer` debug variants by routing them through `fzyzcjy/DeepSeek-V3-0324-{N}layer`.
+`scripts/run_deepseek.py` is an alternative entry point (in preview). It wraps download + FP8→BF16 cast + torch_dist conversion + `train.py` submission behind a Typer CLI, defaults to `deepseek-ai/DeepSeek-V3`.
 
 ## Pairs well with
 
