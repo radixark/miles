@@ -78,7 +78,7 @@ then push up until you OOM.
 | `--advantage-estimator` | `grpo` | `grpo` / `gspo` / `ppo` / `reinforce++` / `reinforce++_baseline` / `on_policy_distillation` |
 | `--use-kl-loss` | off | Compute KL against the reference model. |
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 = monitor only). |
-| `--kl-loss-type` | `low_var_kl` | `kl`, `abs_kl`, `low_var_kl`, `mse_kl`. |
+| `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | `0.0` | Entropy bonus weight. |
 | `--eps-clip` | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | `0.28` | DAPO-style asymmetric high clip. |
@@ -240,7 +240,7 @@ Every flag Miles accepts. Section headings mirror the launch-script argument gro
 | `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce++`, `reinforce++_baseline`, `on_policy_distillation` |
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 = monitor). |
-| `--kl-loss-type` | enum | `low_var_kl` | `kl`, `abs_kl`, `low_var_kl`, `mse_kl`. |
+| `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | float | `0.0` | Entropy bonus weight. |
 | `--eps-clip` | float | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | float | – | Asymmetric high clip. |
