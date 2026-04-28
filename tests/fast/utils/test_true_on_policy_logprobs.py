@@ -1,6 +1,10 @@
 import torch
 
-from miles.utils.ppo_utils import _calculate_log_probs_and_entropy_true_on_policy, _prepare_true_on_policy_full_logits
+from miles.utils.ppo_utils import (
+    _calculate_log_probs_and_entropy_true_on_policy,
+    _prepare_true_on_policy_full_logits,
+    _split_replicated_loss_gather_grad,
+)
 
 
 def test_true_on_policy_logprobs_tp1_truncate_after_real_vocab():
@@ -60,3 +64,23 @@ def test_true_on_policy_fake_tp_vocab_gather_truncates_before_log_softmax():
 
     torch.testing.assert_close(gathered_logits, expected_full_logits)
     torch.testing.assert_close(log_probs, expected_selected)
+
+
+def test_true_on_policy_replicated_loss_gather_backward_splits_without_tp_sum():
+    grad_output = torch.arange(12, dtype=torch.float32).reshape(2, 6)
+
+    rank0_grad = _split_replicated_loss_gather_grad(
+        grad_output,
+        rank=0,
+        world_size=2,
+        local_last_dim=3,
+    )
+    rank1_grad = _split_replicated_loss_gather_grad(
+        grad_output,
+        rank=1,
+        world_size=2,
+        local_last_dim=3,
+    )
+
+    torch.testing.assert_close(rank0_grad, grad_output[:, :3])
+    torch.testing.assert_close(rank1_grad, grad_output[:, 3:])

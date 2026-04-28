@@ -252,10 +252,69 @@ def _gather_true_on_policy_full_logits(
     if tp_size <= 1:
         return _prepare_true_on_policy_full_logits(logits, vocab_size=vocab_size)
 
-    from megatron.core.tensor_parallel.mappings import all_gather_last_dim_from_tensor_parallel_region
-
-    full_logits = all_gather_last_dim_from_tensor_parallel_region(logits.contiguous(), group=process_group)
+    full_logits = _ReplicatedLossAllGatherLastDim.apply(logits.contiguous(), process_group)
     return _prepare_true_on_policy_full_logits(full_logits, vocab_size=vocab_size)
+
+
+def _split_replicated_loss_gather_grad(
+    grad_output: torch.Tensor,
+    *,
+    rank: int,
+    world_size: int,
+    local_last_dim: int,
+) -> torch.Tensor:
+    if world_size <= 1:
+        return grad_output.contiguous()
+
+    expected_last_dim = local_last_dim * world_size
+    if grad_output.size(-1) != expected_last_dim:
+        raise RuntimeError(
+            "True-on-policy replicated-loss gather backward expected the full padded "
+            f"vocab dimension to be {expected_last_dim}, got {grad_output.size(-1)}."
+        )
+
+    return torch.narrow(grad_output, dim=-1, start=rank * local_last_dim, length=local_last_dim).contiguous()
+
+
+class _ReplicatedLossAllGatherLastDim(torch.autograd.Function):
+    """All-gather vocab shards for a loss replicated on every TP rank.
+
+    Megatron's standard all-gather autograd uses reduce-scatter in backward,
+    which is correct when each rank contributes a distinct output gradient. In
+    the true-on-policy logprob path every TP rank computes the same scalar loss
+    from the gathered full vocabulary, so reduce-scatter would sum identical
+    gradients and scale the local logits gradient by TP size.
+    """
+
+    @staticmethod
+    def forward(ctx, input_: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+        world_size = group.size()
+        ctx.group = group
+        ctx.local_last_dim = input_.shape[-1]
+        ctx.world_size = world_size
+
+        if world_size == 1:
+            return input_.contiguous()
+
+        from megatron.core.tensor_parallel.mappings import dist_all_gather_func
+
+        gather_shape = list(input_.shape)
+        gather_shape[0] *= world_size
+        gathered = torch.empty(gather_shape, dtype=input_.dtype, device=input_.device)
+        dist_all_gather_func(gathered, input_.contiguous(), group=group)
+        return torch.cat(gathered.chunk(world_size, dim=0), dim=-1).contiguous()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return (
+            _split_replicated_loss_gather_grad(
+                grad_output,
+                rank=ctx.group.rank(),
+                world_size=ctx.world_size,
+                local_last_dim=ctx.local_last_dim,
+            ),
+            None,
+        )
 
 
 # from https://github.com/volcengine/verl/blob/0bdf7f469854815177e73dcfe9e420836c952e6e/verl/utils/megatron/tensor_parallel.py#L99

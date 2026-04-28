@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .schema import (
+    QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
     KernelContract,
     LogprobContract,
     ModelFamily,
-    QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
     TrueOnPolicyContractName,
     TrueOnPolicyContractSchema,
 )
@@ -82,6 +82,4 @@ def get_true_on_policy_contract(name: str) -> TrueOnPolicyContract:
         return _CONTRACT_BY_NAME[name]
     except KeyError as exc:
         supported = ", ".join(sorted(_CONTRACT_BY_NAME))
-        raise ValueError(
-            f"Unsupported true-on-policy contract {name!r}. Supported contracts: {supported}"
-        ) from exc
+        raise ValueError(f"Unsupported true-on-policy contract {name!r}. Supported contracts: {supported}") from exc

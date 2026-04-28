@@ -217,9 +217,7 @@ class TrueOnPolicyConfig:
             fsdp_args = TrueOnPolicyArgList()
         elif self.train_backend == "fsdp":
             megatron_args = TrueOnPolicyArgList()
-            fsdp_args = TrueOnPolicyArgList(
-                ("--attn-implementation", self.contract.fsdp_attention_implementation)
-            )
+            fsdp_args = TrueOnPolicyArgList(("--attn-implementation", self.contract.fsdp_attention_implementation))
         else:
             raise NotImplementedError(f"Unsupported true-on-policy train backend: {self.train_backend}")
 
@@ -277,8 +275,5 @@ def apply_true_on_policy_script_defaults(args: Any) -> None:
         return
 
     config.validate()
-    if (
-        args.train_backend == "megatron"
-        and config.model_profile.disable_megatron_sequence_parallel
-    ):
+    if args.train_backend == "megatron" and config.model_profile.disable_megatron_sequence_parallel:
         args.use_sequence_parallel = False

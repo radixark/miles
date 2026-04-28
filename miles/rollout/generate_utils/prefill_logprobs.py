@@ -42,9 +42,7 @@ def _build_prefill_scoring_payload(
 
     if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
         image_data = sample.multimodal_inputs["images"]
-        payload["image_data"] = [
-            encode_image_for_rollout_engine(image) for image in image_data
-        ]
+        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
     return payload
 
@@ -52,10 +50,7 @@ def _build_prefill_scoring_payload(
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
     if getattr(args, "sglang_router_policy", None) == "consistent_hashing":
         return False
-    return not any(
-        sample.multimodal_inputs and sample.multimodal_inputs.get("images")
-        for sample in samples
-    )
+    return not any(sample.multimodal_inputs and sample.multimodal_inputs.get("images") for sample in samples)
 
 
 def _build_batch_prefill_scoring_payload(
@@ -63,15 +58,10 @@ def _build_batch_prefill_scoring_payload(
     samples: list[Sample],
     sampling_params: Mapping[str, Any],
 ) -> dict[str, Any]:
-    payloads = [
-        _build_prefill_scoring_payload(args, sample, sampling_params)
-        for sample in samples
-    ]
+    payloads = [_build_prefill_scoring_payload(args, sample, sampling_params) for sample in samples]
     logprob_start_len = payloads[0]["logprob_start_len"]
     if any(payload["logprob_start_len"] != logprob_start_len for payload in payloads):
-        raise ValueError(
-            "Batched SGLang prefill scoring requires a shared logprob_start_len"
-        )
+        raise ValueError("Batched SGLang prefill scoring requires a shared logprob_start_len")
 
     batch_payload: dict[str, Any] = {
         "input_ids": [payload["input_ids"] for payload in payloads],
@@ -139,9 +129,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
         return
 
     samples_to_score = [
-        sample
-        for sample in samples
-        if sample.response_length != 0 and sample.status != Sample.Status.ABORTED
+        sample for sample in samples if sample.response_length != 0 and sample.status != Sample.Status.ABORTED
     ]
     if not samples_to_score:
         return
@@ -158,31 +146,23 @@ async def recompute_samples_rollout_logprobs_via_prefill(
             # SGLang can serve scoring requests from radix/KV cache. Flush before
             # each scoring group so every group uses the same clean-prefill path.
             await post(flush_url, {})
-            payload = _build_batch_prefill_scoring_payload(
-                args, batch_samples, sampling_params
-            )
+            payload = _build_batch_prefill_scoring_payload(args, batch_samples, sampling_params)
             outputs = await post(url, payload)
             if not isinstance(outputs, list):
-                raise ValueError(
-                    f"SGLang batch prefill scoring returned {type(outputs).__name__}, expected list"
-                )
+                raise ValueError(f"SGLang batch prefill scoring returned {type(outputs).__name__}, expected list")
             if len(outputs) != len(batch_samples):
                 raise ValueError(
                     "SGLang batch prefill scoring output count mismatch: "
                     f"expected {len(batch_samples)}, got {len(outputs)}"
                 )
             for sample, output in zip(batch_samples, outputs, strict=True):
-                sample.rollout_log_probs = _extract_response_logprobs(
-                    sample, output["meta_info"]
-                )
+                sample.rollout_log_probs = _extract_response_logprobs(sample, output["meta_info"])
                 sample.metadata["rollout_log_probs_source"] = "sglang_prefill_recompute"
         return
 
     for sample in samples_to_score:
         headers = None
-        uses_consistent_hashing = (
-            getattr(args, "sglang_router_policy", None) == "consistent_hashing"
-        )
+        uses_consistent_hashing = getattr(args, "sglang_router_policy", None) == "consistent_hashing"
         if uses_consistent_hashing and sample.session_id:
             headers = {"X-SMG-Routing-Key": sample.session_id}
 

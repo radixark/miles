@@ -32,4 +32,3 @@ QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA = TrueOnPolicyContractSchema(
     fsdp_attention_implementation="flash_attention_3",
     disable_megatron_sequence_parallel=True,
 )
-

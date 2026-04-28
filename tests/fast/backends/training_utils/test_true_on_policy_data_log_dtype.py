@@ -9,15 +9,15 @@ from miles.backends.training_utils import log_utils
 
 
 def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
-    assert data_utils._rollout_logprob_dtype(
-        Namespace(true_on_policy_mode=True, bf16=True, fp16=False)
-    ) is torch.bfloat16
-    assert data_utils._rollout_logprob_dtype(
-        Namespace(true_on_policy_mode=True, bf16=False, fp16=True)
-    ) is torch.float16
-    assert data_utils._rollout_logprob_dtype(
-        Namespace(true_on_policy_mode=False, bf16=True, fp16=False)
-    ) is torch.float32
+    assert (
+        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=True, bf16=True, fp16=False)) is torch.bfloat16
+    )
+    assert (
+        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=True, bf16=False, fp16=True)) is torch.float16
+    )
+    assert (
+        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=False, bf16=True, fp16=False)) is torch.float32
+    )
 
 
 def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypatch):

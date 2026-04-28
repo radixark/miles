@@ -22,7 +22,9 @@ def test_parallel_state_detects_ulysses_cp():
 
 
 def test_slice_with_cp_uses_sequence_shards_for_sglang_ulysses(monkeypatch):
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=4, cp_rank=2, cp_comm_type="a2a"))
+    monkeypatch.setattr(
+        cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=4, cp_rank=2, cp_comm_type="a2a")
+    )
 
     tokens = torch.arange(11)
 
@@ -32,7 +34,9 @@ def test_slice_with_cp_uses_sequence_shards_for_sglang_ulysses(monkeypatch):
 
 
 def test_slice_log_prob_with_cp_uses_sequence_shards_for_sglang_ulysses(monkeypatch):
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=4, cp_rank=2, cp_comm_type="a2a"))
+    monkeypatch.setattr(
+        cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=4, cp_rank=2, cp_comm_type="a2a")
+    )
 
     log_probs = torch.arange(7, dtype=torch.float32)
 
@@ -43,7 +47,9 @@ def test_slice_log_prob_with_cp_uses_sequence_shards_for_sglang_ulysses(monkeypa
 
 
 def test_regular_cp_still_uses_zigzag_response_slice(monkeypatch):
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=2, cp_rank=1, cp_comm_type="p2p"))
+    monkeypatch.setattr(
+        cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=2, cp_rank=1, cp_comm_type="p2p")
+    )
 
     log_probs = torch.arange(7, dtype=torch.float32)
 
@@ -53,7 +59,9 @@ def test_regular_cp_still_uses_zigzag_response_slice(monkeypatch):
 
 
 def test_local_response_masks_use_sequence_shards_for_sglang_ulysses(monkeypatch):
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=4, cp_rank=2, cp_comm_type="a2a"))
+    monkeypatch.setattr(
+        cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=4, cp_rank=2, cp_comm_type="a2a")
+    )
 
     masks = [torch.ones(7)]
 

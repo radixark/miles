@@ -1,6 +1,6 @@
+import sys
 from argparse import Namespace
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 from tests.ci.ci_register import register_cpu_ci

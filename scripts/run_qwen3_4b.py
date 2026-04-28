@@ -3,12 +3,12 @@ from typing import Literal
 
 import typer
 
+import miles.utils.external_utils.command_utils as U
 from miles.true_on_policy import (
     apply_true_on_policy_script_defaults,
     build_true_on_policy_launch_plan,
     get_megatron_model_type,
 )
-import miles.utils.external_utils.command_utils as U
 
 
 @dataclass
@@ -97,9 +97,7 @@ def execute(args: ScriptArgs):
     is_debug_mode = args.mode != "normal"
     is_debug_one_sample = args.mode == "debug_one_sample"
     model_parallel_size = (
-        args.tensor_model_parallel_size
-        * args.pipeline_model_parallel_size
-        * args.context_parallel_size
+        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
     actor_num_gpus_per_node = model_parallel_size
     train_world_size = args.num_nodes * actor_num_gpus_per_node
@@ -183,12 +181,7 @@ eval:
                 "--eval-top-p 1 "
             )
 
-    grpo_args = (
-        "--advantage-estimator grpo "
-        "--entropy-coef 0.00 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
-    )
+    grpo_args = "--advantage-estimator grpo " "--entropy-coef 0.00 " "--eps-clip 0.2 " "--eps-clip-high 0.28 "
     if args.use_kl_loss:
         grpo_args += "--use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl "
 

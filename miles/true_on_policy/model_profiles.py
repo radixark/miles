@@ -2,12 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .contracts import (
-    LogprobContract,
-    ModelFamily,
-    QWEN3_DENSE_TRUE_ON_POLICY_V1,
-    TrueOnPolicyContract,
-)
+from .contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1, LogprobContract, ModelFamily, TrueOnPolicyContract
 
 ParallelLayout = str
 
@@ -85,11 +80,7 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
 
 
 _MODEL_PROFILES = (QWEN3_DENSE_PROFILE,)
-_PROFILE_BY_MODEL_NAME = {
-    model_name: profile
-    for profile in _MODEL_PROFILES
-    for model_name in profile.model_names
-}
+_PROFILE_BY_MODEL_NAME = {model_name: profile for profile in _MODEL_PROFILES for model_name in profile.model_names}
 
 
 def get_true_on_policy_model_profile(model_name: str) -> TrueOnPolicyModelProfile:
@@ -98,8 +89,7 @@ def get_true_on_policy_model_profile(model_name: str) -> TrueOnPolicyModelProfil
     except KeyError as exc:
         supported = ", ".join(sorted(_PROFILE_BY_MODEL_NAME))
         raise ValueError(
-            f"true-on-policy does not have a model profile for {model_name!r}. "
-            f"Supported models: {supported}"
+            f"true-on-policy does not have a model profile for {model_name!r}. " f"Supported models: {supported}"
         ) from exc
 
 
