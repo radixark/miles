@@ -18,7 +18,6 @@ docker run --rm \
   --gpus all --ipc=host --shm-size=32g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --network=host \
-  -v $HOME/data:/data \
   -it radixark/miles:latest /bin/bash
 
 cd /root/miles && git pull && pip install -e . --no-deps
@@ -27,9 +26,9 @@ cd /root/miles && git pull && pip install -e . --no-deps
 ## 2. Download model and data
 
 ```bash
-hf download Qwen/Qwen3-4B                          --local-dir /data/Qwen3-4B
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /data/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /data/aime-2024
+hf download Qwen/Qwen3-4B                          --local-dir /root/Qwen3-4B
+hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
 ```
 
 ## 3. Convert to Megatron format
@@ -42,8 +41,8 @@ source scripts/models/qwen3-4B.sh
 
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /data/Qwen3-4B \
-   --save          /data/Qwen3-4B_torch_dist
+   --hf-checkpoint /root/Qwen3-4B \
+   --save          /root/Qwen3-4B_torch_dist
 ```
 
 For larger models, run the converter under `torchrun --nproc-per-node 8` (optionally
@@ -62,7 +61,7 @@ rollout / train loop. After a minute or two you should see iteration logs:
 ```text
 [ray]      starting cluster on 1 node, 8 gpus
 [sglang]   launching 4 engines (tp=2 each)
-[megatron] loading dist checkpoint from /data/Qwen3-4B_torch_dist
+[megatron] loading dist checkpoint from /root/Qwen3-4B_torch_dist
 [trainer]  iter 1/3000 | loss=0.412 reward=0.61 rollout=18.4s train=22.1s
 ```
 

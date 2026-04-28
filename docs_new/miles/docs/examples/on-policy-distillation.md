@@ -41,10 +41,10 @@ examples/on_policy_distillation/
 ### 1. Download
 
 ```bash
-hf download Qwen/Qwen3-32B --local-dir /data/Qwen3-32B
-hf download Qwen/Qwen3-8B  --local-dir /data/Qwen3-8B
-hf download --repo-type dataset zhuzilin/dapo-math-17k \
-    --local-dir /data/dapo-math-17k
+hf download Qwen/Qwen3-32B --local-dir /root/Qwen3-32B
+hf download Qwen/Qwen3-8B  --local-dir /root/Qwen3-8B
+hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K \
+    --local-dir /root/dapo-math-17k
 ```
 
 ### 2. Convert the student
@@ -54,8 +54,8 @@ cd /root/miles
 source scripts/models/qwen3-8B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /data/Qwen3-8B \
-   --save           /data/Qwen3-8B_torch_dist
+   --hf-checkpoint /root/Qwen3-8B \
+   --save           /root/Qwen3-8B_torch_dist
 ```
 
 The teacher does **not** need a Megatron checkpoint — it lives in SGLang only.

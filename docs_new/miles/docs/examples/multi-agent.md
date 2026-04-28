@@ -22,7 +22,7 @@ you can hack on it without pulling in MrlX's full dependency tree.
 
 ## Prerequisites
 
-* You've completed the [Qwen3-30B-A3B](../models/moe/qwen3.md) recipe (the
+* You've completed the [Qwen3-30B-A3B](../models/qwen/qwen3-moe.md) recipe (the
   example uses that model).
 * Familiar with [Customization](../user-guide/customization.md).
 
@@ -64,7 +64,7 @@ trajectories, which empirically stabilises early training when most attempts fai
 ROLLOUT_ARGS=(
    --custom-generate-function-path \
        examples.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
-   --prompt-data /data/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt --label-key label
    --apply-chat-template --rollout-shuffle
    --rm-type deepscaler

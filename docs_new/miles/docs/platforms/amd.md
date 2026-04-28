@@ -65,7 +65,7 @@ cd miles && pip install -e . --no-deps
 
 ```bash
 hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
+hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
 ```
 

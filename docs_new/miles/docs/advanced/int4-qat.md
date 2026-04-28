@@ -60,13 +60,13 @@ the calibration script:
 
 ```bash
 python tools/calibrate_w4a16.py \
-   --model-dir /data/MyModel \
-   --output     /data/MyModel-w4a16/ \
-   --calib-data /data/calibration_set.jsonl \
+   --model-dir /root/MyModel \
+   --output     /root/MyModel-w4a16/ \
+   --calib-data /root/calibration_set.jsonl \
    --num-samples 512
 ```
 
-The output is a Hugging Face checkpoint with per-group INT4 weights and per-group
+The output is a HuggingFace checkpoint with per-group INT4 weights and per-group
 scales. Point `--hf-checkpoint` at it.
 
 ## Tuning knobs

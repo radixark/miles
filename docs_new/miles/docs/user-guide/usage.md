@@ -117,8 +117,8 @@ Always pass the **parent** directory to `--load`, not a specific iteration. Use
 source scripts/models/<family>.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /data/<model> \
-   --save          /data/<model>_torch_dist
+   --hf-checkpoint /root/<model> \
+   --save          /root/<model>_torch_dist
 ```
 
 For models larger than a single node, drive the converter with
@@ -184,9 +184,9 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 export WANDB_API_KEY=<key>
 
 # Model + data
-hf download Qwen/Qwen3-4B                          --local-dir /data/Qwen3-4B
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /data/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /data/aime-2024
+hf download Qwen/Qwen3-4B                          --local-dir /root/Qwen3-4B
+hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
 
 # Code
 git clone https://github.com/radixark/miles.git && cd miles

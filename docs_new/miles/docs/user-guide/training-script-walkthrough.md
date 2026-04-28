@@ -60,9 +60,7 @@ The sourced file sets `MODEL_ARGS=(--num-layers ... --hidden-size ... --rotary-b
 
 ## CKPT_ARGS — paths
 
-Three distinct checkpoints live in Miles at runtime: the **actor** (evolves), the
-**reference** (frozen, for KL anchoring), and the HuggingFace directory (tokenizer +
-SGLang init).
+The three roles — actor, frozen reference, HuggingFace directory — are defined in [Core Concepts](concepts.md#the-four-objects). Here they map to four flags:
 
 ```bash
 CKPT_ARGS=(
@@ -99,15 +97,7 @@ Their product is the total sample count produced each rollout.
 
 Their product is the total sample count consumed each rollout.
 
-The invariant connecting the two halves is:
-
-```
-rollout_batch_size × n_samples_per_prompt
-  = global_batch_size × num_steps_per_rollout
-```
-
-Set three sides; Miles fills in the fourth. Set all four and Miles validates the
-equation — inconsistent values abort early.
+These two products must be equal — that's the [four-knob invariant](concepts.md#the-four-knob-invariant). Set three sides; Miles fills in the fourth. Set all four and Miles validates the equation — inconsistent values abort early.
 
 **Outer loop**
 

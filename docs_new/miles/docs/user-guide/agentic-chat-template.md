@@ -19,7 +19,7 @@ Miles ships a one-click verifier and an autofix.
 
 ## Quick start
 
-### Verify a Hugging Face template
+### Verify a HuggingFace template
 
 ```bash
 python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B

@@ -18,7 +18,6 @@ docker run --rm \
   --gpus all --ipc=host --shm-size=32g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --network=host \
-  -v $HOME/data:/data \
   -it radixark/miles:latest /bin/bash
 ```
 

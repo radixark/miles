@@ -23,7 +23,7 @@ You then tell Miles which keys to use:
 
 ```bash
 ROLLOUT_ARGS=(
-   --prompt-data /data/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
 )
@@ -124,8 +124,8 @@ Eval reuses the same JSONL format. You usually want one or more dedicated eval f
 ```bash
 EVAL_ARGS=(
    --eval-prompt-data \
-      aime  /data/aime-2024/aime-2024.jsonl \
-      gsm8k /data/gsm8k/test.jsonl
+      aime  /root/aime-2024/aime-2024.jsonl \
+      gsm8k /root/gsm8k/test.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-temperature 0.0

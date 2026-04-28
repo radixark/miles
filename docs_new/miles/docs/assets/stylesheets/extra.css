@@ -259,7 +259,7 @@ body, .md-typeset {
 /* --------------------------------------------------------------------------
    Brand in sidebar (logo replaces the header logo)
    -------------------------------------------------------------------------- */
-.md-sidebar--primary {
+.md-sidebar.md-sidebar--primary {
   padding-top: 0;
 }
 
@@ -268,12 +268,12 @@ body, .md-typeset {
 }
 
 .md-sidebar--primary .md-sidebar__inner::before {
-  content: "miles";
+  content: "Miles";
   display: flex;
   align-items: center;
-  height: 3rem;
-  padding: 0 1.1rem;
+  padding: 0 1.1rem 0.55rem 2.55rem;
   margin-bottom: 0.4rem;
+  height: 1.6rem;
 
   font-family: "Bricolage Grotesque", sans-serif;
   font-weight: 700;
@@ -284,9 +284,8 @@ body, .md-typeset {
   border-bottom: 1px solid var(--miles-line);
   background-image: url("../images/miles_square.png");
   background-repeat: no-repeat;
-  background-position: 1.05rem center;
+  background-position: 1.05rem top;
   background-size: 22px 22px;
-  padding-left: 2.55rem;
 }
 
 [data-md-color-scheme="slate"] .md-sidebar--primary .md-sidebar__inner::before {
@@ -326,12 +325,12 @@ body, .md-typeset {
 }
 
 [data-md-color-scheme="default"] .md-sidebar--primary {
-  background: var(--miles-bg-soft);
+  background: var(--md-default-bg-color);
   border-right: 1px solid var(--miles-line);
 }
 
 [data-md-color-scheme="slate"] .md-sidebar--primary {
-  background: #06070d;
+  background: var(--md-default-bg-color);
   border-right: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -351,11 +350,10 @@ body, .md-typeset {
   padding: 0.5rem 0.8rem 0.4rem;
 }
 
+/* The brand sits in the header; suppress the duplicate logo + "Miles"
+   that mkdocs-material renders inside the primary nav title. */
 .md-nav--primary > .md-nav__title {
-  background: transparent;
-  box-shadow: none;
-  height: auto;
-  line-height: 1.4;
+  display: none;
 }
 
 .md-nav__item { padding: 0; }
