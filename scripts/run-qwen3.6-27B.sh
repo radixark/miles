@@ -28,7 +28,7 @@ source "${SCRIPT_DIR}/models/qwen3.6-27B.sh"
 
 MODEL_DIR="${MODEL_DIR:-/cluster_public/miles_data/models}"
 DATA_DIR="${DATA_DIR:-/cluster_public/miles_data/datasets}"
-OUTPUT_DIR="${OUTPUT_DIR:-/cluster_personal/zhichen/ckpts/qwen3.6-27B}"
+OUTPUT_DIR="${OUTPUT_DIR:?set OUTPUT_DIR to a writable checkpoint directory}"
 
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_DIR}/Qwen3.6-27B
