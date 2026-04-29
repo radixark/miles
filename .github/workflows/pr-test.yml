@@ -73,7 +73,7 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 1
-      execute_command: "pytest tests/e2e/sglang/test_chat_input_ids_equivalence.py -x -v"
+      execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-sglang-1-gpu"
     secrets: inherit
 
   # Stage B: Short 8-GPU tests
