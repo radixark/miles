@@ -40,8 +40,9 @@ should be supplied via Ray's `env_vars` rather than baked into the launch script
 | Signal | Healthy pattern | Red flag |
 |---|---|---|
 | `loss` | Slow decay over hundreds of iterations | Spike → crash within an iteration |
-| `reward` | Trending up, with healthy variance | Reward saturates near a single value (collapse) |
-| `kl` | Bounded, drifts up over time | Sudden jump (policy diverged from ref) |
+| `raw_reward` | Trending up, with healthy variance | Saturates near a single value (collapse) |
+| `kl_loss` | Bounded, drifts up over time | Sudden jump (policy diverged from ref) — only logged when `--use-kl-loss` |
+| `train_rollout_logprob_abs_diff` | Stable and small (≪ 1.0) | Climbing without bound → train/inference precision drift |
 | `entropy_loss` | Slowly decreasing | Falls to ~0 too fast (mode collapse) |
 | `grad_norm` | < `clip_grad` (1.0 by default) | Repeatedly hitting clip threshold |
 | `rollout_time` / `train_time` | Roughly balanced | One ≫ other → resource imbalance |
