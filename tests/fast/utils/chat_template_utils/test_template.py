@@ -16,6 +16,10 @@ Each test asserts that our ``apply_chat_template`` produces identical token IDs.
 
 from __future__ import annotations
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
 import copy
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -26,6 +30,7 @@ from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils.template import apply_chat_template
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_trajectories import (
     IntermediateSystemThinkingTrajectory,
     IntermediateSystemTrajectory,
@@ -92,7 +97,7 @@ _TOK_CACHE: dict[str, AutoTokenizer] = {}
 
 def _get_tokenizer(model_id: str) -> AutoTokenizer:
     if model_id not in _TOK_CACHE:
-        _TOK_CACHE[model_id] = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        _TOK_CACHE[model_id] = load_tokenizer(model_id, trust_remote_code=True)
     return _TOK_CACHE[model_id]
 
 

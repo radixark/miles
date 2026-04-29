@@ -1,3 +1,9 @@
+from tests.ci.ci_register import register_cuda_ci
+
+# Integration test pulls in miles' experimental FSDP path via rollout loading
+# (ring_flash_attn → flash_attn). Runs in GPU fast suite rather than CPU.
+register_cuda_ci(est_time=60, suite="stage-b-fast-1-gpu", num_gpus=1)
+
 from contextlib import nullcontext
 
 import pytest
