@@ -8,6 +8,12 @@ __all__ = ["check_reward_nonzero_std", "check_no_aborted"]
 
 def check_reward_nonzero_std(args, samples: list[Sample], **kwargs):
     rewards = [sample.get_reward_value(args) for sample in samples]
+    # Aborted samples never get a reward computed (see generate_and_rm in
+    # sglang_rollout.py). Reject the group when any reward is None, matching
+    # the check_no_aborted convention — a group with a missing reward can't
+    # yield a reliable std and shouldn't contribute gradient signal.
+    if any(r is None for r in rewards):
+        return DynamicFilterOutput(keep=False, reason="group_has_aborted")
     keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
     return DynamicFilterOutput(
         keep=keep,

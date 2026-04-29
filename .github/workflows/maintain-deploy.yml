@@ -1,0 +1,182 @@
+name: Maintain deploy branch
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # 2 AM Pacific (PDT) / 1 AM PST. GitHub Actions cron is UTC only; accepts the ~1hr DST drift.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if no changes detected'
+        type: boolean
+        default: false
+
+env:
+  UPSTREAM: radixark/miles
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.fingerprint.outputs.skip }}
+      state: ${{ steps.fingerprint.outputs.state }}
+      branches: ${{ steps.fingerprint.outputs.branches }}
+    steps:
+      - name: Compute desired state and compare
+        id: fingerprint
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force }}
+          REPO: ${{ github.repository }}
+        run: |
+          UPSTREAM_SHA=$(gh api "repos/${UPSTREAM}/commits/main" --jq '.sha' 2>/dev/null || echo "unknown")
+
+          FORK_OWNER="${REPO%%/*}"
+          NOT_BLOCKED='select(([.labels[].name] | index("blocked")) == null)'
+
+          # Branches with open PRs against upstream (no blocked filter; upstream PRs always merge)
+          UPSTREAM_PR_STATE=$(gh api "repos/${UPSTREAM}/pulls?state=open&base=main&per_page=100" \
+            --jq "[.[] | select(.head.repo.owner.login == \"${FORK_OWNER}\")] | sort_by(.head.ref) | map(.head.ref + \"=\" + .head.sha) | join(\",\")")
+
+          UPSTREAM_BRANCHES=$(gh api "repos/${UPSTREAM}/pulls?state=open&base=main&per_page=100" \
+            --jq "[.[] | select(.head.repo.owner.login == \"${FORK_OWNER}\")] | .[].head.ref" | tr '\n' ' ')
+
+          # Branches with open PRs against the fork's own main (fork-only changes), excluding blocked PRs
+          FORK_PR_STATE=$(gh api "repos/${REPO}/pulls?state=open&base=main&per_page=100" \
+            --jq "[.[] | select(.head.repo.full_name == \"${REPO}\") | ${NOT_BLOCKED}] | sort_by(.head.ref) | map(.head.ref + \"=\" + .head.sha) | join(\",\")")
+
+          FORK_BRANCHES=$(gh api "repos/${REPO}/pulls?state=open&base=main&per_page=100" \
+            --jq "[.[] | select(.head.repo.full_name == \"${REPO}\") | ${NOT_BLOCKED}] | .[].head.ref" | tr '\n' ' ')
+
+          # Deduplicate: upstream PRs first, then fork-only PRs
+          BRANCHES="$UPSTREAM_BRANCHES"
+          for fb in $FORK_BRANCHES; do
+            if ! echo " $UPSTREAM_BRANCHES " | grep -q " $fb "; then
+              BRANCHES="$BRANCHES $fb"
+            fi
+          done
+
+          # Combine state fingerprints
+          PR_STATE="${UPSTREAM_PR_STATE}"
+          if [ -n "$FORK_PR_STATE" ]; then
+            PR_STATE="${PR_STATE:+${PR_STATE},}${FORK_PR_STATE}"
+          fi
+
+          STATE="${UPSTREAM_SHA}|${PR_STATE}"
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          echo "branches=$BRANCHES" >> "$GITHUB_OUTPUT"
+          echo "Desired state: $STATE"
+
+          CURRENT=$(gh api "repos/${REPO}/commits/deploy" \
+            --jq '.commit.message' 2>/dev/null \
+            | grep '^state:' | head -1 | cut -d: -f2- || echo "")
+
+          echo "Current state: $CURRENT"
+
+          if [ "$CURRENT" = "$STATE" ] && [ "$FORCE" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::No changes detected, skipping rebuild"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  rebuild:
+    needs: check
+    if: needs.check.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM}.git" || true
+          git fetch upstream main
+          git fetch origin
+
+      - name: Build deploy branch
+        env:
+          PR_BRANCHES: ${{ needs.check.outputs.branches }}
+        run: |
+          git checkout -B deploy upstream/main
+
+          MERGED=""
+          FAILED=""
+          for branch in $PR_BRANCHES; do
+            echo "Merging $branch..."
+            if git merge "origin/$branch" --no-edit -m "Deploy: merge $branch"; then
+              MERGED="$MERGED $branch"
+            else
+              echo "::error::Merge conflict on $branch, skipping"
+              git merge --abort
+              FAILED="$FAILED $branch"
+            fi
+          done
+
+          echo "Successfully merged:${MERGED:-<none>}"
+          if [ -n "$FAILED" ]; then
+            echo "::warning::Failed to merge (conflicts):$FAILED"
+          fi
+          echo "FAILED_BRANCHES=$FAILED" >> "$GITHUB_ENV"
+
+      - name: Preserve fork-local .github/workflows
+        # GitHub Actions only reads workflow files on the branch where the trigger
+        # fires. Fork-local CI (e.g. release-binary.yml that triggers on push to
+        # deploy) lives on fork main, not upstream. Overlay fork-main workflows
+        # onto the deploy tree so those workflows survive the rebuild.
+        run: |
+          git fetch origin main
+          if git ls-tree -r origin/main -- .github/workflows/ 2>/dev/null | grep -q .
+          then
+            git checkout origin/main -- .github/workflows/
+            git add .github/workflows/
+            git diff --cached --quiet || \
+              git commit -m "Deploy: preserve fork-local .github/workflows from main"
+          fi
+
+      - name: Stamp fingerprint and push
+        env:
+          STATE: ${{ needs.check.outputs.state }}
+        run: |
+          git commit --allow-empty -m "state:${STATE}"
+          git push origin deploy --force
+
+      - name: Report merge conflicts
+        if: always() && needs.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_TITLE="Deploy: merge conflict"
+          EXISTING=$(gh issue list --label deploy-conflict --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [ -z "$FAILED_BRANCHES" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh issue close "$EXISTING" --comment "Resolved: all branches merged cleanly."
+            fi
+            exit 0
+          fi
+
+          BODY=$(printf "The following branches failed to merge into deploy:\n\n")
+          for b in $FAILED_BRANCHES; do
+            BODY=$(printf "%s\n- \`%s\`" "$BODY" "$b")
+          done
+          BODY=$(printf "%s\n\nThis issue auto-closes when the next build merges all branches cleanly." "$BODY")
+
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body "$BODY" --label deploy-conflict
+          fi

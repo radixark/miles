@@ -89,6 +89,7 @@ def _compute_config_for_logging(args):
         # We may insert more default values here, and may also allow users to configure a whitelist
     ]
     output["env_vars"] = {k: v for k, v in os.environ.items() if k in whitelist_env_vars}
+    output["launched_by"] = os.environ.get("USER")
 
     if env_report_raw := args.env_report:
         if launcher_report := decode_env_report(env_report_raw):
