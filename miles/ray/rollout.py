@@ -727,7 +727,7 @@ class RolloutManager:
         if any(sample.weight_versions for sample in samples):
             train_data["weight_versions"] = [sample.weight_versions for sample in samples]
 
-        if "teacher_log_probs" in samples[0].__dict__:
+        if samples[0].teacher_log_probs is not None:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
         # Pass dynamic global_batch_size to training side
@@ -1296,7 +1296,7 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 
 
 def _compute_spec_metrics(args, all_samples: list[Sample]):
-    if args.sglang_speculative_algorithm is None:
+    if args.sglang_speculative_algorithm is None and not getattr(args, "init_random_mtp", False):
         return {}
     num_samples = len(all_samples)
     metrics = {}

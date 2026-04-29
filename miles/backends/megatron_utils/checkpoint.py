@@ -102,17 +102,46 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     args = get_args()
     load_path = args.load
 
+    # init_random_mtp: the base Megatron torch_dist checkpoint has no MTP keys. Megatron's
+    # torch_dist loader with strict=False still trips on missing keys inside
+    # _replace_sharded_keys_with_state_dict_keys. Route through the HF bridge loader instead,
+    # which only loads weights that exist in the source and leaves MTP randomly initialized.
+    # Works for both "raw" and "bridge" megatron_to_hf_mode — the model built by miles' own
+    # provider has the MTP block, and bridge.load_hf_weights will simply skip MTP param names.
+    if (
+        getattr(args, "init_random_mtp", False)
+        and (not Path(load_path).exists() or _is_megatron_checkpoint(load_path))
+    ):
+        logger.info(
+            f"init_random_mtp is enabled: loading from HF checkpoint {args.hf_checkpoint} "
+            "via bridge (MTP layers will keep their random initialization)."
+        )
+        return _load_checkpoint_hf(
+            ddp_model=ddp_model,
+            optimizer=optimizer,
+            args=args,
+            load_path=args.hf_checkpoint,
+        )
+
     assert Path(load_path).exists() and _is_dir_nonempty(
         load_path
     ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if _is_megatron_checkpoint(load_path):
+        extra_kwargs = {}
+        if getattr(args, "init_random_mtp", False):
+            extra_kwargs["strict"] = False
+            logger.info(
+                "init_random_mtp is enabled: loading Megatron checkpoint with strict=False "
+                "to allow missing MTP keys (they will keep random initialization)."
+            )
         result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
             opt_param_scheduler=opt_param_scheduler,
             checkpointing_context=checkpointing_context,
             skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            **extra_kwargs,
         )
     else:
         result = _load_checkpoint_hf(
@@ -172,16 +201,45 @@ def _is_megatron_checkpoint(path: str | Path) -> bool:
 
 
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
-    assert args.megatron_to_hf_mode == "bridge", "Only bridge mode is supported for loading HF checkpoint"
+    # Allow raw mode when init_random_mtp is set so miles' own model provider (which builds
+    # the MTP block from CLI args) can coexist with an HF-format source checkpoint.
+    if not (args.megatron_to_hf_mode == "bridge" or getattr(args, "init_random_mtp", False)):
+        raise AssertionError("Only bridge mode is supported for loading HF checkpoint")
     from megatron.bridge import AutoBridge
 
     import miles_plugins.megatron_bridge  # noqa: F401
 
     logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
 
-    with megatron_bridge_utils.patch_megatron_model(ddp_model):
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        bridge.load_hf_weights(ddp_model)
+    init_random_mtp = getattr(args, "init_random_mtp", False)
+    if init_random_mtp:
+        logger.info(
+            "init_random_mtp is enabled: MTP layers will keep their random initialization "
+            "since the base HF checkpoint has no MTP weights."
+        )
+
+    # When init_random_mtp is set, the Megatron model has an `mtp` block that has no HF
+    # counterpart in the source checkpoint. mbridge's `build_conversion_tasks` leaves `None`
+    # entries in the task list for unmapped params, which later crash as
+    # `NoneType.megatron_module`. Temporarily detach the MTP block so bridge.load_hf_weights
+    # never sees those params; the block keeps its random init.
+    detached_mtp = []
+    if init_random_mtp:
+        from megatron.core.utils import unwrap_model
+
+        for m in ddp_model:
+            um = unwrap_model([m])[0]
+            if hasattr(um, "mtp") and um.mtp is not None:
+                detached_mtp.append((um, um.mtp))
+                um.mtp = None
+
+    try:
+        with megatron_bridge_utils.patch_megatron_model(ddp_model):
+            bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            bridge.load_hf_weights(ddp_model)
+    finally:
+        for um, mtp in detached_mtp:
+            um.mtp = mtp
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)
     if (args.fp16 or args.bf16) and optimizer is not None:

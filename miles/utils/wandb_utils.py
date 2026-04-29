@@ -62,9 +62,9 @@ def init_wandb_primary(args):
 
     # Configure settings based on offline/online mode
     if offline:
-        init_kwargs["settings"] = wandb.Settings(mode="offline")
+        init_kwargs["settings"] = wandb.Settings(mode="offline", init_timeout=300)
     else:
-        init_kwargs["settings"] = wandb.Settings(mode="shared", x_primary=True)
+        init_kwargs["settings"] = wandb.Settings(mode="shared", x_primary=True, init_timeout=300)
 
     # Add custom directory if specified
     if args.wandb_dir:
@@ -114,12 +114,13 @@ def init_wandb_secondary(args, router_addr=None):
 
     # Configure settings based on offline/online mode
     if offline:
-        settings_kwargs = dict(mode="offline")
+        settings_kwargs = dict(mode="offline", init_timeout=300)
     else:
         settings_kwargs = dict(
             mode="shared",
             x_primary=False,
             x_update_finish_state=False,
+            init_timeout=300,
         )
 
     if args.sglang_enable_metrics and router_addr is not None:

@@ -646,6 +646,21 @@ def _compute_server_args(
         kwargs["disaggregation_mode"] = "decode"
         kwargs["prefill_round_robin_balance"] = True
 
+    if getattr(args, "init_random_mtp", False):
+        import json
+
+        mtp_num_layers = args.mtp_num_layers
+        override_args = json.loads(kwargs.get("json_model_override_args", "{}"))
+        override_args["num_nextn_predict_layers"] = mtp_num_layers
+        override_args["mtp_num_hidden_layers"] = mtp_num_layers
+        kwargs["json_model_override_args"] = json.dumps(override_args)
+        if "speculative_algorithm" not in kwargs:
+            kwargs["speculative_algorithm"] = "NEXTN"
+        logger.info(
+            f"init_random_mtp: injecting num_nextn_predict_layers={mtp_num_layers} "
+            f"into SGLang model config and enabling speculative_algorithm={kwargs['speculative_algorithm']}"
+        )
+
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:

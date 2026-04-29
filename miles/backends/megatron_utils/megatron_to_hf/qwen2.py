@@ -68,4 +68,28 @@ def convert_qwen2_to_hf(args, name, param):
         elif rest == "self_attention.k_layernorm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.k_norm.weight", param)]
 
+    # MTP (Multi-Token Prediction) layers — present when --init-random-mtp is used
+    mtp_layer_pattern = r"module\.module\.mtp\.layers\.(\d+)\.(.+)"
+    match = re.match(mtp_layer_pattern, name)
+    if match:
+        layer_idx, rest = match.groups()
+
+        if rest == "enorm.weight":
+            return [("mtp.pre_fc_norm_embedding.weight", param)]
+        elif rest == "hnorm.weight":
+            return [("mtp.pre_fc_norm_hidden.weight", param)]
+        elif rest == "eh_proj.weight":
+            return [("mtp.fc.weight", param)]
+        elif rest == "final_layernorm.weight":
+            return [("mtp.norm.weight", param)]
+
+        if rest.startswith("transformer_layer."):
+            transformer_rest = rest[len("transformer_layer."):]
+            proxy_name = f"module.module.decoder.layers.{layer_idx}.{transformer_rest}"
+            results = convert_qwen2_to_hf(args, proxy_name, param)
+            return [
+                (hf_name.replace(f"model.layers.{layer_idx}", f"mtp.layers.{layer_idx}"), p)
+                for hf_name, p in results
+            ]
+
     raise ValueError(f"Unknown parameter name: {name}")

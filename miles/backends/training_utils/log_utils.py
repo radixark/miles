@@ -133,6 +133,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
+                    if val.device != loss_masks[0].device:
+                        val = val.to(loss_masks[0].device)
                     if key in [
                         "log_probs",
                         "ref_log_probs",
@@ -140,6 +142,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         "returns",
                         "advantages",
                         "values",
+                        "teacher_log_probs",
+                        "opd_reverse_kl",
                         "entropy",
                     ]:
                         sum_of_sample_mean = get_sum_of_sample_mean(
