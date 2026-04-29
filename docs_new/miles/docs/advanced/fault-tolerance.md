@@ -1,84 +1,85 @@
 ---
 title: Fault Tolerance
-description: Heartbeats, rank-level recovery, and partial-rollout reuse.
+description: Rollout-side health checks and engine recovery, gated by --use-fault-tolerance.
 ---
 
 # Fault Tolerance
 
-Long-running RL jobs encounter transient failures: flaky NICs, ECC errors,
-NCCL hangs, compiler-cache corruption. Miles ships rollout-side fault tolerance
-to absorb most of those without restarting the run.
+`--use-fault-tolerance` enables Miles's rollout-side fault-tolerance machinery.
+It gates two code paths:
 
-Enable with:
+1. A `RolloutHealthMonitor` thread per server group, started in
+   `miles/ray/rollout.py:379`, which periodically heart-beats each SGLang
+   engine.
+2. A recovery hook in the trainer's weight-update step
+   (`miles/backends/megatron_utils/actor.py:500`), which restarts engines
+   that the health monitor has killed.
 
 ```bash
 --use-fault-tolerance
 ```
 
-The `--use-fault-tolerance` flag turns on the rollout health-check subsystem.
-Training-side recovery uses the standard Megatron + Ray combination and is not
-toggled by this flag.
+The flag is `action="store_true"`, default `False`
+(`miles/utils/arguments.py:528`).
 
-## Rollout health checks
+## Health monitor
 
-Miles periodically calls `/health_generate` on every SGLang server
-(`miles/utils/health_monitor.py`, `miles/backends/sglang_utils/sglang_engine.py`).
-If a heartbeat times out:
+`RolloutHealthMonitor` (`miles/utils/health_monitor.py`) runs in a daemon
+thread. Lifecycle: `start` (called once during init), `pause` and `resume`
+(called when engines offload / onload), `stop` (called during dispose).
+`pause` / `resume` are wired up in `miles/ray/rollout.py:497, 501` and called
+around offload / onload events.
 
-1. The unhealthy server is stopped.
-2. The current rollout drains using the remaining engines.
-3. After the rollout, the failed server is restarted from the latest weights.
-4. Heartbeats resume.
+Each loop iteration does:
 
-| Flag | Default | Notes |
+1. After a `resume`, wait `--rollout-health-check-first-wait` seconds before
+   the first check (intended to cover model compilation and initialisation).
+2. For every active engine in the group, call `engine.health_generate.remote(timeout=self._check_timeout)`.
+3. If the call raises, run `_kill_engine`: `engine.shutdown.remote()`,
+   `ray.kill(engine)`, and the engine slot is set to `None`
+   (`miles/utils/health_monitor.py:160-180`).
+4. Sleep `--rollout-health-check-interval` seconds, then repeat.
+
+### Flags
+
+| Flag | Default | Source help text |
 |---|---|---|
-| `--rollout-health-check-first-wait` | `0` | Grace period before heartbeats start. Bump for first-run kernel compilation (DeepGEMM, large MoE). |
-| `--rollout-health-check-interval` | `30` | Seconds between heartbeats. |
-| `--rollout-health-check-timeout` | `30` | Heartbeat timeout. |
+| `--rollout-health-check-interval` | `30.0` | "Interval in seconds between rollout engine `/health_generate` checks during generate/eval." |
+| `--rollout-health-check-timeout` | `30.0` | "Timeout in seconds to wait for a rollout engine `/health_generate` response before killing it." |
+| `--rollout-health-check-first-wait` | `0` | "Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm." |
 
-!!! tip "First-run kernel compilation"
-    DeepGEMM and similar JIT'd kernels can take several minutes to compile on
-    the first run. Without raising `--rollout-health-check-first-wait`, Miles
-    can declare the engine dead and restart it (which then recompiles). 600
-    seconds is a safe value for the largest models.
+## Engine recovery
 
-## Training-side recovery
+When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
+`rollout_manager.recover_updatable_engines` on rank 0 before each weight
+update (`miles/backends/megatron_utils/actor.py:500`).
 
-Training-side recovery is provided by Megatron checkpointing plus Ray:
+`recover_updatable_engines` (`miles/ray/rollout.py:513`):
 
-* `--save-interval` writes a checkpoint every N rollouts.
-* On rank failure, Ray restarts the actor.
-* The new actor reads from `--load` (typically equal to `--save`).
-* The next rollout uses the recovered weights.
+1. Pauses health monitoring.
+2. Calls `srv.recover()` on the updatable server.
 
-Restart cost depends on `--save-interval`; production runs often use 20 to
-100.
+`srv.recover()` (`miles/ray/rollout.py:263`):
 
-## Partial rollout
+1. Finds engine slots set to `None` (killed by the health monitor).
+2. Calls `start_engines` for each affected group.
+3. Releases memory occupation on the new engines.
 
-If a rollout is partially complete when a worker fails, Miles can keep the
-already-finished trajectories and only resample the missing prompts:
+After `recover_updatable_engines` returns, the weight updater connects to
+the new engines and the next weight transfer proceeds normally.
 
-```bash
-ROLLOUT_ARGS+=( --partial-rollout )
-```
+## P2P weight transfer timeouts
 
-See [examples/fully-async](../examples/fully-async.md) for how partial-rollout
-interacts with the async worker.
+When `--update-weight-transfer-mode p2p` is on, every P2P transfer is
+bounded by `--p2p-transfer-timeout` (default `30.0`s, defined in
+`miles/utils/arguments.py:519`; consumed at
+`miles/backends/megatron_utils/update_weight/update_weight_from_distributed/p2p.py:73`).
+On timeout the failed transfer is logged (`[P2P] Transfer future failed: ...`)
+in `p2p_transfer_utils.py`. There is no automatic retry or automatic
+broadcast-mode fallback in the source today.
 
-## Weight sync retry
+## Dumper-mode interaction
 
-[P2P weight transfer](p2p-weight-transfer.md) is idempotent. Each transfer is
-bounded by `--p2p-transfer-timeout` (default 30s); on timeout the trainer falls
-back to the broadcast path automatically.
-
-## What you still own
-
-Miles cannot recover from these on its own:
-
-* A flaky filesystem that loses checkpoint writes. Use a real shared FS and
-  monitor `iostat`.
-* A node with persistent ECC errors. Hand off to hardware operations.
-* A bad model commit that diverges deterministically. Roll back to a
-  known-good checkpoint.
-* Out-of-disk on the checkpoint volume. Set up alerts.
+In dumper mode (`miles/utils/arguments.py:2102`), Miles forces
+`use_fault_tolerance = False` and `rollout_health_check_interval = 1e18`
+to keep heartbeats from firing.
