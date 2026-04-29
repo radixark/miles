@@ -198,7 +198,6 @@ Async rollout and R3 stack cleanly. Add:
 
 ```bash
 GRPO_ARGS+=( --use-miles-router --use-rollout-routing-replay )
-SGLANG_ARGS+=( --sglang-use-miles-router )
 ```
 
 The custom rollout function automatically passes `return_routed_experts=true` because
