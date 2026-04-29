@@ -73,9 +73,9 @@ bash scripts/run-qwen3-next-80B-A3B.sh
 
 ### 5.1 Parallelism
 
-| Script | Backend | GPUs | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` |
+| Script | Backend | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|---|---|
-| `scripts/run-qwen3-next-80B-A3B.sh` | Megatron | 32 | 2 | 4 | 2 | 8 | 1 | 8192 |
+| `scripts/run-qwen3-next-80B-A3B.sh` | Megatron | 2 | 4 | 2 | 8 | 1 | 8192 | 32 (4 × 8) |
 
 ### 5.2 Algorithm
 
