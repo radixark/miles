@@ -113,11 +113,12 @@ The cache:
 
 * Intercepts text-based requests.
 * Tokenises them once.
-* Stores `(text, token_ids, logprobs, loss_masks)` in a radix tree keyed by
-  text prefix.
+* Stores `string_key`, `token_ids`, `logp`, and `loss_mask` per node in a
+  radix tree keyed by text prefix (`StringTreeNode` in
+  `miles/router/middleware_hub/radix_tree.py`).
 * Lets `/retrieve_from_text` return the exact token sequence with aligned
   metadata.
-* Periodically cleans up stale nodes.
+* Garbage-collects nodes older than `current_weight_version - gc_threshold_k`.
 
 It is implemented as a middleware
 (`miles.router.middleware_hub.radix_tree_middleware.RadixTreeMiddleware`).

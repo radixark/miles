@@ -25,7 +25,7 @@ PD disaggregation splits them into two pools, each sized for its own workload.
 
 `--prefill-num-servers` is a Miles-native flag added by
 `add_prefill_decode_disaggregation_arguments` in `miles/utils/arguments.py`.
-When set, `miles/ray/rollout.py:1089` calls
+When set, `miles/ray/rollout.py:1090` calls
 `SglangConfig.from_prefill_num_servers(args)` to dedicate that many SGLang
 servers to prefill, with the rest used for decode.
 
@@ -82,8 +82,9 @@ on observed queueing:
 
 * [DeepSeek R1 recipe](../models/deepseek/deepseek.md). PD is a clear win at
   671B scale.
-* [Speculative decoding](speculative-decoding.md). Drafts run on the decode
-  pool, the target verifies on the prefill pool.
+* [Speculative decoding](speculative-decoding.md). Both are SGLang-side
+  features; pool sizing should account for the verify-batch size when
+  speculative is on.
 
 ## When PD is not useful
 

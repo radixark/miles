@@ -92,7 +92,7 @@ DeepSeek-V3), the same `--fp8-recipe blockwise` recipe applies. Point
 | NVIDIA H100 / H200 | Native | Hardware FP8 GEMM via cuBLASLt |
 | NVIDIA B100 / B200 | Native | Higher throughput, same code path |
 | NVIDIA A100 | None | Skip FP8, use BF16 |
-| AMD MI300X | Partial | FP8 forward only. See [AMD notes](../platforms/amd.md) |
+| AMD MI300X | Limited | See [AMD notes](../platforms/amd.md) |
 
 ## When BF16 is enough
 
