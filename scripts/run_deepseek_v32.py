@@ -31,6 +31,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "deepseek-ai"
     model_name: str = "DeepSeek-V3.2"
     megatron_model_type: str = "deepseek-v32"
+    from_bf16_ckpt: bool = False
     use_single_node: bool = False
     num_gpus_per_node: int = 8
     actor_num_nodes: int | None = None
@@ -56,43 +57,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_num_gpus = 4
 
 
-def _process_glm_checkpoint(checkpoint_dir: Path):
-    """Patch GLM checkpoint config + tokenizer files for Megatron conversion."""
-    config_path = checkpoint_dir / "config.json"
-
-    with open(config_path) as f:
-        config = json.load(f)
-
-    if config.get("model_type") != "deepseek_v32":
-        config["architectures"] = ["DeepseekV32ForCausalLM"]
-        config["auto_map"] = {
-            "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
-            "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
-        }
-        config["model_type"] = "deepseek_v32"
-
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-
-    # GLM checkpoints ship a custom tokenizer class ("TokenizersBackend"),
-    # which Megatron conversion cannot import in this environment.
-    tokenizer_config_path = checkpoint_dir / "tokenizer_config.json"
-    if tokenizer_config_path.exists():
-        with open(tokenizer_config_path) as f:
-            tokenizer_config = json.load(f)
-
-        tokenizer_config["tokenizer_class"] = "PreTrainedTokenizerFast"
-        # HF fast tokenizer expects a dict for this field.
-        if isinstance(tokenizer_config.get("extra_special_tokens"), list):
-            tokenizer_config["extra_special_tokens"] = {}
-
-        with open(tokenizer_config_path, "w") as f:
-            json.dump(tokenizer_config, f, indent=2, ensure_ascii=False)
-        print(f"Patched {config_path} and {tokenizer_config_path}")
-    else:
-        print(f"Patched {config_path} (no tokenizer_config.json found)")
-
-
 def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
     """Patch checkpoint so AutoConfig can resolve DeepSeek v3.2."""
     config_path = checkpoint_dir / "config.json"
@@ -103,11 +67,22 @@ def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
     with open(config_path) as f:
         config = json.load(f)
 
-    if config.get("model_type") not in ["deepseek_v32", "glm_moe_dsa"]:
+    if config.get("patched_by_miles"):
+        print("Checkpoint already patched by Miles, skipping")
         return
 
-    config.setdefault("rope_interleave", True)
-    config.setdefault("indexer_rope_interleave", False)
+    if config.get("model_type") == "deepseek_v32":
+        config.setdefault("rope_interleave", True)
+        config.setdefault("indexer_rope_interleave", False)
+        (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
+        (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
+    elif config.get("model_type") == "glm_moe_dsa":
+        config.setdefault("rope_interleave", True)
+        config.setdefault("indexer_rope_interleave", True)
+        (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
+        (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
+    else:
+        return
 
     config["architectures"] = ["DeepseekV32ForCausalLM"]
     config["auto_map"] = {
@@ -116,30 +91,35 @@ def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
     }
     config["model_type"] = "deepseek_v32"
 
+    config["patched_by_miles"] = True
+
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-
-    (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
-    (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
 
     print(f"Patched DeepSeek v3.2 files in {checkpoint_dir}")
 
 
 def _prepare_download(args: ScriptArgs):
-    source_checkpoint = Path(args.model_dir) / args.model_name
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    if args.from_bf16_ckpt:
+        U.exec_command(
+            f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}-bf16"
+        )
+    else:
+        U.exec_command(
+            f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+        )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
-    _patch_deepseek_v32_checkpoint(source_checkpoint)
 
 
 def _prepare_bf16_ckpt(args: ScriptArgs):
     bf16_checkpoint = Path(args.model_dir) / f"{args.model_name}-bf16"
-    U.fp8_cast_bf16(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
-    )
+    if not args.from_bf16_ckpt:
+        U.fp8_cast_bf16(
+            path_src=f"{args.model_dir}/{args.model_name}",
+            path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
+        )
     _patch_deepseek_v32_checkpoint(bf16_checkpoint)
 
 
@@ -169,9 +149,9 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
 
     else:
         extra_args = (
-            "--tensor-model-parallel-size 2 "
+            "--tensor-model-parallel-size 4 "
             "--expert-model-parallel-size 16 "
-            "--pipeline-model-parallel-size 4 "
+            "--pipeline-model-parallel-size 6 "
             "--decoder-last-pipeline-num-layers 13 "
             "--expert-tensor-parallel-size 1 "
         )
@@ -303,7 +283,7 @@ def _execute_train(args: ScriptArgs):
     )
     misc_env_vars = {
         "SGLANG_NSA_FORCE_MLA": "1",
-        "INDEXER_ROPE_NEOX_STYLE": "1",  # v3.2 uses NeoX (non-interleaved) style; GLM-5 uses interleaved.
+        # "INDEXER_ROPE_NEOX_STYLE": "1",  # v3.2 uses NeoX (non-interleaved) style; GLM-5 uses interleaved.
         "SGLANG_NSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
         "NVSHMEM_DISABLE_NCCL": "1",
     }
