@@ -114,7 +114,7 @@ The router exposes a small FastAPI surface used internally by Miles:
 |---|---|---|
 | `/add_worker` | POST | Register an SGLang engine |
 | `/list_workers` | GET | List registered workers |
-| `/{path:path}` | GET/POST/PUT/DELETE | Proxy passthrough to selected worker |
+| any other path | GET / POST / PUT / DELETE | Proxied to a selected SGLang worker — e.g. `/generate`, `/v1/chat/completions`, `/health`. |
 
 Middleware plugins (e.g. radix-tree caching) can mount additional routes — see
 `miles/router/middleware_hub/`.
