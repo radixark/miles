@@ -49,11 +49,6 @@ Each example follows the same template:
     Two specialised agents (e.g. doctor + patient) train together and improve
     each other.
 
--   :material-school-outline:{ .lg .middle } **[On-Policy Distillation](on-policy-distillation.md)**
-
-    ---
-    Train a small student against a strong teacher's logits, online, during RL.
-
 -   :material-replay:{ .lg .middle } **[Reproducibility Recipe](reproducibility.md)**
 
     ---
@@ -72,5 +67,4 @@ Each example follows the same template:
 * **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](fully-async.md).
 * **Want tool use / RAG?** → [Search-R1](search-r1.md), then [ReTool](retool.md).
 * **VLM / multi-agent?** → [Multi-Agent Co-Evolution](multi-agent.md).
-* **Distillation?** → [On-Policy Distillation](on-policy-distillation.md).
 * **Replay an old result?** → [Reproducibility Recipe](reproducibility.md).
