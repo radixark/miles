@@ -1,108 +1,78 @@
 ---
 title: Fault Tolerance
-description: Long jobs survive. Short jobs hope. The mechanisms that make multi-week training possible.
+description: Heartbeats, rank-level recovery, and partial-rollout reuse.
 ---
 
 # Fault Tolerance
 
-Run a job for an hour and everything's fine. Run it for two weeks and someone, somewhere,
-crashes — flaky NIC, a bad ECC bit, a NCCL hang, a compiler cache JSON corruption.
-Without fault tolerance you start over. With Miles you keep going.
+Long-running RL jobs encounter transient failures: flaky NICs, ECC errors,
+NCCL hangs, compiler-cache corruption. Miles ships rollout-side fault tolerance
+to absorb most of those without restarting the run.
 
-Enable the whole subsystem with one flag:
+Enable with:
 
 ```bash
 --use-fault-tolerance
 ```
 
-## What's in the box
+The `--use-fault-tolerance` flag turns on the rollout health-check subsystem.
+Training-side recovery uses the standard Megatron + Ray combination and is not
+toggled by this flag.
 
-| Layer | Mechanism |
-|---|---|
-| Rollout | Heartbeats + auto-restart of unhealthy SGLang servers |
-| Training | Rank-level recovery from latest checkpoint |
-| Data | Step-level replay of lost rollouts |
-| Weight sync | Idempotent P2P transfer with retry |
+## Rollout health checks
 
-## Rollout fault tolerance
+Miles periodically calls `/health_generate` on every SGLang server
+(`miles/utils/health_monitor.py`, `miles/backends/sglang_utils/sglang_engine.py`).
+If a heartbeat times out:
 
-Miles periodically sends a `/health_generate` heartbeat to every SGLang server. If a
-heartbeat times out:
-
-1. The unhealthy server is **stopped immediately**.
-2. The current rollout finishes with the remaining engines (drained from the queue).
-3. After the rollout, the failed server is **restarted from latest weights**.
+1. The unhealthy server is stopped.
+2. The current rollout drains using the remaining engines.
+3. After the rollout, the failed server is restarted from the latest weights.
 4. Heartbeats resume.
-
-Tunable knobs:
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--rollout-health-check-first-wait` | `0s` | Grace period for first compile. Bump to **300s+** when using DeepGEMM. |
-| `--rollout-health-check-interval` | `30s` | Time between heartbeats. |
-| `--rollout-health-check-timeout` | `30s` | When to declare an engine dead. |
+| `--rollout-health-check-first-wait` | `0` | Grace period before heartbeats start. Bump for first-run kernel compilation (DeepGEMM, large MoE). |
+| `--rollout-health-check-interval` | `30` | Seconds between heartbeats. |
+| `--rollout-health-check-timeout` | `30` | Heartbeat timeout. |
 
-!!! tip "DeepGEMM compile"
-    DeepGEMM compiles kernels on first run — easily 5+ minutes. If you don't bump
-    `--rollout-health-check-first-wait`, Miles will declare the engine dead and restart
-    it (which then compiles again, ad infinitum). Set it to **600s** for the largest
-    models.
+!!! tip "First-run kernel compilation"
+    DeepGEMM and similar JIT'd kernels can take several minutes to compile on
+    the first run. Without raising `--rollout-health-check-first-wait`, Miles
+    can declare the engine dead and restart it (which then recompiles). 600
+    seconds is a safe value for the largest models.
 
-## Training fault tolerance
+## Training-side recovery
 
-For training, fault tolerance kicks in via the standard Megatron + Ray combination:
+Training-side recovery is provided by Megatron checkpointing plus Ray:
 
 * `--save-interval` writes a checkpoint every N rollouts.
-* On any rank failure, Ray restarts the actor.
-* The new actor reads from `--load` (which equals `--save`).
+* On rank failure, Ray restarts the actor.
+* The new actor reads from `--load` (typically equal to `--save`).
 * The next rollout uses the recovered weights.
 
-Default cadence is `--save-interval 100`. Drop it to `20` for production runs where
-restart cost dominates rollout cost.
+Restart cost depends on `--save-interval`; production runs often use 20 to
+100.
 
-## Step-level data replay
+## Partial rollout
 
-If a rollout is half-finished when a worker crashes, the partial samples are kept and
-the trainer resamples just the missing prompts. Set:
+If a rollout is partially complete when a worker fails, Miles can keep the
+already-finished trajectories and only resample the missing prompts:
 
 ```bash
 ROLLOUT_ARGS+=( --partial-rollout )
 ```
 
-See [examples/fully-async](../examples/fully-async.md) for how partial-rollout interacts
-with the async worker.
+See [examples/fully-async](../examples/fully-async.md) for how partial-rollout
+interacts with the async worker.
 
-## Weight sync retry
+## What you still own
 
-[P2P weight transfer](p2p-weight-transfer.md) is idempotent. If a NCCL connection drops
-mid-sync:
+Miles cannot recover from these on its own:
 
-* The trainer retries up to `--p2p-weight-sync-retries` times (default 3).
-* Each retry uses a fresh NCCL group.
-* If all retries fail, the trainer falls back to file-based sync (slower but reliable).
-
-## Recommended starting config for production
-
-```bash
-TRAIN_ARGS+=(
-   --use-fault-tolerance
-   --rollout-health-check-first-wait 600
-   --rollout-health-check-interval 60
-   --save-interval 20
-   --partial-rollout
-   --p2p-weight-sync-retries 5
-)
-```
-
-## Things you still have to do yourself
-
-Miles can recover from most things. It can't fix:
-
-* A flaky filesystem that loses checkpoint writes — use a real shared FS, monitor
-  `iostat`.
-* A node with persistent ECC errors — page in your hardware team.
-* A bad model commit that diverges in 5 iterations every time. Roll the actor back to a
+* A flaky filesystem that loses checkpoint writes. Use a real shared FS and
+  monitor `iostat`.
+* A node with persistent ECC errors. Hand off to hardware operations.
+* A bad model commit that diverges deterministically. Roll back to a
   known-good checkpoint.
-* Out-of-disk on the checkpoint volume. Set up an alert.
-
-Long RL is a marathon. Build the runway.
+* Out-of-disk on the checkpoint volume. Set up alerts.
