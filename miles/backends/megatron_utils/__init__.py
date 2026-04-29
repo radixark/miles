@@ -41,7 +41,7 @@ except ImportError:
 
 try:
     import miles_plugins.megatron_bridge  # noqa: F401
-except ImportError:
-    pass  # megatron.bridge not installed in this environment
+except Exception as _e:  # best-effort; not every environment uses megatron.bridge
+    logging.warning("miles megatron.bridge plugins failed to load: %s", _e)
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
