@@ -69,9 +69,9 @@ The launcher's docstring says it's tested on **H200 / B200 / GB300**; the datacl
 
 Verbatim from `_execute_train`, `--num-nodes ≥ 16` branch:
 
-| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` |
-|---|---|---|---|---|---|---|
-| 4 | 4 | 2 | 32 | 1 | 18 | 16384 |
+| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` | GPUs |
+|---|---|---|---|---|---|---|---|
+| 4 | 4 | 2 | 32 | 1 | 18 | 16384 | ≥ 128 (≥ 16 × 8) |
 
 Plus `--use-dynamic-batch-size`, `--data-pad-size-multiplier 4096`, `--log-probs-chunk-size 1024`, `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1`.
 

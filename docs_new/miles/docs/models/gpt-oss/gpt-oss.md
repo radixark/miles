@@ -61,7 +61,7 @@ bash scripts/run-gptoss-20b-fsdp.sh
 | Launcher | TP | PP | CP | EP | expert-TP | `micro-batch-size` | GPUs |
 |---|---|---|---|---|---|---|---|
 | `run-gpt-oss-20b-bf16.sh` (Megatron) | 8 | 1 | 1 | 8 | 1 | 1 | 8 (1 × 8) |
-| `run-gptoss-20b-fsdp.sh` (FSDP) | 1 | – | – | – | – | – | 4 |
+| `run-gptoss-20b-fsdp.sh` (FSDP) | 1 | – | – | – | – | – | 4 (1 × 4) |
 
 `--use-dynamic-batch-size` is **not** used on the Megatron BF16 path — the script's comment explains: `--qkv-format bshd` (required for sink attention with TE) is incompatible with dynamic batch size. Only `--micro-batch-size 1` is set. `--sequence-parallel` is on (required for TP + EP).
 

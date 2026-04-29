@@ -86,8 +86,8 @@ python scripts/run_glm45_355b_a32b.py train --hardware GB300
 | Source | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|---|
 | `run-glm4.5-355B-A32B.sh` | 8 | 4 | 2 | 16 | 1 | 16384 | 64 (8 × 8) |
-| `run_glm45_355b_a32b.py` (`num_nodes ≤ 4`, debug) | 4 | 1 | 1 | 4 | 1 | 16384 | up to 32 |
-| `run_glm45_355b_a32b.py` (`num_nodes == 8`) | 4 | 8 | 2 | 8 | 1 | 16384 | 64 |
+| `run_glm45_355b_a32b.py` (`num_nodes ≤ 4`, debug) | 4 | 1 | 1 | 4 | 1 | 16384 | ≤ 32 (≤ 4 × 8) |
+| `run_glm45_355b_a32b.py` (`num_nodes == 8`) | 4 | 8 | 2 | 8 | 1 | 16384 | 64 (8 × 8) |
 
 ### 5.2 Algorithm
 

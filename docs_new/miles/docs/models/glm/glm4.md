@@ -57,10 +57,10 @@ bash scripts/run-glm4-9B-4xgpu-radixtree.sh    # 4 GPU smoke test
 
 ### 5.1 Parallelism
 
-| Script | TP | PP | CP | EP | `max_tokens_per_gpu` | actor / rollout GPUs | Total |
+| Script | TP | PP | CP | EP | `max_tokens_per_gpu` | actor / rollout GPUs | GPUs |
 |---|---|---|---|---|---|---|---|
-| `run-glm4-9B.sh` | 2 | 1 | 2 | 1 | 4608 | 4 / 4 (non-colocate) | 8 |
-| `run-glm4-9B-4xgpu-radixtree.sh` | 2 | 1 | 1 | 1 | 2304 | 4 / 2 | 4 |
+| `run-glm4-9B.sh` | 2 | 1 | 2 | 1 | 4608 | 4 / 4 (non-colocate) | 8 (1 × 8) |
+| `run-glm4-9B-4xgpu-radixtree.sh` | 2 | 1 | 1 | 1 | 2304 | 4 / 2 | 4 (1 × 4) |
 
 ### 5.2 Algorithm
 

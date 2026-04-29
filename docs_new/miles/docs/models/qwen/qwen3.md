@@ -70,9 +70,9 @@ The Qwen3-4B-Instruct-2507 config (`scripts/models/qwen3-4B-Instruct-2507.sh`) j
 
 | Script | TP | PP | CP | EP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|
-| `run-qwen3-4B.sh` | 2 | 1 | 1 | 1 | 9216 | 8 |
-| `run-qwen3-4B_4xgpu.sh` | 2 | 1 | 1 | 1 | 9216 | 4 |
-| `run-qwen3-32B.sh` | 8 | 1 | 1 | 1 | 20480 | 8 |
+| `run-qwen3-4B.sh` | 2 | 1 | 1 | 1 | 9216 | 8 (1 × 8) |
+| `run-qwen3-4B_4xgpu.sh` | 2 | 1 | 1 | 1 | 9216 | 4 (1 × 4) |
+| `run-qwen3-32B.sh` | 8 | 1 | 1 | 1 | 20480 | 8 (1 × 8) |
 
 `--sequence-parallel` is on whenever TP > 1.
 

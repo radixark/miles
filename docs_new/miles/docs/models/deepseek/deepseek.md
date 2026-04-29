@@ -115,9 +115,9 @@ All values below come straight from `scripts/run-deepseek-r1.sh`.
 
 ### 5.1 Parallelism
 
-| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` | Nodes × GPUs |
+| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|---|
-| 8 | 4 | 4 | 32 | 1 | 13 | 16384 | 16 × 8 = 128 |
+| 8 | 4 | 4 | 32 | 1 | 13 | 16384 | 128 (16 × 8) |
 
 ```bash
 PERF_ARGS=(

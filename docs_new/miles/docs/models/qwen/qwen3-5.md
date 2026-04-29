@@ -60,11 +60,11 @@ All three scripts are 1 node × 8 GPU.
 
 ### 5.1 Parallelism
 
-| Script | TP | PP | CP | `max_tokens_per_gpu` | SGLang `mem-fraction-static` | CPU Adam |
-|---|---|---|---|---|---|---|
-| `scripts/run-qwen3.5-4B.sh` | 2 | 1 | 1 | 9216 | 0.7 | – |
-| `scripts/run-qwen3.5-9B.sh` | 2 | 1 | 1 | 9216 | 0.6 | – |
-| `scripts/run-qwen3.5-27B.sh` | 4 | 1 | 1 | 8192 | 0.5 | ✓ |
+| Script | TP | PP | CP | `max_tokens_per_gpu` | SGLang `mem-fraction-static` | CPU Adam | GPUs |
+|---|---|---|---|---|---|---|---|
+| `scripts/run-qwen3.5-4B.sh` | 2 | 1 | 1 | 9216 | 0.7 | – | 8 (1 × 8) |
+| `scripts/run-qwen3.5-9B.sh` | 2 | 1 | 1 | 9216 | 0.6 | – | 8 (1 × 8) |
+| `scripts/run-qwen3.5-27B.sh` | 4 | 1 | 1 | 8192 | 0.5 | ✓ | 8 (1 × 8) |
 
 ### 5.2 Algorithm
 

@@ -85,9 +85,9 @@ bash scripts/run-qwen3-235B-A22B.sh
 
 | Script | Backend | TP | PP | CP | EP | expert-TP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|---|---|
-| `run_qwen3_30b_a3b.py` (H100, 1 node) | Megatron | 4 | 1 | 1 | 8 | 1 | 32768 | 8 |
-| `run-qwen3-235B-A22B.sh` | Megatron | 4 | 4 | 2 | 16 | 1 | 16384 | 64 |
-| `run-qwen3-235B-A22B-sft.sh` | Megatron | 4 | 1 | 1 | 32 | 1 | 9216 | 32 |
+| `run_qwen3_30b_a3b.py` (H100, 1 node) | Megatron | 4 | 1 | 1 | 8 | 1 | 32768 | 8 (1 × 8) |
+| `run-qwen3-235B-A22B.sh` | Megatron | 4 | 4 | 2 | 16 | 1 | 16384 | 64 (8 × 8) |
+| `run-qwen3-235B-A22B-sft.sh` | Megatron | 4 | 1 | 1 | 32 | 1 | 9216 | 32 (4 × 8) |
 
 `run-qwen3-235B-A22B.sh` sets `--decoder-last-pipeline-num-layers 22` to balance the layer count across PP=4.
 

@@ -92,9 +92,9 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_
 
 Identical for both Instruct and Thinking:
 
-| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` | Nodes × GPUs |
+| TP | PP | CP | EP | expert-TP | `decoder-last-pipeline-num-layers` | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|---|
-| 8 | 8 | 4 | 32 | 1 | 5 | 16384 | 32 × 8 = 256 |
+| 8 | 8 | 4 | 32 | 1 | 5 | 16384 | 256 (32 × 8) |
 
 Both scripts pass `--actor-num-nodes 32 --actor-num-gpus-per-node 8 --colocate --update-weight-buffer-size $((4*512*1024*1024))` to `train.py`.
 
