@@ -20,7 +20,7 @@ description: Launch recipe for GLM-5 (744B-A40B) — Python launcher, 16+ node c
 
 | Model | Active / Total | HF ID |
 |---|---|---|
-| GLM-5.1 | 40 B / 744 B | [zai-org/GLM-5](https://huggingface.co/zai-org/GLM-5.1) |
+| GLM-5.1 | 40 B / 744 B | [zai-org/GLM-5.1](https://huggingface.co/zai-org/GLM-5.1) |
 | GLM-5 | 40 B / 744 B | [zai-org/GLM-5](https://huggingface.co/zai-org/GLM-5) |
 
 ## 3. Environment Setup
