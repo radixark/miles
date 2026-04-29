@@ -1487,8 +1487,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Path to the rollout sample filter function. "
                     "This function determines whether a sample will participate in loss calculation. "
-                    "The function should take args and samples (list[Sample]) as input, and return None. "
-                    "Please directly modify the remove_sample attribute of Sample. "
+                    "The function is called as `fn(args, data)` where `data` is "
+                    "`list[list[Sample]]` (a list of n_samples_per_prompt-size groups), "
+                    "and should return None. To exclude a sample from the loss, set "
+                    "`sample.remove_sample = True` on it (nested-iterate the groups to reach Sample objects). "
                     "Note: This attribute does not determine whether the sample participates in advantage normalization."
                 ),
             )
