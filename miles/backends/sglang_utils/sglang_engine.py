@@ -216,12 +216,34 @@ class SGLangEngine(RayActor):
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
-                assert (
-                    self.worker_type == "regular"
-                ), "pd disaggregation is not supported in old router or miles router."
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
+                # Old sglang_router (<=0.2.1) and miles-router use the single-arg
+                # /add_worker?url=... endpoint. For PD disaggregation, forward
+                # worker_type (and bootstrap_port for prefill) as extra query
+                # params so a router that supports PD via /add_worker can act on
+                # them. Routers that only understand the regular form will see
+                # the extra params, ignore them, and register the worker as
+                # regular -- so PD routing through such a router still needs a
+                # server-side update. This at least removes the unconditional
+                # assert that would fail-fast before the request is ever sent.
+                add_worker_url = (
+                    f"http://{self.router_ip}:{self.router_port}/add_worker"
+                    f"?url=http://{self.server_host}:{self.server_port}"
                 )
+                if self.worker_type != "regular":
+                    add_worker_url += f"&worker_type={self.worker_type}"
+                    if self.worker_type == "prefill":
+                        bootstrap_port = server_args_dict.get("disaggregation_bootstrap_port")
+                        if bootstrap_port is not None:
+                            add_worker_url += f"&bootstrap_port={bootstrap_port}"
+                    logger.warning(
+                        "Registering a '%s' worker via /add_worker on the "
+                        "old-style router path. PD disaggregation requires the "
+                        "router to honor worker_type on this endpoint; if it "
+                        "only accepts the single-arg form, workers will be "
+                        "treated as regular and PD routing will not function.",
+                        self.worker_type,
+                    )
+                response = requests.post(add_worker_url)
             else:
                 payload = {
                     "url": f"http://{self.server_host}:{self.server_port}",
