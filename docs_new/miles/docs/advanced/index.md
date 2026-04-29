@@ -38,8 +38,8 @@ parallel pipeline.
 -   :material-shield-check:{ .lg .middle } **[Fault Tolerance](fault-tolerance.md)**
 
     ---
-    Rollout health checks, training-side checkpoint recovery, and partial
-    rollout reuse.
+    Rollout-side health checks and engine recovery, gated by
+    `--use-fault-tolerance`.
 
 -   :material-source-fork:{ .lg .middle } **[PD Disaggregation](pd-disaggregation.md)**
 

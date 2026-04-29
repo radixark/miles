@@ -127,13 +127,12 @@ It is implemented as a middleware
 
 | | MilesRouter | SGLang Model Gateway |
 |---|---|---|
-| Implementation | Python / FastAPI | Rust |
-| Goal | Preserve all response metadata | Maximise serving throughput |
-| Schema | Passthrough | Fixed (drops unknown fields) |
+| Implementation | Python / FastAPI (`miles/router/router.py`) | Upstream `sglang_router` package |
+| Goal | Preserve all response metadata | Production serving |
+| Schema | Passthrough proxy | Fixed (drops unknown response fields) |
 | Routing metadata | Preserved | Dropped |
-| Cache-aware routing | Basic (least-inflight) | Advanced |
-| Circuit breakers, retries | Basic | Advanced |
-| PD disaggregation | Not yet | Supported |
+| Routing policy | Minimum active requests (`_use_url`) | Configurable via `--sglang-router-policy` |
+| PD disaggregation | Not supported (`assert` at `ray/rollout.py:930`) | Supported (`router_args.pd_disaggregation = True`) |
 
 MilesRouter is required when you need R3, the radix-tree middleware, or custom
 middleware. The SGLang Model Gateway covers the case where raw serving
