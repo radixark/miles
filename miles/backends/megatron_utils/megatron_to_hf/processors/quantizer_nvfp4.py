@@ -38,7 +38,6 @@ def _is_ignored(name: str, ignore_rules: list[str]) -> bool:
 def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
-    _validate_group_size(quantization_config)
     ignore_rules = _get_ignore_rules(quantization_config)
 
     decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
@@ -79,12 +78,6 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
 
     # for other parameters, we just return the original converted_named_params
     return converted_named_params
-
-
-def _validate_group_size(quantization_config):
-    group_size = quantization_config.get("group_size", NVFP4_GROUP_SIZE)
-    if group_size != NVFP4_GROUP_SIZE:
-        raise ValueError(f"NVFP4 group_size must be {NVFP4_GROUP_SIZE}, got {group_size}.")
 
 
 def _quantize_moe_params(converted_named_params, ignore_rules):
