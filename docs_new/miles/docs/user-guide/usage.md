@@ -151,7 +151,7 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 | Pipeline parallel | `--pipeline-model-parallel-size` | Not supported yet |
 | Expert parallel | `--expert-model-parallel-size` | Not supported yet |
 | Context parallel | `--context-parallel-size` | Not supported yet |
-| Optimiser | `--use-distributed-optimizer` *(opt-in)* | Built-in |
+| Optimiser | `--use-distributed-optimizer` *(forced on by Miles)* | Built-in |
 | Gradient checkpoint | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` *(boolean)* |
 | CPU offload | Distributed optimiser | `--fsdp-cpu-offload` |
 | CPU backend | *(in distributed optimiser)* | `--fsdp-cpu-backend` |
