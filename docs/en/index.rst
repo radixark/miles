@@ -33,7 +33,6 @@ miles is the RL-framework behind GLM-4.7, GLM-4.6 and GLM-4.5. Apart from models
 
    examples/qwen3-4B.md
    examples/glm4-9B.md
-   examples/nemotron-3-nano-4B.md
 
 .. toctree::
    :maxdepth: 1
@@ -42,7 +41,6 @@ miles is the RL-framework behind GLM-4.7, GLM-4.6 and GLM-4.5. Apart from models
    examples/qwen3-30B-A3B.md
    examples/glm4.5-355B-A32B.md
    examples/deepseek-r1.md
-   examples/nemotron-3-nano-30B-A3B.md
 
 .. toctree::
    :maxdepth: 1
