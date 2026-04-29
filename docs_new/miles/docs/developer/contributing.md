@@ -96,16 +96,6 @@ We label issues with:
 If you're new, sort by `good first issue`. Comment to claim before you start so we
 don't double-up.
 
-## Reviewers
-
-We try to respond within ~48h. PRs from outside the team are reviewed by:
-
-* @core-maintainer-1 — rollout, router
-* @core-maintainer-2 — Megatron / training
-* @core-maintainer-3 — examples, docs
-
-Tag whoever fits. If unsure, don't tag — the bot will route.
-
 ## Where to ask questions
 
 * **Quick questions:** Miles channel of the [SGLang Slack](https://slack.sglang.ai).

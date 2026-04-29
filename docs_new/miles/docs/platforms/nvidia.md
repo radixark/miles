@@ -3,11 +3,9 @@ title: NVIDIA H / B Series
 description: H100, H200, B100, B200 — Miles's primary target.
 ---
 
-# NVIDIA H / B Series
+# NVIDIA GPUs
 
-Hopper (H100/H200) and Blackwell (B100/B200) are Miles's first-class targets. Every CI
-pipeline runs on H-series; B-series uses identical flags and is validated on every
-release. A100 works with FP8 features disabled.
+NVIDIA Blackwell (GB300 / GB200 / B200 / B100) and Hopper (H200 / H100) are Miles's first-class targets.
 
 ## Recommended setup
 
@@ -25,8 +23,8 @@ The image bundles:
 
 | Component | Why pinned |
 |---|---|
-| CUDA 12.4+ | Required for FP8 GEMM via cuBLASLt |
-| FlashAttention-3 (default), flashinfer (det) | Best-in-class attention kernels |
+| CUDA 12.4+ | Required for FP8 GEMM via cuBLAS |
+| FlashAttention-3 (default), Flashinfer| Best-in-class attention kernels |
 | DeepGEMM | Kernel for grouped GEMM (MoE) |
 | NCCL 2.20+ | NVLink SHARP, IB-aware collectives |
 | TransformerEngine | FP8 forward/backward |
@@ -35,22 +33,21 @@ The image bundles:
 
 ### H100 / H200
 
-* Default target — every flag in this site assumes Hopper.
-* H200's 141 GB lets you fit larger models with smaller TP. Drop TP from 8 to 4 where
-  possible.
-* SHARP requires `NCCL_NVLS_ENABLE=1` (already on in our containers).
+* The default target the recipes on this site are tuned against.
+* H200 ships with 141 GB HBM (vs. 80 GB on H100), so you can often reduce TP for the
+  same model — e.g. TP 8 → TP 4 on a single 8-GPU node.
 
 ### B100 / B200
 
-* Same flags as H-series. Native FP8 throughput is roughly 2× H100.
-* Kernel pre-compile times can be longer first run — bump
-  `--rollout-health-check-first-wait` to 600s+.
+* Same launch flags as H-series; FP8 GEMM uses the same code path.
+* First-run kernel compilation can take longer than on H-series. If the rollout engine
+  is flagged unhealthy during warm-up, raise `--rollout-health-check-first-wait`
+  (e.g. 600s).
 
 ### A100
 
-* No FP8 GEMM. Set `--no-fp8` in `MODEL_ARGS`; SGLang auto-detects and falls back to
-  BF16.
-* Tested as a target; not a CI target.
+* No FP8 GEMM — the BF16 path is used automatically.
+* Supported, but not part of CI; expect rougher edges than on H/B-series.
 
 ## Multi-node networking
 
@@ -90,7 +87,6 @@ Before submitting a job, sanity-check the node:
 nvidia-smi                          # GPUs visible, driver / CUDA versions
 nvidia-smi topo -m                  # NVLink mesh (NV* between every pair)
 ibstat                              # IB ports up (multi-node only)
-python -c "import flash_attn; import transformer_engine"   # kernels importable
 ```
 
 If anything's wrong, fix it here — chasing it inside Ray is harder.
