@@ -39,12 +39,16 @@ app = typer.Typer()
 _DEFAULT_MODEL_ORG = {
     "DeepSeek-V4-Flash-FP8": "sgl-project",
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",        # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8
+    "DeepSeek-V4-Pro-FP8": "sgl-project",
 }
 
 _MEGATRON_MODEL_TYPE = {
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
+    "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
 }
+
+_PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 
 
 @dataclass
@@ -55,12 +59,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
+        "DeepSeek-V4-Pro-FP8",
     ] = "DeepSeek-V4-Flash-FP8"
     hf_checkpoint: str | None = None
     num_gpus_per_node: int = 8
     enable_eval: bool = True
     extra_args: str = ""
-    task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
+    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     # Defaults to model_dir (resolved in __post_init__). Set explicitly when
@@ -70,16 +75,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     enable_r3: bool = True
     enable_rir: bool = False
+    enable_mtp: bool = False
     test_pp_single_node: bool = False
     test_cp_single_node: bool = False
     optimizer_offload: bool = False
     use_fault_tolerance: bool = True
+    dump_details: bool = True
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
     train_partial_deterministic: bool = True
     fp8_training: bool = False
     enable_mis: bool = False
-    gb300: bool = False
     skip_saving: bool = False
     cp_size: int = 1
 
@@ -88,6 +94,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
         if self.model_local_dir is None:
             self.model_local_dir = self.model_dir
+        # Pro defaults: validated one-liner reproducer:
+        #   python scripts/run_deepseek_v4.py full-train \
+        #       --model-name DeepSeek-V4-Pro-FP8 --num-nodes 32 --num-gpus-per-node 8
+        if self.model_name in _PRO_MODEL_NAMES:
+            self.optimizer_offload = True
+            self.enable_r3 = False
 
     @property
     def megatron_model_type(self):
@@ -99,6 +111,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     @property
     def bf16_name(self):
+        if self.model_name == "DeepSeek-V4-Pro-FP8":
+            return "DeepSeek-V4-Pro-BF16"
         return f"{self.model_name}-bf16"
 
 
@@ -118,7 +132,14 @@ def _hf_checkpoint_path(args: ScriptArgs) -> str:
 
 
 def _patch_4layer_model_type(args: ScriptArgs):
-    """TMP: patch sglang model type."""
+    """TMP: patch sglang model type for 4-layer prunes.
+
+    HF transformers doesn't know `deepseek_v4` model_type; SGLang only registers
+    `deepseek_ref` (via `srt/utils/hf_transformers_utils.py:319,334`). The full
+    Pro/Flash models work because SGLANG_APPLY_CONFIG_BACKUP=auto substitutes
+    a `deepseek_ref` backup config. For 4-layer prunes we keep `=none` so
+    num_hidden_layers stays 4 — but then we need to patch model_type ourselves.
+    """
     if args.model_name != "DeepSeek-V4-Flash-FP8-4layer":
         return
     cfg = Path(_hf_checkpoint_path(args)) / "config.json"
@@ -174,7 +195,9 @@ def _prepare_spmd(args: ScriptArgs):
     extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 "
     if args.num_nodes == 1 and is_4layer:
         extra_args += (
-            "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
+            "--tensor-model-parallel-size 1 "
+            "--pipeline-model-parallel-size 1 "
+            "--expert-model-parallel-size 1 "
         )
     elif args.num_nodes == 7 and args.model_name == "DeepSeek-V4-Flash-FP8":
         extra_args += (
@@ -184,6 +207,15 @@ def _prepare_spmd(args: ScriptArgs):
             "--decoder-first-pipeline-num-layers 4 "
             "--decoder-last-pipeline-num-layers 4 "
             "--make-vocab-size-divisible-by 64 "
+        )
+    elif args.num_nodes == 32 and args.model_name == "DeepSeek-V4-Pro-FP8":
+        extra_args += (
+            "--tensor-model-parallel-size 8 "
+            "--pipeline-model-parallel-size 8 "
+            "--expert-model-parallel-size 32 "
+            "--decoder-first-pipeline-num-layers 7 "
+            "--decoder-last-pipeline-num-layers 6 "
+            "--make-vocab-size-divisible-by 32 "
         )
     else:
         extra_args += (
@@ -311,7 +343,17 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
-
+        elif total_gpus == 256:  # 32 nodes × 8 GPUs (Pro)
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 8 "
+                "--decoder-first-pipeline-num-layers 7 "
+                "--decoder-last-pipeline-num-layers 6 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 32 "
+                "--expert-tensor-parallel-size 1 "
+            )
     raise NotImplementedError(
         f"No verified parallel config for {total_gpus} GPUs "
         f"({args.num_nodes} nodes × {args.num_gpus_per_node} GPUs/node). "
@@ -407,58 +449,84 @@ def _train(args: ScriptArgs):
     )
     if args.optimizer_offload:
         optimizer_args += (
-            "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
+            "--optimizer-cpu-offload "
+            "--use-precision-aware-optimizer "
+            "--overlap-cpu-optimizer-d2h-h2d "
         )
 
-    sglang_world_size = args.num_gpus_per_node
+    if args.model_name == "DeepSeek-V4-Pro-FP8":
+        sglang_world_size = 32
+        sglang_tp_size = 32
+        sglang_dp_size = 32
+        sglang_ep_size = 32
+        sglang_a2a_backend = "deepep"
+    else:
+        sglang_world_size = args.num_gpus_per_node
+        sglang_tp_size = sglang_world_size
+        sglang_dp_size = sglang_world_size
+        sglang_ep_size = sglang_world_size
+        sglang_a2a_backend = None
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        f"--sglang-tp-size {sglang_world_size} "
-        f"--sglang-dp-size {sglang_world_size} "
+        f"--sglang-tp-size {sglang_tp_size} "
+        f"--sglang-dp-size {sglang_dp_size} "
         "--sglang-enable-dp-attention "
         "--sglang-attention-backend compressed "
         "--sglang-page-size 256 "
-        f"--sglang-max-running-requests {16 * sglang_world_size} "
+        "--sglang-max-running-requests 64 "
         "--sglang-chunked-prefill-size 8192 "
         "--sglang-server-concurrency 1024 "
+        "--sglang-weight-loader-drop-cache-after-load "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
-    sglang_args += f"--sglang-ep-size {sglang_world_size} "
+    if sglang_a2a_backend:
+        sglang_args += (
+            f"--sglang-moe-a2a-backend {sglang_a2a_backend} "
+            "--sglang-cuda-graph-max-bs 8 "
+        )
+    if sglang_a2a_backend and args.enable_mtp:
+        assert False, "MTP rollout is not supported yet"
+        sglang_args += (
+            "--sglang-speculative-algorithm EAGLE "
+            "--sglang-speculative-num-steps 3 "
+            "--sglang-speculative-eagle-topk 1 "
+            "--sglang-speculative-num-draft-tokens 4 "
+        )
+    sglang_args += f"--sglang-ep-size {sglang_ep_size} "
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
     }
     if args.model_name == "DeepSeek-V4-Flash-FP8-4layer":
         extra_env_vars["SGLANG_APPLY_CONFIG_BACKUP"] = "none"
+    if args.model_name == "DeepSeek-V4-Pro-FP8":
+        extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
+        extra_env_vars["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
 
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
-        "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        # when use tp=4, 4GB will cause wgate and wkv not in same bucket
-        f"--update-weight-buffer-size {8 * 1024 ** 3} "
+        f"--update-weight-buffer-size {1 * 1024 ** 3} "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--colocate "
-        f"--dump-details /root/shared_data/{args.run_id}/dump_details "
-        "--disable-weights-backuper "
+        "--train-memory-margin-bytes 3221225472 "
+        "--sglang-mem-fraction-static 0.7 "
+        "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
+        "--colocate "
     )
 
-    if args.gb300:
-        misc_args += "--train-memory-margin-bytes 3221225472 "
-        misc_args += "--sglang-mem-fraction-static 0.7 "
-    else:
-        misc_args += "--train-memory-margin-bytes 1073741824 "
+    if args.dump_details:
+        misc_args += f"--dump-details /root/shared_data/{args.run_id}/dump_details "
 
     if args.enable_mis:
         misc_args += (
@@ -534,8 +602,6 @@ def train(args: ScriptArgs):
 def full_train(args: ScriptArgs):
     _prepare_download(args)
 
-    # Use sentinel files (not just dir existence) — a failed/killed prior step can leave
-    # an empty stub dir that would otherwise make us skip the regeneration.
     bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
     bf16_sentinel = bf16_dir / "model.safetensors.index.json"
     if not bf16_sentinel.exists():

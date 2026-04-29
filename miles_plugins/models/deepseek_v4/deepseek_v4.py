@@ -85,14 +85,10 @@ class DeepSeekV4Attention(MegatronModule):
         self.compress_ratio = config.dsv4_compress_ratios[layer_id] if config.dsv4_compress_ratios else 0
         self.eps = config.layernorm_epsilon
 
-        assert self.dim == 4096
-        assert self.n_heads == 64
-        assert self.q_lora_rank == 1024
         assert self.o_lora_rank == 1024
         assert self.head_dim == 512
         assert self.rope_head_dim == 64
         assert self.nope_head_dim == 448
-        assert self.n_groups == 8
         assert self.window_size == 128
 
         config_no_sp = copy.copy(config)
@@ -295,7 +291,7 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
 
-        attn_impl = os.environ.get("MEGATRON_SPARSE_ATTN_IMPL", "dense")
+        attn_impl = os.environ.get("MEGATRON_SPARSE_ATTN_IMPL", "tilelang")
         if attn_impl == "tilelang":
             o = sparse_attn_tilelang(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
         elif attn_impl == "sparse":

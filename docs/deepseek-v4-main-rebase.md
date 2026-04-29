@@ -20,6 +20,8 @@
 5. Created isolated worktree at `/Users/yueming.yuan/radixark/sunrise/miles-deepseek-v4-main-rebase`.
 6. Started `git rebase upstream/main`; rebase stopped on `6e340712c DeepSeek V4 RL support`.
 7. Resolved the first conflict set by keeping current main infrastructure and replaying only the DeepSeek-V4 semantic additions.
+8. Continued rebase; Git dropped `7fb00e5 cleanup` because its patch is already upstream.
+9. Rebase stopped on `b6fbf677f add pro model training support`.
 
 ## Conflict Notes
 
@@ -58,6 +60,17 @@ Decisions:
 - Kept the main `get_parallel_state().tp.size`/`etp.size` weight bucket sizing while preserving V4 SGLang-fusion atomic bucket groups.
 - Combined MBridge exports from main with optional `DeepseekV4Bridge` registration and config-based dispatch.
 - Combined the HF-to-torch-dist conversion fallback from main with the V4 FP32-preserving MBridge weight conversion patch.
+
+### `b6fbf677f add pro model training support`
+
+Conflicted files:
+
+- `tools/convert_hf_to_torch_dist.py`
+
+Decision:
+
+- Adopted the commit's `pipeline_model_parallel_size <= num_layers` check instead of main's stricter `world_size <= num_layers` check. The total world size can legitimately exceed layer count when TP/CP are used, while PP size is the value constrained by layer partitioning.
+- Kept main's later automatic PP-size derivation and fallback config loading from the first conflict resolution.
 
 ## Fix Notes
 

@@ -66,9 +66,8 @@ def get_args():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     args.global_batch_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-    assert world_size <= args.num_layers, (
-        f"World size {world_size} must be <= number of layers {args.num_layers}. "
-        "Use fewer GPUs (--nproc-per-node) for this conversion."
+    assert args.pipeline_model_parallel_size <= args.num_layers, (
+        f"PP size {args.pipeline_model_parallel_size} must be less than or equal to number of layers {args.num_layers}."
     )
 
     def ceildiv(a, b):
