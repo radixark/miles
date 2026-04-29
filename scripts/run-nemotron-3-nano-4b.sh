@@ -28,20 +28,16 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/nemotron-3-nano-4b.sh"
 
-MODEL_DIR=/cluster_public/miles_data/models/NVIDIA-Nemotron-3-Nano-4B-BF16
-# CELL=tp2pp2 (update matrix.md + OUT_DIR when iterating through parallelism grid)
-OUT_DIR=/cluster_personal/zhichen/ckpts/nemotron-3-nano-4b-tp2pp2
-
 CKPT_ARGS=(
-   --hf-checkpoint $MODEL_DIR
-   --ref-load $MODEL_DIR
-   --save $OUT_DIR
+   --hf-checkpoint $BASE_DIR/NVIDIA-Nemotron-3-Nano-4B-BF16
+   --ref-load $BASE_DIR/NVIDIA-Nemotron-3-Nano-4B-BF16
+   --save $BASE_DIR/nemotron-3-nano-4b_miles
    --save-interval 20
    --megatron-to-hf-mode bridge
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /cluster_public/miles_data/datasets/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template

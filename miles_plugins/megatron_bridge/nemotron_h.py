@@ -90,7 +90,7 @@ def _build_bridge_subclass():
                 return provider
 
             provider.num_moe_experts = n_exp
-            provider.moe_router_topk = int(hf.num_experts_per_tok)
+            provider.moe_router_topk = int(getattr(hf, "num_experts_per_tok", 1))
             provider.moe_router_score_function = "sigmoid"
             provider.moe_router_enable_expert_bias = True
             provider.moe_router_dtype = "fp32"
