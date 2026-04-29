@@ -45,38 +45,39 @@ CKPT_ARGS=(
 
 ### 2. Unified FP8
 
-Rollout and training share the same quantisation. Pair with R3 and TIS for
-MoE workloads:
+Rollout and training share the same quantisation. The flags fall into three
+groups:
 
 ```bash
-SGLANG_ARGS+=(
-   --use-miles-router
-)
+# Megatron / TransformerEngine (PERF_ARGS)
+--transformer-impl transformer_engine
+--fp8-format e4m3
+--fp8-recipe blockwise
 
-PERF_ARGS+=(
-   --transformer-impl transformer_engine
-   --fp8-format e4m3
-   --fp8-recipe blockwise
-)
+# Router (separate group)
+--use-miles-router
 
-GRPO_ARGS+=(
-   --use-rollout-routing-replay
-   --use-tis
-)
+# Optional, for MoE numerical stability
+--use-tis
 ```
 
 | Flag | Effect |
 |---|---|
 | `--transformer-impl transformer_engine` | Megatron flag. Routes Megatron's forward through TransformerEngine so FP8 GEMM is actually engaged. |
 | `--fp8-format e4m3` | Megatron flag. Forward FP8 format used by TransformerEngine. |
-| `--fp8-recipe blockwise` | Megatron flag. Block-wise quantisation recipe; needs to match what SGLang serves. |
-| `--use-rollout-routing-replay` | R3, required for MoE. |
+| `--fp8-recipe blockwise` | Megatron flag. Block-wise quantisation recipe; the SGLang side must serve weights in the matching layout. |
+| `--use-miles-router` | Miles flag (`add_router_arguments`). Required for R3 and the radix-tree middleware. |
 | `--use-tis` | Truncated Importance Sampling for residual precision drift. |
+
+For MoE workloads, also consider `--use-rollout-routing-replay` (R3). The
+canonical FP8 recipe leaves it commented out by default but the flag is
+available for opt-in.
 
 The canonical recipe is
 [`examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh).
 Also enable `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1` in the Ray runtime env to
-use FP32 scales (`miles/ray/actor_group.py:56`).
+use FP32 scales (`miles/ray/actor_group.py:56` already sets this in the actor
+env).
 
 ### 3. Block-wise FP8 (DeepSeek-style)
 

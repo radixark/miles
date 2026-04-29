@@ -94,9 +94,9 @@ forward pass so recorded routes are used instead of recomputed ones.
 
 ### Memory cost
 
-`(num_tokens - 1) × num_layers × top_k × 2 bytes`. For a 32K-token sequence,
-60 layers, and `top_k = 8`, that is roughly 30 MB per sample of routing
-metadata.
+`(num_tokens - 1) × num_layers × top_k × 4 bytes` (int32 per element, see
+`miles/utils/types.py:29`). For a 32K-token sequence, 60 layers, and
+`top_k = 8`, that is roughly 60 MB per sample of routing metadata.
 
 ## Radix-tree cache for `/generate`
 
@@ -162,9 +162,9 @@ policies, request fingerprinting, and latency injection during chaos tests.
 * The model is dense.
 * The `--advantage-estimator` is `reinforce_plus_plus` and `--use-tis` already
   masks the off-policy term.
-* Measured `expert_balance_std` is consistently small without R3.
 
-For MoE training, R3 is on by default in current recipes.
+For MoE training with `--advantage-estimator grpo`, current recipes turn R3
+on (for example `scripts/run-glm4.7-flash.sh`).
 
 ## References
 

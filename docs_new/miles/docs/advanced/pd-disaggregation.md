@@ -20,15 +20,18 @@ PD disaggregation splits them into two pools, each sized for its own workload.
 ## Enable
 
 ```bash
-SGLANG_ARGS+=(
-   --prefill-num-servers 2
-)
+--prefill-num-servers 2
 ```
 
-That tells Miles to dedicate two SGLang servers to prefill and use the rest
-for decode (`miles/ray/rollout.py:1089`). The router routes each request to the
-appropriate pool. `--prefill-num-servers` is mutually exclusive with the
-`server_groups` YAML config (`--sglang-config`).
+`--prefill-num-servers` is a Miles-native flag added by
+`add_prefill_decode_disaggregation_arguments` in `miles/utils/arguments.py`.
+When set, `miles/ray/rollout.py:1089` calls
+`SglangConfig.from_prefill_num_servers(args)` to dedicate that many SGLang
+servers to prefill, with the rest used for decode.
+
+`--prefill-num-servers` is mutually exclusive with the `sglang_config`
+attribute (the YAML `server_groups` config), and also cannot be combined
+with `--rollout-external` (`arguments.py:2082-2087`).
 
 ## When PD is worth it
 

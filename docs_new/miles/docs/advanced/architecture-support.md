@@ -18,57 +18,88 @@ This page uses Qwen3-Next 80B-A3B as the running example.
 
 Megatron instantiates a model in two steps:
 
-1. Generate a layer specification (`ModuleSpec`).
+1. Generate a layer specification (`ModuleSpec` / decoder block spec).
 2. Instantiate concrete PyTorch modules from that spec.
 
-Miles intercepts step 1 and replaces individual modules with HuggingFace
-implementations. Three components do the work.
+Miles intercepts step 1 and rewrites specific submodules to point at a
+HuggingFace-backed implementation. Three components do the work.
 
-### 1. Replace the Megatron module spec
+### 1. Custom decoder spec
 
-```python
-# miles_plugins/models/qwen3_next.py
-def get_qwen3_next_spec(...):
-    spec = get_default_decoder_block_spec(...)
-    spec.submodules.self_attention = ModuleSpec(module=HuggingfaceAttention)
-    spec.submodules.self_attention.params['qk_layernorm'] = True
-    return spec
-```
-
-### 2. Wrap the HuggingFace module
+`miles_plugins/models/qwen3_next.py` defines `get_qwen3_next_spec`. It
+starts from `get_gpt_decoder_block_spec`, then for the layers whose HF
+`layer_types[i] == "linear_attention"` it overrides the layer's
+`submodules.self_attention` with a `ModuleSpec(module=Attention,
+params={"args": args})` (referenced from `miles_plugins/models/`):
 
 ```python
-# miles_plugins/models/hf_attention.py
-class HuggingfaceAttention(MegatronModule):
-    def __init__(self, config, ...):
-        super().__init__(config)
-        self.hf_attn = Qwen3NextAttention(config)
-
-    def forward(self, x, *args, **kwargs):
-        x = align_for_seq_parallel(x)
-        out = self.hf_attn(x, ...)
-        return realign(out)
+# miles_plugins/models/qwen3_next.py (simplified excerpt)
+transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
+...
+for layer_id in range(num_layers_to_build):
+    if hf_config.layer_types[layer_id + offset] == "linear_attention":
+        layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
+        layer_specs.submodules.self_attention = ModuleSpec(
+            module=Attention,
+            params={"args": args},
+        )
+        transformer_layer_spec.layer_specs[layer_id] = layer_specs
+return transformer_layer_spec
 ```
 
-The wrapper handles the data-layout conversions Megatron requires (sequence
-parallelism, TP) and forwards into the HF module unchanged.
+The spec function is wired up via `--spec`:
+
+```bash
+MODEL_ARGS+=(
+   --spec miles_plugins.models.qwen3_next get_qwen3_next_spec
+)
+```
+
+### 2. Abstract Megatron-side wrapper
+
+`miles_plugins/models/hf_attention.py` defines an abstract
+`HuggingfaceAttention(MegatronModule, ABC)` whose `__init__` takes
+`(args, config, layer_number, cp_comm_type, pg_collection)`. It loads the
+HuggingFace config from `args.hf_checkpoint` and prepares the layout
+adapters Megatron's parallelism contract requires (sequence parallel, CP
+zigzag/packed-shard conversions). Concrete Attention classes subclass it
+and embed the actual HF attention module.
 
 ### 3. Align weights with mbridge
 
+The HF parameter layout differs from Megatron's. `miles_plugins/mbridge/`
+ships per-architecture bridges that reconcile the two. For Qwen3-Next:
+
 ```python
 # miles_plugins/mbridge/qwen3_next.py
+@register_model("qwen3_next")
 class Qwen3NextBridge(Qwen2MoEBridge):
-    @property
-    def name_map(self):
-        return {
-            "model.layers.{i}.self_attn.q_proj": "decoder.layers.{i}.self_attention.q_proj",
-            ...
+    _ATTENTION_MAPPING = (
+        Qwen2MoEBridge._ATTENTION_MAPPING
+        | {
+            f"self_attention.{w}": ["model.layers.{layer_number}." + w]
+            for w in [
+                "input_layernorm.weight",
+                "linear_attn.A_log",
+                "linear_attn.conv1d.weight",
+                ...
+            ]
         }
+        | {
+            "self_attention.linear_qkv.weight": [
+                "model.layers.{layer_number}.self_attn.q_proj.weight",
+                "model.layers.{layer_number}.self_attn.k_proj.weight",
+                "model.layers.{layer_number}.self_attn.v_proj.weight",
+            ],
+        }
+    )
 ```
 
-[mbridge](https://github.com/ISEEKYAN/mbridge) handles the bidirectional
-mapping between HF parameter names and Megatron parameter names so the same
-checkpoint can be loaded by either.
+The class-level `_ATTENTION_MAPPING` (and `_MLP_MAPPING`, etc.) extends the
+parent bridge with the layer-name substitutions specific to this
+architecture. Bridges that need to reshape weights at conversion time
+override `_weight_to_mcore_format`. See
+[mbridge](https://github.com/ISEEKYAN/mbridge) for the parent bridges.
 
 ## Capabilities and limits
 
