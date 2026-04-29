@@ -70,7 +70,6 @@ def prepare(args: ScriptArgs):
 
 def execute(args: ScriptArgs):
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
-    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     # Smoke runs: no checkpoint save (Megatron's final save is forced on the
     # last rollout whenever --save-interval is set — miles/utils/misc.py:192 —

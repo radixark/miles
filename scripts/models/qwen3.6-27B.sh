@@ -1,5 +1,5 @@
 MODEL_ARGS=(
-   --spec "miles_plugins.models.qwen3_6" "get_qwen3_6_spec"
+   --spec "miles_plugins.models.qwen3_5" "get_qwen3_5_spec"
 
    --disable-bias-linear
    --qk-layernorm

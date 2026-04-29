@@ -112,8 +112,6 @@ OPTIMIZER_ARGS=(
 )
 
 SGLANG_ARGS=(
-   # SGLang TP>1 produces garbage output for Qwen3.5-family (sgl-project/sglang#21039);
-   # miles still uses 0.5.9, so use 1 GPU per engine for now.
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.5
 )

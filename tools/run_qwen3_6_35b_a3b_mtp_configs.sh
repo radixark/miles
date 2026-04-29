@@ -5,8 +5,9 @@
 set -eo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-# Store logs + miles output_dir on cluster_personal (NFS), not /root (overlayfs fills up).
-OUTPUT_DIR="${OUTPUT_DIR:-/cluster_personal/zhichen/ckpts/qwen36_sweep}"
+# OUTPUT_DIR/RESULT_DIR are user-supplied; pick a path with NFS-grade
+# space (each smoke run writes hundreds of MB of logs/state).
+OUTPUT_DIR="${OUTPUT_DIR:?set OUTPUT_DIR to a writable, NFS-backed path}"
 RESULT_DIR="${RESULT_DIR:-${OUTPUT_DIR}/logs}"
 mkdir -p "$RESULT_DIR"
 
@@ -16,8 +17,8 @@ mkdir -p "$RESULT_DIR"
 # TP-only configs (TP=4/8) dropped: num_kv_heads=2 can't shard that far.
 # ------------------------------------------------------------
 CONFIGS=(
-  # EP8 covered by the baseline run; its log lives at
-  # /cluster_personal/zhichen/ckpts/qwen36_sweep/logs/ep8_baseline/EP8.log
+  # EP8 baseline is exercised by run_qwen3_6_35b_a3b_mtp.py directly; the
+  # configs below cover the remaining parallelism shapes.
   "CP2_EP8:1:8:2:1:1"
   "PP2_CP4:1:2:4:2:1"
   "PP2_EP2_TP2:2:2:1:2:1"
@@ -42,7 +43,7 @@ run_one() {
   env \
     -u MILES_SCRIPT_DATA_DIR \
     -u MILES_SCRIPT_MODEL_DIR \
-    python3 scripts/run_qwen3_6_35b_a3b_mtp.py \
+    python3 tools/run_qwen3_6_35b_a3b_mtp.py \
       --tp "$tp" --ep "$ep" --cp "$cp" --pp "$pp" --etp "$etp" \
       --num-rollout 10 \
       --rollout-max-response-len 1024 \

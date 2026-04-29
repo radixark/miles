@@ -9,7 +9,7 @@
 # existing Qwen3.5 CI convention which checks mean_abs_diff against
 # abs_tol=0.03. abs_diff_mean is inherently larger (triangle inequality).
 
-RESULT_DIR="${RESULT_DIR:-/root/shared_data/qwen36_configs}"
+RESULT_DIR="${RESULT_DIR:?set RESULT_DIR to the directory containing *.log run logs}"
 
 printf "%-20s %-6s %-12s %-12s %-12s %-12s %-12s\n" \
   "CONFIG" "STEPS" "AVG_ABSDIFF" "MAX_ABSDIFF" "AVG_MEANDIFF" "MAX_MEANDIFF" "TARGET<0.02"
@@ -19,9 +19,12 @@ for log in "$RESULT_DIR"/*.log; do
   [[ -f "$log" ]] || continue
   name=$(basename "$log" .log)
 
-  # per-step mean of absolute per-token diffs (train_rollout_logprob_abs_diff)
-  absdiffs=$(grep -aoE "train/train_rollout_logprob_abs_diff': [0-9.e-]+" "$log" |
-              awk -F': ' '{print $2}' | sort -u)
+  # per-step mean of absolute per-token diffs (train_rollout_logprob_abs_diff).
+  # Regex covers scientific notation (e/E and ± exponent sign); we keep one
+  # value per logged step (no `sort -u` — identical values from different
+  # steps are real samples, not duplicates to collapse).
+  absdiffs=$(grep -aoE "train/train_rollout_logprob_abs_diff': [0-9.eE+-]+" "$log" |
+              awk -F': ' '{print $2}')
   # per-step log_probs / rollout_log_probs means
   mean_diffs=$(python3 - "$log" << 'PY'
 import re, sys, pathlib

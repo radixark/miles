@@ -7,12 +7,18 @@ from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
 
 
-@register_model(["qwen3_5", "qwen3_5_moe"])
+@register_model(["qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_6_moe"])
 class Qwen3_5Bridge(Qwen2MoEBridge):
     """
-    Bridge for Qwen3.5 models (both dense and MoE variants).
-    Qwen3.5 is a VLM model with weights under model.language_model.layers prefix,
-    separate in_proj_qkv + in_proj_z for linear attention, and nested text_config.
+    Bridge for Qwen3.5 / Qwen3.6 models (both dense and MoE variants).
+    These share the ``qwen3_5_moe`` HF config schema: VLM layout under
+    ``model.language_model.layers``, separate ``in_proj_qkv`` + ``in_proj_z``
+    for linear attention, and nested ``text_config``.
+
+    Qwen3.6-35B-A3B's only structural difference is MTP-expert packing —
+    fused 3-D ``gate_up_proj`` / ``down_proj`` tensors instead of the
+    per-expert ``.weight`` files used by Qwen3.5 — which
+    ``_mtp_experts_fused()`` autodetects from the safetensor index.
     """
 
     _DIRECT_MAPPING = {
