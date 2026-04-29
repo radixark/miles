@@ -12,7 +12,7 @@ backends are available:
 | Backend | Flag | Status |
 |---|---|---|
 | Megatron-LM *(default)* | `--train-backend megatron` | Production |
-| PyTorch FSDP2 | `--train-backend fsdp` | Experimental (`miles/backends/experimental/fsdp_utils/`) |
+| PyTorch FSDP2 | `--train-backend fsdp` | Experimental. Lives at `miles/backends/experimental/fsdp_utils/`; known bug after SGLang v0.5.10. |
 
 The choice drives checkpoint format, parallelism strategy, and conversion tooling, so
 make it before tuning anything else.
@@ -124,6 +124,9 @@ clipping weights surgically. See [Customization](customization.md#megatron-hooks
 ---
 
 ## FSDP2 (Experimental)
+
+!!! warning "Experimental"
+    The FSDP backend is experimental and has a known bug after SGLang v0.5.10.
 
 FSDP trades maximum throughput for **zero conversion overhead**. There is no
 `torch_dist` step: Miles reads architecture information from the HuggingFace
