@@ -107,17 +107,6 @@ configuration — see troubleshooting below.
 | TE fused kernels | non-det | ✅ via `NVTE_ALLOW_NONDETERMINISTIC_ALGO=0` |
 | Python dataloader shuffle | seeded | ✅ already |
 
-## What to watch
-
-```text
-det/forward_logp_hash       same across runs
-det/backward_grad_hash      same across runs
-det/checkpoint_md5          same after every save
-```
-
-Miles can compute these hashes for you with `--debug-determinism` (off by default,
-adds ~3% overhead).
-
 ## Troubleshooting
 
 | Symptom | Likely cause |
