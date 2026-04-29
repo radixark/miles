@@ -1,102 +1,98 @@
 ---
 title: P2P Weight Transfer
-description: Sub-30-second weight sync from actor to rollout via NCCL P2P / RDMA.
+description: Direct rank-to-rank weight sync from actor to rollout via RDMA writes.
 ---
 
 # P2P Weight Transfer
 
-After every training step, the trainer's freshly-updated weights have to make their way
-to the SGLang engines so the next rollout uses the on-policy model. At GLM4.5 / DeepSeek
-scale that's hundreds of GB of state. The default broadcast path works, but it wastes
-bandwidth — every rollout rank receives redundant copies. **P2P transfer** delivers each
-shard directly to the rank that needs it.
+After every training step, the trainer's updated weights have to reach the
+SGLang engines so the next rollout is on-policy. The default broadcast path
+sends each weight tensor to every rollout rank, which wastes bandwidth at
+large model scales. P2P transfer delivers each shard directly to the rank
+that needs it, using RDMA writes via a transfer engine
+(`miles/backends/megatron_utils/update_weight/update_weight_from_distributed/`).
 
-## Enable it
+## Enable
 
 ```bash
 --update-weight-transfer-mode p2p
 ```
 
-That's the entire user-facing API. Reference design discussion: [issue #755](https://github.com/radixark/miles/issues/755).
+`--update-weight-transfer-mode` accepts `broadcast` (default) or `p2p`
+(`miles/utils/arguments.py:507`).
 
 ## What changes
 
-| | Broadcast (default) | P2P |
+| | Broadcast | P2P |
 |---|---|---|
-| Per-rank receives | All weights, then drops what it doesn't need | Only its shards |
-| Bandwidth | NIC-bound × ranks | NIC-bound × shards |
-| Implementation | NCCL collective | RDMA write |
-| Latency at GLM4.5 scale | ~25–40 s | ~3–8 s |
+| Per-rank receives | All weights, then drops what it doesn't need | Only its own shards |
+| Implementation | NCCL collective (`broadcast.py`) | RDMA writes via mooncake transfer engine + `ThreadPoolExecutor` (`p2p_transfer_utils.py`) |
+| Best-fit scale | Small to mid models | Large models with many rollout ranks |
 
 ## How it works
 
-```mermaid
-flowchart LR
-    subgraph Trainer
-        T1[Megatron rank 0]
-        T2[Megatron rank 1]
-        T3[Megatron rank ...]
-    end
-    subgraph Rollout
-        R1[SGLang rank 0]
-        R2[SGLang rank 1]
-        R3[SGLang rank ...]
-    end
-    T1 -- RDMA write --> R1
-    T1 -. " " .-> R2
-    T2 -- RDMA write --> R2
-    T3 -- RDMA write --> R3
-```
+The P2P path lives in
+`miles/backends/megatron_utils/update_weight/update_weight_from_distributed/p2p.py`
+(class `UpdateWeightP2P`):
 
-In detail:
+1. **Plan.** `RemoteTransferPlan(args, model)` maps trainer ranks to rollout
+   ranks based on TP/EP/PP sharding and GPU counts.
+2. **Gather and convert.** Megatron TP/EP shards are gathered and converted
+   to HF parameter layout (`DistBucketedWeightUpdateMixin`, shared with the
+   broadcast path).
+3. **Register.** CPU pinned buffers are registered with the transfer engine
+   (`register_cpu_memory`) and the engine is initialised over RDMA
+   (`transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", "")` in
+   `p2p_transfer_utils.py:211`).
+4. **Submit and wait.** Per-rank tensors are submitted to a `P2PTransferManager`
+   thread pool (default 4 workers); each worker performs an RDMA write to
+   the destination rollout rank's pre-registered memory. `wait_transfers()`
+   waits on each future with `transfer_timeout`.
+5. **Bump version.** When all transfers complete, the rollout engine's
+   weight version is incremented and generation resumes.
 
-1. **Initialisation** — At startup, each trainer rank:
-    * Builds a transfer plan that maps trainer ranks to rollout ranks based on TP/EP/PP
-      and GPU counts.
-    * Queries each rollout engine for its memory registration info (RDMA addresses +
-      sizes).
-    * Constructs a local CPU model replica that mirrors the target's sharding so weights
-      can be reshaped before transfer.
-2. **Weight gather** — Megatron TP/EP shards are all-gathered and converted to HF format
-   (same as the broadcast path).
-3. **P2P write** — Each trainer rank writes its bucketed tensors directly into the
-   destination rollout rank's memory using RDMA. No collective; pure write.
-4. **Sync** — When all writes ACK, rollout engines bump their weight version and resume
-   generation.
+## Hardware
 
-## Hardware requirements
-
-| Item | Required for P2P? |
-|---|---|
-| NVLink intra-node | Yes |
-| InfiniBand or RoCEv2 inter-node | Yes (this is what RDMA writes ride) |
-| NCCL with `NCCL_P2P_LEVEL=NVL` | Recommended |
-| `NVSHMEM` | Optional, helps |
-
-If you're on a vanilla TCP backplane, P2P falls back to broadcast — nothing breaks but
-you lose the speedup.
+P2P uses RDMA, so the transport requires InfiniBand or RoCEv2 between nodes.
+On a TCP-only backplane the transfer engine cannot initialise the RDMA
+session.
 
 ## Tunable knobs
 
 ```bash
---p2p-transfer-num-workers 4           # thread-pool workers for P2P writes (default 4)
---p2p-transfer-timeout 30              # per-transfer timeout in seconds (default 30)
+--p2p-transfer-num-workers 4           # ThreadPoolExecutor workers for RDMA writes (default 4)
+--p2p-transfer-timeout 30              # per-future timeout in seconds (default 30.0)
 --update-weight-buffer-size 536870912  # bytes per update-weight buffer (default 512 MiB)
 --update-weights-interval 1            # rollouts between weight syncs (default 1)
 ```
 
-## What you should see
+All four are defined in `miles/utils/arguments.py` and consumed in
+`p2p.py:73` and the bucketed update-weight path.
 
-If P2P fails to initialise, Miles silently falls back to broadcast — usually a missing
-IB device. Re-run with `NCCL_DEBUG=INFO` for the per-rank diagnostics.
+## Diagnostics
 
-## When NOT to use P2P
+When a P2P transfer's future raises (timeout, RDMA error), the manager logs
+`[P2P] Transfer future failed: ...` and continues with the remaining
+futures (`p2p_transfer_utils.py`'s `wait()` method). There is no automatic
+broadcast-mode fallback in the source today; mode is decided once at startup
+by `--update-weight-transfer-mode`.
 
-* Single-node jobs — NVLink intra-node already maxes out broadcast.
-* Models < 30 B — overhead isn't worth it.
-* You don't have RDMA-capable interconnect.
+For per-rank diagnostics, run with `NCCL_DEBUG=INFO`.
 
-## Pairs nicely with
+## When P2P helps
 
-* [Fault tolerance](fault-tolerance.md) — P2P retries gracefully fall back to broadcast.
-* [INT4 QAT](int4-qat.md) — 4× smaller weights, 4× faster sync.
+* Large models where the broadcast path is bandwidth-bound.
+* Many rollout ranks: the broadcast tax scales with `num_rollout_ranks`.
+
+## When broadcast is enough
+
+* Single-node jobs where intra-node NVLink saturates the broadcast path.
+* Smaller models.
+* No RDMA-capable interconnect.
+
+## Pairs with
+
+* [Fault tolerance](fault-tolerance.md). Failed P2P transfers are surfaced
+  through `--p2p-transfer-timeout` and engine recovery happens at the next
+  weight update (`actor.py:500`).
+* [INT4 QAT](int4-qat.md). Smaller weights mean less data per sync.

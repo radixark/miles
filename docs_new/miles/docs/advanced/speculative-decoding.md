@@ -1,19 +1,19 @@
 ---
 title: Speculative Decoding
-description: Draft + target speculative rollout, with online SFT for the draft.
+description: Draft + target speculative rollout, with online SFT for MTP-style drafts.
 ---
 
 # Speculative Decoding
 
-Speculative decoding is the cheapest way to make rollout faster. A lightweight **draft
-model** decodes ahead a few tokens; the **target model** then verifies them in a single
-batched forward. When the draft is right (~70–90% of the time on most workloads), you
-get N tokens for the cost of one forward.
+Speculative decoding accelerates rollout by letting a lightweight draft model
+generate ahead a few tokens and then verifying them with a single batched
+forward of the target model. When the draft is correct the target produces N
+tokens for the cost of one forward pass.
 
 ## Enabling speculative decoding
 
-For models with built-in MTP (Multi-Token Prediction) layers — GLM-4.7, DeepSeek-V3,
-DeepSeek-R1 — turn it on with:
+For models with built-in MTP (Multi-Token Prediction) layers (GLM-4.7,
+DeepSeek-V3, DeepSeek-R1):
 
 ```bash
 SGLANG_ARGS+=(
@@ -21,11 +21,15 @@ SGLANG_ARGS+=(
    --sglang-speculative-num-steps 3
    --sglang-speculative-eagle-topk 1
    --sglang-speculative-num-draft-tokens 4
-   --sglang-enable-draft-weights-cpu-backup
 )
 ```
 
-For an externally trained draft model (e.g. trained with
+These are passthrough flags forwarded to SGLang. Miles auto-enables
+`enable_draft_weights_cpu_backup` so SGLang can run training without
+MTP weights resident on GPU
+(`miles/backends/sglang_utils/sglang_engine.py`).
+
+For an externally trained draft model (for example, trained with
 [SpecForge](https://docs.sglang.ai/SpecForge/)):
 
 ```bash
@@ -34,21 +38,18 @@ SGLANG_ARGS+=(
 )
 ```
 
-Full parameter reference: [SGLang speculative decoding docs](https://docs.sglang.ai/advanced_features/speculative_decoding.html).
+Full reference: [SGLang speculative decoding docs](https://docs.sglang.ai/advanced_features/speculative_decoding.html).
 
-## The drift problem
+## Drift over a long RL run
 
-As RL training progresses, the **target** model's distribution shifts away from the
-**draft**'s. Fewer draft tokens pass verification, and after thousands of steps
-speculative decoding can become a *net negative* — the wasted draft compute outweighs
+As RL training progresses, the target model's distribution shifts away from the
+draft. Fewer draft tokens pass verification, and over many steps speculative
+decoding can become a net negative because the wasted draft compute outweighs
 the verified speedup.
 
-The fix: train the draft alongside the target.
+Miles supports training the draft alongside the target through online MTP-SFT.
 
 ## Online SFT for MTP-style draft models
-
-Miles supports online training of the MTP layers during RL — the draft model evolves with
-the target.
 
 ```bash
 PERF_ARGS+=(
@@ -58,51 +59,38 @@ PERF_ARGS+=(
 )
 ```
 
-!!! note "Checkpoint must contain MTP weights"
-    Pass `--mtp-num-layers 1` when you run `convert_hf_to_torch_dist.py`. Without it the
-    `torch_dist` checkpoint won't have the MTP layer to train.
-
-| Knob | What |
+| Flag | Notes |
 |---|---|
-| `--mtp-num-layers 1` | One MTP layer (matches GLM/DeepSeek release defaults) |
-| `--enable-mtp-training` | Backprop through MTP loss alongside the policy loss |
-| `--mtp-loss-scaling-factor 0.2` | Don't let MTP loss dominate the policy gradient |
+| `--mtp-num-layers` | Number of MTP layers in the checkpoint (1 matches GLM/DeepSeek release defaults). |
+| `--enable-mtp-training` | Backprop through MTP loss alongside the policy loss. |
+| `--mtp-loss-scaling-factor` | Weight of the MTP loss in the combined gradient (default `0.2`). |
 
-## What you should see
-
-After enabling online MTP-SFT, watch:
-
-```text
-spec/draft_acceptance_rate     stable around 0.70–0.85
-spec/avg_accepted_tokens       2.5 – 3.0 (out of 4 drafted)
-spec/effective_rollout_speedup 1.7× – 2.3×
-mtp/loss                       slowly decreasing
-```
-
-If acceptance rate is collapsing, either MTP loss scaling is too low or the draft
-needs more training data.
+!!! note "Checkpoint must contain MTP weights"
+    Pass `--mtp-num-layers 1` when running `convert_hf_to_torch_dist.py`.
+    Without it the resulting `torch_dist` checkpoint will not contain the MTP
+    layer to train.
 
 ## External draft model SFT
 
-Training an external (non-MTP) draft model online is **work in progress**. Until then,
-re-train the external draft offline every N rollouts and reload it.
+Training an external (non-MTP) draft model online is not yet supported in
+Miles. The current path is to retrain the external draft offline every N
+rollouts and reload it.
 
-## Combine with everything else
+## Pairs with
 
-Speculative decoding stacks cleanly with:
-
-* **[FP8 unified](fp8-low-precision.md)** — draft and target both quantised the same
-  way.
-* **[INT4 QAT](int4-qat.md)** — quantised draft is ~4× cheaper to verify.
-* **[R3](miles-router.md)** — R3 captures routing for the *target* (verified) tokens.
+* [Unified FP8](fp8-low-precision.md). Draft and target both quantised the
+  same way.
+* [INT4 QAT](int4-qat.md). A quantised draft is cheaper to verify.
+* [R3](miles-router.md). R3 captures routing for the verified tokens emitted
+  by the target.
 
 ## When to skip
 
-* You're rollout-bound on dense models < 13 B — overhead outweighs benefit.
-* You're already at maximum draft acceptance and the bottleneck is verification compute,
+* Rollout-bound on dense models below ~13 B. The verification overhead can
+  outweigh the benefit.
+* Already at high draft acceptance and the bottleneck is verification compute,
   not generation.
 
 ## Reading
 
-* SpecForge — [SGLang docs](https://docs.sglang.ai/SpecForge/)
-* Power-Up Spec Decoding in RL — [blog](https://www.notion.so/jiajunli-guapisolo/Power-Up-Speculative-Decoding-In-Reinforcement-Learning-2a92d24a293b802d9c73dbae429e581e)
+* SpecForge: [SGLang docs](https://docs.sglang.ai/SpecForge/).

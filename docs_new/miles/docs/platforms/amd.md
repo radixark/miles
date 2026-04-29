@@ -8,10 +8,6 @@ description: ROCm 6.3+ with patches for virtual memory management. Same launch s
 Miles runs on AMD Instinct GPUs (MI300, MI325, MI350, MI355X) with ROCm. The launch
 scripts are the same as on NVIDIA — only the container and a few env vars differ.
 
-!!! tip "Need help?"
-    Reach out to [Yusheng Su](https://yushengsu-thu.github.io/) on the Miles channel of
-    the SGLang Slack — he maintains the AMD path.
-
 ## Container images
 
 ```bash
@@ -98,28 +94,3 @@ NCCL_NET=Socket                   # for non-RDMA setups
 NCCL_IB_HCA=...                   # if your fabric supports it
 PYTORCH_NO_HIP_MEMORY_CACHING=0
 ```
-
-## Feature differences vs. NVIDIA
-
-| Feature | NVIDIA H/B | AMD MI300X |
-|---|---|---|
-| FP8 forward GEMM | ✅ Native | ✅ |
-| FP8 backward | ✅ | ⚠️ Limited — defaults to BF16 |
-| FlashAttention-3 | ✅ | ⚠️ Triton port |
-| DeepGEMM | ✅ | ⚠️ Composable Kernel port |
-| NVLink SHARP | ✅ | ❌ |
-| RDMA P2P | ✅ IB | ✅ Infinity Fabric |
-| Context parallel | ✅ | ⚠️ Some configurations broken |
-| Deterministic mode | ✅ | ⚠️ MIOpen workspace tweaks needed |
-
-For the workloads on the supported list (GRPO on Qwen3 / GLM4 dense, MoE up
-to ~30B), the AMD path is production-ready.
-
-## Known issues / open work
-
-* GPU-based ckpt converter — pending.
-* Some MoE configurations need additional tuning of the Triton FA backend.
-* SGLang's deterministic-inference flag has limited ROCm coverage; reproducibility on
-  AMD is best-effort.
-
-If you hit something that isn't documented here, please open an issue with `platform: amd`.

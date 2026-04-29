@@ -5,38 +5,43 @@ description: Separate prefill and decode pools so each is sized for its workload
 
 # PD Disaggregation
 
-In a typical SGLang deployment, every engine handles both **prefill** (the one-shot
-forward over the prompt) and **decode** (the per-token autoregressive loop). The two have
-very different compute profiles:
+In a typical SGLang deployment, every engine handles both **prefill** (the
+one-shot forward over the prompt) and **decode** (the per-token autoregressive
+loop). The two phases have different compute profiles:
 
 | Phase | Compute pattern | Bottleneck |
 |---|---|---|
 | Prefill | Long sequence × full batch | FLOPs |
 | Decode | One token × batch | Memory bandwidth |
 
-Mixing them in one engine means you size for the worse case of both. **PD disaggregation**
-splits them into two pools, each sized for its own workload.
+Mixing them in one engine means each engine is sized for the worse case.
+PD disaggregation splits them into two pools, each sized for its own workload.
 
-## Enable it
+## Enable
 
 ```bash
-SGLANG_ARGS+=(
-   --prefill-num-servers 2
-)
+--prefill-num-servers 2
 ```
 
-That tells Miles to dedicate 2 of your SGLang servers to prefill and use the rest for
-decode. The router knows to route each request appropriately.
+`--prefill-num-servers` is a Miles-native flag added by
+`add_prefill_decode_disaggregation_arguments` in `miles/utils/arguments.py`.
+When set, `miles/ray/rollout.py:1090` calls
+`SglangConfig.from_prefill_num_servers(args)` to dedicate that many SGLang
+servers to prefill, with the rest used for decode.
 
-## When PD pays off
+`--prefill-num-servers` is mutually exclusive with the `sglang_config`
+attribute (the YAML `server_groups` config), and also cannot be combined
+with `--rollout-external` (`arguments.py:2082-2087`).
 
-* Long prompts (≥ 4 K) — prefill dominates total latency.
-* High batch sizes during decode — decode is memory-bandwidth bound.
-* MoE models — decode benefits disproportionately from EP scaling that prefill doesn't
-  need.
+## When PD is worth it
 
-For typical post-training with 1–2 K prompts, the overhead of routing + cache transfer
-often outweighs the speedup. **Measure first.**
+* Long prompts (≥ 4K). Prefill dominates total latency.
+* High decode batch sizes. Decode is memory-bandwidth bound.
+* MoE models. Decode benefits disproportionately from EP scaling that prefill
+  does not need.
+
+For typical post-training with 1–2K prompts, the routing and KV-transfer
+overhead can outweigh the speedup. Measure first.
 
 ## How requests flow
 
@@ -50,52 +55,39 @@ flowchart LR
     Router --> Out[Response]
 ```
 
-The KV cache produced by the prefill pool is migrated to the decode pool. SGLang handles
-the cache transfer transparently when [Miles Router](miles-router.md) is in use; for
-older deployments use the [SGLang Model Gateway](https://docs.sglang.io/advanced_features/sgl_model_gateway.html)
-which has first-class PD support.
+The KV cache produced by the prefill pool is migrated to the decode pool.
+SGLang handles the cache transfer when the
+[SGLang Model Gateway](https://docs.sglang.io/advanced_features/sgl_model_gateway.html)
+fronts the engines (PD support is a feature of the SGLang router).
 
 ## Sizing the pools
 
-Rule of thumb:
+A starting heuristic:
 
 ```
 prefill_servers = ceil(rollout_qps × avg_prompt_tokens / single_engine_prefill_tps)
 decode_servers  = N - prefill_servers
 ```
 
-If you don't know your numbers, start with `prefill_num_servers = N / 4` and adjust
-based on:
+Without measurements, start at `prefill_num_servers = N / 4` and adjust based
+on observed queueing:
 
 | Symptom | Action |
 |---|---|
 | Prefill queue backing up | Increase `prefill_num_servers` |
 | Decode latency creeping up | Decrease `prefill_num_servers` |
-| Router queue depth growing | More servers in *both* pools, then revisit ratio |
+| Both queues growing | Scale up both pools, then revisit the ratio |
 
-## What to measure
+## Pairs with
 
-```text
-sglang/prefill_queue_depth
-sglang/decode_queue_depth
-sglang/prefill_tps
-sglang/decode_tps
-sglang/kv_transfer_latency_ms
-```
+* [DeepSeek R1 recipe](../models/deepseek/deepseek.md). PD is a clear win at
+  671B scale.
+* [Speculative decoding](speculative-decoding.md). Both are SGLang-side
+  features; pool sizing should account for the verify-batch size when
+  speculative is on.
 
-If `kv_transfer_latency_ms` is more than ~5% of total request latency, your interconnect
-between prefill and decode pools is the bottleneck — colocate them on the same node or
-use RDMA.
+## When PD is not useful
 
-## Pairs nicely with
-
-* [DeepSeek R1 recipe](../models/deepseek/deepseek.md) — at 671 B scale, PD is a clear
-  win.
-* [Speculative decoding](speculative-decoding.md) — drafts run on the decode pool, the
-  target verifies on the prefill pool.
-
-## When NOT to use PD
-
-* Small prompts (< 1 K) — prefill is already cheap.
-* Single-node setups — pool boundaries don't help.
-* Highly variable workloads — fixed pool sizes are wasteful.
+* Short prompts (under ~1K tokens). Prefill is already cheap.
+* Single-node setups. Pool boundaries do not help.
+* Highly variable workloads. Fixed pool sizes are wasteful.

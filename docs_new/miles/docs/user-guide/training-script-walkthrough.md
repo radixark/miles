@@ -5,33 +5,27 @@ description: An annotated tour through every argument group in a Miles launch sc
 
 # Training Script Walkthrough
 
-A Miles launch script looks like plain bash — a sequence of `XXX_ARGS=( ... )` arrays
-handed to `train.py` or `train_async.py`. Understanding what each array *does* is the
-single best investment you can make in debugging and tuning Miles.
+A Miles launch script is plain bash — a sequence of `XXX_ARGS=( ... )` arrays handed
+to `train.py` or `train_async.py`. This page walks through each group and then covers
+the execution modes you turn on beyond the default recipe.
 
-This page walks through every group, explains the reasoning behind each knob, and then
-covers the execution modes you reach for when the default recipe stops being enough.
-
-We use `scripts/run-glm4-9B.sh` as the reference script. Other recipes follow the same
-shape.
+`scripts/run-glm4-9B.sh` is the reference script; other recipes follow the same shape.
 
 ## The eight argument groups
 
-```mermaid
-flowchart LR
-    M[MODEL_ARGS\nArchitecture] --> Run
-    C[CKPT_ARGS\nFilesystem] --> Run
-    R[ROLLOUT_ARGS\nData + batching] --> Run
-    E[EVAL_ARGS\nEval overrides] --> Run
-    P[PERF_ARGS\nParallelism] --> Run
-    G[GRPO_ARGS\nAlgorithm] --> Run
-    O[OPTIMIZER_ARGS\nTraining dynamics] --> Run
-    S[SGLANG_ARGS\nInference engine] --> Run
-    Run[train.py] --> Loop[rollout ↔ reward ↔ optimiser step]
-```
+Every launch script assembles eight bash arrays, passes them as CLI flags, and hands
+off to `train.py`:
 
-Every launch script assembles these eight arrays, passes them as CLI flags, and hands
-off to `train.py`. Nothing else is going on.
+| Array | Governs |
+|---|---|
+| `MODEL_ARGS` | Architecture constants (layers, hidden size, rotary base, …) |
+| `CKPT_ARGS` | Filesystem paths for the actor / reference / save directory |
+| `ROLLOUT_ARGS` | Prompt dataset, batch knobs, sampling parameters, reward type |
+| `EVAL_ARGS` | Eval dataset, cadence, sampling overrides for evaluation |
+| `PERF_ARGS` | Parallelism (TP/PP/EP/CP), recomputation, dynamic batching |
+| `GRPO_ARGS` | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| `OPTIMIZER_ARGS` | Learning rate, schedule, weight decay, Adam betas |
+| `SGLANG_ARGS` | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ---
 
@@ -153,8 +147,9 @@ Flags not overridden here inherit their values from `ROLLOUT_ARGS`.
 
 ## PERF_ARGS — parallelism and memory
 
-This group is where the difference between "works on 8 GPUs" and "works on 1024 GPUs"
-lives. Miles forwards Megatron's parallelism flags untouched and adds two of its own.
+This group controls how the model is sharded across GPUs and how much activation
+memory is recomputed vs. stored. Miles forwards Megatron's parallelism flags
+untouched and adds two of its own.
 
 ```bash
 PERF_ARGS=(
@@ -180,7 +175,9 @@ A few notes worth committing to memory:
   sequence-parallel pass reclaims the activation memory TP leaves behind.
 - **`--use-dynamic-batch-size` overrides `--micro-batch-size`.** When dynamic batching
   is active, Miles packs variable-length samples into the closest fit under
-  `--max-tokens-per-gpu`. Samples longer than the cap become their own batch.
+  `--max-tokens-per-gpu`. A sample whose length already exceeds the cap takes a whole
+  micro-batch by itself — that batch still exceeds the cap and may OOM, so keep
+  `--rollout-max-response-len` ≤ `--max-tokens-per-gpu`.
 - **Under context parallel, the budget is shared.** A CP group of size `N` jointly
   processes up to `N × max_tokens_per_gpu` tokens per micro-batch. Size CP before
   tuning `max-tokens-per-gpu`.
@@ -265,9 +262,10 @@ Common additions that don't ship in the canonical recipe:
 | `--sglang-enable-dp-attention` | Long prompts on MoE. |
 | `--sglang-log-level INFO` | Debugging. |
 
-Miles multiplexes across multiple SGLang engines through `sgl-router`. When DP-attention
-is off, the effective `dp_size` is derived from `rollout-num-gpus /
-rollout-num-gpus-per-engine`.
+Miles multiplexes across multiple SGLang engines through a router — the SGLang Model
+Gateway by default, or [MilesRouter](../advanced/miles-router.md) with
+`--use-miles-router`. When DP-attention is off, the effective `dp_size` is derived
+from `rollout-num-gpus / rollout-num-gpus-per-engine`.
 
 ---
 
@@ -338,6 +336,13 @@ entire allocation.
     offload completes. If SGLang is sized to the full device capacity, the init
     collision produces an OOM before training ever starts. Drop
     `--sglang-mem-fraction-static` to **0.8** (further if memory is still tight).
+
+!!! note "What `--colocate` flips on"
+    Setting `--colocate` also enables (unless you've set them explicitly):
+
+    - `--offload-train` — train state offloads to CPU between phases
+    - `--offload-rollout` — rollout state offloads to CPU between phases
+    - `--sglang-disable-piecewise-cuda-graph` — avoids NVLS OOM in colocate mode
 
 ## Dynamic sampling (DAPO-style filtering)
 

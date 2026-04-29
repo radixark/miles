@@ -5,17 +5,16 @@ description: Hardware-specific tutorials. Most users want NVIDIA H/B; AMD MI300X
 
 # Platforms
 
-Miles is hardware-agnostic in design but the realities of CUDA, ROCm, and FP8 mean each
-platform has its own setup notes.
+Miles runs on NVIDIA H/B-series and AMD MI300X with the same launch scripts. Each platform page covers driver versions, build flags, and the FP8 / ROCm quirks you need to know before kicking off a job.
 
 <div class="grid cards" markdown>
 
--   :material-chip:{ .lg .middle } **[NVIDIA H / B Series](nvidia.md)**
+-   :material-chip:{ .lg .middle } **[NVIDIA GPUs](nvidia.md)**
 
     ---
-    The default. H100 / H200 / B100 / B200 with FP8, NVLink, and InfiniBand.
+    The default GB300 / GB200 / B200 / B100 / H200 / H100 with FP8, NVLink, and InfiniBand.
 
--   :material-chip:{ .lg .middle } **[AMD MI300X](amd.md)**
+-   :material-chip:{ .lg .middle } **[AMD GPUs](amd.md)**
 
     ---
     ROCm 6.3+ with patches for virtual memory management. Same launch scripts.
@@ -24,15 +23,15 @@ platform has its own setup notes.
 
 ## Supported features by GPU
 
-| Feature | H100 / H200 / B-series | A100 | MI300X |
+| Feature | H / B-series | A100 | MI300X |
 |---|---|---|---|
 | BF16 training | ✅ | ✅ | ✅ |
-| FP8 GEMM | ✅ Native | ❌ | ✅ Forward only |
-| INT4 W4A16 QAT | ✅ | ⚠️ Slow | ⚠️ |
+| FP8 GEMM | ✅  | - | ✅  |
+| INT4 W4A16 QAT | ✅ | ✅ | ⚠️ |
 | Speculative decoding | ✅ | ✅ | ✅ |
 | Miles Router (R3) | ✅ | ✅ | ✅ |
 | P2P weight transfer (RDMA) | ✅ IB / RoCEv2 | ✅ | ✅ Infinity Fabric |
-| Megatron CP | ✅ | ✅ | ⚠️ Some limitations |
+| Megatron CP | ✅ | ✅ | ✅ |
 | Deterministic inference | ✅ | ✅ | ⚠️ |
 
 ## Storage and network

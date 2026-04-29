@@ -6,16 +6,16 @@ description: Picking between Megatron-LM and FSDP, and the backend-specific plum
 # Training Backends
 
 Miles decouples the **training backend** (how the model is sharded, checkpointed, and
-stepped) from the **inference backend** (SGLang, which is fixed). Two training
-backends are supported today:
+stepped) from the **inference backend** (SGLang). Two training
+backends are available:
 
-| Backend | Flag |
-|---|---|
-| Megatron-LM *(default)* | `--train-backend megatron` |
-| PyTorch FSDP2 *(experimental — known bug after SGLang v0.5.10)* | `--train-backend fsdp` |
+| Backend | Flag | Status |
+|---|---|---|
+| Megatron-LM *(default)* | `--train-backend megatron` | Production |
+| PyTorch FSDP2 | `--train-backend fsdp` | Experimental. Lives at `miles/backends/experimental/fsdp_utils/`; known bug after SGLang v0.5.10. |
 
-Pick one before you touch anything else. Every other decision — checkpoint format,
-parallelism strategy, conversion tooling — follows from this.
+The choice drives checkpoint format, parallelism strategy, and conversion tooling, so
+make it before tuning anything else.
 
 ---
 
@@ -23,9 +23,9 @@ parallelism strategy, conversion tooling — follows from this.
 
 | Concern | Megatron-LM | FSDP |
 |---|---|---|
-| Peak throughput at MoE scale | ✅ best-in-class | ❌ trailing |
-| Expert / tensor / pipeline parallelism | TP · PP · CP · EP · ETP | CP only (TP/PP/EP coming) |
-| Checkpoint format | `torch_dist` (custom) | HuggingFace native |
+| Peak throughput at MoE scale | ✅ best-in-class | ✅ |
+| Parallelism | TP · PP · CP · EP · ETP | Not yet — runs as plain FSDP data parallel |
+| Checkpoint format | `torch_dist` | HuggingFace native |
 | HF → backend conversion step | **Required** | **Not needed** |
 | New-architecture support | Via `miles_plugins` wrappers | Via `AutoConfig` / `AutoModelForCausalLM` |
 | Gradient checkpointing | Fine-grained (`--recompute-granularity`) | Boolean (`--gradient-checkpointing`) |
@@ -53,18 +53,9 @@ Export the Megatron source directory before you launch:
 export PYTHONPATH=/root/Megatron-LM
 ```
 
-Miles locates flags defined outside `parse_args` the same way Megatron does — by
-threading an `extra_args_provider` through:
-
-```python
-if __name__ == "__main__":
-    try:
-        from pretrain_gpt import extra_args_provider
-    except ImportError:
-        extra_args_provider = None
-    args = parse_args(extra_args_provider)
-    train(args)
-```
+Miles adds its own arguments by threading an `extra_args_provider` into Megatron's
+`parse_args` (see `get_miles_extra_args_provider` in `miles/utils/arguments.py`),
+so Miles flags and Megatron flags share a single CLI surface.
 
 ### Architecture specs
 
@@ -83,17 +74,10 @@ The spec function replaces specific Megatron submodules with the HF implementati
 without patching Megatron itself. Details:
 [Backends Beyond Megatron](../advanced/architecture-support.md).
 
-### Checkpoint formats
+### Checkpoint format
 
-Two on-disk formats are supported:
-
-| Format | Flag | Layout | Parallelism-agnostic? |
-|---|---|---|---|
-| Legacy `torch` | `--ckpt-format torch` | `mp_rank_*/` per rank | ❌ |
-| Recommended `torch_dist` | `--ckpt-format torch_dist` | `.distcp` files | ✅ |
-
-Use `torch_dist` unless you have a specific reason not to — it lets you change
-parallelism without re-converting.
+Miles uses Megatron's `torch_dist` format — `.distcp` files that are
+parallelism-agnostic, so you can change TP / PP / EP without re-converting.
 
 A checkpoint directory looks like:
 
@@ -107,9 +91,8 @@ A checkpoint directory looks like:
 └── ...
 ```
 
-Always pass the **parent** directory to `--load`, not a specific iteration. Use
-`--ckpt-step <N>` to pin a particular step; the default reads
-`latest_checkpointed_iteration.txt`.
+Always pass the **parent** directory to `--load`, not a specific iteration. The
+loader reads `latest_checkpointed_iteration.txt` to pick the step.
 
 ### HuggingFace → torch_dist
 
@@ -140,20 +123,16 @@ clipping weights surgically. See [Customization](customization.md#megatron-hooks
 
 ---
 
-## FSDP (PyTorch FSDP2)
+## FSDP2 (Experimental)
 
 !!! warning "Experimental"
     The FSDP backend is experimental and has a known bug after SGLang v0.5.10.
 
 FSDP trades maximum throughput for **zero conversion overhead**. There is no
 `torch_dist` step: Miles reads architecture information from the HuggingFace
-`config.json` and loads weights directly.
-
-!!! tip "Why FSDP, summarised"
-    Architecture discovery is automatic via `AutoModelForCausalLM.from_pretrained()`.
-    The distributed optimiser is built-in. Mixed precision falls out of standard
-    PyTorch. For small-to-mid dense models, the shortest path from `hf download` to a
-    running RL loop is FSDP.
+`config.json` and loads weights directly. Architecture discovery is automatic via
+`AutoModelForCausalLM.from_pretrained()`, the distributed optimiser is built-in, and
+mixed precision falls out of standard PyTorch.
 
 ### Enabling it
 
@@ -168,10 +147,10 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 | Concern | Megatron | FSDP |
 |---|---|---|
 | Model load | `--load` + architecture args | `--hf-checkpoint` *(single flag, required)* |
-| Tensor parallel | `--tensor-model-parallel-size` | Coming soon |
-| Pipeline parallel | `--pipeline-model-parallel-size` | Coming soon |
-| Expert parallel | `--expert-model-parallel-size` | Coming soon |
-| Context parallel | `--context-parallel-size` | `--context-parallel-size` |
+| Tensor parallel | `--tensor-model-parallel-size` | Not supported yet |
+| Pipeline parallel | `--pipeline-model-parallel-size` | Not supported yet |
+| Expert parallel | `--expert-model-parallel-size` | Not supported yet |
+| Context parallel | `--context-parallel-size` | Not supported yet |
 | Optimiser | `--use-distributed-optimizer` *(opt-in)* | Built-in |
 | Gradient checkpoint | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` *(boolean)* |
 | CPU offload | Distributed optimiser | `--fsdp-cpu-offload` |
@@ -239,19 +218,34 @@ Conversely, two flags are **set by Miles** rather than the user:
 The integration lives at
 [`miles/backends/sglang_utils/arguments.py`](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/arguments.py).
 
-### Router passthrough
+### Router
 
-Miles talks to SGLang through [`sgl-router`](https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway).
-Pass router flags with a `--router-` prefix:
+Miles ships two routers in front of the SGLang workers:
+
+- **SGLang Model Gateway** (`sglang_router`) — the original default. Stable, simple,
+  no extra features beyond load balancing.
+- **[MilesRouter](../advanced/miles-router.md)** — a FastAPI proxy maintained inside
+  Miles. Adds expert-routing capture for MoE R3, the radix-tree middleware for
+  token-cached `/generate`, and a pluggable middleware interface for custom
+  request/response logic. Newer recipes (radix-tree, GLM-4.7-Flash, MoE training)
+  already run on it, and more of the recipe surface is moving over.
+
+Pick one at launch:
+
+```bash
+--use-miles-router               # MilesRouter
+# (default)                      # SGLang Model Gateway
+```
+
+Either way, pass router-side flags with the `--router-` prefix:
 
 ```bash
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)
 ```
 
 If `--sglang-router-ip` and `--sglang-router-port` are set, Miles treats them as an
-**external** router and skips starting its own. Miles-registered engines will call the
-external router's `/add_worker` at startup. See
-[Miles Router (R3)](../advanced/miles-router.md) for the Miles-specific proxy.
+**external** router and skips starting its own — engines register via `/add_worker`
+at startup.
 
 ---
 
