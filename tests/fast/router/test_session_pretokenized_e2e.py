@@ -26,6 +26,11 @@ call parser and the OpenAI-format string arguments in mock trajectories.
 Its prefix invariant is verified in the unit tests (test_pretokenized_chat.py).
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 from dataclasses import dataclass
 from types import SimpleNamespace
 

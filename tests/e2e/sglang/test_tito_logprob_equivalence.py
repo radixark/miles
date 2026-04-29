@@ -18,6 +18,11 @@ that wraps the normal agentic flow with re-prefill verification.
 Requires 1 GPU.
 """
 
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=600, suite="stage-b-sglang-1-gpu", num_gpus=1)
+
+
 import json
 import os
 from dataclasses import dataclass

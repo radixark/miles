@@ -62,12 +62,17 @@ depends on the template's assistant-start pattern.
 
 from __future__ import annotations
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
 from dataclasses import dataclass
 
 import pytest
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils.token_seq_comparator import MismatchType, Segment, TokenSeqComparator
+from miles.utils.processing_utils import load_tokenizer
 
 # ---------------------------------------------------------------------------
 # Model configs & fixtures
@@ -121,7 +126,7 @@ _ENV_CACHE: dict[str, TokenizerEnv] = {}
 def _build_env(cfg: ModelConfig) -> TokenizerEnv:
     if cfg.model_id in _ENV_CACHE:
         return _ENV_CACHE[cfg.model_id]
-    tok = AutoTokenizer.from_pretrained(cfg.model_id, trust_remote_code=True)
+    tok = load_tokenizer(cfg.model_id, trust_remote_code=True)
     comp = TokenSeqComparator(tok, assistant_start_str=cfg.assistant_start_str)
     env = TokenizerEnv(tokenizer=tok, config=cfg, comparator=comp)
     _ENV_CACHE[cfg.model_id] = env

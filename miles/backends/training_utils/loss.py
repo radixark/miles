@@ -3,6 +3,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from torch.utils.checkpoint import checkpoint
 
 from miles.utils.distributed_utils import distributed_masked_whiten
@@ -25,6 +26,7 @@ from .cp_utils import (
     all_gather_with_cp,
     get_logits_and_tokens_offset_with_cp,
     get_sum_of_sample_mean,
+    slice_loss_masks_for_local_cp,
 )
 from .parallel import get_parallel_state
 
@@ -471,6 +473,59 @@ def vanilla_tis_function(
     return pg_loss, loss_masks, metrics
 
 
+def compute_ess_ratio_contribution(
+    ppo_kl: torch.Tensor,
+    loss_masks: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    qkv_format: str,
+    max_seq_lens: list[int] | None,
+    calculate_per_token_loss: bool,
+) -> torch.Tensor:
+    """Return an ESS contribution compatible with ``aggregate_train_losses``.
+
+    ESS needs full-sample sums before applying the nonlinear ratio.  Under CP we
+    reconstruct those sums first, then let only CP rank 0 emit the final
+    contribution so the generic CP metric aggregation does not double count it.
+    """
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
+
+    local_masks = slice_loss_masks_for_local_cp(
+        loss_masks,
+        total_lengths,
+        response_lengths,
+        qkv_format,
+        max_seq_lens,
+    )
+    local_lengths = [mask.size(0) for mask in local_masks]
+    is_weights_per_sample = (-ppo_kl.detach().float()).exp().split(local_lengths, dim=0)
+
+    partial_sums = torch.zeros(len(loss_masks), 2, device=ppo_kl.device, dtype=torch.float32)
+    for i, (weights, mask) in enumerate(zip(is_weights_per_sample, local_masks, strict=False)):
+        if weights.numel() != mask.numel():
+            raise ValueError(f"ESS weight/mask length mismatch for sample {i}: {weights.numel()} vs {mask.numel()}")
+        masked_weights = weights * mask.to(device=weights.device, dtype=weights.dtype)
+        partial_sums[i, 0] = masked_weights.sum()
+        partial_sums[i, 1] = (masked_weights * masked_weights).sum()
+
+    if cp_size > 1:
+        dist.all_reduce(partial_sums, op=dist.ReduceOp.SUM, group=parallel_state.cp.group)
+
+    ess_ratio_sum = torch.zeros((), device=ppo_kl.device, dtype=torch.float32)
+    for i, loss_mask in enumerate(loss_masks):
+        num_valid_tokens = torch.clamp_min(loss_mask.to(device=ppo_kl.device, dtype=torch.float32).sum(), 1)
+        sum_w = partial_sums[i, 0]
+        sum_w2 = partial_sums[i, 1]
+        ess_ratio = (sum_w * sum_w) / (num_valid_tokens * torch.clamp_min(sum_w2, 1e-8))
+        ess_ratio_sum += ess_ratio * num_valid_tokens if calculate_per_token_loss else ess_ratio
+
+    if cp_size > 1 and parallel_state.cp.rank != 0:
+        ess_ratio_sum = ess_ratio_sum * 0
+
+    return ess_ratio_sum
+
+
 def icepop_function(
     args,
     *,
@@ -651,6 +706,19 @@ def policy_loss_function(
     else:
         pg_loss_reducer = sum_of_sample_mean
 
+    # ESS (Effective Sample Size) ratio from per-token IS weights
+    # w = π_new/π_old = exp(-ppo_kl).  A value of 1.0 is on-policy; near 0
+    # means the per-token weights are highly concentrated.
+    ess_ratio_sum = compute_ess_ratio_contribution(
+        ppo_kl=ppo_kl,
+        loss_masks=batch["loss_masks"],
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        qkv_format=args.qkv_format,
+        max_seq_lens=max_seq_lens,
+        calculate_per_token_loss=args.calculate_per_token_loss,
+    )
+
     pg_loss = pg_loss_reducer(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
     ppo_kl = sum_of_sample_mean(ppo_kl)
@@ -693,6 +761,7 @@ def policy_loss_function(
         "entropy_loss": entropy_loss.clone().detach(),
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
+        "ess_ratio": ess_ratio_sum.squeeze(),
     }
 
     if train_rollout_logprob_abs_diff is not None:
