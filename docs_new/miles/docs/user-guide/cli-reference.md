@@ -128,7 +128,6 @@ Set these in Ray's `env_vars` for multi-node runs:
 
 | Variable | Effect |
 |---|---|
-| `MILES_DEBUG=1` | Verbose internal logging. |
 | `TORCHINDUCTOR_FORCE_DISABLE_CACHES=1` | Workaround for torch-compile JSONDecodeError. |
 | `RAY_DEDUP_LOGS=0` | Don't deduplicate worker logs. |
 | `NCCL_DEBUG=INFO` | NCCL diagnostics. |
