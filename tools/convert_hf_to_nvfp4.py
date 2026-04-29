@@ -155,28 +155,28 @@ def should_quantize(
     return True
 
 
-def cast_to_fp4x2(x: torch.Tensor) -> torch.Tensor:
-    """Quantize a tensor to FP4 E2M1 and pack two values per byte."""
-    result = torch.zeros_like(x, dtype=torch.uint8)
-    result[(x >= 0.0) & (x <= 0.25)] = 0
-    result[(x > 0.25) & (x < 0.75)] = 1
-    result[(x >= 0.75) & (x <= 1.25)] = 2
-    result[(x > 1.25) & (x < 1.75)] = 3
-    result[(x >= 1.75) & (x <= 2.5)] = 4
-    result[(x > 2.5) & (x < 3.5)] = 5
-    result[(x >= 3.5) & (x <= 5.0)] = 6
-    result[x > 5.0] = 7
-
-    result[(x >= -0.25) & (x < -0.0)] = 8
-    result[(x < -0.25) & (x > -0.75)] = 9
-    result[(x <= -0.75) & (x >= -1.25)] = 10
-    result[(x < -1.25) & (x > -1.75)] = 11
-    result[(x <= -1.75) & (x >= -2.5)] = 12
-    result[(x < -2.5) & (x > -3.5)] = 13
-    result[(x <= -3.5) & (x >= -5.0)] = 14
-    result[x < -5.0] = 15
-
-    return result[:, ::2] + result[:, 1::2] * 16
+def _nvfp4_global_decode_scale_te(global_amax: torch.Tensor) -> torch.Tensor:
+    fp4_max = torch.tensor(FP4_E2M1_MAX, device=global_amax.device, dtype=torch.float32)
+    fp8_max = torch.tensor(FP8_E4M3_MAX, device=global_amax.device, dtype=torch.float32)
+    global_encode_scale = torch.div(fp8_max * fp4_max, global_amax.to(torch.float32))
+    global_encode_scale = torch.min(
+        global_encode_scale,
+        torch.tensor(
+            torch.finfo(torch.float32).max,
+            device=global_encode_scale.device,
+            dtype=torch.float32,
+        ),
+    )
+    if global_encode_scale.numel() == 1:
+        if global_encode_scale == torch.tensor(0.0, device=global_amax.device, dtype=torch.float32):
+            global_encode_scale = torch.tensor(1.0, device=global_amax.device, dtype=torch.float32)
+    else:
+        global_encode_scale = torch.where(
+            global_encode_scale == 0.0,
+            torch.ones_like(global_encode_scale),
+            global_encode_scale,
+        )
+    return torch.div(1.0, global_encode_scale)
 
 
 def _quantize_nvfp4_1d(
@@ -197,45 +197,22 @@ def _quantize_nvfp4_1d(
     if n % NVFP4_GROUP_SIZE != 0:
         raise ValueError(f"NVFP4 requires K divisible by {NVFP4_GROUP_SIZE}, got {n}.")
 
-    weight_f = weight.to(torch.float32)
     if global_amax is None:
-        global_amax = torch.max(torch.abs(weight_f))
+        global_amax = torch.max(torch.abs(weight.to(torch.float32)))
     else:
         global_amax = global_amax.to(device=weight.device, dtype=torch.float32)
-    if global_amax.item() == 0.0:
-        qweight = torch.zeros((m, n // 2), dtype=torch.uint8, device=weight.device)
-        block_scale = torch.zeros(
-            (m, n // NVFP4_GROUP_SIZE),
-            dtype=torch.float8_e4m3fn,
-            device=weight.device,
-        )
-        global_scale = torch.tensor(1.0, device=weight.device, dtype=torch.float32)
-        return qweight, block_scale, global_scale
 
-    fp4_max = torch.tensor(FP4_E2M1_MAX, device=weight.device, dtype=torch.float32)
-    fp8_max = torch.tensor(FP8_E4M3_MAX, device=weight.device, dtype=torch.float32)
+    from transformer_engine.pytorch.custom_recipes.quantization_nvfp4 import NVFP4QuantizerRef
 
-    global_encode_scale = torch.div(fp8_max * fp4_max, global_amax)
-    global_encode_scale = torch.min(
-        global_encode_scale,
-        torch.tensor(torch.finfo(torch.float32).max, device=weight.device, dtype=torch.float32),
+    qweight, block_scale = NVFP4QuantizerRef._quantize_blockwise_reference(
+        weight,
+        global_amax,
+        NVFP4_GROUP_SIZE,
+        1,
+        pow_2_scales=False,
+        eps=0.0,
     )
-    if global_encode_scale.item() == 0.0:
-        global_encode_scale = torch.tensor(1.0, device=weight.device, dtype=torch.float32)
-    global_decode_scale = torch.div(1.0, global_encode_scale)
-
-    weight_blocks = weight_f.view(m, n // NVFP4_GROUP_SIZE, NVFP4_GROUP_SIZE)
-    vec_max = torch.amax(torch.abs(weight_blocks), dim=-1, keepdim=True)
-    decode_scale = torch.div(vec_max, fp4_max) * global_encode_scale
-    decode_scale = torch.clamp(decode_scale, min=-fp8_max, max=fp8_max).to(torch.float8_e4m3fn)
-
-    encode_scale = torch.div(1.0, decode_scale.to(torch.float32) * global_decode_scale)
-    scaled = weight_blocks * encode_scale
-    clipped = torch.clamp(scaled, -fp4_max, fp4_max).reshape(m, n)
-
-    qweight = cast_to_fp4x2(clipped)
-    block_scale = decode_scale.squeeze(-1)
-    return qweight, block_scale, global_decode_scale
+    return qweight, block_scale, _nvfp4_global_decode_scale_te(global_amax)
 
 
 def quantize_nvfp4(
