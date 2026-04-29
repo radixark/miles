@@ -89,50 +89,64 @@ Two flags matter most:
 
 ## Walkthrough — the agent loop
 
+The shipped pipeline is **solver → rewriter → selector**: `num_parallel` solver
+attempts run in parallel, each rewriter rewrites the previous solutions, and a
+`SelectorAgent` picks one. Sampling params are set on `args` upstream by the rollout
+helper, so `run_agent_system` only takes `(args, sample)`.
+
 ```python title="agent_system.py"
-async def run_agent_system(args, sample, sampling_params):
-    history = [{"role": "system", "content": SYSTEM_PROMPT_THINKER}]
-    history.append({"role": "user", "content": sample.prompt})
+async def run_agent_system(args, sample):
+    args = deepcopy(args)
+    args.sample = sample
+    args.results_dict = {"solver": [], "rewriter": [], "selector": []}
 
-    for turn in range(MAX_TURNS):
-        # 1. Thinker moves
-        thinker_out = await call_role(
-            history,
-            system_prompt=SYSTEM_PROMPT_THINKER,
-            sampling_params=sampling_params,
-        )
-        history.append({"role": "assistant", "content": thinker_out})
+    problem_statement = sample.prompt
 
-        # 2. Verifier responds
-        verifier_out = await call_role(
-            history,
-            system_prompt=SYSTEM_PROMPT_VERIFIER,
-            sampling_params=sampling_params,
-        )
-        history.append({"role": "assistant", "content": verifier_out})
+    # 1. Solver: num_parallel attempts in parallel.
+    tasks = [solver_worker(args, problem_statement, i)
+             for i in range(args.num_parallel)]
+    solver_solutions = await asyncio.gather(*tasks, return_exceptions=True)
+    rewards = await batched_async_rm(args, args.results_dict["solver"])
+    for s, r in zip(args.results_dict["solver"], rewards):
+        s.reward = r
 
-        # 3. Termination check
-        if "<final_answer>" in verifier_out:
-            break
+    previous = [r for r in solver_solutions if isinstance(r, str)]
 
-    return assemble_sample(history, sample)
+    # 2. Rewriter: each worker rewrites the previous solutions.
+    tasks = [rewrite_worker(args, previous, problem_statement, i)
+             for i in range(args.num_parallel)]
+    rewritten = [r for r in await asyncio.gather(*tasks, return_exceptions=True)
+                 if isinstance(r, str)]
+
+    # 3. Selector: pick one of the rewritten solutions.
+    selector = SelectorAgent()
+    response = await selector.select(args, problem_statement, rewritten)
+
+    # ... apply asymmetric reward weighting using
+    # args.incorrect_reward_weight / args.correct_reward_weight on the solver
+    # and rewriter samples, then return them all together.
+    return args.results_dict["solver"] + args.results_dict["rewriter"] + ...
 ```
 
-The same SGLang process serves both "roles" — we only swap the system prompt between
-turns. This means **both agents are the same model** updating in lockstep. For
-*architecturally distinct* agents (separate models), see the MrlX repo.
+Both roles share the same SGLang process — `solver_worker`, `rewrite_worker`, and
+`SelectorAgent.select` all post to the same engine, just with different prompts. So
+**both agents are the same model** updating in lockstep. For *architecturally distinct*
+agents (separate models), see the MrlX repo.
 
 ## Walkthrough — rollout integration
 
 `rollout_with_multi_agents.py` exposes `generate_with_multi_agents(args, sample,
-sampling_params)`. Internally it:
+sampling_params, evaluation=False)`. Internally it:
 
-1. Calls `run_agent_system(args, sample, sampling_params)` to get a multi-turn
-   transcript.
-2. Tokenises the transcript and builds `loss_mask` — only the model's outputs (both
-   roles) get loss=1; the prompt and any system messages are masked out.
-3. Computes a single per-trajectory reward (using the parent `--rm-type`).
-4. Returns the `Sample` for the trainer to pack.
+1. Sets `args.sampling_params = sampling_params` and `args.tokenizer`, then loads the
+   custom multi-agent function from `args.custom_multi_agent_function_path`.
+2. Calls `await custom_multi_agent_func(args, sample)` to get the list of samples
+   produced by the solver / rewriter / selector pipeline.
+3. Returns the shuffled list of `Sample`s for the trainer to pack.
+
+The per-sample tokenisation and reward already happen inside `solver_worker` /
+`rewrite_worker` / `SelectorAgent.select` (which call `batched_async_rm`), so the
+rollout integration itself is a thin wrapper.
 
 ## Tuning knobs
 

@@ -45,6 +45,21 @@ Steps performed by the actor (`miles/backends/megatron_utils/actor.py`):
 P2P uses NCCL on top of NVLink (intra-node) and InfiniBand or RoCEv2
 (inter-node). On a vanilla TCP backplane the speedup disappears.
 
+## Tunable knobs
+
+```bash
+--p2p-transfer-num-workers 4           # thread-pool workers for P2P writes (default 4)
+--p2p-transfer-timeout 30              # per-transfer timeout in seconds (default 30)
+--update-weight-buffer-size 536870912  # bytes per update-weight buffer (default 512 MiB)
+--update-weights-interval 1            # rollouts between weight syncs (default 1)
+```
+
+## Diagnostics
+
+If P2P fails to initialise, Miles falls back to broadcast (usually because of
+a missing IB device). Re-run with `NCCL_DEBUG=INFO` to see per-rank
+diagnostics.
+
 ## When P2P helps
 
 * Large models where the broadcast path is bandwidth-bound.
@@ -58,5 +73,6 @@ P2P uses NCCL on top of NVLink (intra-node) and InfiniBand or RoCEv2
 
 ## Pairs with
 
-* [Fault tolerance](fault-tolerance.md).
-* [INT4 QAT](int4-qat.md): smaller weights, shorter sync.
+* [Fault tolerance](fault-tolerance.md). P2P transfers are bounded by
+  `--p2p-transfer-timeout` and fall back to broadcast on timeout.
+* [INT4 QAT](int4-qat.md). Smaller weights mean less data per sync.

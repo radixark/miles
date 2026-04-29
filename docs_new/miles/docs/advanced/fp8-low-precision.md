@@ -49,27 +49,40 @@ Rollout and training share the same quantisation. Pair with R3 and TIS for
 MoE workloads:
 
 ```bash
-GRPO_ARGS+=(
+SGLANG_ARGS+=(
    --use-miles-router
+)
+
+PERF_ARGS+=(
+   --transformer-impl transformer_engine
+   --fp8-format e4m3
+   --fp8-recipe blockwise
+)
+
+GRPO_ARGS+=(
    --use-rollout-routing-replay
    --use-tis
 )
 ```
 
-The Megatron-side FP8 GEMM flags (`--fp8-format`, `--fp8-amax-history-len`,
-`--fp8-margin`) come from Megatron's TransformerEngine integration; consult
-your Megatron-LM source for the supported values. The SGLang-side
-quantisation method is selected via the standard `--sglang-*` passthrough.
+| Flag | Effect |
+|---|---|
+| `--transformer-impl transformer_engine` | Megatron flag. Routes Megatron's forward through TransformerEngine so FP8 GEMM is actually engaged. |
+| `--fp8-format e4m3` | Megatron flag. Forward FP8 format used by TransformerEngine. |
+| `--fp8-recipe blockwise` | Megatron flag. Block-wise quantisation recipe; needs to match what SGLang serves. |
+| `--use-rollout-routing-replay` | R3, required for MoE. |
+| `--use-tis` | Truncated Importance Sampling for residual precision drift. |
 
-For the matching configuration to be effective, the SGLang quantisation method
-and the Megatron-side FP8 settings must agree (per-tensor vs block-wise, block
-sizes, margin).
+The canonical recipe is
+[`examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh).
+Also enable `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1` in the Ray runtime env to
+use FP32 scales (`miles/ray/actor_group.py:56`).
 
 ### 3. Block-wise FP8 (DeepSeek-style)
 
-For models that ship 128×128 block-wise FP8 weights (e.g. DeepSeek-R1 / V3),
-configure both sides to block-wise with matching block sizes through the same
-passthrough mechanisms.
+For models that ship 128×128 block-wise FP8 weights (such as DeepSeek-R1 and
+DeepSeek-V3), the same `--fp8-recipe blockwise` recipe applies. Point
+`--hf-checkpoint` at the block-wise FP8 directory and let SGLang autodetect.
 
 ## Hardware support
 

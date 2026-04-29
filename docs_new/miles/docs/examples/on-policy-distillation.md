@@ -86,9 +86,10 @@ sequenceDiagram
     end
 ```
 
-The teacher is treated as a remote reward model (`--rm-type remote_rm --rm-url
-http://teacher:8001`). For each sample the trainer queries the teacher for token-level
-log-probabilities of the student's own response.
+The teacher is wired in as a custom reward (`--custom-rm-path` +
+`--custom-reward-post-process-path` + `--rm-url http://teacher:8001`). For each sample
+the trainer queries the teacher for token-level log-probabilities of the student's own
+response.
 
 The "reward" then becomes a per-token KL divergence between the student's logp and
 the teacher's logp. Tokens where the student is over-confident relative to the teacher
@@ -98,32 +99,55 @@ get a negative reward; tokens where the student matches get zero.
 
 ```python title="on_policy_distillation.py"
 async def reward_func(args, sample, **kwargs):
-    teacher_logp = await fetch_teacher_logprobs(
-        args.rm_url,
-        prompt=sample.prompt,
-        response=sample.response,
-    )
-    sample.metadata["teacher_log_probs"] = teacher_logp
-    return 0.0  # actual reward computed in post_process_rewards
+    payload = {
+        "input_ids": sample.tokens,
+        "sampling_params": {
+            "temperature": 0,
+            "max_new_tokens": 0,
+            "skip_special_tokens": False,
+        },
+        "return_logprob": True,
+        "logprob_start_len": 0,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(args.rm_url, json=payload) as resp:
+            resp.raise_for_status()
+            return await resp.json()
 ```
 
-The reward function returns 0 — the real signal arrives via `teacher_log_probs` in the
-sample's metadata.
+The "reward" is the entire SGLang `/generate` response — Miles stores it so the
+post-processor can read it back via `sample.get_reward_value(args)` and pull the
+teacher logprobs out of `meta_info["input_token_logprobs"]`.
 
 ## Walkthrough — post-process
 
 ```python
-def post_process_rewards(args, samples):
-    for s in samples:
-        teacher_logp = s.metadata["teacher_log_probs"]
-        # Trim to the response span only
-        teacher_logp = teacher_logp[s.prompt_len:]
-        # Token-level KL: teacher * (teacher - student)
-        s.token_rewards = -compute_kl(teacher_logp, s.token_log_probs)
+def post_process_rewards(args, samples, **kwargs):
+    rewards = [sample.get_reward_value(args) for sample in samples]
+    response_lengths = [sample.response_length for sample in samples]
+
+    teacher_log_probs = [
+        torch.tensor(
+            [item[0] for item in r["meta_info"]["input_token_logprobs"][1:]],
+            dtype=torch.float32,
+        )
+        for r in rewards
+    ]
+    # Keep only the response span (tail of the prompt + response sequence).
+    teacher_log_probs = [
+        t[-response_length:]
+        for t, response_length in zip(teacher_log_probs, response_lengths)
+    ]
+
+    for sample, t_log_probs in zip(samples, teacher_log_probs):
+        sample.teacher_log_probs = t_log_probs
+
+    return teacher_log_probs, teacher_log_probs
 ```
 
-This runs *after* the student's logprobs are computed by Megatron. The result becomes
-per-token rewards used by GRPO's advantage estimation.
+This runs *after* rollout but before the trainer's logprob pass, so by the time
+Megatron computes the student's own logprobs it can read `sample.teacher_log_probs`
+and form the per-token KL used as the GRPO advantage signal.
 
 ## Tuning knobs
 

@@ -66,6 +66,12 @@ ROLLOUT_ARGS+=( --partial-rollout )
 See [examples/fully-async](../examples/fully-async.md) for how partial-rollout
 interacts with the async worker.
 
+## Weight sync retry
+
+[P2P weight transfer](p2p-weight-transfer.md) is idempotent. Each transfer is
+bounded by `--p2p-transfer-timeout` (default 30s); on timeout the trainer falls
+back to the broadcast path automatically.
+
 ## What you still own
 
 Miles cannot recover from these on its own:

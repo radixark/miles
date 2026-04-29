@@ -153,7 +153,6 @@ populated, the trainer never blocks on generation.
 |---|---|
 | `--rollout-batch-size` | Worker target in-flight count |
 | `--sglang-server-concurrency` | Per-engine concurrency cap |
-| `args.queue_max_size` (in source) | Backpressure threshold |
 | `--num-steps-per-rollout` | Increase to consume more per drain (off-policy) |
 
 If queue depth grows unbounded, training is slower than rollout — bump
@@ -198,7 +197,6 @@ Async rollout and R3 stack cleanly. Add:
 
 ```bash
 GRPO_ARGS+=( --use-miles-router --use-rollout-routing-replay )
-SGLANG_ARGS+=( --sglang-use-miles-router )
 ```
 
 The custom rollout function automatically passes `return_routed_experts=true` because
