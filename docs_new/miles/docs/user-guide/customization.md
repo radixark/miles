@@ -1,15 +1,13 @@
 ---
 title: Customization
-description: The 20+ plug-points where you can drop in your own Python without forking Miles.
+description: The 22 plug-points where you can drop in your own Python without forking Miles.
 ---
 
 # Customization
 
-Miles is small at the core and big at the edges. The trainer is one Python file
-(`train.py`) and an algorithm; everything else can be replaced by passing
-`--<thing>-path my_module.my_function`.
-
-This page is a complete catalogue of those plug-points.
+Most of Miles's behaviour can be replaced with user-supplied Python by passing a
+`--*-path` flag. This page lists every such hook, the function signature it expects,
+and the default it replaces.
 
 ## At a glance
 
@@ -29,7 +27,7 @@ This page is a complete catalogue of those plug-points.
 | **Training** | `--custom-loss-function-path` | The loss formula |
 | | `--custom-tis-function-path` | Importance sampling correction |
 | | `--custom-pg-loss-reducer-function-path` | Loss reduction (Dr.GRPO) |
-| | `--custom-convert-samples-to-train-data-path` | Sample → tensor batch |
+| | `--custom-convert-samples-to-train-data-path` | Sample to tensor batch |
 | **Megatron hooks** | `--custom-megatron-init-path` | After Megatron init |
 | | `--custom-megatron-before-log-prob-hook-path` | Before logprob compute |
 | | `--custom-megatron-before-train-step-hook-path` | Before each train step |
@@ -38,16 +36,14 @@ This page is a complete catalogue of those plug-points.
 | **Routing** | `--miles-router-middleware-paths` | Router middleware |
 | **Model** | `--custom-model-provider-path` | Megatron model factory |
 
-The rest of this page documents each one.
-
 ---
 
 ## Rollout
 
-### `--rollout-function-path` — the whole loop
+### `--rollout-function-path`
 
-Replace the entire rollout function. Use this only for **fundamentally different** flows
-(e.g. multi-agent co-evolution).
+Replace the entire rollout function. Use this only for fundamentally different flows
+such as multi-agent co-evolution.
 
 ```python
 async def generate_rollout(args, rollout_id, *, evaluation=False) \
@@ -55,14 +51,15 @@ async def generate_rollout(args, rollout_id, *, evaluation=False) \
     ...
 ```
 
-**Default:** `miles.rollout.sglang_rollout.generate_rollout` (or the experimental
-`InferenceRolloutFn` if `enable_experimental_rollout_refactor()`).
+**Default:** `miles.rollout.sglang_rollout.generate_rollout`, or
+`miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when
+`enable_experimental_rollout_refactor()` is on.
 
 **Reference:** [`examples/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/multi_agent/rollout_with_multi_agents.py).
 
-### `--custom-generate-function-path` — per-sample generation
+### `--custom-generate-function-path`
 
-Replace just the generation step inside the default rollout. Most tool-use / RAG /
+Replace just the generation step inside the default rollout. Most tool-use, RAG, and
 multi-turn workflows live here.
 
 ```python
@@ -72,7 +69,7 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
 
 **Reference:** [`examples/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/search-r1/generate_with_search.py).
 
-### `--data-source-path` — where prompts come from
+### `--data-source-path`
 
 ```python
 class CustomDataSource(DataSource):
@@ -84,9 +81,9 @@ class CustomDataSource(DataSource):
 
 **Default:** `miles.rollout.data_source.RolloutDataSourceWithBuffer`.
 
-### `--eval-function-path` — eval rollout
+### `--eval-function-path`
 
-Same signature as `--rollout-function-path`. Defaults to whatever rollout function you've
+Same signature as `--rollout-function-path`. Defaults to whatever rollout function is
 configured.
 
 ---
@@ -105,8 +102,8 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
     ...
 ```
 
-**Built-in `--rm-type` options:** `math`, `dapo`, `deepscaler`, `f1`, `gpqa`, `ifbench`,
-`remote_rm` (with `--rm-url`).
+**Built-in `--rm-type` options:** `math`, `dapo`, `deepscaler`, `f1`, `gpqa`,
+`ifbench`, `remote_rm` (with `--rm-url`), `random`.
 
 ### `--custom-reward-post-process-path`
 
@@ -116,7 +113,9 @@ Hook to normalise rewards differently from the default GRPO normalisation.
 
 ## Filtering
 
-### `--dynamic-sampling-filter-path` — per-group
+### `--dynamic-sampling-filter-path`
+
+Per-group filter; runs after scoring, before queueing for training.
 
 ```python
 def filter_function(args, samples: list[Sample], **kwargs) -> DynamicFilterOutput:
@@ -125,14 +124,25 @@ def filter_function(args, samples: list[Sample], **kwargs) -> DynamicFilterOutpu
 
 **Stock implementation:** `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std`.
 
-### `--buffer-filter-path` — at dequeue time
+### `--buffer-filter-path`
+
+Pops samples from the rollout buffer at dequeue time. The default is
+`pop_first` in `miles/rollout/data_source.py`.
 
 ```python
-def buffer_filter(samples: list[list[Sample]]) -> list[list[Sample]]:
+def buffer_filter(
+    args,
+    rollout_id: int,
+    buffer: list[list[Sample]],
+    num_samples: int,
+) -> list[list[Sample]]:
     ...
 ```
 
-### `--rollout-sample-filter-path` — per-sample, in-place
+### `--rollout-sample-filter-path`
+
+Per-sample, in-place. Set `s.remove_sample = True` to exclude a sample from the loss
+(advantage normalisation still uses it).
 
 ```python
 def filter_function(args, samples: list[Sample]) -> None:
@@ -143,27 +153,31 @@ def filter_function(args, samples: list[Sample]) -> None:
 
 ### `--rollout-all-samples-process-path`
 
-Run after rollout completes — for logging or analysis of *all* samples (kept and dropped).
+Runs after rollout completes and can see all samples, including filtered ones.
+Useful for logging or analysis.
 
 ### `--rollout-data-postprocess-path`
 
-Run after log probabilities have been computed but before training. Useful for updating
-loss masks based on per-token logprobs.
+Runs after log probabilities have been computed but before training. Useful for
+updating loss masks based on per-token logprobs.
 
 ---
 
 ## Training
 
-### `--custom-loss-function-path` — replace GRPO/PPO loss
+### `--custom-loss-function-path`
 
-Requires `--loss-type custom_loss`. Useful for novel objectives or multi-objective work.
+Replace the GRPO/PPO loss. Requires `--loss-type custom_loss`. Useful for novel
+objectives or multi-objective work.
 
-### `--custom-tis-function-path` — importance sampling
+### `--custom-tis-function-path`
 
-For off-policy correction when train ≠ inference. **Reference:**
-[`examples/train_infer_mismatch_helper/mis.py`](https://github.com/radixark/miles/blob/main/examples/train_infer_mismatch_helper/mis.py).
+Importance sampling correction for off-policy training when train and inference
+diverge.
 
-### `--custom-pg-loss-reducer-function-path` — loss reduction
+**Reference:** [`examples/train_infer_mismatch_helper/mis.py`](https://github.com/radixark/miles/blob/main/examples/train_infer_mismatch_helper/mis.py).
+
+### `--custom-pg-loss-reducer-function-path`
 
 ```python
 def get_pg_loss_reducer(
@@ -175,10 +189,10 @@ def get_pg_loss_reducer(
     ...
 ```
 
-**Use case:** Dr.GRPO divides by a constant instead of effective token count. **Reference:**
-[`examples/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/DrGRPO/custom_reducer.py).
+Use case: Dr.GRPO divides by a constant instead of effective token count.
+**Reference:** [`examples/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/DrGRPO/custom_reducer.py).
 
-### `--custom-convert-samples-to-train-data-path` — sample → tensor batch
+### `--custom-convert-samples-to-train-data-path`
 
 ```python
 def convert_samples_to_train_data(args, samples) -> dict:
@@ -210,7 +224,7 @@ def convert_samples_to_train_data(args, samples) -> dict:
 | `--custom-megatron-before-log-prob-hook-path` | `def custom_hook(args, model, store_prefix) -> None` |
 | `--custom-megatron-before-train-step-hook-path` | `def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler) -> None` |
 
-These give you per-step access to the live Megatron model and optimiser — handy for
+These give per-step access to the live Megatron model and optimiser, useful for
 custom probes, weight clipping, or surgical interventions.
 
 ---
@@ -235,7 +249,7 @@ Return `True` to suppress Miles's default logging, `False` to layer on top.
 
 ### `--miles-router-middleware-paths`
 
-Inject middleware into the [Miles Router](../advanced/miles-router.md) for request /
+Inject middleware into [MilesRouter](../advanced/miles-router.md) for request and
 response transformation, caching, or custom routing.
 
 ---
@@ -259,7 +273,7 @@ def custom_model_provider(
 
 ## Worked example
 
-Plugging in a custom rollout + custom reward in one launch script:
+A custom rollout plus a custom reward in one launch script:
 
 ```bash
 ROLLOUT_ARGS+=(
@@ -270,6 +284,6 @@ ROLLOUT_ARGS+=(
 )
 ```
 
-That's the entire delta from the stock GRPO recipe. No code changes to Miles itself.
+That is the entire delta from the stock GRPO recipe, with no source changes to Miles.
 
 → Next: [Server arguments reference](cli-reference.md)

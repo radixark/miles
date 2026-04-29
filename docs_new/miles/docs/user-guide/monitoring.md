@@ -5,21 +5,22 @@ description: wandb, structured logs, profiling, and what to look at when somethi
 
 # Monitoring & Logging
 
-A long RL run is half training and half watching dials. Miles tries to make the dials
-honest.
+Miles emits per-rollout metrics to stdout and (optionally) Weights & Biases. SGLang and
+Ray write their own logs to their default directories.
 
 ## What gets logged by default
 
-Each rollout iteration emits a structured row to stdout:
+Each rollout iteration emits a structured row to stdout (illustrative shape — exact
+fields depend on backend and config):
 
 ```text
 [trainer] iter 12/3000 | loss=0.412 reward=0.61 kl=0.018
                       | rollout=18.4s train=22.1s p2p=2.1s  (total 42.6s)
                       | grad_norm=0.93 lr=1.0e-06
-                      | rollout/min_resp_len=128 rollout/max_resp_len=4096
 ```
 
-Every column also goes into wandb if `--use-wandb` is on.
+When `--use-wandb` is set, metrics also go to wandb under the `train/`, `rollout/`,
+and `perf/` namespaces (see `miles/utils/wandb_utils.py`).
 
 ## Enabling wandb
 
@@ -28,42 +29,30 @@ ray job submit --address=auto -- \
   python3 train.py ... \
     --use-wandb \
     --wandb-project miles \
-    --wandb-group qwen3-30b-grpo \
-    --wandb-tags exp42,sweep
+    --wandb-group qwen3-30b-grpo
 ```
 
-Sensitive runs? Add `WANDB_API_KEY` to Ray's `env_vars` instead of baking it into the
-launch script.
+Available flags: `--use-wandb`, `--wandb-project`, `--wandb-group`. `WANDB_API_KEY`
+should be supplied via Ray's `env_vars` rather than baked into the launch script.
 
-## What to watch (and what they mean)
+## What to watch
 
-| Panel | Healthy pattern | Red flag |
+| Signal | Healthy pattern | Red flag |
 |---|---|---|
 | `loss` | Slow decay over hundreds of iterations | Spike → crash within an iteration |
 | `reward` | Trending up, with healthy variance | Reward saturates near a single value (collapse) |
 | `kl` | Bounded, drifts up over time | Sudden jump (policy diverged from ref) |
-| `entropy` | Slowly decreasing | Falls to ~0 too fast (mode collapse) |
+| `entropy_loss` | Slowly decreasing | Falls to ~0 too fast (mode collapse) |
 | `grad_norm` | < `clip_grad` (1.0 by default) | Repeatedly hitting clip threshold |
-| `rollout_time / train_time` | Roughly balanced | One ≫ other → resource imbalance |
-| `pg_clipfrac` | < 0.2 | > 0.5 means policy is moving fast → drop LR |
-| `truncated_frac` | Low | High = many responses hit max-len |
-| `rollout/empty_groups` | 0 | > 0 = filter is dropping everything |
+| `rollout_time` / `train_time` | Roughly balanced | One ≫ other → resource imbalance |
+| `train/pg_clipfrac` | < 0.2 | > 0.5 means policy is moving fast → drop LR |
 
-## Per-source logging
-
-When `--prompt-data` is multi-source, every numeric panel is broken out by name:
-
-```text
-reward/math   = 0.74
-reward/coding = 0.32
-reward/chat   = 0.91
-```
-
-Use this to diagnose curriculum imbalances.
+Panel names follow what `loss.py` and the rollout logger emit; Miles's wandb metrics
+live under `train/`, `rollout/`, `perf/`, `multi_turn/`, `passrate/` namespaces.
 
 ## Custom loggers
 
-Replace the default loggers with your own to push to internal systems:
+Replace the default rollout logger with your own to push to internal systems:
 
 ```python
 def my_log(rollout_id, args, samples, extra, rollout_time) -> bool:
@@ -75,23 +64,34 @@ def my_log(rollout_id, args, samples, extra, rollout_time) -> bool:
 --custom-rollout-log-function-path my_pkg.logging.my_log
 ```
 
-→ See [Customization #14](customization.md#logging) for both train and eval log hooks.
-
 ## Profiling
 
 | Tool | When |
 |---|---|
 | `nvidia-smi dmon -s u` | Quick sanity check on GPU utilisation |
-| `nsys profile` | Deep CUDA-level profiling (PyTorch hooks built in) |
+| `nsys profile` | Deep CUDA-level profiling |
 | `py-spy dump --pid <ray worker>` | Find Python-side stalls |
 | `ray timeline` | Inspect Ray task scheduling |
-| `--profile` flag | Built-in PyTorch profiler — writes Chrome traces |
 
-To capture a profile of just iterations 100–110:
+### Built-in PyTorch profiler
+
+The PyTorch profiler is wired into Miles via `miles/utils/profile_utils.py`. Flags
+differ by backend:
+
+**Megatron** — choose which sub-loop to profile:
 
 ```bash
-... --profile --profile-step-start 100 --profile-step-end 110 \
-    --profile-output /data/profiles/run-42
+--profile-target train_overall    # or train_actor, train_log_probs (multi-arg)
+```
+
+**FSDP** — additionally exposes the standard FSDPArgs window:
+
+```bash
+--use-pytorch-profiler
+--profile-step-start 10
+--profile-step-end 12
+--memory-snapshot-path snapshot.pickle
+--tensorboard-dir /data/tb-run-42
 ```
 
 Open the trace in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev/).
@@ -101,19 +101,20 @@ Open the trace in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev/).
 | Source | Path |
 |---|---|
 | Trainer stdout | wherever you redirected `ray job submit` (or Ray dashboard) |
-| SGLang | `/tmp/sglang/*.log` (override with `--sglang-log-dir`) |
 | Ray workers | `~/.ray/session_latest/logs/` |
 | wandb local cache | `wandb/run-<id>/files/` |
-| Profiler traces | `--profile-output` |
+| FSDP profiler / memory snapshot | `--tensorboard-dir`, `--memory-snapshot-path` |
 
-## Health-check endpoints
+## Router endpoints
 
-When `--miles-router` is on, the router exposes:
+[MilesRouter](../advanced/miles-router.md) (when launched via `--use-miles-router`)
+exposes a small FastAPI surface used internally by Miles:
 
-| Endpoint | What |
-|---|---|
-| `GET /healthz` | All engines responsive? |
-| `GET /metrics` | Prometheus metrics for queue depth, throughput, errors |
-| `GET /routing` | Per-engine routing stats (used by R3) |
+| Endpoint | Method | What |
+|---|---|---|
+| `/add_worker` | POST | Register an SGLang engine |
+| `/list_workers` | GET | List registered workers |
+| `/{path:path}` | GET/POST/PUT/DELETE | Proxy passthrough to selected worker |
 
-Wire these into your usual monitoring stack — most teams point Grafana at `/metrics`.
+Middleware plugins (e.g. radix-tree caching) can mount additional routes — see
+`miles/router/middleware_hub/` and the [Miles Router page](../advanced/miles-router.md).

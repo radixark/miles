@@ -28,7 +28,7 @@ flowchart LR
 | Object | Role | Lives in |
 |---|---|---|
 | **Prompt dataset** | Source of input examples | JSONL on disk (or `--data-source-path`) |
-| **Rollout (SGLang engines)** | Generates responses given prompts | One or more `sgl-router`-fronted SGLang servers |
+| **Rollout (SGLang engines)** | Generates responses given prompts | One or more SGLang servers behind a router — sgl router by default; opt into [MilesRouter](../advanced/miles-router.md) with `--use-miles-router` |
 | **Reward model** | Maps `(prompt, response, label) → score` | Built-in (`--rm-type`) or custom (`--custom-rm-path`) |
 | **Actor (Megatron / FSDP)** | The model being trained | Megatron `torch_dist` checkpoint, or HF directory under FSDP |
 | **Reference** | Frozen copy of the actor for KL anchoring | Loaded from `--ref-load`, never updated |

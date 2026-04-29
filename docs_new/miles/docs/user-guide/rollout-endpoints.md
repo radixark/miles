@@ -1,14 +1,14 @@
 ---
 title: Rollout Endpoints
-description: How Miles talks to SGLang — the /generate endpoint and the OpenAI-format /v1/chat/completions endpoint.
+description: How Miles talks to SGLang. The /generate endpoint and the OpenAI-format /v1/chat/completions endpoint.
 ---
 
 # Rollout Endpoints
 
-Miles supports two ways for a custom rollout function to talk to SGLang. Use the
-**`/generate` endpoint** when you control tokenisation and want the most direct
-interface. Use the **OpenAI chat endpoint** when you're building an agent loop that
-benefits from server-side session state.
+Miles supports two ways for a custom rollout function to talk to SGLang. The
+`/generate` endpoint is the most direct interface; you control tokenisation. The
+OpenAI-format `/v1/chat/completions` endpoint is router-session aware and fits
+agent loops with multi-turn dialogue.
 
 | | `/generate` | OpenAI `/v1/chat/completions` |
 |---|---|---|
@@ -27,8 +27,8 @@ Both entry points are wired up through `--custom-generate-function-path`.
 ### What `generate_hub` is
 
 `miles/rollout/generate_hub/` ships reusable generate functions that conform to the
-refactored rollout interface (`GenerateFnInput` / `GenerateFnOutput`). They're designed
-to be composed with custom agents, tool use, or multi-turn logic.
+refactored rollout interface (`GenerateFnInput` / `GenerateFnOutput`). They compose
+with custom agents, tool use, or multi-turn logic.
 
 Key modules:
 
@@ -43,9 +43,9 @@ Key modules:
 The runtime contract:
 
 1. The rollout engine passes a `GenerateFnInput` containing:
-    - `state` — tokenizer, processor, args, sampling defaults.
-    - `sample` — the prompt, current tokens, response, status.
-    - `sampling_params` — `max_new_tokens`, `temperature`, `top_p`, etc.
+    - `state`: tokenizer, processor, args, sampling defaults.
+    - `sample`: the prompt, current tokens, response, status.
+    - `sampling_params`: `max_new_tokens`, `temperature`, `top_p`, etc.
 2. Your function:
     - Builds a request from the prompt.
     - Executes it against SGLang.
@@ -79,7 +79,7 @@ generate.add_arguments = _add_arguments
 ```
 
 !!! tip "Custom CLI flags"
-    `generate.add_arguments = _add_arguments` is the hook for custom CLI flags. They're
+    `generate.add_arguments = _add_arguments` registers extra CLI flags. They are
     parsed into `input.args` and available everywhere in your generator.
 
 Helpers:
@@ -90,22 +90,22 @@ Helpers:
 
 ### Reference generators
 
-- **`single_turn.py`** — Single-turn generation via `/generate`. Text or multimodal prompts.
-- **`multi_turn.py`** — Multi-turn tool calling via `/generate`. CLI flags:
+- **`single_turn.py`**: single-turn generation via `/generate`. Text or multimodal prompts.
+- **`multi_turn.py`**: multi-turn tool calling via `/generate`. Adds CLI flags
   `--generate-max-turns`, `--generate-tool-specs-path`, `--generate-tool-call-parser`,
   `--generate-execute-tool-function-path`, `--generate-multi-samples`.
-- **`benchmarkers.py`** — Forces random output sequence length for benchmarking.
+- **`benchmarkers.py`**: forces random output sequence length for benchmarking.
 
 ### Radix-tree middleware (full TITO for `/generate`)
 
-For **token-in / token-out** caching on `/generate`, turn on the radix-tree middleware.
-It's unrelated to the OpenAI session middleware and only affects the `/generate` and
-`/retrieve_from_text` routes.
+For token-in / token-out caching on `/generate`, enable the radix-tree middleware.
+It is independent of the OpenAI session middleware and only affects the `/generate`
+and `/retrieve_from_text` routes.
 
 What it does:
 
 - Caches token ids and logprobs by prompt text in a radix tree.
-- Lets `/generate` requests include `input_tokens` — skipping re-tokenisation.
+- Lets `/generate` requests include `input_tokens`, skipping re-tokenisation.
 - Enables `update_sample_from_response` to fetch tokens via `/retrieve_from_text`
   during training.
 
@@ -116,10 +116,10 @@ Enable it:
 --miles-router-middleware-paths miles.router.middleware_hub.radix_tree_middleware.RadixTreeMiddleware
 ```
 
-Make sure `--sglang-router-ip` and `--sglang-router-port` point at Miles Router so
+Make sure `--sglang-router-ip` and `--sglang-router-port` point at MilesRouter so
 `/retrieve_from_text` is reachable during rollout.
 
-See [Miles Router (R3)](../advanced/miles-router.md) for the broader router picture.
+See [MilesRouter](../advanced/miles-router.md) for the broader router picture.
 
 ---
 
@@ -127,7 +127,7 @@ See [Miles Router (R3)](../advanced/miles-router.md) for the broader router pict
 
 ### Minimal `run_agent`
 
-Your `run_agent` receives a session-scoped `base_url`. Send OpenAI-format chat requests
+A `run_agent` receives a session-scoped `base_url`. Send OpenAI-format chat requests
 to `base_url/v1/chat/completions` and pass the `messages` list as the prompt.
 
 ```python
@@ -140,13 +140,13 @@ async def run_agent(base_url: str, prompt, request_kwargs: dict | None = None) -
 ```
 
 !!! tip "What's already handled"
-    - `base_url` already includes `/sessions/<id>` — don't add it manually.
+    - `base_url` already includes `/sessions/<id>`. Don't append it manually.
     - `request_kwargs` already contains sampling defaults from
       `agentic_tool_call.build_chat_request_kwargs`.
     - `max_new_tokens` from Miles's rollout params is mapped to OpenAI's `max_tokens`
       before the request is sent.
-    - For structured parsing, use SGLang's `ChatCompletionRequest`-compatible format —
-      a superset of OpenAI plus SGLang extras.
+    - For structured parsing, use SGLang's `ChatCompletionRequest`-compatible
+      format, a superset of OpenAI plus SGLang extras.
 
 ### OpenAI chat messages
 
@@ -165,9 +165,9 @@ Standard OpenAI format:
 ```
 
 !!! warning "Leave `logprob_start_len` alone"
-    `logprobs=True` and `return_prompt_token_ids=True` are set by default — they're
-    what enables TITO. **Do not** set `logprob_start_len=0`: it forces SGLang to
-    compute logprobs for every prompt token, destroys the prefix cache, and hurts
+    `logprobs=True` and `return_prompt_token_ids=True` are set by default; they
+    enable TITO. Do **not** set `logprob_start_len=0`. That forces SGLang to compute
+    logprobs for every prompt token, destroys the prefix cache, and hurts
     performance. `return_prompt_token_ids=True` returns prompt token ids at zero
     cost with full caching.
 
@@ -175,14 +175,14 @@ Standard OpenAI format:
 
 Generator entry point:
 
-- `miles/rollout/generate_hub/agentic_tool_call.py` — OpenAI-format agent loop via
+- `miles/rollout/generate_hub/agentic_tool_call.py`: OpenAI-format agent loop via
   router sessions.
 
 Examples:
 
-- [`examples/openai_format/dapo_math.py`](https://github.com/radixark/miles/blob/main/examples/openai_format/dapo_math.py) —
+- [`examples/openai_format/dapo_math.py`](https://github.com/radixark/miles/blob/main/examples/openai_format/dapo_math.py):
   single-turn OpenAI-format agent (DAPO math).
-- [`examples/openai_format/run-qwen3-4B.sh`](https://github.com/radixark/miles/blob/main/examples/openai_format/run-qwen3-4B.sh) — launcher.
+- [`examples/openai_format/run-qwen3-4B.sh`](https://github.com/radixark/miles/blob/main/examples/openai_format/run-qwen3-4B.sh): launcher.
 
 Wire-up:
 
@@ -194,40 +194,40 @@ CUSTOM_ARGS=(
 ```
 
 !!! warning "Don't apply chat template"
-    For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must remain
-    a `messages` list — SGLang handles templating server-side.
+    For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must
+    remain a `messages` list. SGLang handles templating server-side.
 
 ### Customising the wrapper
 
 [`agentic_tool_call.generate`](https://github.com/radixark/miles/blob/main/miles/rollout/generate_hub/agentic_tool_call.py)
-is a thin wrapper around your custom agent. It:
+is a thin wrapper around the custom agent. It:
 
-1. Creates a session on Miles Router and builds a session-scoped `base_url`.
+1. Creates a session on MilesRouter and builds a session-scoped `base_url`.
 2. Calls the custom agent (from `--custom-agent-function-path`) to send one or more
    chat requests.
 3. Collects session records via `OpenAIEndpointTracer`.
 4. Converts records into `Sample` objects via `compute_samples_from_openai_records`.
 
-For broader customisation (beyond the OpenAI wrapper), see the `/generate` path above.
+For broader customisation beyond the OpenAI wrapper, see the `/generate` path above.
 
 ### TITO (token-in / token-out)
 
 TITO needs two things from every SGLang response:
 
-1. **Prompt token ids** — extracted from `response.choices[0].prompt_token_ids`.
+1. **Prompt token ids**: extracted from `response.choices[0].prompt_token_ids`.
    Returned when the request sets `return_prompt_token_ids=True`.
-2. **Output token ids + logprobs** — from `response.choices[0].logprobs.content[*]`
+2. **Output token ids and logprobs**: from `response.choices[0].logprobs.content[*]`
    (`token_id`, `logprob`). Returned when `logprobs=True`.
 
-By default, `build_chat_request_kwargs` sets **both** flags. The session middleware
-forwards raw `messages` to SGLang, which tokenises the prompt and returns the response.
-`_compute_sample_from_openai_record` in
+By default, `build_chat_request_kwargs` sets both flags. The session middleware
+forwards raw `messages` to SGLang, which tokenises the prompt and returns the
+response. `_compute_sample_from_openai_record` in
 [`openai_endpoint_utils.py`](https://github.com/radixark/miles/blob/main/miles/rollout/generate_utils/openai_endpoint_utils.py)
-extracts prompt + output ids from the response and concatenates them into
+extracts prompt and output ids from the response and concatenates them into
 `sample.tokens`. You don't need to provide `input_ids` yourself.
 
 Multi-turn samples can be saved within a single session, but tokens are **not**
-inherited across turns — each request is tokenised independently.
+inherited across turns. Each request is tokenised independently.
 
 ### Common pitfalls
 
@@ -235,14 +235,14 @@ inherited across turns — each request is tokenised independently.
 |---|---|
 | Missing logprobs / prompt token ids | Ensure `logprobs=True` and `return_prompt_token_ids=True`. |
 | Prefix cache hit rate drops to 0 | Remove `logprob_start_len=0`. |
-| Tokenisation drift across turns | Expected — tokens aren't inherited. |
-| Custom agent hitting the wrong URL | `base_url` already has `/sessions/<id>` — don't add it. |
+| Tokenisation drift across turns | Expected. Tokens aren't inherited. |
+| Custom agent hitting the wrong URL | `base_url` already has `/sessions/<id>`. Don't append it. |
 
 ---
 
 ## Next
 
-- [Customization](customization.md) — the full catalogue of `--*-path` hooks.
-- [Agentic Chat Templates](agentic-chat-template.md) — verifying your template is
+- [Customization](customization.md): the full catalogue of `--*-path` hooks.
+- [Agentic Chat Templates](agentic-chat-template.md): verifying that a template is
   append-only across turns.
-- [Multi-agent example](../examples/multi-agent.md) — full agentic walkthrough.
+- [Multi-agent example](../examples/multi-agent.md): full agentic walkthrough.
