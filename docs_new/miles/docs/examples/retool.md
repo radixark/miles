@@ -125,27 +125,32 @@ masked out of the loss.
 ## Walkthrough — sandbox
 
 `tool_sandbox.py` keeps execution **boring** — Python, no shell, restricted modules,
-hard memory + time caps:
+hard memory + time caps. Defaults live in a module-level `TOOL_CONFIGS` dict, and the
+executor is `PythonSandbox`:
 
 ```python
-class CodeSandbox:
-    ALLOWED_IMPORTS = {"math", "numpy", "sympy", "fractions", "decimal"}
-    MEMORY_LIMIT_MB = 256
-    TIME_LIMIT_SEC  = 5
+TOOL_CONFIGS = {
+    "python_timeout": 120,         # seconds
+    "python_memory_limit": "4GB",
+    "tool_concurrency": 32,
+    # ...
+}
 
-    def execute(self, code: str) -> ExecutionResult:
-        with resource_limits(memory=self.MEMORY_LIMIT_MB,
-                             time=self.TIME_LIMIT_SEC):
-            return run_python_in_subprocess(
-                code,
-                allowed_imports=self.ALLOWED_IMPORTS,
-                stderr_redirect=True,
-            )
+class PythonSandbox:
+    def __init__(self, timeout: int = 10, memory_limit: str = "100MB"):
+        self.timeout = timeout
+        self.memory_limit = memory_limit
+        self.allowed_modules = {"math", "random", "datetime", "collections",
+                                "itertools", "functools", "operator",
+                                "statistics", "decimal", "fractions"}
+
+    async def execute_code(self, code: str) -> str:
+        ...
 ```
 
 Every execution runs in its own subprocess. If you need a richer sandbox (network,
-filesystem), swap in a container-based runner — the interface is just `execute(code) →
-ExecutionResult`.
+filesystem), swap in a container-based runner — the interface is just
+`PythonSandbox.execute_code(code) -> str`.
 
 ## Walkthrough — reward
 
@@ -173,9 +178,9 @@ shape and tool use just keep gradient alive in the early epochs.
 
 | Knob | Effect |
 |---|---|
-| `MEMORY_LIMIT_MB` | Sandbox per-call memory |
-| `TIME_LIMIT_SEC` | Sandbox per-call wallclock |
-| `ALLOWED_IMPORTS` | What modules the model can import |
+| `TOOL_CONFIGS["python_memory_limit"]` | Sandbox per-call memory |
+| `TOOL_CONFIGS["python_timeout"]` | Sandbox per-call wallclock |
+| `PythonSandbox.allowed_modules` | What modules the model can import |
 | `--rollout-max-response-len` | Total response cap (incl. tool I/O) |
 | `format / tool-use bonus weights` | How aggressively to shape early |
 
@@ -191,16 +196,17 @@ sandbox/timeout_rate                  < 0.02
 ```
 
 If `sandbox/timeout_rate` climbs, the model is generating expensive code. Either bump
-`TIME_LIMIT_SEC` or restrict `ALLOWED_IMPORTS` (numpy is the usual suspect).
+`TOOL_CONFIGS["python_timeout"]` or restrict `PythonSandbox.allowed_modules` (numpy is
+the usual suspect).
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| `ModuleNotFoundError` from sandbox | Add the module to `ALLOWED_IMPORTS` |
+| `ModuleNotFoundError` from sandbox | Add the module to `PythonSandbox.allowed_modules` |
 | Tool response not masked | Check `<tool_response>` boundary regex matches your output |
 | EM = 0 forever | Verify your answer extractor — check a few samples manually |
-| Sandbox returns `MemoryError` | Bump `MEMORY_LIMIT_MB`, or restrict `numpy` calls |
+| Sandbox returns `MemoryError` | Bump `TOOL_CONFIGS["python_memory_limit"]`, or restrict `numpy` calls |
 
 ## Variations
 
