@@ -6,6 +6,7 @@ register_cuda_ci(est_time=60, suite="stage-b-fast-1-gpu", num_gpus=1)
 import pytest
 import torch
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
+from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
 from transformer_engine.pytorch.custom_recipes.quantization_nvfp4 import NVFP4QuantizerRef
 
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 import (
@@ -76,6 +77,39 @@ def test_nvfp4_quantize_params_requires_complete_gated_pair():
             ],
             quantization_config={"quant_method": "nvfp4"},
         )
+
+
+def test_nvfp4_quantize_params_respects_extra_high_precision_layers_megatron():
+    weight = torch.randn((4, NVFP4_GROUP_SIZE), dtype=torch.bfloat16)
+    converted_named_params = [
+        ("model.layers.0.mlp.experts.0.gate_proj.weight", weight),
+        ("model.layers.0.mlp.experts.0.up_proj.weight", weight),
+    ]
+    args = type("Args", (), {"extra_high_precision_layers_megatron": ("linear_fc1",)})()
+
+    out = quantize_params_nvfp4(
+        args=args,
+        megatron_name="decoder.layers.0.mlp.experts.linear_fc1.weight0",
+        converted_named_params=converted_named_params,
+        quantization_config={"quant_method": "nvfp4"},
+    )
+
+    assert out is converted_named_params
+
+
+def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
+    weight = torch.randn((4, NVFP4_GROUP_SIZE), dtype=torch.bfloat16)
+
+    assert not tool_should_quantize_nvfp4(
+        "model.layers.0.mlp.experts.0.gate_proj.weight",
+        weight,
+        skip_weight_substrings=("mlp.experts.0",),
+    )
+    assert tool_should_quantize_nvfp4(
+        "model.layers.0.mlp.experts.0.gate_proj.weight",
+        weight,
+        skip_weight_substrings=("mlp.experts.1",),
+    )
 
 
 @pytest.mark.parametrize(

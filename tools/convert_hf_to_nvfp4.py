@@ -1,9 +1,12 @@
 """
 python tools/convert_hf_to_nvfp4.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR]
                                    [--device DEVICE] [--keep-last-n KEEP_LAST_N] [--keep-first-n KEEP_FIRST_N]
+                                   [--extra-high-precision-layers-hf ...]
 
 Convert a BF16/FP16/FP32 HF safetensors checkpoint to NVFP4 (E2M1) for MoE
 expert GEMMs only. Dense linear layers are left unmodified.
+Use --extra-high-precision-layers-hf to keep additional HF weight-name
+substrings unquantized.
 
 This follows the NVFP4 reference quantization in Transformer Engine and uses
 1D block scaling (NVTE_NVFP4_1D_SCALING, group size = 16).
@@ -137,11 +140,14 @@ def should_quantize(
     name: str,
     weight: torch.Tensor,
     skip_layers: set[int] | None = None,
+    skip_weight_substrings: tuple[str, ...] = (),
 ) -> bool:
     if skip_layers:
         layer_id = _extract_layer_id(name)
         if layer_id is not None and layer_id in skip_layers:
             return False
+    if any(substr in name for substr in skip_weight_substrings):
+        return False
     if not _is_moe_expert_weight_name(name):
         return False
     if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
@@ -330,6 +336,7 @@ def _collect_shared_global_amax(
     safetensors_files: list[str],
     device: str,
     skip_layers: set[int],
+    skip_weight_substrings: tuple[str, ...],
 ) -> dict[str, torch.Tensor]:
     """Collect shared gate/up amax across all shards to keep w1/w3 scales equal."""
     gate_amax: dict[str, torch.Tensor] = {}
@@ -338,7 +345,7 @@ def _collect_shared_global_amax(
         with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
             for key in f.keys():
                 tensor = f.get_tensor(key)
-                if not should_quantize(key, tensor, skip_layers):
+                if not should_quantize(key, tensor, skip_layers, skip_weight_substrings):
                     continue
                 base, role = _split_gated_pair_name(key)
                 if base is None or role is None:
@@ -366,6 +373,7 @@ def process_file(
     result_collector: ConversionResult,
     device: str,
     skip_layers: set[int],
+    skip_weight_substrings: tuple[str, ...],
     shared_global_amax: dict[str, torch.Tensor],
 ) -> None:
     if not filename.endswith(".safetensors"):
@@ -377,7 +385,7 @@ def process_file(
     with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
         for key in f.keys():
             tensor = f.get_tensor(key)
-            if should_quantize(key, tensor, skip_layers):
+            if should_quantize(key, tensor, skip_layers, skip_weight_substrings):
                 base, _role = _split_gated_pair_name(key)
                 global_amax = shared_global_amax.get(base) if base else None
                 qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor, global_amax=global_amax)
@@ -396,7 +404,14 @@ def process_file(
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
 
 
-def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int, keep_first_n: int) -> None:
+def convert_nvfp4(
+    model_dir: str,
+    save_dir: str,
+    device: str,
+    keep_last_n: int,
+    keep_first_n: int,
+    extra_high_precision_layers_hf: tuple[str, ...] = (),
+) -> None:
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
     os.makedirs(output_path, exist_ok=True)
@@ -417,6 +432,7 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int, 
         safetensors_files=safetensors_files,
         device=device,
         skip_layers=skip_layers,
+        skip_weight_substrings=extra_high_precision_layers_hf,
     )
     result_collector = ConversionResult()
     for filename in tqdm(safetensors_files, desc="Processing files"):
@@ -427,6 +443,7 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int, 
             result_collector,
             device,
             skip_layers,
+            extra_high_precision_layers_hf,
             shared_global_amax,
         )
         gc.collect()
@@ -476,6 +493,13 @@ def main() -> None:
         default=0,
         help="Keep the first N transformer layers unquantized (BF16/FP16).",
     )
+    parser.add_argument(
+        "--extra-high-precision-layers-hf",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Additional HF weight-name substrings to keep unquantized.",
+    )
     args = parser.parse_args()
 
     if isinstance(args.device, str) and args.device.isdigit():
@@ -496,7 +520,16 @@ def main() -> None:
     elif not os.path.isdir(args.save_dir):
         raise ValueError("The save_dir should be a directory.")
 
-    convert_nvfp4(args.model_dir, args.save_dir, str(device), args.keep_last_n, args.keep_first_n)
+    convert_nvfp4(
+        args.model_dir,
+        args.save_dir,
+        str(device),
+        args.keep_last_n,
+        args.keep_first_n,
+        extra_high_precision_layers_hf=tuple(
+            s.strip() for s in args.extra_high_precision_layers_hf if isinstance(s, str) and s.strip()
+        ),
+    )
 
 
 if __name__ == "__main__":

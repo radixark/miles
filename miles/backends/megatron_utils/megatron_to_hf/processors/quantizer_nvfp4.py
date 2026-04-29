@@ -38,6 +38,12 @@ def _is_ignored(name: str, ignore_rules: list[str]) -> bool:
 def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
+
+    if getattr(args, "extra_high_precision_layers_megatron", False):
+        for layer_name in getattr(args, "extra_high_precision_layers_megatron", ()):
+            if layer_name in megatron_name:
+                return converted_named_params
+
     ignore_rules = _get_ignore_rules(quantization_config)
 
     decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
