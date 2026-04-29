@@ -46,7 +46,7 @@ Replace the entire rollout function. Use this only for fundamentally different f
 such as multi-agent co-evolution.
 
 ```python
-async def generate_rollout(args, rollout_id, *, evaluation=False) \
+def generate_rollout(args, rollout_id, data_source, evaluation=False) \
         -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     ...
 ```
