@@ -4,6 +4,14 @@ import os
 import einops
 import torch
 import torch.nn as nn
+
+# Enable TF32 for fp32 matmul to match the precision of the TileKernels MHC
+# kernels (which use TF32 tensor-core GEMM for the HC fp32 mixer).  Without
+# this, PyTorch's default ``allow_tf32=False`` keeps fp32 ``F.linear`` on the
+# SIMT path, which introduces a ~1e-4 mean-abs gap vs the TileKernels output;
+# matching TF32 brings the gap to <=1.5e-5 mean-abs (1 ULP bf16 max-abs).
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import (
     TEColumnParallelLinear,
