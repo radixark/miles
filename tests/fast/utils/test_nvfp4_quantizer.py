@@ -97,6 +97,34 @@ def test_nvfp4_quantize_params_respects_extra_high_precision_layers_megatron():
     assert out is converted_named_params
 
 
+@pytest.mark.parametrize("layer_idx", [0, 3])
+def test_nvfp4_quantize_params_respects_first_last_layers_bf16(layer_idx):
+    weight = torch.randn((4, NVFP4_GROUP_SIZE), dtype=torch.bfloat16)
+    converted_named_params = [
+        ("model.layers.0.mlp.experts.0.gate_proj.weight", weight),
+        ("model.layers.0.mlp.experts.0.up_proj.weight", weight),
+    ]
+    args = type(
+        "Args",
+        (),
+        {
+            "first_last_layers_bf16": True,
+            "num_layers": 4,
+            "num_layers_at_start_in_bf16": 1,
+            "num_layers_at_end_in_bf16": 1,
+        },
+    )()
+
+    out = quantize_params_nvfp4(
+        args=args,
+        megatron_name=f"decoder.layers.{layer_idx}.mlp.experts.linear_fc1.weight0",
+        converted_named_params=converted_named_params,
+        quantization_config={"quant_method": "nvfp4"},
+    )
+
+    assert out is converted_named_params
+
+
 def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
     weight = torch.randn((4, NVFP4_GROUP_SIZE), dtype=torch.bfloat16)
 

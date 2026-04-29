@@ -96,6 +96,33 @@ def test_mxfp8_quantize_params_respects_extra_high_precision_layers_megatron():
     assert out is converted_named_params
 
 
+@pytest.mark.parametrize("layer_idx", [0, 3])
+def test_mxfp8_quantize_params_respects_first_last_layers_bf16(layer_idx):
+    weight = torch.randn((4, MXFP8_GROUP_SIZE), dtype=torch.bfloat16)
+    converted_named_params = [
+        ("model.layers.0.mlp.experts.0.down_proj.weight", weight),
+    ]
+    args = type(
+        "Args",
+        (),
+        {
+            "first_last_layers_bf16": True,
+            "num_layers": 4,
+            "num_layers_at_start_in_bf16": 1,
+            "num_layers_at_end_in_bf16": 1,
+        },
+    )()
+
+    out = quantize_params_mxfp8(
+        args=args,
+        megatron_name=f"decoder.layers.{layer_idx}.mlp.experts.linear_fc2.weight0",
+        converted_named_params=converted_named_params,
+        quantization_config={"quant_method": "mxfp8"},
+    )
+
+    assert out is converted_named_params
+
+
 def test_mxfp8_hf_should_quantize_respects_extra_high_precision_layers_hf():
     weight = torch.randn((4, MXFP8_GROUP_SIZE), dtype=torch.bfloat16)
 
