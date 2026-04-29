@@ -35,20 +35,17 @@ noise no longer flips routes.
 in `meta_info` of each response, with shape
 `(seq_len - 1, num_layers, top_k)` and dtype `int32`.
 
-**Miles side.** Set both:
+**Miles side.** Enable R3 with:
 
 ```bash
---use-miles-router
 --use-rollout-routing-replay
 ```
 
-`--use-miles-router` is required because the default SGLang Model Gateway drops
-unknown response fields, including the routing metadata. Rollout sends
-`return_routed_experts=true` in each request and stores the results in
-`sample.rollout_routed_experts` (`miles/utils/types.py`). The trainer pushes the
-arrays through `RoutingReplayManager` (`miles/utils/replay_base.py`), and
-`replay_utils.py` plugs them into the forward pass so recorded routes are used
-instead of recomputed ones.
+Rollout sends `return_routed_experts=true` in each request and stores the
+results in `sample.rollout_routed_experts` (`miles/utils/types.py`). The
+trainer pushes the arrays through `RoutingReplayManager`
+(`miles/utils/replay_base.py`), and `replay_utils.py` plugs them into the
+forward pass so recorded routes are used instead of recomputed ones.
 
 ## Memory cost
 

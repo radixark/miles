@@ -249,8 +249,8 @@ Return `True` to suppress Miles's default logging, `False` to layer on top.
 
 ### `--miles-router-middleware-paths`
 
-Inject middleware into [MilesRouter](../advanced/miles-router.md) for request and
-response transformation, caching, or custom routing.
+Inject middleware into the router for request and response transformation,
+caching, or custom routing.
 
 ---
 

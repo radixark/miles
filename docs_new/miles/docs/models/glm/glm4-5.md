@@ -96,7 +96,7 @@ python scripts/run_glm45_355b_a32b.py train --hardware GB300
 | `run-glm4.5-355B-A32B.sh` | GSPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis`, `--use-kl-loss` |
 | `run_glm45_355b_a32b.py` | GRPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis`, `--use-kl-loss` |
 
-Neither launcher enables `--use-miles-router` / `--use-rollout-routing-replay` by default. The Python launcher exposes `--enable-mis` (TIS/RS config) as an opt-in.
+Neither launcher enables `--use-rollout-routing-replay` by default. The Python launcher exposes `--enable-mis` (TIS/RS config) as an opt-in.
 
 ### 5.3 Rollout & SGLang
 
@@ -140,4 +140,4 @@ CPU Adam on:
 
 - [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
 - [INT4 QAT](../../advanced/int4-qat.md)
-- [Miles Router (R3)](../../advanced/miles-router.md) — opt-in via `--enable-mis` on the Python launcher.
+- [Rollout Routing Replay (R3)](../../advanced/miles-router.md) — opt-in via `--enable-mis` on the Python launcher.

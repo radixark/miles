@@ -14,7 +14,7 @@ description: Launch recipes for GLM-4.7-Flash — compact MLA + MoE with R3 enab
 - **Compact MoE architecture**: 30 B total / 3 B active, sparse activation for efficient inference.
 - **MLA attention**: Multi-head Latent Attention with q-LoRA rank 768 and kv-LoRA rank 512.
 - **MTP head + EAGLE speculative**: built-in `--mtp-num-layers 1` and EAGLE rollout enabled by default.
-- **R3 on by default**: both miles launchers enable `--use-miles-router --use-rollout-routing-replay` out of the box.
+- **R3 on by default**: both miles launchers enable `--use-rollout-routing-replay` out of the box.
 
 ## 2. Supported Variants
 
@@ -91,7 +91,6 @@ SGLANG_ARGS=(
    --sglang-speculative-num-draft-tokens 3
 
    # R3 — on by default in this script
-   --use-miles-router
    --use-rollout-routing-replay
 )
 ```
@@ -109,9 +108,9 @@ CPU Adam on:
 ### 5.5 Notable quirks
 
 - Megatron-side DeepEP / `flex` dispatcher are commented out by default in this recipe.
-- R3 (`--use-miles-router --use-rollout-routing-replay`) is enabled by default — atypical for the rest of the model lineup.
+- R3 (`--use-rollout-routing-replay`) is enabled by default — atypical for the rest of the model lineup.
 
 ## 6. Pairs Well With
 
-- [Miles Router (R3)](../../advanced/miles-router.md) — already on by default.
+- [Rollout Routing Replay (R3)](../../advanced/miles-router.md) — already on by default.
 - [FP8 & Low Precision](../../advanced/fp8-low-precision.md)

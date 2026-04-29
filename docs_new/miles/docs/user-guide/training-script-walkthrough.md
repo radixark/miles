@@ -217,7 +217,7 @@ A few design choices become visible here:
   or when you want length-proportional weighting.
 - **`--use-tis` is the numerical safety belt.** Switch it on when rollout and trainer
   operate at different precisions or when you explicitly want off-policy reuse. See
-  the R3 deep dive in [Miles Router](../advanced/miles-router.md).
+  the R3 deep dive in [Rollout Routing Replay (R3)](../advanced/miles-router.md).
 
 ## OPTIMIZER_ARGS — nothing surprising
 
@@ -262,10 +262,9 @@ Common additions that don't ship in the canonical recipe:
 | `--sglang-enable-dp-attention` | Long prompts on MoE. |
 | `--sglang-log-level INFO` | Debugging. |
 
-Miles multiplexes across multiple SGLang engines through a router — the SGLang Model
-Gateway by default, or [MilesRouter](../advanced/miles-router.md) with
-`--use-miles-router`. When DP-attention is off, the effective `dp_size` is derived
-from `rollout-num-gpus / rollout-num-gpus-per-engine`.
+Miles multiplexes across multiple SGLang engines through a router. When
+DP-attention is off, the effective `dp_size` is derived from
+`rollout-num-gpus / rollout-num-gpus-per-engine`.
 
 ---
 
