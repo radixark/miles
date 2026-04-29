@@ -93,8 +93,8 @@ python scripts/run_glm45_355b_a32b.py train --hardware GB300
 
 | Source | Advantage | Notable flags |
 |---|---|---|
-| `run-glm4.5-355B-A32B.sh` | GSPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis`, `--use-kl-loss` |
-| `run_glm45_355b_a32b.py` | GRPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis`, `--use-kl-loss` |
+| `run-glm4.5-355B-A32B.sh` | GSPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis` |
+| `run_glm45_355b_a32b.py` | GRPO | `--eps-clip 1e-4 --eps-clip-high 2e-4 --use-tis` |
 
 Neither launcher enables `--use-miles-router` / `--use-rollout-routing-replay` by default. The Python launcher exposes `--enable-mis` (TIS/RS config) as an opt-in.
 
