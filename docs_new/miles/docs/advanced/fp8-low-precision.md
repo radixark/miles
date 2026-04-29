@@ -54,9 +54,6 @@ groups:
 --fp8-format e4m3
 --fp8-recipe blockwise
 
-# Router (separate group)
---use-miles-router
-
 # Optional, for MoE numerical stability
 --use-tis
 ```
@@ -66,7 +63,6 @@ groups:
 | `--transformer-impl transformer_engine` | Megatron flag. Routes Megatron's forward through TransformerEngine so FP8 GEMM is actually engaged. |
 | `--fp8-format e4m3` | Megatron flag. Forward FP8 format used by TransformerEngine. |
 | `--fp8-recipe blockwise` | Megatron flag. Block-wise quantisation recipe; the SGLang side must serve weights in the matching layout. |
-| `--use-miles-router` | Miles flag (`add_router_arguments`). Required for R3 and the radix-tree middleware. |
 | `--use-tis` | Truncated Importance Sampling for residual precision drift. |
 
 For MoE workloads, also consider `--use-rollout-routing-replay` (R3). The
@@ -103,6 +99,6 @@ DeepSeek-V3), the same `--fp8-recipe blockwise` recipe applies. Point
 
 ## Reading order
 
-1. [MilesRouter and R3](miles-router.md): get R3 working first.
+1. [Rollout Routing Replay (R3)](miles-router.md): get R3 working first.
 2. This page: turn on FP8.
 3. [INT4 QAT](int4-qat.md): push further when memory is the constraint.

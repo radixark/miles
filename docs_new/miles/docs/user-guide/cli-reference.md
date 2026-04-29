@@ -237,7 +237,7 @@ Sections mirror the launch-script argument groups.
 | `--eps-clip-high` | float | – | Asymmetric high clip. |
 | `--use-tis` | flag | off | Truncated Importance Sampling. |
 | `--use-routing-replay` | flag | off | Forward/backward routing consistency. |
-| `--use-rollout-routing-replay` | flag | off | R3 (requires `--use-miles-router`). |
+| `--use-rollout-routing-replay` | flag | off | R3 — capture inference-side expert routing and replay it during training. |
 | `--calculate-per-token-loss` | flag | off | Per-token loss reduction. |
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
 | `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |
@@ -277,7 +277,6 @@ Sections mirror the launch-script argument groups.
 |---|---|---|---|
 | `--sglang-router-ip` | str | – | External router IP. Miles starts its own router if unset. |
 | `--sglang-router-port` | int | – | External router port. |
-| `--use-miles-router` | flag | off | Use [MilesRouter](../advanced/miles-router.md) instead of the SGLang Model Gateway. Required for R3 and the radix-tree middleware. |
 | `--sglang-*` | passthrough | | Any flag accepted by `python -m sglang.launch_server` works with this prefix. |
 | `--router-*` | passthrough | | Any flag accepted by the active router works with this prefix. |
 

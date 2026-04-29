@@ -77,7 +77,7 @@ Plus `--use-dynamic-batch-size`, `--data-pad-size-multiplier 4096`, `--log-probs
 
 ### 5.2 Algorithm
 
-GRPO with `--eps-clip 0.2 --eps-clip-high 0.28`. R3 (`--use-miles-router` etc.) is **not** enabled by default.
+GRPO with `--eps-clip 0.2 --eps-clip-high 0.28`. R3 (`--use-rollout-routing-replay`) is **not** enabled by default.
 
 ### 5.3 Rollout & SGLang
 

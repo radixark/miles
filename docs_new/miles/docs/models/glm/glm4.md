@@ -87,7 +87,6 @@ SGLANG_ARGS=(
 # run-glm4-9B-4xgpu-radixtree.sh
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
-   # --use-miles-router        # commented out by default
 )
 ```
 
@@ -97,10 +96,9 @@ CPU Adam is not enabled in either launcher.
 
 ### 5.5 Notable quirks
 
-- `run-glm4-9B-4xgpu-radixtree.sh` ships a commented `--use-miles-router` line — uncomment to enable R3 on the smoke-test recipe.
 - `run-glm4-9B.sh` runs actor and rollout on disjoint GPUs (non-colocate).
 
 ## 6. Pairs Well With
 
-- [Miles Router (R3)](../../advanced/miles-router.md)
+- [Rollout Routing Replay (R3)](../../advanced/miles-router.md)
 - [FP8 & Low Precision](../../advanced/fp8-low-precision.md)

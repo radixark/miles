@@ -12,7 +12,7 @@ parallel pipeline.
 
 <div class="grid cards" markdown>
 
--   :material-network:{ .lg .middle } **[MilesRouter and R3](miles-router.md)**
+-   :material-network:{ .lg .middle } **[Rollout Routing Replay (R3)](miles-router.md)**
 
     ---
     Capture expert routing during inference and replay during training. The

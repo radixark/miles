@@ -220,24 +220,8 @@ The integration lives at
 
 ### Router
 
-Miles ships two routers in front of the SGLang workers:
-
-- **SGLang Model Gateway** (`sglang_router`) — the original default. Stable, simple,
-  no extra features beyond load balancing.
-- **[MilesRouter](../advanced/miles-router.md)** — a FastAPI proxy maintained inside
-  Miles. Adds expert-routing capture for MoE R3, the radix-tree middleware for
-  token-cached `/generate`, and a pluggable middleware interface for custom
-  request/response logic. Newer recipes (radix-tree, GLM-4.7-Flash, MoE training)
-  already run on it, and more of the recipe surface is moving over.
-
-Pick one at launch:
-
-```bash
---use-miles-router               # MilesRouter
-# (default)                      # SGLang Model Gateway
-```
-
-Either way, pass router-side flags with the `--router-` prefix:
+A router sits in front of the SGLang workers. Pass router-side flags with the
+`--router-` prefix:
 
 ```bash
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)

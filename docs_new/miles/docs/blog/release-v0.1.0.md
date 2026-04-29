@@ -40,7 +40,7 @@ rollout and training; no more MoE collapse from precision drift.
 Expert routing captured during inference, replayed during training. Eliminates the
 train/inference routing mismatch.
 
-→ [Miles Router (R3)](../advanced/miles-router.md)
+→ [Rollout Routing Replay (R3)](../advanced/miles-router.md)
 
 ### Multi-agent co-evolution
 

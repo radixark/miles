@@ -121,5 +121,5 @@ The FSDP variant leaves Adam on GPU.
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [Miles Router (R3)](../../advanced/miles-router.md)
+- [Rollout Routing Replay (R3)](../../advanced/miles-router.md)
 - [Speculative Decoding](../../advanced/speculative-decoding.md)

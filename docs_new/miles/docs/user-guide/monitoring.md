@@ -107,8 +107,7 @@ Open the trace in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev/).
 
 ## Router endpoints
 
-[MilesRouter](../advanced/miles-router.md) (when launched via `--use-miles-router`)
-exposes a small FastAPI surface used internally by Miles:
+The router exposes a small FastAPI surface used internally by Miles:
 
 | Endpoint | Method | What |
 |---|---|---|
@@ -117,4 +116,4 @@ exposes a small FastAPI surface used internally by Miles:
 | `/{path:path}` | GET/POST/PUT/DELETE | Proxy passthrough to selected worker |
 
 Middleware plugins (e.g. radix-tree caching) can mount additional routes — see
-`miles/router/middleware_hub/` and the [Miles Router page](../advanced/miles-router.md).
+`miles/router/middleware_hub/`.

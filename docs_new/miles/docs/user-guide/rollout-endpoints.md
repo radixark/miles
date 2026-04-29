@@ -112,14 +112,11 @@ What it does:
 Enable it:
 
 ```bash
---use-miles-router
 --miles-router-middleware-paths miles.router.middleware_hub.radix_tree_middleware.RadixTreeMiddleware
 ```
 
-Make sure `--sglang-router-ip` and `--sglang-router-port` point at MilesRouter so
+Make sure `--sglang-router-ip` and `--sglang-router-port` point at the router so
 `/retrieve_from_text` is reachable during rollout.
-
-See [MilesRouter](../advanced/miles-router.md) for the broader router picture.
 
 ---
 
