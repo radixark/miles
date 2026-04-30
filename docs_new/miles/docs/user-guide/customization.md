@@ -144,11 +144,16 @@ def buffer_filter(
 Per-sample, in-place. Set `s.remove_sample = True` to exclude a sample from the loss
 (advantage normalisation still uses it).
 
+The framework passes `data: list[list[Sample]]` — a list of
+`n_samples_per_prompt`-size groups — so iterate the outer list once to reach `Sample`
+objects:
+
 ```python
-def filter_function(args, samples: list[Sample]) -> None:
-    for s in samples:
-        if not_good(s):
-            s.remove_sample = True
+def filter_function(args, data: list[list[Sample]]) -> None:
+    for group in data:
+        for s in group:
+            if not_good(s):
+                s.remove_sample = True
 ```
 
 ### `--rollout-all-samples-process-path`
