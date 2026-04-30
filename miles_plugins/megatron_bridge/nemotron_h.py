@@ -27,23 +27,15 @@ logger = logging.getLogger(__name__)
 
 
 _NEMOTRONH_MOE_MAPPINGS: dict[str, str] = {
-    "decoder.layers.*.mlp.router.weight":
-        "backbone.layers.*.mixer.gate.weight",
-    "decoder.layers.*.mlp.router.expert_bias":
-        "backbone.layers.*.mixer.gate.e_score_correction_bias",
+    "decoder.layers.*.mlp.router.weight": "backbone.layers.*.mixer.gate.weight",
+    "decoder.layers.*.mlp.router.expert_bias": "backbone.layers.*.mixer.gate.e_score_correction_bias",
     # Routed experts: up-only FFN (nemotron_h uses squared_relu, no gate).
-    "decoder.layers.*.mlp.experts.linear_fc1.weight*":
-        "backbone.layers.*.mixer.experts.*.up_proj.weight",
-    "decoder.layers.*.mlp.experts.linear_fc2.weight*":
-        "backbone.layers.*.mixer.experts.*.down_proj.weight",
-    "decoder.layers.*.mlp.experts.local_experts.*.linear_fc1.weight":
-        "backbone.layers.*.mixer.experts.*.up_proj.weight",
-    "decoder.layers.*.mlp.experts.local_experts.*.linear_fc2.weight":
-        "backbone.layers.*.mixer.experts.*.down_proj.weight",
-    "decoder.layers.*.mlp.shared_experts.linear_fc1.weight":
-        "backbone.layers.*.mixer.shared_experts.up_proj.weight",
-    "decoder.layers.*.mlp.shared_experts.linear_fc2.weight":
-        "backbone.layers.*.mixer.shared_experts.down_proj.weight",
+    "decoder.layers.*.mlp.experts.linear_fc1.weight*": "backbone.layers.*.mixer.experts.*.up_proj.weight",
+    "decoder.layers.*.mlp.experts.linear_fc2.weight*": "backbone.layers.*.mixer.experts.*.down_proj.weight",
+    "decoder.layers.*.mlp.experts.local_experts.*.linear_fc1.weight": "backbone.layers.*.mixer.experts.*.up_proj.weight",
+    "decoder.layers.*.mlp.experts.local_experts.*.linear_fc2.weight": "backbone.layers.*.mixer.experts.*.down_proj.weight",
+    "decoder.layers.*.mlp.shared_experts.linear_fc1.weight": "backbone.layers.*.mixer.shared_experts.up_proj.weight",
+    "decoder.layers.*.mlp.shared_experts.linear_fc2.weight": "backbone.layers.*.mixer.shared_experts.down_proj.weight",
 }
 
 # HF name → provider name → cast. Miles' generic ``model_provider.py`` does not
@@ -52,8 +44,8 @@ _NEMOTRONH_MOE_MAPPINGS: dict[str, str] = {
 # ~0.28 train-vs-rollout logprob drift for Nano-30B-A3B.
 _NEMOTRONH_MOE_ROUTING_FIELDS: tuple[tuple[str, str, type], ...] = (
     ("routed_scaling_factor", "moe_router_topk_scaling_factor", float),
-    ("n_group",               "moe_router_num_groups",          int),
-    ("topk_group",            "moe_router_group_topk",          int),
+    ("n_group", "moe_router_num_groups", int),
+    ("topk_group", "moe_router_group_topk", int),
 )
 
 
@@ -81,11 +73,7 @@ def _build_bridge_subclass():
             provider = super().provider_bridge(hf_pretrained)
             hf = hf_pretrained.config
 
-            n_exp = int(
-                getattr(hf, "num_experts", None)
-                or getattr(hf, "n_routed_experts", None)
-                or 0
-            )
+            n_exp = int(getattr(hf, "num_experts", None) or getattr(hf, "n_routed_experts", None) or 0)
             if n_exp == 0:
                 return provider
 
@@ -95,9 +83,7 @@ def _build_bridge_subclass():
             provider.moe_router_enable_expert_bias = True
             provider.moe_router_dtype = "fp32"
             provider.moe_grouped_gemm = True
-            provider.moe_ffn_hidden_size = int(
-                getattr(hf, "moe_intermediate_size", None) or provider.ffn_hidden_size
-            )
+            provider.moe_ffn_hidden_size = int(getattr(hf, "moe_intermediate_size", None) or provider.ffn_hidden_size)
 
             # hybrid_override_pattern ('MEMEM*...') marks which layers are MoE.
             # Mirror to moe_layer_freq so miles' replay_utils registers the
@@ -106,17 +92,13 @@ def _build_bridge_subclass():
                 hf, "hybrid_override_pattern", None
             )
             if pattern:
-                provider.moe_layer_freq = [
-                    1 if ch == "E" else 0 for ch in pattern
-                ][: int(provider.num_layers)]
+                provider.moe_layer_freq = [1 if ch == "E" else 0 for ch in pattern][: int(provider.num_layers)]
 
             shared_size = getattr(hf, "moe_shared_expert_intermediate_size", None)
             if shared_size is not None:
                 provider.moe_shared_expert_intermediate_size = int(shared_size)
             elif getattr(hf, "n_shared_experts", 0):
-                provider.moe_shared_expert_intermediate_size = (
-                    provider.moe_ffn_hidden_size * int(hf.n_shared_experts)
-                )
+                provider.moe_shared_expert_intermediate_size = provider.moe_ffn_hidden_size * int(hf.n_shared_experts)
 
             for hf_name, prov_name, cast in _NEMOTRONH_MOE_ROUTING_FIELDS:
                 val = getattr(hf, hf_name, None)
@@ -128,13 +110,8 @@ def _build_bridge_subclass():
             # Append MoE mappings unconditionally. Dense variants do not carry
             # the extra megatron params so these mappings are simply unreferenced.
             registry = super().mapping_registry()
-            base = list(
-                registry.mappings if hasattr(registry, "mappings") else registry._mappings
-            )
-            extras = [
-                AutoMapping(megatron_param=m, hf_param=h)
-                for m, h in _NEMOTRONH_MOE_MAPPINGS.items()
-            ]
+            base = list(registry.mappings if hasattr(registry, "mappings") else registry._mappings)
+            extras = [AutoMapping(megatron_param=m, hf_param=h) for m, h in _NEMOTRONH_MOE_MAPPINGS.items()]
             return MegatronMappingRegistry(*base, *extras)
 
     return MilesNemotronHBridge
