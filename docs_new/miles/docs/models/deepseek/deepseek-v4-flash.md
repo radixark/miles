@@ -22,9 +22,6 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 | Model | Active / Total | HF ID |
 |---|---|---|
 | DeepSeek-V4-Flash-FP8 | ~37 B / 284 B | [sgl-project/DeepSeek-V4-Flash-FP8](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) |
-| DeepSeek-V4-Flash-FP8-4layer | smoke-only | [Pinaster/DeepSeek-V4-Flash-FP8-4layer](https://huggingface.co/Pinaster/DeepSeek-V4-Flash-FP8-4layer) |
-
-DeepSeek-V4-Pro (1.6 T) is roadmap per [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046) and is **not yet validated** through this recipe.
 
 ## 3. Environment Setup
 
@@ -41,7 +38,7 @@ MILES_SCRIPT_OUTPUT_DIR=/cluster_public/miles_data/outputs
 
 Override with `--model-dir`, `--model-local-dir`, `--data-dir`, `--save-dir` on the Python launcher when your cluster mounts a different layout.
 
-GB300 (cu130 / arm64) docker image is not yet published.
+A GB300 (cu130 / arm64) docker image will be published soon.
 
 ### 3.2 Download model + datasets
 
@@ -87,12 +84,6 @@ PYTHONPATH=/root/Megatron-LM torchrun \
 ### 4.1 Quick start
 
 ```bash
-# Single-node 4-layer smoke (pipeline-only sanity check, won't generate readable output)
-cd /root/miles
-python scripts/run_deepseek_v4.py full-train \
-   --model-name DeepSeek-V4-Flash-FP8-4layer \
-   --num-nodes 1 --num-gpus-per-node 8
-
 # Production 8-node Flash run
 cd /root/miles
 python scripts/run_deepseek_v4.py full-train \
@@ -180,7 +171,7 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 - **GPU memory is tight during sglang `wake_up`.** With image defaults (`--sglang-mem-fraction-static 0.7 --train-memory-margin-bytes 3221225472`) a wake_up step can hit `cuMemCreate CUDA_ERROR_OUT_OF_MEMORY` stochastically on 141 GB H200s. Lower the fraction to 0.5 and raise the train margin to 8 GiB (`8589934592`).
 - **Save-storm pod death.** With the default `--save-interval 20`, every save triggers 64-rank concurrent writes to per-pod `/root/models/...` overlay; one pod's overlay can fill enough to trip kubelet/Ray health checks and the actor dies. For smoke runs use `--skip-saving`. For real runs route saves to a shared filesystem via `--save-dir`.
 - **Truncation-drift trap on small response budgets.** `--rollout-max-response-len 256` (the launcher's gsm8k default) leads to ~64 % truncation, low gradient SNR per step, and a fast-growing `train/train_rollout_logprob_abs_diff` (12× over 19 steps observed). Bump to ≥ 4096 for any run intended to learn.
-- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognises `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream. The 4-layer smoke variant is auto-renamed `deepseek_v4 → deepseek_ref` for SGLang compatibility.
+- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognises `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
 
 ## 6. Pairs Well With
 

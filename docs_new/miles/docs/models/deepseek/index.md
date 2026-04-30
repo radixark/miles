@@ -11,11 +11,12 @@ Miles ships recipes for the DeepSeek family across two generations: **V4 Flash**
 
 | Model | Active / Total | HF ID | Recipe |
 |---|---|---|---|
-| DeepSeek-V4-Flash | ~37 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4](deepseek-v4.md) |
+| DeepSeek-V4-Pro | TBA / 1.6 T | TBA | [deepseek-v4-pro](deepseek-v4-pro.md) |
+| DeepSeek-V4-Flash | ~37 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4-flash](deepseek-v4-flash.md) |
 | DeepSeek-V3 | 37 B / 671 B | `deepseek-ai/DeepSeek-V3` | [deepseek](deepseek.md) |
 | DeepSeek-R1 | 37 B / 671 B | `deepseek-ai/DeepSeek-R1` | [deepseek](deepseek.md) |
 
-DeepSeek-V4-Pro (1.6 T) is roadmap per [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046) and is not yet validated.
+A validated DeepSeek-V4-Pro recipe is not yet available — see [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046) for tracking.
 
 ## Fastest path to train
 
@@ -35,7 +36,7 @@ cd /root/miles
 bash scripts/run-deepseek-r1.sh              # full 16-node run
 ```
 
-See the [DeepSeek V4 Flash](deepseek-v4.md) page for the V4 architecture summary, parallelism layouts, and known workarounds; see the [DeepSeek R1 / V3](deepseek.md) page for the V3 flow — FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), per-arg walkthrough, and the alternate Python launcher (`scripts/run_deepseek.py`).
+See the [DeepSeek V4 Flash](deepseek-v4-flash.md) page for the V4 architecture summary, parallelism layouts, and known workarounds; see the [DeepSeek R1 / V3](deepseek.md) page for the V3 flow — FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), per-arg walkthrough, and the alternate Python launcher (`scripts/run_deepseek.py`).
 
 ## Pairs well with
 
