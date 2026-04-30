@@ -56,17 +56,9 @@ runs (routing mismatch, precision drift, NCCL hangs) before chasing the next alg
 
 ## Try it
 
-```bash
-docker pull radixark/miles:latest
-docker run --rm --gpus all --ipc=host --shm-size=32g \
-  -it radixark/miles:latest /bin/bash
-
-cd /root/miles
-bash scripts/run-qwen3-4B.sh
-```
-
-That's the [Quick Start](../getting-started/quick-start.md) — a working training run on
-a single 8-GPU node in under an hour.
+Head to the [Quick Start](../getting-started/quick-start.md) for the full
+walkthrough — `docker pull` to a working GRPO run on Qwen3-4B in under an hour
+on a single 8-GPU node.
 
 ## What's next
 
