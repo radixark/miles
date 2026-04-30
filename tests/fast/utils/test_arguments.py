@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
@@ -127,3 +129,65 @@ class TestMaybeApplyDumperOverrides:
         _maybe_apply_dumper_overrides(args)
 
         assert args.num_rollout == 6
+
+
+def test_recompute_logprobs_via_prefill_flag_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
+
+    assert args.recompute_logprobs_via_prefill is True
+
+
+@pytest.mark.parametrize(
+    ("rollout_num_gpus_per_engine", "recompute_logprobs_via_prefill", "expected_target", "expected_prefill_only"),
+    [
+        (1, False, "fsdp", False),
+        (4, True, "fsdp_tp", True),
+    ],
+)
+def test_true_on_policy_args_propagate_to_sglang_server_args(
+    rollout_num_gpus_per_engine: int,
+    recompute_logprobs_via_prefill: bool,
+    expected_target: str,
+    expected_prefill_only: bool,
+):
+    args = SimpleNamespace(
+        rollout_num_gpus_per_engine=rollout_num_gpus_per_engine,
+        sglang_data_parallel_size=1,
+        sglang_pipeline_parallel_size=1,
+        sglang_expert_parallel_size=1,
+        sglang_enable_dp_attention=False,
+        sglang_router_policy=None,
+        sglang_router_ip=None,
+        true_on_policy_mode=True,
+        recompute_logprobs_via_prefill=recompute_logprobs_via_prefill,
+        sglang_rl_on_policy_target=None,
+        sglang_enable_deterministic_inference=False,
+        sglang_enable_prefill_only_deterministic_inference=False,
+        hf_checkpoint="hf://dummy",
+        seed=7,
+        offload_rollout=False,
+        num_gpus_per_node=8,
+        use_rollout_routing_replay=False,
+        fp16=False,
+    )
+
+    sglang_validate_args(args)
+
+    server_args, _ = _compute_server_args(
+        args,
+        rank=0,
+        dist_init_addr="127.0.0.1:12345",
+        nccl_port=12346,
+        host="127.0.0.1",
+        port=30000,
+    )
+
+    assert args.sglang_rl_on_policy_target == expected_target
+    assert args.sglang_enable_deterministic_inference is True
+    assert args.sglang_enable_prefill_only_deterministic_inference is expected_prefill_only
+    assert server_args["rl_on_policy_target"] == expected_target
+    assert server_args["enable_deterministic_inference"] is True
+    assert server_args["enable_prefill_only_deterministic_inference"] is expected_prefill_only

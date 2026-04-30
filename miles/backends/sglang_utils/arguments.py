@@ -138,6 +138,15 @@ def validate_args(args):
     args.sglang_pp_size = args.sglang_pipeline_parallel_size
     args.sglang_ep_size = args.sglang_expert_parallel_size
 
+    if args.true_on_policy_mode:
+        if getattr(args, "sglang_rl_on_policy_target", None) is None:
+            args.sglang_rl_on_policy_target = "fsdp_tp" if args.sglang_tp_size > 1 else "fsdp"
+        args.sglang_enable_deterministic_inference = True
+
+    if getattr(args, "recompute_logprobs_via_prefill", False):
+        args.sglang_enable_prefill_only_deterministic_inference = True
+        args.sglang_enable_deterministic_inference = True
+
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 
