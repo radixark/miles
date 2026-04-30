@@ -56,9 +56,8 @@ runs (routing mismatch, precision drift, NCCL hangs) before chasing the next alg
 
 ## Try it
 
-Head to the [Quick Start](../getting-started/quick-start.md) for the full
-walkthrough — `docker pull` to a working GRPO run on Qwen3-4B in under an hour
-on a single 8-GPU node.
+Head to the [Quick Start](../getting-started/quick-start.md) for a quick GRPO
+run on Qwen3-4B with a single 8-GPU node.
 
 ## What's next
 
