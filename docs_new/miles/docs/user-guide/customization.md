@@ -132,7 +132,7 @@ Pops samples from the rollout buffer at dequeue time. The default is
 ```python
 def buffer_filter(
     args,
-    rollout_id: int,
+    rollout_id: int | None,
     buffer: list[list[Sample]],
     num_samples: int,
 ) -> list[list[Sample]]:
