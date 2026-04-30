@@ -45,11 +45,11 @@ NVIDIA H100, H200, B100, B200, A100. AMD MI300X, MI325, MI350, MI355X via ROCm. 
 ## Latest updates
 
 - **[2026/02]** Complete argument reference. [CLI Reference](user-guide/cli-reference.md)
-- **[2026/01]** INT4 W4A16 QAT. [Low-precision guide](advanced/int4-qat.md)
-- **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-agent walkthrough](examples/multi-agent.md)
-- **[2025/12]** Rollout Routing Replay (R3) for MoE. [Design doc](advanced/miles-router.md)
-- **[2025/11]** Unified FP8 pipeline generally available. [Post](advanced/fp8-low-precision.md)
-- **[2025/11]** Speculative decoding with online MTP-SFT. [Docs](advanced/speculative-decoding.md)
+- **[2026/01]** INT4 W4A16 QAT. [INT4 Quantization-Aware Training](advanced/int4-qat.md)
+- **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-Agent Co-Evolution](examples/multi-agent.md)
+- **[2025/12]** Rollout Routing Replay (R3) for MoE. [Rollout Routing Replay (R3)](advanced/miles-router.md)
+- **[2025/11]** Unified FP8 pipeline generally available. [FP8 and Low Precision](advanced/fp8-low-precision.md)
+- **[2025/11]** Speculative decoding with online MTP-SFT. [Speculative Decoding](advanced/speculative-decoding.md)
 
 ## Start here
 
