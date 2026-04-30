@@ -509,16 +509,24 @@ class MultiUserToolChainTrajectory:
 
 
 class SimpleNoToolTrajectory:
-    """sys, user, assistant (no tools) — 1 turn, no tool calls"""
+    """sys, user, asst, system_reminder, user2, asst2 — no tools, with system/user append boundaries.
+
+    Codifies the synthetic 'single_system' case the old CI used to manually
+    append: at N=3 prefix ends at the first asst, append starts with the
+    system_reminder, exercising the system-append boundary on a no-tool model.
+    """
 
     TOOLS = None
-    PRETOKENIZE_POSITIONS = [3]
-    APPEND_ROLES = frozenset()
+    PRETOKENIZE_POSITIONS = [3, 4, 5, 6]
+    APPEND_ROLES = frozenset({"user", "system"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello!"},
         {"role": "assistant", "content": "Hi there! How can I help?"},
+        {"role": "system", "content": "Please answer in one short sentence."},
+        {"role": "user", "content": "What's 2+2?"},
+        {"role": "assistant", "content": "Four."},
     ]
 
 
@@ -562,11 +570,16 @@ class MultiTurnNoToolThinkingTrajectory:
 
 
 class SingleToolThinkingTrajectory:
-    """sys, user, assistant(reasoning_content + tool_calls), tool — 1 turn"""
+    """sys, user, ass(think+tool), tool, user2, ass(think+tool), tool, user3, ass — multi-role alternating with thinking.
+
+    Codifies the synthetic 'alternating_user_tool' case the old CI used to
+    manually append: prefix cuts at N=4/N=7 exercise the user-after-tool
+    boundary on a thinking model.
+    """
 
     TOOLS = WEATHER_TOOLS
-    PRETOKENIZE_POSITIONS = [3]
-    APPEND_ROLES = frozenset({"tool"})
+    PRETOKENIZE_POSITIONS = [3, 4, 5, 6, 7, 8]
+    APPEND_ROLES = frozenset({"tool", "user"})
     IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -590,6 +603,33 @@ class SingleToolThinkingTrajectory:
             "role": "tool",
             "content": '{"temperature": 25, "condition": "sunny"}',
             "tool_call_id": "call_1",
+        },
+        {"role": "user", "content": "Now check Shanghai too."},
+        {
+            "role": "assistant",
+            "reasoning_content": "Now the user wants Shanghai's weather. Calling get_weather again.",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Shanghai", "unit": "celsius"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 30, "condition": "cloudy"}',
+            "tool_call_id": "call_2",
+        },
+        {"role": "user", "content": "And tell me the date as well."},
+        {
+            "role": "assistant",
+            "reasoning_content": "The user is asking for the date. I'll answer based on what I know.",
+            "content": "Beijing is 25°C and sunny; Shanghai is 30°C and cloudy. I don't have access to the current date.",
         },
     ]
 
@@ -934,6 +974,71 @@ class IntermediateSystemThinkingTrajectory:
             "role": "tool",
             "content": '{"temperature": 35}',
             "tool_call_id": "call_3",
+        },
+    ]
+
+
+class MultiRoleSequenceTrajectory:
+    """sys, user, asst+tool, tool, user2, asst+tool, system_reminder, tool, asst-final.
+
+    Fills the {thinking=False, append_roles={tool, user, system}} matrix cell
+    that GLM47's tool+user+system SUPPORTED_TEMPLATES row otherwise has no
+    fixture for. Cuts exercise three boundaries: tool-append (N=3), user-after-tool
+    (N=4), system-after-asst (N=6). Cuts at N=5/N=7/N=8 are intentionally not
+    listed — they only exercise generation-prompt-only or repeat tool-append
+    which other trajectories already cover.
+    """
+
+    TOOLS = ALL_TOOLS
+    PRETOKENIZE_POSITIONS = [3, 4, 6]
+    APPEND_ROLES = frozenset({"tool", "user", "system"})
+    IS_THINKING = False
+    MESSAGES = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What's the weather in Beijing today?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_w1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Beijing", "unit": "celsius"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": '{"temperature": 22, "condition": "sunny"}',
+            "tool_call_id": "call_w1",
+        },
+        {"role": "user", "content": "Also tell me the date in Beijing."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_d1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_date",
+                        "arguments": {"timezone": "Asia/Shanghai"},
+                    },
+                }
+            ],
+        },
+        {"role": "system", "content": "Please answer in one short sentence."},
+        {
+            "role": "tool",
+            "content": '{"date": "2026-04-28"}',
+            "tool_call_id": "call_d1",
+        },
+        {
+            "role": "assistant",
+            "content": "Beijing is 22°C and sunny on 2026-04-28.",
         },
     ]
 

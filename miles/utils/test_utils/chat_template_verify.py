@@ -152,6 +152,7 @@ from miles.utils.test_utils.mock_trajectories import (  # noqa: E402
     IntermediateSystemTrajectory,
     LongChainThinkingTrajectory,
     LongChainTrajectory,
+    MultiRoleSequenceTrajectory,
     MultiToolSingleTurnTrajectory,
     MultiTurnNoToolThinkingTrajectory,
     MultiTurnNoToolTrajectory,
@@ -193,6 +194,7 @@ _TRAJECTORIES: list[type] = [
     MultiUserTurnThinkingTrajectory,
     IntermediateSystemThinkingTrajectory,
     MultiTurnNoToolThinkingTrajectory,
+    MultiRoleSequenceTrajectory,
 ]
 
 

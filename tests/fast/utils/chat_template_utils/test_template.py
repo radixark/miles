@@ -37,7 +37,12 @@ from miles.utils.test_utils.chat_template_verify import (
     format_case_id,
     select_cases,
 )
-from miles.utils.test_utils.mock_trajectories import SimpleNoToolTrajectory, SingleToolTrajectory
+from miles.utils.test_utils.mock_trajectories import (
+    MultiRoleSequenceTrajectory,
+    SimpleNoToolTrajectory,
+    SingleToolThinkingTrajectory,
+    SingleToolTrajectory,
+)
 
 # ---------------------------------------------------------------------------
 # SGLang reference: calls OpenAIServingChat._process_messages directly
@@ -137,13 +142,16 @@ def _build_align_params():
         )
         variants = enable_thinking_variants("both" if supports_thinking else "off")
         for case in cases:
-            # SimpleNoTool ends with a plain assistant message (no tool_calls).
-            # sglang's _process_messages treats that as continue_final_message
-            # and drops the trailing <|im_start|>assistant header, which
-            # diverges from apply_chat_template with add_generation_prompt=True.
-            # SGLang-alignment-specific, not a property of the trajectory itself,
-            # so this skip stays inline rather than living on mock_trajectories.
-            if case.traj_cls is SimpleNoToolTrajectory:
+            # Trajectories ending with a plain assistant message (no tool_calls):
+            # sglang's _process_messages treats that as continue_final_message and
+            # drops the trailing <|im_start|>assistant header, which diverges from
+            # apply_chat_template(add_generation_prompt=True). SGLang-alignment-
+            # specific quirk — kept inline rather than living on mock_trajectories.
+            if case.traj_cls in (
+                SimpleNoToolTrajectory,
+                SingleToolThinkingTrajectory,
+                MultiRoleSequenceTrajectory,
+            ):
                 continue
             for variant in variants:
                 ident = f"{short}-{format_case_id(case, variant)}"
