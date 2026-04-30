@@ -44,7 +44,7 @@ NVIDIA H100, H200, B100, B200, A100. AMD MI300X, MI325, MI350, MI355X via ROCm. 
 
 ## Latest updates
 
-- **[2026/02]** Complete argument reference. [Server arguments](user-guide/cli-reference.md)
+- **[2026/02]** Complete argument reference. [CLI Reference](user-guide/cli-reference.md)
 - **[2026/01]** INT4 W4A16 QAT. [Low-precision guide](advanced/int4-qat.md)
 - **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-agent walkthrough](examples/multi-agent.md)
 - **[2025/12]** Rollout Routing Replay (R3) for MoE. [Design doc](advanced/miles-router.md)
