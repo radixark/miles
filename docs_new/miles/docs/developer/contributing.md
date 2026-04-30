@@ -12,17 +12,25 @@ contributions of every size — bug reports, doc fixes, new model recipes, full 
 
 ```text
 miles/
+├── train.py                  # synchronous entry point
+├── train_async.py            # fully-async entry point
 ├── miles/                    # the package itself
 │   ├── backends/             # Megatron, SGLang, training (loss / GRPO / PPO / ...), experimental FSDP
 │   ├── ray/                  # Ray actors + rollout driver
 │   ├── rollout/              # rollout / data source / filters
 │   ├── router/               # Miles Router (FastAPI proxy)
 │   └── utils/                # async, types, IO, distributed helpers, arguments.py
-├── miles_plugins/            # opt-in model wrappers (Qwen3Next, etc.)
+├── miles_plugins/            # opt-in plugins
+│   ├── mbridge/              # mbridge integration
+│   ├── megatron_bridge/      # megatron-bridge integration
+│   └── models/               # model wrappers (GLM4, GLM5, Qwen3.5, Qwen3-Next, ...)
 ├── examples/                 # the recipes documented in this site
 ├── scripts/
 │   ├── models/               # per-model MODEL_ARGS bash files
-│   └── run-*.sh              # canonical launch scripts
+│   ├── amd/                  # AMD-specific launchers
+│   ├── tools/                # script-side utilities (e.g. verify_chat_template.py)
+│   ├── run-*.sh              # bash launch scripts
+│   └── run_*.py              # Python launch scripts
 ├── tools/                    # ckpt converters, calibrators, debug tools
 ├── tests/                    # pytest suite (fast / ci / e2e / utils)
 ├── docker/                   # Dockerfiles
