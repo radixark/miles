@@ -216,9 +216,7 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if not index:
             return False
         fused = any(
-            "mtp.layers." in k
-            and "mlp.experts." in k
-            and (k.endswith("gate_up_proj") or k.endswith("down_proj"))
+            "mtp.layers." in k and "mlp.experts." in k and (k.endswith("gate_up_proj") or k.endswith("down_proj"))
             for k in index
         )
         self._mtp_experts_fused_cached = fused

@@ -50,13 +50,19 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     # model path is a symlink to /cluster_public; skip download if already present
-    U.exec_command(f"test -e {args.model_dir}/{args.model_name} || "
-                   f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command(
+        f"test -e {args.model_dir}/{args.model_name} || "
+        f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     # datasets are symlinked; skip if present
-    U.exec_command(f"test -e {args.data_dir}/dapo-math-17k || "
-                   f"hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir {args.data_dir}/dapo-math-17k")
-    U.exec_command(f"test -e {args.data_dir}/aime-2024 || "
-                   f"hf download --repo-type dataset zhuzilin/aime-2024 --local-dir {args.data_dir}/aime-2024")
+    U.exec_command(
+        f"test -e {args.data_dir}/dapo-math-17k || "
+        f"hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir {args.data_dir}/dapo-math-17k"
+    )
+    U.exec_command(
+        f"test -e {args.data_dir}/aime-2024 || "
+        f"hf download --repo-type dataset zhuzilin/aime-2024 --local-dir {args.data_dir}/aime-2024"
+    )
 
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -75,10 +81,7 @@ def execute(args: ScriptArgs):
     # last rollout whenever --save-interval is set — miles/utils/misc.py:192 —
     # so we omit both --save and --save-interval to keep ~464G per-config off
     # disk). The ref-load is still required to initialise model weights.
-    ckpt_args = (
-        f"--hf-checkpoint {args.model_dir}/{args.model_name} "
-        f"--ref-load {ref_load_path} "
-    )
+    ckpt_args = f"--hf-checkpoint {args.model_dir}/{args.model_name} " f"--ref-load {ref_load_path} "
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -108,10 +111,10 @@ def execute(args: ScriptArgs):
 
     sglang_ep = args.sglang_ep_size if args.sglang_ep_size is not None else args.num_gpus_per_node
     recompute = (
-        "--recompute-granularity full "
-        "--recompute-method uniform "
-        "--recompute-num-layers 1 "
-    ) if args.recompute else ""
+        ("--recompute-granularity full " "--recompute-method uniform " "--recompute-num-layers 1 ")
+        if args.recompute
+        else ""
+    )
 
     perf_args = (
         f"--tensor-model-parallel-size {args.tp} "
@@ -161,11 +164,7 @@ def execute(args: ScriptArgs):
         "--sglang-mamba-scheduler-strategy extra_buffer "
     )
 
-    mtp_args = (
-        "--enable-mtp-training "
-        "--mtp-num-layers 1 "
-        "--mtp-loss-scaling-factor 0.2 "
-    )
+    mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
     misc_args = (
         "--attention-dropout 0.0 "
