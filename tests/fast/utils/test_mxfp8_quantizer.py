@@ -7,6 +7,8 @@ import pytest
 import torch
 from tools.convert_hf_to_mxfp8 import quantize_mxfp8 as tool_quantize_mxfp8
 from tools.convert_hf_to_mxfp8 import should_quantize as tool_should_quantize_mxfp8
+from transformer_engine.pytorch import MXFP8Quantizer
+from transformer_engine.pytorch.constants import TE_DType
 
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_mxfp8 import (
     _quantize_param as processor_quantize_mxfp8_param,
@@ -25,6 +27,8 @@ MXFP8_SHAPES = [
     (512, 256),
     (128, 1024),
     (1024, 2048),
+    (7168, 2048),
+    (2048, 7168),
     (128, 16384),
 ]
 
@@ -56,27 +60,22 @@ def _processor_quantize_mxfp8(weight: torch.Tensor) -> tuple[torch.Tensor, torch
     )
 
 
-def _dequantize_mxfp8(qweight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    scale_fp32 = (scale.to(torch.int32) << 23).view(torch.float32)
-    scale_fp32 = scale_fp32.repeat_interleave(MXFP8_GROUP_SIZE, dim=-1)
-    return qweight.to(torch.float32) * scale_fp32
+def _te_mxfp8_reference(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    weight = weight.contiguous()
+    m, k = weight.shape
+    if m % MXFP8_GROUP_SIZE != 0:
+        padded_m = ((m + MXFP8_GROUP_SIZE - 1) // MXFP8_GROUP_SIZE) * MXFP8_GROUP_SIZE
+        padded_weight = torch.zeros((padded_m, k), dtype=weight.dtype, device=weight.device)
+        padded_weight[:m].copy_(weight)
+    else:
+        padded_weight = weight
 
-
-def _assert_mxfp8_dequant_close(actual: torch.Tensor, expected: torch.Tensor, init_data: str) -> None:
-    actual = actual.to(torch.float32)
-    expected = expected.to(torch.float32)
-    assert not torch.any(torch.isnan(actual))
-    assert not torch.any(torch.isnan(expected))
-    assert actual.shape == expected.shape
-
-    if init_data == "maxes":
-        return
-
-    assert not torch.any(torch.isinf(actual))
-    left = torch.abs(actual - expected)
-    right = 8.0 + 0.125 * torch.abs(expected)
-    mismatch_percent = torch.sum(left > right) / actual.numel()
-    assert mismatch_percent <= 0.001
+    quantizer = MXFP8Quantizer(fp8_dtype=TE_DType[torch.float8_e4m3fn], rowwise=True, columnwise=False)
+    quantized = quantizer(padded_weight)
+    return (
+        quantized._rowwise_data[:m].contiguous(),
+        quantized._rowwise_scale_inv[:m, : k // MXFP8_GROUP_SIZE].contiguous(),
+    )
 
 
 def test_mxfp8_quantize_params_respects_extra_high_precision_layers_megatron():
@@ -146,17 +145,17 @@ def test_mxfp8_hf_should_quantize_respects_extra_high_precision_layers_hf():
 @pytest.mark.parametrize("shape", MXFP8_SHAPES)
 @pytest.mark.parametrize("dtype", [torch.bfloat16], ids=str)
 @pytest.mark.parametrize("init_data", ["random", "boundary", "zeros", "maxes"])
-def test_mxfp8_quantize_dequant_matches_input(quantize_fn, shape, dtype, init_data):
+def test_mxfp8_quantize_matches_reference(quantize_fn, shape, dtype, init_data):
     device = "cuda"
     torch.manual_seed(42)
 
     weight = _make_weight(init_data, dtype, shape, device)
     qweight, scale = quantize_fn(weight)
+    qweight_ref, scale_ref = _te_mxfp8_reference(weight)
 
     assert qweight.shape == weight.shape
     assert qweight.dtype == torch.float8_e4m3fn
     assert scale.shape == (*weight.shape[:-1], weight.shape[-1] // MXFP8_GROUP_SIZE)
     assert scale.dtype == torch.uint8
-
-    dequant = _dequantize_mxfp8(qweight, scale)
-    _assert_mxfp8_dequant_close(dequant, weight, init_data)
+    torch.testing.assert_close(qweight.view(dtype=torch.uint8), qweight_ref.view(dtype=torch.uint8), rtol=0, atol=0)
+    torch.testing.assert_close(scale, scale_ref, rtol=0, atol=0)
