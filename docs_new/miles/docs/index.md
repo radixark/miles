@@ -39,8 +39,10 @@ See [Models](models/index.md) for per-family recipes.
 
 ## Supported hardware
 
-NVIDIA H100, H200, B100, B200, A100. AMD MI300X, MI325, MI350, MI355X via ROCm. See
-[Platforms](platforms/index.md).
+- **NVIDIA**: H100, H200, B100, B200, A100.
+- **AMD**: MI300X, MI325, MI350, MI355X (via ROCm).
+
+See [Platforms](platforms/index.md).
 
 ## Latest updates
 
