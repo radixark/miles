@@ -7,7 +7,7 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is the publicly-distributed FP8 repackage of `deepseek-ai/DeepSeek-V4-Flash` — a 284 B-parameter MoE with a substantially different attention stack from V3/R1. The miles + Megatron-Core integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published image `radixark/miles:deepseek-v4`.
+[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is the publicly-distributed FP8 repackage of `deepseek-ai/DeepSeek-V4-Flash` — a 13 B-active / 284 B-total MoE with a substantially different attention stack from V3/R1. The miles + Megatron-Core integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published image `radixark/miles:deepseek-v4`.
 
 **Key highlights:**
 
@@ -21,7 +21,7 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 
 | Model | Active / Total | HF ID |
 |---|---|---|
-| DeepSeek-V4-Flash-FP8 | ~37 B / 284 B | [sgl-project/DeepSeek-V4-Flash-FP8](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) |
+| DeepSeek-V4-Flash-FP8 | 13 B / 284 B | [sgl-project/DeepSeek-V4-Flash-FP8](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) |
 
 ## 3. Environment Setup
 
@@ -166,11 +166,7 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 
 - **Conversion world_size ≤ num_layers.** `tools/convert_hf_to_torch_dist.py` asserts `world_size ≤ args.num_layers`. Flash has 43 layers, so 8 × 8 = 64 ranks fails. Run `prepare-spmd` (or the standalone `torchrun`) with `--num-gpus-per-node 4` (32 ranks) and let the subsequent `prepare-cp` / `train` stages resume at 8 GPUs/node.
 - **`--hf-checkpoint <path>` skips download but `prepare-cp` still rsyncs `{model_dir}/{model_name}/`.** When you point at pre-staged FP8 weights outside `{model_dir}`, the launcher's second rsync stat()s a missing source (rsync exit 23). Symlink the expected path: `ln -s /path/to/DeepSeek-V4-Flash-FP8 {model_dir}/DeepSeek-V4-Flash-FP8`.
-- **`train.py` argparse rejects `--wandb-run-name`.** Only `--wandb-project` / `--wandb-group` / `--wandb-key` are supported. Pass them via `--extra-args`.
 - **Bursty rollouts can cycle stale TCP connections in `httpx`'s pool.** Under default `httpx.AsyncClient` settings, miles' `_http_client` may reuse a server-side-closed socket and raise `httpx.ReadError` (or trip the miles router circuit breaker, surfacing as a 500 storm). Patch both `httpx.Limits(...)` constructions in `miles/utils/http_utils.py` to set `max_keepalive_connections=0` (covers `init_http_client` and `_HttpPosterActor.__init__`).
-- **GPU memory is tight during sglang `wake_up`.** With image defaults (`--sglang-mem-fraction-static 0.7 --train-memory-margin-bytes 3221225472`) a wake_up step can hit `cuMemCreate CUDA_ERROR_OUT_OF_MEMORY` stochastically on 141 GB H200s. Lower the fraction to 0.5 and raise the train margin to 8 GiB (`8589934592`).
-- **Save-storm pod death.** With the default `--save-interval 20`, every save triggers 64-rank concurrent writes to per-pod `/root/models/...` overlay; one pod's overlay can fill enough to trip kubelet/Ray health checks and the actor dies. For smoke runs use `--skip-saving`. For real runs route saves to a shared filesystem via `--save-dir`.
-- **Truncation-drift trap on small response budgets.** `--rollout-max-response-len 256` (the launcher's gsm8k default) leads to ~64 % truncation, low gradient SNR per step, and a fast-growing `train/train_rollout_logprob_abs_diff` (12× over 19 steps observed). Bump to ≥ 4096 for any run intended to learn.
 - **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognises `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
 
 ## 6. Pairs Well With

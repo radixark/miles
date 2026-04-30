@@ -11,8 +11,8 @@ Miles ships recipes for the DeepSeek family across two generations: **V4 Flash**
 
 | Model | Active / Total | HF ID | Recipe |
 |---|---|---|---|
-| DeepSeek-V4-Pro | TBA / 1.6 T | TBA | [deepseek-v4-pro](deepseek-v4-pro.md) |
-| DeepSeek-V4-Flash | ~37 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4-flash](deepseek-v4-flash.md) |
+| DeepSeek-V4-Pro | 49 B / 1.6 T | TBA | [deepseek-v4-pro](deepseek-v4-pro.md) |
+| DeepSeek-V4-Flash | 13 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4-flash](deepseek-v4-flash.md) |
 | DeepSeek-V3 | 37 B / 671 B | `deepseek-ai/DeepSeek-V3` | [deepseek](deepseek.md) |
 | DeepSeek-R1 | 37 B / 671 B | `deepseek-ai/DeepSeek-R1` | [deepseek](deepseek.md) |
 
