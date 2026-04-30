@@ -261,12 +261,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     else "miles.rollout.sglang_rollout.generate_rollout"
                 ),
                 help=(
-                    "Path to the rollout generation function."
-                    "You should use this model to create your own custom rollout function, "
-                    "and then set this to the path of your custom rollout function. "
-                    "The signature of the function should be "
-                    "`def generate_rollout(args, rollout_id, *, evaluation=False) -> list[list[Sample]]`"
-                    "and within the output sample, you should at least set `tokens`, `response_length`, `reward` "
+                    "Path to the rollout generation function. "
+                    "Use this to create your own custom rollout function and set this to its path. "
+                    "The function is called as `fn(args, rollout_id, data_source, evaluation=evaluation)`, "
+                    "so its signature should be "
+                    "`def generate_rollout(args, rollout_id, data_source, evaluation=False) "
+                    "-> RolloutFnTrainOutput | RolloutFnEvalOutput` "
+                    "(see `miles.rollout.sglang_rollout.generate_rollout` for the default impl). "
+                    "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                     "and `truncated`."
                 ),
             )
