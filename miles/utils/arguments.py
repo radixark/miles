@@ -1856,11 +1856,6 @@ def miles_validate_args(args):
         )
 
     if args.debug_disable_optimizer:
-        logger.warning(
-            "--debug-disable-optimizer is set: Megatron optimizer and LR scheduler "
-            "will not be initialized, optimizer checkpoint state will not be loaded/saved, "
-            "and actor training will stop after forward/backward."
-        )
         args.no_load_optim = True
         args.no_save_optim = True
 
