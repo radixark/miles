@@ -76,6 +76,7 @@ class TestSetupModelAndOptimizerLoraBranch:
             lora_adapter_path=None,
             megatron_to_hf_mode=mode,
             moe_use_upcycling=False,
+            debug_disable_optimizer=False,
             load="/some/path",
             pretrained_checkpoint=None,
             # optimizer fields
