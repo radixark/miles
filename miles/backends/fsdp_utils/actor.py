@@ -302,6 +302,10 @@ class FSDPTrainRayActor(TrainRayActor):
         rewards = torch.tensor(rollout_data["rewards"], device=device, dtype=torch.float32)
         rollout_log_probs_list = rollout_data["rollout_log_probs"]
         sde_step_indices_list = rollout_data.get("sde_step_indices") or [None] * len(denoising_envs)
+        # Optional: per-sample post-CFG model_output recorded by sgld during the rollout
+        # (only present when --diffusion-debug-mode is set). Used to log the per-tile
+        # rollout-vs-train DiT-output diff to wandb.
+        rollout_debug_tensors_list = rollout_data.get("rollout_debug_tensors") or [None] * len(denoising_envs)
 
         batch_size = len(denoising_envs)
         guidance_scale = float(getattr(self.args, "diffusion_guidance_scale", 0))
@@ -353,6 +357,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     denoising_envs=denoising_envs,
                     rollout_log_probs_list=rollout_log_probs_list,
                     sde_step_indices_list=sde_step_indices_list,
+                    rollout_debug_tensors_list=rollout_debug_tensors_list,
                     advantages=advantages,
                     train_num_timesteps=train_num_timesteps,
                     use_cfg=use_cfg,
@@ -414,6 +419,7 @@ class FSDPTrainRayActor(TrainRayActor):
         denoising_envs: list,
         rollout_log_probs_list: list,
         sde_step_indices_list: list,
+        rollout_debug_tensors_list: list,
         advantages: torch.Tensor,
         train_num_timesteps: int,
         use_cfg: bool,
@@ -426,6 +432,7 @@ class FSDPTrainRayActor(TrainRayActor):
         latents_list, next_latents_list, timesteps_list = [], [], []
         log_prob_old_list, advantage_list = [], []
         positive_cond_kwargs_list, negative_cond_kwargs_list = [], []
+        rollout_model_outputs_list: list[torch.Tensor] = []
         sde_window_size: int | None = None
 
         for traj_idx in range(traj_start, traj_end):
@@ -444,6 +451,14 @@ class FSDPTrainRayActor(TrainRayActor):
             advantage = advantages[traj_idx]
 
             sde_step_indices = sde_step_indices_list[traj_idx]
+            # Slice rollout-recorded model_output to the SDE window so it lines up with
+            # latents/next_latents/timesteps. Only present when --diffusion-debug-mode.
+            rollout_dbg = rollout_debug_tensors_list[traj_idx] if rollout_debug_tensors_list else None
+            rollout_model_output = (
+                rollout_dbg.rollout_model_outputs.to(device, dtype=torch.float32)
+                if rollout_dbg is not None and rollout_dbg.rollout_model_outputs is not None
+                else None
+            )
             if sde_step_indices is not None:
                 sde_indices_tensor = torch.as_tensor(sde_step_indices, device=device, dtype=torch.long)
                 latents = latents[sde_indices_tensor]
@@ -451,6 +466,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 timesteps = timesteps[sde_indices_tensor]
                 log_prob_old = log_prob_old[sde_indices_tensor]
                 advantage = advantage[: sde_indices_tensor.numel()]
+                if rollout_model_output is not None:
+                    rollout_model_output = rollout_model_output[sde_indices_tensor]
                 current_window_size = int(sde_indices_tensor.numel())
             else:
                 current_window_size = train_num_timesteps
@@ -467,12 +484,19 @@ class FSDPTrainRayActor(TrainRayActor):
             timesteps_list.append(timesteps)
             log_prob_old_list.append(log_prob_old)
             advantage_list.append(advantage)
+            if rollout_model_output is not None:
+                rollout_model_outputs_list.append(rollout_model_output)
 
         latents_window = torch.stack(latents_list, dim=0)
         next_latents_window = torch.stack(next_latents_list, dim=0)
         timesteps_window = torch.stack(timesteps_list, dim=0)
         log_prob_old_window = torch.stack(log_prob_old_list, dim=0)
         advantage_window = torch.stack(advantage_list, dim=0)
+        rollout_model_outputs_window = (
+            torch.stack(rollout_model_outputs_list, dim=0)
+            if rollout_model_outputs_list and len(rollout_model_outputs_list) == (traj_end - traj_start)
+            else None
+        )
 
         # Skip the (possibly NotImplementedError-raising) collate when no tile
         # will ever have sample > 1: a model that only does timestep-only tiling
@@ -505,6 +529,7 @@ class FSDPTrainRayActor(TrainRayActor):
             "per_sample_neg_cond": negative_cond_kwargs_list,
             "local_batch_size": int(traj_end - traj_start),
             "sde_window_size": int(sde_window_size or 0),
+            "rollout_model_outputs": rollout_model_outputs_window,
         }
 
     def _run_optim_window(
@@ -702,6 +727,21 @@ class FSDPTrainRayActor(TrainRayActor):
             log_stats["log_prob_mean_abs_diff"].append(
                 torch.mean(torch.abs(log_prob_new - log_prob_old_tile)).detach()
             )
+            # Rollout-vs-train DiT-output diff: only when rollout dumped per-step
+            # post-CFG model_outputs (--diffusion-debug-mode). Compares trainer's
+            # recomputed noise_pred_flat against sgld's recorded model_output for
+            # the same (sample, tstep) cell.
+            rollout_mo_window = grids.get("rollout_model_outputs")
+            if rollout_mo_window is not None:
+                rollout_mo_tile = rollout_mo_window[sample_indices][:, tstep_indices]
+                rollout_mo_flat = rollout_mo_tile.reshape(
+                    tile_sample_count * tile_tstep_count, *rollout_mo_tile.shape[2:]
+                )
+                diff = (noise_pred_flat.float() - rollout_mo_flat.float()).abs()
+                ref_max = rollout_mo_flat.float().abs().max() + 1e-30
+                log_stats["model_output_max_abs_diff"].append(diff.max().detach())
+                log_stats["model_output_mean_abs_diff"].append(diff.mean().detach())
+                log_stats["model_output_rel_max"].append((diff.max() / ref_max).detach())
 
         return loss
 
