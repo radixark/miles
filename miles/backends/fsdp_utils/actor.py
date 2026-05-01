@@ -302,15 +302,10 @@ class FSDPTrainRayActor(TrainRayActor):
         rewards = torch.tensor(rollout_data["rewards"], device=device, dtype=torch.float32)
         rollout_log_probs_list = rollout_data["rollout_log_probs"]
         sde_step_indices_list = rollout_data.get("sde_step_indices") or [None] * len(denoising_envs)
-        # Optional: per-sample post-CFG model_output recorded by sgld during the rollout.
-        # Gated explicitly on --diffusion-debug-mode (the same flag that tells sgl-d to
-        # dump these tensors via sampling_params["rollout_debug_mode"] in
-        # miles/rollout/sglang_diffusion_rollout.py). Used to log the per-tile
+        # Optional: per-sample post-CFG model_output recorded by sgld during the rollout
+        # (only present when --diffusion-debug-mode is set). Used to log the per-tile
         # rollout-vs-train DiT-output diff to wandb.
-        if getattr(self.args, "diffusion_debug_mode", False):
-            rollout_debug_tensors_list = rollout_data.get("rollout_debug_tensors") or [None] * len(denoising_envs)
-        else:
-            rollout_debug_tensors_list = [None] * len(denoising_envs)
+        rollout_debug_tensors_list = rollout_data.get("rollout_debug_tensors") or [None] * len(denoising_envs)
 
         batch_size = len(denoising_envs)
         guidance_scale = float(getattr(self.args, "diffusion_guidance_scale", 0))
