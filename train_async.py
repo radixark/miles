@@ -5,7 +5,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.tracking_utils import finish_tracking, init_tracking
 
 
 # The framework supports other asynchronous approaches such as fully async (which is shown in examples/full_async).
@@ -75,4 +75,7 @@ async def train(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(train(args))
+    try:
+        asyncio.run(train(args))
+    finally:
+        finish_tracking()
