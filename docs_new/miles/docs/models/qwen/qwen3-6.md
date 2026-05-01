@@ -7,17 +7,35 @@ description: Launch recipe for the dense Qwen3.6-27B with attention-output-gate.
 
 ## 1. Model Introduction
 
-[Qwen3.6](https://github.com/QwenLM/Qwen3) is the next dense iteration of the
-Qwen3 family. It keeps the gated-attention architecture introduced in Qwen3.5
-and reuses the same Megatron spec (`miles_plugins.models.qwen3_5.get_qwen3_5_spec`)
-— architecturally a wider, deeper variant of Qwen3.5 rather than a brand-new design.
+Per the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.6),
+[Qwen3.6](https://github.com/QwenLM/Qwen3) is a model series from Alibaba that
+emphasizes "stability and real-world utility, delivering substantial upgrades
+in agentic coding and thinking preservation." The family ships in two variants:
+a sparse mixture-of-experts (Qwen3.6-35B-A3B, built on a Gated Delta Networks
+backbone) and a dense alternative (Qwen3.6-27B, "smaller weights footprint,
+single-GPU friendly"). Both variants support context lengths up to 262 144
+tokens, extensible beyond 1 M.
+
+The models feature agentic coding (frontend workflows + repo-level reasoning)
+and thinking preservation (reasoning context retained across conversation
+history). They include native hybrid reasoning (thinking mode by default),
+built-in tool calling with a specialized parser, and multimodal text / image /
+video support. Performance optimizations include Multi-Token Prediction via
+speculative decoding and two mamba cache strategies (V1 / V2). Weights are
+released under Apache 2.0 in BF16 and FP8.
+
+In miles, the dense Qwen3.6-27B reuses the Qwen3.5 Megatron spec
+(`miles_plugins.models.qwen3_5.get_qwen3_5_spec`) — architecturally a wider,
+deeper variant of Qwen3.5 with the gated-attention architecture preserved.
 
 **Key highlights:**
 
+- **Dense hybrid GDN backbone**: single-GPU friendly footprint.
 - **Attention-output gate**: shared with Qwen3.5; trained alongside attention weights.
 - **Extended rotary base**: `--rotary-base 10000000`, `--rotary-percent 0.25`.
 - **Larger vocabulary**: 248320 tokens (same as Qwen3.5).
 - **27 B parameters** with `hidden-size 5120`, `ffn-hidden-size 17408`, 64 layers.
+- **Long context**: up to 262 144 tokens, extensible beyond 1 M.
 
 ## 2. Supported Variants
 
