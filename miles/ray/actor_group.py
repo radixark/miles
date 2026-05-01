@@ -119,9 +119,9 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
-    async def update_weights(self):
+    async def update_weights(self, rollout_id=None):
         """Broadcast weights from rank 0 to all other ranks."""
-        await self._broadcast("update_weights")
+        await self._broadcast("update_weights", rollout_id)
 
     async def onload(self):
         await self._broadcast("wake_up")

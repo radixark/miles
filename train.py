@@ -94,7 +94,7 @@ async def train(args):
         await offload_train()
         if args.offload_rollout:
             await rollout_manager.onload_weights.remote()
-        await actor_model.update_weights()
+        await actor_model.update_weights(rollout_id)
         if args.offload_rollout:
             await rollout_manager.onload_kv.remote()
 

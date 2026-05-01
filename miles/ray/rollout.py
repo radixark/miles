@@ -40,6 +40,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
+from miles.utils.profile_utils import profile_activities_for_sglang, profile_output_dir, should_profile
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.tracking_utils import init_tracking
@@ -443,6 +444,20 @@ class RolloutManager:
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
     def generate(self, rollout_id):
+        # args snapshot predates the driver resolving start_rollout_id; capture it lazily.
+        if getattr(self.args, "start_rollout_id", None) is None:
+            self.args.start_rollout_id = rollout_id
+        profile_engines = self._start_profile(rollout_id)
+        generate_error = None
+        try:
+            return self._generate(rollout_id)
+        except BaseException as e:
+            generate_error = e
+            raise
+        finally:
+            self._stop_profile(profile_engines, generate_error)
+
+    def _generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
         self.health_monitoring_resume()
@@ -453,6 +468,38 @@ class RolloutManager:
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = self._convert_samples_to_train_data(data)
         return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
+
+    def _start_profile(self, rollout_id):
+        if not should_profile(self.args, "rollout", rollout_id):
+            return []
+
+        num_steps = self.args.profile_rollout_num_steps or None
+        profile_engines = [(i, engine) for i, engine in enumerate(self.rollout_engines) if engine is not None]
+        ray.get(
+            [
+                engine.start_profile.remote(
+                    output_dir=profile_output_dir(self.args, "rollout", rollout_id, worker=f"engine_{i}"),
+                    activities=profile_activities_for_sglang(self.args),
+                    with_stack=self.args.profile_with_stack,
+                    record_shapes=self.args.profile_record_shapes,
+                    num_steps=num_steps,
+                )
+                for i, engine in profile_engines
+            ]
+        )
+        # When num_steps is set, SGLang auto-stops; skip the manual stop_profile call.
+        return [] if num_steps else profile_engines
+
+    def _stop_profile(self, profile_engines, generate_error):
+        if not profile_engines:
+            return
+
+        try:
+            ray.get([engine.stop_profile.remote() for _, engine in profile_engines])
+        except Exception:
+            if generate_error is None:
+                raise
+            logger.exception("Failed to stop rollout profiler while handling rollout failure")
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:
