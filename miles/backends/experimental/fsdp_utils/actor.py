@@ -405,11 +405,12 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             self.wake_up()
 
-        with inverse_timer("train_wait"), timer("train"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref)
-            if self.args.debug_rollout_only:
-                return
-            self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+        with self.prof.profile_phase("train", rollout_id):
+            with inverse_timer("train_wait"), timer("train"):
+                rollout_data = get_rollout_data(self.args, rollout_data_ref)
+                if self.args.debug_rollout_only:
+                    return
+                self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,
@@ -427,17 +428,19 @@ class FSDPTrainRayActor(TrainRayActor):
         ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
 
         if self.ref_model is not None:
-            ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
-            rollout_data.update(ref_results)
+            with self.prof.profile_phase("ref_log_probs", rollout_id):
+                ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
+                rollout_data.update(ref_results)
 
-        actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
-        rollout_data.update(actor_results)
+        with self.prof.profile_phase("log_probs", rollout_id):
+            actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
+            rollout_data.update(actor_results)
 
         compute_advantages_and_returns(self.args, rollout_data)
 
         log_rollout_data(rollout_id, self.args, rollout_data)
 
-        with timer("actor_train"):
+        with timer("actor_train"), self.prof.profile_phase("actor_train", rollout_id):
             data_iterator.reset()
             num_steps_per_rollout = len(num_microbatches)
 
@@ -544,7 +547,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self) -> None:  # type: ignore[override]
+    def update_weights(self, rollout_id=None) -> None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines.
 
         Handles both colocated and distributed update modes. In offload mode,
@@ -553,29 +556,30 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
-        )
-        if num_new_engines > 0:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                rollout_engine_lock,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
+        with self.prof.profile_phase("update_weights", rollout_id):
+            rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
+                self.rollout_manager.get_updatable_engines_and_lock.remote()
             )
-            dist.barrier(group=get_gloo_group())
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
-
-        self.weight_updater.update_weights()
-
-        if self.args.ci_test and len(rollout_engines) > 0:
-            engine = random.choice(rollout_engines)
-            engine_version = ray.get(engine.get_weight_version.remote())
-            if str(engine_version) != str(self.weight_updater.weight_version):
-                raise RuntimeError(
-                    f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
+            if num_new_engines > 0:
+                self.weight_updater.connect_rollout_engines(
+                    rollout_engines,
+                    rollout_engine_lock,
+                    engine_gpu_counts=engine_gpu_counts,
+                    engine_gpu_offsets=engine_gpu_offsets,
                 )
+                dist.barrier(group=get_gloo_group())
+                if dist.get_rank() == 0:
+                    ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+
+            self.weight_updater.update_weights()
+
+            if self.args.ci_test and len(rollout_engines) > 0:
+                engine = random.choice(rollout_engines)
+                engine_version = ray.get(engine.get_weight_version.remote())
+                if str(engine_version) != str(self.weight_updater.weight_version):
+                    raise RuntimeError(
+                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
+                    )
 
         clear_memory()
 

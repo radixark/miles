@@ -1,6 +1,7 @@
 import logging
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -38,6 +39,16 @@ class TrainProfiler:
         ):
             self._memory_profiler_overall.stop()
 
+    @contextmanager
+    def profile_phase(self, name: str, rollout_id: int | None):
+        if rollout_id is None or not should_profile(self.args, name, rollout_id):
+            yield
+            return
+        with _create_torch_profiler(
+            self.args, name, output_dir=profile_output_dir(self.args, name, rollout_id)
+        ):
+            yield
+
     def iterate_train_actor(self, iterator):
         return _profile_simple_loop(iterator, self.args, name="train_actor")
 
@@ -50,30 +61,67 @@ def _profile_simple_loop(iterator, args, name):
         yield from iterator
         return
 
-    torch_profiler = _create_torch_profiler(args, name=name)
+    schedule = torch.profiler.schedule(
+        # TODO the train_actor and train_log_probs ones may need to have different args to control step
+        wait=max(args.profile_step_start - 1, 0),
+        warmup=1 if args.profile_step_start > 0 else 0,
+        active=args.profile_step_end - args.profile_step_start,
+        repeat=1,
+    )
+    torch_profiler = _create_torch_profiler(args, name, schedule=schedule)
     torch_profiler.start()
     for item in iterator:
         yield item
         torch_profiler.step()
 
 
-def _create_torch_profiler(args, name):
+def should_profile(args, stage: str, rollout_id: int) -> bool:
+    step = rollout_id - (getattr(args, "start_rollout_id", None) or 0)
+    return (
+        getattr(args, "use_pytorch_profiler", False)
+        and stage in getattr(args, "profile_target", ())
+        and getattr(args, "profile_step_start", 0) <= step < getattr(args, "profile_step_end", 0)
+    )
+
+
+def profile_output_dir(args, stage: str, rollout_id: int | None = None, worker: str | None = None) -> str:
+    path = Path(args.profile_output_dir) / stage
+    if rollout_id is not None:
+        path = path / f"rollout_{rollout_id}"
+    if worker is not None:
+        path = path / worker
+    return str(path)
+
+
+def profile_activities_for_torch(args):
+    activities = []
+    for activity in getattr(args, "profile_activities", ["cpu", "gpu"]):
+        if activity == "cpu":
+            activities.append(torch.profiler.ProfilerActivity.CPU)
+        elif activity == "gpu":
+            activities.append(torch.profiler.ProfilerActivity.CUDA)
+    return activities
+
+
+def profile_activities_for_sglang(args) -> list[str]:
+    return [
+        activity.upper() if activity == "cpu" else "GPU"
+        for activity in getattr(args, "profile_activities", ["cpu", "gpu"])
+    ]
+
+
+def _create_torch_profiler(args, name, *, schedule=None, output_dir: str | None = None):
     return torch.profiler.profile(
-        schedule=torch.profiler.schedule(
-            # TODO the train_actor and train_log_probs ones may need to have different args to control step
-            wait=max(args.profile_step_start - 1, 0),
-            warmup=1 if args.profile_step_start > 0 else 0,
-            active=args.profile_step_end - args.profile_step_start,
-            repeat=1,
-        ),
+        activities=profile_activities_for_torch(args),
+        schedule=schedule,
         on_trace_ready=torch.profiler.tensorboard_trace_handler(
-            args.tensorboard_dir,
+            output_dir or profile_output_dir(args, name),
             worker_name=f"{name}_rank_{torch.distributed.get_rank()}",
             use_gzip=True,
         ),
-        record_shapes=True,
-        with_stack=True,
-        profile_memory=True,
+        record_shapes=args.profile_record_shapes,
+        with_stack=args.profile_with_stack,
+        profile_memory=args.profile_memory,
         with_flops=True,
     )
 

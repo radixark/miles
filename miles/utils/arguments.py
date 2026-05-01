@@ -18,6 +18,18 @@ from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
+PROFILE_DEFAULT_TARGETS = ["rollout", "train", "update_weights"]
+PROFILE_LEGACY_TARGETS = ["train_overall"]
+# Sub-phases of `train`, each emitted as its own torch.profiler trace.
+# Mutually exclusive with `train` (which would otherwise nest profilers).
+PROFILE_TRAIN_SUBPHASE_TARGETS = ["ref_log_probs", "log_probs", "actor_train"]
+PROFILE_TARGET_CHOICES = (
+    PROFILE_DEFAULT_TARGETS
+    + PROFILE_LEGACY_TARGETS
+    + PROFILE_TRAIN_SUBPHASE_TARGETS
+    + ["train_actor", "train_log_probs"]
+)
+
 
 def reset_arg(parser, name, **kwargs):
     """
@@ -33,6 +45,18 @@ def reset_arg(parser, name, **kwargs):
             break
     else:
         parser.add_argument(name, **kwargs)
+
+
+def add_profile_arg(parser):
+    """Register --profile if Megatron's parser hasn't already defined it."""
+    if any("--profile" in a.option_strings for a in parser._actions):
+        return
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        default=False,
+        help="Enable unified profiling for rollout, train, and weight update stages.",
+    )
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
@@ -1354,12 +1378,54 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
             )
+            add_profile_arg(parser)
             parser.add_argument(
                 "--profile-target",
                 type=str,
-                choices=["train_overall", "train_actor", "train_log_probs"],
-                default=["train_overall"],
+                choices=PROFILE_TARGET_CHOICES,
+                default=None,
                 nargs="+",
+                help="Phases to profile. 'train' is mutually exclusive with its sub-phases "
+                "ref_log_probs/log_probs/actor_train.",
+            )
+            parser.add_argument(
+                "--profile-output-dir",
+                type=str,
+                default=None,
+                help="Directory to store profiler traces.",
+            )
+            parser.add_argument(
+                "--profile-activities",
+                type=str.lower,
+                choices=["cpu", "gpu"],
+                nargs="+",
+                default=["cpu", "gpu"],
+                help="Profiler activities to collect.",
+            )
+            parser.add_argument(
+                "--profile-with-stack",
+                action=argparse.BooleanOptionalAction,
+                default=False,
+                help="Record Python/C++ stack traces in profiler events.",
+            )
+            parser.add_argument(
+                "--profile-record-shapes",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="Record operator input shapes in profiler events.",
+            )
+            parser.add_argument(
+                "--profile-memory",
+                action=argparse.BooleanOptionalAction,
+                default=False,
+                help="Record PyTorch memory events in profiler traces.",
+            )
+            parser.add_argument(
+                "--profile-rollout-num-steps",
+                type=int,
+                default=50,
+                help="Auto-stop rollout profiling after this many forward passes per engine. "
+                "Set to 0 to profile the entire rollout (large traces, high overhead).",
             )
             parser.add_argument(
                 "--memory-recorder",
@@ -2077,6 +2143,8 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    _normalize_profile_args(args)
+
     if args.eval_max_context_len is None:
         logger.info(
             f"args.eval_max_context_len is not set. Use args.rollout_max_context_len {args.rollout_max_context_len} as default value."
@@ -2112,6 +2180,50 @@ def miles_validate_args(args):
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
     _maybe_apply_dumper_overrides(args)
+
+
+def _normalize_profile_args(args) -> None:
+    if args.profile_target is None:
+        args.profile_target = (
+            PROFILE_DEFAULT_TARGETS.copy() if getattr(args, "profile", False) else PROFILE_LEGACY_TARGETS.copy()
+        )
+    elif isinstance(args.profile_target, str):
+        args.profile_target = [args.profile_target]
+
+    invalid_targets = set(args.profile_target) - set(PROFILE_TARGET_CHOICES)
+    assert not invalid_targets, f"Invalid profile target(s): {sorted(invalid_targets)}"
+
+    if getattr(args, "profile", False):
+        args.use_pytorch_profiler = True
+
+    assert args.profile_step_end > args.profile_step_start, "profile_step_end must be greater than profile_step_start"
+
+    targets = set(args.profile_target)
+    train_subphase = set(PROFILE_TRAIN_SUBPHASE_TARGETS)
+    assert not (
+        "train_overall" in targets
+        and targets & ({"train", "update_weights", "train_actor", "train_log_probs"} | train_subphase)
+    ), (
+        "train_overall cannot be combined with train/update_weights/train_actor/train_log_probs/sub-phase profiling"
+    )
+    assert not ("train" in targets and targets & ({"train_actor", "train_log_probs"} | train_subphase)), (
+        "train cannot be combined with train_actor/train_log_probs/sub-phase profiling "
+        "(ref_log_probs/log_probs/actor_train)"
+    )
+
+    if isinstance(args.profile_activities, str):
+        args.profile_activities = [args.profile_activities]
+    args.profile_activities = [activity.lower() for activity in args.profile_activities]
+    invalid_activities = set(args.profile_activities) - {"cpu", "gpu"}
+    assert not invalid_activities, f"Invalid profile activities: {sorted(invalid_activities)}"
+
+    if getattr(args, "profile_output_dir", None) is None:
+        if getattr(args, "tensorboard_dir", None) is not None:
+            args.profile_output_dir = args.tensorboard_dir
+        elif getattr(args, "save", None) is not None:
+            args.profile_output_dir = os.path.join(args.save, "profile_traces")
+        else:
+            args.profile_output_dir = "./profile_traces"
 
 
 def _maybe_apply_dumper_overrides(args) -> None:
