@@ -7,21 +7,14 @@ description: Launch recipe for Qwen3.6-35B-A3B with MTP training and EAGLE specu
 
 ## 1. Model Introduction
 
-Per the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.6),
-the [Qwen3.6](https://github.com/QwenLM/Qwen3) series from Alibaba emphasizes
-"stability and real-world utility, delivering substantial upgrades in agentic
-coding and thinking preservation." **Qwen3.6-35B-A3B** is the sparse
-mixture-of-experts variant — 35 B total / 3 B active parameters, built on a
-Gated Delta Networks backbone. Both Qwen3.6 variants support context lengths
-up to 262 144 tokens, extensible beyond 1 M.
-
-The models feature agentic coding (frontend workflows + repo-level reasoning)
-and thinking preservation (reasoning context retained across conversation
-history). They include native hybrid reasoning (thinking mode by default),
-built-in tool calling with a specialized parser, and multimodal text / image /
-video support. Performance optimizations include Multi-Token Prediction via
-speculative decoding and two mamba cache strategies (V1 / V2). Weights are
-released under Apache 2.0 in BF16 and FP8.
+[Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3) is the sparse MoE branch of
+Alibaba's Qwen3.6 line — 35 B total / 3 B active parameters on a Gated Delta
+Networks backbone. Like the dense Qwen3.6-27B, it's tuned for agentic-coding
+workflows and long-session reasoning, with native hybrid thinking mode,
+built-in tool calling, and multimodal text / image / video input. Context
+reaches 262 K and extends past 1 M; weights are Apache 2.0 in BF16 and FP8.
+Qwen3.6 also ships native Multi-Token Prediction for speculative decoding,
+which this recipe trains and serves via EAGLE.
 
 In miles, Qwen3.6-35B-A3B reuses the Qwen3.5 spec
 (`miles_plugins.models.qwen3_5.get_qwen3_5_spec`) and bakes in MTP training
@@ -29,12 +22,12 @@ plus a shared-expert gate.
 
 **Key highlights:**
 
-- **Sparse MoE on a GDN backbone**: 256 experts, top-8 routing, 3 B active out of 35 B total.
+- **Sparse MoE on a GDN backbone**: 256 experts, top-8 routing, 3 B active / 35 B total.
 - **Attention-output gate**: shared with the Qwen3.5 / 3.6 dense series.
 - **Shared expert + gate**: `--moe-shared-expert-intermediate-size 512 --moe-shared-expert-gate`.
-- **Multi-Token Prediction (MTP)**: `--mtp-num-layers 1`; the recipe trains the MTP head and uses EAGLE speculative decoding at rollout.
+- **Multi-Token Prediction (MTP)**: `--mtp-num-layers 1`; trained alongside the policy and served via EAGLE at rollout.
 - **Dispatcher**: `--moe-token-dispatcher-type alltoall` for HF→Megatron conversion; runtime uses `flex` (set in the launcher).
-- **Long context**: up to 262 144 tokens, extensible beyond 1 M.
+- **Long context**: 262 K tokens, extensible past 1 M.
 - **Single-node footprint**: full recipe fits on 1 × 8 GPU (H200).
 
 ## 2. Supported Variants
