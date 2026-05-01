@@ -66,6 +66,9 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 RUN pip install flash-linear-attention==0.4.2
 RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 
+# Mamba kernels for nemotron_h hybrid (mamba+attention) models.
+RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation
+
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install nvidia-mathdx==25.6.0 && \
       pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.10.0"; \
