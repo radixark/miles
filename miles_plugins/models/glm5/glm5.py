@@ -66,6 +66,7 @@ class DSAMultiLatentAttention(Attention):
         layer_number: int,
         attn_mask_type: AttnMaskType,
         attention_type: str,
+        topk_backend: str = "torch",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -138,6 +139,9 @@ class DSAMultiLatentAttention(Attention):
         )
 
         self.index_topk = 2048
+        if topk_backend not in ("torch", "flashinfer"):
+            raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
+        self.topk_backend = topk_backend
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
     def forward(
@@ -204,6 +208,7 @@ class DSAMultiLatentAttention(Attention):
                     starts_block,
                     ends_block,
                     self.index_topk,
+                    topk_backend=self.topk_backend,
                 )
 
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
@@ -249,6 +254,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         submodules: DSASelfAttentionSubmodules,
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
+        topk_backend: str = "torch",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -260,6 +266,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             attention_type="self",
+            topk_backend=topk_backend,
             is_mtp_layer=is_mtp_layer,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
@@ -654,7 +661,10 @@ def get_glm5_spec(args, config, vp_stage):
 
     self_attn_module_spec = ModuleSpec(
         module=DSAMLASelfAttention,
-        params={"attn_mask_type": AttnMaskType.causal},
+        params={
+            "attn_mask_type": AttnMaskType.causal,
+            "topk_backend": args.miles_dsa_topk_backend,
+        },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),
             linear_q_up_proj=backend.column_parallel_layer_norm_linear(),

@@ -151,6 +151,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--miles-dsa-topk-backend",
+                type=str,
+                choices=["torch", "flashinfer"],
+                default="torch",
+                help="Top-k backend for Miles DSA indexer.",
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,
