@@ -75,8 +75,11 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     accumulated_log_probs: list[float] = []
     accumulated_loss_mask: list[int] = []
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    start_time = time.time()
+    turns = 0
 
     while True:
+        turns += 1
         payload = {
             "input_ids": current_ids,
             "sampling_params": {
@@ -124,11 +127,25 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     sample.loss_mask = accumulated_loss_mask
     sample.rollout_log_probs = accumulated_log_probs
     sample.status = Sample.Status.COMPLETED
+    print(
+        f"Random rollout sample finished: group={sample.group_index}, "
+        f"sample={sample.index}, turns={turns}, tokens={len(current_ids)}, "
+        f"response_tokens={sample.response_length}, duration={time.time() - start_time:.2f}s",
+        flush=True,
+    )
     return sample
 
 
 async def _generate_random_group(args, group: list[Sample]) -> list[Sample]:
-    return list(await asyncio.gather(*[_generate_one_random_sample(args, s) for s in group]))
+    start_time = time.time()
+    result = list(await asyncio.gather(*[_generate_one_random_sample(args, s) for s in group]))
+    total_tokens = sum(len(sample.tokens) for sample in result)
+    print(
+        f"Random rollout group finished: group={group[0].group_index}, "
+        f"samples={len(result)}, total_tokens={total_tokens}, duration={time.time() - start_time:.2f}s",
+        flush=True,
+    )
+    return result
 
 
 _global_worker: "AsyncRandomRolloutWorker | None" = None

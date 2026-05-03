@@ -9,7 +9,9 @@ from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config["quant_method"] == "fp8"
-    assert quantization_config["fmt"] == "e4m3"
+    # Some HF/SGLang FP8 configs omit fmt. This converter only emits e4m3.
+    fmt = quantization_config.get("fmt", "e4m3")
+    assert fmt == "e4m3"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
 

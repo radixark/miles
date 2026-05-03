@@ -16,6 +16,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 8
     actor_num_nodes: int = 2
     rollout_num_gpus: int = 8
+    num_rollout: int = 4
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     pause_generation_mode: Literal["in_place", "retract"] = "in_place"
@@ -27,8 +28,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir}")
     U.exec_command(
+        f"test \"$(cat {args.model_dir}/{args.model_name}_torch_dist/latest_checkpointed_iteration.txt 2>/dev/null)\" = release || "
         f"test -e {args.model_dir}/{args.model_name} || "
         f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
+    U.exec_command(
+        f"test -e {args.model_dir}/{args.model_name}-FP8 || "
+        f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
     )
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -53,7 +59,7 @@ def execute(args: ScriptArgs):
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     ckpt_args = (
-        f"--hf-checkpoint {args.model_dir}/{args.model_name}/ "
+        f"--hf-checkpoint {args.model_dir}/{args.model_name}-FP8/ "
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
     )
@@ -61,7 +67,7 @@ def execute(args: ScriptArgs):
     rollout_args = (
         "--rollout-function-path random_async_rollout.generate_rollout_random_async "
         "--disable-rollout-global-dataset "
-        "--num-rollout 100 "
+        f"--num-rollout {args.num_rollout} "
         "--rollout-batch-size 2 "
         "--n-samples-per-prompt 8 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
