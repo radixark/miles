@@ -443,7 +443,24 @@ def log_train_step(
         for key, val in extra_metrics.items():
             log_dict_out[f"train/{role_tag}{key}"] = val
 
+    # `train/step` is the cumulative optimizer-step count across all
+    # rollouts. Because `num_steps_per_rollout` is not a fixed config
+    # value -- it scales with rollout-data volume divided by
+    # `max_tokens_per_gpu` (dynamic batching) -- the gap between
+    # successive rollouts on the `train/step` axis varies, and the
+    # absolute value is hard to interpret at a glance. Emit two
+    # additional axes that are stable by construction:
+    #   - `train/rollout_id`: which rollout cycle produced this data
+    #     (matches `rollout/step`, so train metrics can be plotted
+    #     against the same x-axis as rollout metrics).
+    #   - `train/step_in_rollout`: optimizer step within the rollout
+    #     (0..num_steps_per_rollout-1); useful for inspecting
+    #     within-rollout dynamics.
+    # `train/step` is kept as the canonical step_metric for backward
+    # compatibility.
     log_dict_out["train/step"] = accumulated_step_id
+    log_dict_out["train/rollout_id"] = rollout_id
+    log_dict_out["train/step_in_rollout"] = step_id
 
     if should_log is None:
         should_log = dist.get_rank() == 0
