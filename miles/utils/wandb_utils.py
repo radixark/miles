@@ -163,3 +163,8 @@ def _init_wandb_common():
     wandb.define_metric("eval/step")
     wandb.define_metric("eval/*", step_metric="eval/step")
     wandb.define_metric("perf/*", step_metric="rollout/step")
+    # train/rollout_id is co-logged on both rollout-side and train-side log() calls
+    # so that any train/* or rollout/* metric can be cross-plotted against the
+    # rollout counter. Declared after the "train/*" wildcard so the specific name
+    # isn't inadvertently treated as step-metric'd against train/step.
+    wandb.define_metric("train/rollout_id")

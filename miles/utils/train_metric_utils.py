@@ -45,4 +45,5 @@ def log_perf_data_raw(
 
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
+    log_dict["train/rollout_id"] = rollout_id
     tracking_utils.log(args, log_dict, step_key="rollout/step")

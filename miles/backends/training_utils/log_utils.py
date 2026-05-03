@@ -56,6 +56,7 @@ def gather_log_data(
         # Calculate step once to avoid duplication
         step = compute_rollout_step(args, rollout_id)
         reduced_log_dict["rollout/step"] = step
+        reduced_log_dict["train/rollout_id"] = rollout_id
         tracking_utils.log(args, reduced_log_dict, step_key="rollout/step")
 
         return reduced_log_dict
@@ -353,7 +354,11 @@ def log_cpu_memory(rollout_id: int, args: Namespace, label: str) -> None:
     logger.info(f"[CPU memory] {label}: {cpu_mem_gb:.2f} GB (rollout_id={rollout_id}, step={step})")
     tracking_utils.log(
         args,
-        {f"perf/cpu_memory_{label}_gb": cpu_mem_gb, "rollout/step": step},
+        {
+            f"perf/cpu_memory_{label}_gb": cpu_mem_gb,
+            "rollout/step": step,
+            "train/rollout_id": rollout_id,
+        },
         step_key="rollout/step",
     )
 
@@ -444,6 +449,10 @@ def log_train_step(
             log_dict_out[f"train/{role_tag}{key}"] = val
 
     log_dict_out["train/step"] = accumulated_step_id
+    # Co-log the rollout counter in both forms so train/* metrics can be
+    # cross-plotted against rollout-side axes in the wandb UI.
+    log_dict_out["train/rollout_id"] = rollout_id
+    log_dict_out["rollout/step"] = compute_rollout_step(args, rollout_id)
 
     if should_log is None:
         should_log = dist.get_rank() == 0
