@@ -68,7 +68,7 @@ def extra_argv_for_variant(
             argv.append("--generate-multi-samples")
     elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
         argv += ["--custom-agent-function-path", custom_agent_function_path]
-        argv += ["--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
+        argv += ["--use-session-server", "--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
         if variant == "agentic_tool_call_multi_samples":
             argv.append("--generate-multi-samples")
 

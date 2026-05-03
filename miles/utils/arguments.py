@@ -1849,6 +1849,18 @@ def miles_validate_args(args):
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
     args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
 
+    if not args.use_session_server:
+        misconfigured = []
+        if args.tito_model != TITOTokenizerType.DEFAULT.value:
+            misconfigured.append(f"--tito-model={args.tito_model}")
+        if args.tito_allowed_append_roles != ["tool"]:
+            misconfigured.append(f"--tito-allowed-append-roles={args.tito_allowed_append_roles}")
+        if misconfigured:
+            raise ValueError(
+                f"{', '.join(misconfigured)} require --use-session-server; "
+                "these flags only configure the session-server TITO middleware."
+            )
+
     if "user" in args.tito_allowed_append_roles:
         logger.warning(
             "--tito-allowed-append-roles includes 'user'. "
