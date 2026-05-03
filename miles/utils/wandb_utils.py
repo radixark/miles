@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from copy import deepcopy
 
 import wandb
@@ -7,6 +8,20 @@ import wandb
 from miles.utils.env_report import decode_env_report
 
 logger = logging.getLogger(__name__)
+
+
+# Cross-region clusters (e.g. MBZUAI Abu Dhabi ↔ wandb cloud in US-West) can
+# exceed wandb's 90s default init_timeout during first-attach handshakes in
+# shared mode, especially when many Ray actors initialize concurrently. Raise
+# the ceiling on both primary and secondary init paths. Matches the wandb
+# docs guidance for high-latency environments.
+WANDB_INIT_TIMEOUT_SECS: float = float(os.environ.get("WANDB_INIT_TIMEOUT_SECS", "300"))
+
+# Retry wandb.init on transient CommError/UsageError to survive short
+# wandb-cloud flakiness during boot. Exponential backoff keeps the retry
+# budget bounded while giving enough headroom for a 5-minute blip.
+WANDB_INIT_RETRY_ATTEMPTS: int = int(os.environ.get("WANDB_INIT_RETRY_ATTEMPTS", "3"))
+WANDB_INIT_RETRY_BACKOFF_SECS: float = float(os.environ.get("WANDB_INIT_RETRY_BACKOFF_SECS", "5"))
 
 
 def _is_offline_mode(args) -> bool:
@@ -19,6 +34,38 @@ def _is_offline_mode(args) -> bool:
     if args.wandb_mode:
         return args.wandb_mode == "offline"
     return os.environ.get("WANDB_MODE") == "offline"
+
+
+def _wandb_init_with_retry(init_kwargs: dict, *, role: str):
+    """Call wandb.init(**init_kwargs) with exponential-backoff retry on
+    transient wandb-cloud failures.
+
+    Shared-mode init in online mode makes several HTTPS round-trips to wandb
+    cloud. A single transient CommError during boot (cross-region packet
+    loss, rate-limit burst, DNS hiccup) would otherwise abort the whole run.
+    We retry a bounded number of times with exponential backoff; fall
+    through to raise on terminal failure so the caller surfaces it.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, WANDB_INIT_RETRY_ATTEMPTS + 1):
+        try:
+            return wandb.init(**init_kwargs)
+        except wandb.errors.CommError as exc:  # type: ignore[attr-defined]
+            last_exc = exc
+        except wandb.errors.UsageError as exc:  # type: ignore[attr-defined]
+            last_exc = exc
+        except Exception as exc:  # unexpected; re-raise immediately
+            logger.error("wandb.init (%s) failed with non-retryable %s: %s", role, type(exc).__name__, exc)
+            raise
+        wait = WANDB_INIT_RETRY_BACKOFF_SECS * (2 ** (attempt - 1))
+        logger.warning(
+            "wandb.init (%s) attempt %d/%d failed: %s. Retrying in %.1fs.",
+            role, attempt, WANDB_INIT_RETRY_ATTEMPTS, last_exc, wait,
+        )
+        time.sleep(wait)
+    logger.error("wandb.init (%s) exhausted %d retries; giving up", role, WANDB_INIT_RETRY_ATTEMPTS)
+    assert last_exc is not None
+    raise last_exc
 
 
 def init_wandb_primary(args):
@@ -64,7 +111,15 @@ def init_wandb_primary(args):
     if offline:
         init_kwargs["settings"] = wandb.Settings(mode="offline")
     else:
-        init_kwargs["settings"] = wandb.Settings(mode="shared", x_primary=True)
+        # init_timeout default (90s) is too tight for cross-region clusters.
+        # x_label tags the primary so secondary attachment can be audited in
+        # the wandb UI's console-logs filter.
+        init_kwargs["settings"] = wandb.Settings(
+            mode="shared",
+            x_primary=True,
+            init_timeout=WANDB_INIT_TIMEOUT_SECS,
+            x_label=f"rank_{getattr(args, 'rank', 0)}_primary",
+        )
 
     # Add custom directory if specified
     if args.wandb_dir:
@@ -73,7 +128,7 @@ def init_wandb_primary(args):
         init_kwargs["dir"] = args.wandb_dir
         logger.info(f"W&B logs will be stored in: {args.wandb_dir}")
 
-    wandb.init(**init_kwargs)
+    _wandb_init_with_retry(init_kwargs, role="primary")
 
     _init_wandb_common()
 
@@ -116,10 +171,17 @@ def init_wandb_secondary(args, router_addr=None):
     if offline:
         settings_kwargs = dict(mode="offline")
     else:
+        # Same init_timeout treatment as primary; cross-region latency +
+        # concurrent actor bursts routinely exceed the 90s default for the
+        # secondary's run-attach HTTPS round-trip.
+        # x_label per-rank tagging is the standard per wandb distributed-
+        # training docs (unique label per writer).
         settings_kwargs = dict(
             mode="shared",
             x_primary=False,
             x_update_finish_state=False,
+            init_timeout=WANDB_INIT_TIMEOUT_SECS,
+            x_label=f"rank_{getattr(args, 'rank', 0)}_secondary",
         )
 
     if args.sglang_enable_metrics and router_addr is not None:
@@ -139,7 +201,10 @@ def init_wandb_secondary(args, router_addr=None):
         "project": args.wandb_project,
         "config": args.__dict__,
         "resume": "allow",
-        "reinit": True,
+        # reinit=True removed: shared-mode semantics permit concurrent writers
+        # to the same run natively. Setting reinit=True triggered stale-state
+        # warnings from the wandb-core on secondary actors, without any
+        # functional benefit once the primary owns the run lifecycle.
         "settings": wandb.Settings(**settings_kwargs),
     }
 
@@ -148,7 +213,7 @@ def init_wandb_secondary(args, router_addr=None):
         os.makedirs(args.wandb_dir, exist_ok=True)
         init_kwargs["dir"] = args.wandb_dir
 
-    wandb.init(**init_kwargs)
+    _wandb_init_with_retry(init_kwargs, role="secondary")
 
     _init_wandb_common()
 
