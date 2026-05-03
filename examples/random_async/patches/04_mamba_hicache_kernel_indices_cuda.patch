@@ -1,0 +1,49 @@
+--- a/python/sglang/srt/mem_cache/memory_pool_host.py
++++ b/python/sglang/srt/mem_cache/memory_pool_host.py
+@@ -1368,21 +1368,26 @@
+     def _copy_tensor(
+         src: torch.Tensor,
+         dst: torch.Tensor,
+         src_indices: torch.Tensor,
+         dst_indices: torch.Tensor,
+         io_backend: str,
+     ) -> None:
+         if src_indices.numel() == 0:
+             return
+         if io_backend == "kernel":
++            kernel_device = src.device if src.is_cuda else dst.device
++            if not src_indices.is_cuda:
++                src_indices = src_indices.to(kernel_device, non_blocking=True)
++            if not dst_indices.is_cuda:
++                dst_indices = dst_indices.to(kernel_device, non_blocking=True)
+             # TODO: Rename the interface for clarity.
+             # Here, transfer_kv_per_layer_mla is reused to transfer the Mamba state.
+             # This has nothing to do with MLA; it's only reused because this interface happens to transfer a single Pool.
+             transfer_kv_per_layer_mla(
+                 src=src,
+                 dst=dst,
+                 src_indices=src_indices,
+                 dst_indices=dst_indices,
+                 item_size=MambaPoolHost._item_size_per_index(src),
+             )
+         elif io_backend == "direct":
+@@ -1408,14 +1415,19 @@
+     ) -> None:
+         if src_indices.numel() == 0:
+             return
+         if io_backend == "kernel":
++            kernel_device = src.device if src.is_cuda else dst.device
++            if not src_indices.is_cuda:
++                src_indices = src_indices.to(kernel_device, non_blocking=True)
++            if not dst_indices.is_cuda:
++                dst_indices = dst_indices.to(kernel_device, non_blocking=True)
+             item_size = MambaPoolHost._item_size_per_index(dst)
+             transfer_kv_per_layer_mla_pf_lf(
+                 src=src,
+                 dst=dst,
+                 src_indices=src_indices,
+                 dst_indices=dst_indices,
+                 layer_id=layer_id,
+                 item_size=item_size,
+                 src_layout_dim=item_size * num_layers,
+             )

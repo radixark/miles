@@ -1,0 +1,58 @@
+diff --git a/python/sglang/srt/disaggregation/decode.py b/python/sglang/srt/disaggregation/decode.py
+--- a/python/sglang/srt/disaggregation/decode.py
++++ b/python/sglang/srt/disaggregation/decode.py
+@@ -1158,6 +1158,12 @@ class SchedulerDisaggregationDecodeMixin:
+             # Receive requests
+             recv_reqs = self.recv_requests()
+             self.process_input_requests(recv_reqs)
++            if self._engine_paused:
++                if not getattr(self, "_harmonic_logged_minimal_pd_pause_gate_decode", False):
++                    print("HARMONIC_MINIMAL_PD_PAUSE_GATE decode", flush=True)
++                    self._harmonic_logged_minimal_pd_pause_gate_decode = True
++                continue
++
+             # polling and allocating kv cache
+             self.process_decode_queue()
+ 
+@@ -1185,6 +1191,12 @@ class SchedulerDisaggregationDecodeMixin:
+             # Receive requests
+             recv_reqs = self.recv_requests()
+             self.process_input_requests(recv_reqs)
++            if self._engine_paused:
++                if not getattr(self, "_harmonic_logged_minimal_pd_pause_gate_decode", False):
++                    print("HARMONIC_MINIMAL_PD_PAUSE_GATE decode", flush=True)
++                    self._harmonic_logged_minimal_pd_pause_gate_decode = True
++                continue
++
+             # polling and allocating kv cache
+             self.process_decode_queue()
+ 
+diff --git a/python/sglang/srt/disaggregation/prefill.py b/python/sglang/srt/disaggregation/prefill.py
+--- a/python/sglang/srt/disaggregation/prefill.py
++++ b/python/sglang/srt/disaggregation/prefill.py
+@@ -397,6 +397,12 @@ def event_loop_normal_disagg_prefill(self: Scheduler) -> None:
+             # Receive requests
+             recv_reqs = self.recv_requests()
+             self.process_input_requests(recv_reqs)
++            if self._engine_paused:
++                if not getattr(self, "_harmonic_logged_minimal_pd_pause_gate_prefill", False):
++                    print("HARMONIC_MINIMAL_PD_PAUSE_GATE prefill", flush=True)
++                    self._harmonic_logged_minimal_pd_pause_gate_prefill = True
++                continue
++
+             self.waiting_queue.extend(
+                 self.disagg_prefill_bootstrap_queue.pop_bootstrapped()
+             )
+@@ -428,6 +434,12 @@ def event_loop_overlap_disagg_prefill(self: Scheduler) -> None:
+             # Receive requests
+             recv_reqs = self.recv_requests()
+             self.process_input_requests(recv_reqs)
++            if self._engine_paused:
++                if not getattr(self, "_harmonic_logged_minimal_pd_pause_gate_prefill", False):
++                    print("HARMONIC_MINIMAL_PD_PAUSE_GATE prefill", flush=True)
++                    self._harmonic_logged_minimal_pd_pause_gate_prefill = True
++                continue
++
+             self.waiting_queue.extend(
+                 self.disagg_prefill_bootstrap_queue.pop_bootstrapped()
+             )

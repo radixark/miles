@@ -59,6 +59,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _get_sglang_env_passthrough() -> dict[str, str]:
+    env_names = os.environ.get("MILES_SGLANG_ENV_PASSTHROUGH", "")
+    return {
+        name: os.environ[name]
+        for name in env_names.replace(",", " ").split()
+        if name in os.environ
+    }
+
+
 @dataclasses.dataclass
 class ServerGroup:
     """A group of homogeneous SGLang engines with the same configuration.
@@ -139,6 +148,7 @@ class ServerGroup:
                     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
                 }.items()
             }
+            env_vars.update(_get_sglang_env_passthrough())
             env_vars.update(dumper_utils.get_sglang_env(self.args))
 
             rollout_engine = RolloutRayActor.options(
