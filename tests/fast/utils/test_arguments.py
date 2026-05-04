@@ -9,10 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.arguments import (
-    _maybe_apply_dumper_overrides,
-    get_miles_extra_args_provider,
-)
+from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -148,5 +145,3 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
-
-
