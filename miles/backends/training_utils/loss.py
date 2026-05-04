@@ -751,9 +751,15 @@ def policy_loss_function(
         loss += 0 * logits.sum()
 
     train_rollout_logprob_abs_diff = None
+    train_rollout_kl = None
     if "rollout_log_probs" in batch and batch["rollout_log_probs"]:
         rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
         train_rollout_logprob_abs_diff = sum_of_sample_mean((old_log_probs - rollout_log_probs).abs())
+        # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
+        # — preferred over abs_diff because the clamp bounds outlier-token contribution.
+        train_rollout_kl = sum_of_sample_mean(
+            compute_approx_kl(rollout_log_probs, old_log_probs, kl_loss_type="low_var_kl")
+        )
 
     reported_loss = {
         "loss": loss.clone().detach(),
@@ -766,6 +772,8 @@ def policy_loss_function(
 
     if train_rollout_logprob_abs_diff is not None:
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()
+    if train_rollout_kl is not None:
+        reported_loss["train_rollout_kl"] = train_rollout_kl.clone().detach()
 
     if args.use_kl_loss:
         reported_loss["kl_loss"] = kl_loss.clone().detach()
