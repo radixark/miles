@@ -516,6 +516,7 @@ class TestParserBinding:
             (TITOTokenizerType.MINIMAX_M25, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
+            (TITOTokenizerType.DEEPSEEKV4, "deepseek-v4", "deepseekv4"),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )
@@ -530,6 +531,7 @@ class TestParserBinding:
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN3) == ("qwen3", "qwen25")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47) == ("glm45", "glm47")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEEPSEEKV4) == ("deepseek-v4", "deepseekv4")
         # DEFAULT family has no binding for either parser; both come back None.
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEFAULT) == (None, None)
 
