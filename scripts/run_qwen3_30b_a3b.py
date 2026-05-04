@@ -10,7 +10,6 @@ import miles.utils.external_utils.command_utils as U
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = U.create_run_id()
-    model_org: str = "Qwen"
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
@@ -47,14 +46,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_fp8:
-        U.exec_command(
-            f"hf download {args.model_org}/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
-        )
+        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
 
     if args.rollout_mxfp8:
         U.exec_command(
@@ -311,7 +308,6 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},
