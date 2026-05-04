@@ -68,11 +68,11 @@ def execute(args: ScriptArgs):
         "--rollout-function-path random_async_rollout.generate_rollout_random_async "
         "--disable-rollout-global-dataset "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 2 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 32 "
+        "--n-samples-per-prompt 16 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 1 "
-        "--global-batch-size 16 "
+        "--global-batch-size 512 "
         "--balance-data "
         f"--pause-generation-mode {args.pause_generation_mode} "
     )
@@ -88,7 +88,7 @@ def execute(args: ScriptArgs):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 10000 "
+        "--max-tokens-per-gpu 8000 "
         "--log-probs-chunk-size 1024 "
         "--moe-token-dispatcher-type flex "
         "--moe-flex-dispatcher-backend deepep "
@@ -133,6 +133,7 @@ def execute(args: ScriptArgs):
         "--sglang-moe-a2a-backend deepep "
         "--sglang-disaggregation-transfer-backend nixl "
         "--sglang-context-length 80000 "
+        "--sglang-enable-metrics "
         "--sglang-server-concurrency 384 "
     )
 
@@ -169,6 +170,13 @@ def execute(args: ScriptArgs):
         config=args,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
+            "SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK": "1",
+            "SGLANG_DISAGGREGATION_WAITING_TIMEOUT": "900",
+            "MILES_SGLANG_ENV_PASSTHROUGH": (
+                os.environ.get("MILES_SGLANG_ENV_PASSTHROUGH", "")
+                + " SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK "
+                "SGLANG_DISAGGREGATION_WAITING_TIMEOUT"
+            ).strip(),
             "PYTHONPATH": f"{args.megatron_path}:{example_dir}",
         },
     )

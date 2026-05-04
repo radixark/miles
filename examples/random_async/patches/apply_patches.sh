@@ -1,7 +1,6 @@
 #!/bin/bash
 # Apply the SGLang patches required to run the random_async example on
-# 1P1D4G disaggregation. NOT idempotent — fails if any patch does
-# not apply cleanly. Set SGLANG_PARENT to override the auto-detected
+# 1P1D4G disaggregation. Set SGLANG_PARENT to override the auto-detected
 # sglang location.
 set -euo pipefail
 

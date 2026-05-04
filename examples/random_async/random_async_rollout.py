@@ -37,6 +37,7 @@ from miles.rollout.data_source import DataSource
 from miles.utils.async_utils import run
 from miles.utils.http_utils import post as http_post
 from miles.utils.types import Sample
+from random_async_sglang_metrics import SGLangMetricsReporter, record_agent_request
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +49,14 @@ FILLER_RATIO = 3.0
 # Cap on accumulated context per Sample. The multi-turn loop appends each
 # turn's response + filler to the next request's input_ids until this is
 # exceeded, then the Sample is finalised.
-MAX_CONTEXT_TOKENS = 60000
-# Concurrent in-flight SGLang requests target ``CONCURRENCY_PER_GPU *
-# rollout_num_gpus``; each Sample drives one request at a time within its
-# multi-turn loop, so this translates to a max-concurrent-Samples bound.
+MAX_CONTEXT_TOKENS = int(os.environ.get("RANDOM_ASYNC_MAX_CONTEXT_TOKENS", "60000"))
+# Concurrent in-flight SGLang requests target ``CONCURRENCY_PER_GPU`` per
+# prefill GPU; each Sample drives one request at a time within its multi-turn
+# loop, so this translates to a max-concurrent-Samples bound.
 CONCURRENCY_PER_GPU = int(os.environ.get("RANDOM_ASYNC_CONCURRENCY_PER_GPU", "64"))
 # Qwen3.5-35B vocab size; works for any model with vocab >= this.
 VOCAB_SIZE = 151643
-SGLANG_REQUEST_TIMEOUT_SECONDS = 10 * 60
+SGLANG_REQUEST_TIMEOUT_SECONDS = 30 * 60
 
 
 def _rand_ids(n: int) -> list[int]:
@@ -77,21 +78,35 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
     start_time = time.time()
     turns = 0
+    perfect_cacheable_prefix_len = 0
+    sticky_dp_rank = sample.index % args.rollout_num_gpus_per_engine
 
     while True:
         turns += 1
+        remaining_tokens = MAX_CONTEXT_TOKENS - len(current_ids)
+        if remaining_tokens <= 0:
+            break
+        max_new_tokens = min(random.randint(*MAX_TOKENS_RANGE), remaining_tokens)
         payload = {
             "input_ids": current_ids,
             "sampling_params": {
-                "max_new_tokens": random.randint(*MAX_TOKENS_RANGE),
+                "max_new_tokens": max_new_tokens,
                 "temperature": 0.8,
                 "ignore_eos": True,
             },
             "return_logprob": True,
+            # Keep each sample on one prefill DP rank, and tell decode exactly
+            # which prefill DP owns the KV instead of relying on room queries.
+            "routed_dp_rank": sticky_dp_rank,
+            "disagg_prefill_dp_rank": sticky_dp_rank,
         }
-        max_new_tokens = payload["sampling_params"]["max_new_tokens"]
+        headers = {"x-smg-routing-key": f"random-async-sample-{sample.index}"}
+        request_start = time.monotonic()
         try:
-            data = await asyncio.wait_for(http_post(url, payload), timeout=SGLANG_REQUEST_TIMEOUT_SECONDS)
+            data = await asyncio.wait_for(
+                http_post(url, payload, max_retries=1, headers=headers),
+                timeout=SGLANG_REQUEST_TIMEOUT_SECONDS,
+            )
         except TimeoutError as e:
             raise TimeoutError(
                 "SGLang /generate timed out after "
@@ -99,25 +114,44 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
                 f"(sample_index={sample.index}, group_index={sample.group_index}, "
                 f"input_tokens={len(current_ids)}, max_new_tokens={max_new_tokens})"
             ) from e
+        request_duration = time.monotonic() - request_start
         meta = data["meta_info"]
         lp = meta["output_token_logprobs"]
         if not lp:
             raise RuntimeError(f"SGLang returned no output_token_logprobs: {data}")
         out_tokens = [item[1] for item in lp]
         out_log_probs = [item[0] for item in lp]
+        cached_tokens = meta["cached_tokens"]
+        prompt_tokens = meta["prompt_tokens"]
+        record_agent_request(
+            output_tokens=len(out_tokens),
+            prompt_tokens=prompt_tokens,
+            cached_tokens=cached_tokens,
+            perfect_cacheable_tokens=perfect_cacheable_prefix_len,
+            request_time=request_duration,
+        )
 
         filler = _rand_ids(int(len(out_tokens) * FILLER_RATIO))
         segment = out_tokens + filler
+        segment_log_probs = out_log_probs + [0.0] * len(filler)
+        segment_loss_mask = [1] * len(out_tokens) + [0] * len(filler)
+        remaining_tokens = MAX_CONTEXT_TOKENS - len(current_ids)
+        if len(segment) > remaining_tokens:
+            segment = segment[:remaining_tokens]
+            segment_log_probs = segment_log_probs[:remaining_tokens]
+            segment_loss_mask = segment_loss_mask[:remaining_tokens]
+        retained_generated_tokens = min(len(out_tokens), len(segment))
+        perfect_cacheable_prefix_len = len(current_ids) + retained_generated_tokens
         accumulated_response.extend(segment)
-        accumulated_log_probs.extend(out_log_probs + [0.0] * len(filler))
-        accumulated_loss_mask.extend([1] * len(out_tokens) + [0] * len(filler))
+        accumulated_log_probs.extend(segment_log_probs)
+        accumulated_loss_mask.extend(segment_loss_mask)
         current_ids.extend(segment)
         sample.prefix_cache_info.add(meta)
 
         if "weight_version" in meta:
             sample.weight_versions.append(meta["weight_version"])
 
-        if len(current_ids) > MAX_CONTEXT_TOKENS:
+        if len(current_ids) >= MAX_CONTEXT_TOKENS:
             break
 
     sample.tokens = current_ids
@@ -185,9 +219,19 @@ class AsyncRandomRolloutWorker:
         self.running = True
         self.output_queue: queue.Queue = queue.Queue(maxsize=1000)
         self.worker_thread: threading.Thread | None = None
+        self.metrics_reporter: SGLangMetricsReporter | None = None
         self.failure: BaseException | None = None
+        self.active_count = 0
         self._sample_index = 0
         self._group_index = 0
+
+        if args.sglang_enable_metrics:
+            router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+            self.metrics_reporter = SGLangMetricsReporter(
+                router_url=router_url,
+                prefill_num_gpus=args.rollout_num_gpus_per_engine,
+                decode_num_gpus=args.rollout_num_gpus_per_engine,
+            )
 
     def _make_random_group(self) -> list[Sample]:
         group: list[Sample] = []
@@ -203,7 +247,11 @@ class AsyncRandomRolloutWorker:
     async def continuous_worker_loop(self):
         print("Continuous random-async rollout worker started")
         active: dict[asyncio.Task, int] = {}
-        max_concurrent_groups = max(1, (CONCURRENCY_PER_GPU * self.args.rollout_num_gpus) // self.args.n_samples_per_prompt)
+        max_concurrent_groups = max(
+            1,
+            (CONCURRENCY_PER_GPU * self.args.rollout_num_gpus_per_engine)
+            // self.args.n_samples_per_prompt,
+        )
         gid_counter = 0
 
         try:
@@ -221,8 +269,10 @@ class AsyncRandomRolloutWorker:
                     active[asyncio.create_task(_generate_random_group(self.args, group))] = gid
                     break
 
+                self.active_count = len(active)
                 await asyncio.sleep(1)
         finally:
+            self.active_count = len(active)
             for task in active:
                 task.cancel()
             if active:
@@ -240,12 +290,16 @@ class AsyncRandomRolloutWorker:
 
     def start(self):
         if self.worker_thread is None or not self.worker_thread.is_alive():
+            if self.metrics_reporter is not None:
+                self.metrics_reporter.start()
             self.worker_thread = threading.Thread(target=self.worker_thread_func, daemon=True)
             self.worker_thread.start()
             print("Started random-async worker thread")
 
     def stop(self):
         self.running = False
+        if self.metrics_reporter is not None:
+            self.metrics_reporter.stop()
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=5)
         print("Stopped random-async worker thread")
@@ -262,12 +316,24 @@ class AsyncRandomRolloutWorker:
     def get_queue_size(self) -> int:
         return self.output_queue.qsize()
 
+    def get_active_count(self) -> int:
+        return self.active_count
+
+    def check_failures(self) -> None:
+        if self.failure is not None:
+            raise self.failure
+        if self.metrics_reporter is not None and self.metrics_reporter.failure is not None:
+            raise self.metrics_reporter.failure
+
 
 async def _generate_rollout_async(args, rollout_id: int) -> list[list[Sample]]:
     worker = get_global_worker(args)
     target = args.rollout_batch_size
 
-    print(f"Random rollout {rollout_id}: collecting {target} groups, queue_depth={worker.get_queue_size()}")
+    print(
+        f"Random rollout {rollout_id}: collecting {target} groups, "
+        f"queue_depth={worker.get_queue_size()}, active={worker.get_active_count()}"
+    )
 
     data: list[list[Sample]] = []
     start_time = time.time()
@@ -275,8 +341,7 @@ async def _generate_rollout_async(args, rollout_id: int) -> list[list[Sample]]:
     progress_warn_interval = 30.0
 
     while len(data) < target:
-        if worker.failure is not None:
-            raise worker.failure
+        worker.check_failures()
         if worker.worker_thread is not None and not worker.worker_thread.is_alive():
             raise RuntimeError("Random rollout worker exited without reporting a failure")
 
@@ -289,7 +354,8 @@ async def _generate_rollout_async(args, rollout_id: int) -> list[list[Sample]]:
         if time.time() - last_progress > progress_warn_interval:
             print(
                 f"Random rollout {rollout_id}: no progress for {progress_warn_interval}s, "
-                f"queue_depth={worker.get_queue_size()}, collected={len(data)}/{target}"
+                f"queue_depth={worker.get_queue_size()}, active={worker.get_active_count()}, "
+                f"collected={len(data)}/{target}"
             )
             last_progress = time.time()
 

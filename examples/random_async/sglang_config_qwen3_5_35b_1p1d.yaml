@@ -13,12 +13,14 @@ sglang:
           deepep_mode: normal
           dp_size: 4
           ep_size: 4
+          skip_tokenizer_init: true
           mem_fraction_static: 0.85
           disable_cuda_graph: true
+          load_balance_method: follow_bootstrap_room
           chunked_prefill_size: 65536
           max_running_requests: 512
           enable_hierarchical_cache: true
-          hicache_size: 150 # make sure your machine has enough RAM for 8x150gb.
+          hicache_size: 200 # make sure your machine has enough RAM for 8x150gb.
           context_length: 80000
 
       - worker_type: decode
@@ -28,6 +30,7 @@ sglang:
           deepep_mode: low_latency
           dp_size: 4
           ep_size: 4
+          skip_tokenizer_init: true
           mem_fraction_static: 0.85
           disable_radix_cache: true
           cuda_graph_max_bs: 128
