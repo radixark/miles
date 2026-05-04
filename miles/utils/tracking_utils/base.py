@@ -24,16 +24,13 @@ class TrackingBackend(ABC):
     # Interface every logging backend must satisfy.
 
     @abstractmethod
-    def init(self, args, *, primary: bool = True, **kwargs) -> None:
-        ...
+    def init(self, args, *, primary: bool = True, **kwargs) -> None: ...
 
     @abstractmethod
-    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
-        ...
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None: ...
 
     @abstractmethod
-    def finish(self) -> None:
-        ...
+    def finish(self) -> None: ...
 
 
 # Thin adapters for backwards compatibility to keep wandb_utils and tensorboard_utils untouched.

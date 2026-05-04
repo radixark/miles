@@ -100,6 +100,7 @@ def _init_mlflow_secondary(args) -> None:
 # Logging
 # ---------------------------------------------------------------------------
 
+
 def log_metrics(metrics: dict[str, Any], step: int | None = None) -> None:
     import mlflow
 
@@ -122,6 +123,7 @@ def log_metrics(metrics: dict[str, Any], step: int | None = None) -> None:
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
+
 
 def finish() -> None:
     import mlflow

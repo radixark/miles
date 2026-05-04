@@ -1,6 +1,6 @@
 import logging
 
-from .base import BACKEND_REGISTRY, TrackingBackend, TrackingManager
+from .base import TrackingManager
 
 logger = logging.getLogger(__name__)
 _manager = TrackingManager()
