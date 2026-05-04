@@ -183,7 +183,7 @@ def execute(args: ScriptArgs):
                     # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                 )
                 misc_args += (
-                    "--extra-high-precision-layers .kv_b_proj. "
+                    "--extra-high-precision-layers-hf .kv_b_proj. "
                     "--extra-high-precision-layers-megatron .linear_kv_up_proj .linear_k_up_proj .linear_v_up_proj "
                 )
                 optimizer_args += (
