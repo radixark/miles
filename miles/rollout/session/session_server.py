@@ -81,7 +81,20 @@ class SessionServer:
     def build_proxy_response(self, result: dict) -> Response:
         content = result["response_body"]
         status_code = result["status_code"]
-        headers = result["headers"]
+        # Strip hop-by-hop headers that become stale when we re-emit the body.
+        # JSONResponse re-serializes via json.dumps (different whitespace/unicode
+        # escape behavior than the upstream may have used) and Response may be
+        # re-framed with chunked encoding. Forwarding the upstream content-length,
+        # transfer-encoding, or content-encoding produces a mismatch between the
+        # declared framing and the bytes Starlette actually writes, surfacing to
+        # clients as h11 LocalProtocolError ("Too much data for declared
+        # Content-Length") or "peer closed connection without sending complete
+        # message body". Starlette/hyper will recompute the correct values from
+        # the actual body when we omit these headers.
+        headers = {
+            k: v for k, v in result["headers"].items()
+            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
+        }
         content_type = headers.get("content-type", "")
         try:
             data = json.loads(content)
