@@ -9,7 +9,6 @@ The 1x32 scale block is applied along the last dimension (K=7168).
 """
 
 import argparse
-import gc
 import math
 from dataclasses import dataclass
 
@@ -60,9 +59,7 @@ def normalize_quantized_outputs(
     rows, _ = x_2d.shape
 
     if q.numel() % rows != 0:
-        raise ValueError(
-            f"Quantized tensor cannot be reshaped to [rows, -1]: q.shape={tuple(q.shape)}, rows={rows}"
-        )
+        raise ValueError(f"Quantized tensor cannot be reshaped to [rows, -1]: q.shape={tuple(q.shape)}, rows={rows}")
     q_2d = q.contiguous().reshape(rows, -1)
 
     if scale.numel() % rows != 0:
@@ -96,9 +93,7 @@ def compute_dequant_metrics(
 
     rows, k = x_2d.shape
     if q_2d.shape[0] != rows or scale_u8_2d.shape[0] != rows:
-        raise ValueError(
-            f"Row mismatch: x={x_2d.shape}, q={q_2d.shape}, scale={scale_u8_2d.shape}"
-        )
+        raise ValueError(f"Row mismatch: x={x_2d.shape}, q={q_2d.shape}, scale={scale_u8_2d.shape}")
     if k % group_size != 0:
         raise ValueError(f"K={k} must be divisible by group_size={group_size}.")
 
@@ -109,9 +104,7 @@ def compute_dequant_metrics(
 
     expected_scale_k = k // group_size
     if scale_u8_2d.shape[1] != expected_scale_k:
-        raise ValueError(
-            f"Scale shape mismatch: expected second dim {expected_scale_k}, got {scale_u8_2d.shape[1]}"
-        )
+        raise ValueError(f"Scale shape mismatch: expected second dim {expected_scale_k}, got {scale_u8_2d.shape[1]}")
 
     total = rows * k
     eps = 1e-12
