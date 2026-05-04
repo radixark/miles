@@ -140,6 +140,13 @@ class ServerGroup:
                 }.items()
             }
             env_vars.update(dumper_utils.get_sglang_env(self.args))
+            # Propagate PYTHONPATH so Ray remote actors import the same miles
+            # / sglang modules as the driver. Without this, SGLangEngine
+            # actors inherit only the container's default PYTHONPATH and
+            # `import miles` falls back to a pip-installed /root/miles,
+            # silently bypassing any MILES_OVERRIDE on the driver's PYTHONPATH.
+            if "PYTHONPATH" in os.environ:
+                env_vars["PYTHONPATH"] = os.environ["PYTHONPATH"]
 
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
