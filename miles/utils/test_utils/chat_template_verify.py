@@ -17,7 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from miles.utils.chat_template_utils.template import apply_chat_template, apply_chat_template_from_str
+from miles.utils.chat_template_utils.template import apply_chat_template_from_str
 
 if TYPE_CHECKING:
     from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, TITOTokenizerType
@@ -456,21 +456,15 @@ def verify_append_only_via_tito_instance(
         prefix_msgs = deepcopy(messages[:n])
         full_msgs = deepcopy(messages[:m])
 
-        prefix_text = apply_chat_template(
+        prefix_text = tito._render_messages(
             prefix_msgs,
-            tokenizer=tokenizer,
             tools=tools,
             add_generation_prompt=False,
-            tokenize=False,
-            **template_kwargs,
         )
-        full_text = apply_chat_template(
+        full_text = tito._render_messages(
             full_msgs,
-            tokenizer=tokenizer,
             tools=tools,
             add_generation_prompt=True,
-            tokenize=False,
-            **template_kwargs,
         )
 
         prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
