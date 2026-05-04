@@ -137,20 +137,18 @@ def setup_session_routes(app, backend, args):
                 body = await request.body()
                 request_body = json.loads(body) if body else {}
 
-                # TITO token tracking requires three SGLang flags working together:
-                #   logprobs=True            → populates meta_info.output_token_logprobs
-                #   return_prompt_token_ids  → adds choice.prompt_token_ids
-                #   return_meta_info         → wraps the above in choice.meta_info
-                # All three are hardcoded (not setdefault) to prevent agent-side
+                # TITO token tracking requires Miles-owned input_ids plus SGLang
+                # output-token metadata:
+                #   logprobs=True     → populates meta_info.output_token_logprobs
+                #   return_meta_info  → wraps the above in choice.meta_info
+                # Both flags are hardcoded (not set default) to prevent agent-side
                 # overrides from breaking the token accumulation invariants.
                 request_body["logprobs"] = True
-                request_body["return_prompt_token_ids"] = True
                 request_body["return_meta_info"] = True
                 if getattr(args, "use_rollout_routing_replay", False):
                     request_body["return_routed_experts"] = True
-                # Must be False so stop tokens are trimmed from output: otherwise the
-                # agent sees stop-token text in content, and the accumulated checkpoint
-                # would duplicate structural delimiters that the chat template also emits.
+                # Must be False so stop-token text is trimmed from assistant
+                # message content; token IDs are still taken from logprobs below.
                 request_body["no_stop_trim"] = False
 
                 request_messages = request_body.get("messages", [])
@@ -161,10 +159,15 @@ def setup_session_routes(app, backend, args):
                 )
                 if pretokenized is not None:
                     request_body["input_ids"] = pretokenized["input_ids"]
-                    logger.debug(
-                        "Using pretokenized input_ids: %d tokens",
-                        len(pretokenized["input_ids"]),
+                else:
+                    request_body["input_ids"] = registry.tito_tokenizer.tokenize_prompt(
+                        request_messages,
+                        tools=request_body.get("tools"),
                     )
+                logger.debug(
+                    "Using TITO input_ids: %d tokens",
+                    len(request_body["input_ids"]),
+                )
 
                 body = json.dumps(request_body).encode()
                 expected_num_assistant = session.num_assistant
@@ -195,7 +198,16 @@ def setup_session_routes(app, backend, args):
                     "an empty content rather than None. Please check your modified SGLang version."
                 )
 
-            prompt_token_ids = choice.get("prompt_token_ids")
+            prompt_token_ids = request_body["input_ids"]
+            # The rollout sample builder still consumes this response field, but
+            # TITO prompt tokenization is owned by Miles rather than SGLang.
+            choice["prompt_token_ids"] = prompt_token_ids
+            result["response_body"] = json.dumps(response).encode()
+            result["headers"] = {
+                k: v
+                for k, v in result["headers"].items()
+                if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
+            }
             output_token_logprobs = meta_info["output_token_logprobs"]
             completion_tokens = meta_info["completion_tokens"]
 

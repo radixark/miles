@@ -45,6 +45,9 @@ def router_env():
                 miles_router_timeout=30,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
                 chat_template_path=None,
+                apply_chat_template_kwargs={"enable_thinking": False},
+                tito_model="default",
+                tito_allowed_append_roles=["tool"],
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
             )
@@ -57,7 +60,7 @@ def router_env():
             url = f"http://127.0.0.1:{port}"
 
             try:
-                yield SimpleNamespace(url=url)
+                yield SimpleNamespace(url=url, backend=backend)
             finally:
                 server.stop()
 
@@ -129,6 +132,8 @@ class TestSessionProxy:
         body = resp.json()
         assert "choices" in body
         assert body["choices"]
+        assert isinstance(body["choices"][0]["prompt_token_ids"], list)
+        assert body["choices"][0]["prompt_token_ids"]
 
         get_resp = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
         records = get_resp.json()["records"]

@@ -139,6 +139,21 @@ class TITOTokenizer:
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
+    def tokenize_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        add_generation_prompt: bool = True,
+    ) -> list[int]:
+        return self._encode_text(
+            self._render_messages(
+                messages,
+                add_generation_prompt=add_generation_prompt,
+                tools=tools,
+            )
+        )
+
     def _split_appended_segments(self, appended_messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         segments: list[list[dict[str, Any]]] = []
         i = 0

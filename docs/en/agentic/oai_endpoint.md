@@ -46,16 +46,14 @@ Minimal request shape:
   "messages": [
     {"role": "system", "content": "You are a concise assistant."},
     {"role": "user", "content": "Answer with one word: 2+2?"}
-  ],
-  "logprobs": true,
-  "return_prompt_token_ids": true
+  ]
 }
 ```
 
 You can pass any OpenAI-compatible parameters in the payload, or any
-SGLang-compatible `ChatCompletionRequest` parameters. Note:
-`logprobs=True` and `return_prompt_token_ids=True` are set in
-`request_kwargs` to extract token ids and logprobs for TITO (see below).
+SGLang-compatible `ChatCompletionRequest` parameters. Note: with
+`--use-session-server`, the session middleware sets the token-tracking fields
+TITO needs and injects Miles-owned `input_ids` before proxying to SGLang.
 Do **not** set `logprob_start_len=0` — it would disable SGLang's prefix
 cache.
 
@@ -129,11 +127,13 @@ request. It requires `--use-session-server`; with that on, miles handles
 three things on your behalf:
 
 - Hardcodes the SGLang flags TITO needs on every chat request
-  (`logprobs=True`, `return_meta_info=True`, `return_prompt_token_ids=True`,
-  `no_stop_trim=False`); these are set by the middleware in
-  `miles/rollout/session/sessions.py` and override any agent-passed values.
-- Reuses the token prefix from previous turns by injecting `input_ids` on
-  follow-up requests.
+  (`logprobs=True`, `return_meta_info=True`, `no_stop_trim=False`); these are
+  set by the middleware in `miles/rollout/session/sessions.py` and override any
+  agent-passed values.
+- Reuses the token prefix from previous turns by injecting Miles-owned
+  `input_ids` on every proxied chat request. The response
+  `choice.prompt_token_ids` is copied from those `input_ids`; it is not read
+  back from SGLang.
 - Accumulates per-turn records into the `Sample` you receive at the end of
   the session, with `tokens` and `rollout_log_probs` already populated.
 
