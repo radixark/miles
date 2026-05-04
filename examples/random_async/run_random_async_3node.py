@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -5,6 +6,12 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+
+
+SGLANG_SEMANTIC_ENV_PASSTHROUGH = (
+    "SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK",
+    "SGLANG_DISAGGREGATION_WAITING_TIMEOUT",
+)
 
 
 @dataclass
@@ -57,6 +64,13 @@ def execute(args: ScriptArgs):
     sglang_config_path = os.path.join(example_dir, "sglang_config_qwen3_5_35b_1p1d.yaml")
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
+    extra_env = json.loads(args.extra_env_vars or "{}")
+    passthrough_names = extra_env.get("MILES_SGLANG_ENV_PASSTHROUGH", "").split()
+    for name in SGLANG_SEMANTIC_ENV_PASSTHROUGH:
+        if name not in passthrough_names:
+            passthrough_names.append(name)
+    extra_env["MILES_SGLANG_ENV_PASSTHROUGH"] = " ".join(passthrough_names)
+    args.extra_env_vars = json.dumps(extra_env)
 
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name}-FP8/ "
@@ -95,6 +109,13 @@ def execute(args: ScriptArgs):
         "--transformer-impl transformer_engine "
         "--fp8-format e4m3 "
         "--fp8-recipe blockwise "
+    )
+
+    runtime_args = (
+        "--router-prefill-policy manual "
+        "--router-decode-policy manual "
+        "--router-assignment-mode min_load "
+        "--train-env-vars '{\"PYTORCH_CUDA_ALLOC_CONF\":\"expandable_segments:True\"}' "
     )
 
     grpo_args = (
@@ -156,6 +177,7 @@ def execute(args: ScriptArgs):
         f"{grpo_args} "
         f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
+        f"{runtime_args} "
         f"{sglang_args} "
         f"{misc_args} "
         f"{args.extra_args} "
@@ -170,13 +192,10 @@ def execute(args: ScriptArgs):
         config=args,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
+            "RANDOM_ASYNC_MAX_CONTEXT_TOKENS": "60000",
+            "RANDOM_ASYNC_CONCURRENCY_PER_GPU": "64",
             "SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK": "1",
             "SGLANG_DISAGGREGATION_WAITING_TIMEOUT": "900",
-            "MILES_SGLANG_ENV_PASSTHROUGH": (
-                os.environ.get("MILES_SGLANG_ENV_PASSTHROUGH", "")
-                + " SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK "
-                "SGLANG_DISAGGREGATION_WAITING_TIMEOUT"
-            ).strip(),
             "PYTHONPATH": f"{args.megatron_path}:{example_dir}",
         },
     )

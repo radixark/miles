@@ -10,6 +10,7 @@ disaggregated SGLang. They are temporary workarounds.
 | `04_mamba_hicache_kernel_indices_cuda.patch` | `mem_cache/memory_pool_host.py` | Move Mamba state indices to CUDA before kernel execution. |
 | `13_hicache_load_record_stream_early.patch` | `managers/cache_controller.py` | Record index tensor stream associations early so the allocator doesn't recycle them mid-load. |
 | `14_minimal_pd_pause_gate.patch` | `disaggregation/decode.py` | Gate prefill/decode scheduling during pause so weight updates don't race in-flight requests. |
+| `15_prefer_auto_numa_node.patch` | `utils/numa_utils.py` | Keep auto NUMA detection but use fallback-safe `numactl --preferred` instead of strict `--membind`. |
 
 ## Apply
 
