@@ -1879,23 +1879,11 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
-def _maybe_enable_true_on_policy_sglang_cp_lm_head(args) -> None:
-    """Preserve the user's SGLang LM-head setting for true-on-policy runs.
-
-    The DP LM-head path normalizes logprobs over the attention-TP vocab shard.
-    Strict true-on-policy scoring needs the same full-vocab log-softmax contract
-    as Megatron, so attention CP must not silently opt into DP LM-head.
-    """
-    return
-
-
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
-
-    _maybe_enable_true_on_policy_sglang_cp_lm_head(args)
 
     # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])

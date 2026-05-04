@@ -1,6 +1,5 @@
 from argparse import Namespace
 from collections.abc import Callable, Iterator
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -563,72 +562,6 @@ def icepop_function(
     return pg_loss, loss_masks, metrics
 
 
-_POLICY_LOSS_DUMP_COUNTER = 0
-
-
-def _maybe_dump_policy_loss_debug(
-    *,
-    args: Namespace,
-    batch: RolloutBatch,
-    train_log_probs: list[torch.Tensor],
-    old_log_probs: list[torch.Tensor],
-    rollout_log_probs: list[torch.Tensor] | None,
-    advantages: list[torch.Tensor],
-    local_loss_masks: list[torch.Tensor],
-    ppo_kl: torch.Tensor,
-    pg_loss: torch.Tensor,
-) -> None:
-    dump_dir = getattr(args, "dump_details", None)
-    if dump_dir is None:
-        return
-
-    global _POLICY_LOSS_DUMP_COUNTER
-    counter = _POLICY_LOSS_DUMP_COUNTER
-    _POLICY_LOSS_DUMP_COUNTER += 1
-
-    rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-    path = Path(dump_dir) / "policy_loss_debug" / f"rank_{rank}_call_{counter}.pt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    def to_cpu(tensor: torch.Tensor) -> torch.Tensor:
-        return tensor.detach().float().cpu()
-
-    samples = []
-    for index, train_lp in enumerate(train_log_probs):
-        sample = {
-            "index": index,
-            "total_length": batch["total_lengths"][index],
-            "response_length": batch["response_lengths"][index],
-            "train_log_probs": to_cpu(train_lp),
-            "old_log_probs": to_cpu(old_log_probs[index]),
-            "advantages": to_cpu(advantages[index]),
-            "local_loss_mask": to_cpu(local_loss_masks[index]),
-        }
-        if rollout_log_probs is not None:
-            sample["rollout_log_probs"] = to_cpu(rollout_log_probs[index])
-            if train_lp.shape == rollout_log_probs[index].shape:
-                sample["train_rollout_abs_diff"] = to_cpu((train_lp - rollout_log_probs[index]).abs())
-        samples.append(sample)
-
-    torch.save(
-        {
-            "rank": rank,
-            "call": counter,
-            "samples": samples,
-            "ppo_kl": to_cpu(ppo_kl),
-            "pg_loss": to_cpu(pg_loss),
-            "finite": {
-                "ppo_kl": torch.isfinite(ppo_kl).all().item(),
-                "pg_loss": torch.isfinite(pg_loss).all().item(),
-                "train_log_probs": all(torch.isfinite(t).all().item() for t in train_log_probs),
-                "old_log_probs": all(torch.isfinite(t).all().item() for t in old_log_probs),
-                "advantages": all(torch.isfinite(t).all().item() for t in advantages),
-            },
-        },
-        path,
-    )
-
-
 def policy_loss_function(
     args: Namespace,
     batch: RolloutBatch,
@@ -747,17 +680,20 @@ def policy_loss_function(
 
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
 
-    _maybe_dump_policy_loss_debug(
-        args=args,
-        batch=batch,
-        train_log_probs=train_log_probs_list,
-        old_log_probs=old_log_probs_list,
-        rollout_log_probs=batch.get("rollout_log_probs"),
-        advantages=batch["advantages"],
-        local_loss_masks=local_loss_mask_list,
-        ppo_kl=ppo_kl,
-        pg_loss=pg_loss,
-    )
+    if getattr(args, "dump_details", None) is not None:
+        from .debug_dump import maybe_dump_policy_loss_debug
+
+        maybe_dump_policy_loss_debug(
+            args=args,
+            batch=batch,
+            train_log_probs=train_log_probs_list,
+            old_log_probs=old_log_probs_list,
+            rollout_log_probs=batch.get("rollout_log_probs"),
+            advantages=batch["advantages"],
+            local_loss_masks=local_loss_mask_list,
+            ppo_kl=ppo_kl,
+            pg_loss=pg_loss,
+        )
 
     if args.use_opsm:
         pg_loss = pg_loss * opsm_mask

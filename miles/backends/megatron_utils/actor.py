@@ -429,7 +429,6 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.rollout_data_postprocess is not None:
                 self.rollout_data_postprocess(self.args)
 
-            train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
             log_rollout_data(rollout_id, self.args, rollout_data)
 
             # Train
@@ -445,6 +444,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
             self.prof.step(rollout_id=rollout_id)
+
+        train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
         for m in all_replay_managers:
             if m.enabled:

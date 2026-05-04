@@ -32,35 +32,25 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_fp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
-    tensor_model_parallel_size: int | None = None
-    pipeline_model_parallel_size: int = 1
-    context_parallel_size: int | None = None
-    cp_comm_type: Literal["p2p", "a2a", "all_gather", "allgather", "a2a+p2p"] | None = None
-    rollout_num_gpus: int | None = None
-    rollout_num_gpus_per_engine: int = 1
-    sglang_rl_on_policy_target: Literal["fsdp", "fsdp_tp"] | None = None
-    true_on_policy_contract: str | None = None
-    max_tokens_per_gpu: int | None = None
-    train_memory_margin_bytes: int = 3221225472
-    use_sequence_parallel: bool = True
     use_kl_loss: bool = True
-    # TODO improve, should be able to override more easily
     tis_use_rs: bool = True
 
     def __post_init__(self):
-        if self.cp_comm_type == "allgather":
-            self.cp_comm_type = "all_gather"
-
         if self.train_backend == "megatron":
             self.megatron_model_type = get_megatron_model_type(self.model_name)
 
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
-        if self.tensor_model_parallel_size is None:
-            self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2
-        if self.context_parallel_size is None:
-            self.context_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 4
-        if self.max_tokens_per_gpu is None:
-            self.max_tokens_per_gpu = 32768 if self.train_backend == "fsdp" else 9216
+
+        # Derived parallelism defaults for Qwen3 dense models
+        self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2
+        self.pipeline_model_parallel_size = 1
+        self.context_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 4
+        self.cp_comm_type = "a2a" if self.context_parallel_size > 1 else None
+        self.use_sequence_parallel = self.tensor_model_parallel_size > 1
+        self.max_tokens_per_gpu = 32768 if self.train_backend == "fsdp" else 9216
+        self.rollout_num_gpus_per_engine = 1
+        self.train_memory_margin_bytes = 3221225472
+
         apply_true_on_policy_script_defaults(self)
         if self.train_backend == "megatron" and self.enable_megatron_bridge and self.use_kl_loss:
             raise ValueError(
@@ -197,7 +187,6 @@ eval:
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
-        f"{f'--rollout-num-gpus {args.rollout_num_gpus} ' if args.rollout_num_gpus is not None else ''}"
         "--sglang-chunked-prefill-size 4096 "
         f"{'--sglang-disable-cuda-graph ' if is_debug_one_sample else ''}"
     )
