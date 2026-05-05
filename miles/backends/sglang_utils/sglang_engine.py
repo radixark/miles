@@ -501,8 +501,11 @@ class SGLangEngine(RayActor):
             payload,
         )
 
-    def pause_generation(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/pause_generation", json={})
+    def pause_generation(self, mode: str = "retract"):
+        response = requests.post(
+            f"http://{self.server_host}:{self.server_port}/pause_generation",
+            json={"mode": mode},
+        )
         response.raise_for_status()
         return response
 
@@ -652,7 +655,6 @@ def _compute_server_args(
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     if is_lora_enabled(args):
-        kwargs["enable_weights_cpu_backup"] = args.offload_rollout
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)

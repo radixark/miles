@@ -21,7 +21,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
         super().__init__(*args, **kwargs)
         self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model)
 
-    def get_hf_weight_chunks(self, megatron_local_weights):
+    def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
         rank = dist.get_rank()
 
         for megatron_local_param_infos in tqdm(

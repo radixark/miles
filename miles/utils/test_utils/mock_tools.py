@@ -1,9 +1,9 @@
 import json
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
-from transformers import AutoTokenizer
-
+from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
 
 AGENTIC_MAX_TURNS: int | None = None
@@ -59,7 +59,7 @@ async def execute_tool_call(name: str, params: dict) -> str:
     return TOOL_EXECUTORS[name](params)
 
 
-AGENTIC_RETURN_METADATA: dict[str, Any] | None = None
+AGENTIC_RETURN_METADATA: dict[str, Any] | Callable | None = None
 
 
 async def run_agentic_tool_call(
@@ -112,6 +112,8 @@ async def run_agentic_tool_call(
                 }
             )
 
+    if callable(AGENTIC_RETURN_METADATA):
+        return AGENTIC_RETURN_METADATA(metadata=kwargs.get("metadata"))
     return AGENTIC_RETURN_METADATA
 
 
@@ -139,7 +141,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-_TOKENIZER = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
+_TOKENIZER = load_tokenizer("Qwen/Qwen3-0.6B", trust_remote_code=True)
 
 
 class TwoTurnStub:

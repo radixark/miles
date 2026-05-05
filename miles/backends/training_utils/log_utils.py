@@ -121,6 +121,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "rollout_routed_experts",
                 "max_seq_lens",
                 "dynamic_global_batch_size",
+                "weight_versions",
+                "metadata",
             ]:
                 continue
             # Upload per sample mean for each rollout value
@@ -151,7 +153,14 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     else:
                         val = val.mean() * cp_size
                 else:
-                    val = sum(val) / len(val)
+                    # Flatten nested lists (e.g. list of lists from async rollout)
+                    flat = val
+                    if isinstance(val[0], (list, tuple)):
+                        flat = [x for sublist in val for x in sublist]
+                    # Skip non-numeric values (e.g. strings from async rollout metadata)
+                    if flat and not isinstance(flat[0], (int, float)):
+                        continue
+                    val = sum(flat) / len(flat)
             elif isinstance(val, torch.Tensor):
                 val = val.float().mean()
             else:

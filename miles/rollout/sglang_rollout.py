@@ -1,8 +1,7 @@
 import asyncio
 import copy
-import inspect
 import logging
-
+import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -15,8 +14,9 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
@@ -184,7 +184,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
 
-    output = await post(url, payload)
+    # Use session_id for consistent hashing routing if router uses consistent_hashing policy
+    headers = None
+    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
+        headers = {"X-SMG-Routing-Key": sample.session_id}
+
+    output = await post(url, payload, headers=headers)
 
     if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
         from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
@@ -255,13 +260,12 @@ async def generate_and_rm(
             # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
             custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
 
-            if custom_func_path is not None:
-                custom_generate_func = load_function(custom_func_path)
-                # if signature has evaluation, pass evaluation
-                if "evaluation" in inspect.signature(custom_generate_func).parameters:
-                    sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
-                else:
-                    sample = await custom_generate_func(args, sample, sampling_params)
+            generate_fn = load_generate_function(custom_func_path) if custom_func_path else None
+            if generate_fn is not None:
+                output = await generate_fn(
+                    GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params, evaluation=evaluation)
+                )
+                sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
 
@@ -298,6 +302,12 @@ async def generate_and_rm_group(
 
     if state.aborted:
         return group
+
+    # Generate a unique session_id for each sample in the group (consistent hashing only)
+    if args.sglang_router_policy == "consistent_hashing":
+        for sample in group:
+            if sample.session_id is None:
+                sample.session_id = str(uuid.uuid4())
 
     tasks = []
     for idx, sample in enumerate(group):
