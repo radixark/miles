@@ -66,3 +66,7 @@
 13. **Gradient becomes NaN or Inf during training.**
 
     You can try setting the `--no-check-for-nan-in-loss-and-grad` flag to skip the corresponding training steps.
+
+14. **NCCL error: `Failed to bind NVLink SHARP (NVLS) Multicast memory ... CUDA error 2 'out of memory'`.**
+
+    This issue has been observed on H100 in colocate mode with piece-wise CUDA graph enabled. Piece-wise CUDA graph is now disabled by default in colocate mode. If you encounter this after explicitly enabling it via `--sglang-enforce-piecewise-cuda-graph`, remove that flag.

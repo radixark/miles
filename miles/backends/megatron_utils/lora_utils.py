@@ -9,7 +9,6 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 
 from miles.backends.training_utils.parallel import get_parallel_state
 
@@ -103,6 +102,40 @@ def is_lora_weight_name(name: str) -> bool:
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
+
+
+_param_grad_buffer_patched = False
+
+
+def patch_param_grad_buffer_for_colocate_mode_lora() -> None:
+    """Patch _ParamAndGradBuffer to use disable_param_buffers_cpu_backup=True.
+
+    In colocate mode with offload_train, torch_memory_saver.pause(tag="default")
+    offloads default-region GPU memory.  During LoRA training, base weights are
+    frozen (requires_grad=False) so DDP only creates buffers for adapter params.
+
+    This patch ensures those buffers are allocated in the "param_buffer" region
+    (enable_cpu_backup=False), making them invisible to pause(tag="default") —
+    eliminating the need for resume()/pause() around update_weights.
+
+    The patch is idempotent and only takes effect once.
+    """
+    global _param_grad_buffer_patched
+    if _param_grad_buffer_patched:
+        return
+    _param_grad_buffer_patched = True
+
+    from megatron.core.distributed.param_and_grad_buffer import _ParamAndGradBuffer
+
+    _original_init = _ParamAndGradBuffer.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        kwargs["disable_param_buffers_cpu_backup"] = True
+        kwargs["disable_grad_buffers_cpu_backup"] = True
+        _original_init(self, *args, **kwargs)
+
+    _ParamAndGradBuffer.__init__ = _patched_init
+    logger.info("Patched _ParamAndGradBuffer.__init__ for LoRA colocate mode (disable cpu backup)")
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +308,8 @@ def save_lora_checkpoint(
 
     save_path = Path(save_dir)
     is_dp_rank_0 = get_parallel_state().intra_dp.rank == 0
-    tp_rank = mpu.get_tensor_model_parallel_rank()
-    pp_rank = mpu.get_pipeline_model_parallel_rank()
+    tp_rank = get_parallel_state().tp.rank
+    pp_rank = get_parallel_state().pp.rank
 
     # Create directory on dp_rank=0, then synchronize
     if is_dp_rank_0:
@@ -386,8 +419,8 @@ def load_lora_adapter(
         logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
         return False, None
 
-    tp_rank = mpu.get_tensor_model_parallel_rank()
-    pp_rank = mpu.get_pipeline_model_parallel_rank()
+    tp_rank = get_parallel_state().tp.rank
+    pp_rank = get_parallel_state().pp.rank
 
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
     native_path = adapter_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"

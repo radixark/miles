@@ -38,6 +38,116 @@ def _load_hf_config(checkpoint_path):
         return ns
 
 
+def _get_cp_sequence_lengths(cu_seqlens, cp_size, local_total_len=None):
+    global_seq_lengths = [(cu_seqlens[i + 1] - cu_seqlens[i]).item() for i in range(len(cu_seqlens) - 1)]
+    local_seq_lengths = []
+    for global_seq_len in global_seq_lengths:
+        if global_seq_len % cp_size != 0:
+            raise ValueError(f"Expected sequence length {global_seq_len} to be divisible by cp_size={cp_size}")
+        local_seq_lengths.append(global_seq_len // cp_size)
+
+    if local_total_len is not None and sum(local_seq_lengths) != local_total_len:
+        raise ValueError(f"Expected local total length {local_total_len}, got {sum(local_seq_lengths)}")
+
+    return global_seq_lengths, local_seq_lengths
+
+
+def _gather_cp_tensors(x, cp_group):
+    gathered = [torch.empty_like(x) for _ in range(dist.get_world_size(group=cp_group))]
+    dist.all_gather(gathered, x.contiguous(), group=cp_group)
+    return gathered
+
+
+def _zigzag_to_packed_shard_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    """Convert zigzag ring-attn layout to the contiguous packed shard expected by fla CP."""
+    global_seq_lengths, local_seq_lengths = _get_cp_sequence_lengths(cu_seqlens, cp_size, hidden_states.size(0))
+    gathered_by_rank = [
+        gathered.split(local_seq_lengths, dim=0) for gathered in _gather_cp_tensors(hidden_states, cp_group)
+    ]
+
+    full_sequences = []
+    for seq_idx, global_seq_len in enumerate(global_seq_lengths):
+        per_rank = [rank_seqs[seq_idx] for rank_seqs in gathered_by_rank]
+        if global_seq_len % (2 * cp_size) == 0:
+            subchunk_len = global_seq_len // (2 * cp_size)
+            full_seq = torch.cat(
+                [seq[:subchunk_len] for seq in per_rank] + [seq[subchunk_len:] for seq in per_rank][::-1],
+                dim=0,
+            )
+        else:
+            # Final local padding is appended contiguously on each rank, not in zigzag order.
+            full_seq = torch.cat(per_rank, dim=0)
+        full_sequences.append(full_seq)
+
+    full_stream = torch.cat(full_sequences, dim=0) if full_sequences else hidden_states[:0]
+    shard_len = hidden_states.size(0)
+    return full_stream[cp_rank * shard_len : (cp_rank + 1) * shard_len]
+
+
+def _packed_shard_to_zigzag_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    """Convert contiguous packed shard layout back to zigzag ring-attn layout."""
+    global_seq_lengths, local_seq_lengths = _get_cp_sequence_lengths(cu_seqlens, cp_size, hidden_states.size(0))
+    full_stream = torch.cat(_gather_cp_tensors(hidden_states, cp_group), dim=0)
+    full_sequences = full_stream.split(global_seq_lengths, dim=0)
+
+    local_sequences = []
+    for full_seq, global_seq_len, local_seq_len in zip(
+        full_sequences, global_seq_lengths, local_seq_lengths, strict=True
+    ):
+        if global_seq_len % (2 * cp_size) == 0:
+            subchunk_len = global_seq_len // (2 * cp_size)
+            parts = full_seq.split(subchunk_len, dim=0)
+            local_sequences.append(torch.cat([parts[cp_rank], parts[2 * cp_size - 1 - cp_rank]], dim=0))
+        else:
+            local_sequences.append(full_seq.split(local_seq_len, dim=0)[cp_rank])
+
+    return torch.cat(local_sequences, dim=0) if local_sequences else hidden_states[:0]
+
+
+class _ZigzagToPackedShard(torch.autograd.Function):
+    """Convert zigzag ring-attn layout to contiguous packed shards for native fla CP."""
+
+    @staticmethod
+    def forward(ctx, hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+        ctx.cp_group = cp_group
+        ctx.cp_rank = cp_rank
+        ctx.cp_size = cp_size
+        ctx.save_for_backward(cu_seqlens)
+        return _zigzag_to_packed_shard_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (cu_seqlens,) = ctx.saved_tensors
+        result = _packed_shard_to_zigzag_impl(grad_output, cu_seqlens, ctx.cp_group, ctx.cp_rank, ctx.cp_size)
+        return result, None, None, None, None
+
+
+class _PackedShardToZigzag(torch.autograd.Function):
+    """Convert contiguous packed shards back to zigzag ring-attn layout."""
+
+    @staticmethod
+    def forward(ctx, hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+        ctx.cp_group = cp_group
+        ctx.cp_rank = cp_rank
+        ctx.cp_size = cp_size
+        ctx.save_for_backward(cu_seqlens)
+        return _packed_shard_to_zigzag_impl(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (cu_seqlens,) = ctx.saved_tensors
+        result = _zigzag_to_packed_shard_impl(grad_output, cu_seqlens, ctx.cp_group, ctx.cp_rank, ctx.cp_size)
+        return result, None, None, None, None
+
+
+def _zigzag_to_packed_shard(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    return _ZigzagToPackedShard.apply(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
+
+
+def _packed_shard_to_zigzag(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+    return _PackedShardToZigzag.apply(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size)
+
+
 class _AllGatherForDuplicatedComputation(torch.autograd.Function):
     """All-gather whose backward just returns the local gradient slice (no reduce).
 
@@ -67,6 +177,10 @@ class HuggingfaceAttention(MegatronModule, ABC):
     This layer only contains common modules required for the "self attn" and
     "cross attn" specializations.
     """
+
+    # Subclasses set this to True when the underlying module handles CP natively
+    # (e.g. via fla's state-passing CP for DeltaNet), bypassing the all-gather.
+    hybrid_cp: bool = False
 
     def __init__(
         self,
@@ -115,7 +229,22 @@ class HuggingfaceAttention(MegatronModule, ABC):
                 group=mpu.get_tensor_model_parallel_group(),
             )
 
-        if mpu.get_context_parallel_world_size() > 1:
+        if mpu.get_context_parallel_world_size() > 1 and self.hybrid_cp:
+            cp_size = mpu.get_context_parallel_world_size()
+            # Native fla CP expects each rank to own a contiguous shard of the
+            # packed global token stream. In allgather-CP mode the data pipeline
+            # already provides that layout, so no extra relayout is
+            # needed here.
+            if not self.args.allgather_cp:
+                hidden_states = _zigzag_to_packed_shard(
+                    hidden_states,
+                    cu_seqlens,
+                    mpu.get_context_parallel_group(),
+                    mpu.get_context_parallel_rank(),
+                    cp_size,
+                )
+
+        elif mpu.get_context_parallel_world_size() > 1:
             cp_size = mpu.get_context_parallel_world_size()
             # Use custom all-gather whose backward returns local gradient
             # instead of reduce-scatter, since the computation is duplicated.
@@ -150,7 +279,17 @@ class HuggingfaceAttention(MegatronModule, ABC):
 
         output = output.permute(1, 0, 2)  # [seq_len, bsz, hidden_dim]
 
-        if mpu.get_context_parallel_world_size() > 1:
+        if mpu.get_context_parallel_world_size() > 1 and self.hybrid_cp:
+            if not self.args.allgather_cp:
+                output = _packed_shard_to_zigzag(
+                    output,
+                    cu_seqlens,
+                    mpu.get_context_parallel_group(),
+                    mpu.get_context_parallel_rank(),
+                    cp_size,
+                )
+
+        elif mpu.get_context_parallel_world_size() > 1:
             cp_rank = mpu.get_context_parallel_rank()
             output_list = []
             for i in range(len(cu_seqlens) - 1):
