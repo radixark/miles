@@ -73,8 +73,6 @@ class TrainRayActor(RayActor):
         self.role = role
         self.with_ref = with_ref
 
-        print(f"[HEAL_DBG] TrainRayActor.init start rank={self._rank}", flush=True)
-
         if env_report := args.env_report:
             collect_and_print_node_env_report(
                 role=role,
@@ -94,14 +92,11 @@ class TrainRayActor(RayActor):
             backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
-        print(f"[HEAL_DBG] TrainRayActor.init calling dist.init_process_group rank={self._rank}", flush=True)
         dist.init_process_group(
             backend=backend,
             timeout=timedelta(minutes=args.distributed_timeout_minutes),
         )
-        print(f"[HEAL_DBG] TrainRayActor.init dist.init_process_group done rank={self._rank}", flush=True)
         init_gloo_group()
-        print(f"[HEAL_DBG] TrainRayActor.init init_gloo_group done rank={self._rank}", flush=True)
 
         args.rank = dist.get_rank()
         args.world_size = dist.get_world_size()
@@ -128,7 +123,6 @@ class TrainRayActor(RayActor):
         except Exception as e:
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
 
-        print(f"[HEAL_DBG] TrainRayActor.init done rank={self._rank}", flush=True)
         self._heartbeat.bump()
 
     @ray.method(concurrency_group="heartbeat_status")
