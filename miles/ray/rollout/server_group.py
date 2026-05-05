@@ -187,9 +187,10 @@ class ServerGroup:
                 logger.info(f"Engine at index {i} is already None")
             self.all_engines[i].mark_stopped()
 
-    async def recover(self, port_cursors: PortCursors, start_indices: Optional[list[int]] = None):
-        if start_indices is None:
-            start_indices = [i for i, engine in enumerate(self.all_engines) if not engine.is_allocated]
+    async def recover(self, port_cursors: PortCursors, filter_indices: Optional[list[int]] = None):
+        if filter_indices is None:
+            filter_indices = [i for i, engine in enumerate(self.all_engines) if not engine.is_allocated]
+        start_indices = [idx for idx in filter_indices if not self.all_engines[idx].is_allocated]
 
         handles, new_engine_indices = self.start_engines(port_cursors, start_indices=start_indices)
         await asyncio.gather(*handles)
