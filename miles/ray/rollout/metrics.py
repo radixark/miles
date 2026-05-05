@@ -82,6 +82,12 @@ def _compute_metrics_from_samples(args, samples):
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
 
+    oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
+    if oldest_versions:
+        log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
+        mixed = sum(1 for s in samples if len(set(s.weight_versions)) > 1)
+        log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
+
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
     if tito_vals:
@@ -151,7 +157,18 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 
     interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
 
-    return {f"zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
+    counts = {reward: len(items) for reward, items in group_by(interesting_rewards).items()}
+    log_dict = {f"zero_std/count_{reward}": count for reward, count in counts.items()}
+
+    # Percentages over total groups, so "too hard" (all-0) and "too easy"
+    # (all-1) rates are comparable across runs without needing to know the
+    # rollout batch size.
+    total_groups = len(all_sample_groups)
+    if total_groups > 0:
+        log_dict["zero_std/all_zero_percentage"] = counts.get("0.0", 0) / total_groups
+        log_dict["zero_std/all_one_percentage"] = counts.get("1.0", 0) / total_groups
+
+    return log_dict
 
 
 def _compute_spec_metrics(args, all_samples: list[Sample]):

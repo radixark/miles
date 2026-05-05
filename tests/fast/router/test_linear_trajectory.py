@@ -4,10 +4,15 @@ Tests the session registry CRUD and the trajectory pretokenized state management
 logic in isolation (no HTTP server, no real tokenizer).
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -657,14 +662,13 @@ class TestComputeSessionMismatch:
         session = registry.get_session(sid)
         assert registry.compute_session_mismatch(session) is None
 
-    @patch("miles.rollout.session.linear_trajectory.apply_chat_template")
-    def test_returns_empty_list_when_no_mismatch(self, mock_template, registry: SessionRegistry):
+    def test_returns_empty_list_when_no_mismatch(self, registry: SessionRegistry):
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
         # Simulate: template returns same IDs as stored
-        mock_template.return_value = [1, 2, 3, 10, 11]
+        registry.tito_tokenizer.render_messages = MagicMock(return_value=[1, 2, 3, 10, 11])
 
         # Need a real comparator; replace the None one
         mock_comparator = MagicMock()
@@ -674,14 +678,19 @@ class TestComputeSessionMismatch:
         result = registry.compute_session_mismatch(session)
         assert result == []
         mock_comparator.compare_sequences.assert_called_once_with([1, 2, 3, 10, 11], [1, 2, 3, 10, 11])
+        registry.tito_tokenizer.render_messages.assert_called_once_with(
+            session.messages,
+            tools=None,
+            add_generation_prompt=False,
+            tokenize=True,
+        )
 
-    @patch("miles.rollout.session.linear_trajectory.apply_chat_template")
-    def test_returns_mismatch_dicts(self, mock_template, registry: SessionRegistry):
+    def test_returns_mismatch_dicts(self, registry: SessionRegistry):
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
-        mock_template.return_value = [1, 2, 99, 10, 11]
+        registry.tito_tokenizer.render_messages = MagicMock(return_value=[1, 2, 99, 10, 11])
 
         @dataclass
         class FakeMismatch:
@@ -697,19 +706,17 @@ class TestComputeSessionMismatch:
         result = registry.compute_session_mismatch(session)
         assert result == [{"position": 2, "detail": "mismatch"}]
 
-    @patch("miles.rollout.session.linear_trajectory.apply_chat_template")
-    def test_raises_tokenization_error_on_exception(self, mock_template, registry: SessionRegistry):
+    def test_raises_tokenization_error_on_exception(self, registry: SessionRegistry):
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
-        mock_template.side_effect = RuntimeError("tokenizer failed")
+        registry.tito_tokenizer.render_messages = MagicMock(side_effect=RuntimeError("tokenizer failed"))
 
         with pytest.raises(TokenizationError, match="tokenizer failed"):
             registry.compute_session_mismatch(session)
 
-    @patch("miles.rollout.session.linear_trajectory.apply_chat_template")
-    def test_uses_tools_from_last_record(self, mock_template, registry: SessionRegistry):
+    def test_uses_tools_from_last_record(self, registry: SessionRegistry):
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
@@ -725,13 +732,15 @@ class TestComputeSessionMismatch:
         )
         session.append_record(record)
 
-        mock_template.return_value = [1, 2, 10]
+        mock_tokenize = MagicMock(return_value=[1, 2, 10])
+        registry.tito_tokenizer.render_messages = mock_tokenize
         mock_comparator = MagicMock()
         mock_comparator.compare_sequences.return_value = []
         registry.comparator = mock_comparator
 
         registry.compute_session_mismatch(session)
 
-        # Verify tools were passed to apply_chat_template
-        _, kwargs = mock_template.call_args
+        # Verify tools were passed to the TITO renderer.
+        _, kwargs = mock_tokenize.call_args
         assert kwargs["tools"] == tools
+        assert kwargs["add_generation_prompt"] is False

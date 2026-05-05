@@ -8,10 +8,10 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
+from miles.backends.training_utils.parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,13 @@ class RemoteTransferPlan:
         after bucketed all-gather across TP/EP/ETP dims. The size of this group is
         gathered_dp_size, and each rank has a unique gathered_dp_rank in [0, gathered_dp_size).
         """
-        self._pp_rank = mpu.get_pipeline_model_parallel_rank()
-        self._pp_size = mpu.get_pipeline_model_parallel_world_size()
+        self._pp_rank = get_parallel_state().pp.rank
+        self._pp_size = get_parallel_state().pp.size
 
         world_size = dist.get_world_size()
         self._gathered_dp_size = world_size // self._pp_size
 
-        my_pp_group = dist.get_process_group_ranks(mpu.get_pipeline_model_parallel_group())
+        my_pp_group = dist.get_process_group_ranks(get_parallel_state().pp.group)
         my_column_id = min(my_pp_group)
         all_column_ids = [None] * world_size
         dist.all_gather_object(all_column_ids, my_column_id)

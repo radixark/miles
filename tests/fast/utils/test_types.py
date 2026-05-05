@@ -1,5 +1,10 @@
 """Unit tests for Sample.strip_last_output_tokens."""
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 from unittest.mock import MagicMock
 
 import numpy

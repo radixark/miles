@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sgl-kernel-stub"
+version = "0.0.0"
+description = "Stub sgl_kernel package for CPU-only CI (real sgl_kernel is GPU-only)"
+
+[tool.setuptools.packages.find]
+include = ["sgl_kernel*"]

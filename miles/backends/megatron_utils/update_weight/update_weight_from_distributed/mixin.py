@@ -3,11 +3,11 @@ from collections.abc import Callable
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
-
 from tqdm import tqdm
 
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.timer import timer
 
 from ...megatron_to_hf import convert_to_hf
 from ..common import all_gather_param, collect_named_tensors_for_weight_transfer, post_process_weights
@@ -79,7 +79,7 @@ class DistBucketedWeightUpdateMixin:
             param_size = param.numel() * param.element_size()
             if (
                 buffer_size + param_size
-            ) * mpu.get_expert_model_parallel_world_size() > self.args.update_weight_buffer_size and named_tensors:
+            ) * get_parallel_state().ep.size > self.args.update_weight_buffer_size and named_tensors:
                 self._update_expert_bucket_weights(named_tensors, update_bucket_weight_func, pbar)
                 named_tensors = []
                 buffer_size = 0
@@ -100,24 +100,22 @@ class DistBucketedWeightUpdateMixin:
         Gather EP → HF → update weights. Clears buffer.
         """
         names = [name for name, _ in named_tensors]
-        all_names: list[list[str] | None] = [None] * mpu.get_expert_model_parallel_world_size()
-        dist.all_gather_object(all_names, names, group=mpu.get_expert_model_parallel_group())
+        all_names: list[list[str] | None] = [None] * get_parallel_state().ep.size
+        dist.all_gather_object(all_names, names, group=get_parallel_state().ep.group)
 
         for ep_names in all_names:
             assert len(named_tensors) == len(
                 ep_names
             ), f"mismatch names length: {len(named_tensors)} != {len(ep_names)}"
 
-        all_gathered_params: list[list[tuple[str, torch.Tensor]]] = [
-            [] for _ in range(mpu.get_expert_model_parallel_world_size())
-        ]
+        all_gathered_params: list[list[tuple[str, torch.Tensor]]] = [[] for _ in range(get_parallel_state().ep.size)]
         handles = []
         for i, (_name, param) in enumerate(named_tensors):
             params = [
                 torch.empty_like(param.data, device=torch.cuda.current_device())
-                for _ in range(mpu.get_expert_model_parallel_world_size())
+                for _ in range(get_parallel_state().ep.size)
             ]
-            handle = dist.all_gather(params, param.data, group=mpu.get_expert_model_parallel_group(), async_op=True)
+            handle = dist.all_gather(params, param.data, group=get_parallel_state().ep.group, async_op=True)
             handles.append(handle)
             for ep_rank, ep_names in enumerate(all_names):
                 all_gathered_params[ep_rank].append((ep_names[i], params[ep_rank]))
@@ -139,8 +137,10 @@ class DistBucketedWeightUpdateMixin:
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and run pre-process if needed."""
         if dist.get_rank() == 0:
-            ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            mode = self.args.pause_generation_mode
+            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
+            if mode not in ("in_place"):
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
             # int4/fp4 pre_process
             if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
@@ -150,19 +150,18 @@ class DistBucketedWeightUpdateMixin:
                     post_process_quantization=False,
                 )
 
-    def _finalize_and_resume_engines(self) -> None:
+    def _finalize_and_resume_engines(self, post_load_weights: bool = False) -> None:
         """Run post-process if needed and resume rollout engines."""
         if dist.get_rank() == 0:
-            # int4/fp4 post_process, mxfp8 post-process (swizzle MoE scales).
-            if self.quantization_config and self.quantization_config["quant_method"] in [
-                "compressed-tensors",
-                "mxfp8",
-            ]:
-                post_process_weights(
-                    rollout_engines=self.rollout_engines,
-                    restore_weights_before_load=False,
-                    post_process_quantization=True,
-                )
+            # post_process_quantization is related to the process_weights_after_loading
+            # in the sglang rollout side, which should always be invoked after weight
+            # updating.
+            post_process_weights(
+                rollout_engines=self.rollout_engines,
+                restore_weights_before_load=False,
+                post_process_quantization=True,
+                post_load_weights=post_load_weights,
+            )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
 
     @torch.no_grad()
@@ -183,12 +182,14 @@ class DistBucketedWeightUpdateMixin:
         self._pause_and_prepare_engines()
         dist.barrier(group=get_gloo_group())
 
-        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
+        with timer("update_weights_implementation"):
+            pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-        self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-        dist.barrier(group=get_gloo_group())
-        self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-        dist.barrier(group=get_gloo_group())
+            self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+            dist.barrier(group=get_gloo_group())
+            self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+            dist.barrier(group=get_gloo_group())
 
-        self._finalize_and_resume_engines()
-        dist.barrier(group=get_gloo_group())
+        with timer("finalize_and_resume_engines"):
+            self._finalize_and_resume_engines()
+            dist.barrier(group=get_gloo_group())
