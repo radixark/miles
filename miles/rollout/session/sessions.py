@@ -157,18 +157,20 @@ def setup_session_routes(app, backend, args):
                     tools=request_body.get("tools"),
                     tito_tokenizer=registry.tito_tokenizer,
                 )
+                prompt_token_ids = None
                 if pretokenized is not None:
-                    request_body["input_ids"] = pretokenized["input_ids"]
+                    prompt_token_ids = pretokenized["input_ids"]
                 else:
-                    request_body["input_ids"] = registry.tito_tokenizer.render_messages(
+                    prompt_token_ids = registry.tito_tokenizer.render_messages(
                         request_messages,
                         tools=request_body.get("tools"),
                         add_generation_prompt=True,
                         tokenize=True,
                     )
+                request_body["input_ids"] = prompt_token_ids
                 logger.debug(
                     "Using TITO input_ids: %d tokens",
-                    len(request_body["input_ids"]),
+                    len(prompt_token_ids),
                 )
 
                 body = json.dumps(request_body).encode()
@@ -200,10 +202,8 @@ def setup_session_routes(app, backend, args):
                     "an empty content rather than None. Please check your modified SGLang version."
                 )
 
-            prompt_token_ids = request_body["input_ids"]
-            # The rollout sample builder still consumes this response field, but
-            # TITO prompt tokenization is owned by Miles rather than SGLang.
             choice["prompt_token_ids"] = prompt_token_ids
+            # This must be re-encoded to return the prompt token ids
             result["response_body"] = json.dumps(response).encode()
             output_token_logprobs = meta_info["output_token_logprobs"]
             completion_tokens = meta_info["completion_tokens"]
