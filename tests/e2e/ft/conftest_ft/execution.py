@@ -119,7 +119,7 @@ def get_common_train_args(
     if enable_dumper:
         dumper_args = (
             f"--dumper-dir {dump_dir}/dumps "
-            f"--dumper-fwd-bwd enable=1 enable_model_value=1 enable_model_grad=1 "
+            f"--dumper-fwd-bwd enable=1 enable_model_value=1 enable_model_grad=1 include_parallel_rank_in_filename=1 "
             f"--dumper-source-patcher-config-train {_MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
         )
 
