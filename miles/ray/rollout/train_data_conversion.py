@@ -82,7 +82,7 @@ def convert_samples_to_train_data(
 
     # TODO this looks hacky, refactor it
     # Pass dynamic global_batch_size to training side
-    assert args.use_dynamic_global_batch_size == dynamic_global_batch_size is not None
+    assert args.use_dynamic_global_batch_size == (dynamic_global_batch_size is not None)
     if dynamic_global_batch_size is not None:
         train_data["dynamic_global_batch_size"] = dynamic_global_batch_size
 
