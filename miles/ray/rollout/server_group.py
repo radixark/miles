@@ -76,7 +76,7 @@ class ServerGroup:
         new_engines = []
         new_engine_indices = []
         for i in range(len(self.all_engines)):
-            if (i not in start_indices) or self.all_engines[i].is_allocated:
+            if ((start_indices is not None) and (i not in start_indices)) or self.all_engines[i].is_allocated:
                 continue
 
             global_rank = self.rank_offset + i
