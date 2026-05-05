@@ -1,20 +1,60 @@
 import asyncio
 import atexit
+import logging
 import queue
 import threading
 import time
 
-# Import core functions from sglang_rollout directly to avoid code duplication
+import aiohttp
+
+from miles.rollout.data_source import DataSource
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group
 from miles.utils.async_utils import run
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
+
+
+def group_oldest_weight_version(group: list[Sample]) -> int | None:
+    """Return the minimum weight version across all trajectories and turns in a group."""
+    versions = [s.oldest_weight_version for s in group if s.oldest_weight_version is not None]
+    return min(versions) if versions else None
+
+
+class _CachedWeightVersion:
+    """Throttled query for the current engine weight version via /model_info."""
+
+    def __init__(self, ttl: float = 1.0):
+        self._ttl = ttl
+        self._value: int | None = None
+        self._last_query: float = 0.0
+
+    async def get(self, args) -> int | None:
+        now = time.monotonic()
+        if self._value is not None and (now - self._last_query) < self._ttl:
+            return self._value
+        url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/model_info"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self._value = int(data["weight_version"])
+                        self._last_query = now
+        except Exception as e:
+            logger.debug(f"Failed to query engine weight version: {e}")
+        return self._value
+
+
+_cached_version = _CachedWeightVersion()
+
 
 # Global worker manager
 _global_worker = None
 _worker_lock = threading.Lock()
 
 
-def get_global_worker(args, data_buffer):
+def get_global_worker(args, data_buffer: DataSource):
     """Get or create global worker"""
     global _global_worker
     with _worker_lock:
@@ -40,7 +80,7 @@ class AsyncRolloutWorker:
     Supports continuous running, independent of rollout function lifecycle
     """
 
-    def __init__(self, args, data_buffer, concurrency=10):
+    def __init__(self, args, data_buffer: DataSource, concurrency=10):
         self.args = args
         self.data_buffer = data_buffer  # Directly save data_buffer reference
         self.concurrency = concurrency
@@ -146,7 +186,7 @@ class AsyncRolloutWorker:
         return self.output_queue.qsize()
 
 
-async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[list[Sample]]:
+async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource) -> list[list[Sample]]:
     """
     Simplified asynchronous rollout generation - using global continuous worker
     """
@@ -161,9 +201,15 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[lis
     data = []
     completed_groups = {}
     do_print = True
+    stale_groups_recycled = 0
+    staleness_values = []
+
+    use_staleness_filter = getattr(args, "max_weight_staleness", None) is not None
 
     print(f"Starting async rollout generation for {target_data_size} groups")
     print(f"Global worker queue size: {worker.get_queue_size()}")
+    if use_staleness_filter:
+        print(f"Staleness filter enabled: max_weight_staleness={args.max_weight_staleness}")
 
     # Main loop: collect results from global worker's output queue
     start_time = time.time()
@@ -181,6 +227,11 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[lis
 
         if made_progress:
             last_progress_time = time.time()
+
+        # Query current engine version once per collection batch (cached/throttled)
+        current_engine_version = None
+        if use_staleness_filter:
+            current_engine_version = await _cached_version.get(args)
 
         # Process completed groups in order (try to maintain order, but not strict requirement)
         processed_any = False
@@ -202,13 +253,35 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[lis
 
             if any_aborted:
                 try:
-                    # add back to buffer so it can be retried or handled by buffer policy
+                    for s in group:
+                        s.reset_for_retry()
                     data_buffer.add_samples([group])
                     print(f"Returned aborted group {group_id} to data buffer", flush=True)
                 except Exception as e:
                     print(f"Failed to return aborted group {group_id} to buffer: {e}", flush=True)
                 # don't count as processed for training
                 continue
+
+            # Staleness filter: discard groups whose oldest weight version is too far behind
+            oldest = group_oldest_weight_version(group)
+            if oldest is not None and current_engine_version is not None:
+                staleness = current_engine_version - oldest
+                staleness_values.append(staleness)
+                if staleness > args.max_weight_staleness:
+                    try:
+                        for s in group:
+                            s.reset_for_retry()
+                        data_buffer.add_samples([group])
+                    except Exception as e:
+                        logger.warning(f"Failed to recycle stale group {group_id}: {e}")
+                    stale_groups_recycled += 1
+                    logger.info(
+                        f"Recycled stale group {group_id} "
+                        f"(oldest_version={oldest}, current={current_engine_version}, "
+                        f"staleness={staleness} > max={args.max_weight_staleness})"
+                    )
+                    # don't count as processed for training
+                    continue
 
             if do_print:
                 print(
@@ -238,6 +311,13 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[lis
 
     duration = time.time() - start_time
     print(f"Rollout completed in {duration:.2f}s! Global worker queue size: {worker.get_queue_size()}")
+    if stale_groups_recycled > 0 or staleness_values:
+        avg_staleness = sum(staleness_values) / len(staleness_values) if staleness_values else 0
+        print(
+            f"Staleness stats: recycled={stale_groups_recycled}, "
+            f"avg_staleness={avg_staleness:.1f}, "
+            f"max_staleness={max(staleness_values) if staleness_values else 0}"
+        )
 
     if data:
         print(
@@ -250,7 +330,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[lis
     return data
 
 
-def generate_rollout_fully_async(args, rollout_id, data_buffer, evaluation=False):
+def generate_rollout_fully_async(args, rollout_id, data_buffer: DataSource, evaluation=False):
     if evaluation:
         raise ValueError("Evaluation mode not supported in simple async rollout")
 

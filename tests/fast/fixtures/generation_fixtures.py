@@ -2,6 +2,7 @@
 Fixtures to test custom-generate-function
 """
 
+import uuid
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,7 +16,6 @@ from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.session.session_server import SessionServer
 from miles.utils.async_utils import run
-from miles.utils.chat_template_utils import try_get_fixed_chat_template
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
 from miles.utils.test_utils import mock_tools
@@ -25,6 +25,8 @@ from miles.utils.types import Sample
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 RESPONSE_TEXT = "\\boxed{8}"
+
+
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 
 VARIANT_TO_GENERATE_FN_PATH = {
@@ -66,6 +68,7 @@ def extra_argv_for_variant(
             argv.append("--generate-multi-samples")
     elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
         argv += ["--custom-agent-function-path", custom_agent_function_path]
+        argv += ["--use-session-server", "--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
         if variant == "agentic_tool_call_multi_samples":
             argv.append("--generate-multi-samples")
 
@@ -160,6 +163,7 @@ def make_args(
         "pytest",
         "--train-backend",
         "fsdp",
+        "--ci-test",
         "--rollout-batch-size",
         "1",
         "--num-rollout",
@@ -222,23 +226,21 @@ def _noop_port(port: int):
 @contextmanager
 def with_session_server(
     backend_url: str,
-    model_name: str,
+    args: Namespace,
     *,
-    use_rollout_routing_replay: bool = False,
-    chat_template_path: str | None = None,
+    port: int,
 ):
-    if chat_template_path is None:
-        chat_template_path = try_get_fixed_chat_template(model_name)
     args = SimpleNamespace(
         miles_router_timeout=30,
-        hf_checkpoint=model_name,
-        chat_template_path=chat_template_path,
-        tito_model="default",
-        use_rollout_routing_replay=use_rollout_routing_replay,
+        hf_checkpoint=args.hf_checkpoint,
+        chat_template_path=args.chat_template_path,
+        tito_model=args.tito_model,
+        tito_allowed_append_roles=args.tito_allowed_append_roles,
+        use_rollout_routing_replay=args.use_rollout_routing_replay,
+        session_server_instance_id=uuid.uuid4().hex,
     )
     session_server = SessionServer(args, backend_url=backend_url)
 
-    port = find_available_port(31000)
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     server.start()
 
@@ -271,34 +273,25 @@ def generation_env(request, variant):
             ),
         )
 
-    fixed_template = try_get_fixed_chat_template(model_name)
-
     is_agentic = variant.startswith("agentic_tool_call")
 
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
+        server_port = find_available_port(31000) if is_agentic else mock_server.port
+        _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
+        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
+        args = make_args(
+            variant=variant,
+            router_port=server_port,
+            model_name=model_name,
+            custom_generate_function_path=custom_generate_function_path,
+            **other_args_kwargs,
+        )
+
         # Agentic variants need a SessionServer for TITO session tracking;
         # non-agentic variants talk directly to the mock sglang server.
-        if is_agentic:
-            cm = with_session_server(
-                mock_server.url,
-                model_name,
-                use_rollout_routing_replay=args_kwargs.get("use_rollout_routing_replay", False),
-                chat_template_path=fixed_template,
-            )
-        else:
-            cm = _noop_port(mock_server.port)
+        cm = with_session_server(mock_server.url, args, port=server_port) if is_agentic else _noop_port(server_port)
 
-        with cm as server_port:
-            _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
-            other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
-            args = make_args(
-                variant=variant,
-                router_port=server_port,
-                model_name=model_name,
-                custom_generate_function_path=custom_generate_function_path,
-                chat_template_path=fixed_template,
-                **other_args_kwargs,
-            )
+        with cm:
             if is_agentic:
                 # Point session server address to the SessionServer we just started
                 args.session_server_ip = "127.0.0.1"

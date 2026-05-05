@@ -10,6 +10,7 @@ def _build_mock_args(extra_argv: list[str] | None = None):
         "pytest",
         "--train-backend",
         "fsdp",
+        "--ci-test",
         "--rollout-batch-size",
         "2",
         "--n-samples-per-prompt",

@@ -1,7 +1,7 @@
 # Gen Endpoint Usage
 
 This document covers generate_hub usage for the `/generate` endpoint. For OpenAI
-format usage, see `docs/en/get_started/oai_endpoint.md`.
+format usage, see `docs/en/agentic/oai_endpoint.md`.
 
 ## 1. What generate_hub is
 

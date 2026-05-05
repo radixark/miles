@@ -19,6 +19,11 @@ Contract under test (with split-lock / session.closing):
 
 from __future__ import annotations
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
