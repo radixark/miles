@@ -6,11 +6,7 @@ from typing import Any
 
 from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.session_types import SessionRecord
-from miles.utils.chat_template_utils import (
-    apply_chat_template,
-    assert_messages_append_only_with_allowed_role,
-    message_matches,
-)
+from miles.utils.chat_template_utils import assert_messages_append_only_with_allowed_role, message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 logger = logging.getLogger(__name__)
@@ -19,19 +15,6 @@ logger = logging.getLogger(__name__)
 # TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
 #  raise this limit or make it configurable and remove the restriction.
 MAX_ASSISTANT_ROLLBACK_STEPS = 1
-
-
-def _assert_no_user_after_assistant(messages: list[dict[str, Any]]) -> None:
-    """Assert no user message appears after the first assistant message."""
-    seen_assistant = False
-    for i, msg in enumerate(messages):
-        role = msg.get("role")
-        if role == "assistant":
-            seen_assistant = True
-        elif role == "user" and seen_assistant:
-            raise MessageValidationError(
-                f"invalid message structure: user message at index {i} " f"appears after the first assistant message"
-            )
 
 
 @dataclass
@@ -281,9 +264,8 @@ class SessionRegistry:
             return None
         try:
             tools = session.records[-1].request.get("tools") if session.records else None
-            expected_ids = apply_chat_template(
+            expected_ids = self.tito_tokenizer.render_messages(
                 session.messages,
-                tokenizer=self.tokenizer,
                 tools=tools,
                 add_generation_prompt=False,
                 tokenize=True,

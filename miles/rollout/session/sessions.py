@@ -26,6 +26,8 @@ def setup_session_routes(app, backend, args):
         logger.info("[session] Skipping session routes (hf_checkpoint not set).")
         return
 
+    session_server_instance_id = getattr(args, "session_server_instance_id", None)
+
     tokenizer = load_tokenizer(
         hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
     )
@@ -33,10 +35,18 @@ def setup_session_routes(app, backend, args):
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
         tokenizer_type=getattr(args, "tito_model", "default"),
+        chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
         allowed_append_roles=getattr(args, "tito_allowed_append_roles", None),
     )
 
     registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
+
+    @app.get("/health")
+    async def health():
+        body = {"status": "ok"}
+        if session_server_instance_id is not None:
+            body["session_server_instance_id"] = session_server_instance_id
+        return body
 
     # --- DEBUG: track in-flight chat_completions ---
     _inflight_chat = {"count": 0}
@@ -127,20 +137,18 @@ def setup_session_routes(app, backend, args):
                 body = await request.body()
                 request_body = json.loads(body) if body else {}
 
-                # TITO token tracking requires three SGLang flags working together:
-                #   logprobs=True            → populates meta_info.output_token_logprobs
-                #   return_prompt_token_ids  → adds choice.prompt_token_ids
-                #   return_meta_info         → wraps the above in choice.meta_info
-                # All three are hardcoded (not setdefault) to prevent agent-side
+                # TITO token tracking requires Miles-owned input_ids plus SGLang
+                # output-token metadata:
+                #   logprobs=True     → populates meta_info.output_token_logprobs
+                #   return_meta_info  → wraps the above in choice.meta_info
+                # Both flags are hardcoded (not set default) to prevent agent-side
                 # overrides from breaking the token accumulation invariants.
                 request_body["logprobs"] = True
-                request_body["return_prompt_token_ids"] = True
                 request_body["return_meta_info"] = True
                 if getattr(args, "use_rollout_routing_replay", False):
                     request_body["return_routed_experts"] = True
-                # Must be False so stop tokens are trimmed from output: otherwise the
-                # agent sees stop-token text in content, and the accumulated checkpoint
-                # would duplicate structural delimiters that the chat template also emits.
+                # Must be False so stop-token text is trimmed from assistant
+                # message content; token IDs are still taken from logprobs below.
                 request_body["no_stop_trim"] = False
 
                 request_messages = request_body.get("messages", [])
@@ -149,12 +157,21 @@ def setup_session_routes(app, backend, args):
                     tools=request_body.get("tools"),
                     tito_tokenizer=registry.tito_tokenizer,
                 )
+                prompt_token_ids = None
                 if pretokenized is not None:
-                    request_body["input_ids"] = pretokenized["input_ids"]
-                    logger.debug(
-                        "Using pretokenized input_ids: %d tokens",
-                        len(pretokenized["input_ids"]),
+                    prompt_token_ids = pretokenized["input_ids"]
+                else:
+                    prompt_token_ids = registry.tito_tokenizer.render_messages(
+                        request_messages,
+                        tools=request_body.get("tools"),
+                        add_generation_prompt=True,
+                        tokenize=True,
                     )
+                request_body["input_ids"] = prompt_token_ids
+                logger.debug(
+                    "Using TITO input_ids: %d tokens",
+                    len(prompt_token_ids),
+                )
 
                 body = json.dumps(request_body).encode()
                 expected_num_assistant = session.num_assistant
@@ -185,7 +202,9 @@ def setup_session_routes(app, backend, args):
                     "an empty content rather than None. Please check your modified SGLang version."
                 )
 
-            prompt_token_ids = choice.get("prompt_token_ids")
+            choice["prompt_token_ids"] = prompt_token_ids
+            # This must be re-encoded to return the prompt token ids
+            result["response_body"] = json.dumps(response).encode()
             output_token_logprobs = meta_info["output_token_logprobs"]
             completion_tokens = meta_info["completion_tokens"]
 

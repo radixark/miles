@@ -13,7 +13,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_PATCH_SIZE = 14
 
 
-def load_tokenizer(name_or_path: str, chat_template_path: str = None, **kwargs):
+_TOKENIZER_CACHE: dict[tuple, PreTrainedTokenizerBase] = {}
+
+
+def _make_cache_key(name_or_path: str, chat_template_path: str | None, kwargs: dict) -> tuple | None:
+    try:
+        kwargs_items = tuple(sorted(kwargs.items()))
+        hash(kwargs_items)
+    except TypeError:
+        return None
+    return (name_or_path, chat_template_path, kwargs_items)
+
+
+def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **kwargs) -> PreTrainedTokenizerBase:
+    # Cache keyed by (name, chat_template_path, kwargs) — the fast suite creates
+    # hundreds of SessionServer / MockSGLangServer fixtures and each previously
+    # triggered a fresh AutoTokenizer.from_pretrained, tripping HF Hub rate limits.
+    cache_key = _make_cache_key(name_or_path, chat_template_path, kwargs)
+    if cache_key is not None and cache_key in _TOKENIZER_CACHE:
+        return _TOKENIZER_CACHE[cache_key]
+
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
     if chat_template_path:
         assert os.path.isfile(chat_template_path), (
@@ -23,22 +42,21 @@ def load_tokenizer(name_or_path: str, chat_template_path: str = None, **kwargs):
         with open(chat_template_path) as f:
             tokenizer.chat_template = f.read()
         logger.info("Loaded custom chat template from %s", chat_template_path)
+
+    if cache_key is not None:
+        _TOKENIZER_CACHE[cache_key] = tokenizer
     return tokenizer
 
 
 def build_processor_kwargs(multimodal_inputs: dict | None = None) -> dict:
 
-    forced = {
-        # force return_tensors to None for input_ids
-        "return_tensors": None,
-    }
     modality_forced = {"return_tensors": "pt"}
 
     result = dict(multimodal_inputs) if multimodal_inputs else {}
 
-    result.update(forced)
-
-    # set return_tensors="pt" for modality-specific outputs
+    # return_tensors=None for text (input_ids), "pt" for modality-specific outputs.
+    # Use per-modality dicts to avoid transformers >=5.0 duplicate kwarg error.
+    result["text_kwargs"] = {**result.get("text_kwargs", {}), "return_tensors": None}
     for key in ("audio_kwargs", "images_kwargs", "videos_kwargs"):
         if key in result:
             result[key] = {**result[key], **modality_forced}
