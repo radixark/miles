@@ -104,7 +104,7 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
-) -> tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler]:
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None]:
     """Build model(s), wrap with DDP, and construct optimizer and scheduler.
 
     Args:
@@ -114,8 +114,10 @@ def setup_model_and_optimizer(
     Returns:
         tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler]:
             - List of model chunks wrapped by ``DDP``.
-            - The constructed ``MegatronOptimizer`` instance.
-            - The learning-rate/weight-decay scheduler tied to the optimizer.
+            - The constructed ``MegatronOptimizer`` instance, or ``None`` when
+              ``--debug-disable-optimizer`` is set.
+            - The learning-rate/weight-decay scheduler tied to the optimizer, or
+              ``None`` when ``--debug-disable-optimizer`` is set.
     """
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
@@ -125,6 +127,14 @@ def setup_model_and_optimizer(
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
+    if args.debug_disable_optimizer:
+        if is_megatron_main_rank():
+            logger.warning(
+                "Skipping Megatron optimizer and LR scheduler initialization "
+                "because --debug-disable-optimizer is set."
+            )
+        return model, None, None
+
     # Optimizer
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
@@ -132,6 +142,7 @@ def setup_model_and_optimizer(
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = None
+
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,
@@ -320,8 +331,8 @@ def train_one_step(
     step_id: int,
     data_iterator: Sequence[DataIterator],
     model: Sequence[DDP],
-    optimizer: MegatronOptimizer,
-    opt_param_scheduler: OptimizerParamScheduler,
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
     num_microbatches: int,
 ) -> tuple[dict[str, float], float]:
     """Execute a single pipeline-parallel training step.
@@ -344,11 +355,13 @@ def train_one_step(
     """
     args = get_args()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD)
+    disable_optimizer = args.debug_disable_optimizer or optimizer is None
 
     # Set grad to zero.
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
-    optimizer.zero_grad()
+    if not disable_optimizer:
+        optimizer.zero_grad()
 
     if args.custom_megatron_before_train_step_hook_path:
         from miles.utils.misc import load_function
@@ -449,7 +462,8 @@ def train_one_step(
     )
 
     valid_step = True
-    if not getattr(args, "check_for_nan_in_loss_and_grad", True):
+    grad_norm = 0.0
+    if (not disable_optimizer) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False
@@ -468,7 +482,7 @@ def train_one_step(
 
         check_mtp_only_grad(model, step_id)
 
-    if valid_step:
+    if not disable_optimizer and valid_step:
         # Update parameters.
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
@@ -479,7 +493,8 @@ def train_one_step(
     # release grad
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
-    optimizer.zero_grad()
+    if not disable_optimizer:
+        optimizer.zero_grad()
 
     dumper_phase_util.finalize(model)
 
@@ -501,8 +516,8 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
 def train(
     rollout_id: int,
     model: Sequence[DDP],
-    optimizer: MegatronOptimizer,
-    opt_param_scheduler: OptimizerParamScheduler,
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
 ) -> None:
@@ -521,6 +536,7 @@ def train(
     """
     parallel_state = get_parallel_state()
     args = get_args()
+    disable_optimizer = args.debug_disable_optimizer or optimizer is None
 
     for iterator in data_iterator:
         iterator.reset()
@@ -531,7 +547,7 @@ def train(
 
     # Setup some training config params.
     config = get_model_config(model[0])
-    config.grad_scale_func = optimizer.scale_loss
+    config.grad_scale_func = None if disable_optimizer else optimizer.scale_loss
     config.timers = None
     if isinstance(model[0], DDP) and args.overlap_grad_reduce:
         assert config.no_sync_func is None, (
@@ -553,7 +569,7 @@ def train(
 
     pre_hook_enabled = False
 
-    if args.reset_optimizer_states:
+    if args.reset_optimizer_states and not disable_optimizer:
         if is_megatron_main_rank():
             print("Reset optimizer states")
         for chained_optimizer in optimizer.chained_optimizers:
@@ -641,8 +657,9 @@ def train(
             if args.enable_mtp_training:
                 extra_metrics["mtp_loss"] = mtp_losses
 
-            for param_group_id, param_group in enumerate(optimizer.param_groups):
-                extra_metrics[f"lr-pg_{param_group_id}"] = opt_param_scheduler.get_lr(param_group)
+            if not disable_optimizer:
+                for param_group_id, param_group in enumerate(optimizer.param_groups):
+                    extra_metrics[f"lr-pg_{param_group_id}"] = opt_param_scheduler.get_lr(param_group)
 
             log_dict = log_train_step(
                 args=args,
@@ -677,7 +694,10 @@ def train(
 
 
 def save(
-    iteration: int, model: Sequence[DDP], optimizer: MegatronOptimizer, opt_param_scheduler: OptimizerParamScheduler
+    iteration: int,
+    model: Sequence[DDP],
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -730,7 +750,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
     """
-    should_log = get_parallel_state().intra_dp_cp.rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
+    should_log = get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     try:
         from megatron.bridge import AutoBridge
@@ -773,7 +793,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
 
 def initialize_model_and_optimizer(
     args: Namespace, role: str = "actor"
-) -> tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, int]:
     """Initialize model(s), optimizer, scheduler, and load from checkpoint.
 
     Args:
@@ -807,6 +827,7 @@ def initialize_model_and_optimizer(
 
     check_model_hashes(args, model, iteration)
 
-    opt_param_scheduler.step(increment=iteration * args.global_batch_size)
+    if opt_param_scheduler is not None:
+        opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
     return model, optimizer, opt_param_scheduler, iteration

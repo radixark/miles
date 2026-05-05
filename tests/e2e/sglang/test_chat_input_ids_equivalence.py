@@ -3,8 +3,11 @@ import os
 
 import pytest
 import requests
+from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
+
+register_cuda_ci(est_time=300, suite="stage-b-sglang-1-gpu", num_gpus=1)
 
 MODEL_PATH = os.environ.get("SGLANG_E2E_MODEL_PATH", "Qwen/Qwen3-0.6B")
 SEED = 1234
@@ -102,3 +105,7 @@ def _post_chat(base_url: str, messages: list[dict]) -> dict:
     data = resp.json()
     print(f"chat response text: {data['choices'][0]['message']['content']!r}", flush=True)
     return data
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

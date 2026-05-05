@@ -47,6 +47,10 @@ class Sample:
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
+    # Session ID for consistent hashing routing (used when router policy is consistent_hashing)
+    # TODO: Its definition needs to merge with the session server's session id in the new rollout function.
+    session_id: str | None = None
+
     non_generation_time: float = 0.0  # time spent in non-generation steps
 
     @dataclass
@@ -183,6 +187,35 @@ class Sample:
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
         if self.rollout_routed_experts is not None:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
+
+    def reset_for_retry(self) -> None:
+        """Reset generated outputs so the original prompt can be re-sampled.
+
+        Keeps identity / prompt fields (group_index, index, prompt, label,
+        multimodal_inputs, metadata, generate_function_path, session_id) and
+        restores everything else to dataclass defaults.
+        """
+        self.tokens = []
+        self.multimodal_train_inputs = None
+        self.response = ""
+        self.response_length = 0
+        self.reward = None
+        self.loss_mask = None
+        self.weight_versions = []
+        self.rollout_log_probs = None
+        self.rollout_routed_experts = None
+        self.status = Sample.Status.ABORTED
+        self.non_generation_time = 0.0
+        self.spec_info = Sample.SpecInfo()
+        self.prefix_cache_info = Sample.PrefixCacheInfo()
+        self.remove_sample = False
+        self.train_metadata = None
+
+    @property
+    def oldest_weight_version(self) -> int | None:
+        """Minimum weight version across all turns (generation calls) for this trajectory."""
+        numeric = [int(v) for v in self.weight_versions if str(v).isdigit()]
+        return min(numeric) if numeric else None
 
     def update_from_meta_info(self, args, meta_info: dict):
         """

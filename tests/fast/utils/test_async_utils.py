@@ -3,8 +3,11 @@
 import asyncio
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.utils.async_utils import eager_create_task
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
 
 
 @pytest.mark.asyncio
