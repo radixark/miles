@@ -21,6 +21,11 @@ delays (5s / 10s / 20s) without actually waiting.  The trick:
 This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 import multiprocessing
 import socket
 import threading
