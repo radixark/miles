@@ -264,10 +264,11 @@ class SessionRegistry:
             return None
         try:
             tools = session.records[-1].request.get("tools") if session.records else None
-            expected_ids = self.tito_tokenizer.tokenize_prompt(
+            expected_ids = self.tito_tokenizer.render_messages(
                 session.messages,
                 tools=tools,
                 add_generation_prompt=False,
+                tokenize=True,
             )
             mismatches = self.comparator.compare_sequences(expected_ids, session.token_ids)
             return [m.to_dict() for m in mismatches]

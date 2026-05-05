@@ -575,9 +575,17 @@ class TestRoutedExpertsMultiTurn:
                 tokenizer_type=TITOTokenizerType.QWEN3,
                 allowed_append_roles=["tool"],
             )
-            first_prompt_token_ids = tito.tokenize_prompt(S.OPENAI_MESSAGES_FIRST_TURN, tools=SAMPLE_TOOLS)
-            second_prompt_token_ids = tito.tokenize_prompt(
-                S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT, tools=SAMPLE_TOOLS
+            first_prompt_token_ids = tito.render_messages(
+                S.OPENAI_MESSAGES_FIRST_TURN,
+                tools=SAMPLE_TOOLS,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+            second_prompt_token_ids = tito.render_messages(
+                S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
+                tools=SAMPLE_TOOLS,
+                add_generation_prompt=True,
+                tokenize=True,
             )
         else:
             first_prompt_token_ids = S.FIRST_PROMPT_TOKEN_IDS

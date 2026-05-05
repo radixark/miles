@@ -456,12 +456,12 @@ def verify_append_only_via_tito_instance(
         prefix_msgs = deepcopy(messages[:n])
         full_msgs = deepcopy(messages[:m])
 
-        prefix_text = tito._render_messages(
+        prefix_text = tito.render_messages(
             prefix_msgs,
             tools=tools,
             add_generation_prompt=False,
         )
-        full_text = tito._render_messages(
+        full_text = tito.render_messages(
             full_msgs,
             tools=tools,
             add_generation_prompt=True,

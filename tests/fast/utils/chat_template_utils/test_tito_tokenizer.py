@@ -389,7 +389,7 @@ class TestTokenizeAdditional:
         )
         tool_messages = [SingleToolThinkingTrajectory.MESSAGES[3]]
         dummy_assistant = _build_dummy_assistant(tool_messages)
-        rendered = thinking_tito._render_messages(
+        rendered = thinking_tito.render_messages(
             [{"role": "system", "content": "dummy system"}, dummy_assistant],
             add_generation_prompt=False,
             tools=SingleToolThinkingTrajectory.TOOLS,

@@ -160,9 +160,11 @@ def setup_session_routes(app, backend, args):
                 if pretokenized is not None:
                     request_body["input_ids"] = pretokenized["input_ids"]
                 else:
-                    request_body["input_ids"] = registry.tito_tokenizer.tokenize_prompt(
+                    request_body["input_ids"] = registry.tito_tokenizer.render_messages(
                         request_messages,
                         tools=request_body.get("tools"),
+                        add_generation_prompt=True,
+                        tokenize=True,
                     )
                 logger.debug(
                     "Using TITO input_ids: %d tokens",
@@ -203,11 +205,6 @@ def setup_session_routes(app, backend, args):
             # TITO prompt tokenization is owned by Miles rather than SGLang.
             choice["prompt_token_ids"] = prompt_token_ids
             result["response_body"] = json.dumps(response).encode()
-            result["headers"] = {
-                k: v
-                for k, v in result["headers"].items()
-                if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
-            }
             output_token_logprobs = meta_info["output_token_logprobs"]
             completion_tokens = meta_info["completion_tokens"]
 
