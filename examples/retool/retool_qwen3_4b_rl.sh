@@ -31,7 +31,7 @@ CKPT_ARGS=(
    --ref-load /root/font-info/qwen3-4b-sft_torch_dist
    # --load /root/Qwen3-4B_miles/
    --save /root/font-info/qwen3-4b-sft/qwen3-4b-sft-multi-turn/
-   --save-interval 20
+   --save-interval 200
    --rotary-base 5000000
 )
 
@@ -43,12 +43,12 @@ ROLLOUT_ARGS=(
    --rollout-shuffle
    --reward-key score
    --num-rollout 3000
-   --rollout-batch-size 32
+   --rollout-batch-size 16
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 1
 
-   --global-batch-size 256
+   --global-batch-size 128
    --balance-data
 )
 
@@ -98,8 +98,8 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-dapo
-   --wandb-group qwen3-4B-test-multi-turn
+   --wandb-project miles-dev-retool-v2
+   --wandb-group retool-v1-qwen3-4b-sft-new
    --wandb-key ${WANDB_KEY}
 )
 
@@ -117,6 +117,7 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+   --log-passrate
 )
 
 CUSTOM_ARGS=(

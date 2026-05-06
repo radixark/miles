@@ -56,6 +56,9 @@ ROLLOUT_ARGS=(
 
    --global-batch-size 256
    --balance-data
+
+   # for staleness control
+   #--max-weight-staleness 2
 )
 
 PERF_ARGS=(

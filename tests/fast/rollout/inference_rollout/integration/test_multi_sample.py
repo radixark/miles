@@ -1,3 +1,9 @@
+from tests.ci.ci_register import register_cuda_ci
+
+# Rollout integration tests pull in miles' experimental FSDP utils
+# (ring_flash_attn → flash_attn) via parse_args. Run in GPU fast suite.
+register_cuda_ci(est_time=60, suite="stage-b-fast-1-gpu", num_gpus=1)
+
 import pytest
 from tests.fast.fixtures.rollout_fixtures import DEFAULT_DATA_ROWS, RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_train

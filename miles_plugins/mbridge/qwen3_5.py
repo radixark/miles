@@ -1,0 +1,392 @@
+import inspect
+
+import torch
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
+
+from mbridge.core import register_model
+from mbridge.models import Qwen2MoEBridge
+
+
+@register_model(["qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_6_moe"])
+class Qwen3_5Bridge(Qwen2MoEBridge):
+    """
+    Bridge for Qwen3.5 / Qwen3.6 models (both dense and MoE variants).
+    These share the ``qwen3_5_moe`` HF config schema: VLM layout under
+    ``model.language_model.layers``, separate ``in_proj_qkv`` + ``in_proj_z``
+    for linear attention, and nested ``text_config``.
+
+    Qwen3.6-35B-A3B's only structural difference is MTP-expert packing —
+    fused 3-D ``gate_up_proj`` / ``down_proj`` tensors instead of the
+    per-expert ``.weight`` files used by Qwen3.5 — which
+    ``_mtp_experts_fused()`` autodetects from the safetensor index.
+    """
+
+    _DIRECT_MAPPING = {
+        "embedding.word_embeddings.weight": "model.language_model.embed_tokens.weight",
+        "decoder.final_layernorm.weight": "model.language_model.norm.weight",
+        "output_layer.weight": "lm_head.weight",
+    }
+
+    _ATTENTION_MAPPING = {
+        "self_attention.linear_proj.weight": ["model.language_model.layers.{layer_number}.self_attn.o_proj.weight"],
+        "self_attention.linear_qkv.layer_norm_weight": [
+            "model.language_model.layers.{layer_number}.input_layernorm.weight"
+        ],
+        "self_attention.q_layernorm.weight": ["model.language_model.layers.{layer_number}.self_attn.q_norm.weight"],
+        "self_attention.k_layernorm.weight": ["model.language_model.layers.{layer_number}.self_attn.k_norm.weight"],
+        "self_attention.linear_qkv.weight": [
+            "model.language_model.layers.{layer_number}.self_attn.q_proj.weight",
+            "model.language_model.layers.{layer_number}.self_attn.k_proj.weight",
+            "model.language_model.layers.{layer_number}.self_attn.v_proj.weight",
+        ],
+        "self_attention.linear_qkv.bias": [
+            "model.language_model.layers.{layer_number}.self_attn.q_proj.bias",
+            "model.language_model.layers.{layer_number}.self_attn.k_proj.bias",
+            "model.language_model.layers.{layer_number}.self_attn.v_proj.bias",
+        ],
+    } | {
+        f"self_attention.{weight_name}": ["model.language_model.layers.{layer_number}." + weight_name]
+        for weight_name in [
+            "input_layernorm.weight",
+            # linear attn (Qwen3.5 uses separate in_proj_b/in_proj_a)
+            "linear_attn.A_log",
+            "linear_attn.conv1d.weight",
+            "linear_attn.dt_bias",
+            "linear_attn.in_proj_a.weight",
+            "linear_attn.in_proj_b.weight",
+            "linear_attn.in_proj_qkv.weight",
+            "linear_attn.in_proj_z.weight",
+            "linear_attn.norm.weight",
+            "linear_attn.out_proj.weight",
+            # gated attn (full attention layers)
+            "self_attn.k_norm.weight",
+            "self_attn.k_proj.weight",
+            "self_attn.o_proj.weight",
+            "self_attn.q_norm.weight",
+            "self_attn.q_proj.weight",
+            "self_attn.v_proj.weight",
+        ]
+    }
+
+    _MLP_MAPPING = {
+        "mlp.linear_fc1.weight": [
+            "model.language_model.layers.{layer_number}.mlp.gate_proj.weight",
+            "model.language_model.layers.{layer_number}.mlp.up_proj.weight",
+        ],
+        "mlp.linear_fc1.layer_norm_weight": [
+            "model.language_model.layers.{layer_number}.post_attention_layernorm.weight"
+        ],
+        "mlp.linear_fc2.weight": ["model.language_model.layers.{layer_number}.mlp.down_proj.weight"],
+        # MoE mappings
+        "shared_experts.linear_fc1.weight": [
+            "model.language_model.layers.{layer_number}.mlp.shared_expert.gate_proj.weight",
+            "model.language_model.layers.{layer_number}.mlp.shared_expert.up_proj.weight",
+        ],
+        "pre_mlp_layernorm": ["model.language_model.layers.{layer_number}.post_attention_layernorm.weight"],
+        "shared_experts.linear_fc2.weight": [
+            "model.language_model.layers.{layer_number}.mlp.shared_expert.down_proj.weight"
+        ],
+        "mlp.router.weight": ["model.language_model.layers.{layer_number}.mlp.gate.weight"],
+        "shared_experts.gate_weight": ["model.language_model.layers.{layer_number}.mlp.shared_expert_gate.weight"],
+        # Fused expert format: single 3D tensor for all experts
+        "mlp.experts.linear_fc1": [
+            "model.language_model.layers.{layer_number}.mlp.experts.gate_up_proj",
+        ],
+        "mlp.experts.linear_fc2": ["model.language_model.layers.{layer_number}.mlp.experts.down_proj"],
+    }
+
+    # MTP MLP expert mapping — the format depends on the HF weights.
+    # Qwen3.5-35B-A3B ships MTP experts as individual per-expert tensors;
+    # Qwen3.6-35B-A3B packs them as fused 3-D tensors (like regular layers).
+    # ``_mtp_experts_fused_cached`` is resolved lazily from safetensor_io.
+    _MTP_MLP_MAPPING_UNFUSED = {
+        "mlp.experts.linear_fc1": [
+            "mtp.layers.{layer_number}.mlp.experts.{expert_id}.gate_proj.weight",
+            "mtp.layers.{layer_number}.mlp.experts.{expert_id}.up_proj.weight",
+        ],
+        "mlp.experts.linear_fc2": ["mtp.layers.{layer_number}.mlp.experts.{expert_id}.down_proj.weight"],
+    }
+    _MTP_MLP_MAPPING_FUSED = {
+        "mlp.experts.linear_fc1": ["mtp.layers.{layer_number}.mlp.experts.gate_up_proj"],
+        "mlp.experts.linear_fc2": ["mtp.layers.{layer_number}.mlp.experts.down_proj"],
+    }
+
+    # Override to make ffn_hidden_size optional (Qwen3.5 MoE has no intermediate_size)
+    _CONFIG_MAPPING = {
+        "num_layers": "num_hidden_layers",
+        "hidden_size": "hidden_size",
+        "num_attention_heads": "num_attention_heads",
+        "num_query_groups": "num_key_value_heads",
+        "ffn_hidden_size": ("intermediate_size", None),
+        "attention_dropout": "attention_dropout",
+        "layernorm_epsilon": "rms_norm_eps",
+        "hidden_dropout": ("hidden_dropout", 0.0),
+        "kv_channels": ("head_dim", None),
+    }
+
+    def _get_text_config(self):
+        """Get the text config, handling VLM nesting."""
+        if hasattr(self.hf_config, "text_config"):
+            return self.hf_config.text_config
+        return self.hf_config
+
+    def _is_tied_word_embeddings(self) -> bool:
+        tie_word_embeddings = getattr(self.hf_config, "tie_word_embeddings", None)
+        if tie_word_embeddings is None and hasattr(self.hf_config, "text_config"):
+            tie_word_embeddings = getattr(self.hf_config.text_config, "tie_word_embeddings", None)
+        return bool(tie_word_embeddings)
+
+    def _adjust_mapping_for_shared_weights(self):
+        self._DIRECT_MAPPING = dict(self._DIRECT_MAPPING)
+        if self._is_tied_word_embeddings():
+            embed_key = self._DIRECT_MAPPING["embedding.word_embeddings.weight"]
+            self._DIRECT_MAPPING["output_layer.weight"] = embed_key
+
+    def _get_hf_shared_weight_keys(self) -> list[str]:
+        if self._is_tied_word_embeddings():
+            return [self._DIRECT_MAPPING["embedding.word_embeddings.weight"]]
+        return []
+
+    def _supports_transformer_config_kwarg(self, kwarg_name: str) -> bool:
+        """Check whether the current TransformerConfig accepts a given kwarg."""
+        transformer_config_class = getattr(self, "TransformerConfigClass", None)
+        if transformer_config_class is None:
+            return True
+
+        dataclass_fields = getattr(transformer_config_class, "__dataclass_fields__", None)
+        if dataclass_fields is not None:
+            return kwarg_name in dataclass_fields
+
+        try:
+            signature = inspect.signature(transformer_config_class)
+        except (TypeError, ValueError):
+            return True
+        return kwarg_name in signature.parameters
+
+    def _get_transformer_layer_spec(self, vp_stage=None):
+        transformer_layer_spec = super()._get_transformer_layer_spec(vp_stage)
+        self._last_transformer_layer_spec = transformer_layer_spec
+        return transformer_layer_spec
+
+    def _get_gptmodel_args(self) -> dict:
+        """Override to add MTP block spec if needed."""
+        ret = super()._get_gptmodel_args()
+        text_config = self._get_text_config()
+        if getattr(text_config, "mtp_num_hidden_layers", None) is not None:
+            transformer_layer_spec = getattr(self, "_last_transformer_layer_spec", None)
+            if transformer_layer_spec is None:
+                transformer_layer_spec = self._get_transformer_layer_spec()
+            mtp_block_spec = get_gpt_mtp_block_spec(self.config, transformer_layer_spec, use_transformer_engine=True)
+            ret["mtp_block_spec"] = mtp_block_spec
+        return ret
+
+    def _weight_name_mapping_mlp(self, name: str) -> list[str]:
+        """Override to handle fused expert weights."""
+        layer_number = name.split(".")[2]
+        convert_names = []
+        for keyword, mapping_names in self._MLP_MAPPING.items():
+            if keyword in name:
+                if "{expert_id}" in mapping_names[0]:
+                    expert_id = name.split("weight")[-1]
+                    convert_names.extend(
+                        [x.format(layer_number=layer_number, expert_id=expert_id) for x in mapping_names]
+                    )
+                else:
+                    convert_names.extend([x.format(layer_number=layer_number) for x in mapping_names])
+                break
+        if len(convert_names) == 0:
+            raise NotImplementedError(f"Unsupported parameter name: {name}")
+        return convert_names
+
+    def _mtp_experts_fused(self) -> bool:
+        """Detect whether MTP expert weights are stored in fused 3-D tensors.
+
+        Qwen3.5 MoE-A3B: unfused per-expert tensors (keys end in ``.weight``).
+        Qwen3.6 MoE-A3B: fused ``gate_up_proj`` / ``down_proj`` tensors.
+        Resolved from ``safetensor_io.index`` on first call; result is only
+        cached once ``safetensor_io`` is available, so early pre-init access
+        (e.g. from tests that instantiate via ``__new__``) does not lock in
+        a wrong answer.
+        """
+        cached = getattr(self, "_mtp_experts_fused_cached", None)
+        if cached is not None:
+            return cached
+        io = getattr(self, "safetensor_io", None)
+        index = getattr(io, "index", None) if io is not None else None
+        if not index:
+            return False
+        fused = any(
+            "mtp.layers." in k and "mlp.experts." in k and (k.endswith("gate_up_proj") or k.endswith("down_proj"))
+            for k in index
+        )
+        self._mtp_experts_fused_cached = fused
+        return fused
+
+    @property
+    def _MTP_MLP_MAPPING(self):
+        return self._MTP_MLP_MAPPING_FUSED if self._mtp_experts_fused() else self._MTP_MLP_MAPPING_UNFUSED
+
+    def _weight_name_mapping_mtp_mlp(self, name: str) -> list[str]:
+        """Handle MTP MLP mappings; per-expert format is detected from HF weights."""
+        layer_number = name.split(".")[2]
+        mapping = self._MTP_MLP_MAPPING if "mlp.experts.linear_fc" in name else self._MLP_MAPPING
+        convert_names = []
+        for keyword, mapping_names in mapping.items():
+            if keyword in name:
+                if "{expert_id}" in mapping_names[0]:
+                    expert_id = name.split("weight")[-1]
+                    convert_names.extend(
+                        [x.format(layer_number=layer_number, expert_id=expert_id) for x in mapping_names]
+                    )
+                else:
+                    convert_names.extend([x.format(layer_number=layer_number) for x in mapping_names])
+                break
+        if len(convert_names) == 0:
+            raise NotImplementedError(f"Unsupported parameter name: {name}")
+        return convert_names
+
+    def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
+        """Override to handle MTP layer mappings."""
+        if "mtp" in mcore_weights_name:
+            return self._convert_mtp_param(mcore_weights_name)
+        return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+
+    def _convert_mtp_param(self, name: str) -> list[str]:
+        """Convert MTP layer parameters from MCore to HF format."""
+        if "mtp.layers." not in name:
+            raise NotImplementedError(f"Invalid MTP parameter name: {name}")
+
+        parts = name.split(".")
+        mtp_layer_idx = parts[2]  # mtp.layers.{idx}
+
+        direct_name_mapping = {
+            f"mtp.layers.{mtp_layer_idx}.eh_proj.weight": "mtp.fc.weight",
+            f"mtp.layers.{mtp_layer_idx}.enorm.weight": "mtp.pre_fc_norm_embedding.weight",
+            f"mtp.layers.{mtp_layer_idx}.hnorm.weight": "mtp.pre_fc_norm_hidden.weight",
+            f"mtp.layers.{mtp_layer_idx}.final_layernorm.weight": "mtp.norm.weight",
+        }
+
+        if name in direct_name_mapping:
+            return [direct_name_mapping[name]]
+
+        if "transformer_layer" in name:
+            proxy_name = name.replace(
+                f"mtp.layers.{mtp_layer_idx}.transformer_layer",
+                f"decoder.layers.{mtp_layer_idx}",
+            )
+
+            if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
+                convert_names = super()._weight_name_mapping_attention(proxy_name)
+            elif "mlp" in proxy_name or "pre_mlp_layernorm" in proxy_name:
+                convert_names = self._weight_name_mapping_mtp_mlp(proxy_name)
+            else:
+                raise NotImplementedError(f"Unsupported transformer component in MTP: {name}")
+
+            # MTP weights use model.language_model prefix in regular layers,
+            # but mtp.layers.{idx} directly for MTP layers
+            convert_names = [
+                cn.replace(f"model.language_model.layers.{mtp_layer_idx}", f"mtp.layers.{mtp_layer_idx}")
+                for cn in convert_names
+            ]
+            return convert_names
+
+        raise NotImplementedError(f"Unsupported MTP parameter name: {name}")
+
+    def _weight_to_mcore_format(
+        self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
+    ) -> tuple[list[str], list[torch.Tensor]]:
+        if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
+            assert len(hf_weights) == 1
+            # Keep A_log in fp32 before TP scatter; this avoids precision loss
+            # from Bridge's global pre-cast to self.dtype.
+            return hf_weights[0].to(dtype=torch.float32).contiguous()
+
+        if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
+            # merge qkv
+            assert len(hf_weights) == 3
+            text_config = self._get_text_config()
+            num_key_value_heads = text_config.num_key_value_heads
+            hidden_dim = text_config.hidden_size
+            num_attention_heads = text_config.num_attention_heads
+            num_querys_per_group = num_attention_heads // text_config.num_key_value_heads
+            head_dim = getattr(text_config, "head_dim", hidden_dim // num_attention_heads)
+            group_dim = head_dim * num_attention_heads // num_key_value_heads
+            q, k, v = hf_weights
+            # q k v might be tp split
+            real_num_key_value_heads = q.shape[0] // (2 * group_dim)
+            q = (
+                q.view(
+                    [
+                        real_num_key_value_heads,
+                        num_querys_per_group,
+                        2,
+                        head_dim,
+                        -1,
+                    ]
+                )
+                .transpose(1, 2)
+                .flatten(1, 3)
+            )
+            k = k.view([real_num_key_value_heads, head_dim, -1])
+            v = v.view([real_num_key_value_heads, head_dim, -1])
+            out_shape = [-1, hidden_dim] if ".bias" not in mcore_weights_name else [-1]
+
+            qgkv = torch.cat([q, k, v], dim=1).view(*out_shape).contiguous()
+            return qgkv
+
+        # Handle fused expert weights: extract single expert from 3D fused tensor
+        if "mlp.experts.linear_fc" in mcore_weights_name and len(hf_weights) == 1:
+            w = hf_weights[0]
+            if w.dim() == 3:
+                # Extract expert_id from name like "...linear_fc1.weight42"
+                expert_id = int(mcore_weights_name.split("weight")[-1])
+                expert_w = w[expert_id]  # (out_features, in_features)
+                return expert_w.contiguous()
+
+        return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+
+    def _weight_to_hf_format(
+        self, mcore_weights_name: str, mcore_weights: torch.Tensor
+    ) -> tuple[list[str], list[torch.Tensor]]:
+        return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+
+    def _build_config(self):
+        text_config = self._get_text_config()
+
+        mtp_args = {}
+        if hasattr(text_config, "mtp_num_hidden_layers"):
+            mtp_args["mtp_num_layers"] = text_config.mtp_num_hidden_layers
+
+        base_kwargs = dict(
+            text_config_key="text_config" if hasattr(self.hf_config, "text_config") else None,
+            use_cpu_initialization=False,
+            # Other optimizations
+            persist_layer_norm=True,
+            bias_activation_fusion=True,
+            bias_dropout_fusion=True,
+            # Qwen3.5 specific
+            moe_router_pre_softmax=False,
+            qk_layernorm=True,
+            attention_output_gate=True,
+            **mtp_args,
+        )
+
+        # Handle MoE-specific config
+        if hasattr(text_config, "num_experts"):
+            base_kwargs.update(
+                moe_ffn_hidden_size=text_config.moe_intermediate_size,
+                moe_shared_expert_intermediate_size=getattr(text_config, "shared_expert_intermediate_size", None),
+                moe_router_bias_update_rate=0.001,
+                moe_router_topk=text_config.num_experts_per_tok,
+                num_moe_experts=text_config.num_experts,
+                moe_aux_loss_coeff=text_config.router_aux_loss_coef,
+                moe_router_load_balancing_type="none",
+                moe_grouped_gemm=True,
+                moe_router_score_function="softmax",
+                moe_shared_expert_gate=True,
+            )
+            # For MoE models without intermediate_size, use shared_expert_intermediate_size
+            if not hasattr(text_config, "intermediate_size"):
+                base_kwargs["ffn_hidden_size"] = text_config.shared_expert_intermediate_size
+
+        return self._build_base_config(**base_kwargs)

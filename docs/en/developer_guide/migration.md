@@ -1,0 +1,50 @@
+# Migration Guide
+
+## Train Loop: Sync → Async
+
+### What is changed
+
+The train loop (`train.py`, `train_async.py`) and `RayTrainGroup` now use Python async/await instead of sync `ray.get()`.
+
+### Why it is changed
+
+Python async is more expressive than sync code with `ray.get`. As a concrete example, in fault tolerance, we need to capture ray actor results and do retries when calling `actor_model.train`, while still allowing it to be overlapped freely with `critic_model.train`. This is hard to achieve without Python async.
+
+### How to mechanically migrate
+
+**1. Make the train function async:**
+
+```python
+# Before                          # After
+def train(args):                  async def train(args):
+    ...                               ...
+
+if __name__ == "__main__":        if __name__ == "__main__":
+    train(parse_args())               asyncio.run(train(parse_args()))
+```
+
+**2. `ray.get(x)` → `await x`, drop the `async_` prefix, and add `await` on group methods that previously had none:**
+
+```python
+ray.get(group.async_init(...))               →  await group.init(...)
+ray.get(group.async_train(...))              →  await group.train(...)
+group.save_model(...)                        →  await group.save_model(...)
+group.update_weights()                       →  await group.update_weights()
+ray.get(rollout_manager.generate.remote(id)) →  await rollout_manager.generate.remote(id)
+# Same pattern for offload, onload, clear_memory, connect, set_rollout_manager
+```
+
+**3. Dispatch handles:** replace `handle = group.async_fn(...)` with `task = await eager_create_task(group.fn(...))`.
+
+```python
+# Before                                           # After
+handle = critic.async_train(...)                   task = await eager_create_task(critic.train(...))
+ray.get(actor.async_train(...))                    await actor.train(...)
+ray.get(handle)                                    await task
+```
+
+**4. `create_training_models` is now async:**
+
+```python
+actor, critic = await create_training_models(args, pgs, rollout_manager)
+```
