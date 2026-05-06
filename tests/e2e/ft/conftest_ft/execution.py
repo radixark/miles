@@ -108,6 +108,10 @@ def get_common_train_args(
         f"--global-batch-size 256 "
         "--delay-split-train-data-by-dp "
         "--use-dynamic-batch-size "
+        # Required for FT mode: healing reduces dp_size mid-rollout (e.g. 4->3),
+        # so the effective gbs must trim trailing samples to align with the
+        # post-healing dp_size. Asserted in arguments.py FT block.
+        "--use-dynamic-global-batch-size "
         "--max-tokens-per-gpu 32768 "
         "--moe-token-dispatcher-type alltoall "
         "--advantage-estimator grpo "

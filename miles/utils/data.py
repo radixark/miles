@@ -283,6 +283,26 @@ def process_rollout_data(
         raw = ray.get(rollout_data_ref.inner)
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
+        # Under delay_split (FT mode), rollout did not pre-compute dynamic_gbs
+        # because it didn't know the post-healing dp_size. Compute it now using
+        # the current dp_size, which already reflects healing.
+        if args.use_dynamic_global_batch_size:
+            # TEMP HACK: reuse RolloutManager._compute_dynamic_global_batch_size
+            # via SimpleNamespace mock-self so the trim math + warning/info
+            # logging stays in one place. Will be cleaned up once that method
+            # is refactored to a stateless free function.
+            from types import SimpleNamespace
+
+            from miles.ray.rollout import RolloutManager
+
+            mock_self = SimpleNamespace(
+                train_parallel_config={"dp_size": dp_size},
+                args=args,
+            )
+            n_total = len(raw["tokens"])
+            raw["dynamic_global_batch_size"] = RolloutManager._compute_dynamic_global_batch_size(
+                mock_self, n_total
+            )
         raw = split_train_data_by_dp(args, raw, dp_size=dp_size)
         rollout_data = raw[dp_rank]
     else:

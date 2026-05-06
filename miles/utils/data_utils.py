@@ -10,6 +10,25 @@ def split_train_data_by_dp(args, data: dict[str, Any], *, dp_size: int) -> list[
     if "prompt" in data:
         rollout_data["prompt"] = data["prompt"]
 
+    n_total = len(data["tokens"])
+
+    # Trim trailing samples to dynamic_global_batch_size if it was set upstream.
+    # Two sources for this key:
+    #   - delay_split=False path: rollout-side _compute_dynamic_global_batch_size
+    #   - delay_split=True path:  process_rollout_data computes it after ray.get
+    #                             using the current (post-healing) dp_size.
+    # In both cases the value is a multiple of the relevant dp_size, so trimming
+    # here makes the partition exactly even across ranks.
+    if "dynamic_global_batch_size" in data:
+        n_kept = data["dynamic_global_batch_size"]
+        assert n_kept <= n_total, (
+            f"dynamic_global_batch_size={n_kept} exceeds num_samples={n_total}"
+        )
+        if n_kept < n_total:
+            for key in list(data.keys()):
+                if isinstance(data[key], list) and len(data[key]) == n_total:
+                    data[key] = data[key][:n_kept]
+
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
