@@ -335,7 +335,7 @@ class TestPostProcessRewardsProperties:
 
         rng = random.Random(seed)
         rewards_list: list[float] = []
-        for g in range(n_groups):
+        for _g in range(n_groups):
             base = rng.uniform(-100, 100)
             spread = rng.uniform(0.5, 50.0)  # >> epsilon
             for k in range(group_size):
