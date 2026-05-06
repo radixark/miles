@@ -209,8 +209,7 @@ class TestAllocateExternal:
 
 class TestSharedPortCursorsAcrossGroups:
     """Two ``ServerGroup``s sharing one ``PortCursors`` must produce disjoint
-    port allocations across nodes — see ``server_group.py:37`` for the
-    source-level concern flagged on parallel recover."""
+    port allocations across nodes — required for parallel recover."""
 
     def test_sequential_groups_share_cursor_and_avoid_overlap(self, patch_ray_get):
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
@@ -242,10 +241,10 @@ class TestSharedPortCursorsAcrossGroups:
 class TestRankPortConsistency:
     """rank ↔ addr_and_ports index consistency in ``ServerGroup.start_engines``.
 
-    server_group.py:153-160 builds init_handles by iterating ``new_engines``
-    with ``(global_rank, engine)`` pairs; addr_allocator.py:85 uses
-    ``current_rank = rank + i`` as the dict key. When ``rank_offset != 0`` or
-    ``nodes_per_engine > 1``, the two index spaces must agree."""
+    The init-handles loop iterates ``new_engines`` as ``(global_rank, engine)``
+    pairs while the allocator keys its output dict on ``rank + i``. When
+    ``rank_offset != 0`` or ``nodes_per_engine > 1`` the two index spaces
+    must still agree."""
 
     def test_rank_offset_kwargs_keyed_by_global_rank(self, patch_ray_get):
         """When rank_offset=4, addr_and_ports must be keyed by ranks 4..7,
