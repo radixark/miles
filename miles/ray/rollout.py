@@ -747,7 +747,10 @@ class RolloutManager:
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
-        # Pass dynamic global_batch_size to training side
+        # Pass dynamic global_batch_size to training side. The attribute is set in
+        # _get_rollout_data only when dynamic_gbs is enabled and we're NOT in
+        # delay_split mode (under delay_split the training side computes it using
+        # the post-healing dp_size).
         assert hasattr(self, "_dynamic_global_batch_size") == (
             self.args.use_dynamic_global_batch_size and not self.args.delay_split_train_data_by_dp
         )
