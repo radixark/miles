@@ -498,8 +498,6 @@ def train_one_step(
 
     dumper_phase_util.finalize(model)
 
-    dumper_phase_util.finalize(model)
-
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced)
         return loss_reduced, grad_norm
