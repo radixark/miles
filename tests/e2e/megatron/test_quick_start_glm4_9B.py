@@ -1,5 +1,10 @@
 import os
+
+from tests.ci.ci_register import register_cuda_ci
+
 import miles.utils.external_utils.command_utils as U
+
+register_cuda_ci(est_time=600, suite="stage-c-megatron-8-gpu", num_gpus=8)
 
 ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "1")
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")

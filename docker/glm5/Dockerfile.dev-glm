@@ -1,0 +1,2 @@
+FROM radixark/miles:dev
+RUN pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa
