@@ -8,7 +8,8 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
+
+from miles.backends.training_utils.parallel import get_parallel_state
 
 
 def compute_and_save_output_info(
@@ -63,9 +64,9 @@ def _compute_output_info(
 
     return {
         "rank": rank,
-        "tp_size": mpu.get_tensor_model_parallel_world_size() if dist.is_initialized() else 1,
-        "cp_size": mpu.get_context_parallel_world_size() if dist.is_initialized() else 1,
-        "pp_size": mpu.get_pipeline_model_parallel_world_size() if dist.is_initialized() else 1,
+        "tp_size": get_parallel_state().tp.size if dist.is_initialized() else 1,
+        "cp_size": get_parallel_state().cp.size if dist.is_initialized() else 1,
+        "pp_size": get_parallel_state().pp.size if dist.is_initialized() else 1,
         "logprob_entries": logprob_entries,
     }
 

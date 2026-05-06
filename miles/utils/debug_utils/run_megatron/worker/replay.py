@@ -90,12 +90,17 @@ def _get_parallel_ranks() -> _ParallelRanks:
     """Return parallel ranks, defaulting to 1/0 if mpu is not initialized."""
     from megatron.core import mpu
 
-    initialized: bool = mpu.is_initialized()
+    from miles.backends.training_utils.parallel import get_parallel_state
+
+    if not mpu.is_initialized():
+        return _ParallelRanks(cp_size=1, cp_rank=0, tp_size=1, tp_rank=0)
+
+    state = get_parallel_state()
     return _ParallelRanks(
-        cp_size=mpu.get_context_parallel_world_size() if initialized else 1,
-        cp_rank=mpu.get_context_parallel_rank() if initialized else 0,
-        tp_size=mpu.get_tensor_model_parallel_world_size() if initialized else 1,
-        tp_rank=mpu.get_tensor_model_parallel_rank() if initialized else 0,
+        cp_size=state.cp.size,
+        cp_rank=state.cp.rank,
+        tp_size=state.tp.size,
+        tp_rank=state.tp.rank,
     )
 
 

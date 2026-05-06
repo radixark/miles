@@ -242,9 +242,7 @@ def slice_with_cp(
     return torch.cat([tokens[start_1:end_1], tokens[start_2:end_2]])
 
 
-def natural_to_zigzag_slice(
-    tensor: torch.Tensor, dim: int, cp_size: int, cp_rank: int
-) -> torch.Tensor:
+def natural_to_zigzag_slice(tensor: torch.Tensor, dim: int, cp_size: int, cp_rank: int) -> torch.Tensor:
     """Slice a full-length tensor into the zigzag ring-attention CP layout.
 
     Rank ``cp_rank`` owns chunks ``[cp_rank, 2*cp_size - 1 - cp_rank]`` from the

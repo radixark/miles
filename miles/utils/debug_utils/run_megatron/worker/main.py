@@ -29,6 +29,7 @@ from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.checkpoint import load_checkpoint
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.output import compute_and_save_output_info
 from miles.utils.debug_utils.run_megatron.worker.replay import (
@@ -63,8 +64,8 @@ def main() -> None:
     batch: dict[str, torch.Tensor] = prepare_batch(
         token_ids=token_ids,
         batch_size=args.micro_batch_size,
-        cp_rank=mpu.get_context_parallel_rank(),
-        cp_size=mpu.get_context_parallel_world_size(),
+        cp_rank=get_parallel_state().cp.rank,
+        cp_size=get_parallel_state().cp.size,
     )
 
     if rank == 0:
