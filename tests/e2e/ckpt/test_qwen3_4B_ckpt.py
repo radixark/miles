@@ -14,6 +14,15 @@ MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
 
 
+def _get_latest_checkpointed_iteration() -> int:
+    latest_path = f"/root/models/{MODEL_NAME}_miles/latest_checkpointed_iteration.txt"
+    with open(latest_path, encoding="utf-8") as f:
+        latest_text = f.read().strip()
+    if not latest_text.isdigit():
+        raise ValueError(f"Invalid latest checkpoint value: {latest_text}")
+    return int(latest_text)
+
+
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
@@ -134,6 +143,6 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute("save")
-    execute("load")
+    execute("load", ckpt_step=_get_latest_checkpointed_iteration())
     execute("async_save")
-    execute("load")
+    execute("load", ckpt_step=_get_latest_checkpointed_iteration())

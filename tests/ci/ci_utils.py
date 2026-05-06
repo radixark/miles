@@ -159,6 +159,8 @@ def run_unittest_files(
         else:
             filename, estimated_time = file.name, file.estimated_time
 
+        effective_timeout = max(timeout_per_file, int(estimated_time * 1.25))
+
         process = None
         output_lines = []
 
@@ -213,7 +215,7 @@ def run_unittest_files(
                     run_one_file,
                     args=(filename,),
                     kwargs={"capture_output": enable_retry},
-                    timeout=timeout_per_file,
+                    timeout=effective_timeout,
                 )
 
                 if ret_code == 0:
@@ -248,10 +250,10 @@ def run_unittest_files(
             except TimeoutError:
                 _kill_process_tree(process.pid)
                 time.sleep(5)
-                logger.info(f"\nTIMEOUT: {filename} after {timeout_per_file} seconds\n")
+                logger.info(f"\nTIMEOUT: {filename} after {effective_timeout} seconds\n")
                 if was_retried:
                     retried_tests.append((filename, attempt, "timeout"))
-                failed_tests.append((filename, f"timeout after {timeout_per_file}s"))
+                failed_tests.append((filename, f"timeout after {effective_timeout}s"))
                 break
 
         if not file_passed:
