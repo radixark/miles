@@ -1,11 +1,3 @@
-"""Tests for ``miles/utils/test_utils/mock_sglang_engine.py``.
-
-Two test surfaces:
-- Contract tests (no Ray needed): the mock's API mirrors ``SGLangEngine`` for
-  every method called from ``miles/ray/rollout/``.
-- Smoke tests (real Ray actor): mock can be created as a Ray actor, methods
-  round-trip through Ray, and fault injection surfaces via ``ray.get``."""
-
 from __future__ import annotations
 
 import inspect
