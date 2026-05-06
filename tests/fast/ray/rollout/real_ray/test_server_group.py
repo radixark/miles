@@ -114,7 +114,7 @@ class TestStartEnginesRealActors:
         # Second call with no start_indices: should skip both.
         handles2, indices2 = group.start_engines(PortCursors.empty())
         assert handles2 == [] and indices2 == []
-        for first, e in zip(first_handles, group.all_engines):
+        for first, e in zip(first_handles, group.all_engines, strict=True):
             assert e.actor_handle is first  # still the same actor
 
         for h in first_handles:
