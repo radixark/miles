@@ -2,7 +2,6 @@ from typing import Any
 
 import torch
 
-from miles.backends.training_utils.parallel import ParallelState
 
 # NOTE:
 # - `compute_mis_weights` is a lightweight, standalone function that is useful to unit-test on CPU.
@@ -318,7 +317,6 @@ def compute_mis_weights_with_cp(
     loss_masks: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
-    parallel_state: ParallelState,
     **kwargs: Any,
 ) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, torch.Tensor]]:
     """
@@ -349,7 +347,6 @@ def compute_mis_weights_with_cp(
                 log_prob,
                 total_length,
                 response_length,
-                parallel_state,
                 qkv_format,
                 max_seq_lens[i] if max_seq_lens is not None else None,
             )
@@ -378,7 +375,6 @@ def compute_mis_weights_with_cp(
                 values[i],
                 total_lengths[i],
                 response_lengths[i],
-                parallel_state,
                 qkv_format,
                 max_seq_lens[i] if max_seq_lens is not None else None,
             )

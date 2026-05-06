@@ -1,0 +1,114 @@
+# GB300 (sm103a / cu13 arm64) build.
+# Build with:
+#   docker build -f docker/Dockerfile_GB300 \
+#     --build-arg SGLANG_IMAGE_TAG=v0.5.8.post1-cu130-arm64 \
+#     -t radixark/miles:dev-cu13-arm64 .
+
+ARG SGLANG_IMAGE_TAG=v0.5.8.post1-cu130-arm64
+FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
+
+# ======================================== Arguments =============================================
+
+ARG PATCH_VERSION=latest
+ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
+
+# ======================================== Setup =============================================
+
+WORKDIR /root/
+
+# ======================================== Apt dependencies =============================================
+
+RUN apt update
+RUN apt install -y nvtop rsync dnsutils
+
+# ====================================== Python dependencies ============================================
+
+# The compilation is slow, thus should be put at top
+# TransformerEngines does not support too high FA2
+RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
+
+# The compilation is slow, thus should be put at top
+RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
+    cd flash-attention/ && git checkout fbf24f67cf7f6442c5cfb2c1057f4bfc57e72d89 && git submodule update --init && cd hopper/ && \
+    MAX_JOBS=96 python setup.py install && \
+    export python_path=`python -c "import site; print(site.getsitepackages()[0])"` && \
+    mkdir -p $python_path/flash_attn_3 && \
+    cp flash_attn_interface.py $python_path/flash_attn_3/flash_attn_interface.py && \
+    rm -rf flash-attention/
+
+RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
+
+RUN pip install flash-linear-attention==0.4.0
+RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
+
+# GB300 (cu13): TE 2.12.0 with core_cu13 extra — adds THD layout + head_dim=256 support
+# required for Qwen3-Next-80B-A3B on sm103a (cuDNN and FA2/FA3 don't support this config).
+RUN pip install nvidia-mathdx==25.6.0 && \
+    pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.12.0"
+
+RUN NVCC_APPEND_FLAGS="--threads 4" \
+  pip -v install --disable-pip-version-check --no-cache-dir \
+  --no-build-isolation \
+  --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4
+
+RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
+    cd Megatron-LM && git checkout ${MEGATRON_COMMIT} && \
+    pip install -e .
+
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
+RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
+RUN pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
+
+# GB300: Triton from source — Triton's bundled ptxas does not support sm_103a.
+# This patch from masahi will be included in later Triton releases.
+RUN cd /root && git clone -b feat/v350_plus_8045 https://github.com/fzyzcjy/triton.git && \
+    cd triton && pip install -r python/requirements.txt && pip install --verbose -e .
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt
+
+# GB300: install sgl-kernel built for cu130
+RUN SGL_KERNEL_VERSION=0.3.17.post2 && \
+    python3 -m pip install https://github.com/sgl-project/whl/releases/download/v${SGL_KERNEL_VERSION}/sgl_kernel-${SGL_KERNEL_VERSION}+cu130-cp310-abi3-manylinux2014_$(uname -m).whl --force-reinstall --no-deps
+
+# GB300: use cu13 cuDNN
+RUN pip install nvidia-cudnn-cu13==9.16.0.29
+
+# reinstall numpy 1.x for megatron
+RUN pip install "numpy<2"
+
+RUN rm -f /root/.tmux.conf
+RUN rm -rf /root/.cache/pip /root/flash-attention
+
+# ====================================== Patches ============================================
+
+COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
+RUN cd Megatron-LM && \
+    git update-index --refresh && \
+    git apply megatron.patch --3way && \
+    if grep -R -n '^<<<<<<< ' .; then \
+      echo "Patch failed to apply cleanly. Please resolve conflicts." && \
+      exit 1; \
+    fi && \
+    rm megatron.patch
+
+# Skip sglang patch for GB300 — users bring their own sglang (cu130 arm64) version.
+# See TODO in docker/Dockerfile: should add back when a cu130-arm64-compatible patch exists.
+
+# GB300: patch fla 0.4.0 + Triton 3.5.1 bugs on Blackwell (sm103a):
+#   Bug 1 — wy_fast.py backward kernel: TritonGPUHoistTMEMAlloc dominance error
+#   Bug 2/3 — gluon_ir not compiled in arm64+cu130 Triton build, crashes @autotune kernels
+# Also set TRITON_PTXAS_PATH since Triton's bundled ptxas does not support sm_103a.
+COPY docker/patch/cu13/patch_fla_blackwell.py /tmp/patch_fla_blackwell.py
+RUN python3 /tmp/patch_fla_blackwell.py && \
+    rm -f /tmp/patch_fla_blackwell.py && \
+    echo 'export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas' >> /root/.bashrc
+
+# ====================================== Install main package ============================================
+
+# TODO may improve
+ARG MILES_COMMIT=main
+RUN git clone https://github.com/radixark/miles.git /root/miles && \
+    cd /root/miles && \
+    git checkout ${MILES_COMMIT} && \
+    pip install -e . --no-deps

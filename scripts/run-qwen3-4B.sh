@@ -108,6 +108,12 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
 )
 
+PROMETHEUS_ARGS=(
+   # --use-prometheus
+   # --prometheus-port 9090
+   # --prometheus-run-name "qwen3-4B-exp"
+)
+
 MISC_ARGS=(
    # default dropout in megatron is 0.1
    --attention-dropout 0.0
@@ -147,4 +153,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
+   ${PROMETHEUS_ARGS[@]} \
    ${MISC_ARGS[@]}

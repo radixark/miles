@@ -24,6 +24,7 @@ Agent function contract:
 
 import argparse
 import logging
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -34,6 +35,7 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import (
     OpenAIEndpointTracer,
     compute_samples_from_openai_records,
+    truncate_samples_by_total_tokens,
 )
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.utils.misc import load_function
@@ -43,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    assert getattr(input.args, "session_server_ip", None) and getattr(input.args, "session_server_port", None), (
+        "agentic_tool_call.generate requires session_server_ip/session_server_port. "
+        "Pass --use-session-server to start the session server."
+    )
     tracer = await OpenAIEndpointTracer.create(input.args)
 
     custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
@@ -50,14 +56,39 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         custom_agent_function is not None
     ), f"Custom agent function {input.args.custom_agent_function_path} not found"
 
-    agent_metadata = await custom_agent_function(
-        base_url=tracer.base_url,
-        prompt=input.sample.prompt,
-        request_kwargs=build_chat_request_kwargs(input.sampling_params),
-        metadata=input.sample.metadata,
-    )
+    max_seq_len = getattr(input.args, "max_seq_len", None)
 
-    records = await tracer.collect_records()
+    metadata = input.sample.metadata
+    if max_seq_len is not None:
+        metadata = {**metadata, "max_seq_len": max_seq_len}
+    if tracer.session_server_instance_id:
+        metadata = {**metadata, "session_server_instance_id": tracer.session_server_instance_id}
+
+    log_prefix = f"[session={tracer.session_id}]"
+
+    session_ip = getattr(input.args, "session_server_ip", None)
+    session_port = getattr(input.args, "session_server_port", None)
+    if session_ip and session_port:
+        metadata = {**metadata, "session_server_id": f"{session_ip}:{session_port}"}
+
+    agent_metadata = None
+    t_start = time.monotonic()
+    try:
+        logger.debug(f"{log_prefix} Starting agent function call")
+        agent_metadata = await custom_agent_function(
+            base_url=tracer.base_url,
+            prompt=input.sample.prompt,
+            request_kwargs=build_chat_request_kwargs(input.sampling_params),
+            metadata=metadata,
+        )
+        logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
+    except Exception as e:
+        logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
+
+    finally:
+        logger.debug(f"{log_prefix} Calling collect_records...")
+        records, session_metadata = await tracer.collect_records()
+        logger.debug(f"{log_prefix} collect_records done: {len(records)} records")
 
     if not records:
         logger.warning("No model calls recorded for sample")
@@ -65,19 +96,51 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
-    samples = compute_samples_from_openai_records(input.sample, records, input.state.tokenizer)
+    logger.debug(f"{log_prefix} Computing samples from {len(records)} records...")
+    samples = compute_samples_from_openai_records(
+        input.args,
+        input.sample,
+        records,
+        input.state.tokenizer,
+        accumulated_token_ids=session_metadata.get("accumulated_token_ids"),
+        max_trim_tokens=session_metadata.get("max_trim_tokens", 0),
+    )
 
+    logger.debug(
+        f"{log_prefix} compute_samples done: {len(samples)} samples, total_time={time.monotonic()-t_start:.1f}s"
+    )
     for s in samples:
         s.metadata.update(agent_metadata or {})
 
+    if max_seq_len is not None:
+        samples = truncate_samples_by_total_tokens(samples, max_seq_len, input.state.tokenizer)
+
+    if not samples:
+        logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
+        sample = deepcopy(input.sample)
+        sample.status = Sample.Status.ABORTED
+        return GenerateFnOutput(samples=sample)
+
     if not input.args.generate_multi_samples:
         samples = merge_samples(samples, input.state.tokenizer)
+        samples.metadata.update(session_metadata)
+    else:
+        samples[-1].metadata.update(session_metadata)
     return GenerateFnOutput(samples=samples)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--custom-agent-function-path", type=str)
     parser.add_argument("--generate-multi-samples", action="store_true", default=False)
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=None,
+        dest="max_seq_len",
+        help="Max sequence length in tokens (prompt + completion, including env responses) "
+        "per session. Truncates samples on the Miles side and is forwarded to the "
+        "Harbor agent server (as max_seq_len) to abort the trial early.",
+    )
 
 
 generate.add_arguments = _add_arguments
@@ -96,12 +159,6 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
             if dst not in request_kwargs:
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
-
-    # return_prompt_token_ids: get prompt token IDs without computing logprobs (zero cost, cache-safe)
-    # logprobs: get output token IDs + logprobs (via logprobs.content[].token_id)
-    # NOTE: do NOT set logprob_start_len=0, that would destroy SGLang's prefix cache.
-    request_kwargs["return_prompt_token_ids"] = True
-    request_kwargs["logprobs"] = True
 
     reserved_keys = {"model", "messages"}
     allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys

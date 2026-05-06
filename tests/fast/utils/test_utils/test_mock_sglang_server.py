@@ -1,3 +1,7 @@
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
 import asyncio
 import concurrent.futures
 import time
@@ -244,6 +248,7 @@ class TestChatCompletionsEndpoint:
             json={
                 "model": "test-model",
                 "messages": messages,
+                "return_prompt_token_ids": True,
             },
             timeout=5.0,
         )
@@ -252,6 +257,9 @@ class TestChatCompletionsEndpoint:
 
         assert data["id"].startswith("chatcmpl-")
         assert isinstance(data["created"], int)
+        choice = data["choices"][0]
+        assert "meta_info" in choice
+        choice.pop("meta_info")
         assert data == {
             "id": data["id"],
             "object": "chat.completion",
@@ -281,12 +289,15 @@ class TestChatCompletionsEndpoint:
                     "model": "test",
                     "messages": [{"role": "user", "content": "What year is it?"}],
                     "tools": SAMPLE_TOOLS,
+                    "return_prompt_token_ids": True,
                 },
                 timeout=5.0,
             )
             data = response.json()
 
-            assert data["choices"][0] == {
+            choice = data["choices"][0]
+            choice.pop("meta_info", None)
+            assert choice == {
                 "index": 0,
                 "message": {
                     "role": "assistant",
@@ -317,12 +328,15 @@ class TestChatCompletionsEndpoint:
                     "model": "test",
                     "messages": [{"role": "user", "content": "What's the weather?"}],
                     "tools": SAMPLE_TOOLS,
+                    "return_prompt_token_ids": True,
                 },
                 timeout=5.0,
             )
             data = response.json()
 
-            assert data["choices"][0] == {
+            choice = data["choices"][0]
+            choice.pop("meta_info", None)
+            assert choice == {
                 "index": 0,
                 "message": {"role": "assistant", "content": response_text, "tool_calls": None},
                 "logprobs": {"content": expected_logprobs(server.tokenizer, response_text)},
@@ -351,12 +365,15 @@ class TestChatCompletionsEndpoint:
                     "model": "test",
                     "messages": [{"role": "user", "content": "What year and temperature?"}],
                     "tools": SAMPLE_TOOLS,
+                    "return_prompt_token_ids": True,
                 },
                 timeout=5.0,
             )
             data = response.json()
 
-            assert data["choices"][0] == {
+            choice = data["choices"][0]
+            choice.pop("meta_info", None)
+            assert choice == {
                 "index": 0,
                 "message": {
                     "role": "assistant",
