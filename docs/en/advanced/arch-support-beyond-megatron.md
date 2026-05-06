@@ -27,6 +27,35 @@ miles leverages this mechanism by **hijacking the spec generation stage to repla
 
 Through the coordination of these three components, we can successfully run a complex model architecture not natively supported by Megatron—using its HuggingFace implementation as the vehicle—on top of Megatron's parallel framework. This is achieved while fully retaining all key capabilities like model parallelism, MoE acceleration, and pipeline scheduling.
 
+## Mixed-Precision: Preserving fp32 Parameters in bf16 Models
+
+Some model architectures require specific parameters to remain in fp32 even when the rest of the model runs in bf16. For example, Qwen3.5's `A_log` parameter must stay fp32 — if rounded to bf16, Megatron-side activations diverge from sglang's fp32 `A_log` on the rollout side, causing precision drift.
+
+Megatron's training stack has **three implicit cast points** that silently round fp32 parameters to bf16: `Float16Module` construction, `Bridge._weight_to_mcore_format`, and `Bridge.load_weights`. Both steps below are required — doing only one leaves a silent precision trap where the final dtype *looks* correct (fp32) but values were already rounded to bf16 precision.
+
+### Step 1: Mark the parameter in your model definition
+
+```python
+from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
+
+# In your model's __init__:
+self.A_log = nn.Parameter(torch.log(A).to(torch.float32))
+mark_param_dtype(self.A_log, torch.float32)
+```
+
+`enforce_marked_param_dtypes(model)` — already wired into training and checkpoint conversion entry points — restores tagged params to fp32 after `Float16Module` casts the entire model to bf16.
+
+### Step 2: Override the Bridge to bypass bf16 pre-cast during weight loading
+
+```python
+class Qwen3_5Bridge(Qwen2MoEBridge):
+    def _weight_to_mcore_format(self, mcore_weights_name, hf_weights):
+        if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
+            assert len(hf_weights) == 1
+            return hf_weights[0].to(dtype=torch.float32).contiguous()
+        return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+```
+
 ## Current Limitations
 
 * This approach does not currently support Tensor Parallelism (TP) within the replaced module itself (e.g., the Attention layer in this case).

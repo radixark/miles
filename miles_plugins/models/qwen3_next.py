@@ -7,8 +7,9 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-from transformers import AutoConfig
 from transformers.activations import ACT2FN
+
+from .hf_attention import _load_hf_config
 
 try:
     from fla.modules import FusedRMSNormGated, ShortConvolution
@@ -16,6 +17,8 @@ try:
     from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextAttention, Qwen3NextRMSNorm
 except ImportError:
     pass
+
+from miles.backends.training_utils.cp_utils import build_gdn_cp_context
 
 from .hf_attention import HuggingfaceAttention
 
@@ -107,6 +110,8 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor = None,
     ):
+        cp_context = build_gdn_cp_context(self, cu_seqlens, hidden_states.device)
+
         projected_states_qkvz = self.in_proj_qkvz(hidden_states)
         projected_states_ba = self.in_proj_ba(hidden_states)
         query, key, value, z, b, a = self.fix_query_key_value_ordering(projected_states_qkvz, projected_states_ba)
@@ -114,9 +119,11 @@ class Qwen3NextGatedDeltaNet(nn.Module):
 
         mixed_qkv = torch.cat((query, key, value), dim=-1)
 
+        conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
         mixed_qkv, _ = self.conv1d(
             x=mixed_qkv,
-            cu_seqlens=cu_seqlens,
+            cu_seqlens=conv_cu_seqlens,
+            cp_context=cp_context,
         )
 
         query, key, value = torch.split(
@@ -139,17 +146,29 @@ class Qwen3NextGatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        core_attn_out, last_recurrent_state = chunk_gated_delta_rule(
-            query,
-            key,
-            value,
-            g=g,
-            beta=beta,
-            initial_state=None,
-            output_final_state=False,
-            use_qk_l2norm_in_kernel=True,
-            cu_seqlens=cu_seqlens,
-        )
+        if cp_context is not None:
+            core_attn_out, _ = chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cp_context.cu_seqlens,
+                cp_context=cp_context,
+            )
+        else:
+            core_attn_out, _ = chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=None,
+                output_final_state=False,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=cu_seqlens,
+            )
 
         z_shape_og = z.shape
         # reshape input data into 2D tensor
@@ -214,7 +233,13 @@ def get_qwen3_next_spec(args, config, vp_stage):
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
 
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    hf_config = _load_hf_config(args.hf_checkpoint)
+
+    # Compute layer_types if the config class doesn't expose it
+    if not hasattr(hf_config, "layer_types"):
+        interval = getattr(hf_config, "full_attention_interval", 4)
+        n = hf_config.num_hidden_layers
+        hf_config.layer_types = ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 
     for layer_id in range(num_layers_to_build):
         if hf_config.layer_types[layer_id + offset] == "linear_attention":

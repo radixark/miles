@@ -13,7 +13,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_PATCH_SIZE = 14
 
 
-def load_tokenizer(name_or_path: str, chat_template_path: str = None, **kwargs):
+_TOKENIZER_CACHE: dict[tuple, PreTrainedTokenizerBase] = {}
+
+
+def _make_cache_key(name_or_path: str, chat_template_path: str | None, kwargs: dict) -> tuple | None:
+    try:
+        kwargs_items = tuple(sorted(kwargs.items()))
+        hash(kwargs_items)
+    except TypeError:
+        return None
+    return (name_or_path, chat_template_path, kwargs_items)
+
+
+def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **kwargs) -> PreTrainedTokenizerBase:
+    # Cache keyed by (name, chat_template_path, kwargs) — the fast suite creates
+    # hundreds of SessionServer / MockSGLangServer fixtures and each previously
+    # triggered a fresh AutoTokenizer.from_pretrained, tripping HF Hub rate limits.
+    cache_key = _make_cache_key(name_or_path, chat_template_path, kwargs)
+    if cache_key is not None and cache_key in _TOKENIZER_CACHE:
+        return _TOKENIZER_CACHE[cache_key]
+
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
     if chat_template_path:
         assert os.path.isfile(chat_template_path), (
@@ -23,7 +42,28 @@ def load_tokenizer(name_or_path: str, chat_template_path: str = None, **kwargs):
         with open(chat_template_path) as f:
             tokenizer.chat_template = f.read()
         logger.info("Loaded custom chat template from %s", chat_template_path)
+
+    if cache_key is not None:
+        _TOKENIZER_CACHE[cache_key] = tokenizer
     return tokenizer
+
+
+def build_processor_kwargs(multimodal_inputs: dict | None = None) -> dict:
+
+    modality_forced = {"return_tensors": "pt"}
+
+    result = dict(multimodal_inputs) if multimodal_inputs else {}
+
+    # return_tensors=None for text (input_ids), "pt" for modality-specific outputs.
+    # Use per-modality dicts to avoid transformers >=5.0 duplicate kwarg error.
+    result["text_kwargs"] = {**result.get("text_kwargs", {}), "return_tensors": None}
+    for key in ("audio_kwargs", "images_kwargs", "videos_kwargs"):
+        if key in result:
+            result[key] = {**result[key], **modality_forced}
+        else:
+            result[key] = modality_forced.copy()
+
+    return result
 
 
 def load_processor(name_or_path: str, **kwargs):
@@ -41,15 +81,15 @@ def load_processor(name_or_path: str, **kwargs):
 
 
 def process_vision_info(prompt, processor):
-    # temporary solution, will write image utils for miles later
-    from qwen_vl_utils import process_vision_info
+    # TODO: temporary solution, will write image utils for miles later
+    from qwen_vl_utils import process_vision_info as qwen_process_vision_info
 
     if hasattr(processor.image_processor, "patch_size"):
         image_patch_size = processor.image_processor.patch_size
     else:
         logger.info(f"Using default patch size: {DEFAULT_PATCH_SIZE}")
         image_patch_size = DEFAULT_PATCH_SIZE
-    images, videos = process_vision_info(prompt, image_patch_size=image_patch_size)
+    images, videos = qwen_process_vision_info(prompt, image_patch_size=image_patch_size)
     multimodal_inputs = {"images": images, "videos": videos}
     return multimodal_inputs
 
@@ -60,4 +100,5 @@ def encode_image_for_rollout_engine(image) -> str:
     if image.mode != "RGB":
         image = image.convert("RGB")
     image.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{image_base64}"

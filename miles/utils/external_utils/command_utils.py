@@ -155,7 +155,8 @@ def execute_train(
                         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                     }
                 ),
-                "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+                **{k: os.environ[k] for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME") if k in os.environ},
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
@@ -184,7 +185,7 @@ def execute_train(
         exec_command(
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
-            f'ray job submit --address="http://127.0.0.1:8265" '
+            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
