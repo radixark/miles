@@ -15,6 +15,7 @@ from urllib3.exceptions import NewConnectionError
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
 from miles.ray.ray_actor import RayActor
+from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,15 @@ class SGLangEngine(RayActor):
         disaggregation_bootstrap_port=None,
         router_ip=None,
         router_port=None,
+        engine_info_bootstrap_port=None,
     ):
+        if env_report := self.args.env_report:
+            collect_and_print_node_env_report(
+                role="rollout",
+                rank=self.rank,
+                partial_env_report=env_report,
+            )
+
         self.router_ip = router_ip if router_ip is not None else self.args.sglang_router_ip
         self.router_port = router_port if router_port is not None else self.args.sglang_router_port
 
@@ -163,6 +172,7 @@ class SGLangEngine(RayActor):
             self.worker_type,
             disaggregation_bootstrap_port,
             base_gpu_id=self.base_gpu_id,
+            engine_info_bootstrap_port=engine_info_bootstrap_port,
             sglang_overrides=self.sglang_overrides,
             num_gpus_per_engine=self.num_gpus_per_engine,
         )
@@ -293,6 +303,33 @@ class SGLangEngine(RayActor):
             "update_weights_from_tensor",
             payload,
         )
+
+    def get_remote_instance_transfer_engine_info(self, rank: int):
+        # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
+        response = requests.get(
+            f"http://{self.server_host}:{self.server_port}/get_remote_instance_transfer_engine_info",
+            params={"rank": rank},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        return response.json()["remote_instance_transfer_engine_info"]
+
+    def get_parallelism_info(self, rank: int):
+        response = requests.get(
+            f"http://{self.server_host}:{self.server_port}/parallelism_config",
+            params={"rank": rank},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_server_info(self):
+        response = requests.get(
+            f"http://{self.server_host}:{self.server_port}/server_info",
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        return response.json()
 
     def load_lora_adapter_from_tensors(
         self,
@@ -464,8 +501,11 @@ class SGLangEngine(RayActor):
             payload,
         )
 
-    def pause_generation(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/pause_generation", json={})
+    def pause_generation(self, mode: str = "retract"):
+        response = requests.post(
+            f"http://{self.server_host}:{self.server_port}/pause_generation",
+            json={"mode": mode},
+        )
         response.raise_for_status()
         return response
 
@@ -478,6 +518,7 @@ class SGLangEngine(RayActor):
         self,
         restore_weights_before_load: bool = False,
         post_process_quantization: bool = False,
+        post_load_weights: bool = False,
     ):
         """
         Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
@@ -490,7 +531,14 @@ class SGLangEngine(RayActor):
             {
                 "restore_weights_before_load": restore_weights_before_load,
                 "post_process_quantization": post_process_quantization,
+                "post_load_weights": post_load_weights,
             },
+        )
+
+    def update_weight_version(self, weight_version: str):
+        return self._make_request(
+            "update_weight_version",
+            {"new_version": weight_version},
         )
 
     def start_profile(
@@ -549,6 +597,7 @@ def _compute_server_args(
     worker_type: str = "regular",
     disaggregation_bootstrap_port: int | None = None,
     base_gpu_id: int | None = None,
+    engine_info_bootstrap_port: int | None = None,
     sglang_overrides: dict | None = None,
     num_gpus_per_engine: int | None = None,
 ):
@@ -601,10 +650,11 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
+    if engine_info_bootstrap_port is not None:
+        kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     if is_lora_enabled(args):
-        kwargs["enable_weights_cpu_backup"] = args.offload_rollout
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)

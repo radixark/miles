@@ -86,7 +86,7 @@ First, update the `dataset_path` in `eval_tb_example.yaml` to the local path of 
 Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
-huggingface-cli download open-thoughts/OpenThinker-Agent-v1 \
+hf download open-thoughts/OpenThinker-Agent-v1 \
 --local-dir /root/.cache/OpenThinker-Agent-v1
 ```
 

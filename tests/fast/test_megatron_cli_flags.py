@@ -1,3 +1,7 @@
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
 import sys
 
 import pytest
@@ -43,6 +47,12 @@ def test_post_layernorm_flags_propagate_to_megatron(monkeypatch):
         args.params_dtype = torch.float16
     else:
         args.params_dtype = torch.float32
+
+    # apply_rope_fusion requires TransformerEngine >= 1.4, which is GPU-only
+    # and not installed on CPU CI. This test only validates post-layernorm flag
+    # propagation, so disable the fused kernel to avoid TransformerConfig
+    # __post_init__ validation failure.
+    args.apply_rope_fusion = False
 
     config = core_transformer_config_from_args(args)
 

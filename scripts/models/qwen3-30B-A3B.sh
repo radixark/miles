@@ -1,4 +1,4 @@
-NLAYERS=48
+NLAYERS="${MODEL_ARGS_NUM_LAYERS:-48}"
 FIRST_K_DENSE_REPLACE=0
 
 arr=()
@@ -20,7 +20,7 @@ MODEL_ARGS=(
    --num-attention-heads 32
    --num-query-groups 4
    --kv-channels 128
-   --num-layers 48
+   --num-layers $NLAYERS
    --hidden-size 2048
    --ffn-hidden-size 6144
 
