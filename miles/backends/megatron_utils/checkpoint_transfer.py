@@ -234,6 +234,11 @@ def _recv_checkpoint_with_logging(
             t = t.cpu()
             if cur_i % log_interval == 0 or cur_i == n_tensors - 1:
                 _log_mem(f"recv_loop.tensor_{cur_i}_done_nbytes_{v.nbytes}")
+                # Hypothesis: PyTorch pinned-host cache + glibc fragmentation accumulate
+                # during the t.cpu() loop. Drain caches and gc to expose true RSS.
+                torch._C._host_emptyCache()
+                gc.collect()
+                _log_mem(f"recv_loop.tensor_{cur_i}_after_emptyCache")
         else:
             works.append(work)
         return torch.as_strided(
@@ -261,5 +266,6 @@ def _recv_checkpoint_with_logging(
     result = tree_unflatten(values, meta.treespec)
     _log_mem("recv_loop.after_tree_unflatten")
     gc.collect()
-    _log_mem("recv_loop.after_gc")
+    torch._C._host_emptyCache()
+    _log_mem("recv_loop.after_gc_and_host_emptyCache")
     return result
