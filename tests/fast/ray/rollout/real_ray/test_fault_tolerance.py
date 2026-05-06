@@ -1,10 +1,5 @@
-"""Fault tolerance — real ``ray.kill`` injects the fault, real ``recover()``
-restores the engine.
-
-A MagicMock-only ``actor_handle`` never enters the Ray scheduler, so it
-can't simulate "actor dies for real". Here we drive ``ServerGroup.recover()``
-after ``ray.kill``ing a real ``MockSGLangEngine`` actor, so the recovery
-path runs against genuinely-dead handles."""
+"""Real ``ray.kill`` is required so follow-up ``.remote()`` calls surface
+``RayActorError``; a MagicMock handle can't simulate that."""
 
 from __future__ import annotations
 
