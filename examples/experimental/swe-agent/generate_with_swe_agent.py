@@ -108,7 +108,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if exit_status == "Submitted":
         sample.status = Sample.Status.COMPLETED
-    elif exit_status in ("RolloutTruncated", "LimitsExceeded", "CollapseContinued"):
+    elif exit_status in ("RolloutTruncated", "TimeLimitExceeded", "CollapseContinued", "SequenceLengthLimitExceeded"):
         sample.status = Sample.Status.TRUNCATED
     else:
         sample.status = Sample.Status.ABORTED
