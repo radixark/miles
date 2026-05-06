@@ -4,6 +4,11 @@ Validates that _send_hf_params correctly separates LoRA vs base weights
 and that UpdateWeightFromTensor initialises _lora_config only when LoRA is active.
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
@@ -117,4 +122,4 @@ class TestUpdateWeightFromTensorLoraConfig:
             quantization_config=None,
             is_lora=False,
         )
-        assert updater._lora_config is None
+        assert not hasattr(updater, "_lora_config")
