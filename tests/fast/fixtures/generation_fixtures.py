@@ -2,6 +2,7 @@
 Fixtures to test custom-generate-function
 """
 
+import uuid
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -10,12 +11,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-import requests
-
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
-from miles.router.router import MilesRouter
+from miles.rollout.session.session_server import SessionServer
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
@@ -26,6 +25,8 @@ from miles.utils.types import Sample
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 RESPONSE_TEXT = "\\boxed{8}"
+
+
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 
 VARIANT_TO_GENERATE_FN_PATH = {
@@ -67,6 +68,7 @@ def extra_argv_for_variant(
             argv.append("--generate-multi-samples")
     elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
         argv += ["--custom-agent-function-path", custom_agent_function_path]
+        argv += ["--use-session-server", "--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
         if variant == "agentic_tool_call_multi_samples":
             argv.append("--generate-multi-samples")
 
@@ -155,11 +157,13 @@ def make_args(
     generate_tool_call_parser: str = "qwen25",
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
     rollout_max_context_len: int | None = None,
+    chat_template_path: str | None = None,
 ) -> Namespace:
     argv = [
         "pytest",
         "--train-backend",
         "fsdp",
+        "--ci-test",
         "--rollout-batch-size",
         "1",
         "--num-rollout",
@@ -181,6 +185,8 @@ def make_args(
         "--rollout-max-response-len",
         "16",
     ]
+    if chat_template_path:
+        argv.extend(["--chat-template-path", chat_template_path])
     if use_rollout_routing_replay:
         argv.append("--use-rollout-routing-replay")
     if sglang_speculative_algorithm:
@@ -212,23 +218,31 @@ def make_args(
 
 
 @contextmanager
-def with_miles_router(backend_url: str, model_name: str):
-    router_args = SimpleNamespace(
-        miles_router_max_connections=10,
+def _noop_port(port: int):
+    """No-op context manager that just yields the given port."""
+    yield port
+
+
+@contextmanager
+def with_session_server(
+    backend_url: str,
+    args: Namespace,
+    *,
+    port: int,
+):
+    args = SimpleNamespace(
         miles_router_timeout=30,
-        miles_router_middleware_paths=[],
-        rollout_health_check_interval=60,
-        miles_router_health_check_failure_threshold=3,
-        hf_checkpoint=model_name,
+        hf_checkpoint=args.hf_checkpoint,
+        chat_template_path=args.chat_template_path,
+        tito_model=args.tito_model,
+        tito_allowed_append_roles=args.tito_allowed_append_roles,
+        use_rollout_routing_replay=args.use_rollout_routing_replay,
+        session_server_instance_id=uuid.uuid4().hex,
     )
-    router = MilesRouter(router_args)
+    session_server = SessionServer(args, backend_url=backend_url)
 
-    port = find_available_port(31000)
-    server = UvicornThreadServer(router.app, host="127.0.0.1", port=port)
+    server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     server.start()
-
-    url = f"http://127.0.0.1:{port}"
-    requests.post(f"{url}/add_worker", json={"url": backend_url})
 
     try:
         yield port
@@ -259,18 +273,29 @@ def generation_env(request, variant):
             ),
         )
 
+    is_agentic = variant.startswith("agentic_tool_call")
+
     with with_mock_server(model_name=model_name, process_fn=process_fn) as mock_server:
-        with with_miles_router(mock_server.url, model_name) as router_port:
-            _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
-            other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
-            args = make_args(
-                variant=variant,
-                router_port=router_port,
-                model_name=model_name,
-                custom_generate_function_path=custom_generate_function_path,
-                **other_args_kwargs,
-            )
-            if variant.startswith("agentic_tool_call"):
+        server_port = find_available_port(31000) if is_agentic else mock_server.port
+        _FIXTURE_ONLY_KEYS = {"model_name", "agentic_return_metadata"}
+        other_args_kwargs = {k: v for k, v in args_kwargs.items() if k not in _FIXTURE_ONLY_KEYS}
+        args = make_args(
+            variant=variant,
+            router_port=server_port,
+            model_name=model_name,
+            custom_generate_function_path=custom_generate_function_path,
+            **other_args_kwargs,
+        )
+
+        # Agentic variants need a SessionServer for TITO session tracking;
+        # non-agentic variants talk directly to the mock sglang server.
+        cm = with_session_server(mock_server.url, args, port=server_port) if is_agentic else _noop_port(server_port)
+
+        with cm:
+            if is_agentic:
+                # Point session server address to the SessionServer we just started
+                args.session_server_ip = "127.0.0.1"
+                args.session_server_port = server_port
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
                 mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)

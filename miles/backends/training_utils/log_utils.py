@@ -15,7 +15,7 @@ from miles.utils.types import RolloutBatch
 from ...utils import tracking_utils
 from .cp_utils import get_sum_of_sample_mean
 from .data import DataIterator
-from .parallel import ParallelState
+from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ def gather_log_data(
     args: Namespace,
     rollout_id: int,
     log_dict: dict[str, float],
-    parallel_state: ParallelState,
 ) -> dict[str, float] | None:
     """
     Gather per-rank metrics, reduce by mean on the DP source rank, and log.
@@ -35,18 +34,20 @@ def gather_log_data(
     batch sizes. Returns the reduced dict on the DP source rank; returns None on others.
     """
 
-    if parallel_state.dp_cp_rank == 0:
-        dp_size = parallel_state.dp_cp_size
+    parallel_state = get_parallel_state()
 
-        gathered_log_dict = [None] * dp_size
-        # Not sure if this will be a performance bottleneck.
-        dist.gather_object(
-            log_dict,
-            gathered_log_dict,
-            dst=parallel_state.dp_src_rank,
-            group=parallel_state.dp_cp_group_gloo,
-        )
+    pg = parallel_state.intra_dp_cp
+    dp_size = pg.size
+    gathered_log_dict = [None] * dp_size
+    # Not sure if this will be a performance bottleneck.
+    dist.gather_object(
+        log_dict,
+        gathered_log_dict if pg.rank == 0 else None,
+        dst=dist.get_global_rank(pg.gloo_group, 0),
+        group=pg.gloo_group,
+    )
 
+    if pg.rank == 0:
         reduced_log_dict = {
             f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / dp_size for key in log_dict
         }
@@ -59,12 +60,6 @@ def gather_log_data(
 
         return reduced_log_dict
     else:
-        dist.gather_object(
-            log_dict,
-            None,
-            dst=parallel_state.dp_src_rank,
-            group=parallel_state.dp_cp_group_gloo,
-        )
         return None
 
 
@@ -98,9 +93,7 @@ def aggregate_forward_results(
     return rollout_data
 
 
-def log_rollout_data(
-    rollout_id: int, args: Namespace, rollout_data: RolloutBatch, parallel_state: ParallelState
-) -> None:
+def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -> None:
     """
     Summarize rollout fields and log reduced metrics on PP last stage, TP rank 0.
 
@@ -110,8 +103,9 @@ def log_rollout_data(
     - Non-tensor lists are averaged elementwise.
     - Scalars are converted to Python numbers.
     """
-    if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
-        cp_size = parallel_state.cp_size
+    parallel_state = get_parallel_state()
+    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
+        cp_size = parallel_state.cp.size
         log_dict = {}
         response_lengths = rollout_data["response_lengths"]
         loss_masks = rollout_data["loss_masks"]
@@ -127,6 +121,8 @@ def log_rollout_data(
                 "rollout_routed_experts",
                 "max_seq_lens",
                 "dynamic_global_batch_size",
+                "weight_versions",
+                "metadata",
             ]:
                 continue
             # Upload per sample mean for each rollout value
@@ -150,7 +146,6 @@ def log_rollout_data(
                             total_lengths,
                             response_lengths,
                             loss_masks,
-                            parallel_state,
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
                         )
@@ -158,14 +153,21 @@ def log_rollout_data(
                     else:
                         val = val.mean() * cp_size
                 else:
-                    val = sum(val) / len(val)
+                    # Flatten nested lists (e.g. list of lists from async rollout)
+                    flat = val
+                    if isinstance(val[0], (list, tuple)):
+                        flat = [x for sublist in val for x in sublist]
+                    # Skip non-numeric values (e.g. strings from async rollout metadata)
+                    if flat and not isinstance(flat[0], (int, float)):
+                        continue
+                    val = sum(flat) / len(flat)
             elif isinstance(val, torch.Tensor):
                 val = val.float().mean()
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
-        reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict, parallel_state)
+        reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
             if (
                 rollout_id == 0
@@ -174,7 +176,14 @@ def log_rollout_data(
             ):
                 # When R3 (rollout routing replay) is enabled, ref model does not use R3
                 # so log_probs and ref_log_probs may diverge; use a relaxed tolerance.
-                abs_tol = 1e-5 if args.use_rollout_routing_replay else 1e-9
+                # When --sglang-config deploys multiple models, the heavier offload/onload
+                # cycle can amplify flash-attention non-determinism; use 1e-8.
+                if args.use_rollout_routing_replay:
+                    abs_tol = 1e-5
+                elif getattr(args, "sglang_config", None) is not None:
+                    abs_tol = 1e-8
+                else:
+                    abs_tol = 1e-9
                 assert isclose(
                     reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/ref_log_probs"], abs_tol=abs_tol
                 ), f"CI check failed: log_probs ({reduced_log_dict['rollout/log_probs']}) != ref_log_probs ({reduced_log_dict['rollout/ref_log_probs']})"
@@ -193,13 +202,13 @@ def log_rollout_data(
             )
 
     if args.log_multi_turn:
-        log_multi_turn_data(rollout_id, args, rollout_data, parallel_state)
+        log_multi_turn_data(rollout_id, args, rollout_data)
     if args.log_passrate:
         log_passrate(rollout_id, args, rollout_data)
 
     if args.log_correct_samples:
-        if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
-            cp_size = parallel_state.cp_size
+        if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
+            cp_size = parallel_state.cp.size
             log_dict = {}
             response_lengths = rollout_data["response_lengths"]
             loss_masks = rollout_data["loss_masks"]
@@ -248,7 +257,7 @@ def log_rollout_data(
                 rollout_data[f"correct_length/{p}"] = [val] * num_correct_responses
             if len(correct_entropy) > 0:
                 sum_of_sample_mean = get_sum_of_sample_mean(
-                    correct_total_lengths, correct_response_lengths, correct_loss_masks, parallel_state
+                    correct_total_lengths, correct_response_lengths, correct_loss_masks
                 )
                 correct_entropy = sum_of_sample_mean(torch.cat(correct_entropy, dim=0))
                 rollout_data["correct_entropy"] = [correct_entropy.item()] * num_correct_responses
@@ -256,16 +265,15 @@ def log_rollout_data(
                 rollout_data["correct_entropy"] = [0] * num_correct_responses
 
 
-def log_multi_turn_data(
-    rollout_id: int, args: Namespace, rollout_data: RolloutBatch, parallel_state: ParallelState
-) -> None:
+def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -> None:
     """
     Log multi-turn auxiliary metrics such as raw/observed response lengths and rounds.
 
     Operates only on PP last stage and TP rank 0. Uses GPU tensors when available
     to compute statistics without host transfers.
     """
-    if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
+    parallel_state = get_parallel_state()
+    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
         log_dict = {}
         for key, val in rollout_data.items():
             if key == "loss_masks":
@@ -294,17 +302,18 @@ def log_multi_turn_data(
                 log_dict["multi_turn_metric/round_number_mean"] = np.mean(round_number_array)
                 log_dict["multi_turn_metric/round_number_max"] = np.max(round_number_array)
                 log_dict["multi_turn_metric/round_number_min"] = np.min(round_number_array)
-        gather_log_data("multi_turn", args, rollout_id, log_dict, parallel_state)
+        gather_log_data("multi_turn", args, rollout_id, log_dict)
 
 
-def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch, parallel_state: ParallelState) -> None:
+def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -> None:
     """
     Compute pass@k metrics from `raw_reward` groups and log the results.
 
     `raw_reward` is reshaped to `[group_number, group_size]`, then pass@k is
     estimated per problem and averaged.
     """
-    if parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage:
+    parallel_state = get_parallel_state()
+    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
         log_dict = {}
         for key, val in rollout_data.items():
             if key != "raw_reward":
@@ -316,15 +325,16 @@ def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch, p
                 num_groups=args.rollout_batch_size,
             )
 
-        gather_log_data("passrate", args, rollout_id, log_dict, parallel_state)
+        gather_log_data("passrate", args, rollout_id, log_dict)
 
 
-def log_perf_data(rollout_id: int, args: Namespace, parallel_state: ParallelState) -> None:
+def log_perf_data(rollout_id: int, args: Namespace) -> None:
+    parallel_state = get_parallel_state()
     train_metric_utils.log_perf_data_raw(
         rollout_id=rollout_id,
         args=args,
         is_primary_rank=(
-            parallel_state.tp_rank == 0 and parallel_state.is_pp_last_stage and parallel_state.dp_cp_rank == 0
+            parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage and parallel_state.intra_dp_cp.rank == 0
         ),
         compute_total_fwd_flops=lambda seq_lens: calculate_fwd_flops(seqlens=seq_lens, args=args)
         / dist.get_world_size()
@@ -350,7 +360,6 @@ def log_cpu_memory(rollout_id: int, args: Namespace, label: str) -> None:
 
 def aggregate_train_losses(
     losses_reduced: list[dict[str, list[str] | torch.Tensor]],
-    parallel_state: ParallelState,
 ) -> dict[str, float]:
     """Aggregate loss metrics across micro-batches.
 
@@ -365,6 +374,7 @@ def aggregate_train_losses(
     Returns:
         Dictionary mapping metric names to averaged values.
     """
+    parallel_state = get_parallel_state()
     if not losses_reduced:
         return {}
 
@@ -379,14 +389,14 @@ def aggregate_train_losses(
 
     assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
 
-    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.dp_cp_group)
+    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp.group)
 
     loss_reduced = {}
     values = values.tolist()
     num_samples_or_tokens = values[0]
 
     for key, value in zip(keys, values[1:], strict=False):
-        loss_reduced[key] = value * parallel_state.cp_size / num_samples_or_tokens
+        loss_reduced[key] = value * parallel_state.cp.size / num_samples_or_tokens
 
     return loss_reduced
 

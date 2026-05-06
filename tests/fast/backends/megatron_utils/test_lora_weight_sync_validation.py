@@ -7,6 +7,11 @@ Verifies that silent failures are caught:
 - FlattenedTensorBucket round-trip preserves tensor values
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 from argparse import Namespace
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
@@ -56,6 +61,7 @@ def _make_args(**overrides):
         update_weight_buffer_size=1 << 30,
         actor_num_nodes=1,
         actor_num_gpus_per_node=1,
+        pause_generation_mode="retract",
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -140,7 +146,7 @@ class TestSendHfParamsEmptyLoraDetection:
         updater.use_distribute = False
 
         with pytest.raises(RuntimeError, match="no LoRA weights"):
-            updater._send_hf_params(SAMPLE_BASE_ONLY_WEIGHTS)
+            updater._send_lora_params(SAMPLE_BASE_ONLY_WEIGHTS)
 
     @patch(f"{_UW_MODULE}._send_to_colocated_engine", return_value=([], []))
     @patch(f"{_UW_MODULE}.dist")
@@ -167,7 +173,7 @@ class TestSendHfParamsEmptyLoraDetection:
         updater._ipc_gather_group = MagicMock()
         updater.use_distribute = False
 
-        refs, _ = updater._send_hf_params(SAMPLE_LORA_WEIGHTS)
+        refs, _ = updater._send_lora_params(SAMPLE_LORA_WEIGHTS)
         # Should not raise; mock_send was called with the LoRA tensors
         assert mock_send.called
 
@@ -210,11 +216,14 @@ class TestUpdateWeightsZeroChunks:
         with pytest.raises(RuntimeError, match="zero chunks"):
             updater.update_weights()
 
+    @patch("miles.backends.megatron_utils.update_weight.common.ray")
     @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
     @patch(f"{_UW_MODULE}.ray")
     @patch(f"{_UW_MODULE}.dist")
     @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_no_raise_for_base_model_zero_chunks(self, mock_iter_base, mock_dist, mock_ray, mock_gloo):
+    def test_no_raise_for_base_model_zero_chunks(
+        self, mock_iter_base, mock_dist, mock_ray, mock_gloo, mock_common_ray
+    ):
         """Base model weight sync with zero chunks is valid (e.g. empty model state)."""
         from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
