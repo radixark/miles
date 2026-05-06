@@ -23,7 +23,7 @@ class TestRoundTrip:
 
         loaded = load_debug_rollout_data(args_load, rollout_id=7)
         assert len(loaded) == len(original)
-        for orig, got in zip(original, loaded):
+        for orig, got in zip(original, loaded, strict=True):
             assert got.index == orig.index
             assert got.response_length == orig.response_length
 
