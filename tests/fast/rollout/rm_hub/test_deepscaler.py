@@ -1,3 +1,7 @@
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
 import pytest
 
 from miles.rollout.rm_hub.deepscaler import get_deepscaler_rule_based_reward

@@ -139,4 +139,29 @@ def convert_qwen3_next_to_hf(args, name, param):
             rest = rest[len("self_attention.") :]
             return [(f"model.layers.{layer_idx}.{rest}", param)]
 
+    # MTP (Multi-Token Prediction) layers
+    mtp_layer_pattern = r"module\.module\.mtp\.layers\.(\d+)\.(.+)"
+    match = re.match(mtp_layer_pattern, name)
+    if match:
+        layer_idx, rest = match.groups()
+
+        # MTP-specific components
+        if rest == "enorm.weight":
+            return [("mtp.pre_fc_norm_embedding.weight", param)]
+        elif rest == "hnorm.weight":
+            return [("mtp.pre_fc_norm_hidden.weight", param)]
+        elif rest == "eh_proj.weight":
+            return [("mtp.fc.weight", param)]
+        elif rest == "final_layernorm.weight":
+            return [("mtp.norm.weight", param)]
+
+        # transformer_layer components → reuse decoder conversion with mtp prefix
+        if rest.startswith("transformer_layer."):
+            transformer_rest = rest[len("transformer_layer.") :]
+            proxy_name = f"module.module.decoder.layers.{layer_idx}.{transformer_rest}"
+            results = convert_qwen3_next_to_hf(args, proxy_name, param)
+            return [
+                (hf_name.replace(f"model.layers.{layer_idx}", f"mtp.layers.{layer_idx}"), p) for hf_name, p in results
+            ]
+
     raise ValueError(f"Unknown parameter name: {name}")

@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import random
 import socket
+import time
 
 import httpx
 
@@ -37,6 +38,28 @@ def is_port_available(port):
             return False
         except OverflowError:
             return False
+
+
+def wait_for_server_ready(
+    host: str,
+    port: int,
+    process: "multiprocessing.Process | None" = None,
+    timeout: float = 30,
+) -> None:
+    """Poll until a TCP port is accepting connections.
+
+    Raises ``RuntimeError`` if the process dies or the timeout is exceeded.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if process is not None and not process.is_alive():
+            raise RuntimeError(f"Server process died before port {port} became ready")
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return
+        except OSError:
+            time.sleep(0.5)
+    raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 
 def get_host_info():
@@ -162,15 +185,15 @@ def _next_actor():
     return actor
 
 
-async def _post(client, url, payload, max_retries=60, action="post"):
+async def _post(client, url, payload, max_retries=60, action="post", headers=None):
     retry_count = 0
     while retry_count < max_retries:
         try:
             if action in ("delete", "get"):
                 assert not payload
-                response = await getattr(client, action)(url)
+                response = await getattr(client, action)(url, headers=headers)
             else:
-                response = await getattr(client, action)(url, json=payload or {})
+                response = await getattr(client, action)(url, json=payload or {}, headers=headers)
             response.raise_for_status()
             try:
                 output = response.json()
@@ -244,8 +267,8 @@ def _init_ray_distributed_post(args):
                 timeout=httpx.Timeout(None),
             )
 
-        async def do_post(self, url, payload, max_retries=60, action="post"):
-            return await _post(self._client, url, payload, max_retries, action=action)
+        async def do_post(self, url, payload, max_retries=60, action="post", headers=None):
+            return await _post(self._client, url, payload, max_retries, action=action, headers=headers)
 
     # Create actors per node
     created = []
@@ -270,22 +293,18 @@ def _init_ray_distributed_post(args):
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
-async def post(url, payload, max_retries=60, action="post"):
+async def post(url, payload, max_retries=60, action="post", headers=None):
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:
-            import ray
-
             actor = _next_actor()
             if actor is not None:
-                # Use a thread to avoid blocking the event loop on ray.get
-                obj_ref = actor.do_post.remote(url, payload, max_retries, action=action)
-                return await asyncio.to_thread(ray.get, obj_ref)
+                return await actor.do_post.remote(url, payload, max_retries, action=action, headers=headers)
         except Exception as e:
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
-    return await _post(_http_client, url, payload, max_retries, action=action)
+    return await _post(_http_client, url, payload, max_retries, action=action, headers=headers)
 
 
 # TODO unify w/ `post` to add retries and remote-execution

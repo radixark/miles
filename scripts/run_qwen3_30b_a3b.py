@@ -46,18 +46,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_fp8:
-        U.exec_command(
-            f"huggingface-cli download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
-        )
+        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
 
     if args.rollout_mxfp8:
         U.exec_command(
-            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-MXFP8"
+            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
+            f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
+            f"{args.extra_args} "
         )
 
     if args.rollout_int4:

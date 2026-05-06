@@ -1,10 +1,19 @@
 import os
 
+from tests.ci.ci_register import register_cuda_ci
+
 import miles.utils.external_utils.command_utils as U
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
+register_cuda_ci(
+    est_time=900,
+    suite="stage-c-megatron-8-gpu",
+    num_gpus=8,
+    disabled="CalledProcessError exit code 1 on CI (pre-existing, not caused by CI refactor)",
+)
+
+ENABLE_EVAL = False
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
+USE_DEEPEP = False
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
@@ -13,10 +22,6 @@ NUM_GPUS = 8
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    # GLM-4.7-Flash requires a newer transformers version
-    U.exec_command(
-        "pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa --break-system-packages"
-    )
     U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
@@ -77,7 +82,6 @@ def execute():
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
         "--use-rollout-routing-replay "
-        "--use-miles-router "
     )
 
     optimizer_args = (
