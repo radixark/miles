@@ -34,7 +34,7 @@ sglang:
           mem_fraction_static: 0.85
           disable_radix_cache: true
           cuda_graph_max_bs: 128
-          enable_two_batch_overlap: true
+          enable_two_batch_overlap: false
           max_running_requests: 512
           num_reserved_decode_tokens: 8192
           context_length: 80000

@@ -33,6 +33,9 @@ import random
 import threading
 import time
 
+import numpy as np
+import pybase64
+
 from miles.rollout.data_source import DataSource
 from miles.utils.async_utils import run
 from miles.utils.http_utils import post as http_post
@@ -56,11 +59,19 @@ MAX_CONTEXT_TOKENS = int(os.environ.get("RANDOM_ASYNC_MAX_CONTEXT_TOKENS", "6000
 CONCURRENCY_PER_GPU = int(os.environ.get("RANDOM_ASYNC_CONCURRENCY_PER_GPU", "64"))
 # Qwen3.5-35B vocab size; works for any model with vocab >= this.
 VOCAB_SIZE = 151643
-SGLANG_REQUEST_TIMEOUT_SECONDS = 30 * 60
+SGLANG_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("RANDOM_ASYNC_SGLANG_REQUEST_TIMEOUT_SECONDS", str(30 * 60)))
 
 
 def _rand_ids(n: int) -> list[int]:
     return [random.randrange(VOCAB_SIZE) for _ in range(n)]
+
+
+def _decode_routed_experts(args, encoded: str, token_count: int) -> np.ndarray:
+    return np.frombuffer(pybase64.b64decode(encoded.encode("ascii")), dtype=np.int32).reshape(
+        token_count - 1,
+        args.num_layers,
+        args.moe_router_topk,
+    )
 
 
 async def _generate_one_random_sample(args, sample: Sample) -> Sample:
@@ -80,6 +91,8 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     turns = 0
     perfect_cacheable_prefix_len = 0
     sticky_dp_rank = sample.index % args.rollout_num_gpus_per_engine
+    use_routing_replay = getattr(args, "use_rollout_routing_replay", False)
+    latest_routed_experts: np.ndarray | None = None
 
     while True:
         turns += 1
@@ -100,6 +113,8 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
             "routed_dp_rank": sticky_dp_rank,
             "disagg_prefill_dp_rank": sticky_dp_rank,
         }
+        if use_routing_replay:
+            payload["return_routed_experts"] = True
         headers = {"x-smg-routing-key": f"random-async-sample-{sample.index}"}
         request_start = time.monotonic()
         try:
@@ -121,6 +136,25 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
             raise RuntimeError(f"SGLang returned no output_token_logprobs: {data}")
         out_tokens = [item[1] for item in lp]
         out_log_probs = [item[0] for item in lp]
+        if use_routing_replay and "routed_experts" not in meta:
+            raise RuntimeError(
+                "SGLang response missing required routed_experts "
+                f"(sample_index={sample.index}, group_index={sample.group_index}, turns={turns}, "
+                f"input_tokens={len(current_ids)}, output_tokens={len(out_tokens)}, "
+                f"meta_keys={sorted(meta.keys())}, finish_reason={meta['finish_reason']})"
+            )
+        if len(out_tokens) > remaining_tokens:
+            raise RuntimeError(
+                "SGLang returned more tokens than requested "
+                f"(sample_index={sample.index}, output_tokens={len(out_tokens)}, "
+                f"remaining_tokens={remaining_tokens})"
+            )
+        if use_routing_replay:
+            latest_routed_experts = _decode_routed_experts(
+                args,
+                meta["routed_experts"],
+                len(current_ids) + len(out_tokens),
+            )
         cached_tokens = meta["cached_tokens"]
         prompt_tokens = meta["prompt_tokens"]
         record_agent_request(
@@ -132,6 +166,10 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
         )
 
         filler = _rand_ids(int(len(out_tokens) * FILLER_RATIO))
+        if use_routing_replay and len(out_tokens) + len(filler) >= remaining_tokens:
+            # R3 replay requires routed experts for every final token. Filler is
+            # covered by the next turn's prompt, so do not let filler end a sample.
+            filler = []
         segment = out_tokens + filler
         segment_log_probs = out_log_probs + [0.0] * len(filler)
         segment_loss_mask = [1] * len(out_tokens) + [0] * len(filler)
@@ -160,6 +198,16 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     sample.reward = random.uniform(-1.0, 1.0)
     sample.loss_mask = accumulated_loss_mask
     sample.rollout_log_probs = accumulated_log_probs
+    if use_routing_replay:
+        if latest_routed_experts is None:
+            raise RuntimeError(f"Routing replay enabled but no routed experts were returned for sample {sample.index}")
+        if latest_routed_experts.shape[0] != len(current_ids) - 1:
+            raise RuntimeError(
+                "Routing replay metadata length does not match final sample tokens "
+                f"(sample_index={sample.index}, routed_experts={latest_routed_experts.shape[0]}, "
+                f"tokens_minus_one={len(current_ids) - 1})"
+            )
+        sample.rollout_routed_experts = latest_routed_experts
     sample.status = Sample.Status.COMPLETED
     print(
         f"Random rollout sample finished: group={sample.group_index}, "

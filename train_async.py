@@ -30,11 +30,14 @@ async def train(args):
         await rollout_manager.check_weights.remote(action="compare")
 
     # async train loop.
-    rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
+    rollout_data_next_future = None
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
+        if rollout_data_next_future is None:
+            rollout_data_next_future = rollout_manager.generate.remote(rollout_id)
         if rollout_data_next_future is not None:
             rollout_data_curr_ref = await rollout_data_next_future
+            rollout_data_next_future = None
 
         # Start the next rollout early.
         if rollout_id + 1 < args.num_rollout:
