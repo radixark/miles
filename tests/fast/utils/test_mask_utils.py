@@ -1,10 +1,13 @@
-from transformers import AutoTokenizer
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
 
 from miles.utils.mask_utils import MultiTurnLossMaskGenerator
+from miles.utils.processing_utils import load_tokenizer
 
 
 def test_loss_mask_qwen3_simple(model_name: str = "Qwen/Qwen3-8B"):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = load_tokenizer(model_name)
     mask_generator = MultiTurnLossMaskGenerator(tokenizer, tokenizer_type="qwen3")
     messages = [
         {"role": "system", "content": "SYSTEM MESSAGE FOR TESTING ONLY"},
@@ -24,7 +27,7 @@ def test_loss_mask_qwen3_simple(model_name: str = "Qwen/Qwen3-8B"):
 
 
 def test_loss_mask_qwen3_tools(model_name: str = "Qwen/Qwen3-8B"):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = load_tokenizer(model_name)
     mask_generator = MultiTurnLossMaskGenerator(tokenizer, tokenizer_type="qwen3")
     messages = [
         {"role": "system", "content": "SYSTEM MESSAGE FOR TESTING ONLY"},

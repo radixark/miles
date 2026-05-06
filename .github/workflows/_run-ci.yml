@@ -1,0 +1,206 @@
+name: CI Job
+
+on:
+  workflow_call:
+    inputs:
+      gpu_count:
+        type: number
+        required: true
+      execute_command:
+        type: string
+        required: true
+      runs_on:
+        type: string
+        required: false
+        default: 'self-hosted'
+      container_image:
+        type: string
+        required: false
+        default: 'radixark/miles:dev'
+      skip_dependency_install:
+        type: boolean
+        required: false
+        default: false
+      cpu_runner:
+        type: boolean
+        required: false
+        default: false
+        description: 'Run on GitHub-hosted ubuntu-latest with bare pip install (for CPU-only fast tests)'
+
+jobs:
+  run:
+    if: ${{ !inputs.cpu_runner }}
+    runs-on: ${{ inputs.runs_on }}
+    container:
+      image: ${{ inputs.container_image }}
+      options: >
+        --gpus all
+        --ipc=host
+        --shm-size=32g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --memory=0
+        --memory-swap=0
+        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
+        -v /mnt/nvme0n1/miles_ci/models:/root/models
+        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
+        -v /mnt/nvme0n1/miles_ci/hf_cache:/root/.cache/huggingface
+        --privileged
+        --ulimit nofile=65535:65535
+        -v /tmp:/tmp
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      MILES_TEST_FEW_GPU: '0'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup Ray processes
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          pkill -9 -f gcs_server 2>/dev/null || true
+          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
+          pkill -9 sglang 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          rm -rf /tmp/ray/* 2>/dev/null || true
+          sleep 3
+
+      - name: Resolve dependency refs
+        if: ${{ !inputs.skip_dependency_install }}
+        id: resolve-refs
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+        run: |
+          MEGATRON_PR="${INPUT_MEGATRON_PR}"
+          SGLANG_PR="${INPUT_SGLANG_PR}"
+          if [ -n "$PR_BODY" ]; then
+            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
+            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
+            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+          fi
+          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
+          resolve_fetch_ref() {
+            local ref="$1"
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+              echo "pull/${BASH_REMATCH[1]}/head"
+            else
+              echo "$ref"
+            fi
+          }
+          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
+          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
+          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
+          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+
+      - name: Install dependencies
+        if: ${{ !inputs.skip_dependency_install }}
+        shell: bash
+        env:
+          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
+          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
+        run: |
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+
+      - name: Install (miles only)
+        if: ${{ inputs.skip_dependency_install }}
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+
+      - name: Execute
+        shell: bash
+        run: python tests/ci/gpu_lock_exec.py --count ${{ inputs.gpu_count }} -- ${{ inputs.execute_command }}
+
+  # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.
+  # Used for fast CPU tests so they don't occupy GPU-fleet runner slots.
+  run-cpu:
+    if: ${{ inputs.cpu_runner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Megatron-LM's pyproject declares `packages.find.include = ["megatron.core", "megatron.core.*"]`,
+      # so `pip install -e` only exposes megatron.core — not megatron.training / legacy / rl.
+      # miles imports from megatron.training, so put the checkout on PYTHONPATH directly
+      # and skip the pip install for Megatron-LM entirely (its deps — torch, numpy,
+      # packaging — arrive via miles/requirements.txt transitively).
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/Megatron-LM
+    steps:
+      - name: Free disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h
+
+      - name: Checkout miles
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # 3.11 required for BaseException.add_note (PEP 678), used in miles
+          # source (e.g. miles/rollout/generate_utils/sample_utils.py).
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Checkout sglang
+        uses: actions/checkout@v4
+        with:
+          repository: sgl-project/sglang
+          ref: sglang-miles
+          path: sglang
+
+      - name: Checkout Megatron-LM
+        uses: actions/checkout@v4
+        with:
+          repository: radixark/Megatron-LM
+          ref: miles-main
+          path: Megatron-LM
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install -e sglang/python --no-deps
+          # Megatron-LM is surfaced via PYTHONPATH (see job env); no pip install.
+          uv pip install -r requirements.txt
+          uv pip install -e . --no-deps
+          # sglang is installed --no-deps above, but miles' import chain loads
+          # many sglang modules. Install sglang's pure-python runtime deps
+          # upfront; skip GPU-only ones (cuda-python, flashinfer, flash-attn-4,
+          # sglang-kernel, torchao, torchcodec, torch_memory_saver, quack-kernels,
+          # nvidia-cutlass-dsl, apache-tvm-ffi, kernels, decord2, av).
+          # torch itself comes via accelerate (in requirements.txt).
+          uv pip install \
+            IPython aiohttp anthropic build compressed-tensors einops fastapi \
+            gguf interegular jsonschema llguidance mistral_common modelscope \
+            msgspec ninja nvidia-ml-py openai openai-harmony orjson outlines \
+            partial_json_parser prometheus-client psutil py-spy pydantic \
+            python-multipart pyzmq scipy sentencepiece setproctitle soundfile \
+            tiktoken timm torchvision uvicorn uvloop watchfiles xgrammar
+          # sglang's memory_pool_host.py unconditionally imports sgl_kernel
+          # on non-NPU/XPU/MPS hardware. sgl_kernel is GPU-only — install a
+          # local stub so imports succeed at module load.
+          uv pip install tests/ci/cpu_stubs
+
+      - name: Execute
+        shell: bash
+        run: ${{ inputs.execute_command }}

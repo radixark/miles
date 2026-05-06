@@ -1,0 +1,69 @@
+diff --git a/miles/backends/experimental/fsdp_utils/actor.py b/miles/backends/experimental/fsdp_utils/actor.py
+index 47c2540f9..3c5f50ee8 100644
+--- a/miles/backends/experimental/fsdp_utils/actor.py
++++ b/miles/backends/experimental/fsdp_utils/actor.py
+@@ -81 +80,0 @@ class FSDPTrainRayActor(TrainRayActor):
+-        self._enable_true_on_policy_optimizations(args)
+@@ -100,0 +100,2 @@ class FSDPTrainRayActor(TrainRayActor):
++        self._enable_true_on_policy_optimizations(args)
++
+@@ -103,5 +104,4 @@ class FSDPTrainRayActor(TrainRayActor):
+-        with init_context():
+-            model = self.get_model_cls().from_pretrained(
+-                self.args.hf_checkpoint,
+-                trust_remote_code=True,
+-                attn_implementation=self.args.attn_implementation,
++        model, n = self._build_model_with_attn_bridge(self.args.hf_checkpoint, init_context)
++        if n > 0:
++            logger.info(
++                f"FSDPTrainRayActor applied triton attention patch to {n} layer(s)"
+@@ -180,0 +181 @@ class FSDPTrainRayActor(TrainRayActor):
++        is_moe = getattr(self.hf_config, "num_experts", None) is not None
+@@ -184,2 +184,0 @@ class FSDPTrainRayActor(TrainRayActor):
+-            from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
+-
+@@ -192,2 +191,3 @@ class FSDPTrainRayActor(TrainRayActor):
+-
+-            apply_true_on_policy_patch_for_qwen3_moe()
++            if is_moe:
++                from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
++                apply_true_on_policy_patch_for_qwen3_moe()
+@@ -195 +195,24 @@ class FSDPTrainRayActor(TrainRayActor):
+-            from .models.qwen3_moe_hf import apply_fsdp_moe_patch
++            if is_moe:
++                from .models.qwen3_moe_hf import apply_fsdp_moe_patch
++                apply_fsdp_moe_patch()
++
++    def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
++        """Build HF model and optionally apply Triton attention bridge patch."""
++        use_triton_bridge = getattr(self.args, "attn_implementation", None) == "triton"
++        self._use_triton_bridge = use_triton_bridge
++        effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
++
++        with init_context():
++            model = self.get_model_cls().from_pretrained(
++                checkpoint_path,
++                trust_remote_code=True,
++                attn_implementation=effective_attn,
++            )
++
++        patched_layers = 0
++        if use_triton_bridge:
++            from .sglang_attn_bridge.hf_sglang_triton_patch import (
++                apply_sglang_triton_attention_patch,
++            )
++
++            patched_layers = apply_sglang_triton_attention_patch(model)
+@@ -197 +220 @@ class FSDPTrainRayActor(TrainRayActor):
+-            apply_fsdp_moe_patch()
++        return model, patched_layers
+@@ -605,5 +628,4 @@ class FSDPTrainRayActor(TrainRayActor):
+-            with init_context():
+-                ref_model = self.get_model_cls().from_pretrained(
+-                    ref_load_path,
+-                    trust_remote_code=True,
+-                    attn_implementation=self.args.attn_implementation,
++            ref_model, ref_patch_n = self._build_model_with_attn_bridge(ref_load_path, init_context)
++            if ref_patch_n > 0:
++                logger.info(
++                    f"[Rank {dist.get_rank()}] Applied triton attention patch to ref model ({ref_patch_n} layer(s))"
