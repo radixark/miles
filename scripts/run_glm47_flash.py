@@ -24,10 +24,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    # GLM-4.7-Flash requires a newer transformers version
-    U.exec_command(
-        "pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa"
-    )
     U.exec_command(
         f"hf download {args.model_org}/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}"
     )

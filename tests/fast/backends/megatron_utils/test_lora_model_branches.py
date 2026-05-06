@@ -4,6 +4,11 @@ Validates that setup_model_and_optimizer, save, and save_hf_model correctly
 route to LoRA-specific code paths depending on configuration — without GPU.
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
@@ -71,6 +76,7 @@ class TestSetupModelAndOptimizerLoraBranch:
             lora_adapter_path=None,
             megatron_to_hf_mode=mode,
             moe_use_upcycling=False,
+            debug_disable_optimizer=False,
             load="/some/path",
             pretrained_checkpoint=None,
             # optimizer fields

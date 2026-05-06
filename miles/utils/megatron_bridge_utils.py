@@ -15,6 +15,13 @@ def patch_megatron_model(model):
         model_config.share_embeddings_and_output_weights = unwrapped_model.share_embeddings_and_output_weights
         attribute_was_added = True
 
+    # Float16Module casts buffers to bf16, but expert_bias must stay fp32.
+    # Restore before bridge export reads the values.
+    for m in model:
+        for module in m.modules():
+            if hasattr(module, "_maintain_float32_expert_bias"):
+                module._maintain_float32_expert_bias()
+
     try:
         yield
     finally:
