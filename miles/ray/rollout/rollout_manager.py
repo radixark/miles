@@ -171,7 +171,7 @@ class RolloutManager:
     async def offload(self, tags: list[str] | None = None):
         self._health_monitoring_pause()
         for srv in self.servers.values():
-            await srv.offload(tags)
+            await srv.offload(tags=tags)
 
     async def onload(self, tags: list[str] | None = None):
         for srv in self.servers.values():

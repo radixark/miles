@@ -198,13 +198,7 @@ class ServerGroup:
     def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
-        if tags is not None:
-            return [
-                engine.release_memory_occupation.remote(tags=tags)
-                for engine in self.engines
-                if engine is not None
-            ]
-        return [engine.release_memory_occupation.remote() for engine in self.engines if engine is not None]
+        return [engine.release_memory_occupation.remote(tags=tags) for engine in self.engines if engine is not None]
 
     def onload(self, tags: list[str] | None = None):
         if not self.needs_offload:
