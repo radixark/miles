@@ -169,10 +169,10 @@ class RolloutManager:
     # -------------------------- offload/onload -----------------------------
 
     # TODO may parallelly execute offload/onload across services
-    async def offload(self):
+    async def offload(self, tags: list[str] | None = None):
         self._health_monitoring_pause()
         for srv in self.servers.values():
-            await srv.offload()
+            await srv.offload(tags)
 
     async def onload(self, tags: list[str] | None = None):
         for srv in self.servers.values():
