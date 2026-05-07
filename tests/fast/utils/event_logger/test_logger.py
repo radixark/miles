@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from miles.utils.event_logger.logger import EventLogger, get_event_logger, set_event_logger
-from miles.utils.event_logger.models import RolloutGenerateCompletedEvent, WitnessAllocateIdEvent
+from miles.utils.event_logger.models import WitnessAllocateIdEvent
 from miles.utils.process_identity import MainProcessIdentity, TrainProcessIdentity
 
 _TEST_SOURCE = MainProcessIdentity()
@@ -16,8 +16,8 @@ def _make_logger(log_dir: Path, file_name: str = "events.jsonl") -> EventLogger:
     return EventLogger(log_dir=log_dir, file_name=file_name, source=_TEST_SOURCE)
 
 
-_EVENT_CLS = RolloutGenerateCompletedEvent
-_EVENT_PARTIAL: dict = dict(rollout_id=0, sample_indices=[0, 1, 2])
+_EVENT_CLS = WitnessAllocateIdEvent
+_EVENT_PARTIAL: dict = dict(rollout_id=0, attempt=0, witness_id_to_sample_index={10: 0, 11: 1, 12: 2})
 
 
 class TestEventLoggerWritesJsonl:

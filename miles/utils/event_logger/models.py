@@ -45,12 +45,6 @@ class WitnessSnapshotParamEvent(_ActorTrainEventBase):
     stale_ids: list[int]
 
 
-class RolloutGenerateCompletedEvent(EventBase):
-    type: Literal["rollout_generate_completed"] = "rollout_generate_completed"
-    rollout_id: int
-    sample_indices: list[int]
-
-
 class WitnessAllocateIdEvent(EventBase):
     type: Literal["witness_allocate_id"] = "witness_allocate_id"
     rollout_id: int
@@ -80,7 +74,6 @@ class MetricEvent(EventBase):
 Event = Annotated[
     LocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
-    | RolloutGenerateCompletedEvent
     | WitnessAllocateIdEvent
     | TrainGroupStepEndEvent
     | TrainAdvantageComputationEvent

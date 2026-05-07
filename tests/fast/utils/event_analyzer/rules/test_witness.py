@@ -8,7 +8,6 @@ from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.utils.event_analyzer.rules.witness import WitnessDataMismatchIssue, WitnessMissingSnapshotIssue, check
 from miles.utils.event_logger.models import (
     Event,
-    RolloutGenerateCompletedEvent,
     TrainGroupStepEndEvent,
     TrainAdvantageComputationEvent,
     WitnessAllocateIdEvent,
@@ -44,15 +43,6 @@ def _make_snapshot(
     )
 
 
-def _make_rollout_completed(rollout_id: int, sample_indices: list[int]) -> RolloutGenerateCompletedEvent:
-    return RolloutGenerateCompletedEvent(
-        timestamp=_FIXED_TS,
-        source=_MAIN_SOURCE,
-        rollout_id=rollout_id,
-        sample_indices=sample_indices,
-    )
-
-
 def _make_allocate(
     rollout_id: int,
     witness_id_to_sample_index: dict[int, int],
@@ -85,7 +75,6 @@ class TestWitnessCheck:
 
     def test_normal_step_with_correct_cumulative_witness_ids_returns_no_issues(self) -> None:
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
@@ -94,7 +83,6 @@ class TestWitnessCheck:
 
     def test_normal_step_with_missing_witness_id_returns_issue(self) -> None:
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
@@ -107,7 +95,6 @@ class TestWitnessCheck:
 
     def test_normal_step_with_extra_witness_id_returns_issue(self) -> None:
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11, 99]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
@@ -119,7 +106,6 @@ class TestWitnessCheck:
 
     def test_discarded_step_is_ignored(self) -> None:
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.DISCARDED_SHOULD_RETRY]}),
@@ -129,7 +115,6 @@ class TestWitnessCheck:
     def test_stale_ids_are_ignored(self) -> None:
         """IDs in stale_ids are ignored in both expected and actual."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1, 2]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={2: 0, 5: 1, 8: 2}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[5, 8], stale_ids=[0, 1, 2]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
@@ -139,7 +124,6 @@ class TestWitnessCheck:
     def test_multiple_cells_independent_checking(self) -> None:
         """Each cell is checked independently."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_index=0),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_index=1),
@@ -150,7 +134,6 @@ class TestWitnessCheck:
     def test_retry_uses_latest_attempt_allocation(self) -> None:
         """When retries happen, only the latest attempt's allocation is used."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}, attempt=0),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={20: 0, 21: 1}, attempt=1),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[20, 21]),
@@ -161,11 +144,9 @@ class TestWitnessCheck:
     def test_cumulative_across_rollouts(self) -> None:
         """Expected witness IDs are cumulative from rollout 0 to current."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
-            _make_rollout_completed(rollout_id=1, sample_indices=[1]),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={11: 1}),
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[10, 11]),
             _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
@@ -175,7 +156,6 @@ class TestWitnessCheck:
     def test_missing_snapshot_for_normal_cell_returns_issue(self) -> None:
         """Cell claims NORMAL but has no WitnessSnapshotParamEvent — should return WitnessMissingSnapshotIssue."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
         ]
@@ -188,7 +168,6 @@ class TestWitnessCheck:
     def test_error_cell_outcome_is_skipped(self) -> None:
         """cell_outcomes with 'error' string should not produce any issue."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
             _make_step_end(rollout_id=0, cell_outcomes={0: "error"}),
         ]
@@ -197,7 +176,6 @@ class TestWitnessCheck:
     def test_multiple_snapshots_per_cell(self) -> None:
         """Same cell has head and tail snapshots; only the mismatched one produces an issue."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], instance_id="pp0.head"),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10], instance_id="pp0.tail"),
@@ -213,11 +191,9 @@ class TestWitnessCheck:
         """After wrap, stale_ids contain wrapped IDs (e.g. [8,9,0]). These should be excluded from comparison."""
         # buffer_size=10, allocated IDs 0..7 in rollout 0, then 8,9,0,1,2 in rollout 1 (wrap)
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1, 2, 3, 4, 5, 6, 7]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={i: i for i in range(8)}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=list(range(8))),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
-            _make_rollout_completed(rollout_id=1, sample_indices=[8, 9, 10, 11, 12]),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={8: 8, 9: 9, 0: 10, 1: 11, 2: 12}),
             # After wrap: stale_ids=[3,4,5] (old IDs cleaned), actual nonzero = [0,1,2,6,7,8,9]
             _make_snapshot(
@@ -233,11 +209,9 @@ class TestWitnessCheck:
     def test_ring_buffer_wrap_detects_mismatch(self) -> None:
         """After wrap, a genuinely missing non-stale ID should still be caught."""
         events: list[Event] = [
-            _make_rollout_completed(rollout_id=0, sample_indices=[0, 1, 2, 3, 4, 5, 6, 7]),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={i: i for i in range(8)}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=list(range(8))),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
-            _make_rollout_completed(rollout_id=1, sample_indices=[8, 9, 10, 11, 12]),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={8: 8, 9: 9, 0: 10, 1: 11, 2: 12}),
             # ID 7 is NOT stale but missing from actual — should be caught
             _make_snapshot(

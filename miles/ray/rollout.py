@@ -25,8 +25,6 @@ from miles.rollout.base_types import (
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import dumper_utils, tracking_utils
 from miles.utils.environ import enable_experimental_rollout_refactor
-from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.event_logger.models import RolloutGenerateCompletedEvent
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import (
     _wrap_ipv6,
@@ -455,12 +453,6 @@ class RolloutManager:
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = self._convert_samples_to_train_data(data)
         sample_indices = data.get("sample_indices")
-
-        if is_event_logger_initialized():
-            get_event_logger().log(
-                RolloutGenerateCompletedEvent,
-                dict(rollout_id=rollout_id, sample_indices=sample_indices),
-            )
 
         if self.args.delay_split_train_data_by_dp:
             data = Box(ray.put(data))
