@@ -193,7 +193,7 @@ class RolloutServer:
     async def recover(self):
         """Recover dead engines across all active groups, overlapping init."""
         port_cursors = PortCursors.empty()
-        return await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
+        await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
         handles = []
