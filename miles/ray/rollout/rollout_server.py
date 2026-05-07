@@ -39,6 +39,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
         server_groups: list[ServerGroup] = []
         all_init_handles: list = []
+        new_engine_indices_per_group: list[list[int]] = []
         port_cursors = PortCursors.empty()
 
         for group_cfg in model_cfg.server_groups:
@@ -75,15 +76,18 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 update_weights=model_cfg.update_weights,
             )
             handles, new_engine_indices = group.start_engines(port_cursors)
-            group.mark_alive(engine_indices=new_engine_indices)
             all_init_handles.extend(handles)
             server_groups.append(group)
+            new_engine_indices_per_group.append(new_engine_indices)
 
             engine_offset += num_engines
             gpu_offset += group_cfg.num_gpus
 
         if all_init_handles:
             ray.get(all_init_handles)
+
+        for group, new_engine_indices in zip(server_groups, new_engine_indices_per_group, strict=True):
+            group.mark_alive(engine_indices=new_engine_indices)
 
         servers[model_cfg.name] = RolloutServer(
             server_groups=server_groups,
@@ -193,7 +197,7 @@ class RolloutServer:
     async def recover(self):
         """Recover dead engines across all active groups, overlapping init."""
         port_cursors = PortCursors.empty()
-        return await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
+        await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
         handles = []
@@ -211,6 +215,8 @@ class RolloutServer:
         return await asyncio.gather(*[g.check_weights(action=action) for g in self.server_groups])
 
     async def wait_all_engines_alive(self, timeout: float = 600):
+        # TODO: 600s default is hardcoded; make it configurable (e.g. via args) once we have a clearer
+        # picture of init/recovery upper bounds across model sizes
         sleep_time = 2
         for _ in range(int(timeout // sleep_time)):
             if all(e.is_alive for g in self.server_groups for e in g.all_engines):
