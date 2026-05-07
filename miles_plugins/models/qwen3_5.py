@@ -72,6 +72,10 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
 
         A = torch.empty(self.num_v_heads).uniform_(0, 16)
+        # Qwen3.5 ships A_log in fp32; Qwen3.6 reverted the HF weight to bf16.
+        # We still hold it in fp32 here for engineering simplicity (no special
+        # path for 3.6) — this matches the SGLang implementation, which also
+        # keeps A_log in fp32 regardless of the HF dtype.
         self.A_log = nn.Parameter(torch.log(A).to(torch.float32))
         mark_param_dtype(self.A_log, torch.float32)
 

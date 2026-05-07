@@ -15,8 +15,6 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        import miles_plugins.megatron_bridge  # noqa: F401
-
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type: str = "base"):

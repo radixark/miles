@@ -24,7 +24,7 @@ def _set_random_seed(
 ):
     """Set random seed for reproducability."""
     # Ensure that different pipeline MP stages get different seeds.
-    seed = seed_ + (100 * mpu.get_pipeline_model_parallel_rank())
+    seed = seed_ + (100 * get_parallel_state().pp.rank)
     # Ensure different data parallel ranks get different seeds
     if data_parallel_random_init:
         seed = seed + (10 * get_parallel_state().intra_dp.rank)
@@ -114,6 +114,6 @@ def init(args):
 def is_megatron_main_rank():
     return (
         get_parallel_state().intra_dp_cp.rank == 0
-        and mpu.get_tensor_model_parallel_rank() == 0
-        and mpu.get_pipeline_model_parallel_rank() == mpu.get_pipeline_model_parallel_world_size() - 1
+        and get_parallel_state().tp.rank == 0
+        and get_parallel_state().pp.rank == get_parallel_state().pp.size - 1
     )

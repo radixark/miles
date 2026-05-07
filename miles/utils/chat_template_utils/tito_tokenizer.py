@@ -19,13 +19,41 @@ junction.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
+logger = logging.getLogger(__name__)
+
+# Bundled fixed-template files live under this directory; ``FixedTemplateRow.template``
+# values are filenames relative to it.
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+# Roles the TITO merge logic understands; passing anything else is a typo.
+_VALID_ROLES = frozenset({"tool", "user", "system"})
+
 _DUMMY_SYSTEM: dict[str, Any] = {"role": "system", "content": "dummy system"}
+
+
+@dataclass(frozen=True)
+class FixedTemplateRow:
+    """A ``(roles, template, extra_kwargs)`` row owned by a TITO tokenizer family.
+
+    Each row says: when the session is configured for ``allowed_roles``, this
+    family expects the given chat template plus the given extra kwargs.
+    ``template`` is a path relative to ``TEMPLATE_DIR`` for a bundled fixed
+    template, or ``None`` to keep the HF-native template (kwargs-only fix).
+    """
+
+    allowed_roles: frozenset[str]
+    template: str | None = None
+    extra_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -52,6 +80,7 @@ def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, An
 # ---------------------------------------------------------------------------
 # Base / default tokenizer
 # ---------------------------------------------------------------------------
+# TODO: split different model's TITO tokenizer into different files
 
 
 class TITOTokenizer:
@@ -59,6 +88,16 @@ class TITOTokenizer:
 
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
+
+    # ``(roles, template, extra_kwargs)`` rows this family supports.  Resolved
+    # by ``resolve_fixed_chat_template`` via smallest-superset match against
+    # the caller's ``allowed_append_roles``.
+    SUPPORTED_TEMPLATES: tuple[FixedTemplateRow, ...] = ()
+
+    # sglang ``--reasoning-parser`` and ``--tool-call-parser`` values bound to
+    # this family.
+    reasoning_parser: str | None = None
+    tool_call_parser: str | None = None
 
     def __init__(
         self,
@@ -81,17 +120,18 @@ class TITOTokenizer:
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
-    def _render_messages(
+    def render_messages(
         self,
         messages: list[dict[str, Any]],
         *,
         add_generation_prompt: bool,
         tools: list[dict[str, Any]] | None = None,
-    ) -> str:
+        tokenize: bool = False,
+    ) -> str | list[int]:
         return apply_chat_template(
             messages,
             tokenizer=self.tokenizer,
-            tokenize=False,
+            tokenize=tokenize,
             add_generation_prompt=add_generation_prompt,
             tools=tools,
             **self.chat_template_kwargs,
@@ -136,8 +176,8 @@ class TITOTokenizer:
         When *add_generation_prompt* is True and *appended_messages* is empty,
         this computes the generation-prompt suffix (the assistant opener tokens).
         """
-        text_without = self._render_messages(base_messages, add_generation_prompt=False, tools=tools)
-        text_with = self._render_messages(
+        text_without = self.render_messages(base_messages, add_generation_prompt=False, tools=tools)
+        text_with = self.render_messages(
             base_messages + appended_messages,
             add_generation_prompt=add_generation_prompt,
             tools=tools,
@@ -252,6 +292,21 @@ class Qwen3TITOTokenizer(TITOTokenizer):
     prefix matches the canonical template output.
     """
 
+    reasoning_parser = "qwen3"
+    tool_call_parser = "qwen25"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template="qwen3_fixed.jinja",
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="qwen3_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
+        ),
+    )
+
     _default_assistant_start_str: str = "<|im_start|>assistant"
 
     def __init__(
@@ -287,6 +342,48 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         return prefix + incremental
 
 
+# Qwen3.5 and Qwen3-Next-Thinking share the ``<|im_end|>`` boundary handling
+# with Qwen3, so they reuse Qwen3TITOTokenizer's token-level logic via plain
+# inheritance.  They are still split into named subclasses because each owns
+# its own ``SUPPORTED_TEMPLATES`` row pointing to a distinct fixed jinja, even
+# though their boundary behavior is identical.
+
+
+class Qwen35TITOTokenizer(Qwen3TITOTokenizer):
+    """Qwen3.5 — same boundary behavior as Qwen3, distinct fixed template."""
+
+    tool_call_parser = "qwen3_coder"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template="qwen3.5_fixed.jinja",
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="qwen3.5_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
+        ),
+    )
+
+
+class QwenNextTITOTokenizer(Qwen3TITOTokenizer):
+    """Qwen3-Thinking-2507 / Qwen3-Next-Thinking — same boundary behavior as
+    Qwen3, distinct (shared) fixed template."""
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template="qwen3_thinking_2507_and_next_fixed.jinja",
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="qwen3_thinking_2507_and_next_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # GLM 4.7 implementation
 # ---------------------------------------------------------------------------
@@ -303,6 +400,28 @@ class GLM47TITOTokenizer(TITOTokenizer):
     next turn is ``<|user|>`` because the tool call failed and a system message
     is injected instead).
     """
+
+    reasoning_parser = "glm45"
+    tool_call_parser = "glm47"
+
+    # GLM's HF-native chat template already exposes a ``clear_thinking`` kwarg,
+    # so no fixed-jinja patch is needed for either append surface.
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"clear_thinking": False},
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user", "system"}),
+            template=None,
+            extra_kwargs={"clear_thinking": False},
+        ),
+    )
 
     max_trim_tokens: int = 1
     _default_assistant_start_str: str = "<|assistant|>"
@@ -347,12 +466,16 @@ class GLM47TITOTokenizer(TITOTokenizer):
 class TITOTokenizerType(str, Enum):
     DEFAULT = "default"
     QWEN3 = "qwen3"
+    QWEN35 = "qwen35"
+    QWENNEXT = "qwennext"
     GLM47 = "glm47"
 
 
 _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
     TITOTokenizerType.DEFAULT: TITOTokenizer,
     TITOTokenizerType.QWEN3: Qwen3TITOTokenizer,
+    TITOTokenizerType.QWEN35: Qwen35TITOTokenizer,
+    TITOTokenizerType.QWENNEXT: QwenNextTITOTokenizer,
     TITOTokenizerType.GLM47: GLM47TITOTokenizer,
 }
 
@@ -389,3 +512,120 @@ def get_tito_tokenizer(
     if allowed_append_roles is not None:
         kwargs["allowed_append_roles"] = allowed_append_roles
     return cls(tokenizer, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Fixed-template resolution (smallest-superset over SUPPORTED_TEMPLATES)
+# ---------------------------------------------------------------------------
+
+
+def resolve_fixed_chat_template(
+    tito_model: TITOTokenizerType | str,
+    allowed_append_roles: Iterable[str],
+) -> tuple[str | None, dict[str, Any]]:
+    """Smallest-superset lookup over the requested family's ``SUPPORTED_TEMPLATES``.
+
+    Returns ``(template_path, extra_kwargs)``:
+
+    - ``template_path``: absolute path to a bundled ``.jinja`` file, or ``None``
+      when the matched row registers HF-native (kwargs-only fix) or when no
+      row matches at all.
+    - ``extra_kwargs``: kwargs the caller should merge into
+      ``apply_chat_template`` (caller's explicit user kwargs win on conflict).
+      Empty when no row matches or the matched row needs none.
+
+    Raises ``ValueError`` on equally-minimal supersets — register a stricter
+    row to disambiguate.
+    """
+    if isinstance(tito_model, str):
+        tito_model = TITOTokenizerType(tito_model)
+
+    requested = frozenset(allowed_append_roles)
+    invalid = requested - _VALID_ROLES
+    if invalid:
+        raise ValueError(
+            f"Unknown roles in allowed_append_roles: {sorted(invalid)}. " f"Supported: {sorted(_VALID_ROLES)}."
+        )
+
+    cls = _TOKENIZER_REGISTRY[tito_model]
+    candidates = [row for row in cls.SUPPORTED_TEMPLATES if requested.issubset(row.allowed_roles)]
+    if not candidates:
+        raise ValueError(
+            f"No SUPPORTED_TEMPLATES row registered for tito_model={tito_model.value} "
+            f"with allowed_append_roles={sorted(requested)}. Register a row in "
+            f"{cls.__name__}.SUPPORTED_TEMPLATES (template=None for HF-native models)."
+        )
+
+    # Pick the most specific superset. Ties surface registration mistakes
+    # immediately rather than depending on iteration order.
+    min_size = min(len(row.allowed_roles) for row in candidates)
+    minimal = [row for row in candidates if len(row.allowed_roles) == min_size]
+    if len(minimal) > 1:
+        raise ValueError(
+            f"Ambiguous fixed-template registration for tito_model={tito_model.value}, "
+            f"requested_roles={sorted(requested)}: multiple equally-minimal supersets "
+            f"{[sorted(row.allowed_roles) for row in minimal]}. Register a stricter row to disambiguate."
+        )
+    row = minimal[0]
+
+    path = str(TEMPLATE_DIR / row.template) if row.template else None
+    logger.info(
+        "tito_model=%s requested_roles=%s -> matched registered_roles=%s -> template=%s kwargs=%s",
+        tito_model.value,
+        sorted(requested),
+        sorted(row.allowed_roles),
+        path,
+        row.extra_kwargs,
+    )
+    return path, dict(row.extra_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# sglang parser resolution (per-family binding + assert-equal on user input)
+# ---------------------------------------------------------------------------
+
+
+def resolve_reasoning_and_tool_call_parser(
+    tito_model: TITOTokenizerType | str,
+    user_reasoning_parser: str | None = None,
+    user_tool_call_parser: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve sglang ``--reasoning-parser`` and ``--tool-call-parser`` for the
+    given TITO family.
+
+    Both parsers are bound on the TITO subclass as class attributes because
+    the model's reasoning / tool-call emission shapes are per-family facts.
+    For each parser independently:
+
+    * If the user didn't pass a value, return the family's bound value
+      (which may itself be ``None`` for ``DEFAULT`` or unbound subclasses
+      — the caller is then responsible for supplying one downstream).
+    * If the user passed a value and the family is bound, assert equality;
+      a mismatch is a configuration bug and raises ``ValueError`` rather
+      than silently overriding.
+    * If the user passed a value and the family is unbound, accept it.
+
+    Returns ``(reasoning_parser, tool_call_parser)``.
+    """
+    if isinstance(tito_model, str):
+        tito_model = TITOTokenizerType(tito_model)
+    cls = _TOKENIZER_REGISTRY[tito_model]
+
+    def _resolve_one(field: str, bound: str | None, user: str | None) -> str | None:
+        if user is None:
+            return bound
+        if bound is None:
+            return user
+        if user != bound:
+            raise ValueError(
+                f"--{field.replace('_', '-')}={user!r} disagrees with the parser "
+                f"registered for tito_model={tito_model.value!r}: {bound!r}. The "
+                f"parser is bound on the TITO subclass; either pass {bound!r} or "
+                f"omit the flag to auto-resolve."
+            )
+        return user
+
+    return (
+        _resolve_one("reasoning_parser", cls.reasoning_parser, user_reasoning_parser),
+        _resolve_one("tool_call_parser", cls.tool_call_parser, user_tool_call_parser),
+    )

@@ -1,9 +1,14 @@
 """
 python tools/convert_hf_to_nvfp4.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR]
-                                   [--device DEVICE] [--keep-last-n KEEP_LAST_N] [--keep-first-n KEEP_FIRST_N]
+                                   [--device DEVICE]
+                                   [--num-layers-at-start-in-bf16 NUM_LAYERS_AT_START_IN_BF16]
+                                   [--num-layers-at-end-in-bf16 NUM_LAYERS_AT_END_IN_BF16]
+                                   [--extra-high-precision-layers-hf ...]
 
 Convert a BF16/FP16/FP32 HF safetensors checkpoint to NVFP4 (E2M1) for MoE
 expert GEMMs only. Dense linear layers are left unmodified.
+Use --extra-high-precision-layers-hf to keep additional HF weight-name
+substrings unquantized.
 
 This follows the NVFP4 reference quantization in Transformer Engine and uses
 1D block scaling (NVTE_NVFP4_1D_SCALING, group size = 16).
@@ -60,20 +65,12 @@ def _is_moe_expert_weight_name(name: str) -> bool:
     return any(name.endswith(suffix) for suffix in EXPERT_WEIGHT_SUFFIXES)
 
 
-def _extract_layer_id(name: str) -> int | None:
-    parts = name.split(".")
-    for idx, part in enumerate(parts):
-        if part == "layers" and idx + 1 < len(parts):
-            layer_id = parts[idx + 1]
-            if layer_id.isdigit():
-                return int(layer_id)
-    return None
-
-
 def _get_num_hidden_layers(model_dir: str) -> int:
     config_path = os.path.join(model_dir, "config.json")
     if not os.path.exists(config_path):
-        raise ValueError("config.json is required to use --keep-first-n or --keep-last-n.")
+        raise ValueError(
+            "config.json is required to use --num-layers-at-start-in-bf16 or --num-layers-at-end-in-bf16."
+        )
     cfg = json.load(open(config_path))
     num_layers = cfg.get("num_hidden_layers")
     if num_layers is None and isinstance(cfg.get("text_config"), dict):
@@ -83,65 +80,13 @@ def _get_num_hidden_layers(model_dir: str) -> int:
     return int(num_layers)
 
 
-def _get_last_n_layer_ids(num_layers: int, keep_last_n: int) -> set[int]:
-    if keep_last_n <= 0:
-        return set()
-    start = max(0, num_layers - keep_last_n)
-    return set(range(start, num_layers))
-
-
-def _get_first_n_layer_ids(num_layers: int, keep_first_n: int) -> set[int]:
-    if keep_first_n <= 0:
-        return set()
-    end = min(num_layers, keep_first_n)
-    return set(range(0, end))
-
-
-def _build_keep_last_n_ignore_list(num_layers: int, keep_last_n: int) -> list[str]:
-    if keep_last_n <= 0:
-        return []
-    start = max(0, num_layers - keep_last_n)
-    ignore_list = []
-    for layer_id in range(start, num_layers):
-        prefix = f"model.layers.{layer_id}"
-        ignore_list.extend(
-            [
-                f"{prefix}.self_attn.qkv_proj",
-                f"{prefix}.self_attn.o_proj",
-                f"{prefix}.mlp",
-                f"{prefix}.mlp.experts",
-            ]
-        )
-    return ignore_list
-
-
-def _build_keep_first_n_ignore_list(num_layers: int, keep_first_n: int) -> list[str]:
-    if keep_first_n <= 0:
-        return []
-    end = min(num_layers, keep_first_n)
-    ignore_list = []
-    for layer_id in range(0, end):
-        prefix = f"model.layers.{layer_id}"
-        ignore_list.extend(
-            [
-                f"{prefix}.self_attn.qkv_proj",
-                f"{prefix}.self_attn.o_proj",
-                f"{prefix}.mlp",
-                f"{prefix}.mlp.experts",
-            ]
-        )
-    return ignore_list
-
-
 def should_quantize(
     name: str,
     weight: torch.Tensor,
-    skip_layers: set[int] | None = None,
+    skip_weight_substrings: tuple[str, ...] = (),
 ) -> bool:
-    if skip_layers:
-        layer_id = _extract_layer_id(name)
-        if layer_id is not None and layer_id in skip_layers:
-            return False
+    if any(substr in name for substr in skip_weight_substrings):
+        return False
     if not _is_moe_expert_weight_name(name):
         return False
     if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
@@ -155,28 +100,28 @@ def should_quantize(
     return True
 
 
-def cast_to_fp4x2(x: torch.Tensor) -> torch.Tensor:
-    """Quantize a tensor to FP4 E2M1 and pack two values per byte."""
-    result = torch.zeros_like(x, dtype=torch.uint8)
-    result[(x >= 0.0) & (x <= 0.25)] = 0
-    result[(x > 0.25) & (x < 0.75)] = 1
-    result[(x >= 0.75) & (x <= 1.25)] = 2
-    result[(x > 1.25) & (x < 1.75)] = 3
-    result[(x >= 1.75) & (x <= 2.5)] = 4
-    result[(x > 2.5) & (x < 3.5)] = 5
-    result[(x >= 3.5) & (x <= 5.0)] = 6
-    result[x > 5.0] = 7
-
-    result[(x >= -0.25) & (x < -0.0)] = 8
-    result[(x < -0.25) & (x > -0.75)] = 9
-    result[(x <= -0.75) & (x >= -1.25)] = 10
-    result[(x < -1.25) & (x > -1.75)] = 11
-    result[(x <= -1.75) & (x >= -2.5)] = 12
-    result[(x < -2.5) & (x > -3.5)] = 13
-    result[(x <= -3.5) & (x >= -5.0)] = 14
-    result[x < -5.0] = 15
-
-    return result[:, ::2] + result[:, 1::2] * 16
+def _nvfp4_global_decode_scale_te(global_amax: torch.Tensor) -> torch.Tensor:
+    fp4_max = torch.tensor(FP4_E2M1_MAX, device=global_amax.device, dtype=torch.float32)
+    fp8_max = torch.tensor(FP8_E4M3_MAX, device=global_amax.device, dtype=torch.float32)
+    global_encode_scale = torch.div(fp8_max * fp4_max, global_amax.to(torch.float32))
+    global_encode_scale = torch.min(
+        global_encode_scale,
+        torch.tensor(
+            torch.finfo(torch.float32).max,
+            device=global_encode_scale.device,
+            dtype=torch.float32,
+        ),
+    )
+    if global_encode_scale.numel() == 1:
+        if global_encode_scale == torch.tensor(0.0, device=global_amax.device, dtype=torch.float32):
+            global_encode_scale = torch.tensor(1.0, device=global_amax.device, dtype=torch.float32)
+    else:
+        global_encode_scale = torch.where(
+            global_encode_scale == 0.0,
+            torch.ones_like(global_encode_scale),
+            global_encode_scale,
+        )
+    return torch.div(1.0, global_encode_scale)
 
 
 def _quantize_nvfp4_1d(
@@ -197,45 +142,22 @@ def _quantize_nvfp4_1d(
     if n % NVFP4_GROUP_SIZE != 0:
         raise ValueError(f"NVFP4 requires K divisible by {NVFP4_GROUP_SIZE}, got {n}.")
 
-    weight_f = weight.to(torch.float32)
     if global_amax is None:
-        global_amax = torch.max(torch.abs(weight_f))
+        global_amax = torch.max(torch.abs(weight.to(torch.float32)))
     else:
         global_amax = global_amax.to(device=weight.device, dtype=torch.float32)
-    if global_amax.item() == 0.0:
-        qweight = torch.zeros((m, n // 2), dtype=torch.uint8, device=weight.device)
-        block_scale = torch.zeros(
-            (m, n // NVFP4_GROUP_SIZE),
-            dtype=torch.float8_e4m3fn,
-            device=weight.device,
-        )
-        global_scale = torch.tensor(1.0, device=weight.device, dtype=torch.float32)
-        return qweight, block_scale, global_scale
 
-    fp4_max = torch.tensor(FP4_E2M1_MAX, device=weight.device, dtype=torch.float32)
-    fp8_max = torch.tensor(FP8_E4M3_MAX, device=weight.device, dtype=torch.float32)
+    from transformer_engine.pytorch.custom_recipes.quantization_nvfp4 import NVFP4QuantizerRef
 
-    global_encode_scale = torch.div(fp8_max * fp4_max, global_amax)
-    global_encode_scale = torch.min(
-        global_encode_scale,
-        torch.tensor(torch.finfo(torch.float32).max, device=weight.device, dtype=torch.float32),
+    qweight, block_scale = NVFP4QuantizerRef._quantize_blockwise_reference(
+        weight,
+        global_amax,
+        NVFP4_GROUP_SIZE,
+        1,
+        pow_2_scales=False,
+        eps=0.0,
     )
-    if global_encode_scale.item() == 0.0:
-        global_encode_scale = torch.tensor(1.0, device=weight.device, dtype=torch.float32)
-    global_decode_scale = torch.div(1.0, global_encode_scale)
-
-    weight_blocks = weight_f.view(m, n // NVFP4_GROUP_SIZE, NVFP4_GROUP_SIZE)
-    vec_max = torch.amax(torch.abs(weight_blocks), dim=-1, keepdim=True)
-    decode_scale = torch.div(vec_max, fp4_max) * global_encode_scale
-    decode_scale = torch.clamp(decode_scale, min=-fp8_max, max=fp8_max).to(torch.float8_e4m3fn)
-
-    encode_scale = torch.div(1.0, decode_scale.to(torch.float32) * global_decode_scale)
-    scaled = weight_blocks * encode_scale
-    clipped = torch.clamp(scaled, -fp4_max, fp4_max).reshape(m, n)
-
-    qweight = cast_to_fp4x2(clipped)
-    block_scale = decode_scale.squeeze(-1)
-    return qweight, block_scale, global_decode_scale
+    return qweight, block_scale, _nvfp4_global_decode_scale_te(global_amax)
 
 
 def quantize_nvfp4(
@@ -352,7 +274,7 @@ def _collect_shared_global_amax(
     input_path: str,
     safetensors_files: list[str],
     device: str,
-    skip_layers: set[int],
+    skip_weight_substrings: tuple[str, ...],
 ) -> dict[str, torch.Tensor]:
     """Collect shared gate/up amax across all shards to keep w1/w3 scales equal."""
     gate_amax: dict[str, torch.Tensor] = {}
@@ -361,7 +283,7 @@ def _collect_shared_global_amax(
         with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
             for key in f.keys():
                 tensor = f.get_tensor(key)
-                if not should_quantize(key, tensor, skip_layers):
+                if not should_quantize(key, tensor, skip_weight_substrings=skip_weight_substrings):
                     continue
                 base, role = _split_gated_pair_name(key)
                 if base is None or role is None:
@@ -388,7 +310,10 @@ def process_file(
     filename: str,
     result_collector: ConversionResult,
     device: str,
-    skip_layers: set[int],
+    num_hidden_layers: int,
+    num_layers_at_start_in_bf16: int,
+    num_layers_at_end_in_bf16: int,
+    extra_high_precision_layers_hf: tuple[str, ...],
     shared_global_amax: dict[str, torch.Tensor],
 ) -> None:
     if not filename.endswith(".safetensors"):
@@ -396,11 +321,24 @@ def process_file(
 
     modules_to_not_convert: list[str] = []
     q_weights: dict[str, torch.Tensor] = {}
+    head_end_idx = num_layers_at_start_in_bf16
+    tail_start_idx = num_hidden_layers - num_layers_at_end_in_bf16
+    dynamic_skip_layer_prefixes: set[str] = set()
+    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(0, head_end_idx)})
+    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)})
+
+    if num_layers_at_end_in_bf16 > 0 or num_layers_at_start_in_bf16 > 0:
+        modules_to_not_convert.extend(sorted(dynamic_skip_layer_prefixes))
+
+    dynamic_skip_substrings = (
+        *extra_high_precision_layers_hf,
+        *sorted(dynamic_skip_layer_prefixes),
+    )
 
     with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
         for key in f.keys():
             tensor = f.get_tensor(key)
-            if should_quantize(key, tensor, skip_layers):
+            if should_quantize(key, tensor, skip_weight_substrings=dynamic_skip_substrings):
                 base, _role = _split_gated_pair_name(key)
                 global_amax = shared_global_amax.get(base) if base else None
                 qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor, global_amax=global_amax)
@@ -419,7 +357,14 @@ def process_file(
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
 
 
-def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int, keep_first_n: int) -> None:
+def convert_nvfp4(
+    model_dir: str,
+    save_dir: str,
+    device: str,
+    num_layers_at_start_in_bf16: int = 0,
+    num_layers_at_end_in_bf16: int = 0,
+    extra_high_precision_layers_hf: tuple[str, ...] = (),
+) -> None:
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
     os.makedirs(output_path, exist_ok=True)
@@ -430,16 +375,22 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int, 
 
     safetensors_files = [f for f in os.listdir(input_path) if f.endswith(".safetensors")]
 
-    num_layers = _get_num_hidden_layers(input_path) if (keep_last_n > 0 or keep_first_n > 0) else 0
-    skip_layers = _get_last_n_layer_ids(num_layers, keep_last_n) | _get_first_n_layer_ids(num_layers, keep_first_n)
-    keep_last_ignore = _build_keep_last_n_ignore_list(num_layers, keep_last_n)
-    keep_first_ignore = _build_keep_first_n_ignore_list(num_layers, keep_first_n)
+    num_hidden_layers = _get_num_hidden_layers(input_path)
+    head_end_idx = num_layers_at_start_in_bf16
+    tail_start_idx = num_hidden_layers - num_layers_at_end_in_bf16
+    dynamic_skip_layer_prefixes: set[str] = set()
+    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(0, head_end_idx)})
+    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)})
+    dynamic_skip_substrings = (
+        *extra_high_precision_layers_hf,
+        *sorted(dynamic_skip_layer_prefixes),
+    )
 
     shared_global_amax = _collect_shared_global_amax(
         input_path=input_path,
         safetensors_files=safetensors_files,
         device=device,
-        skip_layers=skip_layers,
+        skip_weight_substrings=dynamic_skip_substrings,
     )
     result_collector = ConversionResult()
     for filename in tqdm(safetensors_files, desc="Processing files"):
@@ -449,14 +400,17 @@ def convert_nvfp4(model_dir: str, save_dir: str, device: str, keep_last_n: int, 
             filename,
             result_collector,
             device,
-            skip_layers,
+            num_hidden_layers,
+            num_layers_at_start_in_bf16,
+            num_layers_at_end_in_bf16,
+            extra_high_precision_layers_hf,
             shared_global_amax,
         )
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    ignore_list = _augment_ignore_list(result_collector.modules_to_not_convert + keep_last_ignore + keep_first_ignore)
+    ignore_list = _augment_ignore_list(result_collector.modules_to_not_convert)
 
     config_path = os.path.join(input_path, "config.json")
     if os.path.exists(config_path):
@@ -488,18 +442,25 @@ def main() -> None:
         help="Torch device to run quantization on (default: cuda).",
     )
     parser.add_argument(
-        "--keep-last-n",
+        "--num-layers-at-start-in-bf16",
         type=int,
         default=0,
-        help="Keep the last N transformer layers unquantized (BF16/FP16).",
+        help="Keep first N decoder layers in BF16 and do not quantize them.",
     )
     parser.add_argument(
-        "--keep-first-n",
+        "--num-layers-at-end-in-bf16",
         type=int,
         default=0,
-        help="Keep the first N transformer layers unquantized (BF16/FP16).",
+        help="Keep last N decoder layers in BF16 and do not quantize them.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--extra-high-precision-layers-hf",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Additional HF weight-name substrings to keep unquantized.",
+    )
+    args, _ = parser.parse_known_args()
 
     if isinstance(args.device, str) and args.device.isdigit():
         device = torch.device(f"cuda:{args.device}")
@@ -519,7 +480,16 @@ def main() -> None:
     elif not os.path.isdir(args.save_dir):
         raise ValueError("The save_dir should be a directory.")
 
-    convert_nvfp4(args.model_dir, args.save_dir, str(device), args.keep_last_n, args.keep_first_n)
+    convert_nvfp4(
+        args.model_dir,
+        args.save_dir,
+        str(device),
+        num_layers_at_start_in_bf16=args.num_layers_at_start_in_bf16,
+        num_layers_at_end_in_bf16=args.num_layers_at_end_in_bf16,
+        extra_high_precision_layers_hf=tuple(
+            s.strip() for s in args.extra_high_precision_layers_hf if isinstance(s, str) and s.strip()
+        ),
+    )
 
 
 if __name__ == "__main__":

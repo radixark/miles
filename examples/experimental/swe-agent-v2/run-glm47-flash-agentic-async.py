@@ -280,7 +280,6 @@ def execute(args: ScriptArgs):
         "--custom-agent-function-path swe_agent_function.run "
         "--custom-rm-path generate.reward_func "
         "--tito-model glm47 "
-        "--chat-template-path autofix "
         "--use-session-server "
         "--session-server-port 30000 "
         "--tito-allowed-append-roles user tool "

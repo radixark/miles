@@ -6,12 +6,19 @@ from itertools import groupby
 import numpy as np
 import pybase64
 import pytest
+from tests.ci.ci_register import register_cuda_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
+
+from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
 from miles.utils.types import Sample
+
+# generate_hub tests use generation_env → parse_args(fsdp) → fsdp_utils
+# import chain that requires flash_attn. Run in GPU fast suite.
+register_cuda_ci(est_time=60, suite="stage-b-fast-1-gpu", num_gpus=1)
 
 _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 
@@ -154,7 +161,6 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "tools": SAMPLE_TOOLS,
         # Injected by the session route for TITO token tracking
         "logprobs": True,
-        "return_prompt_token_ids": True,
         "return_meta_info": True,
         "no_stop_trim": False,
         **extra,
@@ -190,7 +196,7 @@ class TestBasicMultiTurn:
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
         if is_agentic_variant(variant):
-            assert result.requests == [expected_openai_request(SINGLE_TURN_PROMPT)]
+            assert _strip_pretokenized(result.requests) == [expected_openai_request(SINGLE_TURN_PROMPT)]
         else:
             assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
         verify_samples(
@@ -312,7 +318,7 @@ class TestExitConditions:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         if is_agentic_variant(variant):
-            assert result.requests == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
+            assert _strip_pretokenized(result.requests) == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
         else:
             assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
         verify_samples(
@@ -338,7 +344,7 @@ class TestExitConditions:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         if is_agentic_variant(variant):
-            assert result.requests == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
+            assert _strip_pretokenized(result.requests) == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
         else:
             assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
         if variant == "multi_turn_single_sample":
@@ -562,6 +568,28 @@ class TestRoutedExpertsMultiTurn:
         num_layers, moe_router_topk = 2, 4
         generation_env.args.num_layers = num_layers
         generation_env.args.moe_router_topk = moe_router_topk
+        if is_agentic_variant(variant):
+            tito = get_tito_tokenizer(
+                TOKENIZER,
+                # Note: tokenizer_type needs to match MODEL_NAME
+                tokenizer_type=TITOTokenizerType.QWEN3,
+                allowed_append_roles=["tool"],
+            )
+            first_prompt_token_ids = tito.render_messages(
+                S.OPENAI_MESSAGES_FIRST_TURN,
+                tools=SAMPLE_TOOLS,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+            second_prompt_token_ids = tito.render_messages(
+                S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
+                tools=SAMPLE_TOOLS,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+        else:
+            first_prompt_token_ids = S.FIRST_PROMPT_TOKEN_IDS
+            second_prompt_token_ids = S.SECOND_PROMPT_TOKEN_IDS
 
         def make_routed_experts(prompt_token_ids, response_text):
             total_tokens = len(prompt_token_ids) + token_len(response_text)
@@ -570,8 +598,8 @@ class TestRoutedExpertsMultiTurn:
                 routed_experts_len, num_layers, moe_router_topk
             )
 
-        first_routed_experts = make_routed_experts(S.FIRST_PROMPT_TOKEN_IDS, S.FIRST_RESPONSE)
-        second_routed_experts = make_routed_experts(S.SECOND_PROMPT_TOKEN_IDS, S.SECOND_RESPONSE)
+        first_routed_experts = make_routed_experts(first_prompt_token_ids, S.FIRST_RESPONSE)
+        second_routed_experts = make_routed_experts(second_prompt_token_ids, S.SECOND_RESPONSE)
 
         def process_fn(prompt: str) -> ProcessResult:
             if prompt == S.FIRST_PROMPT:
@@ -597,10 +625,10 @@ class TestRoutedExpertsMultiTurn:
             assert result.requests[1]["messages"] == S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT
             for req in result.requests:
                 assert req["logprobs"] is True
-                assert req["return_prompt_token_ids"] is True
                 assert req["return_meta_info"] is True
                 assert req["no_stop_trim"] is False
                 assert req["return_routed_experts"] is True
+                assert "input_ids" in req
         else:
             assert result.requests == [
                 expected_request(S.FIRST_PROMPT_TOKEN_IDS, return_routed_experts=True),
@@ -703,6 +731,7 @@ class TestAgentNoRecords:
             make_args,
             with_session_server,
         )
+        from miles.utils.http_utils import find_available_port
         from miles.utils.misc import SingletonMeta
         from miles.utils.test_utils.mock_sglang_server import with_mock_server
 
@@ -712,16 +741,17 @@ class TestAgentNoRecords:
             model_name=MODEL_NAME,
             process_fn=lambda _: ProcessResult(text="unused", finish_reason="stop"),
         ) as mock_server:
-            with with_session_server(mock_server.url, MODEL_NAME) as session_port:
-                noop_argv = extra_argv_for_variant(
-                    agentic_variant,
-                    custom_agent_function_path="miles.utils.test_utils.mock_tools.run_agentic_noop",
-                )
-                args = make_args(
-                    variant=agentic_variant,
-                    router_port=session_port,
-                    extra_argv=noop_argv,
-                )
+            session_port = find_available_port(31000)
+            noop_argv = extra_argv_for_variant(
+                agentic_variant,
+                custom_agent_function_path="miles.utils.test_utils.mock_tools.run_agentic_noop",
+            )
+            args = make_args(
+                variant=agentic_variant,
+                router_port=session_port,
+                extra_argv=noop_argv,
+            )
+            with with_session_server(mock_server.url, args, port=session_port):
                 args.session_server_ip = "127.0.0.1"
                 args.session_server_port = session_port
                 env = GenerateEnv(args=args, mock_server=mock_server)

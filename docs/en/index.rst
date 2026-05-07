@@ -25,7 +25,7 @@ miles is the RL-framework behind GLM-4.7, GLM-4.6 and GLM-4.5. Apart from models
    :maxdepth: 1
    :caption: Agentic
 
-   agentic/chat_template_verification.md
+   agentic/oai_endpoint.md
 
 .. toctree::
    :maxdepth: 1
