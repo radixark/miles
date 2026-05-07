@@ -34,6 +34,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     self.model,
                     cpu=False,
                     conversion_tasks=conversion_tasks,
+                    merge_adapter_weights=False,
                 )
 
             # TODO: verify if postprocess_hf_param is needed for LoRA weights
