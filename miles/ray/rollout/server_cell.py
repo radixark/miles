@@ -10,15 +10,11 @@ class CellIndexer(NamedTuple):
 
 
 def get_cell_indexer_of_id_map(servers: dict[str, RolloutServer]) -> list[CellIndexer]:
-    """Flatten ``servers`` into a list of ``CellIndexer`` whose position is the cell id.
+    """Flatten ``servers`` into a list whose position is the cell id.
 
-    Each cell is one node-0 engine. The returned list assigns a stable cell id (its
-    list index) to every cell across all servers, and lets callers resolve a cell id
-    back to ``(srv_key, group_index, engine_indices)`` so they can address the
-    underlying engines (engine_indices spans ``nodes_per_engine`` consecutive entries
-    of ``group.all_engines`` for multi-node serving). Iteration order is sorted by
-    ``srv_key``, then ``group_index``, then local engine index, so cell ids are
-    deterministic across calls as long as the server topology is unchanged.
+    A cell is one node-0 engine; ``engine_indices`` covers its ``nodes_per_engine``
+    underlying entries in ``group.all_engines``. Order is sorted by ``srv_key``, so
+    cell ids are stable across calls when the topology is unchanged.
     """
     result: list[CellIndexer] = []
     for srv_key in sorted(servers):
