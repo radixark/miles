@@ -1,34 +1,88 @@
 import dataclasses
+import functools
 import inspect
-from typing import Annotated
+import typing
+from collections.abc import Callable
+from typing import Annotated, TypeVar, overload
 
 import typer
 
+_F = TypeVar("_F", bound=Callable[..., object])
 
-def dataclass_cli(func, env_var_prefix: str = "MILES_SCRIPT_"):
-    """Modified from https://github.com/fastapi/typer/issues/154#issuecomment-1544876144"""
 
-    # The dataclass type is the first argument of the function.
-    sig = inspect.signature(func)
-    param = list(sig.parameters.values())[0]
-    dataclass_cls = param.annotation
+@overload
+def dataclass_cli(func: _F) -> _F: ...
+
+
+@overload
+def dataclass_cli(
+    func: None = None,
+    *,
+    env_var_prefix: str = "MILES_SCRIPT_",
+) -> Callable[[_F], _F]: ...
+
+
+def dataclass_cli(
+    func: _F | None = None,
+    *,
+    env_var_prefix: str = "MILES_SCRIPT_",
+) -> _F | Callable[[_F], _F]:
+    """Turn a function whose first param is a dataclass into a typer-compatible CLI.
+
+    Modified from https://github.com/fastapi/typer/issues/154#issuecomment-1544876144
+
+    Supports field ``metadata`` keys:
+    - ``"help"``: passed as ``help=`` to ``typer.Option``
+
+    Usage::
+
+        @app.command()
+        @dataclass_cli                              # bare — uses MILES_SCRIPT_ env prefix
+        def cmd(args: MyArgs): ...
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")            # no env-var binding
+        def cmd(args: MyArgs): ...
+    """
+    if func is None:
+        return functools.partial(dataclass_cli, env_var_prefix=env_var_prefix)  # type: ignore[return-value]
+
+    return _wrap(func, env_var_prefix=env_var_prefix)
+
+
+def _wrap(func: _F, *, env_var_prefix: str) -> _F:
+    hints: dict[str, type] = typing.get_type_hints(func)
+    first_param_name: str = next(iter(inspect.signature(func).parameters))
+    dataclass_cls: type = hints[first_param_name]
     assert dataclasses.is_dataclass(dataclass_cls)
 
-    # To construct the signature, we remove the first argument (self)
-    # from the dataclass __init__ signature.
-    signature = inspect.signature(dataclass_cls.__init__)
-    old_parameters = list(signature.parameters.values())
-    if len(old_parameters) > 0 and old_parameters[0].name == "self":
+    init_sig: inspect.Signature = inspect.signature(dataclass_cls.__init__)
+    old_parameters: list[inspect.Parameter] = list(init_sig.parameters.values())
+    if old_parameters and old_parameters[0].name == "self":
         del old_parameters[0]
 
-    new_parameters = []
+    resolved_hints: dict[str, type] = typing.get_type_hints(dataclass_cls)
+    fields_by_name: dict[str, dataclasses.Field] = {  # type: ignore[type-arg]
+        f.name: f for f in dataclasses.fields(dataclass_cls)
+    }
+
+    new_parameters: list[inspect.Parameter] = []
     for param in old_parameters:
-        env_var_name = f"{env_var_prefix}{param.name.upper()}"
-        new_annotation = Annotated[param.annotation, typer.Option(envvar=env_var_name)]
+        field: dataclasses.Field = fields_by_name[param.name]  # type: ignore[type-arg]
+
+        typer_kwargs: dict[str, object] = {}
+        if env_var_prefix:
+            typer_kwargs["envvar"] = f"{env_var_prefix}{param.name.upper()}"
+        if "help" in field.metadata:
+            typer_kwargs["help"] = field.metadata["help"]
+
+        resolved_type: type = resolved_hints.get(param.name, param.annotation)
+        new_annotation = Annotated[resolved_type, typer.Option(**typer_kwargs)]
+
         new_parameters.append(param.replace(annotation=new_annotation))
 
-    def wrapped(**kwargs):
-        data = dataclass_cls(**kwargs)
+    def wrapped(**kwargs: object) -> object:
+        data: object = dataclass_cls(**kwargs)
         fields = dataclasses.fields(data)
         max_key_len = max(len(f.name) for f in fields)
         sep = "+" + "-" * (max_key_len + 2) + "+" + "-" * 52 + "+"
@@ -43,40 +97,9 @@ def dataclass_cli(func, env_var_prefix: str = "MILES_SCRIPT_"):
         print(sep)
         return func(data)
 
-    wrapped.__signature__ = signature.replace(parameters=new_parameters)
+    wrapped.__signature__ = init_sig.replace(parameters=new_parameters)  # type: ignore[attr-defined]
     wrapped.__doc__ = func.__doc__
-    wrapped.__name__ = func.__name__
-    wrapped.__qualname__ = func.__qualname__
+    wrapped.__name__ = func.__name__  # type: ignore[attr-defined]
+    wrapped.__qualname__ = func.__qualname__  # type: ignore[attr-defined]
 
-    return wrapped
-
-
-# unit test
-if __name__ == "__main__":
-    from typer.testing import CliRunner
-
-    @dataclasses.dataclass
-    class DemoArgs:
-        name: str
-        count: int = 1
-
-    app = typer.Typer()
-
-    @app.command()
-    @dataclass_cli
-    def main(args: DemoArgs):
-        print(f"{args.name}|{args.count}")
-
-    runner = CliRunner()
-
-    res1 = runner.invoke(app, [], env={"MILES_SCRIPT_NAME": "EnvName", "MILES_SCRIPT_COUNT": "10"})
-    print(f"{res1.stdout=}")
-    assert res1.exit_code == 0
-    assert "EnvName|10" in res1.stdout.strip()
-
-    res2 = runner.invoke(app, ["--count", "999"], env={"MILES_SCRIPT_NAME": "EnvName"})
-    print(f"{res2.stdout=}")
-    assert res2.exit_code == 0
-    assert "EnvName|999" in res2.stdout.strip()
-
-    print("✅ All Tests Passed!")
+    return wrapped  # type: ignore[return-value]

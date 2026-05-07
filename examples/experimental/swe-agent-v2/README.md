@@ -58,7 +58,6 @@ Docker Network (swe-net)
 - Docker with GPU support (nvidia-container-toolkit)
 - Model weights downloaded (e.g. `zai-org/GLM-4.7-Flash`)
 - `transformers>=5` (`pip install "transformers>=5"` — GLM-4.7-Flash's `glm4_moe_lite` model type is not in transformers 4.x)
-- Recommended transformer version: `pip install git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa`
 - Harbor task directories prepared under a shared path
 
 ### Step 1: Create Docker network

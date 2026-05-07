@@ -47,9 +47,9 @@ repos:
 
   - repo: local
     hooks:
-      - id: ban-mpu-get-data-parallel
-        name: Ban direct mpu.get_data_parallel_* calls
+      - id: ban-mpu-get
+        name: Ban direct mpu.get_* calls (use ParallelState)
         language: pygrep
-        entry: 'mpu\.get_data_parallel'
+        entry: 'mpu\.get_'
         types: [python]
-        exclude: '(backends/megatron_utils/parallel\.py|tools/convert_to_hf\.py)'
+        exclude: '(backends/megatron_utils/parallel\.py|tools/convert_to_hf\.py|miles_plugins/|examples/)'

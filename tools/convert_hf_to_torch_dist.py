@@ -12,7 +12,6 @@ from megatron.training.training import get_model
 import miles_plugins.mbridge  # noqa: F401
 from mbridge import AutoBridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
-from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger
@@ -47,8 +46,8 @@ def get_args():
     args.global_batch_size = int(os.environ.get("WORLD_SIZE", "1"))
 
     assert world_size <= args.num_layers, (
-        f"World size {world_size} must be less than or equal to number of layers {args.num_layers}. "
-        "You are using too many GPUs for this conversion."
+        f"World size {world_size} must be <= number of layers {args.num_layers}. "
+        "Use fewer GPUs (--nproc-per-node) for this conversion."
     )
 
     def ceildiv(a, b):
@@ -110,7 +109,6 @@ def main():
     args = get_args()
     init(args)
     model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
-    enforce_marked_param_dtypes(model)
 
     # Load model
     hf_model_path = args.hf_checkpoint

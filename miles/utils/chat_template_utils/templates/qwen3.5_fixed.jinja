@@ -75,14 +75,11 @@
         {%- endif %}
     {%- endif %}
 {%- endfor %}
-{%- if ns.multi_step_tool %}
-    {{- raise_exception('No user query found in messages.') }}
-{%- endif %}
 {%- for message in messages %}
     {%- set content = render_content(message.content, true)|trim %}
     {%- if message.role == "system" %}
         {%- if not loop.first %}
-            {{- '<|im_start|>user\n' + content + '<|im_end|>\n' }}
+            {{- raise_exception('System message must be at the beginning.') }}
         {%- endif %}
     {%- elif message.role == "user" %}
         {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>' + '\n' }}
@@ -97,7 +94,7 @@
             {%- endif %}
         {%- endif %}
         {%- set reasoning_content = reasoning_content|trim %}
-        {%- if loop.index0 > ns.last_query_index %}
+        {%- if (not (clear_thinking | default(true))) or loop.index0 > ns.last_query_index %}
             {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
         {%- else %}
             {{- '<|im_start|>' + message.role + '\n' + content }}

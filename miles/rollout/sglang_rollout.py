@@ -1,6 +1,5 @@
 import asyncio
 import copy
-import inspect
 import logging
 import uuid
 from argparse import Namespace
@@ -15,8 +14,9 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
@@ -260,13 +260,12 @@ async def generate_and_rm(
             # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
             custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
 
-            if custom_func_path is not None:
-                custom_generate_func = load_function(custom_func_path)
-                # if signature has evaluation, pass evaluation
-                if "evaluation" in inspect.signature(custom_generate_func).parameters:
-                    sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
-                else:
-                    sample = await custom_generate_func(args, sample, sampling_params)
+            generate_fn = load_generate_function(custom_func_path) if custom_func_path else None
+            if generate_fn is not None:
+                output = await generate_fn(
+                    GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params, evaluation=evaluation)
+                )
+                sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
 

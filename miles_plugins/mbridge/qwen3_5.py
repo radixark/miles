@@ -7,12 +7,18 @@ from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
 
 
-@register_model(["qwen3_5", "qwen3_5_moe"])
+@register_model(["qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_6_moe"])
 class Qwen3_5Bridge(Qwen2MoEBridge):
     """
-    Bridge for Qwen3.5 models (both dense and MoE variants).
-    Qwen3.5 is a VLM model with weights under model.language_model.layers prefix,
-    separate in_proj_qkv + in_proj_z for linear attention, and nested text_config.
+    Bridge for Qwen3.5 / Qwen3.6 models (both dense and MoE variants).
+    These share the ``qwen3_5_moe`` HF config schema: VLM layout under
+    ``model.language_model.layers``, separate ``in_proj_qkv`` + ``in_proj_z``
+    for linear attention, and nested ``text_config``.
+
+    Qwen3.6-35B-A3B's only structural difference is MTP-expert packing —
+    fused 3-D ``gate_up_proj`` / ``down_proj`` tensors instead of the
+    per-expert ``.weight`` files used by Qwen3.5 — which
+    ``_mtp_experts_fused()`` autodetects from the safetensor index.
     """
 
     _DIRECT_MAPPING = {
@@ -89,13 +95,20 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         "mlp.experts.linear_fc2": ["model.language_model.layers.{layer_number}.mlp.experts.down_proj"],
     }
 
-    # MTP layer uses individual expert format (not fused)
-    _MTP_MLP_MAPPING = {
+    # MTP MLP expert mapping — the format depends on the HF weights.
+    # Qwen3.5-35B-A3B ships MTP experts as individual per-expert tensors;
+    # Qwen3.6-35B-A3B packs them as fused 3-D tensors (like regular layers).
+    # ``_mtp_experts_fused_cached`` is resolved lazily from safetensor_io.
+    _MTP_MLP_MAPPING_UNFUSED = {
         "mlp.experts.linear_fc1": [
             "mtp.layers.{layer_number}.mlp.experts.{expert_id}.gate_proj.weight",
             "mtp.layers.{layer_number}.mlp.experts.{expert_id}.up_proj.weight",
         ],
         "mlp.experts.linear_fc2": ["mtp.layers.{layer_number}.mlp.experts.{expert_id}.down_proj.weight"],
+    }
+    _MTP_MLP_MAPPING_FUSED = {
+        "mlp.experts.linear_fc1": ["mtp.layers.{layer_number}.mlp.experts.gate_up_proj"],
+        "mlp.experts.linear_fc2": ["mtp.layers.{layer_number}.mlp.experts.down_proj"],
     }
 
     # Override to make ffn_hidden_size optional (Qwen3.5 MoE has no intermediate_size)
@@ -185,8 +198,36 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             raise NotImplementedError(f"Unsupported parameter name: {name}")
         return convert_names
 
+    def _mtp_experts_fused(self) -> bool:
+        """Detect whether MTP expert weights are stored in fused 3-D tensors.
+
+        Qwen3.5 MoE-A3B: unfused per-expert tensors (keys end in ``.weight``).
+        Qwen3.6 MoE-A3B: fused ``gate_up_proj`` / ``down_proj`` tensors.
+        Resolved from ``safetensor_io.index`` on first call; result is only
+        cached once ``safetensor_io`` is available, so early pre-init access
+        (e.g. from tests that instantiate via ``__new__``) does not lock in
+        a wrong answer.
+        """
+        cached = getattr(self, "_mtp_experts_fused_cached", None)
+        if cached is not None:
+            return cached
+        io = getattr(self, "safetensor_io", None)
+        index = getattr(io, "index", None) if io is not None else None
+        if not index:
+            return False
+        fused = any(
+            "mtp.layers." in k and "mlp.experts." in k and (k.endswith("gate_up_proj") or k.endswith("down_proj"))
+            for k in index
+        )
+        self._mtp_experts_fused_cached = fused
+        return fused
+
+    @property
+    def _MTP_MLP_MAPPING(self):
+        return self._MTP_MLP_MAPPING_FUSED if self._mtp_experts_fused() else self._MTP_MLP_MAPPING_UNFUSED
+
     def _weight_name_mapping_mtp_mlp(self, name: str) -> list[str]:
-        """Handle MTP MLP mappings, keeping per-expert tensors unfused for MoE layers."""
+        """Handle MTP MLP mappings; per-expert format is detected from HF weights."""
         layer_number = name.split(".")[2]
         mapping = self._MTP_MLP_MAPPING if "mlp.experts.linear_fc" in name else self._MLP_MAPPING
         convert_names = []
