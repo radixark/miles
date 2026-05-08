@@ -84,7 +84,7 @@ If either command fails, see [Debugging](../developer/debug.md) or the [FAQ](../
 
 | Hardware | Status |
 |---|---|
-| NVIDIA H100 / H200 | Production (CI target) |
+| NVIDIA H100 / H200 | Production (CI guarded) |
 | NVIDIA B100 / B200 | Production |
 | NVIDIA A100 | Supported — FP8 features disabled |
 | AMD MI300X, MI325, MI350X, MI355X | Supported via ROCm |
