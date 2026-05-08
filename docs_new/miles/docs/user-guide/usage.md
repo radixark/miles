@@ -24,7 +24,7 @@ make it before tuning anything else.
 | Concern | Megatron-LM | FSDP |
 |---|---|---|
 | Peak throughput at MoE scale | ✅ best-in-class | ✅ |
-| Parallelism | TP · PP · CP · EP · ETP | Not yet — runs as plain FSDP data parallel |
+| Parallelism | [TP / PP / CP / EP / ETP](#parallelism-compatibility) | Not yet — runs as plain FSDP data parallel |
 | Checkpoint format | `torch_dist` | HuggingFace native |
 | HF → backend conversion step | **Required** | **Not needed** |
 | New-architecture support | Via `miles_plugins` wrappers | Via `AutoConfig` / `AutoModelForCausalLM` |
@@ -77,6 +77,25 @@ MODEL_ARGS=(
 The spec function replaces specific Megatron submodules with the HF implementation
 without patching Megatron itself. Details:
 [Backends Beyond Megatron](../advanced/architecture-support.md).
+
+### Parallelism compatibility
+
+Megatron exposes five useful parallel dimensions, but you can't combine them in
+arbitrary ways — only a subset of TP × PP × CP × EP × ETP combinations is actually
+supported, and some legal combinations are slower than the recipe baseline. Start from
+the model recipe's tested combination, then change one dimension at a time.
+
+| Dimension | Use it for | Compatibility notes |
+|---|---|---|
+| TP | Shard dense matrix multiplications inside each layer | When `--tensor-model-parallel-size` is set above 1, also pass `--sequence-parallel` unless the recipe says otherwise. |
+| PP | Split layers across pipeline stages | Combines with TP and CP, but changes micro-batch scheduling and checkpoint layout. |
+| CP | Split long sequences across ranks | Useful for long context; size token budgets as `CP x max_tokens_per_gpu`. |
+| EP | Distribute MoE experts across ranks | MoE-only. Keep trainer EP and SGLang EP as separate choices. |
+| ETP | Tensor-parallelize expert MLPs | MoE-only. Use it only when the recipe enables it or when EP alone cannot fit the experts. |
+
+Do not assume TP, CP, EP, and ETP can all be raised independently for a new model — the
+exact set of supported combinations depends on the Megatron Core kernels and model spec
+being used.
 
 ### Checkpoint format
 
