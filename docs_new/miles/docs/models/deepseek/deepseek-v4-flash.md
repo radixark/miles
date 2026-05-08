@@ -25,20 +25,20 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 
 ## 3. Environment Setup
 
-### 3.1 Required env vars
+### 3.1 Launcher path defaults
 
-The published image `radixark/miles:deepseek-v4` (cu129 x86, H200/B200) preconfigures the launcher's path defaults via `MILES_SCRIPT_*` env vars:
+The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from CLI flags. The defaults baked into the Tap dataclass are:
 
-```bash
-MILES_SCRIPT_MODEL_DIR=/cluster_public/miles_data/models       # shared FS
-MILES_SCRIPT_MODEL_LOCAL_DIR=/node_public/miles_data/models_local  # per-node NVMe
-MILES_SCRIPT_DATA_DIR=/cluster_public/miles_data/datasets
-MILES_SCRIPT_OUTPUT_DIR=/cluster_public/miles_data/outputs
-```
+| Flag | Default | Use |
+|---|---|---|
+| `--data-dir` | `/root/datasets` | HF datasets (dapo-math-17k, aime-2024, gsm8k) |
+| `--model-dir` | `/root/models` | HF model + intermediate Megatron `_torch_dist` artifacts (shared FS) |
+| `--model-local-dir` | (falls back to `--model-dir`) | per-node staging for the local-NVMe copy that `prepare-cp` rsyncs to |
+| `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
-Override with `--model-dir`, `--model-local-dir`, `--data-dir`, `--save-dir` on the Python launcher when your cluster mounts a different layout.
+Override these on the launcher when your cluster mounts a different layout — e.g. `--data-dir /cluster_public/miles_data/datasets`, `--model-local-dir /node_public/miles_data/models_local`. There are no `MILES_SCRIPT_*` env vars that preconfigure these paths; the only env vars the launcher reads are `MILES_SCRIPT_EXTERNAL_RAY` and `MILES_SCRIPT_ENABLE_RAY_SUBMIT` (both governing Ray bootstrapping, see [§4.2](#42-multi-node-fan-out)).
 
-A GB300 (cu130 / arm64) docker image will be published soon.
+The published image `radixark/miles:deepseek-v4` (cu129 x86, H200/B200) is the only currently-released image. A GB300 (cu130 / arm64) docker image will be published soon.
 
 ### 3.2 Download model + datasets
 
