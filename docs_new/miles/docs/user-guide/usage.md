@@ -262,6 +262,8 @@ at startup.
 - [Core concepts](concepts.md) — the four objects that make up any Miles job.
 - [Training script walkthrough](training-script-walkthrough.md) — the launch script,
   argument group by argument group.
+- [Fully Async Rollout](fully-async.md) — decouple generation from trainer steps with
+  a queue-backed rollout worker.
 - [Configuration](cli-reference.md) — the flag taxonomy and defaults.
 - [Backends beyond Megatron](../advanced/architecture-support.md) — wrapping new
   architectures without patching Megatron core.

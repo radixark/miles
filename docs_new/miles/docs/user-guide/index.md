@@ -14,6 +14,7 @@ description: Concepts, launch script walkthrough, customization hooks, and a com
 | [Monitoring & Logging](monitoring.md) | wandb, structured logs, per-source breakdowns, profiling, router metrics. |
 | [Customization](customization.md) | The 22 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
 | [Rollout Endpoints](rollout-endpoints.md) | The `/generate` endpoint and the OpenAI chat endpoint for agentic sessions. |
+| [Fully Async Rollout](fully-async.md) | Queue-backed rollout production, tuning knobs, and when to use `train_async.py`. |
 | [Agentic Chat Templates](agentic-chat-template.md) | Verifying and fixing the chat template so multi-turn rollout stays append-only. |
 | [CLI Reference](cli-reference.md) | Every flag Miles accepts, grouped by subsystem. |
 
