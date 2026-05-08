@@ -40,9 +40,9 @@ needed to run RL at trillion-parameter scale.
 
 ## Supported models
 
-Dense — Qwen3.5, Qwen3, GLM4, MiMo, GPT-OSS.
+Dense — Qwen3.6, Qwen3.5, Qwen3, GLM4, Nemotron-3-Nano, MiMo, GPT-OSS.
 
-Mixture-of-Experts — DeepSeek-V4, DeepSeek V3, Qwen3.5 MoE, Qwen3-Next, Qwen3 MoE, GLM5, GLM4.7, GLM4.5, Kimi K2, Moonlight.
+Mixture-of-Experts — DeepSeek-V4, DeepSeek V3, Qwen3.6 MoE, Qwen3.5 MoE, Qwen3-Next, Qwen3 MoE, GLM5, GLM4.7, GLM4.5, Kimi K2.6, Kimi K2.5, Kimi K2, Moonlight, Nemotron-3-Super, Nemotron-3-Nano MoE.
 
 See [Models](models/index.md) for per-family recipes.
 
