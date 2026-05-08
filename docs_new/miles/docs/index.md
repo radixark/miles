@@ -34,6 +34,9 @@ needed to run RL at trillion-parameter scale.
   extension points.
 - **Minimal core, maximal extension.** Twenty-plus plug-points let you replace the
   rollout, reward, loss, or filter without forking the trainer.
+- **Broad hardware support.** First-class on NVIDIA Hopper (H100, H200) and
+  Blackwell (B100, B200, GB200, GB300), with AMD MI300X / MI325 / MI350 /
+  MI355X also supported via ROCm.
 
 ## Supported models
 
