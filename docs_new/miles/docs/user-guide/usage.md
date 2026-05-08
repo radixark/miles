@@ -42,10 +42,14 @@ a multi-rack job, or anything where the parallelism story matters.
 
 ### Parameter discovery
 
-Miles imports Megatron's entire argument surface at launch via
-`from megatron.training.arguments import parse_args`. That means every Megatron flag
-in your installed checkpoint works without Miles having to re-declare it —
-`--kv-channels`, `--rotary-base`, `--moe-grouped-gemm`, and so on.
+Miles imports Megatron's entire argument surface at launch through Megatron's parser:
+
+```python
+from megatron.training.arguments import parse_args
+```
+
+That means every Megatron flag in your installed checkpoint works without Miles having
+to re-declare it — `--kv-channels`, `--rotary-base`, `--moe-grouped-gemm`, and so on.
 
 Export the Megatron source directory before you launch:
 
