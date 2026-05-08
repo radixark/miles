@@ -17,9 +17,11 @@ needed to run RL at trillion-parameter scale.
 - **Unified low-precision training.** Customisable precision across the rollout and
   training engines, with unified **BF16**, **FP8**, **MXFP8**, and **INT4 QAT** recipes
   available now and an **NVFP4** training recipe in progress.
-- **Rollout Routing Replay (R3).** For MoE models, expert routing captured during
-  inference is replayed during the trainer's forward pass, eliminating the mismatch that
-  destabilises large-scale MoE RL.
+- **Efficient Rollout Routing Replay (R3).** For MoE models, expert routing captured
+  during inference is replayed during the trainer's forward pass, eliminating the
+  mismatch that destabilises large-scale MoE RL. Optimised with a routing-result cache
+  and overlapped device-to-host (D2H) copy to reduce overhead in both single-turn and
+  multi-turn RL.
 - **Speculative rollout with online MTP-SFT.** Miles keeps the draft model's acceptance
   rate high through training by fine-tuning MTP layers on-policy.
 - **Fault tolerance.** Rank-level recovery, step-level replay, and RDMA P2P weight
