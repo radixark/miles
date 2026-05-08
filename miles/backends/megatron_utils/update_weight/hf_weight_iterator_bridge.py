@@ -34,16 +34,17 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     self.model,
                     cpu=False,
                     conversion_tasks=conversion_tasks,
+                    merge_adapter_weights=False,
                 )
 
             # TODO: verify if postprocess_hf_param is needed for LoRA weights
             named_weights = (
                 (
-                    hf_param_name,
+                    hf_param_name.replace(".base_layer.", "."),
                     postprocess_hf_param(
                         args=self.args,
                         megatron_param_name=megatron_param_name,
-                        hf_param_name=hf_param_name,
+                        hf_param_name=hf_param_name.replace(".base_layer.", "."),
                         param=weight,
                     ),
                 )
