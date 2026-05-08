@@ -109,4 +109,4 @@ See [Backends Beyond Megatron](../../advanced/architecture-support.md) for how m
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [Low Precision RL](../../advanced/fp8-low-precision.md)

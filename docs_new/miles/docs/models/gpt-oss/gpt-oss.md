@@ -119,4 +119,4 @@ Neither launcher writes `--save`/`--load`/`--save-interval`.
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](../../advanced/architecture-support.md) — the FSDP variant.
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [Low Precision RL](../../advanced/fp8-low-precision.md)

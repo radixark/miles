@@ -18,7 +18,7 @@ parallel pipeline.
     Capture expert routing during inference and replay during training. The
     mechanism that keeps MoE RL stable.
 
--   :material-flash:{ .lg .middle } **[FP8 and Low Precision](fp8-low-precision.md)**
+-   :material-flash:{ .lg .middle } **[Low Precision RL](fp8-low-precision.md)**
 
     ---
     The unified FP8 path: matched quantisation between training and inference,

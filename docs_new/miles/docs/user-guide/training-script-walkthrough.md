@@ -440,7 +440,7 @@ between rollout and trainer that R3 and TIS were designed to absorb.
     KL anchor silently and makes the loss curve incomparable to earlier runs.
 
 For end-to-end FP8 (trainer and inference at bit-identical precision), see
-[FP8 & Low Precision](../advanced/fp8-low-precision.md). For INT4 quant-aware
+[Low Precision RL](../advanced/fp8-low-precision.md). For INT4 quant-aware
 training, see [INT4 QAT](../advanced/int4-qat.md).
 
 ---
