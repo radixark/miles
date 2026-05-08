@@ -29,7 +29,7 @@ make it before tuning anything else.
 | HF → backend conversion step | **Required** | **Not needed** |
 | New-architecture support | Via `miles_plugins` wrappers | Via `AutoConfig` / `AutoModelForCausalLM` |
 | Gradient checkpointing | Fine-grained (`--recompute-granularity`) | Boolean (`--gradient-checkpointing`) |
-| CPU offload | Distributed optimiser | `--fsdp-cpu-offload` |
+| CPU offload | Distributed optimizer | `--fsdp-cpu-offload` |
 | First-time setup effort | Higher | Lower |
 
 **Rule of thumb.** Reach for FSDP when you want to iterate quickly on a new model or
@@ -114,7 +114,7 @@ Three extension points override Megatron behaviour without forking:
 
 | Flag | Runs |
 |---|---|
-| `--custom-megatron-init-path` | After Megatron initialisation |
+| `--custom-megatron-init-path` | After Megatron initialization |
 | `--custom-megatron-before-log-prob-hook-path` | Before every log-probability computation |
 | `--custom-megatron-before-train-step-hook-path` | Before every training step |
 
@@ -131,7 +131,7 @@ clipping weights surgically. See [Customization](customization.md#megatron-hooks
 FSDP trades maximum throughput for **zero conversion overhead**. There is no
 `torch_dist` step: Miles reads architecture information from the HuggingFace
 `config.json` and loads weights directly. Architecture discovery is automatic via
-`AutoModelForCausalLM.from_pretrained()`, the distributed optimiser is built-in, and
+`AutoModelForCausalLM.from_pretrained()`, the distributed optimizer is built-in, and
 mixed precision falls out of standard PyTorch.
 
 ### Enabling it
@@ -151,10 +151,10 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 | Pipeline parallel | `--pipeline-model-parallel-size` | Not supported yet |
 | Expert parallel | `--expert-model-parallel-size` | Not supported yet |
 | Context parallel | `--context-parallel-size` | Not supported yet |
-| Optimiser | `--use-distributed-optimizer` *(forced on by Miles)* | Built-in |
+| Optimizer | `--use-distributed-optimizer` *(forced on by Miles)* | Built-in |
 | Gradient checkpoint | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` *(boolean)* |
-| CPU offload | Distributed optimiser | `--fsdp-cpu-offload` |
-| CPU backend | *(in distributed optimiser)* | `--fsdp-cpu-backend` |
+| CPU offload | Distributed optimizer | `--fsdp-cpu-offload` |
+| CPU backend | *(in distributed optimizer)* | `--fsdp-cpu-backend` |
 | Attention backend | Decided by Megatron Core | `--attn-implementation flash_attention_2 / sdpa / eager` |
 | Mixed precision | `--fp16` / `--bf16` | `--fp16` *(bf16 inferred)* |
 | Extra backend config | — | `--config <yaml>` |

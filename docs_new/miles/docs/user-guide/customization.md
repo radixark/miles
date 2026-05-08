@@ -18,7 +18,7 @@ and the default it replaces.
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
 | **Reward** | `--custom-rm-path` | Reward computation |
-| | `--custom-reward-post-process-path` | Reward normalisation |
+| | `--custom-reward-post-process-path` | Reward normalization |
 | **Filtering** | `--dynamic-sampling-filter-path` | Per-group filter (DAPO) |
 | | `--buffer-filter-path` | Buffer dequeue filter |
 | | `--rollout-sample-filter-path` | Per-sample loss filter |
@@ -107,7 +107,7 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
 
 ### `--custom-reward-post-process-path`
 
-Hook to normalise rewards differently from the default GRPO normalisation.
+Hook to normalize rewards differently from the default GRPO normalization.
 
 ---
 
@@ -142,7 +142,7 @@ def buffer_filter(
 ### `--rollout-sample-filter-path`
 
 Per-sample, in-place. Set `s.remove_sample = True` to exclude a sample from the loss
-(advantage normalisation still uses it).
+(advantage normalization still uses it).
 
 The framework passes `data: list[list[Sample]]` — a list of
 `n_samples_per_prompt`-size groups — so iterate the outer list once to reach `Sample`
@@ -229,7 +229,7 @@ def convert_samples_to_train_data(args, samples) -> dict:
 | `--custom-megatron-before-log-prob-hook-path` | `def custom_hook(args, model, store_prefix) -> None` |
 | `--custom-megatron-before-train-step-hook-path` | `def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler) -> None` |
 
-These give per-step access to the live Megatron model and optimiser, useful for
+These give per-step access to the live Megatron model and optimizer, useful for
 custom probes, weight clipping, or surgical interventions.
 
 ---

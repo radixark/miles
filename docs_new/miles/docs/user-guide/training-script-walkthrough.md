@@ -44,7 +44,7 @@ The sourced file sets `MODEL_ARGS=(--num-layers ... --hidden-size ... --rotary-b
 
 !!! warning "Architecture parameters are not self-validating"
     Two checkpoints from the same family can ship different `--rotary-base`, vocab
-    padding, or normalisation epsilon. Diff the `config.json` against the file in
+    padding, or normalization epsilon. Diff the `config.json` against the file in
     `scripts/models/` before you run, and override anything that drifts:
 
     ```bash
@@ -85,8 +85,8 @@ Their product is the total sample count produced each rollout.
 
 **Consumption side**
 
-- `--global-batch-size` — samples used per optimiser step.
-- `--num-steps-per-rollout` — optimiser steps per rollout. Leave at `1` for strict
+- `--global-batch-size` — samples used per optimizer step.
+- `--num-steps-per-rollout` — optimizer steps per rollout. Leave at `1` for strict
   on-policy behaviour; raise it for off-policy reuse of rollout batches.
 
 Their product is the total sample count consumed each rollout.
@@ -119,14 +119,14 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 8192
    --rollout-temperature 1
 
-   --balance-data                  # equalise tokens across DP ranks
+   --balance-data                  # equalize tokens across DP ranks
 )
 ```
 
-!!! note "Optimiser step vs. weight sync"
+!!! note "Optimizer step vs. weight sync"
     `--num-steps-per-rollout` counts calls to `optimizer.step()`, not the weight
     handshake between trainer and SGLang. The latter happens exactly once per rollout,
-    regardless of how many optimiser steps fired in between.
+    regardless of how many optimizer steps fired in between.
 
 ## EVAL_ARGS — a strict subset of rollout
 
@@ -221,8 +221,8 @@ A few design choices become visible here:
 
 ## OPTIMIZER_ARGS — nothing surprising
 
-Post-training is unusually sensitive to optimiser settings: the model is already in a
-good basin and large updates destabilise it.
+Post-training is unusually sensitive to optimizer settings: the model is already in a
+good basin and large updates destabilize it.
 
 ```bash
 OPTIMIZER_ARGS=(
@@ -237,7 +237,7 @@ OPTIMIZER_ARGS=(
 
 A rule of thumb: start at `lr = 1e-6` with a constant schedule. If the loss plateaus
 early, investigate the reward signal before raising the learning rate — in most cases
-the reward pipeline collapsed (same score for every sample) rather than the optimiser
+the reward pipeline collapsed (same score for every sample) rather than the optimizer
 stalling.
 
 ## SGLANG_ARGS — passthrough to the rollout engine
@@ -331,7 +331,7 @@ ray job submit ... -- python3 train.py \
 entire allocation.
 
 !!! warning "Leave SGLang some headroom"
-    Megatron reserves VRAM during initialisation and only releases it once the first
+    Megatron reserves VRAM during initialization and only releases it once the first
     offload completes. If SGLang is sized to the full device capacity, the init
     collision produces an OOM before training ever starts. Drop
     `--sglang-mem-fraction-static` to **0.8** (further if memory is still tight).
@@ -447,7 +447,7 @@ training, see [INT4 QAT](../advanced/int4-qat.md).
 
 ## Next
 
-- [Configuration](cli-reference.md) — the same material organised as a flag-by-flag
+- [Configuration](cli-reference.md) — the same material organized as a flag-by-flag
   reference.
 - [Server Arguments](cli-reference.md) — the complete CLI surface.
 - [Customization](customization.md) — the twenty-plus Python extension points.

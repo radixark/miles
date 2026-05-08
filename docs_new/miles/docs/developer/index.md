@@ -28,7 +28,7 @@ short tour for new contributors.
 -   :material-graph-outline:{ .lg .middle } **[Architecture Overview](architecture.md)**
 
     ---
-    The 30-minute tour of how Miles is organised internally.
+    The 30-minute tour of how Miles is organized internally.
 
 </div>
 

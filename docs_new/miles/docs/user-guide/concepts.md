@@ -44,7 +44,7 @@ for it in range(num_rollout):
     # 2. Score
     rewards   = reward_fn(prompts, responses, labels)
 
-    # 3. Optimise
+    # 3. Optimize
     for step in range(num_steps_per_rollout):
         batch = pack(prompts, responses, rewards, size=global_batch_size)
         loss  = grpo_loss(actor, ref_model, batch)

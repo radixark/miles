@@ -28,5 +28,5 @@ See the [DeepSeek R1 / V3](deepseek.md) page for the full flow — FP8 → BF16 
 ## Pairs well with
 
 - [PD Disaggregation](../../advanced/pd-disaggregation.md) — 671 B is where PD really earns its keep.
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md) — amortise weight sync across ranks.
+- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md) — amortize weight sync across ranks.
 - [Fault Tolerance](../../advanced/fault-tolerance.md) — node failures are inevitable at 16-node scale.

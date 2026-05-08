@@ -13,7 +13,7 @@ allocation between rollout and training.
 
 For each token, an MoE router picks `top-k` experts. The choice depends on the
 input through a soft router and a top-k op. In production the router is a
-learned `nn.Linear` with non-deterministic kernels and FP8 quantisation, so tiny
+learned `nn.Linear` with non-deterministic kernels and FP8 quantization, so tiny
 numerical differences flip routes at the per-layer, per-token level.
 
 Without R3:

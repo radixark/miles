@@ -98,7 +98,7 @@ Compare to [run-qwen3-4B.sh](../models/qwen/qwen3.md). The deltas:
 | Flag | Why |
 |---|---|
 | `--rollout-function-path miles.rollout.sft_rollout.generate_rollout` | Read from disk instead of generating |
-| `--rollout-batch-size = --global-batch-size` | One batch read = one optimiser step |
+| `--rollout-batch-size = --global-batch-size` | One batch read = one optimizer step |
 | **No** `--n-samples-per-prompt` | SFT has one target per input |
 | `--loss-type sft_loss` | Cross-entropy instead of policy-gradient |
 | `--calculate-per-token-loss` | Standard SFT averages over unmasked tokens |
@@ -124,7 +124,7 @@ worker count or use parquet (we already do).
 | Knob | Effect |
 |---|---|
 | `--num-epoch` | Total passes over dataset |
-| `--rollout-batch-size` | Bigger = better GPU utilisation, more memory |
+| `--rollout-batch-size` | Bigger = better GPU utilization, more memory |
 | `--max-tokens-per-gpu` | As always — push it up until OOM |
 | `--lr` | SFT typically `1e-5` to `5e-5` (10× higher than RL) |
 | `--lr-decay-style cosine --lr-warmup-iters 100` | Standard SFT schedule |

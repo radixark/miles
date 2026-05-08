@@ -65,7 +65,7 @@ PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
 
 ### 4.1 Quick start
 
-The launcher is a parametrised Typer script (8 × H200) that exercises arbitrary
+The launcher is a parametrized Typer script (8 × H200) that exercises arbitrary
 (TP, EP, CP, PP, ETP) cells:
 
 ```bash

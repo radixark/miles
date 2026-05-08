@@ -42,7 +42,7 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir $BASE_DIR/rl_
 
 ### 3.3 HF → Megatron `torch_dist` conversion
 
-The HF checkpoint ships in block-quantised FP8 — first cast it to BF16:
+The HF checkpoint ships in block-quantized FP8 — first cast it to BF16:
 
 ```bash
 cd miles/
@@ -234,7 +234,7 @@ OPTIMIZER_ARGS=(
 
 ### 5.5 Notable quirks
 
-- **Online FP8 quantisation against the HF config**: `--hf-checkpoint` points at the FP8 HF directory (also where the tokenizer is read from). miles applies the quantisation config from the HF checkpoint, so weights are block-wise quantised before being passed to SGLang. The BF16 HF directory is available as a commented alternative in `CKPT_ARGS`.
+- **Online FP8 quantization against the HF config**: `--hf-checkpoint` points at the FP8 HF directory (also where the tokenizer is read from). miles applies the quantization config from the HF checkpoint, so weights are block-wise quantized before being passed to SGLang. The BF16 HF directory is available as a commented alternative in `CKPT_ARGS`.
 - **`--decoder-last-pipeline-num-layers 13`** is mandatory under PP=4 (61 layers don't divide evenly).
 - **CKPT_ARGS** point at `$BASE_DIR/DeepSeek-R1_miles/` for both `--load` and `--save`; `--load` defaults to `--ref-load` when empty, so first run reads from `torch_dist`.
 - **`--colocate`** runs actor and rollout on the same GPUs (16 nodes × 8 GPU = 128 GPUs total via `--actor-num-nodes 16 --actor-num-gpus-per-node 8`).

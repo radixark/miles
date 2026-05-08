@@ -54,7 +54,7 @@ description: The questions every new Miles user asks in their first week.
 
     So one rollout produces `rollout_batch_size × n_samples_per_prompt` samples.
 
-    `--num-steps-per-rollout` decides how many optimiser steps consume that data. The
+    `--num-steps-per-rollout` decides how many optimizer steps consume that data. The
     invariant is:
 
     > `rollout-batch-size × n-samples-per-prompt = global-batch-size × num-steps-per-rollout`

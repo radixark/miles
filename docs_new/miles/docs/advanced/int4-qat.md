@@ -1,13 +1,13 @@
 ---
 title: INT4 Quantization-Aware Training
-description: Fit large models on a single 8-GPU node by training with W4A16 quantisation in the loop.
+description: Fit large models on a single 8-GPU node by training with W4A16 quantization in the loop.
 ---
 
 # INT4 W4A16 Quantization-Aware Training
 
 When the model is large enough that even FP8 will not fit on one node, the
 options are spreading across more nodes (and paying cross-node bandwidth) or
-quantising further. Miles ships an INT4 W4A16 quant-aware-training pipeline.
+quantizing further. Miles ships an INT4 W4A16 quant-aware-training pipeline.
 On an 8 × 141 GB H200 node, this is the path used to fit very large models in
 a single box.
 
@@ -18,11 +18,11 @@ The recipe is inspired by the
 
 | Term | Bits | Notes |
 |---|---|---|
-| W4 | 4-bit weights | Group-quantised (typical group size 32–128) |
+| W4 | 4-bit weights | Group-quantized (typical group size 32–128) |
 | A16 | 16-bit activations | BF16 activation pathway |
 
 The combination keeps the weights small (memory-bound) while activations stay
-in BF16 (math-bound). With QAT the model trains *with* the quantisation in the
+in BF16 (math-bound). With QAT the model trains *with* the quantization in the
 loop, so the weights round well during inference.
 
 ## Calibration
@@ -50,7 +50,7 @@ python tools/convert_hf_to_int4.py \
 | `--trust-remote-code` | off | Pass when the HF config requires custom code. |
 
 The output is a HuggingFace directory with per-group INT4 weights and scales.
-Point `--hf-checkpoint` at it; SGLang autodetects the quantisation at load time.
+Point `--hf-checkpoint` at it; SGLang autodetects the quantization at load time.
 
 ## Enabling QAT
 
@@ -83,7 +83,7 @@ so the KL anchor stays full-precision.
 
 ## Pairs with
 
-* [R3](miles-router.md). Keeps MoE routing stable across the quantised forward.
+* [R3](miles-router.md). Keeps MoE routing stable across the quantized forward.
 * [P2P weight transfer](p2p-weight-transfer.md). INT4 weights are 4× smaller,
   so weight sync transfers less data.
 * [Speculative decoding](speculative-decoding.md). Compounds for end-to-end

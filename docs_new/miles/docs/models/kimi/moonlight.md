@@ -7,14 +7,14 @@ description: Single-node MoE recipe (8 GPU) — DAPO-style dynamic sampling and 
 
 ## 1. Model Introduction
 
-[Moonlight](https://huggingface.co/moonshotai/Moonlight-16B-A3B) is Moonshot AI's compact MoE — 16 B total / 3 B active, trained with the Muon optimiser — and a useful single-node test target for MoE RL code changes before scaling to Kimi K2.
+[Moonlight](https://huggingface.co/moonshotai/Moonlight-16B-A3B) is Moonshot AI's compact MoE — 16 B total / 3 B active, trained with the Muon optimizer — and a useful single-node test target for MoE RL code changes before scaling to Kimi K2.
 
 **Key highlights:**
 
 - **Compact MoE**: 16 B total / 3 B active, 27 layers (1 dense + 26 MoE), 64 routed experts top-6 + 2 shared.
 - **MLA attention**: Multi-head Latent Attention with `kv-LoRA rank 512`.
 - **Single-node footprint**: full RL recipe fits on 1 × 8 H100.
-- **Muon-trained base**: pretrained with the Muon optimiser; weight decay matters at scale.
+- **Muon-trained base**: pretrained with the Muon optimizer; weight decay matters at scale.
 
 ## 2. Supported Variants
 

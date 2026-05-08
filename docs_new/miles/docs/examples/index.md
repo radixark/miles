@@ -46,7 +46,7 @@ Each example follows the same template:
 -   :material-account-group:{ .lg .middle } **[Multi-Agent Co-Evolution](multi-agent.md)**
 
     ---
-    Two specialised agents (e.g. doctor + patient) train together and improve
+    Two specialized agents (e.g. doctor + patient) train together and improve
     each other.
 
 -   :material-replay:{ .lg .middle } **[Reproducibility Recipe](reproducibility.md)**

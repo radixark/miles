@@ -142,8 +142,8 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
 
 1. **Loss masking.** Tool/observation tokens get `loss_mask=0`. Without this, the model
    learns to *predict the search results*, which is both wrong and wildly unhelpful.
-2. **Tokenisation alignment.** The model must see and the trainer must score the
-   *exact same tokens*. Pre-tokenising vs. re-tokenising at training time can drift —
+2. **Tokenization alignment.** The model must see and the trainer must score the
+   *exact same tokens*. Pre-tokenizing vs. re-tokenizing at training time can drift —
    that's where the [chat template verifier](../user-guide/agentic-chat-template.md)
    matters.
 
@@ -214,7 +214,7 @@ drifted too far. Lower `--lr` or shorten `max_turns`.
 | Retriever 502 errors | `lsof -i :8000` — make sure your local server is alive |
 | Conda activation collisions | Deactivate the `retriever` env before launching training |
 | EM stays at 0 | Check the answer extractor — most often a regex mismatch |
-| Loss masks shifted by one token | Tokeniser added a leading space; align with `add_special_tokens=False` |
+| Loss masks shifted by one token | Tokenizer added a leading space; align with `add_special_tokens=False` |
 
 ## Variations
 

@@ -88,7 +88,7 @@ flowchart LR
 
 1. Sample `rollout-batch-size` prompts and generate `n-samples-per-prompt` responses.
 2. Score responses with the reward model (`--rm-type deepscaler` in this recipe).
-3. Compute the GRPO objective and step the optimiser.
+3. Compute the GRPO objective and step the optimizer.
 4. Push updated weights back to the SGLang engines via P2P.
 
 The four batch-sizing knobs satisfy:

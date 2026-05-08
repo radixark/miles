@@ -27,9 +27,9 @@ on the RL part.
 ## What ships on day one
 
 - **Unified low-precision pipeline.** End-to-end FP8 sampling and training share a
-  single quantisation path. Rollout and trainer see bit-identical policies.
+  single quantization path. Rollout and trainer see bit-identical policies.
 - **Rollout Routing Replay (R3).** For MoE models, expert routing captured at
-  inference time is replayed during training, eliminating the mismatch that destabilises
+  inference time is replayed during training, eliminating the mismatch that destabilizes
   large-scale MoE RL.
 - **Speculative rollout with online MTP-SFT.** The draft model's acceptance rate stays
   high through training because its MTP layers are fine-tuned on-policy.
@@ -39,7 +39,7 @@ on the RL part.
   weeks-long runs survive routine hardware faults.
 - **First-class agentic rollout.** Tool use, search, code execution, and asynchronous
   multi-agent co-evolution all supported through clean Python extension points.
-- **Customise without forking.** Twenty-plus plug-points let you replace the rollout,
+- **Customize without forking.** Twenty-plus plug-points let you replace the rollout,
   reward, loss, filter, or Megatron hook through CLI flags.
 
 ## Design principles
@@ -48,7 +48,7 @@ on the RL part.
 behaviour is swappable through a `--*-path` flag rather than a code patch.
 
 **Match the hardware.** Miles is designed around NVLink, InfiniBand, and RDMA — at
-trillion-parameter scale, the interconnect is the rate limiter, so we optimise for it
+trillion-parameter scale, the interconnect is the rate limiter, so we optimize for it
 first.
 
 **Systems-first, algorithms-second.** We chase the instability that kills production

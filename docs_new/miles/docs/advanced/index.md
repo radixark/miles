@@ -21,7 +21,7 @@ parallel pipeline.
 -   :material-flash:{ .lg .middle } **[Low Precision RL](fp8-low-precision.md)**
 
     ---
-    The unified FP8 path: matched quantisation between training and inference,
+    The unified FP8 path: matched quantization between training and inference,
     BF16 backward and master weights.
 
 -   :material-chip:{ .lg .middle } **[INT4 QAT](int4-qat.md)**
