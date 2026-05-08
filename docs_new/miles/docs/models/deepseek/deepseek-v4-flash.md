@@ -11,10 +11,10 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 
 **Key highlights:**
 
-- **Sparse multi-head latent attention (sparse-MLA)**: low-rank Q (`q_lora_rank=1024`), single-head latent KV (`head_dim=512`), grouped output projection (8 groups, LoRA rank 1024). A learned **DSA indexer** picks topk=512 KV per query at runtime.
-- **KV compressors**: per-layer compression ratios (2 / 4 / 128) reduce the indexer's effective KV size; compressor is FP32-stable with optional FP8 QAT.
+- **Hybrid Attention (CSA + HCA)**: combines **Compressed Sparse Attention** (light compression) and **Heavily Compressed Attention** (heavy compression) layers — DeepSeek's official V4 name (see [HF model card §Introduction](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash#introduction)). Implementation uses low-rank Q (`q_lora_rank=1024`), single-head latent KV (`head_dim=512`), grouped output projection (8 groups, LoRA rank 1024). A learned topk **indexer** (`index_topk=512`, 64 heads × 128 dim) picks 512 KV per query at runtime, inheriting V3.2's DSA-style design.
+- **KV compressors**: 44-element compression schedule `compress_ratios = [0, 0, 4, 128, 4, 128, …, 4, 0]` — first / last few layers are uncompressed (ratio 0), middle layers alternate 4× (CSA) and 128× (HCA). The compressor RoPE has its own base (`compress_rope_theta=160000`), separate from the main attention RoPE.
 - **Hyper-connection (HC) routing**: each layer expands hidden state into `hc_mult=4` parallel streams and recombines via sinkhorn-normalised mixing. Pipeline-parallel buffers are 4-D `[s, b, hc_mult, d]` instead of 3-D.
-- **YaRN RoPE base 160000**, per-head learnable attention sinks, MoE with hash-routed first `dsv4_n_hash_layers` layers.
+- **YaRN RoPE on main attention**: `rope_theta=10000`, YaRN `factor=16`, `original_max_position_embeddings=65536` → effective context length **1,048,576 tokens (1 M)**. Per-head learnable attention sinks (one scalar per head, added to softmax denominator; see `miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_fwd.py`). MoE has 256 routed + 1 shared experts, top-6; first 3 layers (`num_hash_layers=3`) are dense-routed via hash buckets.
 - **FP8 weights with simulated FP8 QAT** on indexer and compressor activations; default training is BF16 on the cast checkpoint, default rollout is FP8 in SGLang with `--sglang-attention-backend compressed`.
 
 ## 2. Supported Variants
