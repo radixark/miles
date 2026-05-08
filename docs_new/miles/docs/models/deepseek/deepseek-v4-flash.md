@@ -7,7 +7,7 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) — a 13 B-active / 284 B-total MoE with a substantially different attention stack from V3/R1. The miles + Megatron-Core integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published image `radixark/miles:deepseek-v4`.
+[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE with a substantially different attention stack from V3/R1. The miles + Megatron-Core integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published image `radixark/miles:deepseek-v4`.
 
 **Key highlights:**
 
@@ -164,8 +164,7 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 ### 5.5 Notable quirks
 
 - **Conversion world_size ≤ num_layers.** `tools/convert_hf_to_torch_dist.py` asserts `world_size ≤ args.num_layers`. Flash has 43 layers, so 8 × 8 = 64 ranks fails. Run `prepare-spmd` (or the standalone `torchrun`) with `--num-gpus-per-node 4` (32 ranks) and let the subsequent `prepare-cp` / `train` stages resume at 8 GPUs/node.
-- **`--hf-checkpoint <path>` skips download but `prepare-cp` still rsyncs `{model_dir}/{model_name}/`.** When you point at pre-staged FP8 weights outside `{model_dir}`, the launcher's second rsync stat()s a missing source (rsync exit 23). Symlink the expected path: `ln -s /path/to/DeepSeek-V4-Flash-FP8 {model_dir}/DeepSeek-V4-Flash-FP8`.
-- **Bursty rollouts can cycle stale TCP connections in `httpx`'s pool.** Under default `httpx.AsyncClient` settings, miles' `_http_client` may reuse a server-side-closed socket and raise `httpx.ReadError` (or trip the miles router circuit breaker, surfacing as a 500 storm). Patch both `httpx.Limits(...)` constructions in `miles/utils/http_utils.py` to set `max_keepalive_connections=0` (covers `init_http_client` and `_HttpPosterActor.__init__`).
+- **`--hf-checkpoint <path>` skips download but `prepare-cp` still rsyncs `{model_dir}/{model_name}/`.** When you point at pre-staged FP8 weights outside `{model_dir}`, the launcher's second rsync fails because the source path does not exist (rsync exit 23). Symlink the expected path: `ln -s /path/to/DeepSeek-V4-Flash-FP8 {model_dir}/DeepSeek-V4-Flash-FP8`.
 - **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognises `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
 
 ## 6. Pairs Well With
