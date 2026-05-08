@@ -14,8 +14,9 @@ needed to run RL at trillion-parameter scale.
 
 ## Core features
 
-- **Unified low-precision training.** FP8 sampling and FP8 training share a single
-  quantisation path, so the rollout policy and the training policy are bit-identical.
+- **Unified low-precision training.** Customisable precision across the rollout and
+  training engines, with unified **BF16**, **FP8**, **MXFP8**, and **INT4 QAT** recipes
+  available now and an **NVFP4** training recipe in progress.
 - **Rollout Routing Replay (R3).** For MoE models, expert routing captured during
   inference is replayed during the trainer's forward pass, eliminating the mismatch that
   destabilises large-scale MoE RL.
