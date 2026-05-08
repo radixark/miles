@@ -90,7 +90,7 @@ See [Platforms](platforms/index.md).
 1. **[Installation](getting-started/installation.md)** — Docker, bare metal, AMD.
 2. **[Quick Start](getting-started/quick-start.md)** — a working training run in under an hour.
 3. **[Core concepts](user-guide/concepts.md)** — the four objects in every Miles job.
-4. **[Training backends](user-guide/usage.md)** — choosing between Megatron and FSDP.
+4. **[Training backend](user-guide/usage.md)** — Megatron-LM, parallelism, checkpoints, and hooks.
 5. **[Training script walkthrough](user-guide/training-script-walkthrough.md)** — every
    argument group in a launch script, annotated.
 
