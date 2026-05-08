@@ -8,6 +8,7 @@ description: Concepts, launch script walkthrough, customization hooks, and a com
 | Page | What it covers |
 |---|---|
 | [Core Concepts](concepts.md) | The four objects in the training loop and the four-knob invariant. |
+| [Argument Groups](argument-groups.md) | Where `MODEL_ARGS`, `PERF_ARGS`, `GRPO_ARGS`, and the other launch-script arrays belong. |
 | [Training Backends](usage.md) | Choosing between Megatron-LM and FSDP, and each backend's plumbing. |
 | [Training Script Walkthrough](training-script-walkthrough.md) | The eight `XXX_ARGS` arrays in a launch script, plus the execution modes (sync/async, colocation, dynamic sampling, partial rollout, BF16+FP8). |
 | [Monitoring & Logging](monitoring.md) | wandb, structured logs, per-source breakdowns, profiling, router metrics. |

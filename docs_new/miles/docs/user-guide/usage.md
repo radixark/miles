@@ -95,7 +95,8 @@ the model recipe's tested combination, then change one dimension at a time.
 
 Do not assume TP, CP, EP, and ETP can all be raised independently for a new model — the
 exact set of supported combinations depends on the Megatron Core kernels and model spec
-being used.
+being used. The [Argument Groups](argument-groups.md#perf-args) page lists the flags
+that belong in `PERF_ARGS`.
 
 ### Checkpoint format
 
