@@ -28,14 +28,13 @@ source "${SCRIPT_DIR}/models/qwen3.5-35B-A3B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint /data/Qwen3.5-35B-A3B
-   --megatron-to-hf-mode bridge
 )
 
 LORA_ARGS=(
    --lora-rank 32                    # LoRA rank (typical values: 8, 16, 32, 64)
    --lora-alpha 32                   # LoRA alpha (usually 2x rank)
    --lora-dropout 0.0                # LoRA dropout (0.0 for RL training)
-   --target-modules "o_proj"
+   --target-modules "q_proj"
    --megatron-to-hf-mode bridge
 )
 
@@ -61,8 +60,8 @@ ROLLOUT_ARGS=(
 EVAL_ARGS=(
    --eval-interval 20
    --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
+   --n-samples-per-eval-prompt 1
+   --eval-max-response-len 8000
    --eval-top-p 1
 )
 
@@ -81,9 +80,11 @@ PERF_ARGS=(
    # --micro-batch-size 1
    --use-dynamic-batch-size
    --max-tokens-per-gpu 8192
+   --no-offload-train
 )
 
 GRPO_ARGS=(
+
    --advantage-estimator grpo
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
@@ -110,16 +111,19 @@ WANDB_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.4
+   --sglang-tp-size 1
    --sglang-ep-size 8
+   --sglang-dtype bfloat16
 
-   #--sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
-   --sglang-disable-cuda-graph
-
+   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
    # mtp speculative decoding
+   #--sglang-disable-cuda-graph-padding
 
 
    --sglang-max-running-requests 512
+   --sglang-moe-runner-backend triton
+   --sglang-lora-backend csgmv
 )
 
 
@@ -132,6 +136,8 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+   --moe-token-dispatcher-type flex
+   --update-weight-buffer-size 536870912 # 512MB
 )
 
 # launch the master node of ray in container
