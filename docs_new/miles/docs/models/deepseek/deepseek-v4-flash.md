@@ -94,7 +94,7 @@ python scripts/run_deepseek_v4.py full-train \
 
 ### 4.2 Multi-node fan-out
 
-The Python launcher manages Ray internally — start each pod with `radixark/miles:deepseek-v4` and a working `/cluster_public` (or equivalent shared FS), then on the head node:
+The Python launcher manages Ray internally — start each pod with `radixark/miles:deepseek-v4` and a working shared filesystem mounted at the same path on every node, then on the head node:
 
 ```bash
 ray start --head --num-gpus 8 --disable-usage-stats
