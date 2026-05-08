@@ -132,7 +132,25 @@ def patch_param_grad_buffer_for_colocate_mode_lora() -> None:
     def _patched_init(self, *args, **kwargs):
         kwargs["disable_param_buffers_cpu_backup"] = True
         kwargs["disable_grad_buffers_cpu_backup"] = True
-        _original_init(self, *args, **kwargs)
+
+        tms_cdll = None
+        tms_region_was_active = False
+        try:
+            from torch_memory_saver import torch_memory_saver
+
+            if torch_memory_saver._impl is not None:
+                tms_cdll = torch_memory_saver._impl._binary_wrapper.cdll
+                tms_region_was_active = bool(tms_cdll.tms_get_interesting_region())
+                if tms_region_was_active:
+                    tms_cdll.tms_set_interesting_region(False)
+        except ImportError:
+            pass
+
+        try:
+            _original_init(self, *args, **kwargs)
+        finally:
+            if tms_cdll is not None and tms_region_was_active:
+                tms_cdll.tms_set_interesting_region(True)
 
     _ParamAndGradBuffer.__init__ = _patched_init
     logger.info("Patched _ParamAndGradBuffer.__init__ for LoRA colocate mode (disable cpu backup)")

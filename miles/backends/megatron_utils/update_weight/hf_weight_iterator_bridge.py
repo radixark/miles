@@ -34,7 +34,10 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     self.model,
                     cpu=False,
                     conversion_tasks=conversion_tasks,
+                    merge_adapter_weights=False
                 )
+            
+            named_weights = (i for i in named_weights if i is not None)
 
             # TODO: verify if postprocess_hf_param is needed for LoRA weights
             named_weights = (
@@ -72,17 +75,20 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
         new_param_weight = new_param_weight.cuda()
         return dataclasses.replace(task, param_weight=new_param_weight)
 
-    return _MapWithLen(_handle_one, vanilla_conversion_tasks)
+    return _MapWithLen(_handle_one, vanilla_conversion_tasks, predicate=lambda task: task is not None)
 
 
 class _MapWithLen:
-    def __init__(self, fn, xs):
+    def __init__(self, fn, xs, predicate=lambda _: True):
         self.fn = fn
         self.xs = xs
+        self.predicate = predicate
 
     def __len__(self):
-        return len(self.xs)
+        return sum(1 for x in self.xs if self.predicate(x))
 
     def __iter__(self):
         for x in self.xs:
+            if not self.predicate(x):
+                continue
             yield self.fn(x)
