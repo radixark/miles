@@ -117,8 +117,6 @@ Or set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` to point the launcher
 
 ### 5.1 Parallelism
 
-`scripts/run_deepseek_v4.py::_get_parallel_config` validates the layout per cluster shape:
-
 | Hardware | Nodes × GPUs | TP | PP | EP | expert-TP | `max_tokens_per_gpu` | Pipeline layout |
 |---|---|---|---|---|---|---|---|
 | H200 | 8 × 8 = 64 | 8 | 8 | 8 | 1 | 2048 | first 4 / last 3 layers |
