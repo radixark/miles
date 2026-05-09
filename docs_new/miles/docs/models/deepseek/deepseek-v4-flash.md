@@ -125,7 +125,7 @@ Or set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` to point the launcher
 | GB300 | 8 × 4 = 32 (CP=1) | 8 | 4 | 8 | 1 | 2048 | first 11 / last 10 layers |
 | GB300 | 8 × 4 = 32 (CP=2) | 2 | 8 | 4 | 1 | 2048 | first 4 / last 3 layers |
 
-`_get_parallel_config` raises `NotImplementedError` for any other GPU count.
+These are the validated layouts shipped with the launcher; you can supply any other TP / EP / PP / CP combination that fits your compute.
 
 ### 5.2 Algorithm
 
