@@ -23,9 +23,7 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 |---|---|---|
 | DeepSeek-V4-Flash-FP8 | 13 B / 284 B | [sgl-project/DeepSeek-V4-Flash-FP8](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) |
 
-## 3. Environment Setup
-
-### 3.1 Launcher path defaults
+## 3. Launcher path defaults
 
 The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from CLI flags. The defaults are:
 
@@ -35,7 +33,7 @@ The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts as separate sibling sub-directories |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
-Override these on the launcher when your cluster mounts a different layout. There are no `MILES_SCRIPT_*` env vars that preconfigure these paths; the only env vars the launcher reads are `MILES_SCRIPT_EXTERNAL_RAY` and `MILES_SCRIPT_ENABLE_RAY_SUBMIT` (both governing Ray bootstrapping, see [§4.2](#42-multi-node-fan-out)).
+Override these on the launcher when your cluster mounts a different layout. There are no `MILES_SCRIPT_*` env vars that preconfigure these paths; the only env vars the launcher reads are `MILES_SCRIPT_EXTERNAL_RAY` and `MILES_SCRIPT_ENABLE_RAY_SUBMIT` (both governing Ray bootstrapping, see [§5.3](#53-multi-node-fan-out)).
 
 The H200 / B200 image is `radixark/miles:deepseek-v4` (cu129 x86). For GB300 (cu130 / arm64), use `radixark/miles:gb300-dev-dskv4`:
 
@@ -43,7 +41,25 @@ The H200 / B200 image is `radixark/miles:deepseek-v4` (cu129 x86). For GB300 (cu
 docker pull radixark/miles:gb300-dev-dskv4
 ```
 
-### 3.2 Download model + datasets
+## 4. Quick start
+
+One command runs the full pipeline — dataset download, FP8 → BF16 cast, distributed `torch_dist` conversion, and the training loop:
+
+```bash
+# Production 8-node Flash run
+cd /root/miles
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash-FP8 \
+   --num-nodes 8 --num-gpus-per-node 8
+```
+
+`full-train` chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
+
+## 5. Script breakdown
+
+What `full-train` does under the hood, and how to drive each stage manually if you need to debug or run outside the one-line launcher.
+
+### 5.1 Download model + datasets
 
 ```bash
 # inside the radixark/miles:deepseek-v4 (H200 / B200) or
@@ -55,7 +71,7 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/dataset
 
 The Python launcher's `prepare-download` subcommand does the dataset fetch automatically; pass `--hf-checkpoint <path>` to skip the model download when the FP8 weights are already on a shared filesystem.
 
-### 3.3 HF → Megatron `torch_dist` conversion
+### 5.2 HF → Megatron `torch_dist` conversion
 
 Convert FP8 → BF16 first, then run distributed conversion:
 
@@ -81,23 +97,9 @@ PYTHONPATH=/root/Megatron-LM torchrun \
    --save          /root/models/DeepSeek-V4-Flash-FP8_torch_dist/
 ```
 
-`--nproc-per-node 4` (not 8) is intentional — see [§5.5 Notable quirks](#55-notable-quirks). The Python launcher's `prepare-spmd` subcommand drives the same conversion; pair it with `--num-gpus-per-node 4` when invoked standalone to keep the conversion `world_size ≤ num_layers`.
+The Python launcher's `prepare-spmd` subcommand drives the same conversion.
 
-## 4. Launch
-
-### 4.1 Quick start
-
-```bash
-# Production 8-node Flash run
-cd /root/miles
-python scripts/run_deepseek_v4.py full-train \
-   --model-name DeepSeek-V4-Flash-FP8 \
-   --num-nodes 8 --num-gpus-per-node 8
-```
-
-`full-train` chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
-
-### 4.2 Multi-node fan-out
+### 5.3 Multi-node fan-out
 
 The Python launcher manages Ray internally — start each pod with the appropriate image for the cluster (`radixark/miles:deepseek-v4` on H200 / B200, `radixark/miles:gb300-dev-dskv4` on GB300) and a working shared filesystem mounted at the same path on every node, then on the head node:
 
@@ -109,27 +111,26 @@ ray start --address=${HEAD_IP}:6379 --num-gpus 8 --disable-usage-stats
 
 Or set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` to point the launcher at an existing Ray cluster (e.g., one that an orchestration layer already brought up). When `RAY_ADDRESS` is unset the launcher boots a local Ray head.
 
-## 5. Recipe Configuration
+## 6. Recipe Configuration
 
-### 5.1 Parallelism
+### 6.1 Parallelism
 
 `scripts/run_deepseek_v4.py::_get_parallel_config` validates the layout per cluster shape:
 
 | Hardware | Nodes × GPUs | TP | PP | EP | expert-TP | `max_tokens_per_gpu` | Pipeline layout |
 |---|---|---|---|---|---|---|---|
-| H200 | 7 × 8 = 56 | 8 | 7 | 8 | 1 | 2048 | `E,t*4\|t*7\|t*7\|t*7\|t*7\|t*7\|t*4,L` |
 | H200 | 8 × 8 = 64 | 8 | 8 | 8 | 1 | 2048 | first 4 / last 3 layers |
 | GB300 | 7 × 4 = 28 | 4 | 7 | 4 | 1 | 2048 | first 7 / last 6 layers |
 | GB300 | 8 × 4 = 32 (CP=1) | 8 | 4 | 8 | 1 | 2048 | first 11 / last 10 layers |
 | GB300 | 8 × 4 = 32 (CP=2) | 2 | 8 | 4 | 1 | 2048 | first 4 / last 3 layers |
 
-7 H200 nodes is the documented minimum — `_get_parallel_config` raises `NotImplementedError` for any other GPU count.
+`_get_parallel_config` raises `NotImplementedError` for any other GPU count.
 
-### 5.2 Algorithm
+### 6.2 Algorithm
 
 GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --kl-loss-coef 0.00 --kl-loss-type low_var_kl --entropy-coef 0.00 --advantage-estimator grpo`. `--moe-router-freeze-gate` and `--freeze-e-score-correction-bias` are required and asserted on the mcore side — bias-update during RL is forbidden.
 
-### 5.3 Rollout & SGLang
+### 6.3 Rollout & SGLang
 
 ```bash
 SGLANG_ARGS=(
@@ -152,7 +153,7 @@ Required env vars (the launcher sets these for you): `SGLANG_SKIP_CHECKPOINT_LOA
 
 Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 
-### 5.4 Optimizer
+### 6.4 Optimizer
 
 ```bash
 --optimizer adam
@@ -166,13 +167,11 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 
 `--low-memory-resume` (off by default) puts optimizer states on CPU during ckpt resume to avoid OOM on the very first iteration.
 
-### 5.5 Notable quirks
+### 6.5 Notable quirks
 
-- **Conversion world_size ≤ num_layers.** `tools/convert_hf_to_torch_dist.py` asserts `world_size ≤ args.num_layers`. Flash has 43 layers, so 8 × 8 = 64 ranks fails. Run `prepare-spmd` (or the standalone `torchrun`) with `--num-gpus-per-node 4` (32 ranks) and let the subsequent `prepare-cp` / `train` stages resume at 8 GPUs/node.
-- **`--hf-checkpoint <path>` skips download but `prepare-cp` still rsyncs `{model_dir}/{model_name}/`.** When you point at pre-staged FP8 weights outside `{model_dir}`, the launcher's second rsync fails because the source path does not exist (rsync exit 23). Symlink the expected path: `ln -s /path/to/DeepSeek-V4-Flash-FP8 {model_dir}/DeepSeek-V4-Flash-FP8`.
 - **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognises `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
 
-## 6. Pairs Well With
+## 7. Pairs Well With
 
 - [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
 - [Miles Router](../../advanced/miles-router.md) — `--use-miles-router` is required for V4 rollouts.
