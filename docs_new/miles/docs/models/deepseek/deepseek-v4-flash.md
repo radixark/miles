@@ -175,6 +175,4 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 ## 6. Pairs Well With
 
 - [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
-- [Miles Router](../../advanced/miles-router.md) — `--use-miles-router` is required for V4 rollouts.
 - [Architecture Support](../../advanced/architecture-support.md) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.
-- [Fault Tolerance](../../advanced/fault-tolerance.md) — `--use-fault-tolerance` is on by default in the launcher.
