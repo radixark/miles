@@ -113,6 +113,10 @@ ray start --address=${HEAD_IP}:6379 --num-gpus 8 --disable-usage-stats
 
 Or set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` to point the launcher at an existing Ray cluster (e.g., one that an orchestration layer already brought up). When `RAY_ADDRESS` is unset the launcher boots a local Ray head.
 
+### 4.4 Notable quirks
+
+- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognises `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
+
 ## 5. Example Recipe Configuration
 
 ### 5.1 Parallelism
@@ -165,10 +169,6 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 ```
 
 `--low-memory-resume` (off by default) puts optimizer states on CPU during ckpt resume to avoid OOM on the very first iteration.
-
-### 5.5 Notable quirks
-
-- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognises `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
 
 ## 6. Pairs Well With
 
