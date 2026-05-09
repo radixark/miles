@@ -113,7 +113,7 @@ ray start --address=${HEAD_IP}:6379 --num-gpus 8 --disable-usage-stats
 
 Or set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` to point the launcher at an existing Ray cluster (e.g., one that an orchestration layer already brought up). When `RAY_ADDRESS` is unset the launcher boots a local Ray head.
 
-## 5. Recipe Configuration
+## 5. Example Recipe Configuration
 
 ### 5.1 Parallelism
 
