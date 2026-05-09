@@ -52,6 +52,7 @@ The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts as separate sibling sub-directories |
+| `--model-local-dir` | `/root/local_data` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk instead of shared storage |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
 Override these on the launcher when your cluster mounts a different layout. There are no `MILES_SCRIPT_*` env vars that preconfigure these paths; the only env vars the launcher reads are `MILES_SCRIPT_EXTERNAL_RAY` and `MILES_SCRIPT_ENABLE_RAY_SUBMIT` (both governing Ray bootstrapping, see [§4.3](#43-multi-node-fan-out)).
