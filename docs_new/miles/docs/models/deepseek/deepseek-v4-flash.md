@@ -122,7 +122,6 @@ Or set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` to point the launcher
 | Hardware | Nodes × GPUs | TP | PP | EP | expert-TP | `max_tokens_per_gpu` | Pipeline layout |
 |---|---|---|---|---|---|---|---|
 | H200 | 8 × 8 = 64 | 8 | 8 | 8 | 1 | 2048 | first 4 / last 3 layers |
-| GB300 | 7 × 4 = 28 | 4 | 7 | 4 | 1 | 2048 | first 7 / last 6 layers |
 | GB300 | 8 × 4 = 32 (CP=1) | 8 | 4 | 8 | 1 | 2048 | first 11 / last 10 layers |
 | GB300 | 8 × 4 = 32 (CP=2) | 2 | 8 | 4 | 1 | 2048 | first 4 / last 3 layers |
 
