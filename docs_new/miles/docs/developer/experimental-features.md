@@ -12,7 +12,7 @@ the long-running training jobs you'd publish results from.
 
 ## FSDP backend
 
-A PyTorch FSDP2 training backend lives at `miles/backends/experimental/fsdp_utils/`.
+A PyTorch FSDP2 training backend lives at `miles/backends/fsdp_utils/`.
 It trades maximum throughput for **zero conversion overhead**: there is no
 `torch_dist` step, Miles reads architecture information from the HuggingFace
 `config.json`, and weights load directly via `AutoModelForCausalLM.from_pretrained()`.
