@@ -12,188 +12,190 @@
     "light": "#07C983",
     "dark": "#0D9373"
   },
-  "topbarLinks": [
-    {
-      "name": "GitHub",
-      "url": "https://github.com/radixark/miles"
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/radixark/miles"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Contact",
+      "href": "mailto:miles@radixark.ai"
     }
-  ],
-  "topbarCtaButton": {
-    "name": "Contact",
-    "url": "mailto:miles@radixark.ai"
   },
-  "navigation": [
-    {
-      "group": "",
-      "pages": ["docs/index"]
-    },
-    {
-      "group": "Getting Started",
-      "pages": [
-        "docs/getting-started/index",
-        "docs/getting-started/installation",
-        "docs/getting-started/quick-start"
-      ]
-    },
-    {
-      "group": "Models",
-      "pages": [
-        "docs/models/index",
-        {
-          "group": "DeepSeek",
-          "pages": [
-            "docs/models/deepseek/deepseek-v4",
-            "docs/models/deepseek/deepseek"
-          ]
-        },
-        {
-          "group": "Qwen",
-          "pages": [
-            {
-              "group": "Qwen3.6",
-              "pages": [
-                "docs/models/qwen/qwen3-6",
-                "docs/models/qwen/qwen3-6-moe"
-              ]
-            },
-            {
-              "group": "Qwen3.5",
-              "pages": [
-                "docs/models/qwen/qwen3-5",
-                "docs/models/qwen/qwen3-5-moe"
-              ]
-            },
-            "docs/models/qwen/qwen3-next",
-            {
-              "group": "Qwen3",
-              "pages": [
-                "docs/models/qwen/qwen3",
-                "docs/models/qwen/qwen3-moe"
-              ]
-            }
-          ]
-        },
-        {
-          "group": "GLM",
-          "pages": [
-            "docs/models/glm/glm5",
-            "docs/models/glm/glm4-7-flash",
-            "docs/models/glm/glm4-5",
-            "docs/models/glm/glm4"
-          ]
-        },
-        {
-          "group": "Kimi",
-          "pages": [
-            "docs/models/kimi/kimi-k2.5",
-            "docs/models/kimi/kimi-k2",
-            "docs/models/kimi/moonlight"
-          ]
-        },
-        {
-          "group": "Nemotron",
-          "pages": [
-            {
-              "group": "Nemotron-3-Nano",
-              "pages": [
-                "docs/models/nemotron/nemotron-3-nano",
-                "docs/models/nemotron/nemotron-3-nano-moe"
-              ]
-            },
-            "docs/models/nemotron/nemotron-3-super"
-          ]
-        },
-        "docs/models/mimo/mimo",
-        "docs/models/gpt-oss/gpt-oss"
-      ]
-    },
-    {
-      "group": "User Guide",
-      "pages": [
-        "docs/user-guide/index",
-        "docs/user-guide/concepts",
-        "docs/user-guide/argument-groups",
-        "docs/user-guide/usage",
-        "docs/user-guide/training-script-walkthrough",
-        "docs/user-guide/monitoring",
-        "docs/user-guide/customization",
-        "docs/user-guide/rollout-endpoints",
-        "docs/user-guide/fully-async",
-        "docs/user-guide/agentic-chat-template",
-        "docs/user-guide/cli-reference"
-      ]
-    },
-    {
-      "group": "Advanced Features",
-      "pages": [
-        "docs/advanced/index",
-        {
-          "group": "Performance",
-          "pages": [
-            "docs/advanced/fp8-low-precision",
-            "docs/advanced/int4-qat",
-            "docs/advanced/speculative-decoding"
-          ]
-        },
-        {
-          "group": "Scale & Reliability",
-          "pages": [
-            "docs/advanced/fault-tolerance",
-            "docs/advanced/pd-disaggregation",
-            "docs/advanced/p2p-weight-transfer"
-          ]
-        },
-        {
-          "group": "MoE & Routing",
-          "pages": [
-            "docs/advanced/miles-router"
-          ]
-        },
-        {
-          "group": "Backends",
-          "pages": [
-            "docs/advanced/architecture-support"
-          ]
-        }
-      ]
-    },
-    {
-      "group": "Examples",
-      "pages": [
-        "docs/examples/index",
-        "docs/examples/fully-async",
-        "docs/examples/search-r1",
-        "docs/examples/retool",
-        "docs/examples/multi-agent",
-        "docs/examples/reproducibility",
-        "docs/examples/openhermes-sft"
-      ]
-    },
-    {
-      "group": "Developer Guide",
-      "pages": [
-        "docs/developer/index",
-        "docs/developer/contributing",
-        "docs/developer/debug",
-        "docs/developer/migration",
-        "docs/developer/architecture"
-      ]
-    },
-    {
-      "group": "Platforms",
-      "pages": [
-        "docs/platforms/index",
-        "docs/platforms/nvidia",
-        "docs/platforms/amd"
-      ]
-    },
-    {
-      "group": "Resources",
-      "pages": [
-        "docs/faq",
-        "docs/blog/index",
-        "docs/blog/introducing-miles"
-      ]
-    }
-  ]
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "docs/index",
+          "docs/getting-started/index",
+          "docs/getting-started/installation",
+          "docs/getting-started/quick-start"
+        ]
+      },
+      {
+        "group": "Models",
+        "pages": [
+          "docs/models/index",
+          {
+            "group": "DeepSeek",
+            "pages": [
+              "docs/models/deepseek/deepseek-v4",
+              "docs/models/deepseek/deepseek"
+            ]
+          },
+          {
+            "group": "Qwen",
+            "pages": [
+              {
+                "group": "Qwen3.6",
+                "pages": [
+                  "docs/models/qwen/qwen3-6",
+                  "docs/models/qwen/qwen3-6-moe"
+                ]
+              },
+              {
+                "group": "Qwen3.5",
+                "pages": [
+                  "docs/models/qwen/qwen3-5",
+                  "docs/models/qwen/qwen3-5-moe"
+                ]
+              },
+              "docs/models/qwen/qwen3-next",
+              {
+                "group": "Qwen3",
+                "pages": [
+                  "docs/models/qwen/qwen3",
+                  "docs/models/qwen/qwen3-moe"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "GLM",
+            "pages": [
+              "docs/models/glm/glm5",
+              "docs/models/glm/glm4-7-flash",
+              "docs/models/glm/glm4-5",
+              "docs/models/glm/glm4"
+            ]
+          },
+          {
+            "group": "Kimi",
+            "pages": [
+              "docs/models/kimi/kimi-k2.5",
+              "docs/models/kimi/kimi-k2",
+              "docs/models/kimi/moonlight"
+            ]
+          },
+          {
+            "group": "Nemotron",
+            "pages": [
+              {
+                "group": "Nemotron-3-Nano",
+                "pages": [
+                  "docs/models/nemotron/nemotron-3-nano",
+                  "docs/models/nemotron/nemotron-3-nano-moe"
+                ]
+              },
+              "docs/models/nemotron/nemotron-3-super"
+            ]
+          },
+          "docs/models/mimo/mimo",
+          "docs/models/gpt-oss/gpt-oss"
+        ]
+      },
+      {
+        "group": "User Guide",
+        "pages": [
+          "docs/user-guide/index",
+          "docs/user-guide/concepts",
+          "docs/user-guide/argument-groups",
+          "docs/user-guide/usage",
+          "docs/user-guide/training-script-walkthrough",
+          "docs/user-guide/monitoring",
+          "docs/user-guide/customization",
+          "docs/user-guide/rollout-endpoints",
+          "docs/user-guide/fully-async",
+          "docs/user-guide/agentic-chat-template",
+          "docs/user-guide/cli-reference"
+        ]
+      },
+      {
+        "group": "Advanced Features",
+        "pages": [
+          "docs/advanced/index",
+          {
+            "group": "Performance",
+            "pages": [
+              "docs/advanced/fp8-low-precision",
+              "docs/advanced/int4-qat",
+              "docs/advanced/speculative-decoding"
+            ]
+          },
+          {
+            "group": "Scale & Reliability",
+            "pages": [
+              "docs/advanced/fault-tolerance",
+              "docs/advanced/pd-disaggregation",
+              "docs/advanced/p2p-weight-transfer"
+            ]
+          },
+          {
+            "group": "MoE & Routing",
+            "pages": [
+              "docs/advanced/miles-router"
+            ]
+          },
+          {
+            "group": "Backends",
+            "pages": [
+              "docs/advanced/architecture-support"
+            ]
+          }
+        ]
+      },
+      {
+        "group": "Examples",
+        "pages": [
+          "docs/examples/index",
+          "docs/examples/fully-async",
+          "docs/examples/search-r1",
+          "docs/examples/retool",
+          "docs/examples/multi-agent",
+          "docs/examples/reproducibility",
+          "docs/examples/openhermes-sft"
+        ]
+      },
+      {
+        "group": "Developer Guide",
+        "pages": [
+          "docs/developer/index",
+          "docs/developer/contributing",
+          "docs/developer/debug",
+          "docs/developer/migration",
+          "docs/developer/architecture"
+        ]
+      },
+      {
+        "group": "Platforms",
+        "pages": [
+          "docs/platforms/index",
+          "docs/platforms/nvidia",
+          "docs/platforms/amd"
+        ]
+      },
+      {
+        "group": "Resources",
+        "pages": [
+          "docs/faq",
+          "docs/blog/index",
+          "docs/blog/introducing-miles"
+        ]
+      }
+    ]
+  }
 }
