@@ -7,7 +7,7 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA in
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE with a substantially different attention stack from V3/R1. The miles + Megatron-Core integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published image `radixark/miles:deepseek-v4`.
+[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE with a substantially different attention stack from V3/R1. The miles + Megatron-Core integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published images `radixark/miles:deepseek-v4` (H200 / B200, cu129 x86) and `radixark/miles:gb300-dev-dskv4` (GB300, cu130 arm64).
 
 **Key highlights:**
 
@@ -37,12 +37,17 @@ The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from
 
 Override these on the launcher when your cluster mounts a different layout. There are no `MILES_SCRIPT_*` env vars that preconfigure these paths; the only env vars the launcher reads are `MILES_SCRIPT_EXTERNAL_RAY` and `MILES_SCRIPT_ENABLE_RAY_SUBMIT` (both governing Ray bootstrapping, see [§4.2](#42-multi-node-fan-out)).
 
-The published image `radixark/miles:deepseek-v4` (cu129 x86, H200/B200) is the only currently-released image. A GB300 (cu130 / arm64) docker image will be published soon.
+The H200 / B200 image is `radixark/miles:deepseek-v4` (cu129 x86). For GB300 (cu130 / arm64), use `radixark/miles:gb300-dev-dskv4`:
+
+```bash
+docker pull radixark/miles:gb300-dev-dskv4
+```
 
 ### 3.2 Download model + datasets
 
 ```bash
-# inside the radixark/miles:deepseek-v4 container
+# inside the radixark/miles:deepseek-v4 (H200 / B200) or
+# radixark/miles:gb300-dev-dskv4 (GB300) container
 hf download sgl-project/DeepSeek-V4-Flash-FP8 --local-dir /root/models/DeepSeek-V4-Flash-FP8
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
@@ -94,7 +99,7 @@ python scripts/run_deepseek_v4.py full-train \
 
 ### 4.2 Multi-node fan-out
 
-The Python launcher manages Ray internally — start each pod with `radixark/miles:deepseek-v4` and a working shared filesystem mounted at the same path on every node, then on the head node:
+The Python launcher manages Ray internally — start each pod with the appropriate image for the cluster (`radixark/miles:deepseek-v4` on H200 / B200, `radixark/miles:gb300-dev-dskv4` on GB300) and a working shared filesystem mounted at the same path on every node, then on the head node:
 
 ```bash
 ray start --head --num-gpus 8 --disable-usage-stats
