@@ -7,6 +7,8 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles.backends.training_utils.parallel import get_parallel_state
+
 
 @torch.compile(dynamic=True)
 def compute_approx_kl(
@@ -233,9 +235,8 @@ def get_reinforce_plus_plus_returns(
         List[torch.Tensor]: A list of return (G_t) tensors for the
                             local sequence chunks owned by the current GPU rank.
     """
-    from megatron.core import mpu
 
-    cp_size = mpu.get_context_parallel_world_size()
+    cp_size = get_parallel_state().cp.size
 
     final_returns_chunks = []
     for i in range(len(rewards)):
@@ -335,9 +336,8 @@ def get_advantages_and_returns(
     - advantages: Tensor of shape (response_size,)
     - returns: Tensor of shape (response_size,)
     """
-    from megatron.core import mpu
 
-    cp_size = mpu.get_context_parallel_world_size()
+    cp_size = get_parallel_state().cp.size
     if cp_size > 1:
         from miles.backends.training_utils.cp_utils import all_gather_with_cp
 
@@ -391,14 +391,12 @@ def get_advantages_and_returns_batch(
         returns_list:      list[Tensor], same shape
     """
 
-    from megatron.core import mpu
-
     with torch.no_grad():
         B = len(response_lengths)
         assert B == len(values_list)
         assert B == len(rewards_list)
 
-        cp_size = mpu.get_context_parallel_world_size()
+        cp_size = get_parallel_state().cp.size
         device = values_list[0].device
         dtype = values_list[0].dtype
 

@@ -8,11 +8,11 @@ from collections.abc import Iterator, Sequence
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import ParamInfo
 
 logger = logging.getLogger(__name__)
@@ -84,11 +84,11 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
         return param.data
 
     if ".experts." in name:
-        tp_size = mpu.get_expert_tensor_parallel_world_size()
-        tp_group = mpu.get_expert_tensor_parallel_group()
+        tp_size = get_parallel_state().etp.size
+        tp_group = get_parallel_state().etp.group
     else:
-        tp_size = mpu.get_tensor_model_parallel_world_size()
-        tp_group = mpu.get_tensor_model_parallel_group()
+        tp_size = get_parallel_state().tp.size
+        tp_group = get_parallel_state().tp.group
 
     param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
     dist.all_gather(param_partitions, param.data, group=tp_group)
@@ -124,11 +124,11 @@ def all_gather_params_async(
         else:
             # Start async all_gather
             if ".experts." in info.name:
-                tp_size = mpu.get_expert_tensor_parallel_world_size()
-                tp_group = mpu.get_expert_tensor_parallel_group()
+                tp_size = get_parallel_state().etp.size
+                tp_group = get_parallel_state().etp.group
             else:
-                tp_size = mpu.get_tensor_model_parallel_world_size()
-                tp_group = mpu.get_tensor_model_parallel_group()
+                tp_size = get_parallel_state().tp.size
+                tp_group = get_parallel_state().tp.group
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
@@ -207,8 +207,8 @@ def _named_params_and_buffers_global(
     Yield (global_name, param/buffer) with consistent names across PP/EP. Adjusts indices for
     virtual PP + EP offsets. Handles decoder.layers, mtp.layers (Multi-Token Prediction), expert_bias.
     """
-    ep_size = mpu.get_expert_model_parallel_world_size()
-    ep_rank = mpu.get_expert_model_parallel_rank()
+    ep_size = get_parallel_state().ep.size
+    ep_rank = get_parallel_state().ep.rank
     if args.num_experts:
         expert_offset = ep_rank * args.num_experts // ep_size
 

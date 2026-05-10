@@ -1,6 +1,15 @@
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(
+    est_time=60,
+    suite="stage-a-fast",
+    disabled="stepfun-ai/Step-3.5-Flash config num_hidden_layers/layer_types mismatch breaks huggingface_hub strict validation",
+)
+
 import pytest
 
 from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
+from miles.utils.processing_utils import load_tokenizer
 
 TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen2.5-0.5B-Instruct",
@@ -61,9 +70,7 @@ SAMPLE_TOOL_RESPONSES = [
 class TestTokenizeToolResponses:
     @pytest.mark.parametrize("model_name", ["Qwen/Qwen3-0.6B"])
     def test_snapshot(self, model_name):
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        tokenizer = load_tokenizer(model_name, trust_remote_code=True)
         token_ids = tokenize_tool_responses(SAMPLE_TOOL_RESPONSES, tokenizer)
         decoded = tokenizer.decode(token_ids)
 
@@ -84,9 +91,7 @@ class TestTokenizeToolResponses:
         if num_tools > 1 and model_name in SINGLE_TOOL_CALL_ONLY_MODELS:
             pytest.skip(f"{model_name} only supports single tool call")
 
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        tokenizer = load_tokenizer(model_name, trust_remote_code=True)
 
         tool_responses = SAMPLE_TOOL_RESPONSES[:num_tools]
         assert len(tool_responses) == num_tools

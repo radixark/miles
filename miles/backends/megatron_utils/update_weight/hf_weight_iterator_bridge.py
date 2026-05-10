@@ -1,5 +1,6 @@
 import dataclasses
 
+from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
 from miles.utils.iter_utils import chunk_named_params_by_size
 
@@ -14,42 +15,46 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        import miles_plugins.megatron_bridge  # noqa: F401
-
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
-    def get_hf_weight_chunks(self, megatron_local_weights):
+    def get_hf_weight_chunks(self, megatron_local_weights, weight_type: str = "base"):
         # TODO: support quantization (e.g. modify megatron-bridge to provide megatron param name)
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
-            if self.is_lora:
+            if weight_type == "lora":
                 named_weights = self._bridge.export_adapter_weights(
                     self.model,
                     cpu=False,
                     show_progress=False,
                 )
-            else:
+            elif weight_type == "base":
                 conversion_tasks = self._bridge.get_conversion_tasks(self.model)
                 conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
                 named_weights = self._bridge.export_hf_weights(
                     self.model,
                     cpu=False,
                     conversion_tasks=conversion_tasks,
+                    merge_adapter_weights=False,
                 )
 
             # TODO: verify if postprocess_hf_param is needed for LoRA weights
             named_weights = (
                 (
-                    hf_param_name,
+                    hf_param_name.replace(".base_layer.", "."),
                     postprocess_hf_param(
                         args=self.args,
                         megatron_param_name=megatron_param_name,
-                        hf_param_name=hf_param_name,
+                        hf_param_name=hf_param_name.replace(".base_layer.", "."),
                         param=weight,
                     ),
                 )
                 for hf_param_name, weight, megatron_param_name in named_weights
             )
+
+            if weight_type == "base":
+                named_weights = ((n, t) for n, t in named_weights if not is_lora_weight_name(n))
+            elif weight_type == "lora":
+                named_weights = ((n, t) for n, t in named_weights if is_lora_weight_name(n))
 
             yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
 
