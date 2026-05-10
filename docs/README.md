@@ -1,7 +1,7 @@
 # Miles Documentation
 
 We recommend new contributors start from writing documentation, which helps you quickly understand miles codebase.
-Most documentation files are located under the `docs/` folder.
+Most documentation files are located under the  `docs/` folder.
 
 ## Docs Workflow
 
