@@ -4,6 +4,7 @@ import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
 from miles.rollout.session.linear_trajectory import SessionRegistry
@@ -152,7 +153,13 @@ def setup_session_routes(app, backend, args):
                 request_body["no_stop_trim"] = False
 
                 request_messages = request_body.get("messages", [])
-                pretokenized = session.prepare_pretokenized(
+                # Tokenization is CPU-bound; run it in a threadpool so the
+                # asyncio event loop stays responsive to other requests (e.g.
+                # /health heartbeats from the agent server). Under high
+                # inflight_chat, synchronous tokenization on the event loop
+                # starves /health, which triggers agent-server flushes.
+                pretokenized = await run_in_threadpool(
+                    session.prepare_pretokenized,
                     request_messages,
                     tools=request_body.get("tools"),
                     tito_tokenizer=registry.tito_tokenizer,
@@ -233,7 +240,9 @@ def setup_session_routes(app, backend, args):
                     )
                     return backend.build_proxy_response(result)
 
-                session.update_pretokenized_state(
+                # See above: CPU-bound tokenization → threadpool.
+                await run_in_threadpool(
+                    session.update_pretokenized_state,
                     request_messages,
                     assistant_message,
                     prompt_token_ids=prompt_token_ids,
