@@ -29,21 +29,21 @@
     "groups": [
       {
         "group": "Getting Started",
+        "root": "docs/getting-started/index",
         "pages": [
           "docs/index",
-          "docs/getting-started/index",
           "docs/getting-started/installation",
           "docs/getting-started/quick-start"
         ]
       },
       {
         "group": "Models",
+        "root": "docs/models/index",
         "pages": [
-          "docs/models/index",
           {
             "group": "DeepSeek",
+            "root": "docs/models/deepseek/index",
             "pages": [
-              "docs/models/deepseek/index",
               {
                 "group": "DeepSeek-V4",
                 "pages": [
@@ -56,8 +56,8 @@
           },
           {
             "group": "Qwen",
+            "root": "docs/models/qwen/index",
             "pages": [
-              "docs/models/qwen/index",
               {
                 "group": "Qwen3.6",
                 "pages": [
@@ -84,8 +84,8 @@
           },
           {
             "group": "GLM",
+            "root": "docs/models/glm/index",
             "pages": [
-              "docs/models/glm/index",
               "docs/models/glm/glm5",
               "docs/models/glm/glm4-7-flash",
               "docs/models/glm/glm4-5",
@@ -94,8 +94,8 @@
           },
           {
             "group": "Kimi",
+            "root": "docs/models/kimi/index",
             "pages": [
-              "docs/models/kimi/index",
               "docs/models/kimi/kimi-k2.5",
               "docs/models/kimi/kimi-k2",
               "docs/models/kimi/moonlight"
@@ -103,6 +103,7 @@
           },
           {
             "group": "Nemotron",
+            "root": "docs/models/nemotron/index",
             "pages": [
               {
                 "group": "Nemotron-3-Nano",
@@ -120,8 +121,8 @@
       },
       {
         "group": "User Guide",
+        "root": "docs/user-guide/index",
         "pages": [
-          "docs/user-guide/index",
           "docs/user-guide/concepts",
           "docs/user-guide/argument-groups",
           "docs/user-guide/usage",
@@ -136,8 +137,8 @@
       },
       {
         "group": "Advanced Features",
+        "root": "docs/advanced/index",
         "pages": [
-          "docs/advanced/index",
           {
             "group": "Performance",
             "pages": [
@@ -170,8 +171,8 @@
       },
       {
         "group": "Examples",
+        "root": "docs/examples/index",
         "pages": [
-          "docs/examples/index",
           "docs/examples/fully-async",
           "docs/examples/search-r1",
           "docs/examples/retool",
@@ -182,8 +183,8 @@
       },
       {
         "group": "Developer Guide",
+        "root": "docs/developer/index",
         "pages": [
-          "docs/developer/index",
           "docs/developer/contributing",
           "docs/developer/debug",
           "docs/developer/migration",
@@ -193,8 +194,8 @@
       },
       {
         "group": "Platforms",
+        "root": "docs/platforms/index",
         "pages": [
-          "docs/platforms/index",
           "docs/platforms/nvidia",
           "docs/platforms/amd"
         ]
