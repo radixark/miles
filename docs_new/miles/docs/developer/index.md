@@ -30,6 +30,11 @@ short tour for new contributors.
     ---
     The 30-minute tour of how Miles is organized internally.
 
+-   :material-flask-outline:{ .lg .middle } **[Experimental Features](experimental-features.md)**
+
+    ---
+    Opt-in backends and features (FSDP, …) that aren't production-ready yet.
+
 </div>
 
 ## TL;DR for first-time contributors

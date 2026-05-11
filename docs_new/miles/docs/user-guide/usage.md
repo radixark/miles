@@ -1,42 +1,13 @@
 ---
-title: Training Backends
-description: Picking between Megatron-LM and FSDP, and the backend-specific plumbing each one exposes.
+title: Training Backend
+description: Megatron-LM as the training backend — parameters, parallelism, checkpoints, and hooks.
 ---
 
-# Training Backends
+# Training Backend
 
 Miles decouples the **training backend** (how the model is sharded, checkpointed, and
-stepped) from the **inference backend** (SGLang). Two training
-backends are available:
-
-| Backend | Flag | Status |
-|---|---|---|
-| Megatron-LM *(default)* | `--train-backend megatron` | Production |
-| PyTorch FSDP2 | `--train-backend fsdp` | Experimental. Lives at `miles/backends/experimental/fsdp_utils/`; known bug after SGLang v0.5.10. |
-
-The choice drives checkpoint format, parallelism strategy, and conversion tooling, so
-make it before tuning anything else.
-
----
-
-## Choosing a backend
-
-| Concern | Megatron-LM | FSDP |
-|---|---|---|
-| Peak throughput at MoE scale | ✅ best-in-class | ✅ |
-| Parallelism | [TP / PP / CP / EP / ETP](#parallelism-compatibility) | Not yet — runs as plain FSDP data parallel |
-| Checkpoint format | `torch_dist` | HuggingFace native |
-| HF → backend conversion step | **Required** | **Not needed** |
-| New-architecture support | Via `miles_plugins` wrappers | Via `AutoConfig` / `AutoModelForCausalLM` |
-| Gradient checkpointing | Fine-grained (`--recompute-granularity`) | Boolean (`--gradient-checkpointing`) |
-| CPU offload | Distributed optimizer | `--fsdp-cpu-offload` |
-| First-time setup effort | Higher | Lower |
-
-**Rule of thumb.** Reach for FSDP when you want to iterate quickly on a new model or
-run small-to-mid dense workloads; reach for Megatron when you're training a large MoE,
-a multi-rack job, or anything where the parallelism story matters.
-
----
+stepped) from the **inference backend** (SGLang). The production training backend is
+**Megatron-LM**.
 
 ## Megatron-LM
 
@@ -147,63 +118,6 @@ clipping weights surgically. See [Customization](customization.md#megatron-hooks
 
 ---
 
-## FSDP2 (Experimental)
-
-!!! warning "Experimental"
-    The FSDP backend is experimental and has a known bug after SGLang v0.5.10.
-
-FSDP trades maximum throughput for **zero conversion overhead**. There is no
-`torch_dist` step: Miles reads architecture information from the HuggingFace
-`config.json` and loads weights directly. Architecture discovery is automatic via
-`AutoModelForCausalLM.from_pretrained()`, the distributed optimizer is built-in, and
-mixed precision falls out of standard PyTorch.
-
-### Enabling it
-
-```bash
---train-backend fsdp
-```
-
-### Flag mapping
-
-Most RL-level flags carry over unchanged. Backend-specific differences:
-
-| Concern | Megatron | FSDP |
-|---|---|---|
-| Model load | `--load` + architecture args | `--hf-checkpoint` *(single flag, required)* |
-| Tensor parallel | `--tensor-model-parallel-size` | Not supported yet |
-| Pipeline parallel | `--pipeline-model-parallel-size` | Not supported yet |
-| Expert parallel | `--expert-model-parallel-size` | Not supported yet |
-| Context parallel | `--context-parallel-size` | Not supported yet |
-| Optimizer | `--use-distributed-optimizer` *(forced on by Miles)* | Built-in |
-| Gradient checkpoint | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` *(boolean)* |
-| CPU offload | Distributed optimizer | `--fsdp-cpu-offload` |
-| CPU backend | *(in distributed optimizer)* | `--fsdp-cpu-backend` |
-| Attention backend | Decided by Megatron Core | `--attn-implementation flash_attention_2 / sdpa / eager` |
-| Mixed precision | `--fp16` / `--bf16` | `--fp16` *(bf16 inferred)* |
-| Extra backend config | — | `--config <yaml>` |
-
-### Quick start
-
-```bash
-# Optional: wandb
-export WANDB_API_KEY=<key>
-
-# Model + data
-hf download Qwen/Qwen3-4B                          --local-dir /root/Qwen3-4B
-hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
-
-# Code
-git clone https://github.com/radixark/miles.git && cd miles
-pip install -e . --no-deps
-
-# Launch — no conversion step
-bash scripts/run-qwen3-4B-fsdp.sh
-```
-
----
-
 ## SGLang as the inference engine
 
 SGLang is the fixed inference engine regardless of training backend. Three pieces of
@@ -267,3 +181,5 @@ at startup.
 - [Configuration](cli-reference.md) — the flag taxonomy and defaults.
 - [Backends beyond Megatron](../advanced/architecture-support.md) — wrapping new
   architectures without patching Megatron core.
+- [Experimental Features → FSDP backend](../developer/experimental-features.md#fsdp-backend)
+  — experimental PyTorch FSDP2 backend for fast iteration on small dense models.
