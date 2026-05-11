@@ -65,6 +65,8 @@ The under-the-hood stages are essentially identical to V4-Flash — see the [V4-
 
 ### 5.1 Megatron Parallelism
 
+These are the validated layouts shipped with the launcher; All parallelisms are supported, you can supply any other TP / EP / PP / CP combination that fits your compute.
+
 | Hardware | Nodes × GPUs | TP | PP | CP | EP | expert-TP | Pipeline layout |
 |---|---|---|---|---|---|---|---|
 | H200 | 32 × 8 = 256 | 8 | 8 | 1 | 32 | 1 | first 7 / last 6 layers |

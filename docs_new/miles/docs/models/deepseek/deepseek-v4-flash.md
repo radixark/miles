@@ -121,15 +121,15 @@ Alternatively, you can set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` t
 
 ## 5. Example Recipe Configuration
 
-### 5.1 Parallelism
+### 5.1 Megatron Parallelism
+
+These are the validated layouts shipped with the launcher; All parallelisms are supported, you can supply any other TP / EP / PP / CP combination that fits your compute.
 
 | Hardware | Nodes × GPUs | TP | PP | CP | EP | expert-TP | Pipeline layout |
 |---|---|---|---|---|---|---|---|
 | H200 | 8 × 8 = 64 | 8 | 8 | 1 | 8 | 1 | first 4 / last 3 layers |
 | GB300 | 8 × 4 = 32 | 8 | 4 | 1 | 8 | 1 | first 11 / last 10 layers |
 | GB300 | 8 × 4 = 32 | 2 | 8 | 2 | 4 | 1 | first 4 / last 3 layers |
-
-These are the validated layouts shipped with the launcher; you can supply any other TP / EP / PP / CP combination that fits your compute.
 
 ### 5.2 Algorithm
 
