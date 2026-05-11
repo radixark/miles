@@ -24,7 +24,6 @@ description: Launch recipe for DeepSeek-V4-Pro (1.6 T) — V4-family architectur
 - **Identical YaRN RoPE and context**: `rope_theta=10000`, YaRN `factor=16`, `original_max_position_embeddings=65536` → effective context length **1,048,576 tokens (1 M)**, same as Flash.
 - **Hyper-connection (HC) routing**: `hc_mult=4` parallel streams with sinkhorn-normalised mixing, same as Flash (PP buffers stay 4-D).
 - **FP8 weights with simulated FP8 QAT** on indexer and compressor activations; default training is BF16 on the cast checkpoint and default rollout is FP8 in SGLang with `--sglang-attention-backend compressed`.
-- **Pro-specific launcher defaults**: the launcher flips `optimizer_offload=True` (CPU-offloaded Adam states) and `enable_r3=False` (no Rollout Routing Replay) when `--model-name DeepSeek-V4-Pro-FP8` is selected.
 
 ## 2. Supported Variants
 
