@@ -43,30 +43,19 @@ needed to run RL at trillion-parameter scale.
 
 <CardGroup cols={2}>
   <Card title="Dense">
-    - **Qwen**: [Qwen3.6](models/qwen/qwen3-6.md),
-      [Qwen3.5](models/qwen/qwen3-5.md), [Qwen3](models/qwen/qwen3.md)
-    - **GLM**: [GLM4](models/glm/glm4.md)
-    - **Nemotron**: [Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md)
-    - **MiMo**: [MiMo](models/mimo/mimo.md)
-    - **GPT-OSS**: [GPT-OSS](models/gpt-oss/gpt-oss.md)
+    - **Qwen**: <span style={{fontWeight: 400}}>[Qwen3.6](models/qwen/qwen3-6.md), [Qwen3.5](models/qwen/qwen3-5.md), [Qwen3](models/qwen/qwen3.md)</span>
+    - **GLM**: <span style={{fontWeight: 400}}>[GLM4](models/glm/glm4.md)</span>
+    - **Nemotron**: <span style={{fontWeight: 400}}>[Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md)</span>
+    - **MiMo**: <span style={{fontWeight: 400}}>[MiMo](models/mimo/mimo.md)</span>
+    - **GPT-OSS**: <span style={{fontWeight: 400}}>[GPT-OSS](models/gpt-oss/gpt-oss.md)</span>
   </Card>
 
   <Card title="Mixture of Experts">
-    - **DeepSeek**: [DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md),
-      [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md),
-      [DeepSeek-V3 / R1](models/deepseek/deepseek.md)
-    - **Qwen**: [Qwen3.6 MoE](models/qwen/qwen3-6-moe.md),
-      [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md),
-      [Qwen3-Next](models/qwen/qwen3-next.md),
-      [Qwen3 MoE](models/qwen/qwen3-moe.md)
-    - **GLM**: [GLM5 / GLM5.1](models/glm/glm5.md),
-      [GLM4.7](models/glm/glm4-7-flash.md),
-      [GLM4.5](models/glm/glm4-5.md)
-    - **Kimi**: [Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md),
-      [Kimi K2](models/kimi/kimi-k2.md),
-      [Moonlight](models/kimi/moonlight.md)
-    - **Nemotron**: [Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md),
-      [Nemotron-3-Super](models/nemotron/nemotron-3-super.md)
+    - **DeepSeek**: <span style={{fontWeight: 400}}>[DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md), [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md), [DeepSeek-V3 / R1](models/deepseek/deepseek.md)</span>
+    - **Qwen**: <span style={{fontWeight: 400}}>[Qwen3.6 MoE](models/qwen/qwen3-6-moe.md), [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md), [Qwen3-Next](models/qwen/qwen3-next.md), [Qwen3 MoE](models/qwen/qwen3-moe.md)</span>
+    - **GLM**: <span style={{fontWeight: 400}}>[GLM5 / GLM5.1](models/glm/glm5.md), [GLM4.7](models/glm/glm4-7-flash.md), [GLM4.5](models/glm/glm4-5.md)</span>
+    - **Kimi**: <span style={{fontWeight: 400}}>[Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md), [Kimi K2](models/kimi/kimi-k2.md), [Moonlight](models/kimi/moonlight.md)</span>
+    - **Nemotron**: <span style={{fontWeight: 400}}>[Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md), [Nemotron-3-Super](models/nemotron/nemotron-3-super.md)</span>
   </Card>
 </CardGroup>
 
