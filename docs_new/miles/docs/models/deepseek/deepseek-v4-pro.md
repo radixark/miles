@@ -13,15 +13,18 @@ description: Launch recipe for DeepSeek-V4-Pro (1.6 T) — V4-family architectur
 
 ## 1. Model Introduction
 
-TBD — Pro-specific architecture summary (active / total params, attention stack, KV
-compressors, MoE topology, RoPE / context length, FP8 vs BF16 defaults).
+[DeepSeek-V4-Pro](https://huggingface.co/sgl-project/DeepSeek-V4-Pro-FP8) is a 49 B-active / 1.6 T-total MoE that scales up the same sparse-MLA + DSA-indexer + KV-compressor + hyper-connection stack as [V4-Flash](deepseek-v4-flash.md). The architecture family is identical; the deltas are size and a handful of tuned knobs (indexer top-k, output-projection groups, compression schedule). The miles + Megatron-Core integration ships in the same image as Flash and is selected with `--model-name DeepSeek-V4-Pro-FP8`.
 
-**Key highlights:**
+**Key highlights** (deltas vs [V4-Flash](deepseek-v4-flash.md#1-model-introduction)):
 
-- TBD
-- TBD
-- TBD
-- TBD
+- **Scaled-up V4 architecture**: 61 layers (vs 43), hidden-size 7168 (vs 4096), 128 attention heads (vs 64), `ffn_hidden_size=3072` and `moe_ffn_hidden_size=3072` (vs 2048). All layers are MoE (same `--moe-layer-freq` pattern). `q_lora_rank=1536` (vs 1024); latent KV (`kv_lora_rank=512`, `qk_head_dim=512`, `v_head_dim=512`) is unchanged across V4.
+- **Hybrid Attention with wider indexer and output projection**: `index_topk=1024` (vs Flash's 512) — Pro keeps 64 indexer heads × 128 dim but picks twice as many KV per query. Grouped output projection uses `o_groups=16` (vs 8), keeping `o_lora_rank=1024`.
+- **KV compressors start heavily compressed**: 60-element schedule `[128, 128, 4, 128, 4, 128, …, 4, 0]` — Pro skips Flash's two leading uncompressed layers and starts at ratio-128 (HCA) from layer 0. Middle layers still alternate 4× (CSA) and 128× (HCA); only the final layer is uncompressed. Compressor RoPE base (`compress_rope_theta=160000`) is shared with Flash.
+- **MoE topology**: 384 routed experts + 1 shared (vs Flash's 256 + 1), top-6. `--moe-router-topk-scaling-factor 2.5` (vs Flash 1.5) compensates for the larger expert pool. The first 3 layers (`num_hash_layers=3`) remain dense-routed via hash buckets.
+- **Identical YaRN RoPE and context**: `rope_theta=10000`, YaRN `factor=16`, `original_max_position_embeddings=65536` → effective context length **1,048,576 tokens (1 M)**, same as Flash.
+- **Hyper-connection (HC) routing**: `hc_mult=4` parallel streams with sinkhorn-normalised mixing, same as Flash (PP buffers stay 4-D).
+- **FP8 weights with simulated FP8 QAT** on indexer and compressor activations; default training is BF16 on the cast checkpoint and default rollout is FP8 in SGLang with `--sglang-attention-backend compressed`.
+- **Pro-specific launcher defaults**: the launcher flips `optimizer_offload=True` (CPU-offloaded Adam states) and `enable_r3=False` (no Rollout Routing Replay) when `--model-name DeepSeek-V4-Pro-FP8` is selected.
 
 ## 2. Supported Variants
 
