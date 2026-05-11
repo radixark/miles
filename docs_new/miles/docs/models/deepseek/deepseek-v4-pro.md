@@ -36,7 +36,9 @@ description: Launch recipe for DeepSeek-V4-Pro (1.6 T) — V4-family architectur
 ### 3.1 One-line launch
 
 ```bash
-# Same image as V4-Flash
+# Pull the image matching your cluster:
+#   H200 / B200 (cu129 x86) -> radixark/miles:deepseek-v4
+#   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
 docker pull radixark/miles:deepseek-v4
 
 # Production Pro run, inside the container
