@@ -4,7 +4,8 @@
   "theme": "mint",
   "logo": {
     "dark": "/docs/assets/images/miles_logo.png",
-    "light": "/docs/assets/images/miles_logo.png"
+    "light": "/docs/assets/images/miles_logo.png",
+    "href": "/docs"
   },
   "favicon": "/docs/assets/images/miles_square.png",
   "colors": {
