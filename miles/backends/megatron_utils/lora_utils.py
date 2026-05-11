@@ -1,5 +1,7 @@
 """LoRA utilities for Megatron backend using Megatron-Bridge PEFT integration."""
 
+from __future__ import annotations
+
 import logging
 import os
 from argparse import Namespace
@@ -231,6 +233,13 @@ def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
         exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=lora_type)
     return exclude_modules
 
+def exclude_mtp_vision_modules(target_modules: list[str]) -> list[str]:
+    """Restrict Qwen3.5-VL LoRA targets to the language model."""
+    return [
+        target if "language_model" in target else f"*language_model.decoder.layers.*.*.{target}"
+        for target in target_modules
+    ]
+
 
 def create_lora_instance(args: Namespace):
     """Create a LoRA or CanonicalLoRA instance based on args.
@@ -249,6 +258,11 @@ def create_lora_instance(args: Namespace):
         lora_cls = LoRA
 
     target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
+
+    model_name = args.hf_checkpoint
+    if "Qwen3.5" in model_name:
+        target_modules = exclude_mtp_vision_modules(target_modules)
+
     exclude_modules = parse_exclude_modules(args, lora_type=lora_cls)
 
     lora = lora_cls(
@@ -451,6 +465,7 @@ def load_lora_adapter(
     return False, None
 
 
+
 def _load_training_state(
     adapter_dir: Path,
     optimizer: Any | None,
@@ -503,3 +518,4 @@ def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
         "bias": "none",
         "task_type": "CAUSAL_LM",
     }
+
