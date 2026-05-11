@@ -93,7 +93,7 @@ The bridge between Megatron's LoRA path and SGLang adapter loading is in:
 - `miles/backends/megatron_utils/checkpoint.py` — adapter-aware save and load.
 - `miles/backends/megatron_utils/update_weight/update_weight_from_tensor.py`
   — colocate-mode weight sync from the trainer's LoRA tensors into the SGLang
-  rollout engine.
+  rollout engine. We will merge this [PR](https://github.com/radixark/miles/pull/988) soon to support disaggregate mode.
 
 A worked tutorial covering checkpoint conversion, SGLang adapter loading, and
 LoRA-specific evaluation will land here in a future doc pass.
