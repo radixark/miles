@@ -27,6 +27,9 @@ needed to run RL at trillion-parameter scale.
   multi-turn RL.
 - **Speculative rollout with online MTP-SFT.** Miles keeps the draft model's acceptance
   rate high through training by fine-tuning MTP layers on-policy.
+- **LoRA training and serving.** Both SFT and RL recipes support LoRA adapters,
+  and the same adapters load directly into SGLang for rollout — no separate
+  merge or conversion step.
 - **Fault tolerance.** Rank-level recovery, step-level replay, and RDMA P2P weight
   sync let weeks-long runs survive routine hardware faults.
 - **First-class agentic rollout.** Tool use, multi-turn dialogue, search, code
