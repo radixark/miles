@@ -41,28 +41,34 @@ needed to run RL at trillion-parameter scale.
 
 ## Supported models
 
-- **DeepSeek**: [DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md),
-  [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md),
-  [DeepSeek-V3 / R1](models/deepseek/deepseek.md)
-- **Qwen**: [Qwen3.6](models/qwen/qwen3-6.md),
-  [Qwen3.6 MoE](models/qwen/qwen3-6-moe.md),
-  [Qwen3.5](models/qwen/qwen3-5.md),
-  [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md),
-  [Qwen3-Next](models/qwen/qwen3-next.md),
-  [Qwen3](models/qwen/qwen3.md),
-  [Qwen3 MoE](models/qwen/qwen3-moe.md)
-- **GLM**: [GLM5 / GLM5.1](models/glm/glm5.md),
-  [GLM4.7](models/glm/glm4-7-flash.md),
-  [GLM4.5](models/glm/glm4-5.md),
-  [GLM4](models/glm/glm4.md)
-- **Kimi**: [Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md),
-  [Kimi K2](models/kimi/kimi-k2.md),
-  [Moonlight](models/kimi/moonlight.md)
-- **Nemotron**: [Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md),
-  [Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md),
-  [Nemotron-3-Super](models/nemotron/nemotron-3-super.md)
-- **MiMo**: [MiMo](models/mimo/mimo.md)
-- **GPT-OSS**: [GPT-OSS](models/gpt-oss/gpt-oss.md)
+<CardGroup cols={2}>
+  <Card title="Dense">
+    - **Qwen**: [Qwen3.6](models/qwen/qwen3-6.md),
+      [Qwen3.5](models/qwen/qwen3-5.md), [Qwen3](models/qwen/qwen3.md)
+    - **GLM**: [GLM4](models/glm/glm4.md)
+    - **Nemotron**: [Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md)
+    - **MiMo**: [MiMo](models/mimo/mimo.md)
+    - **GPT-OSS**: [GPT-OSS](models/gpt-oss/gpt-oss.md)
+  </Card>
+
+  <Card title="Mixture of Experts">
+    - **DeepSeek**: [DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md),
+      [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md),
+      [DeepSeek-V3 / R1](models/deepseek/deepseek.md)
+    - **Qwen**: [Qwen3.6 MoE](models/qwen/qwen3-6-moe.md),
+      [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md),
+      [Qwen3-Next](models/qwen/qwen3-next.md),
+      [Qwen3 MoE](models/qwen/qwen3-moe.md)
+    - **GLM**: [GLM5 / GLM5.1](models/glm/glm5.md),
+      [GLM4.7](models/glm/glm4-7-flash.md),
+      [GLM4.5](models/glm/glm4-5.md)
+    - **Kimi**: [Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md),
+      [Kimi K2](models/kimi/kimi-k2.md),
+      [Moonlight](models/kimi/moonlight.md)
+    - **Nemotron**: [Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md),
+      [Nemotron-3-Super](models/nemotron/nemotron-3-super.md)
+  </Card>
+</CardGroup>
 
 See [Models](models/index.md) for exact conversion commands, launch scripts, and
 parallelism settings.
