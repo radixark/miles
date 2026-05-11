@@ -36,8 +36,8 @@ description: Launch recipe for DeepSeek-V4-Pro (1.6 T) — V4-family architectur
 ### 3.1 One-line launch
 
 ```bash
-# Pull the image matching your cluster (TBD)
-docker pull <image>
+# Same image as V4-Flash
+docker pull radixark/miles:deepseek-v4
 
 # Production Pro run, inside the container
 cd /root/miles
@@ -46,7 +46,7 @@ python scripts/run_deepseek_v4.py full-train \
    --num-nodes 32 --num-gpus-per-node 8
 ```
 
-TBD — describe what `full-train` chains for Pro and any Pro-specific stage skips.
+The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
 
 ### 3.2 Launcher path defaults
 
