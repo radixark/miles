@@ -41,7 +41,7 @@ docker pull <image>
 cd /root/miles
 python scripts/run_deepseek_v4.py full-train \
    --model-name DeepSeek-V4-Pro \
-   --num-nodes 8 --num-gpus-per-node 256
+   --num-nodes 32 --num-gpus-per-node 8
 ```
 
 TBD — describe what `full-train` chains for Pro and any Pro-specific stage skips.
@@ -59,24 +59,15 @@ TBD — Pro-specific overrides or env-var notes.
 
 ## 4. Script breakdown
 
-What `full-train` does under the hood, and how to drive each stage manually.
+The under-the-hood stages — `prepare-download`, `prepare-spmd` (FP8 → BF16 cast and
+distributed `torch_dist` conversion), `prepare-cp` (NVMe fan-out), and Ray bootstrap —
+are essentially identical to the V4-Flash flow. Follow the corresponding sections of
+the V4-Flash page and substitute the Pro model name and path defaults shown above:
 
-### 4.1 Download model + datasets
-
-TBD
-
-### 4.2 HF → Megatron `torch_dist` conversion
-
-TBD — FP8 → BF16 cast (if applicable) and the distributed conversion command for Pro.
-
-### 4.3 Multi-node fan-out
-
-TBD — Ray bootstrapping, shared-filesystem expectations, `MILES_SCRIPT_EXTERNAL_RAY` /
-`RAY_ADDRESS` handling for Pro.
-
-### 4.4 Notable quirks
-
-- TBD
+- [V4-Flash §4.1 Download model + datasets](deepseek-v4-flash.md#41-download-model-datasets)
+- [V4-Flash §4.2 HF → Megatron `torch_dist` conversion](deepseek-v4-flash.md#42-hf--megatron-torch_dist-conversion)
+- [V4-Flash §4.3 Multi-node fan-out](deepseek-v4-flash.md#43-multi-node-fan-out)
+- [V4-Flash §4.4 Notable quirks](deepseek-v4-flash.md#44-notable-quirks)
 
 ## 5. Example Recipe Configuration
 
