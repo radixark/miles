@@ -93,11 +93,9 @@ SGLANG_ARGS=(
    --sglang-max-running-requests 64
    --sglang-chunked-prefill-size 8192
    --sglang-server-concurrency 1024
-   --sglang-weight-loader-drop-cache-after-load
    --sglang-moe-a2a-backend deepep             # DeepEP normal-mode dispatch
    --sglang-cuda-graph-max-bs 8                # see hang caveat below
-   --sglang-mem-fraction-static 0.7            # leave headroom for Megatron during wake_up
-   --use-rollout-routing-replay                # R3 — forced off for Pro at the launcher level
+   --sglang-mem-fraction-static 0.7            # Pro needs a larger dynamic buffer
    --use-miles-router
 )
 ```
