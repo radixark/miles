@@ -1,9 +1,9 @@
 ---
-title: DeepSeek V4 Pro
+title: DeepSeek-V4 Pro
 description: Launch recipe for DeepSeek-V4-Pro (1.6 T) — V4-family architecture at Pro scale.
 ---
 
-# DeepSeek V4 Pro
+# DeepSeek-V4 Pro
 
 !!! note "Work in progress"
     This page is being filled in. The skeleton below mirrors the

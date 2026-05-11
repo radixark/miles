@@ -1,6 +1,6 @@
 ---
 title: GPT-OSS 20B
-description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, dequantises MXFP4 → BF16 first).
+description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, dequantizes MXFP4 → BF16 first).
 ---
 
 # GPT-OSS 20B
@@ -13,7 +13,7 @@ description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, d
 
 - **Configurable reasoning effort**: low / medium / high reasoning effort selectable per request.
 - **Full chain-of-thought**: the reasoning trace is exposed and trainable.
-- **MXFP4 native weights**: the HF checkpoint ships in MXFP4 (post-trained) — the FSDP launcher dequantises to BF16 first; the BF16 launcher uses mbridge to load HF directly.
+- **MXFP4 native weights**: the HF checkpoint ships in MXFP4 (post-trained) — the FSDP launcher dequantizes to BF16 first; the BF16 launcher uses mbridge to load HF directly.
 - **Sink attention**: requires `--qkv-format bshd` on the Megatron path, which precludes dynamic batch sizing.
 
 ## 2. Supported Variants
@@ -31,15 +31,15 @@ description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, d
 hf download openai/gpt-oss-20b --local-dir /root/shared/gpt-oss-20b
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/shared/dapo-math-17k
 
-# FSDP path — script downloads + dequantises automatically; only the dataset is needed
+# FSDP path — script downloads + dequantizes automatically; only the dataset is needed
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 ```
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
-**N/A** — the Megatron BF16 launcher loads the HF checkpoint directly via `--megatron-to-hf-mode bridge` (mbridge); the FSDP launcher loads HF directly. There is no `convert_hf_to_torch_dist.py` step for either path.
+Neither launcher needs a `convert_hf_to_torch_dist.py` step. The Megatron BF16 launcher loads the HF checkpoint directly via `--megatron-to-hf-mode bridge` (mbridge); the FSDP launcher loads HF directly.
 
-The FSDP launcher additionally runs an inline `convert_model.py` snippet that downloads `openai/gpt-oss-20b` and dequantises its MXFP4 weights to BF16, saving to `/root/models/gpt-oss-20b-bf16`.
+The FSDP launcher additionally runs an inline `convert_model.py` snippet that downloads `openai/gpt-oss-20b` and dequantizes its MXFP4 weights to BF16, saving to `/root/models/gpt-oss-20b-bf16`.
 
 ## 4. Launch
 
@@ -119,4 +119,4 @@ Neither launcher writes `--save`/`--load`/`--save-interval`.
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](../../advanced/architecture-support.md) — the FSDP variant.
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [Low Precision RL](../../advanced/fp8-low-precision.md)

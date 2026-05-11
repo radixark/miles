@@ -6,13 +6,13 @@ description: How to verify and override the chat template applied during multi-t
 # Agentic Chat Templates
 
 In agentic / multi-turn workflows, Miles uses SGLang's pretokenized prefix mechanism
-so the conversation history is not re-tokenised every turn. That requires the chat
+so the conversation history is not re-tokenized every turn. That requires the chat
 template to satisfy an **append-only invariant**: rendering messages `[1..N]` must
 produce a string that is an exact prefix of rendering `[1..N+1]`.
 
 Some community templates violate this. They use `loop.last` or other
 context-dependent Jinja logic that flips bits across turns, and the result is silent
-tokenisation drift, divergent log-probabilities, and gradient blow-up after a few
+tokenization drift, divergent log-probabilities, and gradient blow-up after a few
 iterations of multi-turn RL.
 
 Miles ships a verifier and an autofix.
@@ -121,8 +121,8 @@ Built-in fixed templates that ship with Miles live under
 
 | Without it | With it |
 |---|---|
-| Re-tokenise everything each turn | Tokenise only the new turn |
-| O(N²) tokenisation cost | O(N) tokenisation cost |
+| Re-tokenize everything each turn | Tokenize only the new turn |
+| O(N²) tokenization cost | O(N) tokenization cost |
 | Subtle drift between turns | Bit-stable tokens |
 | Multi-turn RL collapses after ~50 steps | Stable across thousands of steps |
 

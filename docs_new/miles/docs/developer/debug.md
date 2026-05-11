@@ -72,7 +72,7 @@ A typical workflow:
 1. Run with `--debug-rollout-only --save-debug-rollout-data` to capture a few
    well-formed rollouts.
 2. Switch to `--debug-train-only --load-debug-rollout-data` to iterate on training
-   changes (parallelism, optimiser, custom loss) with **fixed inputs**. Removes
+   changes (parallelism, optimizer, custom loss) with **fixed inputs**. Removes
    rollout randomness from your bisect.
 
 This is the single most useful pattern in the Miles workflow. Use it.

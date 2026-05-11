@@ -14,49 +14,76 @@ needed to run RL at trillion-parameter scale.
 
 ## Core features
 
-- **Unified low-precision training.** FP8 sampling and FP8 training share a single
-  quantisation path, so the rollout policy and the training policy are bit-identical.
-- **Rollout Routing Replay (R3).** For MoE models, expert routing captured during
-  inference is replayed during the trainer's forward pass, eliminating the mismatch that
-  destabilises large-scale MoE RL.
+- **Fast and stable support for the latest models.** Day-0 enablement of frontier
+  releases such as DeepSeek-V4, with rapid follow-on support for new architectures
+  including GLM-5, Qwen 3.6, and Nemotron-3-Super.
+- **Unified low-precision training.** Customisable precision across the rollout and
+  training engines, with unified **BF16**, **FP8**, **MXFP8**, and **INT4 QAT** recipes
+  available now and an **NVFP4** training recipe in progress.
+- **Efficient Rollout Routing Replay (R3).** For MoE models, expert routing captured
+  during inference is replayed during the trainer's forward pass, eliminating the
+  mismatch that destabilizes large-scale MoE RL. Optimized with a routing-result cache
+  and overlapped device-to-host (D2H) copy to reduce overhead in both single-turn and
+  multi-turn RL.
 - **Speculative rollout with online MTP-SFT.** Miles keeps the draft model's acceptance
   rate high through training by fine-tuning MTP layers on-policy.
-- **Fault tolerance.** Rank-level recovery, step-level replay, and RDMA P2P weight
-  sync let weeks-long runs survive routine hardware faults.
-- **First-class agentic rollout.** Tool use, multi-turn dialogue, search, code
+- **LoRA training and serving.** Both SFT and RL recipes support LoRA adapters,
+  and the same adapters load directly into SGLang for rollout — no separate
+  merge or conversion step.
+- **Native agentic rollout.** Tool use, multi-turn dialogue, search, code
   execution, and multi-agent co-evolution are all supported through clean Python
   extension points.
 - **Minimal core, maximal extension.** Twenty-plus plug-points let you replace the
   rollout, reward, loss, or filter without forking the trainer.
+- **Broad hardware support.** First-class on NVIDIA Hopper (H100, H200) and
+  Blackwell (B100, B200, GB200, GB300), with AMD MI300X / MI325 / MI350 /
+  MI355X also supported via ROCm.
 
 ## Supported models
 
-Dense — Qwen3.5, Qwen3, GLM4, MiMo, GPT-OSS.
+<CardGroup cols={2}>
+  <Card title="Dense">
+    - **Qwen**: <span style="font-weight: 400 !important">[Qwen3.6](models/qwen/qwen3-6.md), [Qwen3.5](models/qwen/qwen3-5.md), [Qwen3](models/qwen/qwen3.md)</span>
+    - **GLM**: <span style="font-weight: 400 !important">[GLM4](models/glm/glm4.md)</span>
+    - **Nemotron**: <span style="font-weight: 400 !important">[Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md)</span>
+    - **MiMo**: <span style="font-weight: 400 !important">[MiMo](models/mimo/mimo.md)</span>
+    - **GPT-OSS**: <span style="font-weight: 400 !important">[GPT-OSS](models/gpt-oss/gpt-oss.md)</span>
+  </Card>
 
-Mixture-of-Experts — DeepSeek-V4, DeepSeek V3, Qwen3.5 MoE, Qwen3-Next, Qwen3 MoE, GLM5, GLM4.7, GLM4.5, Kimi K2, Moonlight.
+  <Card title="Mixture of Experts">
+    - **DeepSeek**: <span style="font-weight: 400 !important">[DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md), [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md), [DeepSeek-V3 / R1](models/deepseek/deepseek.md)</span>
+    - **Qwen**: <span style="font-weight: 400 !important">[Qwen3.6 MoE](models/qwen/qwen3-6-moe.md), [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md), [Qwen3-Next](models/qwen/qwen3-next.md), [Qwen3 MoE](models/qwen/qwen3-moe.md)</span>
+    - **GLM**: <span style="font-weight: 400 !important">[GLM5 / GLM5.1](models/glm/glm5.md), [GLM4.7](models/glm/glm4-7-flash.md), [GLM4.5](models/glm/glm4-5.md)</span>
+    - **Kimi**: <span style="font-weight: 400 !important">[Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md), [Kimi K2](models/kimi/kimi-k2.md), [Moonlight](models/kimi/moonlight.md)</span>
+    - **Nemotron**: <span style="font-weight: 400 !important">[Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md), [Nemotron-3-Super](models/nemotron/nemotron-3-super.md)</span>
+  </Card>
+</CardGroup>
 
-See [Models](models/index.md) for per-family recipes.
+See [Models](models/index.md) for exact conversion commands, launch scripts, and
+parallelism settings.
 
 ## Supported hardware
 
-NVIDIA H100, H200, B100, B200, A100. AMD MI300X, MI325, MI350, MI355X via ROCm. See
-[Platforms](platforms/index.md).
+- **NVIDIA**: GB300, GB200, B200, B100, H200, H100, A100.
+- **AMD**: MI300X, MI325, MI350, MI355X (via ROCm).
+
+See [Platforms](platforms/index.md).
 
 ## Latest updates
 
-- **[2026/02]** Complete argument reference. [Server arguments](user-guide/cli-reference.md)
-- **[2026/01]** INT4 W4A16 QAT. [Low-precision guide](advanced/int4-qat.md)
-- **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-agent walkthrough](examples/multi-agent.md)
-- **[2025/12]** Rollout Routing Replay (R3) for MoE. [Design doc](advanced/miles-router.md)
-- **[2025/11]** Unified FP8 pipeline generally available. [Post](advanced/fp8-low-precision.md)
-- **[2025/11]** Speculative decoding with online MTP-SFT. [Docs](advanced/speculative-decoding.md)
+- **[2026/02]** Complete argument reference. [CLI Reference](user-guide/cli-reference.md)
+- **[2026/01]** INT4 W4A16 QAT. [INT4 Quantization-Aware Training](advanced/int4-qat.md)
+- **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-Agent Co-Evolution](examples/multi-agent.md)
+- **[2025/12]** Rollout Routing Replay (R3) for MoE. [Rollout Routing Replay (R3)](advanced/miles-router.md)
+- **[2025/11]** Unified FP8 pipeline generally available. [FP8 and Low Precision](advanced/fp8-low-precision.md)
+- **[2025/11]** Speculative decoding with online MTP-SFT. [Speculative Decoding](advanced/speculative-decoding.md)
 
 ## Start here
 
 1. **[Installation](getting-started/installation.md)** — Docker, bare metal, AMD.
 2. **[Quick Start](getting-started/quick-start.md)** — a working training run in under an hour.
 3. **[Core concepts](user-guide/concepts.md)** — the four objects in every Miles job.
-4. **[Training backends](user-guide/usage.md)** — choosing between Megatron and FSDP.
+4. **[Training backend](user-guide/usage.md)** — Megatron-LM, parallelism, checkpoints, and hooks.
 5. **[Training script walkthrough](user-guide/training-script-walkthrough.md)** — every
    argument group in a launch script, annotated.
 

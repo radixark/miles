@@ -65,13 +65,13 @@ Just two flags:
 +   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
 ```
 
-Everything else — model args, optimiser, GRPO config — stays the same.
+Everything else — model args, optimizer, GRPO config — stays the same.
 
 ## Walkthrough
 
 The interesting code is small. Here's the global worker manager:
 
-```python title="fully_async_rollout.py"
+```python fully_async_rollout.py
 _global_worker = None
 _worker_lock = threading.Lock()
 
@@ -171,7 +171,7 @@ async/consumer_drain_seconds      < producer cycle time
 ```
 
 If `consumer_drain_seconds > producer_cycle_time`, your trainer is starving the queue —
-check GPU utilisation.
+check GPU utilization.
 
 ## Limitations
 

@@ -18,14 +18,14 @@ off to `train.py`:
 
 | Array | Governs |
 |---|---|
-| `MODEL_ARGS` | Architecture constants (layers, hidden size, rotary base, …) |
-| `CKPT_ARGS` | Filesystem paths for the actor / reference / save directory |
-| `ROLLOUT_ARGS` | Prompt dataset, batch knobs, sampling parameters, reward type |
-| `EVAL_ARGS` | Eval dataset, cadence, sampling overrides for evaluation |
-| `PERF_ARGS` | Parallelism (TP/PP/EP/CP), recomputation, dynamic batching |
-| `GRPO_ARGS` | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| `OPTIMIZER_ARGS` | Learning rate, schedule, weight decay, Adam betas |
-| `SGLANG_ARGS` | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`MODEL_ARGS`](argument-groups.md#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`CKPT_ARGS`](argument-groups.md#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`ROLLOUT_ARGS`](argument-groups.md#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`EVAL_ARGS`](argument-groups.md#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`PERF_ARGS`](argument-groups.md#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`GRPO_ARGS`](argument-groups.md#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`OPTIMIZER_ARGS`](argument-groups.md#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`SGLANG_ARGS`](argument-groups.md#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ---
 
@@ -42,15 +42,16 @@ source "${SCRIPT_DIR}/models/glm4-9B.sh"
 
 The sourced file sets `MODEL_ARGS=(--num-layers ... --hidden-size ... --rotary-base ...)`.
 
-!!! warning "Architecture parameters are not self-validating"
-    Two checkpoints from the same family can ship different `--rotary-base`, vocab
-    padding, or normalisation epsilon. Diff the `config.json` against the file in
-    `scripts/models/` before you run, and override anything that drifts:
+<Warning>
+**Architecture parameters are not self-validating.** Two checkpoints from the same family can ship different `--rotary-base`, vocab
+padding, or normalization epsilon. Diff the `config.json` against the file in
+`scripts/models/` before you run, and override anything that drifts:
 
-    ```bash
-    source "${SCRIPT_DIR}/models/glm4-9B.sh"
-    MODEL_ARGS+=(--rotary-base 10000)
-    ```
+```bash
+source "${SCRIPT_DIR}/models/glm4-9B.sh"
+MODEL_ARGS+=(--rotary-base 10000)
+```
+</Warning>
 
 ## CKPT_ARGS — paths
 
@@ -85,8 +86,8 @@ Their product is the total sample count produced each rollout.
 
 **Consumption side**
 
-- `--global-batch-size` — samples used per optimiser step.
-- `--num-steps-per-rollout` — optimiser steps per rollout. Leave at `1` for strict
+- `--global-batch-size` — samples used per optimizer step.
+- `--num-steps-per-rollout` — optimizer steps per rollout. Leave at `1` for strict
   on-policy behaviour; raise it for off-policy reuse of rollout batches.
 
 Their product is the total sample count consumed each rollout.
@@ -119,14 +120,15 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 8192
    --rollout-temperature 1
 
-   --balance-data                  # equalise tokens across DP ranks
+   --balance-data                  # equalize tokens across DP ranks
 )
 ```
 
-!!! note "Optimiser step vs. weight sync"
-    `--num-steps-per-rollout` counts calls to `optimizer.step()`, not the weight
-    handshake between trainer and SGLang. The latter happens exactly once per rollout,
-    regardless of how many optimiser steps fired in between.
+<Note>
+**Optimizer step vs. weight sync.** `--num-steps-per-rollout` counts calls to `optimizer.step()`, not the weight
+handshake between trainer and SGLang. The latter happens exactly once per rollout,
+regardless of how many optimizer steps fired in between.
+</Note>
 
 ## EVAL_ARGS — a strict subset of rollout
 
@@ -221,8 +223,8 @@ A few design choices become visible here:
 
 ## OPTIMIZER_ARGS — nothing surprising
 
-Post-training is unusually sensitive to optimiser settings: the model is already in a
-good basin and large updates destabilise it.
+Post-training is unusually sensitive to optimizer settings: the model is already in a
+good basin and large updates destabilize it.
 
 ```bash
 OPTIMIZER_ARGS=(
@@ -237,7 +239,7 @@ OPTIMIZER_ARGS=(
 
 A rule of thumb: start at `lr = 1e-6` with a constant schedule. If the loss plateaus
 early, investigate the reward signal before raising the learning rate — in most cases
-the reward pipeline collapsed (same score for every sample) rather than the optimiser
+the reward pipeline collapsed (same score for every sample) rather than the optimizer
 stalling.
 
 ## SGLANG_ARGS — passthrough to the rollout engine
@@ -330,18 +332,20 @@ ray job submit ... -- python3 train.py \
 `--rollout-num-gpus` is ignored under `--colocate`; the two phases always share the
 entire allocation.
 
-!!! warning "Leave SGLang some headroom"
-    Megatron reserves VRAM during initialisation and only releases it once the first
-    offload completes. If SGLang is sized to the full device capacity, the init
-    collision produces an OOM before training ever starts. Drop
-    `--sglang-mem-fraction-static` to **0.8** (further if memory is still tight).
+<Warning>
+**Leave SGLang some headroom.** Megatron reserves VRAM during initialization and only releases it once the first
+offload completes. If SGLang is sized to the full device capacity, the init
+collision produces an OOM before training ever starts. Drop
+`--sglang-mem-fraction-static` to **0.8** (further if memory is still tight).
+</Warning>
 
-!!! note "What `--colocate` flips on"
-    Setting `--colocate` also enables (unless you've set them explicitly):
+<Note>
+**What `--colocate` flips on.** Setting `--colocate` also enables (unless you've set them explicitly):
 
-    - `--offload-train` — train state offloads to CPU between phases
-    - `--offload-rollout` — rollout state offloads to CPU between phases
-    - `--sglang-disable-piecewise-cuda-graph` — avoids NVLS OOM in colocate mode
+- `--offload-train` — train state offloads to CPU between phases
+- `--offload-rollout` — rollout state offloads to CPU between phases
+- `--sglang-disable-piecewise-cuda-graph` — avoids NVLS OOM in colocate mode
+</Note>
 
 ## Dynamic sampling (DAPO-style filtering)
 
@@ -399,11 +403,12 @@ Each entry in the buffer carries its original `sample.metadata` (including the
 rollout ID that first launched it), which is usually enough to reason about staleness
 if you want a stricter eviction policy.
 
-!!! tip "Partial rollout and off-policy correction"
-    Samples that re-enter the trainer from the buffer were generated under an older
-    policy than the one currently being trained. If you enable `--partial-rollout`
-    together with aggressive reuse (`--num-steps-per-rollout > 1`), pair it with
-    `--use-tis` to keep the gradient well-behaved.
+<Tip>
+**Partial rollout and off-policy correction.** Samples that re-enter the trainer from the buffer were generated under an older
+policy than the one currently being trained. If you enable `--partial-rollout`
+together with aggressive reuse (`--num-steps-per-rollout > 1`), pair it with
+`--use-tis` to keep the gradient well-behaved.
+</Tip>
 
 ## BF16 training with FP8 inference
 
@@ -435,19 +440,20 @@ receives via P2P sync into FP8 before running them. This is the lowest-friction 
 to take the inference-side speedup, but it does introduce the precision mismatch
 between rollout and trainer that R3 and TIS were designed to absorb.
 
-!!! warning "Do not point `--ref-load` at the FP8 directory"
-    The reference model must remain BF16. Replacing it with FP8 weights changes the
-    KL anchor silently and makes the loss curve incomparable to earlier runs.
+<Warning>
+**Do not point `--ref-load` at the FP8 directory.** The reference model must remain BF16. Replacing it with FP8 weights changes the
+KL anchor silently and makes the loss curve incomparable to earlier runs.
+</Warning>
 
 For end-to-end FP8 (trainer and inference at bit-identical precision), see
-[FP8 & Low Precision](../advanced/fp8-low-precision.md). For INT4 quant-aware
+[Low Precision RL](../advanced/fp8-low-precision.md). For INT4 quant-aware
 training, see [INT4 QAT](../advanced/int4-qat.md).
 
 ---
 
 ## Next
 
-- [Configuration](cli-reference.md) — the same material organised as a flag-by-flag
+- [Configuration](cli-reference.md) — the same material organized as a flag-by-flag
   reference.
 - [Server Arguments](cli-reference.md) — the complete CLI surface.
 - [Customization](customization.md) — the twenty-plus Python extension points.

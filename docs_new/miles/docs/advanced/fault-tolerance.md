@@ -33,7 +33,7 @@ around offload / onload events.
 Each loop iteration does:
 
 1. After a `resume`, wait `--rollout-health-check-first-wait` seconds before
-   the first check (intended to cover model compilation and initialisation).
+   the first check (intended to cover model compilation and initialization).
 2. For every active engine in the group, call `engine.health_generate.remote(timeout=self._check_timeout)`.
 3. If the call raises, run `_kill_engine`: `engine.shutdown.remote()`,
    `ray.kill(engine)`, and the engine slot is set to `None`

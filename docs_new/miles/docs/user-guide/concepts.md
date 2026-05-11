@@ -44,7 +44,7 @@ for it in range(num_rollout):
     # 2. Score
     rewards   = reward_fn(prompts, responses, labels)
 
-    # 3. Optimise
+    # 3. Optimize
     for step in range(num_steps_per_rollout):
         batch = pack(prompts, responses, rewards, size=global_batch_size)
         loss  = grpo_loss(actor, ref_model, batch)
@@ -76,18 +76,19 @@ Use this map when reading any launch script:
 
 | Argument group | Concerns |
 |---|---|
-| `MODEL_ARGS` | Architecture constants (layers, hidden size, rotary base, …) |
-| `CKPT_ARGS` | Filesystem paths for the actor / reference / save directory |
-| `ROLLOUT_ARGS` | Prompt dataset, batch knobs, sampling parameters, reward type |
-| `EVAL_ARGS` | Eval dataset, cadence, sampling overrides for evaluation |
-| `PERF_ARGS` | Parallelism (TP/PP/EP/CP), recomputation, dynamic batching |
-| `GRPO_ARGS` | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| `OPTIMIZER_ARGS` | Learning rate, schedule, weight decay, Adam betas |
-| `SGLANG_ARGS` | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`MODEL_ARGS`](argument-groups.md#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`CKPT_ARGS`](argument-groups.md#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`ROLLOUT_ARGS`](argument-groups.md#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`EVAL_ARGS`](argument-groups.md#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`PERF_ARGS`](argument-groups.md#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`GRPO_ARGS`](argument-groups.md#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`OPTIMIZER_ARGS`](argument-groups.md#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`SGLANG_ARGS`](argument-groups.md#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ## Next
 
-- [Training Backends](usage.md) — Megatron vs FSDP, and each one's plumbing.
+- [Training Backend](usage.md) — Megatron-LM, parallelism, checkpoints, and hooks.
+- [Argument Groups](argument-groups.md) — where each launch-script array belongs.
 - [Training Script Walkthrough](training-script-walkthrough.md) — the launch script
   group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).
 - [CLI Reference](cli-reference.md) — every flag, grouped and fully catalogued.

@@ -65,10 +65,11 @@ PERF_ARGS+=(
 | `--enable-mtp-training` | Backprop through MTP loss alongside the policy loss. |
 | `--mtp-loss-scaling-factor` | Weight of the MTP loss in the combined gradient (default `0.2`). |
 
-!!! note "Checkpoint must contain MTP weights"
-    Pass `--mtp-num-layers 1` when running `convert_hf_to_torch_dist.py`.
-    Without it the resulting `torch_dist` checkpoint will not contain the MTP
-    layer to train.
+<Note>
+**Checkpoint must contain MTP weights.** Pass `--mtp-num-layers 1` when running `convert_hf_to_torch_dist.py`.
+Without it the resulting `torch_dist` checkpoint will not contain the MTP
+layer to train.
+</Note>
 
 ## External draft model SFT
 
@@ -78,9 +79,9 @@ rollouts and reload it.
 
 ## Pairs with
 
-* [Unified FP8](fp8-low-precision.md). Draft and target both quantised the
+* [Unified FP8](fp8-low-precision.md). Draft and target both quantized the
   same way.
-* [INT4 QAT](int4-qat.md). A quantised draft is cheaper to verify.
+* [INT4 QAT](int4-qat.md). A quantized draft is cheaper to verify.
 * [R3](miles-router.md). R3 captures routing for the verified tokens emitted
   by the target.
 

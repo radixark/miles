@@ -1091,3 +1091,66 @@ body, .md-typeset {
   margin: 0 1rem 1rem;
   padding-top: 1.2rem;
 }
+
+/* --------------------------------------------------------------------------
+   Homepage model matrix
+   -------------------------------------------------------------------------- */
+.md-typeset .miles-model-matrix {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1.1rem 0 0.7rem;
+}
+
+.md-typeset .miles-model-panel {
+  border: 1px solid var(--miles-line);
+  border-radius: 8px;
+  padding: 0.85rem 0.95rem 0.9rem;
+  background:
+    linear-gradient(180deg, rgba(31, 123, 224, 0.055), transparent 46%),
+    var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .miles-model-panel {
+  background:
+    linear-gradient(180deg, rgba(92, 182, 255, 0.07), transparent 48%),
+    rgba(255, 255, 255, 0.018);
+}
+
+.md-typeset .miles-model-panel--moe {
+  background:
+    linear-gradient(180deg, rgba(16, 185, 129, 0.06), transparent 46%),
+    var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .miles-model-panel--moe {
+  background:
+    linear-gradient(180deg, rgba(16, 185, 129, 0.075), transparent 48%),
+    rgba(255, 255, 255, 0.018);
+}
+
+.md-typeset .miles-model-kicker {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .miles-model-panel p {
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-typeset .miles-model-panel a {
+  font-weight: 500;
+}
+
+@media screen and (max-width: 44rem) {
+  .md-typeset .miles-model-matrix {
+    grid-template-columns: 1fr;
+  }
+}

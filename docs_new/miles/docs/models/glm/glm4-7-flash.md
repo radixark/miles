@@ -113,4 +113,4 @@ CPU Adam on:
 ## 6. Pairs Well With
 
 - [Rollout Routing Replay (R3)](../../advanced/miles-router.md) — already on by default.
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [Low Precision RL](../../advanced/fp8-low-precision.md)

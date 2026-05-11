@@ -8,29 +8,27 @@ description: Architecture, contribution conventions, debugging, and migration no
 You're here because you want to change Miles, not just use it. This section is the
 short tour for new contributors.
 
-<div class="grid cards" markdown>
-
--   :material-file-document-edit:{ .lg .middle } **[Contributing](contributing.md)**
-
-    ---
+<CardGroup cols={2}>
+  <Card title="Contributing" icon="file-pen" href="contributing">
     PR conventions, code layout, how reviews work.
+  </Card>
 
--   :material-bug:{ .lg .middle } **[Debugging](debug.md)**
-
-    ---
+  <Card title="Debugging" icon="bug" href="debug">
     Aligning precision, separate train/rollout debugging, common kernel pitfalls.
+  </Card>
 
--   :material-source-branch-sync:{ .lg .middle } **[Migration Guide](migration.md)**
-
-    ---
+  <Card title="Migration Guide" icon="code-branch" href="migration">
     Sync → async loop, breaking flag changes between releases.
+  </Card>
 
--   :material-graph-outline:{ .lg .middle } **[Architecture Overview](architecture.md)**
+  <Card title="Architecture Overview" icon="diagram-project" href="architecture">
+    The 30-minute tour of how Miles is organized internally.
+  </Card>
 
-    ---
-    The 30-minute tour of how Miles is organised internally.
-
-</div>
+  <Card title="Experimental Features" icon="flask" href="experimental-features">
+    Opt-in backends and features (FSDP, …) that aren't production-ready yet.
+  </Card>
+</CardGroup>
 
 ## TL;DR for first-time contributors
 

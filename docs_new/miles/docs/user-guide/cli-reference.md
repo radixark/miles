@@ -46,8 +46,8 @@ rollout_batch_size × n_samples_per_prompt
 |---|---|---|
 | `--rollout-batch-size` | `16 – 256` | Prompts per rollout. |
 | `--n-samples-per-prompt` | `4 – 16` | Responses per prompt (GRPO group size). |
-| `--global-batch-size` | derived | Samples per optimiser step. |
-| `--num-steps-per-rollout` | `1` | Optimiser steps per rollout. |
+| `--global-batch-size` | derived | Samples per optimizer step. |
+| `--num-steps-per-rollout` | `1` | Optimizer steps per rollout. |
 | `--num-rollout` | `1000 – 10000` | Total rollout iterations. |
 
 ### Memory and throughput
@@ -88,7 +88,7 @@ then push up until you OOM.
 | `--apply-chat-template` | off | Apply the tokenizer's chat template. |
 | `--rollout-shuffle` | off | Shuffle prompts each rollout. |
 
-### Optimiser
+### Optimizer
 
 | Flag | Default | What |
 |---|---|---|
@@ -175,8 +175,8 @@ Sections mirror the launch-script argument groups.
 | `--num-rollout` | int | – | Total rollout iterations. If unset, derived from dataset size. |
 | `--rollout-batch-size` | int | – | Prompts per rollout. |
 | `--n-samples-per-prompt` | int | `1` | Responses per prompt. |
-| `--global-batch-size` | int | derived | Samples per optimiser step. |
-| `--num-steps-per-rollout` | int | `1` | Optimiser steps per rollout. |
+| `--global-batch-size` | int | derived | Samples per optimizer step. |
+| `--num-steps-per-rollout` | int | `1` | Optimizer steps per rollout. |
 | `--over-sampling-batch-size` | int | – | Oversample size for dynamic sampling (DAPO). |
 | `--balance-data` | flag | off | Balance per-rank token count. |
 
@@ -219,7 +219,7 @@ Sections mirror the launch-script argument groups.
 | `--recompute-method` | enum | Megatron default | `uniform` or `block`. |
 | `--recompute-num-layers` | int | Megatron default | Recompute chunk size. |
 | `--gradient-checkpointing` | flag | off | FSDP equivalent of recompute flags. |
-| `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimiser state to CPU. |
+| `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |
 | `--attn-implementation` | enum | `flash_attention_2` | FSDP only: `flash_attention_2`, `sdpa`, `eager`. |
 
@@ -241,7 +241,7 @@ Sections mirror the launch-script argument groups.
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
 | `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |
 
-### Optimiser
+### Optimizer
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
@@ -256,7 +256,7 @@ Sections mirror the launch-script argument groups.
 | `--clip-grad` | float | `1.0` | Grad clipping (Megatron flag). |
 | `--optimizer-cpu-offload` | flag | off | Megatron CPU Adam (Megatron flag). |
 | `--overlap-cpu-optimizer-d2h-h2d` | flag | off | Overlap D2H/H2D with compute (Megatron flag). |
-| `--use-precision-aware-optimizer` | flag | off | Precision-aware optimiser path (Megatron flag). |
+| `--use-precision-aware-optimizer` | flag | off | Precision-aware optimizer path (Megatron flag). |
 
 ### Reward and filters
 
@@ -347,7 +347,7 @@ Common `--sglang-*` flags:
 | `--load-debug-rollout-data` | path | – | Replay rollouts from disk (implies `--debug-train-only`). |
 | `--deterministic-mode` | flag | off | Megatron deterministic mode. |
 
-### Customisation
+### Customization
 
 See [Customization](customization.md) for the full catalogue of `--*-path` flags
 that replace or extend Miles's behaviour.

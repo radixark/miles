@@ -10,8 +10,8 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
 
 ## Method 1: Docker (recommended)
 
-=== "NVIDIA"
-
+<Tabs>
+  <Tab title="NVIDIA">
     ```bash
     docker pull radixark/miles:latest
 
@@ -21,9 +21,8 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
       --network=host \
       -it radixark/miles:latest /bin/bash
     ```
-
-=== "AMD MI300X / MI350X"
-
+  </Tab>
+  <Tab title="AMD MI300X / MI350X">
     ```bash
     docker pull rlsys/miles:MI350-355-latest    # or MI300-latest
 
@@ -34,6 +33,8 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
       --privileged \
       -it rlsys/miles:MI350-355-latest /bin/bash
     ```
+  </Tab>
+</Tabs>
 
 The image ships with:
 
@@ -54,9 +55,10 @@ pip install -r requirements.txt
 pip install -e . --no-deps
 ```
 
-!!! warning "Patched dependencies"
-    Miles pins patched versions of SGLang and Megatron-LM. Installing them yourself at
-    the wrong commit is the most common source of bug reports — use Docker if you can.
+<Warning>
+**Patched dependencies.** Miles pins patched versions of SGLang and Megatron-LM. Installing them yourself at
+the wrong commit is the most common source of bug reports — use Docker if you can.
+</Warning>
 
 ## Method 3: Update an existing container
 
@@ -84,7 +86,7 @@ If either command fails, see [Debugging](../developer/debug.md) or the [FAQ](../
 
 | Hardware | Status |
 |---|---|
-| NVIDIA H100 / H200 | Production (CI target) |
+| NVIDIA H100 / H200 | Production (CI guarded) |
 | NVIDIA B100 / B200 | Production |
 | NVIDIA A100 | Supported — FP8 features disabled |
 | AMD MI300X, MI325, MI350X, MI355X | Supported via ROCm |

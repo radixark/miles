@@ -1,12 +1,12 @@
 ---
 title: Multi-Agent Co-Evolution
-description: Two specialised agents train together and improve each other.
+description: Two specialized agents train together and improve each other.
 ---
 
 # Multi-Agent Co-Evolution
 
 **What you'll learn:** how to wire up an asynchronous multi-agent system in Miles, where
-two (or more) specialised agents take alternating turns and the joint outcome drives a
+two (or more) specialized agents take alternating turns and the joint outcome drives a
 single shared reward.
 
 This example uses a dual-agent setup that interleaves a "thinker" and a "verifier", but
@@ -56,7 +56,7 @@ MULTI_AGENT_CONFIGS = {
 ```
 
 Asymmetric reward weighting (0.8 / 1.2) gives a small bias toward upweighting "correct"
-trajectories, which empirically stabilises early training when most attempts fail.
+trajectories, which empirically stabilizes early training when most attempts fail.
 
 ## Launch script highlights
 
@@ -94,7 +94,7 @@ attempts run in parallel, each rewriter rewrites the previous solutions, and a
 `SelectorAgent` picks one. Sampling params are set on `args` upstream by the rollout
 helper, so `run_agent_system` only takes `(args, sample)`.
 
-```python title="agent_system.py"
+```python agent_system.py
 async def run_agent_system(args, sample):
     args = deepcopy(args)
     args.sample = sample
@@ -144,7 +144,7 @@ sampling_params, evaluation=False)`. Internally it:
    produced by the solver / rewriter / selector pipeline.
 3. Returns the shuffled list of `Sample`s for the trainer to pack.
 
-The per-sample tokenisation and reward already happen inside `solver_worker` /
+The per-sample tokenization and reward already happen inside `solver_worker` /
 `rewrite_worker` / `SelectorAgent.select` (which call `batched_async_rm`), so the
 rollout integration itself is a thin wrapper.
 
@@ -190,7 +190,7 @@ sample dict (see [Customization #13](../user-guide/customization.md#training)).
 ### True asymmetric agents
 
 Run two SGLang services — one per agent — and have your rollout function call the
-appropriate URL per turn. The trainer can either train both jointly (one optimiser per
+appropriate URL per turn. The trainer can either train both jointly (one optimizer per
 model) or train one and freeze the other (PvE).
 
 ### Adversarial pairing

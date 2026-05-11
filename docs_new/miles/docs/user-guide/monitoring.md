@@ -69,7 +69,7 @@ def my_log(rollout_id, args, samples, extra, rollout_time) -> bool:
 
 | Tool | When |
 |---|---|
-| `nvidia-smi dmon -s u` | Quick sanity check on GPU utilisation |
+| `nvidia-smi dmon -s u` | Quick sanity check on GPU utilization |
 | `nsys profile` | Deep CUDA-level profiling |
 | `py-spy dump --pid <ray worker>` | Find Python-side stalls |
 | `ray timeline` | Inspect Ray task scheduling |

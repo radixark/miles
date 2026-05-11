@@ -1,6 +1,6 @@
 ---
 title: Architecture Overview
-description: The 30-minute tour of how Miles is organised internally.
+description: The 30-minute tour of how Miles is organized internally.
 ---
 
 # Architecture Overview
