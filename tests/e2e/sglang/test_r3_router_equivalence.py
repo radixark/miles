@@ -1,13 +1,15 @@
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=600, suite="stage-b-sglang-8-gpu", num_gpus=8)
+# Two model families run sequentially in one job, so est_time is roughly 2x
+# of a single family.
+register_cuda_ci(est_time=1200, suite="stage-b-sglang-8-gpu", num_gpus=8)
 
 """E2E test: verify sglang router and miles router produce identical rollout
 routing replay results across MoE models.
 
 Design
 ~~~~~~
-For each model in ``MODEL_REGISTRY``, run the same rollout workload twice
+For each model in :data:`CONFIGS`, run the same rollout workload twice
 under ``--debug-rollout-only --sglang-enable-deterministic-inference
 --use-rollout-routing-replay``:
 
@@ -37,7 +39,9 @@ loaded.  This lets us get away with a single H200 and no
 
 Controls
 ~~~~~~~~
-- ``ROUTER_EQ_MODEL_FAMILY``: ``qwen3_30b_a3b`` (default) | ``glm47_flash``.
+- :data:`CONFIGS` (``qwen3_30b_a3b``, ``glm47_flash``): default CI sweep.
+  ``ROUTER_EQ_MODEL_FAMILY`` overrides this to run a single family, primarily
+  for local debugging.
 - The CI suite reserves 8 GPUs to avoid sharing the runner with another GPU
   job while this SGLang/Ray process tree is alive. The test workload itself
   still uses a single engine (``--rollout-num-gpus-per-engine 1``) so both
@@ -53,7 +57,6 @@ from pathlib import Path
 
 import miles.utils.external_utils.command_utils as U
 
-MODEL_FAMILY = os.environ.get("ROUTER_EQ_MODEL_FAMILY", "qwen3_30b_a3b")
 DUMP_ROOT = Path(os.environ.get("ROUTER_EQ_DUMP_ROOT", "/tmp/router-eq"))
 PROMPT_DATA_PATH = "/root/datasets/dapo-math-17k/dapo-math-17k.jsonl"
 NUM_PROMPTS = int(os.environ.get("ROUTER_EQ_NUM_PROMPTS", "10"))
@@ -94,15 +97,26 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
 }
 
-
-def _get_config() -> ModelConfig:
-    if MODEL_FAMILY not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown ROUTER_EQ_MODEL_FAMILY={MODEL_FAMILY!r}; choose from {list(MODEL_REGISTRY)}")
-    return MODEL_REGISTRY[MODEL_FAMILY]
+# Default CI sweep. ``ROUTER_EQ_MODEL_FAMILY`` (single family) overrides this
+# list, primarily for local debugging.
+CONFIGS: list[str] = ["qwen3_30b_a3b", "glm47_flash"]
 
 
-def prepare() -> None:
-    cfg = _get_config()
+def _resolve_configs() -> list[str]:
+    override = os.environ.get("ROUTER_EQ_MODEL_FAMILY")
+    if override:
+        return [override]
+    return list(CONFIGS)
+
+
+def _get_config(model_family: str) -> ModelConfig:
+    if model_family not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown ROUTER_EQ_MODEL_FAMILY={model_family!r}; choose from {list(MODEL_REGISTRY)}")
+    return MODEL_REGISTRY[model_family]
+
+
+def prepare(model_family: str) -> None:
+    cfg = _get_config(model_family)
     U.exec_command("mkdir -p /root/models /root/datasets")
     if not Path(cfg.local_dir).exists():
         U.exec_command(f"hf download {cfg.hf_repo} --local-dir {cfg.local_dir}")
@@ -110,12 +124,12 @@ def prepare() -> None:
         U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
 
-def _variant_dir(variant: str) -> Path:
-    return DUMP_ROOT / MODEL_FAMILY / variant
+def _variant_dir(model_family: str, variant: str) -> Path:
+    return DUMP_ROOT / model_family / variant
 
 
-def _variant_dump_path(variant: str) -> Path:
-    return _variant_dir(variant) / "dump.jsonl"
+def _variant_dump_path(model_family: str, variant: str) -> Path:
+    return _variant_dir(model_family, variant) / "dump.jsonl"
 
 
 def _build_train_args(cfg: ModelConfig, variant: str) -> str:
@@ -172,12 +186,12 @@ def _build_train_args(cfg: ModelConfig, variant: str) -> str:
     return ckpt_args + rollout_args + generate_args + router_args + perf_args + sglang_args + infra_args
 
 
-def _run_variant(cfg: ModelConfig, variant: str) -> None:
-    dump_dir = _variant_dir(variant)
+def _run_variant(model_family: str, cfg: ModelConfig, variant: str) -> None:
+    dump_dir = _variant_dir(model_family, variant)
     if dump_dir.exists():
         shutil.rmtree(dump_dir)
     dump_dir.mkdir(parents=True, exist_ok=True)
-    dump_path = _variant_dump_path(variant)
+    dump_path = _variant_dump_path(model_family, variant)
 
     train_args = _build_train_args(cfg, variant)
     U.execute_train(
@@ -234,31 +248,37 @@ def _assert_records_equal(left: list[dict], right: list[dict]) -> None:
         assert ba == bb, f"index={a['index']} routed_experts bytes differ"
 
 
-def execute() -> None:
-    cfg = _get_config()
+def execute(model_family: str) -> None:
+    cfg = _get_config(model_family)
     for variant in ("miles", "sgl"):
-        _run_variant(cfg, variant)
+        _run_variant(model_family, cfg, variant)
 
-    miles_records = _load_dump(_variant_dump_path("miles"))
-    sgl_records = _load_dump(_variant_dump_path("sgl"))
+    miles_records = _load_dump(_variant_dump_path(model_family, "miles"))
+    sgl_records = _load_dump(_variant_dump_path(model_family, "sgl"))
 
     assert miles_records, "miles-router run produced no dump records"
     assert sgl_records, "sglang-router run produced no dump records"
 
     _assert_records_equal(miles_records, sgl_records)
 
-    print(f"[router-eq] model_family={MODEL_FAMILY} variants miles/sgl " f"match across {len(miles_records)} samples")
+    print(f"[router-eq] model_family={model_family} variants miles/sgl " f"match across {len(miles_records)} samples")
+
+
+def _run_all() -> None:
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
+    for model_family in _resolve_configs():
+        print(
+            f"\n{'=' * 60}\nRunning model_family: {model_family}\n{'=' * 60}\n",
+            flush=True,
+        )
+        prepare(model_family)
+        execute(model_family)
 
 
 def test_r3_router_equivalence():
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    execute()
+    _run_all()
 
 
 if __name__ == "__main__":
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    execute()
+    _run_all()
