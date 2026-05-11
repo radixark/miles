@@ -23,7 +23,8 @@ when you need the full default and type for an individual flag.
 | [`OPTIMIZER_ARGS`](#optimizer-args) | Learning rate, schedule, weight decay, Adam betas | Recipe defaults |
 | [`SGLANG_ARGS`](#sglang-args) | Rollout engine topology and `--sglang-*` passthrough | Deployment shape |
 
-## MODEL_ARGS - architecture constants { #model-args }
+<a id="model-args"></a>
+## MODEL_ARGS - architecture constants
 
 `MODEL_ARGS` tells Megatron what model it is instantiating. Megatron cannot infer all
 architecture details from a HuggingFace checkpoint, so each recipe sources a matching
@@ -43,7 +44,8 @@ Keep these values aligned with the checkpoint's `config.json`. If one checkpoint
 family changes rotary base, vocab padding, or normalization epsilon, override the
 sourced defaults in the launch script.
 
-## CKPT_ARGS - checkpoint paths { #ckpt-args }
+<a id="ckpt-args"></a>
+## CKPT_ARGS - checkpoint paths
 
 `CKPT_ARGS` wires the three model roles in a run:
 
@@ -57,7 +59,8 @@ sourced defaults in the launch script.
 `--load` and `--save` usually point to the same directory. If `--load` has no
 `latest_checkpointed_iteration.txt`, Miles warm-starts the actor from `--ref-load`.
 
-## ROLLOUT_ARGS - sampling and reward { #rollout-args }
+<a id="rollout-args"></a>
+## ROLLOUT_ARGS - sampling and reward
 
 `ROLLOUT_ARGS` controls data entering the loop and how many samples each rollout
 produces.
@@ -74,7 +77,8 @@ produces.
 The rollout volume and training consumption must satisfy the
 [four-knob invariant](concepts.md#the-four-knob-invariant).
 
-## EVAL_ARGS - evaluation overrides { #eval-args }
+<a id="eval-args"></a>
+## EVAL_ARGS - evaluation overrides
 
 Evaluation reuses the rollout stack but usually runs with a different dataset and more
 deterministic sampling.
@@ -90,7 +94,8 @@ Common entries:
 
 Flags not set in `EVAL_ARGS` inherit from `ROLLOUT_ARGS`.
 
-## PERF_ARGS - parallelism and memory { #perf-args }
+<a id="perf-args"></a>
+## PERF_ARGS - parallelism and memory
 
 `PERF_ARGS` controls how training is sharded and how activation memory is managed.
 
@@ -108,7 +113,8 @@ valid or worth using for every model. Start from the recipe's tested combination
 see [parallelism compatibility](usage.md#parallelism-compatibility) before changing
 more than one dimension.
 
-## GRPO_ARGS - RL objective { #grpo-args }
+<a id="grpo-args"></a>
+## GRPO_ARGS - RL objective
 
 `GRPO_ARGS` controls the policy-gradient objective and the stability terms around it.
 
@@ -124,7 +130,8 @@ more than one dimension.
 Zero-weight KL is recipe-specific. `--use-kl-loss --kl-loss-coef 0.00` still loads the
 reference and logs KL; it does not remove the reference model.
 
-## OPTIMIZER_ARGS - optimizer schedule { #optimizer-args }
+<a id="optimizer-args"></a>
+## OPTIMIZER_ARGS - optimizer schedule
 
 `OPTIMIZER_ARGS` carries the optimizer choice and scalar schedule.
 
@@ -140,7 +147,8 @@ Common entries:
 Post-training is sensitive to large updates. Most recipes start near `1e-6` and use a
 constant schedule unless the model page says otherwise.
 
-## SGLANG_ARGS - rollout engine passthrough { #sglang-args }
+<a id="sglang-args"></a>
+## SGLANG_ARGS - rollout engine passthrough
 
 `SGLANG_ARGS` configures the inference side. Miles owns
 `--rollout-num-gpus-per-engine`; everything prefixed with `--sglang-` is forwarded to

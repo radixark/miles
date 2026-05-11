@@ -10,53 +10,43 @@ longer runs: routing replay for MoE, low-precision training, weight-sync
 mechanics, fault tolerance, and embedding HuggingFace modules in Megatron's
 parallel pipeline.
 
-<div class="grid cards" markdown>
-
--   :material-network:{ .lg .middle } **[Rollout Routing Replay (R3)](miles-router.md)**
-
-    ---
+<CardGroup cols={2}>
+  <Card title="Rollout Routing Replay (R3)" icon="network-wired" href="miles-router">
     Capture expert routing during inference and replay during training. The
     mechanism that keeps MoE RL stable.
+  </Card>
 
--   :material-flash:{ .lg .middle } **[Low Precision RL](fp8-low-precision.md)**
-
-    ---
+  <Card title="Low Precision RL" icon="bolt" href="fp8-low-precision">
     The unified FP8 path: matched quantization between training and inference,
     BF16 backward and master weights.
+  </Card>
 
--   :material-chip:{ .lg .middle } **[INT4 QAT](int4-qat.md)**
-
-    ---
+  <Card title="INT4 QAT" icon="microchip" href="int4-qat">
     W4A16 quantization-aware training for fitting large models on a single
     8-GPU node.
+  </Card>
 
--   :material-rocket:{ .lg .middle } **[Speculative Decoding](speculative-decoding.md)**
-
-    ---
+  <Card title="Speculative Decoding" icon="rocket" href="speculative-decoding">
     Draft + target speculative rollout, with online MTP-SFT for the draft.
+  </Card>
 
--   :material-shield-check:{ .lg .middle } **[Fault Tolerance](fault-tolerance.md)**
-
-    ---
+  <Card title="Fault Tolerance" icon="shield-halved" href="fault-tolerance">
     Rollout-side health checks and engine recovery, gated by
     `--use-fault-tolerance`.
+  </Card>
 
--   :material-source-fork:{ .lg .middle } **[PD Disaggregation](pd-disaggregation.md)**
-
-    ---
+  <Card title="PD Disaggregation" icon="code-fork" href="pd-disaggregation">
     Separate prefill and decode pools for workloads where each phase has
     different bottlenecks.
+  </Card>
 
--   :material-swap-horizontal:{ .lg .middle } **[P2P Weight Transfer](p2p-weight-transfer.md)**
-
-    ---
+  <Card title="P2P Weight Transfer" icon="arrows-left-right" href="p2p-weight-transfer">
     Direct rank-to-rank weight sync, an alternative to the broadcast path
     at large model scale.
+  </Card>
 
--   :material-puzzle-plus:{ .lg .middle } **[Backends Beyond Megatron](architecture-support.md)**
-
-    ---
+  <Card title="Backends Beyond Megatron" icon="puzzle-piece" href="architecture-support">
     Wrap a HuggingFace implementation as a Megatron module without patching
     Megatron core.
-
-</div>
+  </Card>
+</CardGroup>

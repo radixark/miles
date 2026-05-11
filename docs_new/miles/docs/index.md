@@ -15,7 +15,7 @@ needed to run RL at trillion-parameter scale.
 ## Core features
 
 - **Fast and stable support for the latest models.** Day-0 enablement of frontier
-  releases such as DeepSeek V4, with rapid follow-on support for new architectures
+  releases such as DeepSeek-V4, with rapid follow-on support for new architectures
   including GLM-5, Qwen 3.6, and Nemotron-3-Super.
 - **Unified low-precision training.** Customisable precision across the rollout and
   training engines, with unified **BF16**, **FP8**, **MXFP8**, and **INT4 QAT** recipes
@@ -43,31 +43,27 @@ needed to run RL at trillion-parameter scale.
 
 ## Supported models
 
-<div class="miles-model-matrix" markdown>
+<CardGroup cols={2}>
+  <Card title="Dense">
+    [Qwen3.6](models/qwen/qwen3-6.md), [Qwen3.5](models/qwen/qwen3-5.md),
+    [Qwen3](models/qwen/qwen3.md), [GLM4](models/glm/glm4.md),
+    [Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md),
+    [MiMo](models/mimo/mimo.md), [GPT-OSS](models/gpt-oss/gpt-oss.md)
+  </Card>
 
-<div class="miles-model-panel" markdown>
-<span class="miles-model-kicker">Dense</span>
-
-[Qwen3.6](models/qwen/qwen3-6.md), [Qwen3.5](models/qwen/qwen3-5.md),
-[Qwen3](models/qwen/qwen3.md), [GLM4](models/glm/glm4.md),
-[Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md),
-[MiMo](models/mimo/mimo.md), [GPT-OSS](models/gpt-oss/gpt-oss.md)
-</div>
-
-<div class="miles-model-panel miles-model-panel--moe" markdown>
-<span class="miles-model-kicker">Mixture of Experts</span>
-
-[DeepSeek-V4](models/deepseek/deepseek-v4.md), [DeepSeek-V3 / R1](models/deepseek/deepseek.md),
-[Qwen3.6 MoE](models/qwen/qwen3-6-moe.md), [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md),
-[Qwen3-Next](models/qwen/qwen3-next.md), [Qwen3 MoE](models/qwen/qwen3-moe.md),
-[GLM5 / GLM5.1](models/glm/glm5.md), [GLM4.7](models/glm/glm4-7-flash.md),
-[GLM4.5](models/glm/glm4-5.md), [Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md),
-[Kimi K2](models/kimi/kimi-k2.md), [Moonlight](models/kimi/moonlight.md),
-[Nemotron-3-Super](models/nemotron/nemotron-3-super.md),
-[Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md)
-</div>
-
-</div>
+  <Card title="Mixture of Experts">
+    [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md),
+    [DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md),
+    [DeepSeek-V3 / R1](models/deepseek/deepseek.md),
+    [Qwen3.6 MoE](models/qwen/qwen3-6-moe.md), [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md),
+    [Qwen3-Next](models/qwen/qwen3-next.md), [Qwen3 MoE](models/qwen/qwen3-moe.md),
+    [GLM5 / GLM5.1](models/glm/glm5.md), [GLM4.7](models/glm/glm4-7-flash.md),
+    [GLM4.5](models/glm/glm4-5.md), [Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md),
+    [Kimi K2](models/kimi/kimi-k2.md), [Moonlight](models/kimi/moonlight.md),
+    [Nemotron-3-Super](models/nemotron/nemotron-3-super.md),
+    [Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md)
+  </Card>
+</CardGroup>
 
 See [Models](models/index.md) for exact conversion commands, launch scripts, and
 parallelism settings.

@@ -43,13 +43,21 @@
           {
             "group": "DeepSeek",
             "pages": [
-              "docs/models/deepseek/deepseek-v4",
+              "docs/models/deepseek/index",
+              {
+                "group": "DeepSeek-V4",
+                "pages": [
+                  "docs/models/deepseek/deepseek-v4-flash",
+                  "docs/models/deepseek/deepseek-v4-pro"
+                ]
+              },
               "docs/models/deepseek/deepseek"
             ]
           },
           {
             "group": "Qwen",
             "pages": [
+              "docs/models/qwen/index",
               {
                 "group": "Qwen3.6",
                 "pages": [
@@ -77,6 +85,7 @@
           {
             "group": "GLM",
             "pages": [
+              "docs/models/glm/index",
               "docs/models/glm/glm5",
               "docs/models/glm/glm4-7-flash",
               "docs/models/glm/glm4-5",
@@ -86,6 +95,7 @@
           {
             "group": "Kimi",
             "pages": [
+              "docs/models/kimi/index",
               "docs/models/kimi/kimi-k2.5",
               "docs/models/kimi/kimi-k2",
               "docs/models/kimi/moonlight"
@@ -177,7 +187,8 @@
           "docs/developer/contributing",
           "docs/developer/debug",
           "docs/developer/migration",
-          "docs/developer/architecture"
+          "docs/developer/architecture",
+          "docs/developer/experimental-features"
         ]
       },
       {

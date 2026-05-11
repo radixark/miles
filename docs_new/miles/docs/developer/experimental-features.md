@@ -19,10 +19,11 @@ It trades maximum throughput for **zero conversion overhead**: there is no
 The distributed optimizer is built into FSDP, and mixed precision falls out of standard
 PyTorch.
 
-!!! warning "Status"
-    Experimental. Known bug after SGLang v0.5.10. No TP / PP / CP / EP — runs as
-    plain FSDP data parallel only. Suitable for fast iteration on small-to-mid dense
-    models, not for production runs.
+<Warning>
+**Status.** Experimental. Known bug after SGLang v0.5.10. No TP / PP / CP / EP — runs as
+plain FSDP data parallel only. Suitable for fast iteration on small-to-mid dense
+models, not for production runs.
+</Warning>
 
 ### When to reach for it
 

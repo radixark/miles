@@ -1,9 +1,9 @@
 ---
-title: DeepSeek V4 Flash
+title: DeepSeek-V4 Flash
 description: Launch recipe for DeepSeek-V4-Flash (284 B) — sparse-MLA + DSA indexer + KV compressors, FP8 rollout / BF16 train, 8-node H200.
 ---
 
-# DeepSeek V4 Flash
+# DeepSeek-V4 Flash
 
 ## 1. Model Introduction
 

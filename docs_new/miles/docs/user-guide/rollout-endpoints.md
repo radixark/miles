@@ -78,9 +78,10 @@ def _add_arguments(parser):
 generate.add_arguments = _add_arguments
 ```
 
-!!! tip "Custom CLI flags"
-    `generate.add_arguments = _add_arguments` registers extra CLI flags. They are
-    parsed into `input.args` and available everywhere in your generator.
+<Tip>
+**Custom CLI flags.** `generate.add_arguments = _add_arguments` registers extra CLI flags. They are
+parsed into `input.args` and available everywhere in your generator.
+</Tip>
 
 Helpers:
 
@@ -136,14 +137,16 @@ async def run_agent(base_url: str, prompt, request_kwargs: dict | None = None) -
     await post(f"{base_url}/v1/chat/completions", payload)
 ```
 
-!!! tip "What's already handled"
-    - `base_url` already includes `/sessions/<id>`. Don't append it manually.
-    - `request_kwargs` already contains sampling defaults from
-      `agentic_tool_call.build_chat_request_kwargs`.
-    - `max_new_tokens` from Miles's rollout params is mapped to OpenAI's `max_tokens`
-      before the request is sent.
-    - For structured parsing, use SGLang's `ChatCompletionRequest`-compatible
-      format, a superset of OpenAI plus SGLang extras.
+<Tip>
+**What's already handled.**
+- `base_url` already includes `/sessions/<id>`. Don't append it manually.
+- `request_kwargs` already contains sampling defaults from
+  `agentic_tool_call.build_chat_request_kwargs`.
+- `max_new_tokens` from Miles's rollout params is mapped to OpenAI's `max_tokens`
+  before the request is sent.
+- For structured parsing, use SGLang's `ChatCompletionRequest`-compatible
+  format, a superset of OpenAI plus SGLang extras.
+</Tip>
 
 ### OpenAI chat messages
 
@@ -161,12 +164,13 @@ Standard OpenAI format:
 }
 ```
 
-!!! warning "Leave `logprob_start_len` alone"
-    `logprobs=True` and `return_prompt_token_ids=True` are set by default; they
-    enable TITO. Do **not** set `logprob_start_len=0`. That forces SGLang to compute
-    logprobs for every prompt token, destroys the prefix cache, and hurts
-    performance. `return_prompt_token_ids=True` returns prompt token ids at zero
-    cost with full caching.
+<Warning>
+**Leave `logprob_start_len` alone.** `logprobs=True` and `return_prompt_token_ids=True` are set by default; they
+enable TITO. Do **not** set `logprob_start_len=0`. That forces SGLang to compute
+logprobs for every prompt token, destroys the prefix cache, and hurts
+performance. `return_prompt_token_ids=True` returns prompt token ids at zero
+cost with full caching.
+</Warning>
 
 ### Quickstart
 
@@ -190,9 +194,10 @@ CUSTOM_ARGS=(
 )
 ```
 
-!!! warning "Don't apply chat template"
-    For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must
-    remain a `messages` list. SGLang handles templating server-side.
+<Warning>
+**Don't apply chat template.** For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must
+remain a `messages` list. SGLang handles templating server-side.
+</Warning>
 
 ### Customizing the wrapper
 

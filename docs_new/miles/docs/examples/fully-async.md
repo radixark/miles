@@ -71,7 +71,7 @@ Everything else — model args, optimizer, GRPO config — stays the same.
 
 The interesting code is small. Here's the global worker manager:
 
-```python title="fully_async_rollout.py"
+```python fully_async_rollout.py
 _global_worker = None
 _worker_lock = threading.Lock()
 
