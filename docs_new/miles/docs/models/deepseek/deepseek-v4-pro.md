@@ -5,7 +5,7 @@ description: Launch recipe for DeepSeek-V4-Pro (1.6 T) — V4-family architectur
 
 # DeepSeek-V4 Pro
 
-Tracking issue: [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046).
+DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046).
 
 ## 1. Model Introduction
 
