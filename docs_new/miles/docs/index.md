@@ -98,5 +98,3 @@ See [Platforms](platforms/index.md).
 - GitHub: [github.com/radixark/miles](https://github.com/radixark/miles)
 - Slack: [slack.sglang.ai](https://slack.sglang.ai), channel `#miles`
 - Contributing: [developer guide](developer/contributing.md)
-
-<!-- trigger preview revalidation -->
