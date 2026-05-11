@@ -23,44 +23,36 @@ Each example follows the same template:
 
 ## The catalogue
 
-<div class="grid cards" markdown>
-
--   :material-flash-outline:{ .lg .middle } **[Fully Async Rollout](fully-async.md)**
-
-    ---
+<CardGroup cols={2}>
+  <Card title="Fully Async Rollout" icon="bolt" href="fully-async">
     Continuous background generation with a queue between rollout and training.
     Up to 2× end-to-end speedup.
+  </Card>
 
--   :material-magnify:{ .lg .middle } **[Search-R1 (Tool Use)](search-r1.md)**
-
-    ---
+  <Card title="Search-R1 (Tool Use)" icon="magnifying-glass" href="search-r1">
     Multi-turn rollout where the model can issue `<search>...` actions, get
     observations from a retrieval server, and produce a final answer.
+  </Card>
 
--   :material-tools:{ .lg .middle } **[ReTool (Code Execution)](retool.md)**
-
-    ---
+  <Card title="ReTool (Code Execution)" icon="screwdriver-wrench" href="retool">
     SFT + RL pipeline for tool-augmented reasoning. Sandboxed Python code execution
     interleaved with thinking.
+  </Card>
 
--   :material-account-group:{ .lg .middle } **[Multi-Agent Co-Evolution](multi-agent.md)**
-
-    ---
+  <Card title="Multi-Agent Co-Evolution" icon="users" href="multi-agent">
     Two specialized agents (e.g. doctor + patient) train together and improve
     each other.
+  </Card>
 
--   :material-replay:{ .lg .middle } **[Reproducibility Recipe](reproducibility.md)**
-
-    ---
+  <Card title="Reproducibility Recipe" icon="rotate-left" href="reproducibility">
     Bit-stable training across reruns. Determinism flags, seeds, and what to
     watch.
+  </Card>
 
--   :material-book-open-page-variant:{ .lg .middle } **[SFT on OpenHermes](openhermes-sft.md)**
-
-    ---
+  <Card title="SFT on OpenHermes" icon="book-open" href="openhermes-sft">
     Plain SFT (no RL) — sometimes you just need a quick fine-tune.
-
-</div>
+  </Card>
+</CardGroup>
 
 ## Where to start
 

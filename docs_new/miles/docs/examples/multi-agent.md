@@ -94,7 +94,7 @@ attempts run in parallel, each rewriter rewrites the previous solutions, and a
 `SelectorAgent` picks one. Sampling params are set on `args` upstream by the rollout
 helper, so `run_agent_system` only takes `(args, sample)`.
 
-```python title="agent_system.py"
+```python agent_system.py
 async def run_agent_system(args, sample):
     args = deepcopy(args)
     args.sample = sample

@@ -15,7 +15,7 @@ Each model name links to its recipe page.
 
 | Family | Models |
 |---|---|
-| **DeepSeek** | [DeepSeek-V4](deepseek/deepseek-v4.md), [DeepSeek-V3](deepseek/deepseek.md), [DeepSeek-R1](deepseek/deepseek.md) |
+| **DeepSeek** | [DeepSeek-V4 Flash](deepseek/deepseek-v4-flash.md), [DeepSeek-V4 Pro](deepseek/deepseek-v4-pro.md), [DeepSeek-V3](deepseek/deepseek.md), [DeepSeek-R1](deepseek/deepseek.md) |
 | **Qwen** | [Qwen3.6](qwen/qwen3-6.md), [Qwen3.6 MoE](qwen/qwen3-6-moe.md), [Qwen3.5-4B / 9B / 27B](qwen/qwen3-5.md), [Qwen3.5-35B-A3B](qwen/qwen3-5-moe.md), [Qwen3-Next-80B-A3B-Thinking](qwen/qwen3-next.md), [Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B](qwen/qwen3.md), [Qwen3-30B-A3B / 235B-A22B](qwen/qwen3-moe.md) |
 | **GLM** | [GLM-5.1](glm/glm5.md), [GLM-5](glm/glm5.md), [GLM-4.7-Flash](glm/glm4-7-flash.md), [GLM-4.5](glm/glm4-5.md), [GLM-Z1-9B-0414](glm/glm4.md) |
 | **Kimi** | [Kimi-K2.6](kimi/kimi-k2.5.md), [Kimi-K2.5](kimi/kimi-k2.5.md), [Kimi-K2-Instruct / Thinking](kimi/kimi-k2.md), [Moonlight-16B-A3B](kimi/moonlight.md) |

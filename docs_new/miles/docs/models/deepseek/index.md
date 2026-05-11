@@ -1,11 +1,11 @@
 ---
 title: DeepSeek
-description: Miles recipes for the DeepSeek family — V4 Flash (sparse-MLA + DSA indexer), V3, and R1.
+description: Miles recipes for the DeepSeek family — DeepSeek-V4 Flash (sparse-MLA + DSA indexer), V3, and R1.
 ---
 
 # DeepSeek family
 
-Miles ships recipes for the DeepSeek family across two generations: **V4 Flash** introduces sparse multi-head latent attention with a learned indexer and KV compressors (8-node H200), while **V3 / R1** remain the canonical 16-node 671 B-parameter recipes (BF16 train + 128×128 block-wise FP8 rollout, DeepEP, DAPO-style dynamic sampling).
+Miles ships recipes for the DeepSeek family across two generations: **DeepSeek-V4 Flash** introduces sparse multi-head latent attention with a learned indexer and KV compressors (8-node H200), while **V3 / R1** remain the canonical 16-node 671 B-parameter recipes (BF16 train + 128×128 block-wise FP8 rollout, DeepEP, DAPO-style dynamic sampling).
 
 ## Variants
 
@@ -36,7 +36,7 @@ cd /root/miles
 bash scripts/run-deepseek-r1.sh              # full 16-node run
 ```
 
-See the [DeepSeek V4 Flash](deepseek-v4-flash.md) page for the V4 architecture summary, parallelism layouts, and known workarounds; see the [DeepSeek R1 / V3](deepseek.md) page for the V3 flow — FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), per-arg walkthrough, and the alternate Python launcher (`scripts/run_deepseek.py`).
+See the [DeepSeek-V4 Flash](deepseek-v4-flash.md) page for the V4 architecture summary, parallelism layouts, and known workarounds; see the [DeepSeek R1 / V3](deepseek.md) page for the V3 flow — FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), per-arg walkthrough, and the alternate Python launcher (`scripts/run_deepseek.py`).
 
 ## Pairs well with
 

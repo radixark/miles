@@ -89,10 +89,11 @@ bash examples/retool/retool_qwen3_4b_sft.sh
 bash examples/retool/retool_qwen3_4b_rl.sh
 ```
 
-!!! warning "rotary-base 5000000"
-    Qwen3-4B-Instruct-2507 ships with `rotary_base=5_000_000`. If you forget the
-    `--rotary-base 5000000` override during conversion, you'll see garbled generations
-    that look like the model has been lobotomized. Don't skip it.
+<Warning>
+**rotary-base 5000000.** Qwen3-4B-Instruct-2507 ships with `rotary_base=5_000_000`. If you forget the
+`--rotary-base 5000000` override during conversion, you'll see garbled generations
+that look like the model has been lobotomized. Don't skip it.
+</Warning>
 
 ## Walkthrough — tool format
 

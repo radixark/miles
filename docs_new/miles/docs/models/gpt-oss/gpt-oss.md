@@ -37,7 +37,7 @@ hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-ma
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
-**N/A** — the Megatron BF16 launcher loads the HF checkpoint directly via `--megatron-to-hf-mode bridge` (mbridge); the FSDP launcher loads HF directly. There is no `convert_hf_to_torch_dist.py` step for either path.
+Neither launcher needs a `convert_hf_to_torch_dist.py` step. The Megatron BF16 launcher loads the HF checkpoint directly via `--megatron-to-hf-mode bridge` (mbridge); the FSDP launcher loads HF directly.
 
 The FSDP launcher additionally runs an inline `convert_model.py` snippet that downloads `openai/gpt-oss-20b` and dequantizes its MXFP4 weights to BF16, saving to `/root/models/gpt-oss-20b-bf16`.
 
