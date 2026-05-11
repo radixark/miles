@@ -11,7 +11,9 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
 ## Method 1: Docker (recommended)
 
 <Tabs>
+
   <Tab title="NVIDIA">
+
     ```bash
     docker pull radixark/miles:latest
 
@@ -21,8 +23,10 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
       --network=host \
       -it radixark/miles:latest /bin/bash
     ```
+
   </Tab>
   <Tab title="AMD MI300X / MI350X">
+
     ```bash
     docker pull rlsys/miles:MI350-355-latest    # or MI300-latest
 
@@ -33,7 +37,9 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
       --privileged \
       -it rlsys/miles:MI350-355-latest /bin/bash
     ```
+
   </Tab>
+
 </Tabs>
 
 The image ships with:
@@ -56,8 +62,10 @@ pip install -e . --no-deps
 ```
 
 <Warning>
+
 **Patched dependencies.** Miles pins patched versions of SGLang and Megatron-LM. Installing them yourself at
 the wrong commit is the most common source of bug reports — use Docker if you can.
+
 </Warning>
 
 ## Method 3: Update an existing container
