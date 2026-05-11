@@ -5,6 +5,8 @@ description: Launch recipe for DeepSeek-V4-Flash (284 B) — FP8 rollout / BF16 
 
 # DeepSeek-V4 Flash
 
+Tracking issue: [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046).
+
 ## 1. Model Introduction
 
 [DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. The miles + Megatron-Core (`mcore`) integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published images `radixark/miles:deepseek-v4` (H200 / B200, cu129 x86) and `radixark/miles:gb300-dev-dskv4` (GB300, cu130 arm64).
