@@ -121,11 +121,11 @@ Alternatively, you can set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` t
 
 ### 5.1 Parallelism
 
-| Hardware | Nodes × GPUs | TP | PP | EP | expert-TP | `max_tokens_per_gpu` | Pipeline layout |
+| Hardware | Nodes × GPUs | TP | PP | CP | EP | expert-TP | Pipeline layout |
 |---|---|---|---|---|---|---|---|
-| H200 | 8 × 8 = 64 | 8 | 8 | 8 | 1 | 2048 | first 4 / last 3 layers |
-| GB300 | 8 × 4 = 32 (CP=1) | 8 | 4 | 8 | 1 | 2048 | first 11 / last 10 layers |
-| GB300 | 8 × 4 = 32 (CP=2) | 2 | 8 | 4 | 1 | 2048 | first 4 / last 3 layers |
+| H200 | 8 × 8 = 64 | 8 | 8 | 1 | 8 | 1 | first 4 / last 3 layers |
+| GB300 | 8 × 4 = 32 | 8 | 4 | 1 | 8 | 1 | first 11 / last 10 layers |
+| GB300 | 8 × 4 = 32 | 2 | 8 | 2 | 4 | 1 | first 4 / last 3 layers |
 
 These are the validated layouts shipped with the launcher; you can supply any other TP / EP / PP / CP combination that fits your compute.
 
