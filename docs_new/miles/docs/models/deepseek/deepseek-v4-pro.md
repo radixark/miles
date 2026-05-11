@@ -41,7 +41,7 @@ docker pull <image>
 cd /root/miles
 python scripts/run_deepseek_v4.py full-train \
    --model-name DeepSeek-V4-Pro \
-   --num-nodes <N> --num-gpus-per-node <G>
+   --num-nodes 8 --num-gpus-per-node 256
 ```
 
 TBD — describe what `full-train` chains for Pro and any Pro-specific stage skips.
