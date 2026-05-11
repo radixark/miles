@@ -15,12 +15,14 @@ Uses the same infrastructure as ``test_session_server_tool_call``:
 ``execute_train --debug-rollout-only`` with a custom generate function
 that wraps the normal agentic flow with re-prefill verification.
 
-Requires 1 GPU.
+The CI suite reserves 8 GPUs to avoid sharing the runner with another GPU job
+while this SGLang/Ray process tree is alive. The test workload itself still
+uses one GPU by default.
 """
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=600, suite="stage-b-sglang-1-gpu", num_gpus=1)
+register_cuda_ci(est_time=600, suite="stage-b-sglang-8-gpu", num_gpus=8)
 
 
 import json

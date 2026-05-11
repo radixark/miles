@@ -76,7 +76,7 @@ jobs:
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-fast-1-gpu"
     secrets: inherit
 
-  # Stage B: SGLang patch tests (1 GPU)
+  # Stage B: SGLang patch tests (8 GPU)
   stage-b-sglang:
     needs: [stage-a-fast]
     if: |
@@ -84,12 +84,12 @@ jobs:
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-sglang')))
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 1
+      gpu_count: 8
       infinite_run: ${{ inputs.infinite_run || false }}
       ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
       ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
       pr_body: ${{ github.event.pull_request.body || '' }}
-      execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-sglang-1-gpu"
+      execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-sglang-8-gpu"
     secrets: inherit
 
   # Stage B: Short 8-GPU tests
