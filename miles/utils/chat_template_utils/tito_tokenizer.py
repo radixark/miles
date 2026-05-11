@@ -482,6 +482,9 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
     out of scope for this family registration.
     """
 
+    reasoning_parser = "nemotron_3"
+    tool_call_parser = "qwen3_coder"
+
     SUPPORTED_TEMPLATES = (
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
