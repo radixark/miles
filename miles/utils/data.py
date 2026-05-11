@@ -182,6 +182,31 @@ class Dataset:
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
     ):
+        _fallback_encode_messages = None
+        if apply_chat_template:
+            # transformers.AutoConfig does not recognize "deepseek_v4"; read config.json directly.
+            _model_type = ""
+            _config_path = os.path.join(tokenizer.name_or_path, "config.json")
+            if os.path.isfile(_config_path):
+                try:
+                    with open(_config_path) as _f:
+                        _model_type = json.load(_f).get("model_type", "") or ""
+                except Exception:
+                    _model_type = ""
+            if _model_type.startswith("deepseek_v4"):
+                from sglang.srt.entrypoints.openai.encoding_dsv4 import encode_messages as _fallback_encode_messages
+
+                _encoder_name = "encoding_dsv4"
+            else:
+                from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages as _fallback_encode_messages
+
+                _encoder_name = "encoding_dsv32"
+            logger.info(
+                "Dataset chat-template fallback: model_type=%r -> %s",
+                _model_type or "unknown",
+                _encoder_name,
+            )
+
         origin_samples = []
         for data in read_file(path):
             # Both chat templates and multimodal inputs require conversation format (list of message dicts)
@@ -209,10 +234,23 @@ class Dataset:
                         **apply_chat_template_kwargs,
                     )
                 except Exception:
-                    from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
-
                     encode_config = dict(thinking_mode="thinking", drop_thinking=True, add_default_bos_token=True)
-                    prompt = encode_messages(prompt, **encode_config)
+                    if apply_chat_template_kwargs:
+                        # HF passes `thinking` (bool); encoder takes `thinking_mode` ("thinking"/"chat").
+                        if "thinking" in apply_chat_template_kwargs:
+                            encode_config["thinking_mode"] = (
+                                "thinking" if apply_chat_template_kwargs["thinking"] else "chat"
+                            )
+                        for _k in (
+                            "thinking_mode",
+                            "drop_thinking",
+                            "add_default_bos_token",
+                            "context",
+                            "reasoning_effort",
+                        ):
+                            if _k in apply_chat_template_kwargs:
+                                encode_config[_k] = apply_chat_template_kwargs[_k]
+                    prompt = _fallback_encode_messages(prompt, **encode_config)
                 output_prompt = prompt
             else:
                 output_prompt = prompt
