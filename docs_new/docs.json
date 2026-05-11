@@ -173,7 +173,8 @@
                 "pages": [
                   "docs/advanced/fp8-low-precision",
                   "docs/advanced/int4-qat",
-                  "docs/advanced/speculative-decoding"
+                  "docs/advanced/speculative-decoding",
+                  "docs/advanced/lora"
                 ],
                 "expanded": false
               },
