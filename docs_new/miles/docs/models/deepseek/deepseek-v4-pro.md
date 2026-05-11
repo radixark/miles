@@ -27,7 +27,7 @@ compressors, MoE topology, RoPE / context length, FP8 vs BF16 defaults).
 
 | Model | Active / Total | HF ID |
 |---|---|---|
-| DeepSeek-V4-Pro | 49 B / 1.6 T | TBD |
+| DeepSeek-V4-Pro-FP8 | 49 B / 1.6 T | [sgl-project/DeepSeek-V4-Pro-FP8](https://huggingface.co/sgl-project/DeepSeek-V4-Pro-FP8) |
 
 ## 3. Quick start
 
@@ -40,7 +40,7 @@ docker pull <image>
 # Production Pro run, inside the container
 cd /root/miles
 python scripts/run_deepseek_v4.py full-train \
-   --model-name DeepSeek-V4-Pro \
+   --model-name DeepSeek-V4-Pro-FP8 \
    --num-nodes 32 --num-gpus-per-node 8
 ```
 
@@ -67,7 +67,11 @@ The under-the-hood stages are essentially identical to V4-Flash — see the [V4-
 
 | Hardware | Nodes × GPUs | TP | PP | EP | expert-TP | `max_tokens_per_gpu` | Pipeline layout |
 |---|---|---|---|---|---|---|---|
-| TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| H200 | 32 × 8 = 256 | 8 | 8 | 32 | 1 | 2048 | first 7 / last 6 layers |
+
+The launcher additionally flips two Pro-specific defaults on selection of
+`--model-name DeepSeek-V4-Pro-FP8`: `optimizer_offload=True` (Adam states offloaded to
+CPU to fit Pro on H200) and `enable_r3=False` (Rollout Routing Replay disabled).
 
 ### 5.2 Algorithm
 
