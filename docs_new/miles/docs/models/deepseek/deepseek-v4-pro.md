@@ -59,15 +59,7 @@ TBD — Pro-specific overrides or env-var notes.
 
 ## 4. Script breakdown
 
-The under-the-hood stages — `prepare-download`, `prepare-spmd` (FP8 → BF16 cast and
-distributed `torch_dist` conversion), `prepare-cp` (NVMe fan-out), and Ray bootstrap —
-are essentially identical to the V4-Flash flow. Follow the corresponding sections of
-the V4-Flash page and substitute the Pro model name and path defaults shown above:
-
-- [V4-Flash §4.1 Download model + datasets](deepseek-v4-flash.md#41-download-model-datasets)
-- [V4-Flash §4.2 HF → Megatron `torch_dist` conversion](deepseek-v4-flash.md#42-hf--megatron-torch_dist-conversion)
-- [V4-Flash §4.3 Multi-node fan-out](deepseek-v4-flash.md#43-multi-node-fan-out)
-- [V4-Flash §4.4 Notable quirks](deepseek-v4-flash.md#44-notable-quirks)
+The under-the-hood stages are essentially identical to V4-Flash — see the [V4-Flash Script breakdown](deepseek-v4-flash.md#4-script-breakdown) and substitute the Pro model name and path defaults shown above.
 
 ## 5. Example Recipe Configuration
 
