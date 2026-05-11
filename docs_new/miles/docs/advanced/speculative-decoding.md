@@ -66,9 +66,11 @@ PERF_ARGS+=(
 | `--mtp-loss-scaling-factor` | Weight of the MTP loss in the combined gradient (default `0.2`). |
 
 <Note>
+
 **Checkpoint must contain MTP weights.** Pass `--mtp-num-layers 1` when running `convert_hf_to_torch_dist.py`.
 Without it the resulting `torch_dist` checkpoint will not contain the MTP
 layer to train.
+
 </Note>
 
 ## External draft model SFT

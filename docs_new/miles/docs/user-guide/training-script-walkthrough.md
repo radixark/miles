@@ -43,6 +43,7 @@ source "${SCRIPT_DIR}/models/glm4-9B.sh"
 The sourced file sets `MODEL_ARGS=(--num-layers ... --hidden-size ... --rotary-base ...)`.
 
 <Warning>
+
 **Architecture parameters are not self-validating.** Two checkpoints from the same family can ship different `--rotary-base`, vocab
 padding, or normalization epsilon. Diff the `config.json` against the file in
 `scripts/models/` before you run, and override anything that drifts:
@@ -51,6 +52,7 @@ padding, or normalization epsilon. Diff the `config.json` against the file in
 source "${SCRIPT_DIR}/models/glm4-9B.sh"
 MODEL_ARGS+=(--rotary-base 10000)
 ```
+
 </Warning>
 
 ## CKPT_ARGS — paths
@@ -125,9 +127,11 @@ ROLLOUT_ARGS=(
 ```
 
 <Note>
+
 **Optimizer step vs. weight sync.** `--num-steps-per-rollout` counts calls to `optimizer.step()`, not the weight
 handshake between trainer and SGLang. The latter happens exactly once per rollout,
 regardless of how many optimizer steps fired in between.
+
 </Note>
 
 ## EVAL_ARGS — a strict subset of rollout
@@ -333,18 +337,22 @@ ray job submit ... -- python3 train.py \
 entire allocation.
 
 <Warning>
+
 **Leave SGLang some headroom.** Megatron reserves VRAM during initialization and only releases it once the first
 offload completes. If SGLang is sized to the full device capacity, the init
 collision produces an OOM before training ever starts. Drop
 `--sglang-mem-fraction-static` to **0.8** (further if memory is still tight).
+
 </Warning>
 
 <Note>
+
 **What `--colocate` flips on.** Setting `--colocate` also enables (unless you've set them explicitly):
 
 - `--offload-train` — train state offloads to CPU between phases
 - `--offload-rollout` — rollout state offloads to CPU between phases
 - `--sglang-disable-piecewise-cuda-graph` — avoids NVLS OOM in colocate mode
+
 </Note>
 
 ## Dynamic sampling (DAPO-style filtering)
@@ -404,10 +412,12 @@ rollout ID that first launched it), which is usually enough to reason about stal
 if you want a stricter eviction policy.
 
 <Tip>
+
 **Partial rollout and off-policy correction.** Samples that re-enter the trainer from the buffer were generated under an older
 policy than the one currently being trained. If you enable `--partial-rollout`
 together with aggressive reuse (`--num-steps-per-rollout > 1`), pair it with
 `--use-tis` to keep the gradient well-behaved.
+
 </Tip>
 
 ## BF16 training with FP8 inference
@@ -441,8 +451,10 @@ to take the inference-side speedup, but it does introduce the precision mismatch
 between rollout and trainer that R3 and TIS were designed to absorb.
 
 <Warning>
+
 **Do not point `--ref-load` at the FP8 directory.** The reference model must remain BF16. Replacing it with FP8 weights changes the
 KL anchor silently and makes the loss curve incomparable to earlier runs.
+
 </Warning>
 
 For end-to-end FP8 (trainer and inference at bit-identical precision), see

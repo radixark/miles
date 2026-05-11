@@ -42,21 +42,27 @@ needed to run RL at trillion-parameter scale.
 ## Supported models
 
 <CardGroup cols={2}>
+
   <Card title="Dense">
+
     - **Qwen**: <span style="font-weight: 400 !important">[Qwen3.6](models/qwen/qwen3-6.md), [Qwen3.5](models/qwen/qwen3-5.md), [Qwen3](models/qwen/qwen3.md)</span>
     - **GLM**: <span style="font-weight: 400 !important">[GLM4](models/glm/glm4.md)</span>
     - **Nemotron**: <span style="font-weight: 400 !important">[Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md)</span>
     - **MiMo**: <span style="font-weight: 400 !important">[MiMo](models/mimo/mimo.md)</span>
     - **GPT-OSS**: <span style="font-weight: 400 !important">[GPT-OSS](models/gpt-oss/gpt-oss.md)</span>
+
   </Card>
 
   <Card title="Mixture of Experts">
+
     - **DeepSeek**: <span style="font-weight: 400 !important">[DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md), [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md), [DeepSeek-V3 / R1](models/deepseek/deepseek.md)</span>
     - **Qwen**: <span style="font-weight: 400 !important">[Qwen3.6 MoE](models/qwen/qwen3-6-moe.md), [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md), [Qwen3-Next](models/qwen/qwen3-next.md), [Qwen3 MoE](models/qwen/qwen3-moe.md)</span>
     - **GLM**: <span style="font-weight: 400 !important">[GLM5 / GLM5.1](models/glm/glm5.md), [GLM4.7](models/glm/glm4-7-flash.md), [GLM4.5](models/glm/glm4-5.md)</span>
     - **Kimi**: <span style="font-weight: 400 !important">[Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md), [Kimi K2](models/kimi/kimi-k2.md), [Moonlight](models/kimi/moonlight.md)</span>
     - **Nemotron**: <span style="font-weight: 400 !important">[Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md), [Nemotron-3-Super](models/nemotron/nemotron-3-super.md)</span>
+
   </Card>
+
 </CardGroup>
 
 See [Models](models/index.md) for exact conversion commands, launch scripts, and
