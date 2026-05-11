@@ -69,7 +69,8 @@ never need to pad manually.
 
 <Accordion title="SGLang gives `Max retries exceeded with url: /get_model_info`.">
 Multiple SGLang servers are colliding on the same node. Reduce the number of SGLang
-instances per node — e.g. set `tp_size=8` so there's exactly one server per host.
+instances per node — e.g. set `--rollout-num-gpus-per-engine 8` so there's exactly
+one server per host.
 </Accordion>
 
 <Accordion title="Gradient norm is huge and training crashes.">
@@ -98,17 +99,11 @@ Add `--no-check-for-nan-in-loss-and-grad` to skip the offending steps temporaril
 then go investigate the data + model alignment that caused it.
 </Accordion>
 
-<Accordion title="NCCL error: `Failed to bind NVLink SHARP Multicast memory ... CUDA error 2`.">
-Seen on H100 colocate + piece-wise CUDA graph. Piece-wise CUDA graph is now off by
-default in colocate. If you explicitly enabled it via
-`--sglang-enforce-piecewise-cuda-graph`, remove that flag.
-</Accordion>
-
 <Accordion title="Where do logs live?">
 | What | Path |
 |---|---|
 | Trainer stdout | wherever you redirected `ray job submit` |
-| SGLang | `/tmp/sglang/*.log` (or `--log-dir` if set) |
+| SGLang server | stdout/stderr captured by Ray under `~/.ray/session_latest/logs/`; pass `--sglang-log-dir <path>` to write to a chosen directory instead |
 | Ray workers | `~/.ray/session_latest/logs/` |
 | wandb | `wandb/` in your run dir, plus the cloud UI |
 </Accordion>
