@@ -5,6 +5,16 @@
 
 The environment setup, model download, data, and checkpoint conversion are the same as for the Qwen3-4B model. You can refer to [Example: Qwen3-4B Model](qwen3-4B.md), replacing mentions of Qwen3-4B with Qwen3-30B-A3B.
 
+The helper script you source must match the checkpoint family you are using:
+
+| Checkpoint family | Helper script | `--rotary-base` |
+| --- | --- | --- |
+| `Qwen3-30B-A3B` and the base-family FP8/INT4 examples in this repo | `scripts/models/qwen3-30B-A3B.sh` | `1000000` |
+| `Qwen3-30B-A3B-Instruct-2507` | `scripts/models/qwen3-30B-A3B-Instruct-2507.sh` | `10000000` |
+| `Qwen3-30B-A3B-Thinking-2507` | `scripts/models/qwen3-30B-A3B-Thinking-2507.sh` | `10000000` |
+
+Even when two checkpoints share the same architecture, variant-specific settings such as `--rotary-base` still need to match the Hugging Face config exactly.
+
 To convert huggingface checkpoint to torch_dist, please try:
 
 ```bash
@@ -16,6 +26,17 @@ PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen3-30B-A3B/ \
    --save /root/Qwen3-30B-A3B_torch_dist/
+```
+
+For `Qwen3-30B-A3B-Instruct-2507` or `Qwen3-30B-A3B-Thinking-2507`, source the matching helper instead before conversion or training. For example:
+
+```bash
+source scripts/models/qwen3-30B-A3B-Instruct-2507.sh
+PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
+   tools/convert_hf_to_torch_dist.py \
+   ${MODEL_ARGS[@]} \
+   --hf-checkpoint /root/Qwen3-30B-A3B-Instruct-2507/ \
+   --save /root/Qwen3-30B-A3B-Instruct-2507_torch_dist/
 ```
 
 ## Run Training
