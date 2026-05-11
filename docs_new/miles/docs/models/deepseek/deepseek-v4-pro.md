@@ -84,11 +84,33 @@ TBD — GRPO / loss flags / routing-bias freeze constraints for Pro.
 
 ```bash
 SGLANG_ARGS=(
-   # TBD
+   --rollout-num-gpus-per-engine 32
+   --sglang-tp-size 32
+   --sglang-dp-size 32
+   --sglang-ep-size 32
+   --sglang-enable-dp-attention
+   --sglang-attention-backend compressed       # V4 sparse-MLA backend
+   --sglang-page-size 256
+   --sglang-max-running-requests 64
+   --sglang-chunked-prefill-size 8192
+   --sglang-server-concurrency 1024
+   --sglang-weight-loader-drop-cache-after-load
+   --sglang-moe-a2a-backend deepep             # DeepEP normal-mode dispatch
+   --sglang-cuda-graph-max-bs 8                # see hang caveat below
+   --sglang-mem-fraction-static 0.7            # leave headroom for Megatron during wake_up
+   --use-rollout-routing-replay                # R3 — forced off for Pro at the launcher level
+   --use-miles-router
 )
 ```
 
-TBD — required env vars and Megatron-side flags.
+Required env vars (the launcher sets these for you): `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, and the Pro-only pair `SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=256`, `SGLANG_JIT_DEEPGEMM_PRECOMPILE=0`.
+
+Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
+
+!!! warning "Pro-specific rollout caveats"
+    1. **Engine size ≥ 32 GPUs.** Pro needs a single SGLang engine spanning at least 32 GPUs — the launcher hard-codes `--rollout-num-gpus-per-engine 32`. Smaller engines do not leave enough memory after weights, KV cache, indexer state, and DeepEP buffers, and rollout will OOM under load.
+    2. **EP is mandatory; pure TP will not shard the model.** 384 routed experts × `moe_ffn_hidden_size=3072` cannot be partitioned by tensor parallelism alone — the model must use expert parallelism (`--sglang-ep-size 32`) to spread the expert MLPs across ranks. `--sglang-tp-size 32` only covers the attention / embedding paths.
+    3. **DeepEP normal-mode + CUDA graphs can hang at large batch sizes.** When `--sglang-moe-a2a-backend deepep` is on, an overly large `--sglang-cuda-graph-max-bs` makes SGLang hang during graph capture or replay. The launcher pins it to `8` for Pro — raise it only after verifying the engine doesn't deadlock at your target batch.
 
 ### 5.4 Optimizer
 
