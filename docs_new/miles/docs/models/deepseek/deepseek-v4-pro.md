@@ -67,7 +67,7 @@ The under-the-hood stages are essentially identical to V4-Flash — see the [V4-
 
 ## 5. Example Recipe Configuration
 
-### 5.1 Parallelism
+### 5.1 Megatron Parallelism
 
 | Hardware | Nodes × GPUs | TP | PP | EP | expert-TP | `max_tokens_per_gpu` | Pipeline layout |
 |---|---|---|---|---|---|---|---|
