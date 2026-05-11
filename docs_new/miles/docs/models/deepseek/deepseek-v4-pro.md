@@ -114,8 +114,21 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 ### 5.4 Optimizer
 
 ```bash
-# TBD
+--optimizer adam
+--lr 1e-6 --lr-decay-style constant
+--weight-decay 0.1
+--adam-beta1 0.9 --adam-beta2 0.98
+--accumulate-allreduce-grads-in-fp32
+--attention-softmax-in-fp32
+--clip-grad 1.0                       # Megatron default; not overridden by the launcher
+
+# Pro-only — forced on by the launcher (optimizer_offload=True)
+--optimizer-cpu-offload
+--use-precision-aware-optimizer
+--overlap-cpu-optimizer-d2h-h2d
 ```
+
+Pro selects `--model-name DeepSeek-V4-Pro-FP8`, which flips `optimizer_offload=True` in the launcher (`scripts/run_deepseek_v4.py`) and appends the three CPU-offload flags above. Adam states live on host RAM and are D2H/H2D-overlapped with the backward pass, freeing GPU memory for the 1.6 T weight + KV footprint. The `--low-memory-resume` flag (off by default) additionally puts optimizer states on CPU during ckpt resume to avoid OOM on the very first iteration.
 
 ## 6. Pairs Well With
 
