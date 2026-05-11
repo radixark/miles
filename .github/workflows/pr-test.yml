@@ -35,6 +35,10 @@ jobs:
     with:
       gpu_count: 0
       cpu_runner: true
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cpu --suite stage-a-fast"
     secrets: inherit
 
@@ -46,12 +50,17 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "pytest tests/e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py -x -v"
     secrets: inherit
 
   # Stage B: Fast GPU tests (1 GPU, runs every PR)
   # For fast tests that require GPU (e.g. deterministic inference paths that
-  # pull in flash_attn). Parallel with stage-b-sglang; one self-hosted daemon slot.
+  # pull in flash_attn). This can start in parallel with stage-b-sglang at the
+  # workflow level; gpu_lock_exec gates actual GPU access on the runner.
   stage-b-fast-gpu:
     needs: [stage-a-fast]
     if: |
@@ -60,6 +69,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 1
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-fast-1-gpu"
     secrets: inherit
 
@@ -72,6 +85,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 1
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-sglang-1-gpu"
     secrets: inherit
 
@@ -84,6 +101,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-short-8-gpu"
     secrets: inherit
 
@@ -96,6 +117,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-fsdp-8-gpu"
     secrets: inherit
 
@@ -112,6 +137,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-megatron-8-gpu --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3"
     secrets: inherit
 
@@ -124,6 +153,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-precision-8-gpu"
     secrets: inherit
 
@@ -136,6 +169,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-ckpt-8-gpu"
     secrets: inherit
 
@@ -148,6 +185,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-long-8-gpu"
     secrets: inherit
 
@@ -160,6 +201,10 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-lora-8-gpu"
     secrets: inherit
 
@@ -174,7 +219,11 @@ jobs:
       gpu_count: 8
       container_image: "radixark/miles:glm5"
       skip_dependency_install: true
-      execute_command: "python tests/ci/gpu_lock_exec.py --count 8 -- python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
+      execute_command: "python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
     secrets: inherit
 
   # Stage C: All suites (triggered by run-ci-image label)
@@ -197,5 +246,9 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      infinite_run: ${{ inputs.infinite_run || false }}
+      ci_megatron_pr: ${{ inputs.ci_megatron_pr || '' }}
+      ci_sglang_pr: ${{ inputs.ci_sglang_pr || '' }}
+      pr_body: ${{ github.event.pull_request.body || '' }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite ${{ matrix.suite }}"
     secrets: inherit
