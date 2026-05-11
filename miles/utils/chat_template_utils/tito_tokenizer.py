@@ -506,6 +506,40 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
+# Mistral v3 implementation
+# ---------------------------------------------------------------------------
+
+
+class MistralV3TITOTokenizer(TITOTokenizer):
+    """Mistral v3 instruct family: ``[INST] ... [/INST]`` template.
+
+    Mistral v3 chat template wraps each user turn in ``[INST] ... [/INST]``
+    and assistant content as plain text ending in ``</s>``.  No
+    per-message ``<|im_end|>`` style boundary; the model EOS is ``</s>``.
+
+    Only ``{tool}`` surface is registered because the HF-native template
+    inserts the ``[AVAILABLE_TOOLS]`` block right before the **last**
+    ``user`` turn — adding a new ``user`` shifts that block and breaks
+    append-only.  Multi-user-turn surfaces would need a fixed jinja.
+
+    Reasoning is not separately structured (no ``<think>`` block); the
+    sglang ``mistral`` tool-call parser handles ``[TOOL_CALLS][...]``.
+    """
+
+    reasoning_parser = None
+    tool_call_parser = "mistral"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+    )
+
+    _default_assistant_start_str: str = "[/INST]"
+
+
+# ---------------------------------------------------------------------------
 # Kimi K2 implementation
 # ---------------------------------------------------------------------------
 
@@ -553,6 +587,37 @@ class Kimi26TITOTokenizer(TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
+# MiniMax M2 implementation
+# ---------------------------------------------------------------------------
+
+
+class MinimaxM2TITOTokenizer(TITOTokenizer):
+    """MiniMax-M2 family: bespoke ``]~!b[`` / ``[e~[`` / ``]~b]`` tag set.
+
+    M2 chat template uses ``]~!b[`` (BOS), ``[e~[`` (EOS), ``]~b]`` (role
+    open marker).  Reasoning is gated by a per-message ``last_user_index``
+    check: ``reasoning_content`` is only rendered for assistant turns
+    *after* the last ``user`` — appending a new ``user`` therefore strips
+    prior assistant ``<think>`` blocks and breaks append-only.
+
+    Only ``{tool}`` surface is registered for that reason; multi-user-turn
+    requires a fixed jinja that always preserves history reasoning.
+    """
+
+    reasoning_parser = None
+    tool_call_parser = None
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+    )
+
+    _default_assistant_start_str: str = "]~b]ai"
+
+
+# ---------------------------------------------------------------------------
 # Enum + Registry + Factory
 # ---------------------------------------------------------------------------
 
@@ -566,6 +631,8 @@ class TITOTokenizerType(str, Enum):
     NEMOTRON3 = "nemotron3"
     KIMI25 = "kimi25"
     KIMI26 = "kimi26"
+    MISTRAL_V3 = "mistral_v3"
+    MINIMAX_M2 = "minimax_m2"
 
 
 _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
@@ -577,6 +644,8 @@ _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
     TITOTokenizerType.NEMOTRON3: Nemotron3TITOTokenizer,
     TITOTokenizerType.KIMI25: Kimi25TITOTokenizer,
     TITOTokenizerType.KIMI26: Kimi26TITOTokenizer,
+    TITOTokenizerType.MISTRAL_V3: MistralV3TITOTokenizer,
+    TITOTokenizerType.MINIMAX_M2: MinimaxM2TITOTokenizer,
 }
 
 
