@@ -71,10 +71,6 @@ These are the validated layouts shipped with the launcher; All parallelisms are 
 |---|---|---|---|---|---|---|---|
 | H200 | 32 × 8 = 256 | 8 | 8 | 1 | 32 | 1 | first 7 / last 6 layers |
 
-The launcher additionally flips two Pro-specific defaults on selection of
-`--model-name DeepSeek-V4-Pro-FP8`: `optimizer_offload=True` (Adam states offloaded to
-CPU to fit Pro on H200) and `enable_r3=False` (Rollout Routing Replay disabled).
-
 ### 5.2 Algorithm
 
 Same as Flash — see [V4-Flash §5.2 Algorithm](deepseek-v4-flash.md#52-algorithm).
