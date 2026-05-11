@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=600, suite="stage-b-sglang-1-gpu", num_gpus=1)
+register_cuda_ci(est_time=600, suite="stage-b-sglang-8-gpu", num_gpus=8)
 
 """E2E test: verify sglang router and miles router produce identical rollout
 routing replay results across MoE models.
@@ -38,9 +38,10 @@ loaded.  This lets us get away with a single H200 and no
 Controls
 ~~~~~~~~
 - ``ROUTER_EQ_MODEL_FAMILY``: ``qwen3_30b_a3b`` (default) | ``glm47_flash``.
-- Single H200, bf16, rollout batch 10, num_rollout 1. Single engine
-  (``--rollout-num-gpus-per-engine 1``) so both variants hit the same
-  underlying sglang process topology.
+- The CI suite reserves 8 GPUs to avoid sharing the runner with another GPU
+  job while this SGLang/Ray process tree is alive. The test workload itself
+  still uses a single engine (``--rollout-num-gpus-per-engine 1``) so both
+  variants hit the same underlying sglang process topology.
 """
 
 import base64
