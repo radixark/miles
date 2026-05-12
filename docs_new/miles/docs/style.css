@@ -1,9 +1,43 @@
-/* Regular-weight model links inside the homepage CardGroup.
-   The Card body applies a bold weight to its children, so the family
-   name (e.g. **Qwen**) and the comma-separated model links would both
-   render bold without this override. */
+/* Regular-weight model links inside the homepage CardGroup. */
 .model-list,
 .model-list a {
   font-weight: 400 !important;
+}
+
+/* RadixArk design system overrides */
+
+/* Body text — radixark off-white */
+p, li, td {
+  color: rgba(248, 242, 234, 0.85);
+}
+
+/* Links — brand orange */
+a {
+  color: #d55816;
+}
+
+/* Inline code */
+code {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 3px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 2px 6px;
+}
+
+/* Code block borders */
+pre {
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 4px !important;
+}
+
+/* Dividers */
+hr {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Inter for nav/UI to match radixark buttons */
+nav, button {
+  font-family: "Inter", system-ui, sans-serif;
 }
 
