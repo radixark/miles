@@ -258,8 +258,7 @@
             "group": "Resources",
             "pages": [
               "miles/docs/faq",
-              "miles/docs/blog/index",
-              "miles/docs/blog/introducing-miles"
+              "miles/docs/blog/index"
             ]
           }
         ]
