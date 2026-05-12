@@ -8,7 +8,7 @@
   --rx-table-bg:    rgba(26, 20, 16, 0.02);
 }
 
-.dark {
+html.dark {
   --rx-code-bg:     rgba(255, 255, 255, 0.06);
   --rx-code-border: rgba(255, 255, 255, 0.08);
   --rx-divider:     rgba(255, 255, 255, 0.08);
@@ -39,7 +39,7 @@ a[href^="http"]:not([href*="radixark.com"])::after {
 /* =============================================
    Nav / UI — Inter (matches RadixArk buttons)
    ============================================= */
-nav, button, [role="button"] {
+#navbar, button {
   font-family: "Inter", system-ui, sans-serif;
 }
 

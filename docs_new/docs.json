@@ -279,9 +279,9 @@
       "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
     },
     "body": {
-      "family": "Hanken Grotesk",
-      "weight": 300,
-      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+      "family": "Inter",
+      "weight": 400,
+      "url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap"
     }
   }
 }
