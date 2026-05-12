@@ -3,15 +3,16 @@
   "name": "Miles",
   "theme": "mint",
   "logo": {
-    "dark": "/miles/docs/assets/images/miles_logo.png",
-    "light": "/miles/docs/assets/images/miles_logo.png",
-    "href": "/miles/docs"
+    "light": "/miles/docs/assets/images/miles_logo_light.png",
+    "dark": "/miles/docs/assets/images/miles_logo_dark.png",
+    "href": "/miles/docs",
+    "width": 130
   },
   "favicon": "/miles/docs/assets/images/miles_square.png",
   "colors": {
-    "primary": "#F97316",
-    "light": "#FB923C",
-    "dark": "#EA580C"
+    "primary": "#d55816",
+    "light": "#e8722a",
+    "dark": "#b84a12"
   },
   "navbar": {
     "links": [
@@ -265,5 +266,21 @@
       }
     ]
   },
-  "url": "https://www.radixark.com"
+  "background": {
+    "dark": "#0c0b0a",
+    "light": "#faf7f4"
+  },
+  "url": "https://www.radixark.com",
+  "font": {
+    "headings": {
+      "family": "Hanken Grotesk",
+      "weight": 600,
+      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+    },
+    "body": {
+      "family": "Inter",
+      "weight": 400,
+      "url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap"
+    }
+  }
 }
