@@ -275,13 +275,11 @@
   "font": {
     "headings": {
       "family": "Hanken Grotesk",
-      "weight": 600,
-      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+      "weight": 600
     },
     "body": {
       "family": "Hanken Grotesk",
-      "weight": 300,
-      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+      "weight": 300
     }
   }
 }
