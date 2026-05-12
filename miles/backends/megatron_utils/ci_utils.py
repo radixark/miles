@@ -169,11 +169,13 @@ def check_peak_gpu_memory_after_load(args) -> None:
         return
 
     # Threshold 20 GB is midpoint between ~16.9 GB (with) and ~22.4 GB (without) on 8xH200.
+    # ROCm async 4+4 config uses TP=1,CP=1 (full model per GPU), so ~34 GB is expected.
     peak_gpu_gb = torch.cuda.max_memory_allocated() / (1024**3)
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     logger.info(f"[CI low-memory-resume] Rank {rank} peak GPU memory: {peak_gpu_gb:.2f} GB")
 
-    threshold_gb = 20.0
+    is_rocm = hasattr(torch.version, "hip") and torch.version.hip is not None
+    threshold_gb = 40.0 if is_rocm else 20.0
     assert peak_gpu_gb < threshold_gb, (
         f"[Rank {rank}] Peak GPU memory ({peak_gpu_gb:.2f} GB) exceeds threshold ({threshold_gb} GB). "
         f"--low-memory-resume optimization may not be working correctly."
