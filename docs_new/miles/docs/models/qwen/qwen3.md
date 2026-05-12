@@ -116,7 +116,7 @@ The 4 B / 8 B / 14 B recipes leave Adam on GPU.
 
 ### 5.5 Notable quirks
 
-- **BF16 train + FP8 inference**: `run-qwen3-4B.sh:30-31` ships a commented `--hf-checkpoint /root/Qwen3-4B-FP8` alternative — uncomment it (and download `Qwen/Qwen3-4B-FP8`) to swap rollout to FP8 while keeping BF16 training. See [Low Precision RL](/miles/docs/advanced/fp8-low-precision).
+- **BF16 train + FP8 inference**: `run-qwen3-4B.sh` ships a commented `--hf-checkpoint /root/Qwen3-4B-FP8` alternative — uncomment it (and download `Qwen/Qwen3-4B-FP8`) to swap rollout to FP8 while keeping BF16 training. See [Low Precision RL](/miles/docs/advanced/fp8-low-precision).
 - **FSDP backend**: `run-qwen3-4B-fsdp.sh` runs the same recipe with `--train-backend fsdp`; no Megatron `torch_dist` conversion needed.
 - **AMD ROCm**: `scripts/amd/run-qwen3-4B-amd.sh` mirrors the recipe with `${NUM_GPUS}` resolved from the AMD environment.
 

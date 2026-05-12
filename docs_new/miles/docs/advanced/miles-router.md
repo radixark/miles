@@ -47,7 +47,7 @@ forward pass so recorded routes are used instead of recomputed ones.
 ## Memory cost
 
 `(num_tokens - 1) × num_layers × top_k × 4 bytes` (int32 per element, see
-`miles/utils/types.py:29`). For a 32K-token sequence, 60 layers, and
+`miles/utils/types.py`). For a 32K-token sequence, 60 layers, and
 `top_k = 8`, that is roughly 60 MB per sample of routing metadata.
 
 ## When R3 is not required
