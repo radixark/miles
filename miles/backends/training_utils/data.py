@@ -141,6 +141,9 @@ def get_batch(
         cp_rank = parallel_state.cp.rank
 
         if allgather_cp:
+            assert batch.get("adapter_slots") is None, (
+                "allgather CP is currently not supported with multi-LoRA: "
+            )
             # DSA mode: concatenate all sequences first, then slice once with CP.
             # We also pad the *global* concatenated stream to make per-rank chunks equal.
             cu_seqlens_list: list[int] = [0]
@@ -188,10 +191,12 @@ def get_batch(
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
 
     # Multi-LoRA: compute per-adapter token counts from post-CP per-sample lengths.
-    # NOTE: allgather CP is not supported — it chunks the global stream across CP ranks
-    # without respecting sample boundaries, which breaks MultiLoRA's adapter routing.
+    # NOTE: allgather CP is currently not supported
     adapter_slots = batch.get("adapter_slots")
     if adapter_slots is not None:
+        assert all(adapter_slots[i] <= adapter_slots[i+1] for i in range(len(adapter_slots)-1)), (
+            f"adapter_slots not sorted in micro-batch: {adapter_slots}"
+        )
         n_adapters = data_iterator.rollout_data["n_adapters"]
         total_tokens = tokens.numel()
         counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())

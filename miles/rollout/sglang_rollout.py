@@ -1,12 +1,12 @@
 import asyncio
 import copy
-import inspect
 import logging
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
+from importlib import import_module
 
 import numpy as np
 import pybase64
@@ -15,15 +15,15 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.backends.megatron_utils.multi_lora import is_multi_lora_enabled
-from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
-from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.misc import SingletonMeta, load_function, load_class
 from miles.utils.processing_utils import (
     build_processor_kwargs,
     encode_image_for_rollout_engine,
@@ -62,6 +62,17 @@ class GenerateState(metaclass=SingletonMeta):
     """
     The global state for the generation process.
     """
+
+    # Allow factory using custom GenerateState
+    def __new__(cls, args: Namespace):
+        custom_path = getattr(args, "custom_generate_state_path", None)
+        if not custom_path:
+            return super().__new__(cls)
+
+        custom_cls = load_class(custom_path)
+        if not issubclass(custom_cls, cls):
+            raise TypeError(f"{custom_cls} is not a subclass of {cls}")
+        return super().__new__(custom_cls)  # uninitialized instance of the real class
 
     def __init__(self, args: Namespace) -> None:
         # persistent state for the generation process
@@ -115,8 +126,7 @@ class GenerateState(metaclass=SingletonMeta):
 
     def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
         for group in samples:
-            self.pendings.add(
-                asyncio.create_task(
+            task = asyncio.create_task(
                     # submit a group of samples as a single task.
                     generate_and_rm_group(
                         self.args,
@@ -125,8 +135,32 @@ class GenerateState(metaclass=SingletonMeta):
                         evaluation=False,
                     )
                 )
-            )
+            self.on_group_submit(group, task)
+            self.pendings.add(task)
+
         self.remaining_batch_size += len(samples)
+
+    # Lifecycle hooks that can be implemented in custom GenerateState
+    # Run on group submit - can be used to add callbacks on completion + update
+    # state based on submitted groups
+    # TODO: make this async
+    def on_group_submit(self, group: list[Sample], task) -> None:
+        ...
+
+    # Run when adding the group to the batch selected for that rollout id
+    async def on_group_selected(self, group: list[Sample] | list[list[Sample]]) -> None:
+        ...
+
+    # Run at the beginning of generate_rollout_async
+    async def on_generate_rollout_start(self, rollout_id: int) -> None:
+        ...
+
+    # Run at the end of generate_rollout_async
+    async def on_generate_rollout_complete(self, rollout_id: int,
+       completed_samples: list[list[Sample]] | list[list[list[Sample]]],
+       aborted_samples: list[list[Sample]]
+    ) -> None:
+        ...
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
@@ -167,8 +201,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "return_logprob": True,
     }
 
-    if is_multi_lora_enabled(args) and sample.adapter_name is not None:
-        payload["lora_path"] = sample.adapter_name
+    if sample.adapter is not None:
+        payload["lora_path"] = sample.adapter.name
     elif is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
@@ -263,13 +297,12 @@ async def generate_and_rm(
             # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
             custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
 
-            if custom_func_path is not None:
-                custom_generate_func = load_function(custom_func_path)
-                # if signature has evaluation, pass evaluation
-                if "evaluation" in inspect.signature(custom_generate_func).parameters:
-                    sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
-                else:
-                    sample = await custom_generate_func(args, sample, sampling_params)
+            generate_fn = load_generate_function(custom_func_path) if custom_func_path else None
+            if generate_fn is not None:
+                output = await generate_fn(
+                    GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params, evaluation=evaluation)
+                )
+                sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
 
@@ -399,6 +432,9 @@ async def generate_rollout_async(
 
     state = GenerateState(args)
 
+    # Run generate rollout start lifecycle hook
+    await state.on_generate_rollout_start(rollout_id)
+
     # instantiate data filters
     dynamic_filter = (
         load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path is not None else None
@@ -437,12 +473,14 @@ async def generate_rollout_async(
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
                 state.remaining_batch_size -= 1
+
                 continue
 
             # add the samples to the data
             # NOTE: here we have not stored all the unused samples back to the data buffer.
             if len(data) < target_data_size:
                 data.append(group)
+                await state.on_group_selected(group)
                 pbar.update(args.n_samples_per_prompt)
 
     pbar.close()
@@ -459,6 +497,10 @@ async def generate_rollout_async(
     all_samples = sorted(
         all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
     )
+
+    # run generate rollout completion lifecycle hook
+    # Note: this is called before sample filtering to allow the hook to see all samples
+    await state.on_generate_rollout_complete(rollout_id, data, aborted_samples)
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()

@@ -35,12 +35,15 @@ ray job submit --address="http://127.0.0.1:8265" \
    \
    --hf-checkpoint /root/Qwen3-4B/ \
    --megatron-to-hf-mode bridge \
+   \
    --lora-rank 32 \
    --lora-alpha 32 \
    --lora-dropout 0.0 \
    --target-modules "all-linear" \
    --multi-lora-dir "${SCRIPT_DIR}/adapters" \
    --multi-lora-n-adapters 4 \
+   --sglang-lora-backend triton \
+   \
    --prompt-data /root/gsm8k/train.parquet \
    --input-key messages \
    --label-key label \
@@ -49,7 +52,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --num-rollout 100 \
    --rollout-batch-size 32 \
    --n-samples-per-prompt 8 \
-   --rollout-max-response-len 1024 \
+   --rollout-max-response-len 4096 \
    --rollout-temperature 1 \
    --global-batch-size 256 \
    \
@@ -67,7 +70,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --adam-beta1 0.9 \
    --adam-beta2 0.98 \
    \
-   --tensor-model-parallel-size 1 \
+   --tensor-model-parallel-size 2 \
    --sequence-parallel \
    --pipeline-model-parallel-size 1 \
    --context-parallel-size 1 \
@@ -83,4 +86,10 @@ ray job submit --address="http://127.0.0.1:8265" \
    --hidden-dropout 0.0 \
    --accumulate-allreduce-grads-in-fp32 \
    --attention-softmax-in-fp32 \
-   --attention-backend flash
+   --attention-backend flash \
+   \
+   --use-wandb \
+   --wandb-host https://wandb.ai/ \
+   --wandb-team osmosis-staging \
+   --wandb-project miles-multilora \
+   --wandb-group qwen3-4B-test

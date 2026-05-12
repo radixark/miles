@@ -6,6 +6,30 @@ import numpy
 import torch
 
 
+@dataclass(frozen=True)
+class AdapterRef:
+    """Per-sample handle identifying which LoRA adapter this sample is bound to.
+
+    Set by ``MultiLoRADataSource`` and consumed at training (slot routing) and
+    inference (per-request lora_path) sites. ``None`` means no adapter.
+    """
+
+    name: str
+    slot: int
+
+
+@dataclass(frozen=True)
+class RewardSpec:
+    """Per-sample handle describing how this sample's response is scored.
+
+    Decoupled from ``AdapterRef`` because reward dispatch is a separate concern
+    from adapter routing — single-adapter or non-LoRA flows can use this too.
+    """
+
+    rm_type: str | None = None
+    custom_rm_path: str | None = None
+
+
 @dataclass
 class Sample:
     """The sample generated"""
@@ -48,7 +72,9 @@ class Sample:
     train_metadata: dict | None = None
 
     # MultiLoRA: which adapter this sample trains/infers with
-    adapter_name: str | None = None
+    adapter: AdapterRef | None = None
+    # Per-sample reward dispatch override (e.g., per-adapter RM in multi-LoRA)
+    reward_spec: RewardSpec | None = None
 
     # Session ID for consistent hashing routing (used when router policy is consistent_hashing)
     # TODO: Its definition needs to merge with the session server's session id in the new rollout function.

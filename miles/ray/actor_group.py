@@ -123,6 +123,22 @@ class RayTrainGroup:
         """Broadcast weights from rank 0 to all other ranks."""
         await self._broadcast("update_weights")
 
+    async def load_pending_adapters(self) -> int:
+        """Multi-LoRA: model-side install of PENDING adapters on every rank.
+        Returns the number installed so the caller can decide whether the next
+        ``update_weights`` needs to push them to SGLang. No-op (returns 0)
+        when multi-LoRA is disabled. All ranks return the same count."""
+        results = await self._broadcast("load_pending_adapters")
+        return results[0] if results else 0
+
+    async def unload_drained_adapters(self, rollout_id):
+        """Multi-LoRA: model-side cleanup of DRAINED adapters (save final ckpt,
+        clear slot, zero optimizer). Caller must run ``update_weights`` first so
+        SGLang has unloaded the adapter. No-op if multi-LoRA is disabled."""
+        # TODO: track iteration individually?
+        results = await self._broadcast("unload_drained_adapters", rollout_id)
+        return results[0] if results else 0
+
     async def onload(self):
         await self._broadcast("wake_up")
 
@@ -141,9 +157,6 @@ class RayTrainGroup:
 
     async def set_rollout_manager(self, rollout_manager):
         await self._broadcast("set_rollout_manager", rollout_manager)
-
-    async def set_multi_lora_controller(self, controller):
-        await self._broadcast("set_multi_lora_controller", controller)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:
         refs = [getattr(actor, method_name).remote(*args, **kwargs) for actor in self._actor_handles]

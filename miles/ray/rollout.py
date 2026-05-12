@@ -727,8 +727,8 @@ class RolloutManager:
         if any(sample.weight_versions for sample in samples):
             train_data["weight_versions"] = [sample.weight_versions for sample in samples]
 
-        if any(sample.adapter_name is not None for sample in samples):
-            train_data["adapter_names"] = [sample.adapter_name for sample in samples]
+        if any(sample.adapter is not None for sample in samples):
+            train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
 
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
@@ -758,16 +758,11 @@ class RolloutManager:
         else:
             partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
-        # Multi-LoRA: resolve adapter names to slot indices and sort partitions.
-        adapter_names = data.get("adapter_names")
-        if adapter_names is not None:
-            active = ray.get(self.args.multi_lora_controller.active_runs.remote())
-            slot_for = {name: cfg["slot"] for name, cfg in active.items()}
-            data["adapter_slots"] = [slot_for[name] for name in adapter_names]
-            partitions = [
-                sorted(p, key=lambda i: slot_for.get(adapter_names[i], 0))
-                for p in partitions
-            ]
+        # Multi-LoRA: sort partitions by adapter slot so each microbatch is
+        # contiguous-by-slot (required by the per-adapter token-count math).
+        adapter_slots = data.get("adapter_slots")
+        if adapter_slots is not None:
+            partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
         rollout_data_refs = []
 
@@ -1195,7 +1190,7 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
 
 def _compute_per_adapter_metrics(args, samples: list[Sample]) -> dict:
     """Compute reward and response length metrics grouped by adapter name."""
-    by_adapter = group_by(samples, lambda s: getattr(s, "adapter_name", None))
+    by_adapter = group_by(samples, lambda s: s.adapter.name if s.adapter else None)
     log_dict = {}
     for name, adapter_samples in by_adapter.items():
         if name is None:
@@ -1316,7 +1311,18 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 
     interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
 
-    return {f"zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
+    counts = {reward: len(items) for reward, items in group_by(interesting_rewards).items()}
+    log_dict = {f"zero_std/count_{reward}": count for reward, count in counts.items()}
+
+    # Percentages over total groups, so "too hard" (all-0) and "too easy"
+    # (all-1) rates are comparable across runs without needing to know the
+    # rollout batch size.
+    total_groups = len(all_sample_groups)
+    if total_groups > 0:
+        log_dict["zero_std/all_zero_percentage"] = counts.get("0.0", 0) / total_groups
+        log_dict["zero_std/all_one_percentage"] = counts.get("1.0", 0) / total_groups
+
+    return log_dict
 
 
 def _compute_spec_metrics(args, all_samples: list[Sample]):

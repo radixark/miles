@@ -5,3 +5,4 @@ data: /root/gsm8k/train.parquet
 input_key: messages
 label_key: label
 rm_type: math
+num_row: 400

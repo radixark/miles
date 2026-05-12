@@ -28,17 +28,8 @@ async def remote_rm(args, sample: Sample):
 
 
 def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
-    """Return (custom_rm_path, rm_type) for a sample.
-
-    For multi-LoRA, reads from the per-adapter config. Otherwise falls
-    back to global args.
-    """
-    if getattr(args, "multi_lora", False):
-        adapter_configs = getattr(args, "adapter_configs", {})
-        adapter_name = getattr(sample, "adapter_name", None)
-        if adapter_name and adapter_name in adapter_configs:
-            cfg = adapter_configs[adapter_name]
-            return cfg.get("custom_rm_path"), (cfg.get("rm_type") or "").strip()
+    if sample.reward_spec is not None:
+        return sample.reward_spec.custom_rm_path, (sample.reward_spec.rm_type or "").strip()
     return getattr(args, "custom_rm_path", None), (getattr(args, "rm_type", None) or "").strip()
 
 

@@ -132,6 +132,7 @@ def setup_model_and_optimizer(
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = None
+
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,
@@ -254,9 +255,9 @@ def forward_only(
         response_lengths = batch["response_lengths"]
 
         if "adapter_token_counts" in batch:
-            from megatron.bridge.peft.multi_lora_layers import set_batch
+            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
 
-            set_batch(model, batch["adapter_token_counts"])
+            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
         output_tensor = model(
             input_ids=tokens,
@@ -405,9 +406,9 @@ def train_one_step(
         )
 
         if "adapter_token_counts" in batch:
-            from megatron.bridge.peft.multi_lora_layers import set_batch
+            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
 
-            set_batch(model, batch["adapter_token_counts"])
+            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
         from miles.utils.replay_base import all_replay_managers
 

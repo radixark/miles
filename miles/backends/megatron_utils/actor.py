@@ -35,7 +35,7 @@ from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
-from .multi_lora import is_multi_lora_enabled
+from .multi_lora_utils import is_multi_lora_enabled
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import get_register_replay_list_func
 from .update_weight.common import named_params_and_buffers
@@ -113,13 +113,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
         if is_multi_lora_enabled(args):
-            import ray
+            from .multi_lora_utils import initialize_multi_lora_model_and_optimizer
 
-            from .multi_lora import initialize_multi_lora_model_and_optimizer
-
-            adapter_configs = ray.get(self.multi_lora_controller.active_runs.remote())
             (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = (
-                initialize_multi_lora_model_and_optimizer(args, adapter_configs, role)
+                initialize_multi_lora_model_and_optimizer(args, role)
             )
         else:
             (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = (
@@ -176,14 +173,15 @@ class MegatronTrainRayActor(TrainRayActor):
                 update_weight_cls = UpdateWeightFromDistributed
             else:
                 update_weight_cls = UpdateWeightP2P
-        self.weight_updater = update_weight_cls(
-            self.args,
-            self.model,
+        weight_updater_kwargs = dict(
             weights_getter=lambda: self.weights_backuper.get("actor"),
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=is_lora_enabled(args),
         )
+        if update_weight_cls is UpdateWeightFromTensor:
+            weight_updater_kwargs["is_multi_lora"] = is_multi_lora_enabled(args)
+        self.weight_updater = update_weight_cls(self.args, self.model, **weight_updater_kwargs)
 
         # empty cache after initialization
         clear_memory()
@@ -212,7 +210,8 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before offload model")
         destroy_process_groups()
 
-        torch_memory_saver.pause()
+        tag = "default" if is_lora_enabled(self.args) else None
+        torch_memory_saver.pause(tag=tag)
 
         print_memory("after offload model")
 
@@ -224,7 +223,8 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.offload_train
         print_memory("before wake_up model")
 
-        torch_memory_saver.resume()
+        tag = "default" if is_lora_enabled(self.args) else None
+        torch_memory_saver.resume(tag=tag)
 
         clear_memory()
         reload_process_groups()
@@ -376,10 +376,6 @@ class MegatronTrainRayActor(TrainRayActor):
         return getattr(self.args, f"use_rollout_{m.name}_replay")
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
-        # Track which adapter slots had data this step
-        adapter_slots = rollout_data.get("adapter_slots")
-        self.active_adapter_slots = set(adapter_slots) if adapter_slots is not None else None
-
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
@@ -480,22 +476,56 @@ class MegatronTrainRayActor(TrainRayActor):
 
         log_perf_data(rollout_id, self.args)
 
-        # Multi-LoRA: handle exhausted adapters
-        if is_multi_lora_enabled(self.args):
-            from .update_weight.multi_lora_sync import deregister_adapter
+    @timer
+    def load_pending_adapters(self) -> int:
+        if not is_multi_lora_enabled(self.args):
+            return 0
 
-            exhausted = ray.get(self.multi_lora_controller.get_exhausted.remote())
-            for name in exhausted:
-                deregister_adapter(
-                    name=name,
-                    rollout_id=rollout_id,
-                    args=self.args,
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    controller=self.multi_lora_controller,
-                    ipc_engine=self.weight_updater._ipc_engine,
-                    ipc_gather_src=self.weight_updater._ipc_gather_src,
-                )
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
+        from miles.utils.adapter_config import AdapterState
+        configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
+        if not any(c.state == AdapterState.PENDING for c in configs.values()):
+            return 0
+        # TODO: verify if it fits in patterns to offload and wakeup here
+        # if self.args.offload_train:
+        #     self.wake_up()
+
+        from miles.backends.megatron_utils.multi_lora_utils import load_pending_adapters
+
+        n = load_pending_adapters(self.args, self.model, self.optimizer)
+        if n > 0:
+            # Re-snapshot: init_adapter_slot + load_adapter mutated the model,
+            # so the noop-backuper's recorded hash is now stale (would assert
+            # on the next weights_getter()). Mirrors the post-train backup
+            # pattern at the end of train().
+            self.weights_backuper.backup("actor")
+
+        # if self.args.offload_train:
+        #     self.sleep()
+        return n
+
+    @timer
+    def unload_drained_adapters(self, rollout_id: int) -> int:
+        if not is_multi_lora_enabled(self.args):
+            return 0
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
+        from miles.utils.adapter_config import AdapterState
+        configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
+        if not any(c.state == AdapterState.DRAINED for c in configs.values()):
+            return 0
+
+        # TODO: check if needed/semantics
+        # if self.args.offload_train:
+        #     self.wake_up()
+
+        from miles.backends.megatron_utils.multi_lora_utils import unload_drained_adapters
+        n = unload_drained_adapters(self.args, self.model, self.optimizer, rollout_id)
+        if n > 0:
+            self.weights_backuper.backup("actor")
+
+        # if self.args.offload_train:
+        #     self.sleep()
+        return n
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
@@ -512,10 +542,14 @@ class MegatronTrainRayActor(TrainRayActor):
             maybe_finalize_async_save(blocking=True)
 
         if is_multi_lora_enabled(self.args):
-            from .update_weight.multi_lora_sync import save_multi_lora_checkpoints
+            from miles.ray.multi_lora_controller import get_multi_lora_controller
 
-            adapter_configs = ray.get(self.multi_lora_controller.active_runs.remote())
-            save_multi_lora_checkpoints(self.args, self.model, rollout_id, adapter_configs)
+            from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
+
+            controller = get_multi_lora_controller()
+            adapter_configs = ray.get(controller.adapter_configs.remote())
+            adapter_steps = ray.get(controller.adapter_train_steps.remote())
+            save_multi_lora_checkpoints(self.args, self.model, adapter_steps, adapter_configs)
         else:
             save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
 
@@ -558,23 +592,9 @@ class MegatronTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
 
-        if self.args.offload_train and is_lora_enabled(self.args):
-            # For LoRA, we must resume() to restore GPU memory backing for adapter
-            # weights. Unlike base model weights (which are read from CPU backups),
-            # LoRA adapter weights are accessed directly from GPU model parameters.
-            # The disable() context alone only prevents new allocations from being
-            # tracked -- it does NOT restore previously paused/offloaded tensors.
-            torch_memory_saver.resume()
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            if is_multi_lora_enabled(self.args):
-                adapter_configs = ray.get(self.multi_lora_controller.active_runs.remote())
-                self.weight_updater.update_multi_lora_weights(
-                    adapter_configs=adapter_configs,
-                    active_slots=getattr(self, "active_adapter_slots", None),
-                )
-            else:
-                self.weight_updater.update_weights()
+            self.weight_updater.update_weights()
             print_memory("after update_weights")
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
@@ -597,8 +617,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("old_actor")
 
         if self.args.offload_train:
-            if is_lora_enabled(self.args):
-                torch_memory_saver.pause()
             destroy_process_groups()
 
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
@@ -626,9 +644,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag
-
-    def set_multi_lora_controller(self, controller):
-        self.multi_lora_controller = controller
 
     def connect_actor_critic(
         self,

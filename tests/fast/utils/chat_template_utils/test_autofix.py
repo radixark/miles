@@ -5,6 +5,11 @@ clean HuggingFace repo ID, so we test a wide variety of realistic (and weird)
 path formats to make sure glob matching is robust.
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 import os
 
 import pytest

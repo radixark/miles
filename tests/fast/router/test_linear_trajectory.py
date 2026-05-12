@@ -4,6 +4,11 @@ Tests the session registry CRUD and the trajectory pretokenized state management
 logic in isolation (no HTTP server, no real tokenizer).
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-fast")
+
+
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any

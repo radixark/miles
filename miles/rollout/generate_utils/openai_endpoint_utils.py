@@ -199,6 +199,7 @@ def _compute_sample_from_openai_record(
         case "abort":
             sample.status = Sample.Status.ABORTED
 
+    sample.prefix_cache_info.add(choice.get("meta_info", {}))
     if "weight_version" in choice["meta_info"]:
         sample.weight_versions.append(choice["meta_info"]["weight_version"])
 
