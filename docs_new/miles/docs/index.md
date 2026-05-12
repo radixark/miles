@@ -38,29 +38,17 @@ needed to run RL at trillion-parameter scale.
 
 ## Supported models
 
-<CardGroup cols={2}>
+Each model name links to its recipe page.
 
-  <Card title="Dense">
-
-    - **Qwen**: <span className="model-list">[Qwen3.6](/miles/docs/models/qwen/qwen3-6), [Qwen3.5](/miles/docs/models/qwen/qwen3-5), [Qwen3](/miles/docs/models/qwen/qwen3)</span>
-    - **GLM**: <span className="model-list">[GLM4](/miles/docs/models/glm/glm4)</span>
-    - **Nemotron**: <span className="model-list">[Nemotron-3-Nano](/miles/docs/models/nemotron/nemotron-3-nano)</span>
-    - **MiMo**: <span className="model-list">[MiMo](/miles/docs/models/mimo/mimo)</span>
-    - **GPT-OSS**: <span className="model-list">[GPT-OSS](/miles/docs/models/gpt-oss/gpt-oss)</span>
-
-  </Card>
-
-  <Card title="Mixture of Experts">
-
-    - **DeepSeek**: <span className="model-list">[DeepSeek-V4 Pro](/miles/docs/models/deepseek/deepseek-v4-pro), [DeepSeek-V4 Flash](/miles/docs/models/deepseek/deepseek-v4-flash), [DeepSeek-V3 / R1](/miles/docs/models/deepseek/deepseek)</span>
-    - **Qwen**: <span className="model-list">[Qwen3.6 MoE](/miles/docs/models/qwen/qwen3-6-moe), [Qwen3.5 MoE](/miles/docs/models/qwen/qwen3-5-moe), [Qwen3-Next](/miles/docs/models/qwen/qwen3-next), [Qwen3 MoE](/miles/docs/models/qwen/qwen3-moe)</span>
-    - **GLM**: <span className="model-list">[GLM5 / GLM5.1](/miles/docs/models/glm/glm5), [GLM4.7](/miles/docs/models/glm/glm4-7-flash), [GLM4.5](/miles/docs/models/glm/glm4-5)</span>
-    - **Kimi**: <span className="model-list">[Kimi K2.5 / K2.6](/miles/docs/models/kimi/kimi-k2.5), [Kimi K2](/miles/docs/models/kimi/kimi-k2), [Moonlight](/miles/docs/models/kimi/moonlight)</span>
-    - **Nemotron**: <span className="model-list">[Nemotron-3-Nano MoE](/miles/docs/models/nemotron/nemotron-3-nano-moe), [Nemotron-3-Super](/miles/docs/models/nemotron/nemotron-3-super)</span>
-
-  </Card>
-
-</CardGroup>
+| Family | Models |
+|---|---|
+| **DeepSeek** | [DeepSeek-V4 Pro](/miles/docs/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/miles/docs/models/deepseek/deepseek-v4-flash)<br/>[DeepSeek-R1](/miles/docs/models/deepseek/deepseek)<br/>[DeepSeek-V3](/miles/docs/models/deepseek/deepseek) |
+| **Qwen** | [Qwen3.6 MoE](/miles/docs/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/miles/docs/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/miles/docs/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/miles/docs/models/qwen/qwen3-5)<br/>[Qwen3-Next-80B-A3B-Thinking](/miles/docs/models/qwen/qwen3-next)<br/>[Qwen3-30B-A3B / 235B-A22B](/miles/docs/models/qwen/qwen3-moe)<br/>[Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B](/miles/docs/models/qwen/qwen3) |
+| **GLM** | [GLM-5.1](/miles/docs/models/glm/glm5)<br/>[GLM-5](/miles/docs/models/glm/glm5)<br/>[GLM-4.7-Flash](/miles/docs/models/glm/glm4-7-flash)<br/>[GLM-4.5](/miles/docs/models/glm/glm4-5)<br/>[GLM-Z1-9B-0414](/miles/docs/models/glm/glm4) |
+| **Kimi** | [Kimi-K2.6](/miles/docs/models/kimi/kimi-k2.5)<br/>[Kimi-K2.5](/miles/docs/models/kimi/kimi-k2.5)<br/>[Kimi-K2-Instruct / Thinking](/miles/docs/models/kimi/kimi-k2)<br/>[Moonlight-16B-A3B](/miles/docs/models/kimi/moonlight) |
+| **Nemotron** | [Nemotron-3-Super-120B-A12B-FP8](/miles/docs/models/nemotron/nemotron-3-super)<br/>[Nemotron-3-Nano MoE](/miles/docs/models/nemotron/nemotron-3-nano-moe)<br/>[Nemotron-3-Nano](/miles/docs/models/nemotron/nemotron-3-nano) |
+| **MiMo** | [MiMo-7B-RL](/miles/docs/models/mimo/mimo) |
+| **GPT-OSS** | [gpt-oss-20b](/miles/docs/models/gpt-oss/gpt-oss) |
 
 See [Models](/miles/docs/models/index) for exact conversion commands, launch scripts, and
 parallelism settings.
