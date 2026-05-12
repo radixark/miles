@@ -1,59 +1,128 @@
-/* Regular-weight model links inside the homepage CardGroup. */
-.model-list,
-.model-list a {
-  font-weight: 400 !important;
-}
-
 /* =============================================
-   Light mode — warm off-white palette
+   Design tokens — light / dark
    ============================================= */
 :root {
-  --rx-code-bg: rgba(26, 20, 16, 0.05);
-  --rx-code-border: rgba(26, 20, 16, 0.1);
-  --rx-divider: rgba(26, 20, 16, 0.1);
+  --rx-code-bg:     rgba(26, 20, 16, 0.05);
+  --rx-code-border: rgba(26, 20, 16, 0.10);
+  --rx-divider:     rgba(26, 20, 16, 0.10);
+  --rx-table-bg:    rgba(26, 20, 16, 0.02);
 }
 
-/* =============================================
-   Dark mode overrides
-   ============================================= */
 .dark {
-  --rx-code-bg: rgba(255, 255, 255, 0.06);
+  --rx-code-bg:     rgba(255, 255, 255, 0.06);
   --rx-code-border: rgba(255, 255, 255, 0.08);
-  --rx-divider: rgba(255, 255, 255, 0.08);
+  --rx-divider:     rgba(255, 255, 255, 0.08);
+  --rx-table-bg:    rgba(255, 255, 255, 0.02);
 }
 
 /* =============================================
-   Links — brand orange (works on both modes)
+   Links
    ============================================= */
-a {
-  color: #d55816;
-}
+a { color: #d55816; }
 
-/* External links — ↗ indicator + lighter orange */
+/* External links — arrow indicator */
 a[href^="http"]:not([href*="radixark.com"])::after {
   content: " ↗";
   font-size: 0.7em;
   vertical-align: super;
   opacity: 0.6;
 }
-
 a[href^="http"]:not([href*="radixark.com"]) {
   color: #e8722a;
 }
 
 /* =============================================
-   Code — subtle tint, let Mintlify handle sizing
+   Code — consistent across headings, body, FAQ
    ============================================= */
 code {
   background: var(--rx-code-bg) !important;
+  border-radius: 4px !important;
+  font-size: 0.875em !important;
+  padding: 0.15em 0.4em !important;
 }
 
 pre {
   border: 1px solid var(--rx-code-border) !important;
+  border-radius: 6px !important;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
+pre code {
+  font-size: 0.875rem !important;
+  padding: 0 !important;
+  background: none !important;
+  border-radius: 0 !important;
+}
+
+/* =============================================
+   Tables — readable + mobile-safe
+   ============================================= */
+table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-collapse: collapse;
+  width: max-content;
+  max-width: 100%;
+  font-size: 0.9375rem;
+}
+
+th {
+  background: var(--rx-table-bg);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+td {
+  border-color: var(--rx-divider);
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+/* =============================================
+   Images — always responsive
+   ============================================= */
+img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* =============================================
+   Dividers
+   ============================================= */
 hr {
   border-color: var(--rx-divider) !important;
+  margin: 2rem 0;
 }
 
+/* =============================================
+   Model-list card fix (homepage CardGroup)
+   ============================================= */
+.model-list,
+.model-list a {
+  font-weight: 400 !important;
+}
 
+/* =============================================
+   Mobile — overflow and text consistency
+   ============================================= */
+@media (max-width: 768px) {
+  pre, table, img, video, iframe {
+    max-width: 100%;
+  }
+
+  pre code {
+    font-size: 0.8125rem !important;
+  }
+
+  table {
+    font-size: 0.875rem;
+  }
+
+  h1 code, h2 code, h3 code {
+    font-size: 0.8em !important;
+  }
+}
