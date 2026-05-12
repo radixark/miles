@@ -2,9 +2,6 @@
 title: Rollout Routing Replay (R3)
 description: Capture expert routing during inference and replay it during training so MoE RL is stable.
 ---
-
-# Rollout Routing Replay (R3)
-
 Rollout Routing Replay (R3) records the expert routing decisions made during
 inference and replays them during training, producing bit-identical expert
 allocation between rollout and training.

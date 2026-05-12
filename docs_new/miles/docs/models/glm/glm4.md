@@ -2,9 +2,6 @@
 title: GLM4
 description: Launch recipes for GLM-Z1-9B-0414. The 32 B model config ships without a launcher.
 ---
-
-# GLM4
-
 ## 1. Model Introduction
 
 [GLM-Z1-9B-0414](https://huggingface.co/zai-org/GLM-Z1-9B-0414) is a dense reasoning-tuned model from Zhipu AI's GLM-4 series, sized for single-node experimentation.
@@ -49,7 +46,6 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 ```bash
 cd /root/miles
 bash scripts/run-glm4-9B.sh                    # 8 GPU
-# or:
 bash scripts/run-glm4-9B-4xgpu-radixtree.sh    # 4 GPU smoke test
 ```
 
@@ -100,5 +96,5 @@ CPU Adam is not enabled in either launcher.
 
 ## 6. Pairs Well With
 
-- [Rollout Routing Replay (R3)](../../advanced/miles-router.md)
-- [Low Precision RL](../../advanced/fp8-low-precision.md)
+- [Rollout Routing Replay (R3)](/docs/advanced/miles-router)
+- [Low Precision RL](/docs/advanced/fp8-low-precision)

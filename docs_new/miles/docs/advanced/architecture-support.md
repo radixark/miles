@@ -2,9 +2,6 @@
 title: Backends Beyond Megatron
 description: Embed HuggingFace implementations as black-box modules inside Megatron's parallel pipeline.
 ---
-
-# Backends Beyond Megatron
-
 Adding a new architecture (such as Qwen3-Next's Gated-Delta-Net) directly to
 Megatron-LM's native code path is invasive. Miles takes a different approach:
 wrap the model's official HuggingFace implementation as a black-box module and
@@ -33,7 +30,6 @@ starts from `get_gpt_decoder_block_spec`, then for the layers whose HF
 params={"args": args})` (referenced from `miles_plugins/models/`):
 
 ```python
-# miles_plugins/models/qwen3_next.py (simplified excerpt)
 transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
 ...
 for layer_id in range(num_layers_to_build):

@@ -2,9 +2,6 @@
 title: Fully Async Rollout
 description: Keep generation running continuously in the background so the trainer never waits.
 ---
-
-# Fully Async Rollout
-
 **What you'll learn:** how to make rollout production and trainer consumption fully
 parallel, with a queue in between, by using a custom rollout function.
 
@@ -26,9 +23,9 @@ instead of the sum.
 
 ## Prerequisites
 
-* You completed the [Qwen3-4B](../models/qwen/qwen3.md) recipe (or have an
+* You completed the [Qwen3-4B](/docs/models/qwen/qwen3) recipe (or have an
   equivalent model + dataset).
-* Comfortable with [Customization](../user-guide/customization.md) — async rollout uses
+* Comfortable with [Customization](/docs/user-guide/customization) — async rollout uses
   a custom rollout function.
 
 ## Files
@@ -181,7 +178,7 @@ check GPU utilization.
 * **Best-effort ordering.** Samples are sorted by index at drain time, but exact-order
   guarantees aren't provided.
 * **Minimal error handling.** If a generate task throws, it's logged but the worker
-  keeps going. Production users wire in [fault tolerance](../advanced/fault-tolerance.md).
+  keeps going. Production users wire in [fault tolerance](/docs/advanced/fault-tolerance).
 
 ## Variations
 

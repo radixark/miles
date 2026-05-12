@@ -2,9 +2,6 @@
 title: Qwen3.5
 description: Launch recipes for Qwen3.5-4B / 9B / 27B with attention-output-gate.
 ---
-
-# Qwen3.5
-
 ## 1. Model Introduction
 
 [Qwen3.5](https://github.com/QwenLM/Qwen3) is the next iteration of the Qwen3 dense series, introducing the gated-attention architecture and an FP32-preserved `A_log` parameter.
@@ -31,7 +28,6 @@ description: Launch recipes for Qwen3.5-4B / 9B / 27B with attention-output-gate
 ```bash
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
-# Place the model checkpoint at /root/Qwen3.5-{4B,9B,27B}
 ```
 
 ### 3.2 HF → Megatron `torch_dist` conversion
@@ -104,9 +100,9 @@ From `scripts/models/qwen3.5-4B.sh` (and analogous configs for 9 B / 27 B):
 - `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`.
 - `--attention-output-gate`.
 
-See [Backends Beyond Megatron](../../advanced/architecture-support.md) for how miles preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
+See [Backends Beyond Megatron](/docs/advanced/architecture-support) for how miles preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [Low Precision RL](../../advanced/fp8-low-precision.md)
+- [Backends Beyond Megatron](/docs/advanced/architecture-support)
+- [Low Precision RL](/docs/advanced/fp8-low-precision)

@@ -2,9 +2,6 @@
 title: GLM4.5
 description: Launch recipes for GLM-4.5 (355B-A32B) — bash launcher and Python launcher.
 ---
-
-# GLM4.5
-
 ## 1. Model Introduction
 
 [GLM-4.5](https://huggingface.co/zai-org/GLM-4.5) is Zhipu AI's flagship MoE language model with advanced capabilities in reasoning, function calling, and multi-modal understanding.
@@ -33,7 +30,6 @@ The bash launcher (`run-glm4.5-355B-A32B.sh`) requires:
 
 ```bash
 export BASE_DIR=<shared FS path, reachable from every node>
-# MASTER_ADDR is overridden to ${MLP_WORKER_0_HOST} inside the script (L144),
 # so it comes from the cluster orchestrator.
 ```
 
@@ -140,6 +136,6 @@ CPU Adam on:
 
 ## 6. Pairs Well With
 
-- [Low Precision RL](../../advanced/fp8-low-precision.md)
-- [INT4 QAT](../../advanced/int4-qat.md)
-- [Rollout Routing Replay (R3)](../../advanced/miles-router.md) — opt-in via `--enable-mis` on the Python launcher.
+- [Low Precision RL](/docs/advanced/fp8-low-precision)
+- [INT4 QAT](/docs/advanced/int4-qat)
+- [Rollout Routing Replay (R3)](/docs/advanced/miles-router) — opt-in via `--enable-mis` on the Python launcher.

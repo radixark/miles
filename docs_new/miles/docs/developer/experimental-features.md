@@ -2,9 +2,6 @@
 title: Experimental Features
 description: Backends and features that exist in tree but are not production-ready — opt-in at your own risk.
 ---
-
-# Experimental Features
-
 These features live in the Miles tree but are **not** production-ready. They typically
 have rough edges, missing parallelism, or known bugs against current dependency
 versions. Use them when you want to iterate quickly or co-develop a feature, not for
@@ -34,7 +31,7 @@ models, not for production runs.
 - You want a HuggingFace-native checkpoint at every step with no conversion.
 
 For large MoE models, multi-rack jobs, or anything where TP / PP / CP / EP matters,
-use the production [Megatron-LM backend](../user-guide/usage.md#megatron-lm) instead.
+use the production [Megatron-LM backend](/docs/user-guide/usage#megatron-lm) instead.
 
 ### Enabling it
 
@@ -64,7 +61,6 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 ### Quick start
 
 ```bash
-# Optional: wandb
 export WANDB_API_KEY=<key>
 
 # Model + data

@@ -2,9 +2,6 @@
 title: Qwen3.6 MoE
 description: Launch recipe for Qwen3.6-35B-A3B with MTP training and EAGLE speculative rollout.
 ---
-
-# Qwen3.6 MoE
-
 ## 1. Model Introduction
 
 [Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3) is the sparse MoE branch of
@@ -148,10 +145,10 @@ From `scripts/models/qwen3.6-35B-A3B.sh` and `scripts/run_qwen3_6_35b_a3b_mtp.py
 - `--moe-grouped-gemm`, `--moe-token-drop-policy probs`, `--moe-router-dtype fp32`, `--moe-permute-fusion`, `--moe-aux-loss-coeff 0`.
 - `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `--vocab-size 248320`.
 
-See [Backends Beyond Megatron](../../advanced/architecture-support.md) for FP32 parameter handling and how miles wires the spec.
+See [Backends Beyond Megatron](/docs/advanced/architecture-support) for FP32 parameter handling and how miles wires the spec.
 
 ## 6. Pairs Well With
 
-- [Speculative Decoding](../../advanced/speculative-decoding.md)
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
+- [Speculative Decoding](/docs/advanced/speculative-decoding)
+- [Backends Beyond Megatron](/docs/advanced/architecture-support)
+- [P2P Weight Transfer](/docs/advanced/p2p-weight-transfer)

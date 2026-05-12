@@ -2,9 +2,6 @@
 title: Migration Guide
 description: Sync → async loop, breaking flag changes between releases.
 ---
-
-# Migration Guide
-
 This page tracks breaking changes between Miles releases and how to update your code or
 launch scripts.
 

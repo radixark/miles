@@ -3,9 +3,6 @@ title: Introducing Miles
 description: Why RadixArk built Miles, and what it means for production-scale RL post-training.
 date: 2025-11-19
 ---
-
-# Introducing Miles
-
 *November 19, 2025 — RadixArk team*
 
 Today RadixArk is open-sourcing **Miles**, a reinforcement learning framework purpose-
@@ -56,7 +53,7 @@ runs (routing mismatch, precision drift, NCCL hangs) before chasing the next alg
 
 ## Try it
 
-Head to the [Quick Start](../getting-started/quick-start.md) for a quick GRPO
+Head to the [Quick Start](/docs/getting-started/quick-start) for a quick GRPO
 run on Qwen3-4B with a single 8-GPU node.
 
 ## What's next

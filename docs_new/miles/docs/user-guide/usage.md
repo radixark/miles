@@ -2,9 +2,6 @@
 title: Training Backend
 description: Megatron-LM as the training backend — parameters, parallelism, checkpoints, and hooks.
 ---
-
-# Training Backend
-
 Miles decouples the **training backend** (how the model is sharded, checkpointed, and
 stepped) from the **inference backend** (SGLang). The production training backend is
 **Megatron-LM**.
@@ -47,7 +44,7 @@ MODEL_ARGS=(
 
 The spec function replaces specific Megatron submodules with the HF implementation
 without patching Megatron itself. Details:
-[Backends Beyond Megatron](../advanced/architecture-support.md).
+[Backends Beyond Megatron](/docs/advanced/architecture-support).
 
 ### Parallelism compatibility
 
@@ -66,7 +63,7 @@ the model recipe's tested combination, then change one dimension at a time.
 
 Do not assume TP, CP, EP, and ETP can all be raised independently for a new model — the
 exact set of supported combinations depends on the Megatron Core kernels and model spec
-being used. The [Argument Groups](argument-groups.md#perf-args) page lists the flags
+being used. The [Argument Groups](/docs/user-guide/argument-groups#perf-args) page lists the flags
 that belong in `PERF_ARGS`.
 
 ### Checkpoint format
@@ -114,7 +111,7 @@ Three extension points override Megatron behaviour without forking:
 | `--custom-megatron-before-train-step-hook-path` | Before every training step |
 
 Typical use cases: mixing in an auxiliary loss, instrumenting per-step metrics, or
-clipping weights surgically. See [Customization](customization.md#megatron-hooks).
+clipping weights surgically. See [Customization](/docs/user-guide/customization#megatron-hooks).
 
 ---
 
@@ -173,13 +170,13 @@ at startup.
 
 ## Further reading
 
-- [Core concepts](concepts.md) — the four objects that make up any Miles job.
-- [Training script walkthrough](training-script-walkthrough.md) — the launch script,
+- [Core concepts](/docs/user-guide/concepts) — the four objects that make up any Miles job.
+- [Training script walkthrough](/docs/user-guide/training-script-walkthrough) — the launch script,
   argument group by argument group.
-- [Fully Async Rollout](fully-async.md) — decouple generation from trainer steps with
+- [Fully Async Rollout](/docs/user-guide/fully-async) — decouple generation from trainer steps with
   a queue-backed rollout worker.
-- [Configuration](cli-reference.md) — the flag taxonomy and defaults.
-- [Backends beyond Megatron](../advanced/architecture-support.md) — wrapping new
+- [Configuration](/docs/user-guide/cli-reference) — the flag taxonomy and defaults.
+- [Backends beyond Megatron](/docs/advanced/architecture-support) — wrapping new
   architectures without patching Megatron core.
-- [Experimental Features → FSDP backend](../developer/experimental-features.md#fsdp-backend)
+- [Experimental Features → FSDP backend](/docs/developer/experimental-features#fsdp-backend)
   — experimental PyTorch FSDP2 backend for fast iteration on small dense models.

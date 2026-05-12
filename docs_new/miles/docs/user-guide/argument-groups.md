@@ -2,14 +2,11 @@
 title: Argument Groups
 description: The launch-script argument groups used by Miles recipes, with links to the flags that belong in each group.
 ---
-
-# Argument Groups
-
 Miles launch scripts are bash arrays. The grouping is deliberately boring: each array
 owns one operational concern, then the script expands all arrays into `train.py` or
 `train_async.py`.
 
-Use this page to decide where a flag belongs. Use the [CLI Reference](cli-reference.md)
+Use this page to decide where a flag belongs. Use the [CLI Reference](/docs/user-guide/cli-reference)
 when you need the full default and type for an individual flag.
 
 | Group | Owns | Typical source |
@@ -75,7 +72,7 @@ produces.
 | Filtering | `--over-sampling-batch-size`, `--dynamic-sampling-filter-path` |
 
 The rollout volume and training consumption must satisfy the
-[four-knob invariant](concepts.md#the-four-knob-invariant).
+[four-knob invariant](/docs/user-guide/concepts#the-four-knob-invariant).
 
 <a id="eval-args"></a>
 ## EVAL_ARGS - evaluation overrides
@@ -110,7 +107,7 @@ Flags not set in `EVAL_ARGS` inherit from `ROLLOUT_ARGS`.
 
 Megatron exposes TP, PP, CP, EP, and ETP, but not every product of those dimensions is
 valid or worth using for every model. Start from the recipe's tested combination and
-see [parallelism compatibility](usage.md#parallelism-compatibility) before changing
+see [parallelism compatibility](/docs/user-guide/usage#parallelism-compatibility) before changing
 more than one dimension.
 
 <a id="grpo-args"></a>

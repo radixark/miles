@@ -2,9 +2,6 @@
 title: NVIDIA H / B Series
 description: H100, H200, B100, B200 — Miles's primary target.
 ---
-
-# NVIDIA GPUs
-
 NVIDIA Blackwell (GB300 / GB200 / B200 / B100) and Hopper (H200 / H100) are Miles's first-class targets.
 
 ## Recommended setup

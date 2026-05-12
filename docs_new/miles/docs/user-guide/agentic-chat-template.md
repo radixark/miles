@@ -2,9 +2,6 @@
 title: Agentic Chat Templates
 description: How to verify and override the chat template applied during multi-turn rollout.
 ---
-
-# Agentic Chat Templates
-
 In agentic / multi-turn workflows, Miles uses SGLang's pretokenized prefix mechanism
 so the conversation history is not re-tokenized every turn. That requires the chat
 template to satisfy an **append-only invariant**: rendering messages `[1..N]` must

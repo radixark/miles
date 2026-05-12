@@ -2,9 +2,6 @@
 title: Reproducibility Recipe
 description: Bit-stable training across reruns. Determinism flags, seeds, and what to watch.
 ---
-
-# Reproducibility Recipe
-
 **What you'll learn:** how to configure Miles + SGLang + Megatron for **bit-wise
 reproducible** RL training. Same inputs → identical outputs across reruns, machines,
 and time.

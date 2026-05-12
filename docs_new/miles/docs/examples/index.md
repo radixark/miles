@@ -2,9 +2,6 @@
 title: Examples
 description: Annotated end-to-end walkthroughs for the workflows people actually want to build.
 ---
-
-# Examples
-
 The model recipes show you how to train a model. The examples below show you how to
 *build something useful* with Miles — tools, search, multi-agent, distillation, and
 async rollout.
@@ -70,7 +67,7 @@ Each example follows the same template:
 
 ## Where to start
 
-* **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](fully-async.md).
-* **Want tool use / RAG?** → [Search-R1](search-r1.md), then [ReTool](retool.md).
-* **VLM / multi-agent?** → [Multi-Agent Co-Evolution](multi-agent.md).
-* **Replay an old result?** → [Reproducibility Recipe](reproducibility.md).
+* **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](/docs/examples/fully-async).
+* **Want tool use / RAG?** → [Search-R1](/docs/examples/search-r1), then [ReTool](/docs/examples/retool).
+* **VLM / multi-agent?** → [Multi-Agent Co-Evolution](/docs/examples/multi-agent).
+* **Replay an old result?** → [Reproducibility Recipe](/docs/examples/reproducibility).
