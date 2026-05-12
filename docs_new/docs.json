@@ -29,13 +29,23 @@
   "navigation": {
     "tabs": [
       {
+        "tab": "Welcome to Miles",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "miles/docs/index"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "Getting Started",
         "groups": [
           {
             "group": "Getting Started",
             "root": "miles/docs/getting-started/index",
             "pages": [
-              "miles/docs/index",
               "miles/docs/getting-started/installation",
               "miles/docs/getting-started/quick-start"
             ]
@@ -265,5 +275,6 @@
         ]
       }
     ]
-  }
+  },
+  "url": "https://www.radixark.com"
 }
