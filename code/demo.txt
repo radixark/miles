@@ -1,0 +1,40 @@
+docker run --name miles_ycy  -itd  --gpus all  -v /home/yangchengyi/:/home/yangchengyi/   --ipc=host --ulimit memlock=-1 --ulimit stack=67108864   harbor.unisound.ai/unisound/miles_ycy:latest -p60022:22 -p60023:2222 bash
+docker run -d --name miles_ycy \
+  --gpus all \
+  -v /home/yangchengyi/:/home/yangchengyi/ \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -p 60022:22 \
+  -p 60023:2222 \
+  harbor.insound.ai/unisound/miles_ycy:latest 
+docker run \
+  --name qdl-dev-3 \
+  -itd  \
+  --gpus all \
+  -v /fs/nlp/:/fs/nlp/ \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864  
+  harbor.unisound.ai/unisound/miles_ycy:latest \
+  -p 60022:22 \
+  -p 60023:2222 bash
+
+docker create \
+  --name miles_ycy \
+  --gpus all \
+  -v /home/yangchengyi/:/home/yangchengyi/ \
+  -v /fs/nlp-intern/yangchengyi:/fs/nlp-intern/yangchengyi \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -p 5001:22 \
+  -p 5002:2222 \
+  harbor.unisound.ai/unisound/miles_ycy:latest \
+  sleep infinity
+
+  
+PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /home/yangchengyi/data/models/Qwen3-4B-Instruct-2507 \
+    --save /home/yangchengyi/data/models/Qwen3-4B-Instruct-2507_torch_dist

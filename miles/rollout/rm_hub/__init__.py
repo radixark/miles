@@ -46,8 +46,8 @@ async def async_rm(args, sample: Sample, **kwargs):
         return await remote_rm(args, sample)
     elif rm_type == "deepscaler":
         return get_deepscaler_rule_based_reward(response, label)
-    elif rm_type == "dapo":
-        return compute_score_dapo(response, label)
+    elif rm_type in ["dapo", "deepmath"]:
+        return compute_score_dapo(response, label, meta_data=metadata)
     elif rm_type == "math":
         return 1 if grade_answer_verl(response, label) else 0
     elif rm_type == "f1":

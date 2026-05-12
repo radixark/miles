@@ -8,7 +8,7 @@ from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
-
+from .minimax import convert_minimax_to_hf
 
 # TODO unify w/ `convert_to_hf`
 def postprocess_hf_param(args, megatron_param_name, hf_param_name, param):
@@ -50,6 +50,8 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_llama_to_hf(args, name, param)
     elif "mimo" in model_name:
         converted_named_tensors = convert_mimo_to_hf(args, name, param)
+    elif "minimax" in model_name:
+        converted_named_tensors = convert_minimax_to_hf(args, name, param)
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 

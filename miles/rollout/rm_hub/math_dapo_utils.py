@@ -183,7 +183,11 @@ def normalize_final_answer(final_answer: str) -> str:
 
 
 def is_correct_minerva(
-    solution_str: str, gt: str, gt_need_extract: bool = False, answer_pattern: str = r"(?i)Answer\s*:\s*([^\n]+)"
+    solution_str: str,
+    gt: str,
+    gt_need_extract: bool = False,
+    answer_pattern: str = r"(?i)Answer\s*:\s*([^\n]+)",
+    meta_data: dict | None = None,
 ) -> tuple[bool, str]:
     """Check if the solution is correct according to Minerva criteria.
 
@@ -192,6 +196,7 @@ def is_correct_minerva(
         gt: The ground truth answer
         gt_need_extract: Whether the ground truth needs extraction
         answer_pattern: Regex pattern to extract the answer
+        meta_data: Optional sample metadata, printed when integer normalization of gt fails
 
     Returns:
         Tuple of (is_correct, normalized_prediction)
@@ -207,7 +212,11 @@ def is_correct_minerva(
     else:
         gt = normalize_final_answer(gt)
 
-    gt = str(int(float(gt)))  # in dapo, all answers are integers
+    try:
+        gt = str(int(float(gt)))  # in dapo, all answers are integers
+    except (ValueError, TypeError, OverflowError):
+        print(meta_data)
+        gt = str(gt)
 
     return (pred == gt), pred
 
@@ -238,7 +247,11 @@ def is_correct_strict_box(pred: str, gt: str, pause_tokens_index: list[int] | No
 
 
 def verify(
-    solution_str: str, answer: str, strict_box_verify: bool = False, pause_tokens_index: list[int] | None = None
+    solution_str: str,
+    answer: str,
+    strict_box_verify: bool = False,
+    pause_tokens_index: list[int] | None = None,
+    meta_data: dict | None = None,
 ) -> bool:
     """Verify if the solution is correct.
 
@@ -254,8 +267,14 @@ def verify(
     if strict_box_verify:
         correct, pred = is_correct_strict_box(solution_str, answer, pause_tokens_index)
         return correct == 1, pred
-
-    correct, pred = is_correct_minerva(solution_str, answer)
+    ANSWER_PATTERN_BOXED = r"(?i)\\boxed\s*{([^\n]+)}"
+    ANSWER_PATTERN = r"(?i)Answer\s*:\s*([^\n]+)"
+    rm_type = meta_data.get("rm_type", "")
+    if rm_type == "deepmath":
+        answer_pattern = ANSWER_PATTERN_BOXED
+    else:
+        answer_pattern = ANSWER_PATTERN
+    correct, pred = is_correct_minerva(solution_str, answer, meta_data=meta_data, answer_pattern=answer_pattern)
     return correct, pred
 
 
@@ -264,6 +283,7 @@ def compute_score(
     ground_truth: str,
     strict_box_verify: bool = False,
     pause_tokens_index: list[int] | None = None,
+    meta_data: dict | None = None,
 ) -> float:
     """Compute the reward score for a solution.
 
@@ -280,7 +300,9 @@ def compute_score(
     solution_str = solution_str[-300:]  # The longest answer in MATH-500 has 159 characters
 
     # Verify the solution
-    correct, pred = verify(solution_str, ground_truth, strict_box_verify, pause_tokens_index)
+    correct, pred = verify(
+        solution_str, ground_truth, strict_box_verify, pause_tokens_index, meta_data=meta_data
+    )
 
     reward = 1.0 if correct else -1.0
     acc = correct

@@ -1,0 +1,323 @@
+diff --git a/miles/backends/megatron_utils/megatron_to_hf/__init__.py b/miles/backends/megatron_utils/megatron_to_hf/__init__.py
+index 90a8f977a..548b215fb 100644
+--- a/miles/backends/megatron_utils/megatron_to_hf/__init__.py
++++ b/miles/backends/megatron_utils/megatron_to_hf/__init__.py
+@@ -8,6 +8,7 @@ from .qwen2 import convert_qwen2_to_hf
+ from .qwen3_5 import convert_qwen3_5_to_hf
+ from .qwen3_next import convert_qwen3_next_to_hf
+ from .qwen3moe import convert_qwen3moe_to_hf
++from .minimax import convert_minimax_to_hf
+ 
+ 
+ # TODO unify w/ `convert_to_hf`
+@@ -50,6 +51,8 @@ def _convert_to_hf_core(args, model_name, name, param):
+         converted_named_tensors = convert_llama_to_hf(args, name, param)
+     elif "mimo" in model_name:
+         converted_named_tensors = convert_mimo_to_hf(args, name, param)
++    elif "minimax" in model_name:
++        converted_named_tensors = convert_minimax_to_hf(args, name, param)
+     else:
+         raise ValueError(f"Unsupported model: {model_name}")
+ 
+diff --git a/miles/backends/megatron_utils/megatron_to_hf/minimax.py b/miles/backends/megatron_utils/megatron_to_hf/minimax.py
+new file mode 100644
+index 000000000..6b4bc9d35
+--- /dev/null
++++ b/miles/backends/megatron_utils/megatron_to_hf/minimax.py
+@@ -0,0 +1,85 @@
++import re
++
++import torch
++
++
++def convert_minimax_to_hf(args, name, param):
++    if name == "module.module.embedding.word_embeddings.weight":
++        return [("model.embed_tokens.weight", param)]
++    if name == "module.module.output_layer.weight":
++        return [("lm_head.weight", param)]
++    if name == "module.module.decoder.final_layernorm.weight":
++        return [("model.norm.weight", param)]
++
++    try:
++        head_dim = args.kv_channels if args.kv_channels is not None else args.hidden_size // args.num_attention_heads
++    except:
++        head_dim = args.hidden_size // args.num_attention_heads
++    value_num_per_group = args.num_attention_heads // args.num_query_groups
++
++    decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
++    match = re.match(decoder_layers_pattern, name)
++    if match:
++        layer_idx, rest = match.groups()
++
++        expert_pattern = r"mlp\.experts\.(.+)\.weight(\d+)"
++        match = re.match(expert_pattern, rest)
++        if match:
++            rest, expert_idx = match.groups()
++            if rest == "linear_fc1":
++                gate_weight, up_weight = param.chunk(2, dim=0)
++                return [
++                    (f"model.layers.{layer_idx}.block_sparse_moe.experts.{expert_idx}.w1.weight", gate_weight),
++                    (f"model.layers.{layer_idx}.block_sparse_moe.experts.{expert_idx}.w3.weight", up_weight),
++                ]
++            if rest == "linear_fc2":
++                return [
++                    (f"model.layers.{layer_idx}.block_sparse_moe.experts.{expert_idx}.w2.weight", param),
++                ]
++            raise ValueError(f"Unknown expert parameter name: {name}")
++
++        if rest == "self_attention.linear_proj.weight":
++            return [(f"model.layers.{layer_idx}.self_attn.o_proj.weight", param)]
++        if rest == "self_attention.linear_qkv.weight":
++            param = param.view(args.num_query_groups, -1, head_dim, args.hidden_size)
++            q_param, k_param, v_param = torch.split(param, split_size_or_sections=[value_num_per_group, 1, 1], dim=1)
++            q_param = q_param.reshape(-1, args.hidden_size)
++            k_param = k_param.reshape(-1, args.hidden_size)
++            v_param = v_param.reshape(-1, args.hidden_size)
++            return [
++                (f"model.layers.{layer_idx}.self_attn.q_proj.weight", q_param),
++                (f"model.layers.{layer_idx}.self_attn.k_proj.weight", k_param),
++                (f"model.layers.{layer_idx}.self_attn.v_proj.weight", v_param),
++            ]
++        if rest == "self_attention.linear_qkv.bias":
++            param = param.view(args.num_query_groups, -1)
++            q_bias, k_bias, v_bias = torch.split(
++                param,
++                split_size_or_sections=[value_num_per_group * head_dim, head_dim, head_dim],
++                dim=1,
++            )
++            q_bias = q_bias.contiguous().flatten()
++            k_bias = k_bias.contiguous().flatten()
++            v_bias = v_bias.contiguous().flatten()
++            return [
++                (f"model.layers.{layer_idx}.self_attn.q_proj.bias", q_bias),
++                (f"model.layers.{layer_idx}.self_attn.k_proj.bias", k_bias),
++                (f"model.layers.{layer_idx}.self_attn.v_proj.bias", v_bias),
++            ]
++        if rest == "self_attention.linear_qkv.layer_norm_weight":
++            return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
++        if rest == "mlp.linear_fc1.layer_norm_weight":
++            return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
++        if rest == "mlp.router.weight":
++            return [(f"model.layers.{layer_idx}.block_sparse_moe.gate.weight", param)]
++        if rest == "mlp.router.expert_bias":
++            return [(f"model.layers.{layer_idx}.block_sparse_moe.e_score_correction_bias", param)]
++
++        if rest == "self_attention.q_layernorm.weight":
++            return [(f"model.layers.{layer_idx}.self_attn.q_norm.weight", param)]
++        if rest == "self_attention.k_layernorm.weight":
++            return [(f"model.layers.{layer_idx}.self_attn.k_norm.weight", param)]
++        elif rest == "pre_mlp_layernorm.weight":
++            return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
++
++    raise ValueError(f"Unknown parameter name: {name}")
+diff --git a/miles_plugins/mbridge/__init__.py b/miles_plugins/mbridge/__init__.py
+index 85e79ec0e..1e8cecaff 100644
+--- a/miles_plugins/mbridge/__init__.py
++++ b/miles_plugins/mbridge/__init__.py
+@@ -5,6 +5,7 @@ from .glm4moe_lite import GLM4MoELiteBridge
+ from .mimo import MimoBridge
+ from .qwen3_5 import Qwen3_5Bridge
+ from .qwen3_next import Qwen3NextBridge
++from .minimax import MinimaxM2Bridge
+ 
+ __all__ = [
+     "GLM4Bridge",
+@@ -14,4 +15,5 @@ __all__ = [
+     "Qwen3_5Bridge",
+     "MimoBridge",
+     "DeepseekV32Bridge",
++    "MinimaxM2Bridge"
+ ]
+diff --git a/miles_plugins/mbridge/minimax.py b/miles_plugins/mbridge/minimax.py
+new file mode 100644
+index 000000000..7b278a981
+--- /dev/null
++++ b/miles_plugins/mbridge/minimax.py
+@@ -0,0 +1,86 @@
++# slime_plugins/models/minimax_bridge.py
++
++"""
++MiniMax-M2 Bridge Implementation
++"""
++
++import torch
++from typing import List
++
++from mbridge.core import register_model
++from mbridge.models import Qwen2Bridge, Qwen2MoEBridge
++
++from miles_plugins.models.minimax_attention import MinimaxSelfAttention
++
++
++@register_model("minimax_m2")
++class MinimaxM2Bridge(Qwen2MoEBridge):
++    
++    _ATTENTION_MAPPING = {
++        "self_attention.linear_qkv.layer_norm_weight": [
++            "model.layers.{layer_number}.input_layernorm.weight"
++        ],
++        
++        "self_attention.linear_qkv.weight": [
++            "model.layers.{layer_number}.self_attn.q_proj.weight",
++            "model.layers.{layer_number}.self_attn.k_proj.weight",
++            "model.layers.{layer_number}.self_attn.v_proj.weight",
++        ],
++        
++        "self_attention.q_layernorm.weight": [
++            "model.layers.{layer_number}.self_attn.q_norm.weight"
++        ],
++        "self_attention.k_layernorm.weight": [
++            "model.layers.{layer_number}.self_attn.k_norm.weight"
++        ],
++        
++        "self_attention.linear_proj.weight": [
++            "model.layers.{layer_number}.self_attn.o_proj.weight"
++        ],
++    }
++    
++    _MLP_MAPPING = {
++        **(Qwen2MoEBridge._MLP_MAPPING),
++        "mlp.router.expert_bias": [
++            "model.layers.{layer_number}.block_sparse_moe.e_score_correction_bias"
++        ],
++        "mlp.router.weight": [
++            "model.layers.{layer_number}.block_sparse_moe.gate.weight"
++        ],
++        "mlp.experts.linear_fc1": [
++            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w1.weight",
++            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w3.weight",
++        ],
++        
++        "mlp.experts.linear_fc2": [
++            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight"
++        ],
++    }
++    def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
++        if "block_sparse_moe" in mcore_weights_name:
++            return self._weight_name_mapping_mlp(mcore_weights_name)
++        return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
++
++    def _build_config(self):
++        config= self._build_base_config(
++            use_cpu_initialization=False,
++            moe_ffn_hidden_size=self.hf_config.intermediate_size,
++            moe_router_bias_update_rate=0.001,
++            moe_router_topk=self.hf_config.num_experts_per_tok,
++            num_moe_experts=self.hf_config.num_local_experts,
++            # moe_aux_loss_coeff=self.hf_config.router_aux_loss_coef,
++            # moe_router_load_balancing_type="aux_loss",
++            moe_router_enable_expert_bias=True,
++            moe_router_load_balancing_type="none",  # default None for RL
++            moe_grouped_gemm=True,
++            moe_router_score_function="sigmoid",
++            persist_layer_norm=True,
++            bias_activation_fusion=True,
++            bias_dropout_fusion=True,
++            moe_router_pre_softmax=False,
++            qk_layernorm=True,
++        )
++        print(f"moe_router_enable_expert_bias = {config.moe_router_enable_expert_bias}")
++        return config
++
++
+diff --git a/miles_plugins/models/__init__.py b/miles_plugins/models/__init__.py
+index e69de29bb..e8609faf9 100644
+--- a/miles_plugins/models/__init__.py
++++ b/miles_plugins/models/__init__.py
+@@ -0,0 +1,2 @@
++from .qwen3_5 import get_qwen3_5_spec
++from .minimax_m2 import get_minimax_m2_spec
+diff --git a/miles_plugins/models/minimax_m2.py b/miles_plugins/models/minimax_m2.py
+new file mode 100644
+index 000000000..89a16c12a
+--- /dev/null
++++ b/miles_plugins/models/minimax_m2.py
+@@ -0,0 +1,31 @@
++import copy
++
++from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
++from megatron.core.transformer.transformer_block import get_num_layers_to_build
++
++from .minimax_attention import MinimaxSelfAttention
++
++def get_minimax_m2_spec(args, config, vp_stage):
++    # always use the moe path
++    if not args.num_experts:
++        config.moe_layer_freq = [0] * config.num_layers
++
++    # Define the decoder block spec
++    kwargs = {
++        "use_transformer_engine": True,
++    }
++    if vp_stage is not None:
++        kwargs["vp_stage"] = vp_stage
++    transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
++
++    assert config.pipeline_model_parallel_layout is None, "not support this at the moment"
++
++
++    num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
++    for layer_id in range(num_layers_to_build):
++        layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
++        attn_spec = layer_specs.submodules.self_attention  # 原来的 ModuleSpec
++        attn_spec.module = MinimaxSelfAttention            # 只换类
++        
++        transformer_layer_spec.layer_specs[layer_id] = layer_specs
++    return transformer_layer_spec
+diff --git a/scripts/models/minimax-2.5.sh b/scripts/models/minimax-2.5.sh
+new file mode 100644
+index 000000000..b1b874751
+--- /dev/null
++++ b/scripts/models/minimax-2.5.sh
+@@ -0,0 +1,51 @@
++NLAYERS=62
++FIRST_K_DENSE_REPLACE=0
++
++arr=()
++for ((i=0; i<NLAYERS; i++)); do
++  if (( i < FIRST_K_DENSE_REPLACE )); then
++    arr+=(0)
++  else
++    arr+=(1)
++  fi
++done
++
++printf -v MOE_LAYER_FREQ "[%s]" "$(IFS=', '; echo "${arr[*]}")"
++
++
++MODEL_ARGS=(
++   --spec "slime_plugins.models.minimax_m2" "get_minimax_m2_spec"
++   --disable-bias-linear
++   --qk-layernorm
++   --group-query-attention
++   --num-attention-heads 48
++   --num-query-groups 8
++   --kv-channels 128
++   --num-layers 62
++   --hidden-size 3072
++  #  --ffn-hidden-size 6144
++
++   --normalization RMSNorm
++   --position-embedding-type rope
++   --norm-epsilon 1e-6
++   --rotary-percent 1.0
++   --swiglu
++   --untie-embeddings-and-output-weights
++   --vocab-size 200064
++
++   --rotary-base 5000000
++
++   # moe
++   --moe-ffn-hidden-size 1536
++   --moe-router-score-function sigmoid
++   --moe-token-dispatcher-type alltoall
++   --moe-router-topk 8
++   --moe-layer-freq $MOE_LAYER_FREQ
++   --num-experts 256
++   --moe-grouped-gemm
++   --moe-token-drop-policy probs
++   --moe-router-dtype fp32
++   --moe-permute-fusion
++   --moe-router-enable-expert-bias
++   --moe-aux-loss-coeff 0
++)

@@ -10,6 +10,31 @@ import torch.nn.functional as F
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict):
+    try:
+        import json
+        import time
+
+        with open("/home/yangchengyi/.cursor/debug-09a431.log", "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": "09a431",
+                        "runId": "pre-fix",
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+
+
 @torch.compile(dynamic=True)
 def compute_approx_kl(
     log_probs: torch.Tensor,
@@ -646,6 +671,22 @@ def chunked_gae(
 def calculate_log_probs_and_entropy(
     logits, tokens, tp_group, with_entropy: bool = False, chunk_size: int = -1, true_on_policy: bool = False
 ):
+    # #region agent log
+    if logits.is_cuda:
+        _agent_debug_log(
+            "H1",
+            "miles/utils/ppo_utils.py:calculate_log_probs_and_entropy:entry",
+            "entry shape and cuda memory",
+            {
+                "logits_shape": list(logits.shape),
+                "logits_dtype": str(logits.dtype),
+                "with_entropy": bool(with_entropy),
+                "chunk_size": int(chunk_size),
+                "allocated_gb": round(torch.cuda.memory_allocated(logits.device) / (1024**3), 4),
+                "reserved_gb": round(torch.cuda.memory_reserved(logits.device) / (1024**3), 4),
+            },
+        )
+    # #endregion
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(logits, tokens, with_entropy=with_entropy)
 
@@ -657,6 +698,20 @@ def calculate_log_probs_and_entropy(
     if logits.size(0) != 0:
         if chunk_size > 0:
             num_chunks = (logits.size(0) - 1) // chunk_size + 1
+            # #region agent log
+            if logits.is_cuda:
+                _agent_debug_log(
+                    "H2",
+                    "miles/utils/ppo_utils.py:calculate_log_probs_and_entropy:chunking",
+                    "chunking plan",
+                    {
+                        "num_chunks": int(num_chunks),
+                        "tokens_len": int(tokens.size(0)),
+                        "first_dim": int(logits.size(0)),
+                        "last_dim_vocab": int(logits.size(-1)),
+                    },
+                )
+            # #endregion
             tokens_chunks = tokens.chunk(num_chunks, dim=0)
             logits_chunks = logits.chunk(num_chunks, dim=0)
             log_probs = []
@@ -667,12 +722,42 @@ def calculate_log_probs_and_entropy(
             if with_entropy:
                 entropys = []
                 for _, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
+                    # #region agent log
+                    if logits_chunk.is_cuda:
+                        est_clone_gb = (logits_chunk.numel() * logits_chunk.element_size()) / (1024**3)
+                        _agent_debug_log(
+                            "H3",
+                            "miles/utils/ppo_utils.py:calculate_log_probs_and_entropy:entropy_chunk_before_clone",
+                            "entropy chunk before clone",
+                            {
+                                "chunk_shape": list(logits_chunk.shape),
+                                "est_clone_gb": round(est_clone_gb, 4),
+                                "allocated_gb": round(torch.cuda.memory_allocated(logits_chunk.device) / (1024**3), 4),
+                                "reserved_gb": round(torch.cuda.memory_reserved(logits_chunk.device) / (1024**3), 4),
+                            },
+                        )
+                    # #endregion
                     entropy = compute_entropy_from_logits(logits_chunk.clone(), tp_group)
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
             log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
             if with_entropy:
+                # #region agent log
+                if logits.is_cuda:
+                    est_clone_gb = (logits.numel() * logits.element_size()) / (1024**3)
+                    _agent_debug_log(
+                        "H4",
+                        "miles/utils/ppo_utils.py:calculate_log_probs_and_entropy:full_entropy_before_clone",
+                        "full entropy before clone",
+                        {
+                            "logits_shape": list(logits.shape),
+                            "est_clone_gb": round(est_clone_gb, 4),
+                            "allocated_gb": round(torch.cuda.memory_allocated(logits.device) / (1024**3), 4),
+                            "reserved_gb": round(torch.cuda.memory_reserved(logits.device) / (1024**3), 4),
+                        },
+                    )
+                # #endregion
                 entropy = compute_entropy_from_logits(logits.clone(), tp_group)
     else:
         log_prob = logits.new_zeros((0,))

@@ -147,6 +147,7 @@ class Sample:
         return sample
 
     def get_reward_value(self, args) -> float:
+        # print(f"{args.reward_key=}")
         return self.reward if not args.reward_key else self.reward[args.reward_key]
 
     @property

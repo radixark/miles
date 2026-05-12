@@ -1256,6 +1256,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Directory to store tensorboard logs. Default is  os.environ.get('TENSORBOARD_DIR') directory.",
             )
+            parser.add_argument(
+                "--tb-dir",
+                type=str,
+                default=None,
+                help="Directory to store tensorboard logs. Default is  os.environ.get('TENSORBOARD_DIR') directory.",
+            )
             parser.add_argument("--tb-experiment-name", type=str, default=None)
 
             return parser
