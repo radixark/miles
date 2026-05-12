@@ -7,7 +7,7 @@ short tour for new contributors.
 
 <CardGroup cols={2}>
 
-  <Card title="Contributing" icon="file-pen" href="/miles/docs/developer/contributing">
+  <Card title="Contributing" icon="file-pen" href="/miles/docs/developer/contributor-guide">
 
     PR conventions, code layout, how reviews work.
 

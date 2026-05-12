@@ -94,4 +94,4 @@ See [Platforms](/miles/docs/platforms/index).
 
 - GitHub: [github.com/radixark/miles](https://github.com/radixark/miles)
 - Slack: [slack.sglang.ai](https://slack.sglang.ai), channel `#miles`
-- Contributing: [developer guide](/miles/docs/developer/contributing)
+- Contributing: [developer guide](/miles/docs/developer/contributor-guide)
