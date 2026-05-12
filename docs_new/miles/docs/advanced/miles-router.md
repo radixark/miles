@@ -9,7 +9,7 @@ allocation between rollout and training.
 ## Why MoE RL is unstable without R3
 
 For each token, an MoE router picks `top-k` experts. The choice depends on the
-input through a soft router and a top-k op. In production the router is a
+input through a soft router and a top-k operation. In production the router is a
 learned `nn.Linear` with non-deterministic kernels and FP8 quantization, so tiny
 numerical differences flip routes at the per-layer, per-token level.
 
