@@ -17,7 +17,7 @@
   "navbar": {
     "links": [
       {
-        "type": "github",
+        "label": "GitHub",
         "href": "https://github.com/radixark/miles"
       }
     ],
