@@ -29,7 +29,7 @@ hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/shared/
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/shared/aime-2024
 ```
 
-The bash launcher hardcodes `BASE_DIR=/root/shared` (L29). The Python launcher downloads `zhuzilin/dapo-math-17k` and `zhuzilin/aime-2024` automatically.
+The bash launcher hardcodes `BASE_DIR=/root/shared`. The Python launcher downloads `zhuzilin/dapo-math-17k` and `zhuzilin/aime-2024` automatically.
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
