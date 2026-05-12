@@ -1,6 +1,6 @@
 ---
-title: GLM5
-description: Launch recipe for GLM-5 (744B-A40B) — Python launcher, 16+ node config.
+title: GLM-5 / GLM-5.1
+description: Launch recipe for GLM-5 and GLM-5.1 (744 B / 40 B active) — Python launcher, 16+ node config.
 ---
 ## 1. Model Introduction
 
