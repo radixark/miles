@@ -143,3 +143,17 @@ hr {
     font-size: 0.8em !important;
   }
 }
+
+/* =============================================
+   Accordion / FAQ — title size
+   ============================================= */
+/* Mintlify renders accordion titles as buttons;
+   scale them down relative to body text */
+button[data-accordion-trigger],
+[data-accordion] button,
+.accordion-title,
+details summary {
+  font-size: 0.9375rem !important; /* 15px — tighter than body */
+  line-height: 1.4 !important;
+  font-weight: 500 !important;
+}
