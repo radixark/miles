@@ -1,5 +1,6 @@
 ---
 title: GPT-OSS 20B
+sidebarTitle: GPT-OSS
 description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, dequantizes MXFP4 → BF16 first).
 ---
 ## 1. Model Introduction
