@@ -4,41 +4,56 @@
   font-weight: 400 !important;
 }
 
-/* RadixArk design system overrides */
-
-/* Body text — radixark off-white */
-p, li, td {
-  color: rgba(248, 242, 234, 0.85);
+/* =============================================
+   Light mode — warm off-white palette
+   ============================================= */
+:root {
+  --rx-code-bg: rgba(26, 20, 16, 0.05);
+  --rx-code-border: rgba(26, 20, 16, 0.1);
+  --rx-divider: rgba(26, 20, 16, 0.1);
 }
 
-/* Links — brand orange */
+/* =============================================
+   Dark mode overrides
+   ============================================= */
+.dark {
+  --rx-code-bg: rgba(255, 255, 255, 0.06);
+  --rx-code-border: rgba(255, 255, 255, 0.08);
+  --rx-divider: rgba(255, 255, 255, 0.08);
+}
+
+/* =============================================
+   Links — brand orange (works on both modes)
+   ============================================= */
 a {
   color: #d55816;
 }
 
-/* Inline code */
+/* External links — ↗ indicator + lighter orange */
+a[href^="http"]:not([href*="radixark.com"])::after {
+  content: " ↗";
+  font-size: 0.7em;
+  vertical-align: super;
+  opacity: 0.6;
+}
+
+a[href^="http"]:not([href*="radixark.com"]) {
+  color: #e8722a;
+}
+
+/* =============================================
+   Code — subtle tint, let Mintlify handle sizing
+   ============================================= */
 code {
-  background: rgba(255, 255, 255, 0.06) !important;
-  border-radius: 3px !important;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9em;
-  padding: 2px 6px;
+  background: var(--rx-code-bg) !important;
 }
 
-/* Code block borders */
 pre {
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
-  border-radius: 4px !important;
+  border: 1px solid var(--rx-code-border) !important;
 }
 
-/* Dividers */
 hr {
-  border-color: rgba(255, 255, 255, 0.08) !important;
-}
-
-/* Inter for nav/UI to match radixark buttons */
-nav, button {
-  font-family: "Inter", system-ui, sans-serif;
+  border-color: var(--rx-divider) !important;
 }
 
 
