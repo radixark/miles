@@ -38,7 +38,7 @@ miles/
 
 ```bash
 cd /root/miles
-git remote add me git@github.com:YOUR_USERNAME/miles.git
+git remote add me git@github.com:<your_user>/miles.git
 git checkout -b feat/awesome
 
 # Edit code
@@ -62,12 +62,12 @@ gh pr create --title "..." --body "..."
 
 Before you click "Ready for review":
 
-- `pre-commit run --all-files` passes.
-- You added or updated tests for new behaviour.
-- You ran `pytest -x` and it's green.
-- If you touched the launch flags, `python3 train.py --help` still parses.
-- If you added a public flag, it appears in [Server Arguments](/miles/docs/user-guide/cli-reference).
-- If you added a new example, you wrote a real walkthrough (use
+- [ ] `pre-commit run --all-files` passes.
+- [ ] You added or updated tests for new behaviour.
+- [ ] You ran `pytest -x` and it's green.
+- [ ] If you touched the launch flags, `python3 train.py --help` still parses.
+- [ ] If you added a public flag, it appears in [Server Arguments](/miles/docs/user-guide/cli-reference).
+- [ ] If you added a new example, you wrote a real walkthrough (use
   [examples/index](/miles/docs/examples/index) as the structural template).
 
 ## Commit messages
@@ -81,7 +81,7 @@ docs: clarify FP8 rationale for MoE
 test: cover R3 routing replay
 ```
 
-The first line is under 70 chars. Body explains *why*, not *what* — the diff already
+The first line is < 70 chars. Body explains *why*, not *what* — the diff already
 shows what.
 
 ## Issue triage
