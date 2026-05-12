@@ -15,7 +15,7 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 - **KV compressors start heavily compressed**: 60-element schedule `[128, 128, 4, 128, 4, 128, …, 4, 0]` — Pro skips Flash's two leading uncompressed layers and starts at ratio-128 (HCA) from layer 0. Middle layers still alternate 4× (CSA) and 128× (HCA); only the final layer is uncompressed. Compressor RoPE base (`compress_rope_theta=160000`) is shared with Flash.
 - **MoE topology**: 384 routed experts + 1 shared (vs Flash's 256 + 1), top-6. `--moe-router-topk-scaling-factor 2.5` (vs Flash 1.5) compensates for the larger expert pool. The first 3 layers (`num_hash_layers=3`) remain dense-routed via hash buckets.
 - **Identical YaRN RoPE and context**: `rope_theta=10000`, YaRN `factor=16`, `original_max_position_embeddings=65536` → effective context length **1,048,576 tokens (1 M)**, same as Flash.
-- **Hyper-connection (HC) routing**: `hc_mult=4` parallel streams with sinkhorn-normalised mixing, same as Flash (PP buffers stay 4-D).
+- **Hyper-connection (HC) routing**: `hc_mult=4` parallel streams with sinkhorn-normalized mixing, same as Flash (PP buffers stay 4-D).
 - **FP8 weights with simulated FP8 QAT** on indexer and compressor activations; default training is BF16 on the cast checkpoint and default rollout is FP8 in SGLang with `--sglang-attention-backend compressed`.
 
 ## 2. Supported Variants

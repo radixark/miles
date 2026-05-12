@@ -8,7 +8,7 @@ description: Launch recipes for Qwen3.5-4B / 9B / 27B with attention-output-gate
 
 **Key highlights:**
 
-- **Attention-output gate**: a learned gate on the attention output, trained alongside attention weights for stronger long-context behaviour.
+- **Attention-output gate**: a learned gate on the attention output, trained alongside attention weights for stronger long-context behavior.
 - **Extended rotary base**: `--rotary-base 10000000`, `--rotary-percent 0.25` — wider effective context than the original Qwen3.
 - **Larger vocabulary**: 248320 tokens.
 - **FP32 `A_log` preservation**: a parameter that must stay in FP32 through Megatron's mixed-precision pipeline; miles handles this via the bridge.
