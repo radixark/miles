@@ -7,7 +7,7 @@ and coverage assertions live in ``session_verify_agent``).  Requires 8 GPUs.
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=600, suite="stage-b-short-8-gpu", num_gpus=8)
+register_cuda_ci(est_time=600, suite="stage-b-sglang-8-gpu", num_gpus=8)
 
 
 import os
