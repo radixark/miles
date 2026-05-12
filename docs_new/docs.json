@@ -230,7 +230,7 @@
             "group": "Developer Guide",
             "root": "miles/docs/developer/index",
             "pages": [
-              "miles/docs/developer/contributing",
+              "miles/docs/developer/contributor-guide",
               "miles/docs/developer/debug",
               "miles/docs/developer/migration",
               "miles/docs/developer/architecture",

@@ -81,7 +81,7 @@ docs: clarify FP8 rationale for MoE
 test: cover R3 routing replay
 ```
 
-The first line is under 70 chars. Body explains *why*, not *what* — the diff already
+The first line is < 70 chars. Body explains *why*, not *what* — the diff already
 shows what.
 
 ## Issue triage
