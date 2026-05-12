@@ -7,7 +7,9 @@ and coverage assertions live in ``session_verify_agent``).  Requires 8 GPUs.
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=600, suite="stage-b-sglang-8-gpu", num_gpus=8)
+# Four model families run sequentially in one job, so est_time is roughly 4x
+# of a single family.
+register_cuda_ci(est_time=2400, suite="stage-b-sglang-8-gpu", num_gpus=8)
 
 
 import os
@@ -65,20 +67,28 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
 }
 
-DEFAULT_MODEL_FAMILY = "glm47-multi-role"
+# Default CI sweep. ``SESSION_TEST_MODEL_FAMILY`` (single family) overrides
+# this list, primarily for local debugging.
+CONFIGS: list[str] = list(MODEL_REGISTRY)
 
 
-def _get_config() -> ModelConfig:
-    family = os.environ.get("SESSION_TEST_MODEL_FAMILY", DEFAULT_MODEL_FAMILY)
-    if family not in MODEL_REGISTRY:
+def _resolve_configs() -> list[str]:
+    override = os.environ.get("SESSION_TEST_MODEL_FAMILY")
+    if override:
+        return [override]
+    return list(CONFIGS)
+
+
+def _get_config(model_family: str) -> ModelConfig:
+    if model_family not in MODEL_REGISTRY:
         raise ValueError(
-            f"Unknown SESSION_TEST_MODEL_FAMILY={family!r}. " f"Choose from: {list(MODEL_REGISTRY.keys())}"
+            f"Unknown SESSION_TEST_MODEL_FAMILY={model_family!r}. " f"Choose from: {list(MODEL_REGISTRY.keys())}"
         )
-    return MODEL_REGISTRY[family]
+    return MODEL_REGISTRY[model_family]
 
 
-def test_session_server_multi_role():
-    cfg = _get_config()
+def _run_one(model_family: str):
+    cfg = _get_config(model_family)
     run_session_verify(
         hf_checkpoint=cfg.model_name,
         tito_model=cfg.tito_model,
@@ -88,6 +98,15 @@ def test_session_server_multi_role():
         tp_size=cfg.tp_size,
         cycles=cfg.cycles,
     )
+
+
+def test_session_server_multi_role():
+    for model_family in _resolve_configs():
+        print(
+            f"\n{'=' * 60}\nRunning model_family: {model_family}\n{'=' * 60}\n",
+            flush=True,
+        )
+        _run_one(model_family)
 
 
 if __name__ == "__main__":
