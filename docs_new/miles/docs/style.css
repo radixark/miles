@@ -29,14 +29,14 @@ a:hover {
 }
 
 a[href^="http"]:not([href*="radixark.com"]) {
-  color: #e8722a;
+  color: #d55816;
 }
 
 a[href^="http"]:not([href*="radixark.com"])::after {
   content: " ↗";
-  font-size: 0.7em;
+  font-size: 0.65em;
   vertical-align: super;
-  opacity: 0.6;
+  opacity: 0.35;
 }
 
 /* =============================================
