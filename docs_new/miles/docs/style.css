@@ -16,19 +16,34 @@
 }
 
 /* =============================================
-   Links
+   Links — internal orange, external lighter + ↗
    ============================================= */
-a { color: #d55816; }
+a {
+  color: #d55816;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
 
-/* External links — arrow indicator */
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+a[href^="http"]:not([href*="radixark.com"]) {
+  color: #e8722a;
+}
+
 a[href^="http"]:not([href*="radixark.com"])::after {
   content: " ↗";
   font-size: 0.7em;
   vertical-align: super;
   opacity: 0.6;
 }
-a[href^="http"]:not([href*="radixark.com"]) {
-  color: #e8722a;
+
+/* =============================================
+   Nav / UI — Inter (matches RadixArk buttons)
+   ============================================= */
+nav, button, [role="button"] {
+  font-family: "Inter", system-ui, sans-serif;
 }
 
 /* =============================================
@@ -106,6 +121,11 @@ hr {
   font-weight: 400 !important;
 }
 
+.model-list a {
+  font-size: 0.9em;
+  text-underline-offset: 2px;
+}
+
 /* =============================================
    Mobile — overflow and text consistency
    ============================================= */
@@ -125,22 +145,4 @@ hr {
   h1 code, h2 code, h3 code {
     font-size: 0.8em !important;
   }
-}
-
-/* =============================================
-   Link underlines — thin and elegant
-   ============================================= */
-a {
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
-}
-
-a:hover {
-  text-decoration-thickness: 2px;
-}
-
-/* Model list links — slightly smaller, refined */
-.model-list a {
-  font-size: 0.9em;
-  text-underline-offset: 2px;
 }
