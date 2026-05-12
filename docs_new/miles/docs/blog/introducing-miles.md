@@ -42,7 +42,7 @@ on the RL part.
 ## Design principles
 
 **Small core, many edges.** The trainer is a short Python program; almost every
-behaviour is swappable through a `--*-path` flag rather than a code patch.
+behavior is swappable through a `--*-path` flag rather than a code patch.
 
 **Match the hardware.** Miles is designed around NVLink, InfiniBand, and RDMA — at
 trillion-parameter scale, the interconnect is the rate limiter, so we optimize for it

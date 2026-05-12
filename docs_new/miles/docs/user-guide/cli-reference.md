@@ -346,5 +346,5 @@ Common `--sglang-*` flags:
 
 ### Customization
 
-See [Customization](/miles/docs/user-guide/customization) for the full catalogue of `--*-path` flags
-that replace or extend Miles's behaviour.
+See [Customization](/miles/docs/user-guide/customization) for the full catalog of `--*-path` flags
+that replace or extend Miles's behavior.

@@ -18,7 +18,7 @@ Each example follows the same template:
 8. **Troubleshooting** — the failure modes we've actually hit.
 9. **Variations** — common adaptations.
 
-## The catalogue
+## The catalog
 
 <CardGroup cols={2}>
 

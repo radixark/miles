@@ -102,7 +102,7 @@ command.
 
 ### Hooks
 
-Three extension points override Megatron behaviour without forking:
+Three extension points override Megatron behavior without forking:
 
 | Flag | Runs |
 |---|---|
