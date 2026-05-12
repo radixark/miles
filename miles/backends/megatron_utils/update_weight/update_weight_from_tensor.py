@@ -336,61 +336,25 @@ class UpdateWeightFromTensor:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    def _send_hf_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
-        all_refs = []
-        long_lived_tensors = []
-
-        # Separate LoRA weights from base weights
-        if self.is_lora:
-            weight_tensors = [(n, t) for n, t in hf_named_tensors if is_lora_weight_name(n)]
-            if not weight_tensors:
-                raise RuntimeError(
-                    "LoRA weight sync failed: no LoRA weights (lora_A/lora_B) found in the "
-                    "HF weight chunk produced by the weight iterator. This usually means the "
-                    "Megatron-Bridge or SGLang version is incompatible and adapter weights were "
-                    "not exported. Check that `megatron_to_hf_mode` and bridge version match."
-                )
-        else:
-            weight_tensors = hf_named_tensors
-
-        kwargs = dict(
-            hf_named_tensors=weight_tensors,
-            ipc_engine=self._ipc_engine,
-            ipc_gather_src=self._ipc_gather_src,
-            ipc_gather_group=self._ipc_gather_group,
-            weight_version=self.weight_version,
-        )
-        if self.is_lora:
-            kwargs |= dict(
-                lora_config=self._lora_config,
-                lora_name=self._lora_name,
-                lora_loaded=self._lora_loaded,
-            )
-        else:
-            kwargs |= dict(
+    def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+            refs, long_lived_tensors = _send_to_colocated_engine(
+                hf_named_tensors=hf_named_tensors,
+                ipc_engine=self._ipc_engine,
+                ipc_gather_src=self._ipc_gather_src,
+                ipc_gather_group=self._ipc_gather_group,
                 weight_version=self.weight_version,
             )
-
-        refs_colocated, long_lived_tensors = _send_to_colocated_engine(**kwargs)
-        all_refs.extend(refs_colocated)
-
-        if self.is_lora:
-            self._lora_loaded = True
-
-        if self.is_lora and self.use_distribute and self._is_distributed_src_rank:
-            raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
-
-        if self.use_distribute and self._is_distributed_src_rank:
-            refs_distributed = update_weights_from_distributed(
-                self._group_name,
-                self._model_update_groups,
-                self.weight_version,
-                self.distributed_rollout_engines,
-                hf_named_tensors,
-            )
-            if refs_distributed:
-                refs = (refs or []) + refs_distributed
-        return refs or [], long_lived_tensors
+            if self.use_distribute and self._is_distributed_src_rank:
+                refs_distributed = update_weights_from_distributed(
+                    self._group_name,
+                    self._model_update_groups,
+                    self.weight_version,
+                    self.distributed_rollout_engines,
+                    hf_named_tensors,
+                )
+                if refs_distributed:
+                    refs = (refs or []) + refs_distributed
+            return refs or [], long_lived_tensors
 
     def _send_lora_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         if not any(is_lora_weight_name(n) for n, _ in hf_named_tensors):
