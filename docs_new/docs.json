@@ -3,9 +3,10 @@
   "name": "Miles",
   "theme": "linden",
   "logo": {
-    "dark": "/miles/docs/assets/images/miles_logo.png",
-    "light": "/miles/docs/assets/images/miles_logo.png",
-    "href": "/miles/docs"
+    "light": "/miles/docs/assets/images/miles_logo_light.png",
+    "dark": "/miles/docs/assets/images/miles_logo_dark.png",
+    "href": "/miles/docs",
+    "width": 80
   },
   "favicon": "/miles/docs/assets/images/miles_square.png",
   "colors": {
