@@ -287,4 +287,4 @@ ROLLOUT_ARGS+=(
 
 That is the entire delta from the stock GRPO recipe, with no source changes to Miles.
 
-→ Next: [Server arguments reference](cli-reference)
+→ Next: [Server arguments reference](/docs/user-guide/cli-reference)

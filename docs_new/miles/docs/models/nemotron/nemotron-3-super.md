@@ -143,13 +143,13 @@ this scale.
   --make-vocab-size-divisible-by 128`.
 - `--attention-backend auto` (Mamba layers select their own kernel).
 
-See [Backends Beyond Megatron](../../advanced/architecture-support) for how
+See [Backends Beyond Megatron](/docs/advanced/architecture-support) for how
 the bridge shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto
-the Megatron provider, and [FP8 & Low Precision](../../advanced/fp8-low-precision)
+the Megatron provider, and [FP8 & Low Precision](/docs/advanced/fp8-low-precision)
 for the FP8 weight format.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support)
-- [FP8 & Low Precision](../../advanced/fp8-low-precision)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer)
+- [Backends Beyond Megatron](/docs/advanced/architecture-support)
+- [FP8 & Low Precision](/docs/advanced/fp8-low-precision)
+- [P2P Weight Transfer](/docs/advanced/p2p-weight-transfer)

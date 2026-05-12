@@ -105,7 +105,7 @@ loop and uses a continuously-running worker.
 ## Extension points (the right way)
 
 The trainer is plug-in-friendly. Most extensions don't need a code change inside Miles —
-just pass a `--something-path my_pkg.thing`. See [Customization](../user-guide/customization)
+just pass a `--something-path my_pkg.thing`. See [Customization](/docs/user-guide/customization)
 for the full list.
 
 If you find yourself patching the trainer to make something work, that's a sign we're

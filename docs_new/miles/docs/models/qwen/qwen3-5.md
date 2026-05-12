@@ -100,9 +100,9 @@ From `scripts/models/qwen3.5-4B.sh` (and analogous configs for 9 B / 27 B):
 - `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`.
 - `--attention-output-gate`.
 
-See [Backends Beyond Megatron](../../advanced/architecture-support) for how miles preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
+See [Backends Beyond Megatron](/docs/advanced/architecture-support) for how miles preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support)
-- [Low Precision RL](../../advanced/fp8-low-precision)
+- [Backends Beyond Megatron](/docs/advanced/architecture-support)
+- [Low Precision RL](/docs/advanced/fp8-low-precision)

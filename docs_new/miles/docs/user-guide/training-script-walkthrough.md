@@ -15,14 +15,14 @@ off to `train.py`:
 
 | Array | Governs |
 |---|---|
-| [`MODEL_ARGS`](argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
-| [`CKPT_ARGS`](argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
-| [`ROLLOUT_ARGS`](argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
-| [`EVAL_ARGS`](argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
-| [`PERF_ARGS`](argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
-| [`GRPO_ARGS`](argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| [`OPTIMIZER_ARGS`](argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
-| [`SGLANG_ARGS`](argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`MODEL_ARGS`](/docs/user-guide/argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`CKPT_ARGS`](/docs/user-guide/argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`ROLLOUT_ARGS`](/docs/user-guide/argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`EVAL_ARGS`](/docs/user-guide/argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`PERF_ARGS`](/docs/user-guide/argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`GRPO_ARGS`](/docs/user-guide/argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`OPTIMIZER_ARGS`](/docs/user-guide/argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`SGLANG_ARGS`](/docs/user-guide/argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ---
 
@@ -54,7 +54,7 @@ MODEL_ARGS+=(--rotary-base 10000)
 
 ## CKPT_ARGS — paths
 
-The three roles — actor, frozen reference, HuggingFace directory — are defined in [Core Concepts](concepts#the-four-objects). Here they map to four flags:
+The three roles — actor, frozen reference, HuggingFace directory — are defined in [Core Concepts](/docs/user-guide/concepts#the-four-objects). Here they map to four flags:
 
 ```bash
 CKPT_ARGS=(
@@ -91,7 +91,7 @@ Their product is the total sample count produced each rollout.
 
 Their product is the total sample count consumed each rollout.
 
-These two products must be equal — that's the [four-knob invariant](concepts#the-four-knob-invariant). Set three sides; Miles fills in the fourth. Set all four and Miles validates the equation — inconsistent values abort early.
+These two products must be equal — that's the [four-knob invariant](/docs/user-guide/concepts#the-four-knob-invariant). Set three sides; Miles fills in the fourth. Set all four and Miles validates the equation — inconsistent values abort early.
 
 **Outer loop**
 
@@ -220,7 +220,7 @@ A few design choices become visible here:
   or when you want length-proportional weighting.
 - **`--use-tis` is the numerical safety belt.** Switch it on when rollout and trainer
   operate at different precisions or when you explicitly want off-policy reuse. See
-  the R3 deep dive in [Rollout Routing Replay (R3)](../advanced/miles-router).
+  the R3 deep dive in [Rollout Routing Replay (R3)](/docs/advanced/miles-router).
 
 ## OPTIMIZER_ARGS — nothing surprising
 
@@ -300,7 +300,7 @@ Enable it with two changes to the launch script:
 | Sync *(default)* | Lower | Lower overall | Strict on-policy, debugging |
 | Async | Higher | Up to 2× | Rollout-bound jobs, long runs |
 
-See the [Fully Async Rollout example](../examples/fully-async) for the full
+See the [Fully Async Rollout example](/docs/examples/fully-async) for the full
 walkthrough including the worker implementation.
 
 ## Colocation: share GPUs or don't
@@ -454,15 +454,15 @@ KL anchor silently and makes the loss curve incomparable to earlier runs.
 </Warning>
 
 For end-to-end FP8 (trainer and inference at bit-identical precision), see
-[Low Precision RL](../advanced/fp8-low-precision). For INT4 quant-aware
-training, see [INT4 QAT](../advanced/int4-qat).
+[Low Precision RL](/docs/advanced/fp8-low-precision). For INT4 quant-aware
+training, see [INT4 QAT](/docs/advanced/int4-qat).
 
 ---
 
 ## Next
 
-- [Configuration](cli-reference) — the same material organized as a flag-by-flag
+- [Configuration](/docs/user-guide/cli-reference) — the same material organized as a flag-by-flag
   reference.
-- [Server Arguments](cli-reference) — the complete CLI surface.
-- [Customization](customization) — the twenty-plus Python extension points.
-- [Training Backends](usage) — Megatron vs FSDP and each one's plumbing.
+- [Server Arguments](/docs/user-guide/cli-reference) — the complete CLI surface.
+- [Customization](/docs/user-guide/customization) — the twenty-plus Python extension points.
+- [Training Backends](/docs/user-guide/usage) — Megatron vs FSDP and each one's plumbing.

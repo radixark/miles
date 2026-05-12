@@ -73,19 +73,19 @@ Use this map when reading any launch script:
 
 | Argument group | Concerns |
 |---|---|
-| [`MODEL_ARGS`](argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
-| [`CKPT_ARGS`](argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
-| [`ROLLOUT_ARGS`](argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
-| [`EVAL_ARGS`](argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
-| [`PERF_ARGS`](argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
-| [`GRPO_ARGS`](argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| [`OPTIMIZER_ARGS`](argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
-| [`SGLANG_ARGS`](argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`MODEL_ARGS`](/docs/user-guide/argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`CKPT_ARGS`](/docs/user-guide/argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`ROLLOUT_ARGS`](/docs/user-guide/argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`EVAL_ARGS`](/docs/user-guide/argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`PERF_ARGS`](/docs/user-guide/argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`GRPO_ARGS`](/docs/user-guide/argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`OPTIMIZER_ARGS`](/docs/user-guide/argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`SGLANG_ARGS`](/docs/user-guide/argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ## Next
 
-- [Training Backend](usage) — Megatron-LM, parallelism, checkpoints, and hooks.
-- [Argument Groups](argument-groups) — where each launch-script array belongs.
-- [Training Script Walkthrough](training-script-walkthrough) — the launch script
+- [Training Backend](/docs/user-guide/usage) — Megatron-LM, parallelism, checkpoints, and hooks.
+- [Argument Groups](/docs/user-guide/argument-groups) — where each launch-script array belongs.
+- [Training Script Walkthrough](/docs/user-guide/training-script-walkthrough) — the launch script
   group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).
-- [CLI Reference](cli-reference) — every flag, grouped and fully catalogued.
+- [CLI Reference](/docs/user-guide/cli-reference) — every flag, grouped and fully catalogued.

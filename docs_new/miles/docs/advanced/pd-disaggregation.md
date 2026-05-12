@@ -77,9 +77,9 @@ on observed queueing:
 
 ## Pairs with
 
-* [DeepSeek R1 recipe](../models/deepseek/deepseek). PD is a clear win at
+* [DeepSeek R1 recipe](/docs/models/deepseek/deepseek). PD is a clear win at
   671B scale.
-* [Speculative decoding](speculative-decoding). Both are SGLang-side
+* [Speculative decoding](/docs/advanced/speculative-decoding). Both are SGLang-side
   features; pool sizing should account for the verify-batch size when
   speculative is on.
 

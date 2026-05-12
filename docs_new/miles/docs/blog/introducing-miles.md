@@ -53,7 +53,7 @@ runs (routing mismatch, precision drift, NCCL hangs) before chasing the next alg
 
 ## Try it
 
-Head to the [Quick Start](../getting-started/quick-start) for a quick GRPO
+Head to the [Quick Start](/docs/getting-started/quick-start) for a quick GRPO
 run on Qwen3-4B with a single 8-GPU node.
 
 ## What's next

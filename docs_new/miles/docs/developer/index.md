@@ -42,7 +42,7 @@ short tour for new contributors.
 ## TL;DR for first-time contributors
 
 1. Pick something small from `good first issue` on [GitHub](https://github.com/radixark/miles/issues).
-2. Run the [Reproducibility recipe](../examples/reproducibility) so you can be sure
+2. Run the [Reproducibility recipe](/docs/examples/reproducibility) so you can be sure
    "I changed X and it broke" actually means that.
 3. Use `--debug-train-only` or `--debug-rollout-only` to scope your changes.
 4. Open a PR. We'll review within ~48h.

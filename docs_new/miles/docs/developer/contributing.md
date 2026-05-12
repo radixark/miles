@@ -66,9 +66,9 @@ Before you click "Ready for review":
 - [ ] You added or updated tests for new behaviour.
 - [ ] You ran `pytest -x` and it's green.
 - [ ] If you touched the launch flags, `python3 train.py --help` still parses.
-- [ ] If you added a public flag, it appears in [Server Arguments](../user-guide/cli-reference).
+- [ ] If you added a public flag, it appears in [Server Arguments](/docs/user-guide/cli-reference).
 - [ ] If you added a new example, you wrote a real walkthrough (use
-  [examples/index](../examples/index) as the structural template).
+  [examples/index](/docs/examples/index) as the structural template).
 
 ## Commit messages
 

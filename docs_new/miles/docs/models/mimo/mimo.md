@@ -117,4 +117,4 @@ CPU Adam is **not** enabled.
 
 ## 6. Pairs Well With
 
-- [Speculative Decoding](../../advanced/speculative-decoding)
+- [Speculative Decoding](/docs/advanced/speculative-decoding)

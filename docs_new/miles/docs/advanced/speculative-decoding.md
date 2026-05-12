@@ -78,10 +78,10 @@ rollouts and reload it.
 
 ## Pairs with
 
-* [Unified FP8](fp8-low-precision). Draft and target both quantized the
+* [Unified FP8](/docs/advanced/fp8-low-precision). Draft and target both quantized the
   same way.
-* [INT4 QAT](int4-qat). A quantized draft is cheaper to verify.
-* [R3](miles-router). R3 captures routing for the verified tokens emitted
+* [INT4 QAT](/docs/advanced/int4-qat). A quantized draft is cheaper to verify.
+* [R3](/docs/advanced/miles-router). R3 captures routing for the verified tokens emitted
   by the target.
 
 ## When to skip

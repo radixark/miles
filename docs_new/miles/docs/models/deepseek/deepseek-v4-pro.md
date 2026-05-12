@@ -6,9 +6,9 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Pro](https://huggingface.co/sgl-project/DeepSeek-V4-Pro-FP8) is a 49 B-active / 1.6 T-total MoE that scales up the same sparse-MLA + DSA-indexer + KV-compressor + hyper-connection stack as [V4-Flash](deepseek-v4-flash). The architecture family is identical; the deltas are size and a handful of tuned knobs (indexer top-k, output-projection groups, compression schedule). The miles + Megatron-Core integration ships in the same image as Flash and is selected with `--model-name DeepSeek-V4-Pro-FP8`.
+[DeepSeek-V4-Pro](https://huggingface.co/sgl-project/DeepSeek-V4-Pro-FP8) is a 49 B-active / 1.6 T-total MoE that scales up the same sparse-MLA + DSA-indexer + KV-compressor + hyper-connection stack as [V4-Flash](/docs/models/deepseek/deepseek-v4-flash). The architecture family is identical; the deltas are size and a handful of tuned knobs (indexer top-k, output-projection groups, compression schedule). The miles + Megatron-Core integration ships in the same image as Flash and is selected with `--model-name DeepSeek-V4-Pro-FP8`.
 
-**Key highlights** (deltas vs [V4-Flash](deepseek-v4-flash#1-model-introduction)):
+**Key highlights** (deltas vs [V4-Flash](/docs/models/deepseek/deepseek-v4-flash#1-model-introduction)):
 
 - **Scaled-up V4 architecture**: 61 layers (vs 43), hidden-size 7168 (vs 4096), 128 attention heads (vs 64), `ffn_hidden_size=3072` and `moe_ffn_hidden_size=3072` (vs 2048). All layers are MoE (same `--moe-layer-freq` pattern). `q_lora_rank=1536` (vs 1024); latent KV (`kv_lora_rank=512`, `qk_head_dim=512`, `v_head_dim=512`) is unchanged across V4.
 - **Hybrid Attention with wider indexer and output projection**: `index_topk=1024` (vs Flash's 512) — Pro keeps 64 indexer heads × 128 dim but picks twice as many KV per query. Grouped output projection uses `o_groups=16` (vs 8), keeping `o_lora_rank=1024`.
@@ -55,7 +55,7 @@ TBD — Pro-specific overrides or env-var notes.
 
 ## 4. Script breakdown
 
-The under-the-hood stages are essentially identical to V4-Flash — see the [V4-Flash Script breakdown](deepseek-v4-flash#4-script-breakdown) and substitute the Pro model name and path defaults shown above.
+The under-the-hood stages are essentially identical to V4-Flash — see the [V4-Flash Script breakdown](/docs/models/deepseek/deepseek-v4-flash#4-script-breakdown) and substitute the Pro model name and path defaults shown above.
 
 ## 5. Example Recipe Configuration
 
@@ -69,7 +69,7 @@ These are the validated layouts shipped with the launcher; All parallelisms are 
 
 ### 5.2 Algorithm
 
-Same as Flash — see [V4-Flash §5.2 Algorithm](deepseek-v4-flash#52-algorithm).
+Same as Flash — see [V4-Flash §5.2 Algorithm](/docs/models/deepseek/deepseek-v4-flash#52-algorithm).
 
 ### 5.3 Rollout & SGLang
 
@@ -123,6 +123,6 @@ Pro selects `--model-name DeepSeek-V4-Pro-FP8`, which flips `optimizer_offload=T
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](../../advanced/fp8-low-precision)
-- [Architecture Support](../../advanced/architecture-support)
-- [DeepSeek V4 Flash](deepseek-v4-flash) — sibling recipe; shares the V4-family architecture.
+- [FP8 & Low Precision](/docs/advanced/fp8-low-precision)
+- [Architecture Support](/docs/advanced/architecture-support)
+- [DeepSeek V4 Flash](/docs/models/deepseek/deepseek-v4-flash) — sibling recipe; shares the V4-family architecture.

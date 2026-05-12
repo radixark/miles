@@ -8,9 +8,9 @@ Miles supports both ends of Moonshot's MoE line: the 1 T-parameter Kimi K2 (Inst
 
 | Model | Active / Total | HF ID | Recipe |
 |---|---|---|---|
-| Kimi-K2-Instruct | 32 B / 1 T | `moonshotai/Kimi-K2-Instruct` | [kimi-k2](kimi-k2) |
-| Kimi-K2-Thinking | 32 B / 1 T | `moonshotai/Kimi-K2-Thinking` | [kimi-k2](kimi-k2) |
-| Moonlight-16B-A3B | 3 B / 16 B | `moonshotai/Moonlight-16B-A3B` | [moonlight](moonlight) |
+| Kimi-K2-Instruct | 32 B / 1 T | `moonshotai/Kimi-K2-Instruct` | [kimi-k2](/docs/models/kimi/kimi-k2) |
+| Kimi-K2-Thinking | 32 B / 1 T | `moonshotai/Kimi-K2-Thinking` | [kimi-k2](/docs/models/kimi/kimi-k2) |
+| Moonlight-16B-A3B | 3 B / 16 B | `moonshotai/Moonlight-16B-A3B` | [moonlight](/docs/models/kimi/moonlight) |
 
 ## Fastest path to train
 
@@ -22,10 +22,10 @@ hf download moonshotai/Moonlight-16B-A3B --local-dir /root/Moonlight-16B-A3B
 bash scripts/run-moonlight-16B-A3B.sh
 ```
 
-See the [Moonlight](moonlight) page for the full walkthrough, or [Kimi K2](kimi-k2) for the 16-node K2-Thinking recipe (including the one-line `model_type` patch that lets Miles treat K2 as a DeepSeek-V3-shaped architecture).
+See the [Moonlight](/docs/models/kimi/moonlight) page for the full walkthrough, or [Kimi K2](/docs/models/kimi/kimi-k2) for the 16-node K2-Thinking recipe (including the one-line `model_type` patch that lets Miles treat K2 as a DeepSeek-V3-shaped architecture).
 
 ## Which variant do I pick?
 
-- **Single-node MoE smoke test** → Moonlight-16B-A3B ([moonlight](moonlight)).
-- **Frontier-scale instruction-tuned MoE** → Kimi-K2-Instruct ([kimi-k2](kimi-k2)).
-- **Reasoning-style training, INT4 QAT target** → Kimi-K2-Thinking ([kimi-k2](kimi-k2)).
+- **Single-node MoE smoke test** → Moonlight-16B-A3B ([moonlight](/docs/models/kimi/moonlight)).
+- **Frontier-scale instruction-tuned MoE** → Kimi-K2-Instruct ([kimi-k2](/docs/models/kimi/kimi-k2)).
+- **Reasoning-style training, INT4 QAT target** → Kimi-K2-Thinking ([kimi-k2](/docs/models/kimi/kimi-k2)).
