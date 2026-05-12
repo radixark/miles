@@ -53,7 +53,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_parser="qwen3_coder",
         tito_model="qwen35",
         allowed_append_roles=("tool", "user"),
-        tp_size=1,
+        tp_size=2,
         cycles=2,
     ),
     "qwennext-tool-user": ModelConfig(
