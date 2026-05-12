@@ -122,7 +122,7 @@ Models marked with ★ are MoE architectures, where P2P benefits are most pronou
 | DeepSeek-V3 ★ | Kimi-K2 | 1T(64B) | `DeepseekV3ForCausalLM` | TP=8, PP=8, CP=4, EP=32, ETP=1, 32 nodes | TP=32, EP=32, 32 nodes | 53,279.1 | 7,227.3 | **−86.4%** |
 
 
-![P2P vs NCCL Broadcast Scaling](/docs/assets/images/p2p_vs_nccl_scaling.png)
+![P2P vs NCCL Broadcast Scaling](/miles/docs/assets/images/p2p_vs_nccl_scaling.png)
 
 \* Kimi-K2 RDMA time includes ~884 ms GPU-side `post_load_weights` requantization on rollout engines.
 

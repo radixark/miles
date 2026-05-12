@@ -44,7 +44,7 @@ MODEL_ARGS=(
 
 The spec function replaces specific Megatron submodules with the HF implementation
 without patching Megatron itself. Details:
-[Backends Beyond Megatron](/docs/advanced/architecture-support).
+[Backends Beyond Megatron](/miles/docs/advanced/architecture-support).
 
 ### Parallelism compatibility
 
@@ -63,7 +63,7 @@ the model recipe's tested combination, then change one dimension at a time.
 
 Do not assume TP, CP, EP, and ETP can all be raised independently for a new model — the
 exact set of supported combinations depends on the Megatron Core kernels and model spec
-being used. The [Argument Groups](/docs/user-guide/argument-groups#perf-args) page lists the flags
+being used. The [Argument Groups](/miles/docs/user-guide/argument-groups#perf-args) page lists the flags
 that belong in `PERF_ARGS`.
 
 ### Checkpoint format
@@ -111,7 +111,7 @@ Three extension points override Megatron behaviour without forking:
 | `--custom-megatron-before-train-step-hook-path` | Before every training step |
 
 Typical use cases: mixing in an auxiliary loss, instrumenting per-step metrics, or
-clipping weights surgically. See [Customization](/docs/user-guide/customization#megatron-hooks).
+clipping weights surgically. See [Customization](/miles/docs/user-guide/customization#megatron-hooks).
 
 ---
 
@@ -170,13 +170,13 @@ at startup.
 
 ## Further reading
 
-- [Core concepts](/docs/user-guide/concepts) — the four objects that make up any Miles job.
-- [Training script walkthrough](/docs/user-guide/training-script-walkthrough) — the launch script,
+- [Core concepts](/miles/docs/user-guide/concepts) — the four objects that make up any Miles job.
+- [Training script walkthrough](/miles/docs/user-guide/training-script-walkthrough) — the launch script,
   argument group by argument group.
-- [Fully Async Rollout](/docs/user-guide/fully-async) — decouple generation from trainer steps with
+- [Fully Async Rollout](/miles/docs/user-guide/fully-async) — decouple generation from trainer steps with
   a queue-backed rollout worker.
-- [Configuration](/docs/user-guide/cli-reference) — the flag taxonomy and defaults.
-- [Backends beyond Megatron](/docs/advanced/architecture-support) — wrapping new
+- [Configuration](/miles/docs/user-guide/cli-reference) — the flag taxonomy and defaults.
+- [Backends beyond Megatron](/miles/docs/advanced/architecture-support) — wrapping new
   architectures without patching Megatron core.
-- [Experimental Features → FSDP backend](/docs/developer/experimental-features#fsdp-backend)
+- [Experimental Features → FSDP backend](/miles/docs/developer/experimental-features#fsdp-backend)
   — experimental PyTorch FSDP2 backend for fast iteration on small dense models.

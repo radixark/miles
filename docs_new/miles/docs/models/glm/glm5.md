@@ -112,6 +112,6 @@ The launcher exposes these as flags:
 
 ## 6. Pairs Well With
 
-- [PD Disaggregation](/docs/advanced/pd-disaggregation) — on by default for `num_nodes ≥ 1`.
-- [Low Precision RL](/docs/advanced/fp8-low-precision) — opt-in via `--fp8-rollout`.
-- [Speculative Decoding](/docs/advanced/speculative-decoding) — opt-in via `--enable-mtp`.
+- [PD Disaggregation](/miles/docs/advanced/pd-disaggregation) — on by default for `num_nodes ≥ 1`.
+- [Low Precision RL](/miles/docs/advanced/fp8-low-precision) — opt-in via `--fp8-rollout`.
+- [Speculative Decoding](/miles/docs/advanced/speculative-decoding) — opt-in via `--enable-mtp`.

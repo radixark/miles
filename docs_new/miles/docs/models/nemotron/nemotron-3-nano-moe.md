@@ -137,11 +137,11 @@ From `scripts/models/nemotron-3-nano-30b-a3b.sh` and `scripts/run-nemotron-3-nan
 - `--position-embedding-type none`, `--vocab-size 131072 --make-vocab-size-divisible-by 128`.
 - `--attention-backend auto` (Mamba layers select their own kernel).
 
-See [Backends Beyond Megatron](/docs/advanced/architecture-support) for how the bridge
+See [Backends Beyond Megatron](/miles/docs/advanced/architecture-support) for how the bridge
 shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto the Megatron provider.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](/docs/advanced/architecture-support)
-- [P2P Weight Transfer](/docs/advanced/p2p-weight-transfer)
-- [FP8 & Low Precision](/docs/advanced/fp8-low-precision)
+- [Backends Beyond Megatron](/miles/docs/advanced/architecture-support)
+- [P2P Weight Transfer](/miles/docs/advanced/p2p-weight-transfer)
+- [FP8 & Low Precision](/miles/docs/advanced/fp8-low-precision)

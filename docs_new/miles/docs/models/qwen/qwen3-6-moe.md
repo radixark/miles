@@ -145,10 +145,10 @@ From `scripts/models/qwen3.6-35B-A3B.sh` and `scripts/run_qwen3_6_35b_a3b_mtp.py
 - `--moe-grouped-gemm`, `--moe-token-drop-policy probs`, `--moe-router-dtype fp32`, `--moe-permute-fusion`, `--moe-aux-loss-coeff 0`.
 - `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `--vocab-size 248320`.
 
-See [Backends Beyond Megatron](/docs/advanced/architecture-support) for FP32 parameter handling and how miles wires the spec.
+See [Backends Beyond Megatron](/miles/docs/advanced/architecture-support) for FP32 parameter handling and how miles wires the spec.
 
 ## 6. Pairs Well With
 
-- [Speculative Decoding](/docs/advanced/speculative-decoding)
-- [Backends Beyond Megatron](/docs/advanced/architecture-support)
-- [P2P Weight Transfer](/docs/advanced/p2p-weight-transfer)
+- [Speculative Decoding](/miles/docs/advanced/speculative-decoding)
+- [Backends Beyond Megatron](/miles/docs/advanced/architecture-support)
+- [P2P Weight Transfer](/miles/docs/advanced/p2p-weight-transfer)

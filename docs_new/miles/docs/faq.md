@@ -89,7 +89,7 @@ one server per host.
 
 Check the chat template first — most "exploding gradient" reports come from feeding
 already-templated data into a model that re-applies its template. Then read
-[Debugging](/docs/developer/debug).
+[Debugging](/miles/docs/developer/debug).
 
 </Accordion>
 

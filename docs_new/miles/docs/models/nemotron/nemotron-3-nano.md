@@ -120,9 +120,9 @@ From `scripts/models/nemotron-3-nano-4b.sh` and `scripts/run-nemotron-3-nano-4b.
 - `--attention-backend auto` (the Mamba layers select their own kernel; flash-only is not safe here).
 - Bridge load is required for hybrid `nemotron_h`: the AutoBridge wires `mamba_num_heads`, `mamba_state_dim`, `hybrid_override_pattern`. PP additionally needs miles' PP-unwrap shim (already on the `feat/nemotron-gemma4-rl` branch).
 
-See [Backends Beyond Megatron](/docs/advanced/architecture-support) for the AutoBridge wiring.
+See [Backends Beyond Megatron](/miles/docs/advanced/architecture-support) for the AutoBridge wiring.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](/docs/advanced/architecture-support)
-- [P2P Weight Transfer](/docs/advanced/p2p-weight-transfer)
+- [Backends Beyond Megatron](/miles/docs/advanced/architecture-support)
+- [P2P Weight Transfer](/miles/docs/advanced/p2p-weight-transfer)

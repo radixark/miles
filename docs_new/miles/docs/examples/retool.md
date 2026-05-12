@@ -11,7 +11,7 @@ Python snippet, get the result, continue reasoning, repeat.
 
 ## Prerequisites
 
-* Familiar with [Search-R1](/docs/examples/search-r1) — same general pattern.
+* Familiar with [Search-R1](/miles/docs/examples/search-r1) — same general pattern.
 * `radixark/miles:latest` container.
 * ~150 GB free disk for the SFT data + base model.
 

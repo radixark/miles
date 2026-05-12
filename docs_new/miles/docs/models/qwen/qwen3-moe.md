@@ -136,5 +136,5 @@ Both `run_qwen3_30b_a3b.py` (H100, 1 node) and `run-qwen3-235B-A22B.sh` enable C
 
 ## 6. Pairs Well With
 
-- [Low Precision RL](/docs/advanced/fp8-low-precision)
-- [Rollout Routing Replay (R3)](/docs/advanced/miles-router)
+- [Low Precision RL](/miles/docs/advanced/fp8-low-precision)
+- [Rollout Routing Replay (R3)](/miles/docs/advanced/miles-router)

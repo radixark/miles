@@ -136,6 +136,6 @@ CPU Adam on:
 
 ## 6. Pairs Well With
 
-- [Low Precision RL](/docs/advanced/fp8-low-precision)
-- [INT4 QAT](/docs/advanced/int4-qat)
-- [Rollout Routing Replay (R3)](/docs/advanced/miles-router) — opt-in via `--enable-mis` on the Python launcher.
+- [Low Precision RL](/miles/docs/advanced/fp8-low-precision)
+- [INT4 QAT](/miles/docs/advanced/int4-qat)
+- [Rollout Routing Replay (R3)](/miles/docs/advanced/miles-router) — opt-in via `--enable-mis` on the Python launcher.
