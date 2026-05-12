@@ -13,7 +13,7 @@ input through a soft router and a top-k op. In production the router is a
 learned `nn.Linear` with non-deterministic kernels and FP8 quantization, so tiny
 numerical differences flip routes at the per-layer, per-token level.
 
-Without R3:
+An example without R3:
 
 * Rollout selects experts `{2, 7}` for token 314.
 * Training (with the same weights but slightly different precision and kernels)
@@ -22,8 +22,8 @@ Without R3:
   layers, tens of thousands of tokens, and thousands of training steps, the
   policy diverges.
 
-With R3 the inference router's choice is what training also uses. Numerical
-noise no longer flips routes.
+With R3, the trainer replays the rollout router's expert assignments verbatim,
+so numerical noise no longer flips routes.
 
 ## How R3 wires up
 
