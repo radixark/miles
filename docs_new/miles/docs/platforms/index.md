@@ -6,13 +6,13 @@ Miles runs on NVIDIA H/B-series and AMD MI300X with the same launch scripts. Eac
 
 <CardGroup cols={2}>
 
-  <Card title="NVIDIA GPUs" icon="microchip" href="nvidia">
+  <Card title="NVIDIA GPUs" icon="microchip" href="/miles/docs/platforms/nvidia">
 
     The default GB300 / GB200 / B200 / B100 / H200 / H100 with FP8, NVLink, and InfiniBand.
 
   </Card>
 
-  <Card title="AMD GPUs" icon="microchip" href="amd">
+  <Card title="AMD GPUs" icon="microchip" href="/miles/docs/platforms/amd">
 
     ROCm 6.3+ with patches for virtual memory management. Same launch scripts.
 
