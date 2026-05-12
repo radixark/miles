@@ -62,12 +62,12 @@ gh pr create --title "..." --body "..."
 
 Before you click "Ready for review":
 
-- [ ] `pre-commit run --all-files` passes.
-- [ ] You added or updated tests for new behaviour.
-- [ ] You ran `pytest -x` and it's green.
-- [ ] If you touched the launch flags, `python3 train.py --help` still parses.
-- [ ] If you added a public flag, it appears in [Server Arguments](/miles/docs/user-guide/cli-reference).
-- [ ] If you added a new example, you wrote a real walkthrough (use
+- `pre-commit run --all-files` passes.
+- You added or updated tests for new behaviour.
+- You ran `pytest -x` and it's green.
+- If you touched the launch flags, `python3 train.py --help` still parses.
+- If you added a public flag, it appears in [Server Arguments](/miles/docs/user-guide/cli-reference).
+- If you added a new example, you wrote a real walkthrough (use
   [examples/index](/miles/docs/examples/index) as the structural template).
 
 ## Commit messages
