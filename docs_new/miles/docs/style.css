@@ -30,13 +30,23 @@ a:hover {
 
 a[href^="http"]:not([href*="radixark.com"]) {
   color: #d55816;
+  position: relative;
+  padding-right: 0.85em; /* reserve space for > so layout never shifts */
 }
 
 a[href^="http"]:not([href*="radixark.com"])::after {
-  content: " ↗";
-  font-size: 0.65em;
-  vertical-align: super;
-  opacity: 0.35;
+  content: ">";
+  position: absolute;
+  margin-left: 0.2em;
+  font-size: 0.8em;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  transform: translateX(-2px);
+}
+
+a[href^="http"]:not([href*="radixark.com"]):hover::after {
+  opacity: 0.7;
+  transform: translateX(2px);
 }
 
 /* =============================================
