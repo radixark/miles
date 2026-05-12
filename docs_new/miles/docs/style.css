@@ -126,3 +126,21 @@ hr {
     font-size: 0.8em !important;
   }
 }
+
+/* =============================================
+   Link underlines — thin and elegant
+   ============================================= */
+a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Model list links — slightly smaller, refined */
+.model-list a {
+  font-size: 0.9em;
+  text-underline-offset: 2px;
+}
