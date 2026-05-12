@@ -15,12 +15,21 @@ Uses the same infrastructure as ``test_session_server_tool_call``:
 ``execute_train --debug-rollout-only`` with a custom generate function
 that wraps the normal agentic flow with re-prefill verification.
 
-Requires 1 GPU.
+In CI, the file runs every model in :data:`CONFIGS` back-to-back so both
+qwen3 and glm47 paths are covered by a single job. The ``CONFIGS`` default
+can be overridden by setting ``SESSION_TEST_MODEL_FAMILY`` to a single
+family name, which is handy when debugging locally.
+
+The CI suite reserves 8 GPUs to avoid sharing the runner with another GPU job
+while this SGLang/Ray process tree is alive. The test workload itself still
+uses one GPU by default.
 """
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=600, suite="stage-b-sglang-1-gpu", num_gpus=1)
+# Two model families run sequentially in one job, so est_time is roughly 2x
+# of a single family.
+register_cuda_ci(est_time=1200, suite="stage-b-sglang-8-gpu", num_gpus=8)
 
 
 import json
@@ -32,7 +41,6 @@ import miles.utils.external_utils.command_utils as U
 # Model family registry
 # ---------------------------------------------------------------------------
 
-MODEL_FAMILY = os.environ.get("SESSION_TEST_MODEL_FAMILY", "qwen3")
 ENABLE_R3 = os.environ.get("ENABLE_R3", "0") == "1"
 
 
@@ -61,17 +69,28 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
 }
 
+# Default CI sweep. ``SESSION_TEST_MODEL_FAMILY`` (single family) overrides
+# this list, primarily for local debugging.
+CONFIGS: list[str] = ["qwen3", "glm47"]
+
 PROMPT_DATA_PATH = "/root/datasets/session_logprob_verify.jsonl"
 
 
-def _get_config() -> ModelConfig:
-    if MODEL_FAMILY not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model family {MODEL_FAMILY!r}. " f"Choose from: {list(MODEL_REGISTRY.keys())}")
-    return MODEL_REGISTRY[MODEL_FAMILY]
+def _resolve_configs() -> list[str]:
+    override = os.environ.get("SESSION_TEST_MODEL_FAMILY")
+    if override:
+        return [override]
+    return list(CONFIGS)
 
 
-def prepare():
-    cfg = _get_config()
+def _get_config(model_family: str) -> ModelConfig:
+    if model_family not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model family {model_family!r}. " f"Choose from: {list(MODEL_REGISTRY.keys())}")
+    return MODEL_REGISTRY[model_family]
+
+
+def prepare(model_family: str):
+    cfg = _get_config(model_family)
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download {cfg.model_name} --local-dir /root/models/{cfg.model_name.split('/')[-1]}")
 
@@ -99,8 +118,8 @@ def prepare():
             f.write(json.dumps(p) + "\n")
 
 
-def execute():
-    cfg = _get_config()
+def execute(model_family: str):
+    cfg = _get_config(model_family)
     local_model_dir = f"/root/models/{cfg.model_name.split('/')[-1]}"
 
     ckpt_args = f"--hf-checkpoint {local_model_dir} "
@@ -157,15 +176,21 @@ def execute():
     )
 
 
-def test_tito_logprob_equivalence():
-    prepare()
+def _run_all():
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
+    for model_family in _resolve_configs():
+        print(
+            f"\n{'=' * 60}\nRunning model_family: {model_family}\n{'=' * 60}\n",
+            flush=True,
+        )
+        prepare(model_family)
+        execute(model_family)
+
+
+def test_tito_logprob_equivalence():
+    _run_all()
 
 
 if __name__ == "__main__":
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    execute()
+    _run_all()

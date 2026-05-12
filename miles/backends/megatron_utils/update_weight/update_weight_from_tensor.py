@@ -7,7 +7,6 @@ from typing import Any
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
@@ -124,8 +123,8 @@ class UpdateWeightFromTensor:
             distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
             self._is_distributed_src_rank = (
                 get_parallel_state().intra_dp_cp.rank == 0
-                and mpu.get_tensor_model_parallel_rank() == 0
-                and mpu.get_pipeline_model_parallel_rank() == 0
+                and get_parallel_state().tp.rank == 0
+                and get_parallel_state().pp.rank == 0
             )
             self._group_name = "miles"
             if self._is_distributed_src_rank:

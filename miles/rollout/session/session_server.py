@@ -81,7 +81,13 @@ class SessionServer:
     def build_proxy_response(self, result: dict) -> Response:
         content = result["response_body"]
         status_code = result["status_code"]
-        headers = result["headers"]
+        # Drop wire-level framing headers from upstream so Starlette rebuilds them
+        # from the body we actually send: transfer-encoding is hop-by-hop
+        headers = {
+            k: v
+            for k, v in result["headers"].items()
+            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
+        }
         content_type = headers.get("content-type", "")
         try:
             data = json.loads(content)

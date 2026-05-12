@@ -15,8 +15,6 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        import miles_plugins.megatron_bridge  # noqa: F401
-
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type: str = "base"):
@@ -36,16 +34,17 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     self.model,
                     cpu=False,
                     conversion_tasks=conversion_tasks,
+                    merge_adapter_weights=False,
                 )
 
             # TODO: verify if postprocess_hf_param is needed for LoRA weights
             named_weights = (
                 (
-                    hf_param_name,
+                    hf_param_name.replace(".base_layer.", "."),
                     postprocess_hf_param(
                         args=self.args,
                         megatron_param_name=megatron_param_name,
-                        hf_param_name=hf_param_name,
+                        hf_param_name=hf_param_name.replace(".base_layer.", "."),
                         param=weight,
                     ),
                 )

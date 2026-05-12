@@ -17,7 +17,6 @@ from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
 from miles.rollout.session.session_server import SessionServer
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
-from miles.utils.chat_template_utils import try_get_fixed_chat_template
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, with_mock_server
@@ -108,9 +107,9 @@ def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornT
     session_args = SimpleNamespace(
         miles_router_timeout=30,
         hf_checkpoint=args.hf_checkpoint,
-        chat_template_path=getattr(args, "chat_template_path", None)
-        or try_get_fixed_chat_template(args.hf_checkpoint),
+        chat_template_path=getattr(args, "chat_template_path", None),
         tito_model=getattr(args, "tito_model", "default"),
+        tito_allowed_append_roles=getattr(args, "tito_allowed_append_roles", ["tool"]),
         use_rollout_routing_replay=getattr(args, "use_rollout_routing_replay", False),
     )
     session_server = SessionServer(session_args, backend_url=backend_url)

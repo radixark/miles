@@ -12,8 +12,9 @@ pytest-asyncio
 pyyaml
 qwen_vl_utils # for VLM
 ray[default]
-ring_flash_attn
+ring_flash_attn; platform_system == "Linux"
 sglang-router>=0.2.3
 tensorboard
+torchft-nightly==2026.4.3; platform_system == "Linux"
 transformers
 wandb
