@@ -118,10 +118,8 @@ of the model is bf16. Qwen3.5's `A_log` is the canonical example. Rounding it
 to bf16 makes Megatron-side activations diverge from SGLang-side rollout,
 causing precision drift.
 
-The canonical cast point is Megatron's `Float16Module`, which (per the
-docstring on `enforce_marked_param_dtypes` in
-`miles/backends/megatron_utils/fp32_param_utils.py`) "unconditionally casts
-every floating-point parameter to bf16/fp16 at wrap time". The mbridge
+The canonical cast point is Megatron's `Float16Module`, which casts
+every floating-point parameter to bf16/fp16 at wrap time. The mbridge
 weight-conversion path (`_weight_to_mcore_format` and friends) is the
 other place fp32 weights can be silently downcast. Two steps are required
 to keep tagged params in fp32.
