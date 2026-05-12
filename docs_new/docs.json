@@ -17,7 +17,7 @@
   "navbar": {
     "links": [
       {
-        "label": "GitHub",
+        "type": "github",
         "href": "https://github.com/radixark/miles"
       }
     ],
@@ -271,5 +271,17 @@
     "dark": "#0c0b0a",
     "light": "#faf7f4"
   },
-  "url": "https://www.radixark.com"
+  "url": "https://www.radixark.com",
+  "font": {
+    "headings": {
+      "family": "Hanken Grotesk",
+      "weight": 600,
+      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+    },
+    "body": {
+      "family": "Hanken Grotesk",
+      "weight": 300,
+      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+    }
+  }
 }
