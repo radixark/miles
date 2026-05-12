@@ -1,12 +1,12 @@
 ---
 title: Rollout Routing Replay (R3)
-description: Capture expert routing during inference and replay it during training so MoE RL is stable.
+description: Capture expert routing during inference and replay it during training to stabilize RL.
 ---
 Rollout Routing Replay (R3) records the expert routing decisions made during
 inference and replays them during training, producing bit-identical expert
 allocation between rollout and training.
 
-## Why MoE RL was previously unstable
+## Why MoE RL is unstable without R3
 
 For each token, an MoE router picks `top-k` experts. The choice depends on the
 input through a soft router and a top-k op. In production the router is a
