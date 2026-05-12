@@ -31,7 +31,7 @@ models, not for production runs.
 - You want a HuggingFace-native checkpoint at every step with no conversion.
 
 For large MoE models, multi-rack jobs, or anything where TP / PP / CP / EP matters,
-use the production [Megatron-LM backend](../user-guide/usage.md#megatron-lm) instead.
+use the production [Megatron-LM backend](../user-guide/usage#megatron-lm) instead.
 
 ### Enabling it
 

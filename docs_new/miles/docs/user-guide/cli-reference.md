@@ -27,7 +27,7 @@ This page has two passes.
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 
-See [Training Script Walkthrough: Colocation](training-script-walkthrough.md#colocation-share-gpus-or-dont)
+See [Training Script Walkthrough: Colocation](training-script-walkthrough#colocation-share-gpus-or-dont)
 for what `--colocate` flips on under the hood.
 
 ### Batch sizing

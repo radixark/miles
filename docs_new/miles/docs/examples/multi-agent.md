@@ -182,7 +182,7 @@ verifier becomes verbose. Tighten its system prompt or reduce its `max_tokens`.
 
 Replace `call_role` with a VLM-aware caller that includes images in messages. Miles
 supports VLM multi-turn natively — same pattern, just `multimodal_train_inputs` in the
-sample dict (see [Customization #13](../user-guide/customization.md#training)).
+sample dict (see [Customization #13](../user-guide/customization#training)).
 
 ### True asymmetric agents
 

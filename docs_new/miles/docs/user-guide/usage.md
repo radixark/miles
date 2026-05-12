@@ -63,7 +63,7 @@ the model recipe's tested combination, then change one dimension at a time.
 
 Do not assume TP, CP, EP, and ETP can all be raised independently for a new model — the
 exact set of supported combinations depends on the Megatron Core kernels and model spec
-being used. The [Argument Groups](argument-groups.md#perf-args) page lists the flags
+being used. The [Argument Groups](argument-groups#perf-args) page lists the flags
 that belong in `PERF_ARGS`.
 
 ### Checkpoint format
@@ -111,7 +111,7 @@ Three extension points override Megatron behaviour without forking:
 | `--custom-megatron-before-train-step-hook-path` | Before every training step |
 
 Typical use cases: mixing in an auxiliary loss, instrumenting per-step metrics, or
-clipping weights surgically. See [Customization](customization.md#megatron-hooks).
+clipping weights surgically. See [Customization](customization#megatron-hooks).
 
 ---
 
@@ -178,5 +178,5 @@ at startup.
 - [Configuration](cli-reference) — the flag taxonomy and defaults.
 - [Backends beyond Megatron](../advanced/architecture-support) — wrapping new
   architectures without patching Megatron core.
-- [Experimental Features → FSDP backend](../developer/experimental-features.md#fsdp-backend)
+- [Experimental Features → FSDP backend](../developer/experimental-features#fsdp-backend)
   — experimental PyTorch FSDP2 backend for fast iteration on small dense models.

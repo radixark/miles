@@ -15,14 +15,14 @@ off to `train.py`:
 
 | Array | Governs |
 |---|---|
-| [`MODEL_ARGS`](argument-groups.md#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
-| [`CKPT_ARGS`](argument-groups.md#ckpt-args) | Filesystem paths for the actor / reference / save directory |
-| [`ROLLOUT_ARGS`](argument-groups.md#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
-| [`EVAL_ARGS`](argument-groups.md#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
-| [`PERF_ARGS`](argument-groups.md#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
-| [`GRPO_ARGS`](argument-groups.md#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| [`OPTIMIZER_ARGS`](argument-groups.md#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
-| [`SGLANG_ARGS`](argument-groups.md#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`MODEL_ARGS`](argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`CKPT_ARGS`](argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`ROLLOUT_ARGS`](argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`EVAL_ARGS`](argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`PERF_ARGS`](argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`GRPO_ARGS`](argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`OPTIMIZER_ARGS`](argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`SGLANG_ARGS`](argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ---
 
@@ -54,7 +54,7 @@ MODEL_ARGS+=(--rotary-base 10000)
 
 ## CKPT_ARGS — paths
 
-The three roles — actor, frozen reference, HuggingFace directory — are defined in [Core Concepts](concepts.md#the-four-objects). Here they map to four flags:
+The three roles — actor, frozen reference, HuggingFace directory — are defined in [Core Concepts](concepts#the-four-objects). Here they map to four flags:
 
 ```bash
 CKPT_ARGS=(
@@ -91,7 +91,7 @@ Their product is the total sample count produced each rollout.
 
 Their product is the total sample count consumed each rollout.
 
-These two products must be equal — that's the [four-knob invariant](concepts.md#the-four-knob-invariant). Set three sides; Miles fills in the fourth. Set all four and Miles validates the equation — inconsistent values abort early.
+These two products must be equal — that's the [four-knob invariant](concepts#the-four-knob-invariant). Set three sides; Miles fills in the fourth. Set all four and Miles validates the equation — inconsistent values abort early.
 
 **Outer loop**
 

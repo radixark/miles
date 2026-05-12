@@ -72,7 +72,7 @@ produces.
 | Filtering | `--over-sampling-batch-size`, `--dynamic-sampling-filter-path` |
 
 The rollout volume and training consumption must satisfy the
-[four-knob invariant](concepts.md#the-four-knob-invariant).
+[four-knob invariant](concepts#the-four-knob-invariant).
 
 <a id="eval-args"></a>
 ## EVAL_ARGS - evaluation overrides
@@ -107,7 +107,7 @@ Flags not set in `EVAL_ARGS` inherit from `ROLLOUT_ARGS`.
 
 Megatron exposes TP, PP, CP, EP, and ETP, but not every product of those dimensions is
 valid or worth using for every model. Start from the recipe's tested combination and
-see [parallelism compatibility](usage.md#parallelism-compatibility) before changing
+see [parallelism compatibility](usage#parallelism-compatibility) before changing
 more than one dimension.
 
 <a id="grpo-args"></a>
