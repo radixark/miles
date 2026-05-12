@@ -29,23 +29,13 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Welcome to Miles",
+        "tab": "Welcome",
         "groups": [
           {
-            "group": "Overview",
+            "group": "Welcome",
+            "root": "miles/docs/index",
             "pages": [
-              "miles/docs/index"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Getting Started",
-        "groups": [
-          {
-            "group": "Getting Started",
-            "root": "miles/docs/getting-started/index",
-            "pages": [
+              "miles/docs/getting-started/index",
               "miles/docs/getting-started/installation",
               "miles/docs/getting-started/quick-start"
             ]
