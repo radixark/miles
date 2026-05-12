@@ -38,7 +38,7 @@ miles/
 
 ```bash
 cd /root/miles
-git remote add me git@github.com:<your_user>/miles.git
+git remote add me git@github.com:YOUR_USERNAME/miles.git
 git checkout -b feat/awesome
 
 # Edit code
