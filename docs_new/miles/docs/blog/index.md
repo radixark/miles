@@ -16,5 +16,4 @@ description: Engineering posts and release notes from the Miles team.
 ## Subscribe
 
 * GitHub releases: [radixark/miles/releases](https://github.com/radixark/miles/releases)
-* RSS: coming soon
-* Twitter/X: [@radixark_miles](https://twitter.com)
+* Twitter/X: [@radixark](https://twitter.com/radixark)
