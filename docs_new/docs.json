@@ -9,9 +9,9 @@
   },
   "favicon": "/docs/assets/images/miles_square.png",
   "colors": {
-    "primary": "#0D9373",
-    "light": "#07C983",
-    "dark": "#0D9373"
+    "primary": "#F97316",
+    "light": "#FB923C",
+    "dark": "#EA580C"
   },
   "navbar": {
     "links": [

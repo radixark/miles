@@ -2,9 +2,6 @@
 title: Multi-Agent Co-Evolution
 description: Two specialized agents train together and improve each other.
 ---
-
-# Multi-Agent Co-Evolution
-
 **What you'll learn:** how to wire up an asynchronous multi-agent system in Miles, where
 two (or more) specialized agents take alternating turns and the joint outcome drives a
 single shared reward.
@@ -22,9 +19,9 @@ you can hack on it without pulling in MrlX's full dependency tree.
 
 ## Prerequisites
 
-* You've completed the [Qwen3-30B-A3B](../models/qwen/qwen3-moe.md) recipe (the
+* You've completed the [Qwen3-30B-A3B](../models/qwen/qwen3-moe) recipe (the
   example uses that model).
-* Familiar with [Customization](../user-guide/customization.md).
+* Familiar with [Customization](../user-guide/customization).
 
 ## Files
 

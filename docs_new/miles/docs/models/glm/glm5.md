@@ -2,9 +2,6 @@
 title: GLM5
 description: Launch recipe for GLM-5 (744B-A40B) — Python launcher, 16+ node config.
 ---
-
-# GLM5 / GLM5.1
-
 ## 1. Model Introduction
 
 [GLM-5](https://huggingface.co/zai-org/GLM-5) is the most powerful language model in Zhipu AI's GLM series, scaling to 744 B parameters (40 B active) and integrating DeepSeek Sparse Attention (DSA) for long-context efficiency. [GLM-5.1](https://huggingface.co/zai-org/GLM-5.1) is the next-generation model for agentic engineering on top of GLM-5, sharing the same model architectures,
@@ -48,7 +45,6 @@ python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes 1
 The Typer app exposes four subcommands:
 
 ```bash
-# Full pipeline: download, convert, copy, train
 python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes <N>
 
 # Just download model + datasets and convert to Megatron
@@ -116,6 +112,6 @@ The launcher exposes these as flags:
 
 ## 6. Pairs Well With
 
-- [PD Disaggregation](../../advanced/pd-disaggregation.md) — on by default for `num_nodes ≥ 1`.
-- [Low Precision RL](../../advanced/fp8-low-precision.md) — opt-in via `--fp8-rollout`.
-- [Speculative Decoding](../../advanced/speculative-decoding.md) — opt-in via `--enable-mtp`.
+- [PD Disaggregation](../../advanced/pd-disaggregation) — on by default for `num_nodes ≥ 1`.
+- [Low Precision RL](../../advanced/fp8-low-precision) — opt-in via `--fp8-rollout`.
+- [Speculative Decoding](../../advanced/speculative-decoding) — opt-in via `--enable-mtp`.

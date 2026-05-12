@@ -2,9 +2,6 @@
 title: Training Script Walkthrough
 description: An annotated tour through every argument group in a Miles launch script, plus the feature modes you turn on when a recipe isn't enough.
 ---
-
-# Training Script Walkthrough
-
 A Miles launch script is plain bash — a sequence of `XXX_ARGS=( ... )` arrays handed
 to `train.py` or `train_async.py`. This page walks through each group and then covers
 the execution modes you turn on beyond the default recipe.
@@ -223,7 +220,7 @@ A few design choices become visible here:
   or when you want length-proportional weighting.
 - **`--use-tis` is the numerical safety belt.** Switch it on when rollout and trainer
   operate at different precisions or when you explicitly want off-policy reuse. See
-  the R3 deep dive in [Rollout Routing Replay (R3)](../advanced/miles-router.md).
+  the R3 deep dive in [Rollout Routing Replay (R3)](../advanced/miles-router).
 
 ## OPTIMIZER_ARGS — nothing surprising
 
@@ -274,7 +271,6 @@ DP-attention is off, the effective `dp_size` is derived from
 
 ---
 
-# Execution modes
 
 The eight argument groups describe **what** you're training. The next set of sections
 describe **how** the training runs — the execution modes that flip Miles from its
@@ -304,7 +300,7 @@ Enable it with two changes to the launch script:
 | Sync *(default)* | Lower | Lower overall | Strict on-policy, debugging |
 | Async | Higher | Up to 2× | Rollout-bound jobs, long runs |
 
-See the [Fully Async Rollout example](../examples/fully-async.md) for the full
+See the [Fully Async Rollout example](../examples/fully-async) for the full
 walkthrough including the worker implementation.
 
 ## Colocation: share GPUs or don't
@@ -458,15 +454,15 @@ KL anchor silently and makes the loss curve incomparable to earlier runs.
 </Warning>
 
 For end-to-end FP8 (trainer and inference at bit-identical precision), see
-[Low Precision RL](../advanced/fp8-low-precision.md). For INT4 quant-aware
-training, see [INT4 QAT](../advanced/int4-qat.md).
+[Low Precision RL](../advanced/fp8-low-precision). For INT4 quant-aware
+training, see [INT4 QAT](../advanced/int4-qat).
 
 ---
 
 ## Next
 
-- [Configuration](cli-reference.md) — the same material organized as a flag-by-flag
+- [Configuration](cli-reference) — the same material organized as a flag-by-flag
   reference.
-- [Server Arguments](cli-reference.md) — the complete CLI surface.
-- [Customization](customization.md) — the twenty-plus Python extension points.
-- [Training Backends](usage.md) — Megatron vs FSDP and each one's plumbing.
+- [Server Arguments](cli-reference) — the complete CLI surface.
+- [Customization](customization) — the twenty-plus Python extension points.
+- [Training Backends](usage) — Megatron vs FSDP and each one's plumbing.

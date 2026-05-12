@@ -2,16 +2,12 @@
 title: AMD MI300X
 description: ROCm 6.3+ with patches for virtual memory management. Same launch scripts.
 ---
-
-# AMD MI300X
-
 Miles runs on AMD Instinct GPUs (MI300, MI325, MI350, MI355X) with ROCm. The launch
 scripts are the same as on NVIDIA — only the container and a few env vars differ.
 
 ## Container images
 
 ```bash
-# MI350 / MI355X
 docker pull rlsys/miles:MI350-355-latest
 
 # MI300 / MI325

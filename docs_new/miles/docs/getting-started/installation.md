@@ -2,9 +2,6 @@
 title: Installation
 description: Install Miles on NVIDIA or AMD GPUs. Docker is the recommended path.
 ---
-
-# Installation
-
 There are three ways to install Miles. Docker is recommended because Miles pins patched
 versions of SGLang, Megatron-LM, and a few CUDA kernels.
 
@@ -48,7 +45,7 @@ The image ships with:
 - Megatron-LM, SGLang, FlashAttention-3, DeepGEMM, Apex
 - Ray, uv, and Miles installed editable at `/root/miles`
 
-See [Platforms](../platforms/index.md) for platform-specific notes.
+See [Platforms](../platforms/index) for platform-specific notes.
 
 ## Method 2: From source
 
@@ -88,7 +85,7 @@ python -c "import miles; print('Miles import OK')"
 nvidia-smi
 ```
 
-If either command fails, see [Debugging](../developer/debug.md) or the [FAQ](../faq.md).
+If either command fails, see [Debugging](../developer/debug) or the [FAQ](../faq).
 
 ## Hardware requirements
 
@@ -104,6 +101,6 @@ or Slingshot — and 200+ GB/s per node. Single-node jobs run fine over NVLink o
 
 ## Next steps
 
-- [Quick Start](quick-start.md) — run your first training job.
-- [Core concepts](../user-guide/concepts.md) — the mental model behind Miles.
-- [Training backends](../user-guide/usage.md) — Megatron vs FSDP.
+- [Quick Start](quick-start) — run your first training job.
+- [Core concepts](../user-guide/concepts) — the mental model behind Miles.
+- [Training backends](../user-guide/usage) — Megatron vs FSDP.

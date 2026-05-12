@@ -2,9 +2,6 @@
 title: FAQ
 description: The questions every new Miles user asks in their first week.
 ---
-
-# FAQ
-
 <AccordionGroup>
 
 <Accordion title="Why do I see garbled text during training?">
@@ -92,7 +89,7 @@ one server per host.
 
 Check the chat template first — most "exploding gradient" reports come from feeding
 already-templated data into a model that re-applies its template. Then read
-[Debugging](developer/debug.md).
+[Debugging](developer/debug).
 
 </Accordion>
 

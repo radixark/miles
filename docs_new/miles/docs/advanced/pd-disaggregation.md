@@ -2,9 +2,6 @@
 title: PD Disaggregation
 description: Separate prefill and decode pools so each is sized for its workload.
 ---
-
-# PD Disaggregation
-
 In a typical SGLang deployment, every engine handles both **prefill** (the
 one-shot forward over the prompt) and **decode** (the per-token autoregressive
 loop). The two phases have different compute profiles:
@@ -80,9 +77,9 @@ on observed queueing:
 
 ## Pairs with
 
-* [DeepSeek R1 recipe](../models/deepseek/deepseek.md). PD is a clear win at
+* [DeepSeek R1 recipe](../models/deepseek/deepseek). PD is a clear win at
   671B scale.
-* [Speculative decoding](speculative-decoding.md). Both are SGLang-side
+* [Speculative decoding](speculative-decoding). Both are SGLang-side
   features; pool sizing should account for the verify-batch size when
   speculative is on.
 

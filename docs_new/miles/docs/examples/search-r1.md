@@ -2,9 +2,6 @@
 title: Search-R1 (Tool Use)
 description: Train a model to issue search queries, integrate observations, and answer multi-turn QA.
 ---
-
-# Search-R1 — Tool-augmented multi-turn RL
-
 **What you'll learn:** how to wire up a tool (web search) into a Miles training loop —
 custom multi-turn rollout, observation interleaving, reward function, and TIS to keep
 training stable when train ≠ inference.
@@ -17,7 +14,7 @@ This is a Miles-friendly reproduction of the original
 * `radixark/miles:latest` container.
 * Either a serper.dev API key (Google search backend) or ~135 GB free disk for the
   local Wikipedia retriever (see [appendix](#appendix-local-wikipedia-retriever)).
-* You completed [Customization](../user-guide/customization.md) — this example uses a
+* You completed [Customization](../user-guide/customization) — this example uses a
   custom rollout function and reward.
 
 ## Files
@@ -144,7 +141,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
    learns to *predict the search results*, which is both wrong and wildly unhelpful.
 2. **Tokenization alignment.** The model must see and the trainer must score the
    *exact same tokens*. Pre-tokenizing vs. re-tokenizing at training time can drift —
-   that's where the [chat template verifier](../user-guide/agentic-chat-template.md)
+   that's where the [chat template verifier](../user-guide/agentic-chat-template)
    matters.
 
 ## Walkthrough — reward
@@ -234,7 +231,6 @@ conflicting with Miles.
 ### One-time setup
 
 ```bash
-# 1. Conda
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
 bash ~/miniconda.sh -b -p $HOME/miniconda3
 source ~/miniconda3/etc/profile.d/conda.sh

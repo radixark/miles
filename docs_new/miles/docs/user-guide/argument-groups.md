@@ -2,14 +2,11 @@
 title: Argument Groups
 description: The launch-script argument groups used by Miles recipes, with links to the flags that belong in each group.
 ---
-
-# Argument Groups
-
 Miles launch scripts are bash arrays. The grouping is deliberately boring: each array
 owns one operational concern, then the script expands all arrays into `train.py` or
 `train_async.py`.
 
-Use this page to decide where a flag belongs. Use the [CLI Reference](cli-reference.md)
+Use this page to decide where a flag belongs. Use the [CLI Reference](cli-reference)
 when you need the full default and type for an individual flag.
 
 | Group | Owns | Typical source |

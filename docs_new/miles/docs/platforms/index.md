@@ -2,9 +2,6 @@
 title: Platforms
 description: Hardware-specific tutorials. Most users want NVIDIA H/B; AMD MI300X is supported via ROCm.
 ---
-
-# Platforms
-
 Miles runs on NVIDIA H/B-series and AMD MI300X with the same launch scripts. Each platform page covers driver versions, build flags, and the FP8 / ROCm quirks you need to know before kicking off a job.
 
 <CardGroup cols={2}>

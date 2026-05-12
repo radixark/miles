@@ -2,9 +2,6 @@
 title: Nemotron-3-Super
 description: Launch recipe for NVIDIA Nemotron-3-Super-120B-A12B-FP8 (Mamba+Attention+MoE hybrid, FP8 native) via Megatron AutoBridge.
 ---
-
-# Nemotron-3-Super
-
 ## 1. Model Introduction
 
 [NVIDIA Nemotron-3-Super-120B-A12B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8)
@@ -146,13 +143,13 @@ this scale.
   --make-vocab-size-divisible-by 128`.
 - `--attention-backend auto` (Mamba layers select their own kernel).
 
-See [Backends Beyond Megatron](../../advanced/architecture-support.md) for how
+See [Backends Beyond Megatron](../../advanced/architecture-support) for how
 the bridge shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto
-the Megatron provider, and [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+the Megatron provider, and [FP8 & Low Precision](../../advanced/fp8-low-precision)
 for the FP8 weight format.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
+- [Backends Beyond Megatron](../../advanced/architecture-support)
+- [FP8 & Low Precision](../../advanced/fp8-low-precision)
+- [P2P Weight Transfer](../../advanced/p2p-weight-transfer)

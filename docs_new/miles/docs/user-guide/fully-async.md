@@ -2,9 +2,6 @@
 title: Fully Async Rollout
 description: How fully async rollout decouples generation from training, when to use it, and which flags enable it.
 ---
-
-# Fully Async Rollout
-
 Fully async rollout splits Miles into two concurrent loops:
 
 1. A background rollout worker keeps SGLang generation in flight and pushes completed
@@ -38,7 +35,7 @@ function that owns the background worker:
 +   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
 ```
 
-Everything else belongs in the same [argument groups](argument-groups.md) as a
+Everything else belongs in the same [argument groups](argument-groups) as a
 synchronous run.
 
 ## Queue model
@@ -94,11 +91,11 @@ Warning: No progress for <N>s. Queue size: <N>, Collected: <N>/<N>
 ```
 
 Treat large staleness windows as a training-quality signal, not just a performance
-signal. Fast [P2P weight transfer](../advanced/p2p-weight-transfer.md) keeps the
+signal. Fast [P2P weight transfer](../advanced/p2p-weight-transfer) keeps the
 rollout engines closer to the latest actor weights so fewer groups get recycled by
 `--max-weight-staleness`.
 
 ## Example implementation
 
 For a complete Qwen3 launch script and worker implementation, see the
-[Fully Async Rollout example](../examples/fully-async.md).
+[Fully Async Rollout example](../examples/fully-async).

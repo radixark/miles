@@ -2,9 +2,6 @@
 title: Monitoring & Logging
 description: wandb, structured logs, profiling, and what to look at when something looks off.
 ---
-
-# Monitoring & Logging
-
 Miles emits per-rollout metrics to stdout and (optionally) Weights & Biases. SGLang and
 Ray write their own logs to their default directories.
 

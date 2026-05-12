@@ -2,9 +2,6 @@
 title: DeepSeek-V4 Flash
 description: Launch recipe for DeepSeek-V4-Flash (284 B) — FP8 rollout / BF16 train, 8-node H200 (64 GPUs).
 ---
-
-# DeepSeek-V4 Flash
-
 DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046).
 
 ## 1. Model Introduction
@@ -32,7 +29,6 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 One command runs the full pipeline — dataset download, FP8 → BF16 cast, distributed `torch_dist` conversion, and the training loop:
 
 ```bash
-# Pull the image matching your cluster:
 #   H200 / B200 (cu129 x86) -> radixark/miles:deepseek-v4
 #   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
 docker pull radixark/miles:deepseek-v4
@@ -185,5 +181,5 @@ The `--low-memory-resume` flag (off by default) puts optimizer states on CPU dur
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
-- [Architecture Support](../../advanced/architecture-support.md) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.
+- [FP8 & Low Precision](../../advanced/fp8-low-precision)
+- [Architecture Support](../../advanced/architecture-support) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.

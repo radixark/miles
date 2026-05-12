@@ -2,9 +2,6 @@
 title: Qwen3-Next 80B-A3B
 description: Launch recipes for Qwen3-Next-80B-A3B-Thinking on Megatron and FSDP backends.
 ---
-
-# Qwen3-Next 80B-A3B
-
 ## 1. Model Introduction
 
 [Qwen3-Next](https://huggingface.co/collections/Qwen/qwen3-next) is Alibaba's next-generation Qwen architecture, swapping classical attention for a hybrid Gated DeltaNet + Full Attention design.
@@ -91,7 +88,6 @@ The canonical script enables EAGLE speculative rollout:
 --sglang-ep-size 8
 --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 128)
 
-# mtp / EAGLE
 --sglang-speculative-algorithm EAGLE
 --sglang-speculative-num-steps 2
 --sglang-speculative-eagle-topk 1
@@ -120,6 +116,6 @@ The FSDP variant leaves Adam on GPU.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [Rollout Routing Replay (R3)](../../advanced/miles-router.md)
-- [Speculative Decoding](../../advanced/speculative-decoding.md)
+- [Backends Beyond Megatron](../../advanced/architecture-support)
+- [Rollout Routing Replay (R3)](../../advanced/miles-router)
+- [Speculative Decoding](../../advanced/speculative-decoding)

@@ -2,9 +2,6 @@
 title: Fault Tolerance
 description: Rollout-side health checks and engine recovery, gated by --use-fault-tolerance.
 ---
-
-# Fault Tolerance
-
 `--use-fault-tolerance` enables Miles's rollout-side fault-tolerance machinery.
 It gates two code paths:
 

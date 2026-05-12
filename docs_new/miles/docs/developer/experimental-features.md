@@ -2,9 +2,6 @@
 title: Experimental Features
 description: Backends and features that exist in tree but are not production-ready — opt-in at your own risk.
 ---
-
-# Experimental Features
-
 These features live in the Miles tree but are **not** production-ready. They typically
 have rough edges, missing parallelism, or known bugs against current dependency
 versions. Use them when you want to iterate quickly or co-develop a feature, not for
@@ -64,7 +61,6 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 ### Quick start
 
 ```bash
-# Optional: wandb
 export WANDB_API_KEY=<key>
 
 # Model + data

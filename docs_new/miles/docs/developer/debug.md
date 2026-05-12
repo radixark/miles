@@ -2,9 +2,6 @@
 title: Debugging
 description: Aligning precision, separate train/rollout debugging, common kernel pitfalls.
 ---
-
-# Debugging
-
 When something is wrong with a Miles run, the question is almost always: **rollout or
 training?** Once you've isolated which side is misbehaving, the rest is a normal
 debugging session.
@@ -40,7 +37,7 @@ They should be: at step 1 the actor and reference are the same weights. If KL > 
 * **Large values (KL > 1).** Configuration error. Re-check parallelism and precision.
 * **Slightly elevated logp on instruct (~0.8 per token).** Almost always a chat-template
   mismatch — your prompts don't match the format the model was trained on. Run the
-  [chat template verifier](../user-guide/agentic-chat-template.md).
+  [chat template verifier](../user-guide/agentic-chat-template).
 
 #### Is `grad_norm` reasonable?
 
@@ -80,7 +77,7 @@ This is the single most useful pattern in the Miles workflow. Use it.
 ## Determinism for bisecting
 
 When you need to A/B test a code change, bit-wise reproducibility is your friend. See
-the [Reproducibility recipe](../examples/reproducibility.md) for the exact flag set
+the [Reproducibility recipe](../examples/reproducibility) for the exact flag set
 and env vars. The 25% throughput cost is worth it during development.
 
 ## Common kernel pitfalls

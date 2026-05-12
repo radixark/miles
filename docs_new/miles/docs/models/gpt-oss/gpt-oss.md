@@ -2,9 +2,6 @@
 title: GPT-OSS 20B
 description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, dequantizes MXFP4 → BF16 first).
 ---
-
-# GPT-OSS 20B
-
 ## 1. Model Introduction
 
 [GPT-OSS](https://huggingface.co/openai/gpt-oss-20b) is OpenAI's open-weight language model, designed for reasoning, agentic tasks, and developer use cases. miles supports the 20 B variant.
@@ -27,7 +24,6 @@ description: Two launchers — Megatron BF16 (8 GPU, mbridge) and FSDP (4 GPU, d
 ### 3.1 Download model + datasets
 
 ```bash
-# Megatron BF16 path — stage everything under /root/shared (script's hardcoded BASE_DIR)
 hf download openai/gpt-oss-20b --local-dir /root/shared/gpt-oss-20b
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/shared/dapo-math-17k
 
@@ -118,5 +114,5 @@ Neither launcher writes `--save`/`--load`/`--save-interval`.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support.md) — the FSDP variant.
-- [Low Precision RL](../../advanced/fp8-low-precision.md)
+- [Backends Beyond Megatron](../../advanced/architecture-support) — the FSDP variant.
+- [Low Precision RL](../../advanced/fp8-low-precision)

@@ -2,9 +2,6 @@
 title: Training Backend
 description: Megatron-LM as the training backend — parameters, parallelism, checkpoints, and hooks.
 ---
-
-# Training Backend
-
 Miles decouples the **training backend** (how the model is sharded, checkpointed, and
 stepped) from the **inference backend** (SGLang). The production training backend is
 **Megatron-LM**.
@@ -47,7 +44,7 @@ MODEL_ARGS=(
 
 The spec function replaces specific Megatron submodules with the HF implementation
 without patching Megatron itself. Details:
-[Backends Beyond Megatron](../advanced/architecture-support.md).
+[Backends Beyond Megatron](../advanced/architecture-support).
 
 ### Parallelism compatibility
 
@@ -173,13 +170,13 @@ at startup.
 
 ## Further reading
 
-- [Core concepts](concepts.md) — the four objects that make up any Miles job.
-- [Training script walkthrough](training-script-walkthrough.md) — the launch script,
+- [Core concepts](concepts) — the four objects that make up any Miles job.
+- [Training script walkthrough](training-script-walkthrough) — the launch script,
   argument group by argument group.
-- [Fully Async Rollout](fully-async.md) — decouple generation from trainer steps with
+- [Fully Async Rollout](fully-async) — decouple generation from trainer steps with
   a queue-backed rollout worker.
-- [Configuration](cli-reference.md) — the flag taxonomy and defaults.
-- [Backends beyond Megatron](../advanced/architecture-support.md) — wrapping new
+- [Configuration](cli-reference) — the flag taxonomy and defaults.
+- [Backends beyond Megatron](../advanced/architecture-support) — wrapping new
   architectures without patching Megatron core.
 - [Experimental Features → FSDP backend](../developer/experimental-features.md#fsdp-backend)
   — experimental PyTorch FSDP2 backend for fast iteration on small dense models.

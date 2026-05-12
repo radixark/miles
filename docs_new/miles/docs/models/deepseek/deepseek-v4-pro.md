@@ -2,14 +2,11 @@
 title: DeepSeek-V4 Pro
 description: Launch recipe for DeepSeek-V4-Pro (1.6 T) — V4-family architecture at Pro scale.
 ---
-
-# DeepSeek-V4 Pro
-
 DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046).
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Pro](https://huggingface.co/sgl-project/DeepSeek-V4-Pro-FP8) is a 49 B-active / 1.6 T-total MoE that scales up the same sparse-MLA + DSA-indexer + KV-compressor + hyper-connection stack as [V4-Flash](deepseek-v4-flash.md). The architecture family is identical; the deltas are size and a handful of tuned knobs (indexer top-k, output-projection groups, compression schedule). The miles + Megatron-Core integration ships in the same image as Flash and is selected with `--model-name DeepSeek-V4-Pro-FP8`.
+[DeepSeek-V4-Pro](https://huggingface.co/sgl-project/DeepSeek-V4-Pro-FP8) is a 49 B-active / 1.6 T-total MoE that scales up the same sparse-MLA + DSA-indexer + KV-compressor + hyper-connection stack as [V4-Flash](deepseek-v4-flash). The architecture family is identical; the deltas are size and a handful of tuned knobs (indexer top-k, output-projection groups, compression schedule). The miles + Megatron-Core integration ships in the same image as Flash and is selected with `--model-name DeepSeek-V4-Pro-FP8`.
 
 **Key highlights** (deltas vs [V4-Flash](deepseek-v4-flash.md#1-model-introduction)):
 
@@ -32,7 +29,6 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 ### 3.1 One-line launch
 
 ```bash
-# Pull the image matching your cluster:
 #   H200 / B200 (cu129 x86) -> radixark/miles:deepseek-v4
 #   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
 docker pull radixark/miles:deepseek-v4
@@ -100,10 +96,11 @@ Required env vars (the launcher sets these for you): `SGLANG_SKIP_CHECKPOINT_LOA
 
 Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 
-!!! warning "Pro-specific rollout caveats"
-    1. **Engine size ≥ 32 GPUs.** Pro needs a single SGLang engine spanning at least 32 GPUs — the launcher hard-codes `--rollout-num-gpus-per-engine 32`. Smaller engines do not leave enough memory after weights, KV cache, indexer state, and DeepEP buffers, and rollout will OOM under load.
-    2. **EP is mandatory; pure TP will not shard the model.** 384 routed experts × `moe_ffn_hidden_size=3072` cannot be partitioned by tensor parallelism alone — the model must use expert parallelism (`--sglang-ep-size 32`) to spread the expert MLPs across ranks. `--sglang-tp-size 32` only covers the attention / embedding paths.
-    3. **DeepEP normal-mode + CUDA graphs can hang at large batch sizes.** When `--sglang-moe-a2a-backend deepep` is on, an overly large `--sglang-cuda-graph-max-bs` makes SGLang hang during graph capture or replay. The launcher pins it to `8` for Pro — raise it only after verifying the engine doesn't deadlock at your target batch.
+<Warning title="Pro-specific rollout caveats">
+1. **Engine size ≥ 32 GPUs.** Pro needs a single SGLang engine spanning at least 32 GPUs — the launcher hard-codes `--rollout-num-gpus-per-engine 32`. Smaller engines do not leave enough memory after weights, KV cache, indexer state, and DeepEP buffers, and rollout will OOM under load.
+2. **EP is mandatory; pure TP will not shard the model.** 384 routed experts × `moe_ffn_hidden_size=3072` cannot be partitioned by tensor parallelism alone — the model must use expert parallelism (`--sglang-ep-size 32`) to spread the expert MLPs across ranks. `--sglang-tp-size 32` only covers the attention / embedding paths.
+3. **DeepEP normal-mode + CUDA graphs can hang at large batch sizes.** When `--sglang-moe-a2a-backend deepep` is on, an overly large `--sglang-cuda-graph-max-bs` makes SGLang hang during graph capture or replay. The launcher pins it to `8` for Pro — raise it only after verifying the engine doesn't deadlock at your target batch.
+</Warning>
 
 ### 5.4 Optimizer
 
@@ -126,6 +123,6 @@ Pro selects `--model-name DeepSeek-V4-Pro-FP8`, which flips `optimizer_offload=T
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
-- [Architecture Support](../../advanced/architecture-support.md)
-- [DeepSeek V4 Flash](deepseek-v4-flash.md) — sibling recipe; shares the V4-family architecture.
+- [FP8 & Low Precision](../../advanced/fp8-low-precision)
+- [Architecture Support](../../advanced/architecture-support)
+- [DeepSeek V4 Flash](deepseek-v4-flash) — sibling recipe; shares the V4-family architecture.

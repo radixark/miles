@@ -2,9 +2,6 @@
 title: SFT on OpenHermes
 description: Plain supervised fine-tuning of Qwen3-4B-Base on the OpenHermes-2.5 dataset.
 ---
-
-# SFT on OpenHermes
-
 **What you'll learn:** how to use Miles for plain supervised fine-tuning. No RL, no
 rollout, no reward — just data → loss → optimizer.
 
@@ -16,7 +13,7 @@ Why use Miles for SFT? Two reasons:
 
 ## Prerequisites
 
-* You completed the [Qwen3-4B](../models/qwen/qwen3.md) recipe (we reuse the
+* You completed the [Qwen3-4B](../models/qwen/qwen3) recipe (we reuse the
   conversion).
 * ~50 GB free disk for OpenHermes-2.5.
 
@@ -67,7 +64,7 @@ bash scripts/run-qwen3-4B-base-sft.sh
 
 ## What changes vs. the GRPO recipe
 
-Compare to [run-qwen3-4B.sh](../models/qwen/qwen3.md). The deltas:
+Compare to [run-qwen3-4B.sh](../models/qwen/qwen3). The deltas:
 
 ```diff
 - python3 train.py

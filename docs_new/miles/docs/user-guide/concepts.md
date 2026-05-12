@@ -2,9 +2,6 @@
 title: Core Concepts
 description: The four objects that make up every Miles job, and how data flows between them.
 ---
-
-# Core Concepts
-
 A Miles training job is a loop over four objects. Once you understand what each one
 *is* and how data flows between them, every flag in the system has an obvious home.
 
@@ -87,8 +84,8 @@ Use this map when reading any launch script:
 
 ## Next
 
-- [Training Backend](usage.md) — Megatron-LM, parallelism, checkpoints, and hooks.
-- [Argument Groups](argument-groups.md) — where each launch-script array belongs.
-- [Training Script Walkthrough](training-script-walkthrough.md) — the launch script
+- [Training Backend](usage) — Megatron-LM, parallelism, checkpoints, and hooks.
+- [Argument Groups](argument-groups) — where each launch-script array belongs.
+- [Training Script Walkthrough](training-script-walkthrough) — the launch script
   group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).
-- [CLI Reference](cli-reference.md) — every flag, grouped and fully catalogued.
+- [CLI Reference](cli-reference) — every flag, grouped and fully catalogued.

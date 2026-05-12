@@ -2,9 +2,6 @@
 title: LoRA Training and Serving
 description: Train LoRA adapters with miles SFT or RL recipes and serve them through SGLang from the same checkpoint.
 ---
-
-# LoRA Training and Serving
-
 Miles supports LoRA adapters for both SFT and RL recipes. Adapters trained by
 miles load directly into SGLang for rollout, so there is no separate merge or
 conversion step in the training-serving loop.
@@ -75,7 +72,7 @@ reason.
   drives `train.py`.
 * **Low-precision training**: the LoRA branch follows the surrounding
   precision, so block-wise FP8, MXFP8, and INT4 QAT recipes are compatible.
-  See [Low Precision RL](fp8-low-precision.md) and [INT4 QAT](int4-qat.md).
+  See [Low Precision RL](fp8-low-precision) and [INT4 QAT](int4-qat).
 * **`--target-modules` is mandatory** when `--lora-rank > 0`. There is no
   auto-detection; the launcher asserts at startup.
 * **Single adapter per run**: multi-LoRA training in a single job is not

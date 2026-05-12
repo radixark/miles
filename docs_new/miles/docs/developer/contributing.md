@@ -2,9 +2,6 @@
 title: Contributing
 description: PR conventions, code layout, and how reviews work.
 ---
-
-# Contributing
-
 Miles is open source under the LICENSE file in the repo. We accept community
 contributions of every size — bug reports, doc fixes, new model recipes, full features.
 
@@ -40,7 +37,6 @@ miles/
 ## Local dev loop
 
 ```bash
-# Inside the radixark/miles container
 cd /root/miles
 git remote add me git@github.com:<your_user>/miles.git
 git checkout -b feat/awesome
@@ -70,9 +66,9 @@ Before you click "Ready for review":
 - [ ] You added or updated tests for new behaviour.
 - [ ] You ran `pytest -x` and it's green.
 - [ ] If you touched the launch flags, `python3 train.py --help` still parses.
-- [ ] If you added a public flag, it appears in [Server Arguments](../user-guide/cli-reference.md).
+- [ ] If you added a public flag, it appears in [Server Arguments](../user-guide/cli-reference).
 - [ ] If you added a new example, you wrote a real walkthrough (use
-  [examples/index](../examples/index.md) as the structural template).
+  [examples/index](../examples/index) as the structural template).
 
 ## Commit messages
 

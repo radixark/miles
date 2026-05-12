@@ -2,9 +2,6 @@
 title: GLM4.7 Flash
 description: Launch recipes for GLM-4.7-Flash — compact MLA + MoE with R3 enabled by default.
 ---
-
-# GLM4.7 Flash
-
 ## 1. Model Introduction
 
 [GLM-4.7-Flash](https://huggingface.co/zai-org/GLM-4.7-Flash) is a lightweight, high-speed MoE model in the GLM-4.7 series from Zhipu AI, designed for single-GPU-node deployment.
@@ -53,7 +50,6 @@ The Python launcher does the conversion automatically.
 ### 4.1 Quick start
 
 ```bash
-# Bash launcher (1 node × 8 GPU)
 cd /root/miles
 bash scripts/run-glm4.7-flash.sh
 
@@ -112,5 +108,5 @@ CPU Adam on:
 
 ## 6. Pairs Well With
 
-- [Rollout Routing Replay (R3)](../../advanced/miles-router.md) — already on by default.
-- [Low Precision RL](../../advanced/fp8-low-precision.md)
+- [Rollout Routing Replay (R3)](../../advanced/miles-router) — already on by default.
+- [Low Precision RL](../../advanced/fp8-low-precision)
