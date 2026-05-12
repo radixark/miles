@@ -132,7 +132,7 @@ CPU Adam on:
 ### 5.5 Notable quirks
 
 - The bash launcher does not set `--load`/`--save` in `CKPT_ARGS` — `--load` defaults to the value of `--ref-load`.
-- `run_glm45_355b_a32b.py` is Blackwell-only: `_execute_train` asserts `args.hardware != "H100"` (L100).
+- `run_glm45_355b_a32b.py` is Blackwell-only: `_execute_train` asserts `args.hardware != "H100"`.
 
 ## 6. Pairs Well With
 
