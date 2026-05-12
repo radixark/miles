@@ -67,7 +67,7 @@ Each example follows the same template:
 
 ## Where to start
 
-* **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](/docs/examples/fully-async).
-* **Want tool use / RAG?** → [Search-R1](/docs/examples/search-r1), then [ReTool](/docs/examples/retool).
-* **VLM / multi-agent?** → [Multi-Agent Co-Evolution](/docs/examples/multi-agent).
-* **Replay an old result?** → [Reproducibility Recipe](/docs/examples/reproducibility).
+* **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](/miles/docs/examples/fully-async).
+* **Want tool use / RAG?** → [Search-R1](/miles/docs/examples/search-r1), then [ReTool](/miles/docs/examples/retool).
+* **VLM / multi-agent?** → [Multi-Agent Co-Evolution](/miles/docs/examples/multi-agent).
+* **Replay an old result?** → [Reproducibility Recipe](/miles/docs/examples/reproducibility).

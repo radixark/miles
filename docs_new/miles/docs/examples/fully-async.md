@@ -23,9 +23,9 @@ instead of the sum.
 
 ## Prerequisites
 
-* You completed the [Qwen3-4B](/docs/models/qwen/qwen3) recipe (or have an
+* You completed the [Qwen3-4B](/miles/docs/models/qwen/qwen3) recipe (or have an
   equivalent model + dataset).
-* Comfortable with [Customization](/docs/user-guide/customization) — async rollout uses
+* Comfortable with [Customization](/miles/docs/user-guide/customization) — async rollout uses
   a custom rollout function.
 
 ## Files
@@ -178,7 +178,7 @@ check GPU utilization.
 * **Best-effort ordering.** Samples are sorted by index at drain time, but exact-order
   guarantees aren't provided.
 * **Minimal error handling.** If a generate task throws, it's logged but the worker
-  keeps going. Production users wire in [fault tolerance](/docs/advanced/fault-tolerance).
+  keeps going. Production users wire in [fault tolerance](/miles/docs/advanced/fault-tolerance).
 
 ## Variations
 

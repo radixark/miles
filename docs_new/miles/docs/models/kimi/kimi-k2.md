@@ -164,7 +164,7 @@ CPU Adam is enabled in both:
 
 ## 6. Pairs Well With
 
-- [PD Disaggregation](/docs/advanced/pd-disaggregation)
-- [P2P Weight Transfer](/docs/advanced/p2p-weight-transfer)
-- [Fault Tolerance](/docs/advanced/fault-tolerance)
-- [INT4 QAT](/docs/advanced/int4-qat)
+- [PD Disaggregation](/miles/docs/advanced/pd-disaggregation)
+- [P2P Weight Transfer](/miles/docs/advanced/p2p-weight-transfer)
+- [Fault Tolerance](/miles/docs/advanced/fault-tolerance)
+- [INT4 QAT](/miles/docs/advanced/int4-qat)

@@ -98,9 +98,9 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 ### 5.5 Notable quirks
 
 - The Megatron side uses `--moe-token-dispatcher-type flex`; DeepEP isn't enabled here, unlike Qwen3-Next.
-- The model config (`scripts/models/qwen3.5-35B-A3B.sh`) reuses the Qwen3.5 spec: `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `A_log` kept in FP32 via the bridge. See [Backends Beyond Megatron](/docs/advanced/architecture-support).
+- The model config (`scripts/models/qwen3.5-35B-A3B.sh`) reuses the Qwen3.5 spec: `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `A_log` kept in FP32 via the bridge. See [Backends Beyond Megatron](/miles/docs/advanced/architecture-support).
 
 ## 6. Pairs Well With
 
-- [Speculative Decoding](/docs/advanced/speculative-decoding)
-- [Backends Beyond Megatron](/docs/advanced/architecture-support)
+- [Speculative Decoding](/miles/docs/advanced/speculative-decoding)
+- [Backends Beyond Megatron](/miles/docs/advanced/architecture-support)

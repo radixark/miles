@@ -8,10 +8,10 @@ Miles ships recipes for the DeepSeek family across two generations: **DeepSeek-V
 
 | Model | Active / Total | HF ID | Recipe |
 |---|---|---|---|
-| DeepSeek-V4-Pro | 49 B / 1.6 T | TBA | [deepseek-v4-pro](/docs/models/deepseek/deepseek-v4-pro) |
-| DeepSeek-V4-Flash | 13 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4-flash](/docs/models/deepseek/deepseek-v4-flash) |
-| DeepSeek-V3 | 37 B / 671 B | `deepseek-ai/DeepSeek-V3` | [deepseek](/docs/models/deepseek/deepseek) |
-| DeepSeek-R1 | 37 B / 671 B | `deepseek-ai/DeepSeek-R1` | [deepseek](/docs/models/deepseek/deepseek) |
+| DeepSeek-V4-Pro | 49 B / 1.6 T | TBA | [deepseek-v4-pro](/miles/docs/models/deepseek/deepseek-v4-pro) |
+| DeepSeek-V4-Flash | 13 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4-flash](/miles/docs/models/deepseek/deepseek-v4-flash) |
+| DeepSeek-V3 | 37 B / 671 B | `deepseek-ai/DeepSeek-V3` | [deepseek](/miles/docs/models/deepseek/deepseek) |
+| DeepSeek-R1 | 37 B / 671 B | `deepseek-ai/DeepSeek-R1` | [deepseek](/miles/docs/models/deepseek/deepseek) |
 
 A validated DeepSeek-V4-Pro recipe is not yet available — see [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046) for tracking.
 
@@ -33,10 +33,10 @@ cd /root/miles
 bash scripts/run-deepseek-r1.sh              # full 16-node run
 ```
 
-See the [DeepSeek-V4 Flash](/docs/models/deepseek/deepseek-v4-flash) page for the V4 architecture summary, parallelism layouts, and known workarounds; see the [DeepSeek R1 / V3](/docs/models/deepseek/deepseek) page for the V3 flow — FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), per-arg walkthrough, and the alternate Python launcher (`scripts/run_deepseek.py`).
+See the [DeepSeek-V4 Flash](/miles/docs/models/deepseek/deepseek-v4-flash) page for the V4 architecture summary, parallelism layouts, and known workarounds; see the [DeepSeek R1 / V3](/miles/docs/models/deepseek/deepseek) page for the V3 flow — FP8 → BF16 conversion, Megatron parallelism layout (TP8 / PP4 / EP32 / CP4), per-arg walkthrough, and the alternate Python launcher (`scripts/run_deepseek.py`).
 
 ## Pairs well with
 
-- [PD Disaggregation](/docs/advanced/pd-disaggregation) — 671 B is where PD really earns its keep.
-- [P2P Weight Transfer](/docs/advanced/p2p-weight-transfer) — amortize weight sync across ranks.
-- [Fault Tolerance](/docs/advanced/fault-tolerance) — node failures are inevitable at 16-node scale.
+- [PD Disaggregation](/miles/docs/advanced/pd-disaggregation) — 671 B is where PD really earns its keep.
+- [P2P Weight Transfer](/miles/docs/advanced/p2p-weight-transfer) — amortize weight sync across ranks.
+- [Fault Tolerance](/miles/docs/advanced/fault-tolerance) — node failures are inevitable at 16-node scale.

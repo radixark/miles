@@ -45,7 +45,7 @@ The image ships with:
 - Megatron-LM, SGLang, FlashAttention-3, DeepGEMM, Apex
 - Ray, uv, and Miles installed editable at `/root/miles`
 
-See [Platforms](/docs/platforms/index) for platform-specific notes.
+See [Platforms](/miles/docs/platforms/index) for platform-specific notes.
 
 ## Method 2: From source
 
@@ -85,7 +85,7 @@ python -c "import miles; print('Miles import OK')"
 nvidia-smi
 ```
 
-If either command fails, see [Debugging](/docs/developer/debug) or the [FAQ](/docs/faq).
+If either command fails, see [Debugging](/miles/docs/developer/debug) or the [FAQ](/miles/docs/faq).
 
 ## Hardware requirements
 
@@ -101,6 +101,6 @@ or Slingshot — and 200+ GB/s per node. Single-node jobs run fine over NVLink o
 
 ## Next steps
 
-- [Quick Start](/docs/getting-started/quick-start) — run your first training job.
-- [Core concepts](/docs/user-guide/concepts) — the mental model behind Miles.
-- [Training backends](/docs/user-guide/usage) — Megatron vs FSDP.
+- [Quick Start](/miles/docs/getting-started/quick-start) — run your first training job.
+- [Core concepts](/miles/docs/user-guide/concepts) — the mental model behind Miles.
+- [Training backends](/miles/docs/user-guide/usage) — Megatron vs FSDP.

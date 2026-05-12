@@ -96,5 +96,5 @@ CPU Adam is not enabled in either launcher.
 
 ## 6. Pairs Well With
 
-- [Rollout Routing Replay (R3)](/docs/advanced/miles-router)
-- [Low Precision RL](/docs/advanced/fp8-low-precision)
+- [Rollout Routing Replay (R3)](/miles/docs/advanced/miles-router)
+- [Low Precision RL](/miles/docs/advanced/fp8-low-precision)

@@ -80,10 +80,10 @@ so the KL anchor stays full-precision.
 
 ## Pairs with
 
-* [R3](/docs/advanced/miles-router). Keeps MoE routing stable across the quantized forward.
-* [P2P weight transfer](/docs/advanced/p2p-weight-transfer). INT4 weights are 4× smaller,
+* [R3](/miles/docs/advanced/miles-router). Keeps MoE routing stable across the quantized forward.
+* [P2P weight transfer](/miles/docs/advanced/p2p-weight-transfer). INT4 weights are 4× smaller,
   so weight sync transfers less data.
-* [Speculative decoding](/docs/advanced/speculative-decoding). Compounds for end-to-end
+* [Speculative decoding](/miles/docs/advanced/speculative-decoding). Compounds for end-to-end
   rollout speedup.
 
 ## When QAT is not appropriate

@@ -25,7 +25,7 @@ A common mistake is forgetting `--colocate` when sharing GPUs.
 
 </Accordion>
 
-<Accordion title="I'm OOM during training. What is `max_tokens_per_gpu`?">
+<Accordion title={<>I'm OOM during training. What is <code>max_tokens_per_gpu</code>?</>}>
 
 `max-tokens-per-gpu` caps how many tokens a single GPU sees per micro-batch (only when
 `--use-dynamic-batch-size` is on, which it should be).
@@ -41,7 +41,7 @@ parallel (`--context-parallel-size N`) to spread one sample across N ranks.
 
 </Accordion>
 
-<Accordion title="Multi-node training fails with `transformers cannot find a model`.">
+<Accordion title={<>Multi-node training fails with <code>transformers cannot find a model</code>.</>}>
 
 Multiple workers calling `AutoConfig.from_pretrained` on a shared filesystem race each
 other. Set `--model-name <hf-id>` so workers don't re-resolve the path.
@@ -78,7 +78,7 @@ never need to pad manually.
 
 </Accordion>
 
-<Accordion title="SGLang gives `Max retries exceeded with url: /get_model_info`.">
+<Accordion title={<>SGLang gives <code>Max retries exceeded with url: /get_model_info</code>.</>}>
 
 Multiple SGLang servers are colliding on the same node. Reduce the number of SGLang
 instances per node — e.g. set `--rollout-num-gpus-per-engine 8` so there's exactly
@@ -89,7 +89,7 @@ one server per host.
 
 Check the chat template first — most "exploding gradient" reports come from feeding
 already-templated data into a model that re-applies its template. Then read
-[Debugging](/docs/developer/debug).
+[Debugging](/miles/docs/developer/debug).
 
 </Accordion>
 
@@ -100,14 +100,14 @@ them explicitly with `--rollout-stop` or `--rollout-stop-token-ids`.
 
 </Accordion>
 
-<Accordion title="SGLang error: `illegal memory access`.">
+<Accordion title={<>SGLang error: <code>illegal memory access</code>.</>}>
 
 Per the [SGLang FAQ](https://docs.sglang.io/references/faq.html), this is usually OOM
 masquerading. Lower `--sglang-mem-fraction-static`.
 
 </Accordion>
 
-<Accordion title="`JSONDecodeError` from `torch.compile` / inductor.">
+<Accordion title={<><code>JSONDecodeError</code> from <code>torch.compile</code> / inductor.</>}>
 
 Torch's compiler cache is corrupt. Add `TORCHINDUCTOR_FORCE_DISABLE_CACHES=1` to your
 Ray env vars and re-run.

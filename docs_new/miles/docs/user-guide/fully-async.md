@@ -35,7 +35,7 @@ function that owns the background worker:
 +   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
 ```
 
-Everything else belongs in the same [argument groups](/docs/user-guide/argument-groups) as a
+Everything else belongs in the same [argument groups](/miles/docs/user-guide/argument-groups) as a
 synchronous run.
 
 ## Queue model
@@ -91,11 +91,11 @@ Warning: No progress for <N>s. Queue size: <N>, Collected: <N>/<N>
 ```
 
 Treat large staleness windows as a training-quality signal, not just a performance
-signal. Fast [P2P weight transfer](/docs/advanced/p2p-weight-transfer) keeps the
+signal. Fast [P2P weight transfer](/miles/docs/advanced/p2p-weight-transfer) keeps the
 rollout engines closer to the latest actor weights so fewer groups get recycled by
 `--max-weight-staleness`.
 
 ## Example implementation
 
 For a complete Qwen3 launch script and worker implementation, see the
-[Fully Async Rollout example](/docs/examples/fully-async).
+[Fully Async Rollout example](/miles/docs/examples/fully-async).
