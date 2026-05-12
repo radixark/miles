@@ -14,7 +14,7 @@ needed to run RL at trillion-parameter scale.
 - **Fast and stable support for the latest models.** Day-0 enablement of frontier
   releases such as DeepSeek-V4, with rapid follow-on support for new architectures
   including GLM-5, Qwen 3.6, and Nemotron-3-Super.
-- **Unified low-precision training.** Customisable precision across the rollout and
+- **Unified low-precision training.** Customizable precision across the rollout and
   training engines, with unified **BF16**, **FP8**, **MXFP8**, and **INT4 QAT** recipes
   available now and an **NVFP4** training recipe in progress.
 - **Efficient Rollout Routing Replay (R3).** For MoE models, expert routing captured

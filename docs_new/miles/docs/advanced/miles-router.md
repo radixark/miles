@@ -1,19 +1,19 @@
 ---
 title: Rollout Routing Replay (R3)
-description: Capture expert routing during inference and replay it during training so MoE RL is stable.
+description: Capture expert routing during inference and replay it during training to stabilize RL.
 ---
 Rollout Routing Replay (R3) records the expert routing decisions made during
 inference and replays them during training, producing bit-identical expert
 allocation between rollout and training.
 
-## Why MoE RL was previously unstable
+## Why MoE RL is unstable without R3
 
 For each token, an MoE router picks `top-k` experts. The choice depends on the
-input through a soft router and a top-k op. In production the router is a
+input through a soft router and a top-k operation. In production the router is a
 learned `nn.Linear` with non-deterministic kernels and FP8 quantization, so tiny
 numerical differences flip routes at the per-layer, per-token level.
 
-Without R3:
+An example without R3:
 
 * Rollout selects experts `{2, 7}` for token 314.
 * Training (with the same weights but slightly different precision and kernels)
@@ -22,8 +22,8 @@ Without R3:
   layers, tens of thousands of tokens, and thousands of training steps, the
   policy diverges.
 
-With R3 the inference router's choice is what training also uses. Numerical
-noise no longer flips routes.
+With R3, the trainer replays the rollout router's expert assignments verbatim,
+so numerical noise no longer flips routes.
 
 ## How R3 wires up
 
@@ -47,7 +47,7 @@ forward pass so recorded routes are used instead of recomputed ones.
 ## Memory cost
 
 `(num_tokens - 1) × num_layers × top_k × 4 bytes` (int32 per element, see
-`miles/utils/types.py:29`). For a 32K-token sequence, 60 layers, and
+`miles/utils/types.py`). For a 32K-token sequence, 60 layers, and
 `top_k = 8`, that is roughly 60 MB per sample of routing metadata.
 
 ## When R3 is not required
