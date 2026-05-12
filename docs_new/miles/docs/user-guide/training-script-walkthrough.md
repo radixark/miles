@@ -87,7 +87,7 @@ Their product is the total sample count produced each rollout.
 
 - `--global-batch-size` — samples used per optimizer step.
 - `--num-steps-per-rollout` — optimizer steps per rollout. Leave at `1` for strict
-  on-policy behaviour; raise it for off-policy reuse of rollout batches.
+  on-policy behavior; raise it for off-policy reuse of rollout batches.
 
 Their product is the total sample count consumed each rollout.
 
@@ -133,7 +133,7 @@ regardless of how many optimizer steps fired in between.
 
 ## EVAL_ARGS — a strict subset of rollout
 
-Evaluation reuses the rollout machinery but lets you override sampling behaviour so
+Evaluation reuses the rollout machinery but lets you override sampling behavior so
 that eval is deterministic and comparable across runs.
 
 ```bash

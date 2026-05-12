@@ -249,7 +249,7 @@ inherited across turns. Each request is tokenized independently.
 
 ## Next
 
-- [Customization](/miles/docs/user-guide/customization): the full catalogue of `--*-path` hooks.
+- [Customization](/miles/docs/user-guide/customization): the full catalog of `--*-path` hooks.
 - [Agentic Chat Templates](/miles/docs/user-guide/agentic-chat-template): verifying that a template is
   append-only across turns.
 - [Multi-agent example](/miles/docs/examples/multi-agent): full agentic walkthrough.

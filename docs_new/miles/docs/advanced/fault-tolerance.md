@@ -2,8 +2,8 @@
 title: Fault Tolerance
 description: Rollout-side health checks and engine recovery, gated by --use-fault-tolerance.
 ---
-`--use-fault-tolerance` enables Miles's rollout-side fault-tolerance machinery.
-It gates two code paths:
+The `--use-fault-tolerance` flag enables Miles's rollout-side
+fault-tolerance machinery. It gates two code paths:
 
 1. A `RolloutHealthMonitor` thread per server group, started in
    `miles/ray/rollout.py`, which periodically heart-beats each SGLang

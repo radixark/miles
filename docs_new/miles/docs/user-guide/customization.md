@@ -2,7 +2,7 @@
 title: Customization
 description: The 22 plug-points where you can drop in your own Python without forking Miles.
 ---
-Most of Miles's behaviour can be replaced with user-supplied Python by passing a
+Most of Miles's behavior can be replaced with user-supplied Python by passing a
 `--*-path` flag. This page lists every such hook, the function signature it expects,
 and the default it replaces.
 
