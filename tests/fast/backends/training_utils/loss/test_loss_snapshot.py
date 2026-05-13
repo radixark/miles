@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entr
 from miles.backends.training_utils.loss_hub.losses import policy_loss_function, sft_loss_function, value_loss_function
 
 from .loss_test_utils import (
+    args_from_dict,
     assert_outputs_equal,
     deep_clone,
     ensure_snapshot_dir,
@@ -94,11 +94,6 @@ CONFIGS = [
 # ---------------------------------------------------------------------------
 # pytest hooks & fixtures
 # ---------------------------------------------------------------------------
-
-
-def pytest_addoption(parser):
-    parser.addoption("--snapshot", action="store_true", help="Generate snapshots from current code")
-    parser.addoption("--compare", action="store_true", help="Compare current code against saved snapshots")
 
 
 @pytest.fixture
@@ -257,6 +252,6 @@ class TestLossSnapshot:
             path = snapshot_dir / f"{config[0]}.pt"
             assert path.exists(), f"Snapshot not found: {path}"
             saved_inputs, saved_outputs = load_snapshot(path)
-            saved_args = Namespace(**saved_inputs["args_dict"])
+            saved_args = args_from_dict(saved_inputs["args_dict"])
             outputs = run_all(saved_args, parallel_state, saved_inputs)
             assert_outputs_equal(outputs, saved_outputs)
