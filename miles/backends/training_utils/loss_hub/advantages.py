@@ -93,13 +93,19 @@ def compute_advantages(
 
 
 def normalize_advantages(
-    args,
-    advantages,
-    loss_masks,
-    total_lengths,
-    response_lengths,
-    max_seq_lens=None,
-):
+    args: Namespace,
+    advantages: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None = None,
+) -> list[torch.Tensor]:
+    """Whiten advantages across the DP group using `loss_masks` for weighting.
+
+    Under CP > 1 the mask is sliced to this rank's tokens; when the local
+    mask is empty the inputs pass through unchanged. Output shapes match
+    `advantages`.
+    """
     parallel_state = get_parallel_state()
     all_advs = torch.cat(advantages)
     cp_size = parallel_state.cp.size
