@@ -5,13 +5,18 @@ import einops
 import torch
 import torch.nn as nn
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
-from megatron.core.extensions.transformer_engine import TELinear, TENorm
+from megatron.core.extensions.transformer_engine import (
+    TEColumnParallelLinear,
+    TELinear,
+    TENorm,
+    TERowParallelLinear,
+)
 from megatron.core.models.gpt import experimental_attention_variant_module_specs as _eav_specs
 from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
     get_transformer_block_with_experimental_attention_variant_spec,
 )
 from megatron.core.process_groups_config import ProcessGroupCollection
-from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
+from megatron.core.tensor_parallel.layers import ColumnParallelLinear
 from megatron.core.tensor_parallel.mappings import (
     copy_to_tensor_model_parallel_region,
     gather_from_sequence_parallel_region,
@@ -108,13 +113,16 @@ class DeepSeekV4Attention(MegatronModule):
             parallel_mode="duplicated",
         )
         self.q_norm = TENorm(config_no_sp, self.q_lora_rank, eps=self.eps)
-        self.wq_b = ColumnParallelLinear(
+        self.wq_b = TEColumnParallelLinear(
             self.q_lora_rank,
             self.n_heads * self.head_dim,
             config=config_no_sp,
             init_method=config.init_method,
             bias=False,
             gather_output=False,
+            skip_bias_add=False,
+            is_expert=False,
+            tp_group=self.tp_group,
         )
         self.wkv = TELinear(
             self.dim,
@@ -140,7 +148,7 @@ class DeepSeekV4Attention(MegatronModule):
             gather_output=False,
         )
         assert self.wo_a.weight.dtype == torch.bfloat16
-        self.wo_b = RowParallelLinear(
+        self.wo_b = TERowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.dim,
             config=config_no_sp,
@@ -148,6 +156,8 @@ class DeepSeekV4Attention(MegatronModule):
             bias=False,
             input_is_parallel=True,
             skip_bias_add=False,
+            is_expert=False,
+            tp_group=self.tp_group,
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
