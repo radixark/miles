@@ -106,6 +106,13 @@ def normalize_advantages(
     mask is empty the inputs pass through unchanged. Output shapes match
     `advantages`.
     """
+    num_samples = len(advantages)
+    assert len(loss_masks) == num_samples
+    assert len(total_lengths) == num_samples
+    assert len(response_lengths) == num_samples
+    if max_seq_lens is not None:
+        assert len(max_seq_lens) == num_samples
+
     parallel_state = get_parallel_state()
     all_advs = torch.cat(advantages)
     cp_size = parallel_state.cp.size
@@ -113,11 +120,11 @@ def normalize_advantages(
         all_masks = torch.cat(loss_masks)
     else:
         mask_chunks = []
-        for i in range(len(advantages)):
-            total_len = total_lengths[i]
-            response_len = response_lengths[i]
+        max_seq_lens_iter = max_seq_lens if max_seq_lens is not None else [None] * num_samples
+        for total_len, response_len, full_mask, max_seq_len in zip(
+            total_lengths, response_lengths, loss_masks, max_seq_lens_iter, strict=True
+        ):
             prompt_len = total_len - response_len
-            max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
 
             _, _, _, token_offsets = get_logits_and_tokens_offset_with_cp(
                 total_len, response_len, args.qkv_format, max_seq_len
@@ -129,7 +136,6 @@ def normalize_advantages(
             res_s1, res_e1 = max(0, s1 - prompt_len), max(0, e1 - prompt_len)
 
             local_mask_parts = []
-            full_mask = loss_masks[i]
             if res_e0 > res_s0:
                 local_mask_parts.append(full_mask[res_s0:res_e0])
             if res_e1 > res_s1:
