@@ -239,7 +239,10 @@ class DeepSeekV4Attention(MegatronModule):
         kv_vanilla = kv_vanilla.clone()
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
         if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
-            kv_vanilla = fp8_simulate_qat(kv_vanilla, 64)
+            kv_vanilla = kv_vanilla.clone()
+            kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(
+                kv_vanilla[..., : self.nope_head_dim], 64
+            )
 
         seqlen_global = seqlen_local * self.cp_size
         q_positions = get_q_positions_for_cp(
