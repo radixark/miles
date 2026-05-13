@@ -3,14 +3,13 @@ from argparse import Namespace
 import torch
 from torch.utils.checkpoint import checkpoint
 
+from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
+from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values  # noqa: F401
+from miles.backends.training_utils.loss_hub.losses import get_loss_function
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ppo_utils import compute_approx_kl
 from miles.utils.types import RolloutBatch
-
-from .cp_utils import get_sum_of_sample_mean
-from .loss_hub.advantages import compute_advantages, normalize_advantages
-from .loss_hub.logits import get_log_probs_and_entropy, get_values  # noqa: F401
-from .loss_hub.losses import get_loss_function
-from .parallel import get_parallel_state
 
 
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:

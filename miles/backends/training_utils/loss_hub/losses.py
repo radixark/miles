@@ -4,19 +4,18 @@ from collections.abc import Callable
 import torch
 import torch.distributed as dist
 
-from miles.utils.misc import load_function
-from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
-from miles.utils.types import RolloutBatch
-
-from ..cp_utils import (
+from miles.backends.training_utils.cp_utils import (
     all_gather_with_cp,
     get_local_response_loss_masks,
     get_sum_of_sample_mean,
     slice_loss_masks_for_local_cp,
 )
-from ..parallel import get_parallel_state
-from .corrections import vanilla_tis_function
-from .logits import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
+from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.misc import load_function
+from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
+from miles.utils.types import RolloutBatch
 
 
 def compute_ess_ratio_contribution(
