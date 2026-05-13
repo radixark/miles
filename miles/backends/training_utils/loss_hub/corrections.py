@@ -1,10 +1,11 @@
+from argparse import Namespace
 from typing import Any
 
 import torch
 
 
 def vanilla_tis_function(
-    args,
+    args: Namespace,
     *,
     pg_loss: torch.Tensor,
     train_log_probs: list[torch.Tensor],
@@ -12,6 +13,10 @@ def vanilla_tis_function(
     loss_masks: list[torch.Tensor],
     **kwargs: Any,
 ) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, torch.Tensor]]:
+    """Truncated importance sampling: clamp `exp(train - rollout)` to
+    `[tis_clip_low, tis_clip]` and multiply into `pg_loss`. `loss_masks` is
+    passed through unchanged; metrics report the pre-clamp ratio.
+    """
     rollout_log_probs = torch.cat(rollout_log_probs, dim=0)
     old_log_probs = torch.cat(train_log_probs, dim=0)
     tis = torch.exp(old_log_probs - rollout_log_probs)
@@ -28,7 +33,7 @@ def vanilla_tis_function(
 
 
 def icepop_function(
-    args,
+    args: Namespace,
     *,
     pg_loss: torch.Tensor,
     train_log_probs: list[torch.Tensor],
@@ -36,6 +41,10 @@ def icepop_function(
     loss_masks: list[torch.Tensor],
     **kwargs: Any,
 ) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, torch.Tensor]]:
+    """IS clip-or-pop: zero out tokens whose `exp(train - rollout)` is outside
+    `[tis_clip_low, tis_clip]` and pass the in-range ratio through unweighted.
+    Same return shape as `vanilla_tis_function`.
+    """
     rollout_log_probs = torch.cat(rollout_log_probs, dim=0)
     old_log_probs = torch.cat(train_log_probs, dim=0)
     ice_ratio = torch.exp(old_log_probs - rollout_log_probs)
