@@ -16,7 +16,7 @@ from miles.debug.run_megatron.cli.commands.args import (
 from miles.debug.run_megatron.cli.commands.compare import compare_impl
 from miles.debug.run_megatron.cli.commands.run import run_impl
 from miles.debug.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
-from miles.utils.typer_utils import dataclass_cli
+from miles.utils.arguments_utils.typer import dataclass_cli
 
 
 def register(app: typer.Typer) -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from miles.utils.argparse_utils import DataclassArgparseBridge
+from miles.utils.arguments_utils.argparse_bridge import DataclassArgparseBridge
 
 
 @dataclasses.dataclass(frozen=True)

@@ -20,7 +20,7 @@ from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumping_utils
 from miles.utils.concurrency_utils import run
 from miles.utils.data_utils import Dataset
-from miles.utils.eval_config import EvalDatasetConfig
+from miles.utils.arguments_utils.eval_config import EvalDatasetConfig
 from miles.utils.net_utils import get, post
 from miles.utils.singleton import SingletonMeta
 from miles.utils.registry import load_function

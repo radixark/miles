@@ -8,7 +8,7 @@ import ray
 import torch
 import torch.distributed as dist
 
-import miles.utils.eval_config
+import miles.utils.arguments_utils.eval_config
 from miles.ray.ray_actor import RayActor
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.observability_utils import collect_and_print_node_env_report
@@ -60,7 +60,7 @@ class TrainRayActor(RayActor):
                 partial_env_report=env_report,
             )
 
-        torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
+        torch.serialization.add_safe_globals([miles.utils.arguments_utils.eval_config.EvalDatasetConfig])
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(f"cuda:{local_rank}")

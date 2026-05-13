@@ -13,7 +13,7 @@ from pathlib import Path
 
 from miles.utils.shell import exec_command
 from miles.utils.concurrency_utils import exec_command_all_ray_node
-from miles.utils.typer_utils import dataclass_cli
+from miles.utils.arguments_utils.typer import dataclass_cli
 
 _ = exec_command, exec_command_all_ray_node, dataclass_cli
 

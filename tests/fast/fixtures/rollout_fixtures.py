@@ -16,7 +16,7 @@ import requests
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
 from miles.rollout.session.session_server import SessionServer
 from miles.router.router import MilesRouter
-from miles.utils.arguments import parse_args
+from miles.utils.arguments_utils import parse_args
 from miles.utils.net_utils import find_available_port, init_http_client
 from miles.utils.singleton import SingletonMeta
 from miles.testing.mock_sglang_server import MockSGLangServer, with_mock_server

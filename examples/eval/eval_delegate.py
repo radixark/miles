@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Optional
 
 from omegaconf import OmegaConf
-from miles.utils.eval_config import DATASET_RUNTIME_SPECS, _apply_dataset_field_overrides
+from miles.utils.arguments_utils.eval_config import DATASET_RUNTIME_SPECS, _apply_dataset_field_overrides
 
 logger = logging.getLogger(__name__)
 

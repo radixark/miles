@@ -14,7 +14,7 @@ def test_post_layernorm_flags_propagate_to_megatron(monkeypatch):
     from megatron.training.arguments import core_transformer_config_from_args
 
     import miles.backends.megatron_utils.arguments as megatron_arguments
-    import miles.utils.arguments as miles_arguments
+    import miles.utils.arguments_utils as miles_arguments
 
     monkeypatch.setattr(miles_arguments, "miles_validate_args", lambda args: None)
     monkeypatch.setattr(megatron_arguments, "validate_args", lambda args: None)

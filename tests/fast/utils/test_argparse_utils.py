@@ -7,7 +7,7 @@ import dataclasses
 
 import pytest
 
-from miles.utils.argparse_utils import DataclassArgparseBridge
+from miles.utils.arguments_utils.argparse_bridge import DataclassArgparseBridge
 
 
 @dataclasses.dataclass(frozen=True)

@@ -20,7 +20,7 @@ from miles.debug.run_megatron.cli.worker_executor import (
 )
 from miles.debug.run_megatron.worker.script_args import WorkerScriptArgs
 from miles.utils.shell import exec_command
-from miles.utils.typer_utils import dataclass_cli
+from miles.utils.arguments_utils.typer import dataclass_cli
 
 
 def register(app: typer.Typer) -> None:

@@ -5,7 +5,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from miles.utils.typer_utils import dataclass_cli
+from miles.utils.arguments_utils.typer import dataclass_cli
 
 runner = CliRunner()
 

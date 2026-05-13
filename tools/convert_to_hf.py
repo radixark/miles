@@ -5,7 +5,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 import miles.backends.megatron_utils as megatron_utils
 from miles.backends.megatron_utils import update_weight_utils
-from miles.utils.arguments import parse_args
+from miles.utils.arguments_utils import parse_args
 
 
 def add_checkpoint_args(parser):

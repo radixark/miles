@@ -208,7 +208,7 @@ def make_args(
     if extra_argv:
         argv.extend(extra_argv)
 
-    from miles.utils.arguments import parse_args
+    from miles.utils.arguments_utils import parse_args
 
     with patch("sys.argv", argv):
         args = parse_args()
