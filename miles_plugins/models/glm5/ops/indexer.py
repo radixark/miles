@@ -30,11 +30,20 @@ class IndexerFunction(torch.autograd.Function):
             # Clamp k to logits' last-dim size: when the available context is
             # shorter than the configured index_topk (small CI tests, short
             # debug rollouts), torch.topk raises "selected index k out of range".
-            # Taking all of context in that case is the right behavior.
+            # Then pad topk_indices back to the original `topk` width with -1
+            # sentinels so the backward kernel's power-of-2 / multiple-of-32
+            # assertions on shape[-1] still hold. pytorch_extract_topk_scores
+            # and the TileLang bwd kernel both treat index==-1 as invalid.
             actual_topk = min(topk, logits.shape[-1])
             index_score, topk_indices = torch.topk(logits, actual_topk, dim=-1)
             topk_indices = topk_indices.to(torch.int32)
             topk_indices = topk_indices.masked_fill(index_score == -torch.inf, -1)
+            if actual_topk < topk:
+                padding_shape = (*topk_indices.shape[:-1], topk - actual_topk)
+                topk_indices = torch.cat(
+                    [topk_indices, topk_indices.new_full(padding_shape, -1)],
+                    dim=-1,
+                )
 
         index_score = pytorch_extract_topk_scores(logits, topk_indices)
 
