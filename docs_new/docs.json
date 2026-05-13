@@ -271,6 +271,11 @@
     "light": "#faf7f4"
   },
   "url": "https://www.radixark.com",
+  "feedback": {
+    "suggestEdit": true,
+    "raiseIssue": true,
+    "thumbsRating": true
+  },
   "font": {
     "headings": {
       "family": "Hanken Grotesk",
