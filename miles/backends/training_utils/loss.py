@@ -19,9 +19,9 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     This function extracts rewards, log-probs, values, and masks from
     `rollout_data`, computes KL divergences, then applies the chosen advantage
     estimator. Supported methods: "grpo", "gspo", "ppo", "reinforce_plus_plus",
-    and "reinforce_plus_plus_baseline". When `args.normalize_advantages` is
-    True, advantages are whitened across the data-parallel group using masked
-    statistics.
+    "reinforce_plus_plus_baseline", and "on_policy_distillation". When
+    `args.normalize_advantages` is True, advantages are whitened across the
+    data-parallel group using masked statistics.
 
     Early returns if both `log_probs` and `values` are None (intermediate
     pipeline stages).
