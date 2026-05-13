@@ -263,7 +263,7 @@ def policy_loss_function(
         )
 
     # Determine pg_loss reducer: use custom if specified, otherwise default
-    if getattr(args, "custom_pg_loss_reducer_function_path", None) is not None:
+    if args.custom_pg_loss_reducer_function_path is not None:
         custom_pg_loss_reducer_func = load_function(args.custom_pg_loss_reducer_function_path)
         # Determine which loss_masks to use for pg_loss reducer
         pg_loss_masks = modified_response_masks if (args.get_mismatch_metrics or args.use_tis) else batch["loss_masks"]
