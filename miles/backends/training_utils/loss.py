@@ -10,10 +10,10 @@ from .cp_utils import get_sum_of_sample_mean
 from .loss_hub.advantages import compute_advantages, normalize_advantages
 from .loss_hub.logits import get_log_probs_and_entropy, get_values  # noqa: F401
 from .loss_hub.losses import get_loss_function
-from .parallel import ParallelState
+from .parallel import get_parallel_state
 
 
-def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelState, rollout_data: RolloutBatch) -> None:
+def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
     This function extracts rewards, log-probs, values, and masks from
@@ -63,7 +63,6 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
 
     advantages, returns = compute_advantages(
         args=args,
-        parallel_state=parallel_state,
         kl=kl,
         rewards=rewards,
         log_probs=log_probs,
@@ -75,9 +74,7 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
     )
 
     if args.normalize_advantages:
-        advantages = normalize_advantages(
-            args, parallel_state, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens
-        )
+        advantages = normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns
@@ -85,7 +82,6 @@ def compute_advantages_and_returns(args: Namespace, parallel_state: ParallelStat
 
 def loss_function(
     args: Namespace,
-    parallel_state: ParallelState,
     batch: RolloutBatch,
     num_microbatches: int,
     logits: torch.Tensor,
@@ -114,6 +110,7 @@ def loss_function(
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
+    parallel_state = get_parallel_state()
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
     num_samples = len(batch["response_lengths"])
 
@@ -121,7 +118,6 @@ def loss_function(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        parallel_state,
         args.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens", None),
@@ -133,28 +129,28 @@ def loss_function(
         loss, log = checkpoint(
             func,
             args,
-            parallel_state,
             batch,
             logits,
             sum_of_sample_mean,
         )
     else:
-        loss, log = func(args, parallel_state, batch, logits, sum_of_sample_mean)
+        loss, log = func(args, batch, logits, sum_of_sample_mean)
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
-    if parallel_state.cp_size > 1 and args.allgather_cp:
+    if parallel_state.cp.size > 1 and args.allgather_cp:
         loss = loss + 0 * logits.sum()
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
+    assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
-            loss = loss * num_microbatches / global_batch_size * parallel_state.dp_cp_size
+            loss = loss * num_microbatches / global_batch_size * parallel_state.intra_dp_cp.size
         else:
-            loss = loss / global_batch_size * parallel_state.dp_size
+            loss = loss / global_batch_size * parallel_state.intra_dp.size
     else:
         if apply_megatron_loss_scaling:
-            loss = loss * parallel_state.cp_size
+            loss = loss * parallel_state.cp.size
 
     return (
         loss,

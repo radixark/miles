@@ -28,7 +28,7 @@ from pathlib import Path
 
 import torch
 
-from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
 ARTIFACTS_REPO = "https://github.com/yueming-yuan/miles-artifacts.git"
 ARTIFACTS_CACHE = Path.home() / ".cache" / "miles-test-artifacts"
@@ -40,23 +40,21 @@ ARTIFACTS_CACHE = Path.home() / ".cache" / "miles-test-artifacts"
 
 
 def make_parallel_state() -> ParallelState:
-    return ParallelState(
-        dp_rank=0,
-        dp_src_rank=0,
-        dp_size=1,
-        cp_rank=0,
-        cp_size=1,
-        dp_cp_rank=0,
-        dp_cp_size=1,
-        dp_group=None,
-        dp_cp_group=None,
-        dp_cp_group_gloo=None,
-        cp_group=None,
-        tp_size=1,
-        tp_rank=0,
-        tp_group=None,
+    def _trivial_group() -> GroupInfo:
+        return GroupInfo(rank=0, size=1, group=None)
+
+    state = ParallelState(
+        intra_dp=_trivial_group(),
+        intra_dp_cp=_trivial_group(),
+        cp=_trivial_group(),
+        tp=_trivial_group(),
+        pp=_trivial_group(),
+        ep=_trivial_group(),
+        etp=_trivial_group(),
         is_pp_last_stage=True,
     )
+    set_parallel_state(state)
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +97,7 @@ _ARGS_DEFAULTS = dict(
     value_clip=0.2,
     # loss_function dispatcher
     global_batch_size=1,  # overridden by make_inputs
+    use_dynamic_global_batch_size=False,
     recompute_loss_function=False,
 )
 

@@ -2,20 +2,73 @@ from argparse import Namespace
 from collections.abc import Callable
 
 import torch
+import torch.distributed as dist
 
 from miles.utils.misc import load_function
 from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
 from miles.utils.types import RolloutBatch
 
-from ..cp_utils import all_gather_with_cp, get_sum_of_sample_mean
-from ..parallel import ParallelState
+from ..cp_utils import all_gather_with_cp, get_sum_of_sample_mean, slice_loss_masks_for_local_cp
+from ..parallel import get_parallel_state
 from .corrections import vanilla_tis_function
 from .logits import get_log_probs_and_entropy, get_values
 
 
+def compute_ess_ratio_contribution(
+    ppo_kl: torch.Tensor,
+    loss_masks: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    qkv_format: str,
+    max_seq_lens: list[int] | None,
+    calculate_per_token_loss: bool,
+) -> torch.Tensor:
+    """Return an ESS contribution compatible with ``aggregate_train_losses``.
+
+    ESS needs full-sample sums before applying the nonlinear ratio.  Under CP we
+    reconstruct those sums first, then let only CP rank 0 emit the final
+    contribution so the generic CP metric aggregation does not double count it.
+    """
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
+
+    local_masks = slice_loss_masks_for_local_cp(
+        loss_masks,
+        total_lengths,
+        response_lengths,
+        qkv_format,
+        max_seq_lens,
+    )
+    local_lengths = [mask.size(0) for mask in local_masks]
+    is_weights_per_sample = (-ppo_kl.detach().float()).exp().split(local_lengths, dim=0)
+
+    partial_sums = torch.zeros(len(loss_masks), 2, device=ppo_kl.device, dtype=torch.float32)
+    for i, (weights, mask) in enumerate(zip(is_weights_per_sample, local_masks, strict=False)):
+        if weights.numel() != mask.numel():
+            raise ValueError(f"ESS weight/mask length mismatch for sample {i}: {weights.numel()} vs {mask.numel()}")
+        masked_weights = weights * mask.to(device=weights.device, dtype=weights.dtype)
+        partial_sums[i, 0] = masked_weights.sum()
+        partial_sums[i, 1] = (masked_weights * masked_weights).sum()
+
+    if cp_size > 1:
+        dist.all_reduce(partial_sums, op=dist.ReduceOp.SUM, group=parallel_state.cp.group)
+
+    ess_ratio_sum = torch.zeros((), device=ppo_kl.device, dtype=torch.float32)
+    for i, loss_mask in enumerate(loss_masks):
+        num_valid_tokens = torch.clamp_min(loss_mask.to(device=ppo_kl.device, dtype=torch.float32).sum(), 1)
+        sum_w = partial_sums[i, 0]
+        sum_w2 = partial_sums[i, 1]
+        ess_ratio = (sum_w * sum_w) / (num_valid_tokens * torch.clamp_min(sum_w2, 1e-8))
+        ess_ratio_sum += ess_ratio * num_valid_tokens if calculate_per_token_loss else ess_ratio
+
+    if cp_size > 1 and parallel_state.cp.rank != 0:
+        ess_ratio_sum = ess_ratio_sum * 0
+
+    return ess_ratio_sum
+
+
 def policy_loss_function(
     args: Namespace,
-    parallel_state: ParallelState,
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
@@ -44,6 +97,7 @@ def policy_loss_function(
         "tis", "ois", "tis_clipfrac" are included when the respective features
         are enabled.
     """
+    parallel_state = get_parallel_state()
     advantages = torch.cat(batch["advantages"], dim=0)
     old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
 
@@ -54,7 +108,6 @@ def policy_loss_function(
     log_probs_and_entropy = get_log_probs_and_entropy(
         logits,
         args=args,
-        parallel_state=parallel_state,
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=total_lengths,
         response_lengths=response_lengths,
@@ -71,13 +124,13 @@ def policy_loss_function(
     full_old_log_probs = None
     if need_full_log_probs:
         full_log_probs = [
-            all_gather_with_cp(log_prob, total_length, response_length, parallel_state)
+            all_gather_with_cp(log_prob, total_length, response_length)
             for log_prob, total_length, response_length in zip(
                 log_probs, total_lengths, response_lengths, strict=False
             )
         ]
         full_old_log_probs = [
-            all_gather_with_cp(old_log_prob, total_length, response_length, parallel_state)
+            all_gather_with_cp(old_log_prob, total_length, response_length)
             for old_log_prob, total_length, response_length in zip(
                 old_log_probs, total_lengths, response_lengths, strict=False
             )
@@ -152,7 +205,6 @@ def policy_loss_function(
             total_lengths,
             response_lengths,
             modified_response_masks,
-            parallel_state,
             args.calculate_per_token_loss,
             args.qkv_format,
             max_seq_lens,
@@ -168,6 +220,19 @@ def policy_loss_function(
         )
     else:
         pg_loss_reducer = sum_of_sample_mean
+
+    # ESS (Effective Sample Size) ratio from per-token IS weights
+    # w = π_new/π_old = exp(-ppo_kl).  A value of 1.0 is on-policy; near 0
+    # means the per-token weights are highly concentrated.
+    ess_ratio_sum = compute_ess_ratio_contribution(
+        ppo_kl=ppo_kl,
+        loss_masks=batch["loss_masks"],
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        qkv_format=args.qkv_format,
+        max_seq_lens=max_seq_lens,
+        calculate_per_token_loss=args.calculate_per_token_loss,
+    )
 
     pg_loss = pg_loss_reducer(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
@@ -201,9 +266,14 @@ def policy_loss_function(
         loss += 0 * logits.sum()
 
     train_rollout_logprob_abs_diff = None
+    train_rollout_kl = None
     if "rollout_log_probs" in batch and batch["rollout_log_probs"]:
         rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
         train_rollout_logprob_abs_diff = sum_of_sample_mean((old_log_probs - rollout_log_probs).abs())
+        # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
+        train_rollout_kl = sum_of_sample_mean(
+            compute_approx_kl(rollout_log_probs, old_log_probs, kl_loss_type="low_var_kl")
+        )
 
     reported_loss = {
         "loss": loss.clone().detach(),
@@ -211,10 +281,13 @@ def policy_loss_function(
         "entropy_loss": entropy_loss.clone().detach(),
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
+        "ess_ratio": ess_ratio_sum.squeeze(),
     }
 
     if train_rollout_logprob_abs_diff is not None:
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()
+    if train_rollout_kl is not None:
+        reported_loss["train_rollout_kl"] = train_rollout_kl.clone().detach()
 
     if args.use_kl_loss:
         reported_loss["kl_loss"] = kl_loss.clone().detach()
@@ -236,7 +309,6 @@ def policy_loss_function(
 
 def value_loss_function(
     args: Namespace,
-    parallel_state: ParallelState,
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
@@ -263,7 +335,6 @@ def value_loss_function(
     values = get_values(
         logits,
         args=args,
-        parallel_state=parallel_state,
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
@@ -296,7 +367,6 @@ def value_loss_function(
 
 def sft_loss_function(
     args: Namespace,
-    parallel_state: ParallelState,
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
@@ -323,7 +393,6 @@ def sft_loss_function(
     log_probs_and_entropy = get_log_probs_and_entropy(
         logits,
         args=args,
-        parallel_state=parallel_state,
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=total_lengths,
         response_lengths=response_lengths,

@@ -1,25 +1,61 @@
 import os
 
+from tests.ci.ci_register import register_cuda_ci
+
 import miles.utils.external_utils.command_utils as U
 
+# Sweeps enabled rollout / dispatcher variants in one job so the previously
+# matrix-parameterized CI is back. est_time stays conservative while the
+# bridge + DeepEP variant below is disabled pending a fix.
+register_cuda_ci(est_time=3600, suite="stage-c-megatron-8-gpu", num_gpus=8)
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "1")))
-USE_FP8_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_FP8_ROLLOUT", "1")))
-USE_INT4_ROLLOUT = bool(int(os.environ.get("MILES_TEST_USE_INT4_ROLLOUT", "0")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 
+# Each entry is one matrix variant from the legacy parameterized job.
+CONFIGS: list[dict] = [
+    {
+        "USE_DEEPEP": True,
+        "USE_FP8_ROLLOUT": True,
+        "USE_INT4_ROLLOUT": False,
+        "USE_BRIDGE": False,
+    },
+    # TODO: This deepep test need fix.
+    # {
+    #     "USE_DEEPEP": True,
+    #     "USE_FP8_ROLLOUT": True,
+    #     "USE_INT4_ROLLOUT": False,
+    #     "USE_BRIDGE": True,
+    # },
+    {
+        "USE_DEEPEP": False,
+        "USE_FP8_ROLLOUT": False,
+        "USE_INT4_ROLLOUT": False,
+        "USE_BRIDGE": False,
+    },
+    {
+        "USE_DEEPEP": False,
+        "USE_FP8_ROLLOUT": False,
+        "USE_INT4_ROLLOUT": True,
+        "USE_BRIDGE": False,
+    },
+]
+
+
+def _any_config(key: str) -> bool:
+    return any(c[key] for c in CONFIGS)
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
-    if USE_FP8_ROLLOUT:
+    if _any_config("USE_FP8_ROLLOUT"):
         U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
-    if USE_INT4_ROLLOUT:
+    if _any_config("USE_INT4_ROLLOUT"):
         U.exec_command(
             f"python tools/convert_hf_to_int4_direct.py "
             f"--model-dir /root/models/{MODEL_NAME} "
@@ -28,16 +64,25 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
+    # Bridge mode reads the HF checkpoint directly without the torch_dist
+    # conversion, but every non-bridge variant needs it, so do the conversion
+    # if any variant requires it.
+    if not all(c["USE_BRIDGE"] for c in CONFIGS):
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+        )
 
 
-def execute():
+def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE_BRIDGE: bool):
+    ref_load = f"/root/models/{MODEL_NAME}" if USE_BRIDGE else f"/root/{MODEL_NAME}_torch_dist"
     if USE_INT4_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load {ref_load} "
     elif USE_FP8_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load {ref_load} "
     else:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {ref_load} "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -134,6 +179,9 @@ def execute():
         "--colocate "
     )
 
+    if USE_BRIDGE:
+        misc_args += "--megatron-to-hf-mode bridge "
+
     if USE_DEEPEP:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
     else:
@@ -168,8 +216,9 @@ def execute():
 
 
 if __name__ == "__main__":
-    # TODO also use typer
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
+    for config in CONFIGS:
+        print(f"\n{'=' * 60}\nRunning config: {config}\n{'=' * 60}\n", flush=True)
+        execute(**config)

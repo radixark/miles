@@ -124,7 +124,6 @@ def _get_sum_of_sample_mean(batch, args, parallel_state):
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        parallel_state,
         args.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens", None),
@@ -133,7 +132,7 @@ def _get_sum_of_sample_mean(batch, args, parallel_state):
 
 def run_compute_advantages_and_returns(args, parallel_state, inputs):
     rollout_data = make_rollout_data(inputs)
-    compute_advantages_and_returns(args, parallel_state, rollout_data)
+    compute_advantages_and_returns(args, rollout_data)
     return {"advantages": rollout_data["advantages"], "returns": rollout_data["returns"]}
 
 
@@ -157,7 +156,6 @@ def run_get_log_probs_and_entropy(args, parallel_state, inputs):
     return get_log_probs_and_entropy(
         deep_clone(inputs["policy_logits"]),
         args=args,
-        parallel_state=parallel_state,
         unconcat_tokens=deep_clone(inputs["unconcat_tokens"]),
         total_lengths=list(inputs["total_lens"]),
         response_lengths=list(inputs["response_lens"]),
@@ -170,7 +168,6 @@ def run_get_values(args, parallel_state, inputs):
     return get_values(
         deep_clone(inputs["value_logits"]),
         args=args,
-        parallel_state=parallel_state,
         unconcat_tokens=deep_clone(inputs["unconcat_tokens"]),
         total_lengths=list(inputs["total_lens"]),
         response_lengths=list(inputs["response_lens"]),
@@ -187,7 +184,7 @@ def run_loss_fn(args, parallel_state, inputs):
     fn = {"policy_loss": policy_loss_function, "value_loss": value_loss_function, "sft_loss": sft_loss_function}[
         loss_type
     ]
-    loss, metrics = fn(args, parallel_state, batch, logits, som)
+    loss, metrics = fn(args, batch, logits, som)
     loss.backward()
     result = {"loss": loss.detach(), "metrics": {k: v.detach() for k, v in metrics.items()}}
     result["logits_grad"] = logits.grad.clone()
@@ -199,7 +196,7 @@ def run_loss_function_dispatcher(args, parallel_state, inputs):
     batch = make_batch(inputs, loss_type)
     logits = deep_clone(inputs["policy_logits"] if loss_type != "value_loss" else inputs["value_logits"])
     logits.requires_grad_(True)
-    loss, normalizer, log_dict = loss_function(args, parallel_state, batch, 1, logits)
+    loss, normalizer, log_dict = loss_function(args, batch, 1, logits)
     loss.backward()
     result = {
         "loss": loss.detach(),

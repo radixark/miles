@@ -20,6 +20,12 @@ def add_sglang_router_arguments(parser):
         help="Port of the SGLang router",
     )
     parser.add_argument(
+        "--sglang-router-policy",
+        type=str,
+        default=None,
+        help="Routing policy for the SGLang router (e.g., 'consistent_hashing', 'round_robin')",
+    )
+    parser.add_argument(
         "--sglang-router-request-timeout-secs",
         type=int,
         default=14400,
@@ -39,6 +45,7 @@ def add_sglang_arguments(parser):
 
     skipped_args = [
         "model_path",
+        "config",
         "trust_remote_code",
         "random_seed",
         # memory
@@ -108,6 +115,20 @@ def add_sglang_arguments(parser):
     ServerArgs.add_cli_args(parser)
     parser.add_argument = old_add_argument
 
+    parser.add_argument(
+        "--sglang-config",
+        type=str,
+        default=None,
+        help=(
+            "Path to a YAML config for SGLang engine deployment. "
+            "Defines server_groups with worker_type (regular/prefill/decode/placeholder), "
+            "num_gpus per group, and optional per-group 'overrides' dict of "
+            "ServerArgs field names that override the base --sglang-* CLI args. "
+            "Placeholder groups reserve GPU slots without creating engines. "
+            "Mutually exclusive with --prefill-num-servers."
+        ),
+    )
+
     return parser
 
 
@@ -119,6 +140,13 @@ def validate_args(args):
 
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
+
+    if args.sglang_router_policy:
+        from miles.utils.environ import enable_experimental_rollout_refactor
+
+        assert (
+            not enable_experimental_rollout_refactor()
+        ), "--sglang-router-policy is not supported with MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1"
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = _wrap_ipv6(args.sglang_router_ip)

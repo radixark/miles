@@ -123,6 +123,7 @@ MISC_ARGS=(
 CUSTOM_ARGS=(
    --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
    --custom-agent-function-path examples.openai_format.dapo_math.run_agent
+   --use-session-server
 )
 
 # launch the master node of ray in container

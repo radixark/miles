@@ -50,7 +50,6 @@ Docker Network (swe-net)
 | `swe_agent_function.py` | Custom agent function — dispatches to Harbor server, returns env metadata |
 | `generate.py` | Reward function, agent metrics aggregation, `RolloutFn` |
 | `download_and_process_data.py` | Download from HuggingFace or local JSONL, convert to Miles format |
-| `prepare_harbor_tasks.py` | Convert Miles JSONL to Harbor task directories (generic fallback) |
 
 ## Step-by-Step Setup
 
@@ -116,6 +115,20 @@ pip install harbor
 
 ### Step 4: Prepare data and Harbor task directories
 
+Harbor task directories are prepared on the agent server side using **harbor adapters**. Each adapter converts a specific dataset into Harbor's 4-file task format. For example, to prepare SWE-bench tasks:
+
+```bash
+# On the agent server (CPU machine), inside the harbor repo:
+cd $CWD/harbor/adapters/swebench && uv sync
+
+# Generate Harbor task directories for all SWE-bench Verified instances
+uv run run_adapter.py --task-dir $HARBOR_TASKS_DIR --all
+```
+
+This uses the `swebench` Python package to produce correct Docker image names and Dockerfiles for each instance. Other adapters (e.g. `adapters/swe-gym`) follow the same pattern.
+
+To prepare training data on the Miles side:
+
 ```bash
 # Inside miles container:
 
@@ -126,10 +139,6 @@ python download_and_process_data.py --input /data/tb.jsonl --output tb.jsonl \
 
 # Merge into one mixed JSONL
 cat swe.jsonl tb.jsonl > mixed.jsonl
-
-# Create Harbor task dirs (for custom data without a Harbor adapter)
-python prepare_harbor_tasks.py --input my.jsonl --output /root/harbor_tasks/ \
-  --docker-network swe-net
 ```
 
 Each Harbor task directory contains 4 files:
@@ -159,12 +168,12 @@ The reference checkpoint must be in Megatron distributed format for training:
 
 ```bash
 # Inside miles container — one-time conversion
-torchrun --nproc_per_node=4 /root/miles/tools/convert_hf_to_torch_dist.py \
-  --hf-checkpoint zai-org/GLM-4.7-Flash \
-  --save /root/GLM-4.7-Flash_torch_dist \
-  --tensor-model-parallel-size 1 \
-  --pipeline-model-parallel-size 1 \
-  --expert-model-parallel-size 4
+cd /root/miles
+source scripts/models/glm4.7-flash.sh
+PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+    ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/GLM-4.7-Flash \
+    --save /root/GLM-4.7-Flash_torch_dist
 ```
 
 ### Step 7: Launch training
@@ -293,7 +302,7 @@ Agent containers need to resolve the Miles container's hostname. Ensure:
 
 ### `TaskNotFound` error
 
-The task directory for the given `instance_id` doesn't exist under `HARBOR_TASKS_DIR`. Run the appropriate Harbor adapter or `prepare_harbor_tasks.py` first.
+The task directory for the given `instance_id` doesn't exist under `HARBOR_TASKS_DIR`. Run the appropriate harbor adapter first (e.g. `adapters/swebench/run_adapter.py` for SWE-bench tasks).
 
 ### SGLang engines OOM (`Not enough memory`)
 

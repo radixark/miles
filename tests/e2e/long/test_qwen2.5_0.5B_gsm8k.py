@@ -1,6 +1,11 @@
 import os
+
+from tests.ci.ci_register import register_cuda_ci
+
 import miles.utils.external_utils.command_utils as U
 
+# est_time calibrated against historical CI runtime: ~5071–5923s on 8×H100.
+register_cuda_ci(est_time=6000, suite="stage-c-long-8-gpu", num_gpus=8)
 
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
@@ -12,7 +17,7 @@ NUM_GPUS = 2 if FEW_GPU else 8
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 

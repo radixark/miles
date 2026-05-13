@@ -32,4 +32,5 @@ def set_default_megatron_args(args):
         logger.info("--tokenizer-model not set, use --hf-checkpoint as tokenizer model.")
         args.tokenizer_model = args.hf_checkpoint
         args.tokenizer_type = "HuggingFaceTokenizer"
+
     return args

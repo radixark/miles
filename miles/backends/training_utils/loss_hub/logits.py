@@ -6,14 +6,13 @@ import torch
 from miles.utils.ppo_utils import calculate_log_probs_and_entropy
 
 from ..cp_utils import _allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
-from ..parallel import ParallelState
+from ..parallel import get_parallel_state
 
 
 def get_responses(
     logits: torch.Tensor,
     *,
     args: Namespace,
-    parallel_state: ParallelState,
     unconcat_tokens: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
@@ -54,7 +53,8 @@ def get_responses(
 
     logits = logits.div(args.rollout_temperature)
 
-    cp_size = parallel_state.cp_size
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
     end = 0
     seq_start = 0
     for i, (tokens, total_length, response_length) in enumerate(
@@ -75,7 +75,7 @@ def get_responses(
             # DSA: global concat then contiguous CP split. Each rank owns logits for
             # global positions [chunk_start, chunk_end).
             logits_local_len = logits.size(0)
-            cp_rank = parallel_state.cp_rank
+            cp_rank = parallel_state.cp.rank
             chunk_start = cp_rank * logits_local_len
             chunk_end = chunk_start + logits_local_len
 
@@ -97,7 +97,7 @@ def get_responses(
         else:
             # TODO: this is super ugly... do better abstraction.
             chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                total_length, response_length, parallel_state, qkv_format, max_seq_len
+                total_length, response_length, qkv_format, max_seq_len
             )
 
             logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
@@ -124,7 +124,6 @@ def get_log_probs_and_entropy(
     logits: torch.Tensor,
     *,
     args: Namespace,
-    parallel_state: ParallelState,
     unconcat_tokens: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
@@ -155,12 +154,12 @@ def get_log_probs_and_entropy(
         a list of `[R]` tensors.
     """
     assert non_loss_data
+    parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
     for logits_chunk, tokens_chunk in get_responses(
         logits,
         args=args,
-        parallel_state=parallel_state,
         unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
@@ -169,7 +168,7 @@ def get_log_probs_and_entropy(
         log_prob, entropy = calculate_log_probs_and_entropy(
             logits_chunk,
             tokens_chunk,
-            parallel_state.tp_group,
+            parallel_state.tp.group,
             with_entropy=with_entropy,
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
@@ -190,7 +189,6 @@ def get_log_probs_and_entropy(
             res,
             logits=logits,
             args=args,
-            parallel_state=parallel_state,
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             max_seq_lens=max_seq_lens,
@@ -203,7 +201,6 @@ def get_values(
     logits: torch.Tensor,
     *,
     args: Namespace,
-    parallel_state: ParallelState,
     unconcat_tokens: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
@@ -234,7 +231,6 @@ def get_values(
     for logits_chunk, _ in get_responses(
         logits,
         args=args,
-        parallel_state=parallel_state,
         unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
@@ -252,7 +248,6 @@ def get_values(
             res,
             logits=logits,
             args=args,
-            parallel_state=parallel_state,
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             max_seq_lens=max_seq_lens,

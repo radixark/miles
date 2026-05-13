@@ -11,12 +11,11 @@ from miles.utils.ppo_utils import (
 )
 
 from ..cp_utils import get_logits_and_tokens_offset_with_cp
-from ..parallel import ParallelState
+from ..parallel import get_parallel_state
 
 
 def compute_advantages(
     args: Namespace,
-    parallel_state: ParallelState,
     kl: list[torch.Tensor],
     rewards: list[float],
     log_probs: list[torch.Tensor],
@@ -41,14 +40,14 @@ def compute_advantages(
         old_rewards = rewards
         rewards = []
         kl_coef = -args.kl_coef
-        cp_rank = parallel_state.cp_rank
+        cp_rank = get_parallel_state().cp.rank
         for reward, k in zip(old_rewards, kl, strict=False):
             k *= kl_coef
             if cp_rank == 0:
                 k[-1] += reward
             rewards.append(k)
         advantages, returns = get_advantages_and_returns_batch(
-            total_lengths, response_lengths, values, rewards, args.gamma, args.lambd, parallel_state
+            total_lengths, response_lengths, values, rewards, args.gamma, args.lambd
         )
 
     elif args.advantage_estimator == "reinforce_plus_plus":
@@ -61,7 +60,6 @@ def compute_advantages(
             total_lengths=total_lengths,
             kl_coef=args.kl_coef,
             gamma=args.gamma,
-            parallel_state=parallel_state,
         )
         advantages = [r for r in returns]
 
@@ -97,15 +95,15 @@ def compute_advantages(
 
 def normalize_advantages(
     args,
-    parallel_state,
     advantages,
     loss_masks,
     total_lengths,
     response_lengths,
     max_seq_lens=None,
 ):
+    parallel_state = get_parallel_state()
     all_advs = torch.cat(advantages)
-    cp_size = parallel_state.cp_size
+    cp_size = parallel_state.cp.size
     if cp_size == 1:
         all_masks = torch.cat(loss_masks)
     else:
@@ -117,7 +115,7 @@ def normalize_advantages(
             max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
 
             _, _, _, token_offsets = get_logits_and_tokens_offset_with_cp(
-                total_len, response_len, parallel_state, args.qkv_format, max_seq_len
+                total_len, response_len, args.qkv_format, max_seq_len
             )
 
             # Convert global offsets to response-space offsets
@@ -147,7 +145,7 @@ def normalize_advantages(
         assert (
             all_advs.size() == all_masks.size()
         ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-        dp_group = parallel_state.dp_group
+        dp_group = parallel_state.intra_dp.group
 
         whitened_advs_flat = distributed_masked_whiten(
             all_advs,
