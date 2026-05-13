@@ -119,8 +119,7 @@ def normalize_advantages(
             )
 
             # Convert global offsets to response-space offsets
-            s0, e0 = token_offsets[0]
-            s1, e1 = token_offsets[1]
+            (s0, e0), (s1, e1) = token_offsets
             res_s0, res_e0 = max(0, s0 - prompt_len), max(0, e0 - prompt_len)
             res_s1, res_e1 = max(0, s1 - prompt_len), max(0, e1 - prompt_len)
 
