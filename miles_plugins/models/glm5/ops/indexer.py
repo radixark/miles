@@ -27,7 +27,12 @@ class IndexerFunction(torch.autograd.Function):
         _, head_num, _ = index_q.shape
         logits = indexer_fwd_interface(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True)
         if topk_indices is None:
-            index_score, topk_indices = torch.topk(logits, topk, dim=-1)
+            # Clamp k to logits' last-dim size: when the available context is
+            # shorter than the configured index_topk (small CI tests, short
+            # debug rollouts), torch.topk raises "selected index k out of range".
+            # Taking all of context in that case is the right behavior.
+            actual_topk = min(topk, logits.shape[-1])
+            index_score, topk_indices = torch.topk(logits, actual_topk, dim=-1)
             topk_indices = topk_indices.to(torch.int32)
             topk_indices = topk_indices.masked_fill(index_score == -torch.inf, -1)
 
