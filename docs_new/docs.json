@@ -271,10 +271,37 @@
     "light": "#faf7f4"
   },
   "url": "https://www.radixark.com",
-  "feedback": {
-    "suggestEdit": true,
-    "raiseIssue": true,
-    "thumbsRating": true
+  "contextual": {
+    "options": [
+      "copy",
+      "view",
+      {
+        "title": "Raise a docs issue",
+        "description": "Flag a wording, formatting, or accuracy issue on this page.",
+        "icon": "github",
+        "href": "https://github.com/radixark/miles-doc/issues/new?template=doc-polish.yml&page=$page"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/radixark/miles"
+    },
+    "links": [
+      {
+        "header": "Contribute",
+        "items": [
+          {
+            "label": "Raise a docs issue",
+            "href": "https://github.com/radixark/miles-doc/issues/new?template=doc-polish.yml"
+          },
+          {
+            "label": "Source on GitHub",
+            "href": "https://github.com/radixark/miles-doc"
+          }
+        ]
+      }
+    ]
   },
   "font": {
     "headings": {
