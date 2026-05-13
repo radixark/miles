@@ -273,13 +273,11 @@
   "url": "https://www.radixark.com",
   "contextual": {
     "options": [
-      "copy",
-      "view",
       {
         "title": "Raise a docs issue",
         "description": "Flag a wording, formatting, or accuracy issue on this page.",
         "icon": "github",
-        "href": "https://github.com/radixark/miles-doc/issues/new?template=doc-polish.yml&page=$page"
+        "href": "https://github.com/radixark/miles-doc/issues/new?template=doc-polish.yml"
       }
     ]
   },
