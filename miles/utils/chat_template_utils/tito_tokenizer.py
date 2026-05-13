@@ -104,12 +104,14 @@ class TITOTokenizer:
         tokenizer: Any,
         chat_template_kwargs: dict[str, Any] | None = None,
         assistant_start_str: str | None = None,
+        special_token_ids: set[int] | None = None,
         allowed_append_roles: list[str] | None = None,
     ):
         self.tokenizer = tokenizer
         self.chat_template_kwargs = chat_template_kwargs or {}
         self._assistant_start_str = assistant_start_str
         self.allowed_append_roles: list[str] = allowed_append_roles if allowed_append_roles is not None else ["tool"]
+        self.special_token_ids: set[int] = special_token_ids
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -117,6 +119,7 @@ class TITOTokenizer:
         return TokenSeqComparator(
             self.tokenizer,
             assistant_start_str=self._assistant_start_str,
+            special_token_ids=self.special_token_ids,
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
@@ -544,6 +547,14 @@ class MistralV3TITOTokenizer(TITOTokenizer):
 # ---------------------------------------------------------------------------
 
 
+def _kimi_segment_special_token_ids(tokenizer: Any) -> set[int]:
+    """Kimi specials minus ``<|im_middle|>`` (intra-turn role-name/body
+    separator, not a role boundary; must not be a segment boundary)."""
+    return TokenSeqComparator._collect_special_ids(tokenizer) - {
+        tokenizer.convert_tokens_to_ids("<|im_middle|>")
+    }
+
+
 class Kimi25TITOTokenizer(TITOTokenizer):
     """Moonshot Kimi K2.5: ``<|im_end|>`` boundary (no trailing newline).
 
@@ -565,6 +576,21 @@ class Kimi25TITOTokenizer(TITOTokenizer):
 
     _default_assistant_start_str: str = "<|im_assistant|>"
 
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            special_token_ids=_kimi_segment_special_token_ids(tokenizer),
+            allowed_append_roles=allowed_append_roles,
+        )
+
 
 class Kimi26TITOTokenizer(TITOTokenizer):
     """Moonshot Kimi K2.6: same boundary as K2.5 + native ``preserve_thinking`` kwarg.
@@ -573,7 +599,15 @@ class Kimi26TITOTokenizer(TITOTokenizer):
     that K2.5 needs patched in.  No bundled fixed
     template required; ``{tool, user}`` row registers ``template=None`` and
     auto-merges ``preserve_thinking=True`` for multi-user-turn rollout.
+
+    Tool-call parser is bound to ``kimi_k2_raw_id`` rather than ``kimi_k2``:
+    RL trajectories need the model-emitted ``tool_call_id`` to round-trip
+    verbatim across turns (no ``history_tool_calls_cnt`` renumbering), and
+    miles is the primary consumer of this TITO family.
     """
+
+    reasoning_parser = "kimi_k2"
+    tool_call_parser = "kimi_k2_raw_id"
 
     SUPPORTED_TEMPLATES = (
         FixedTemplateRow(
@@ -584,6 +618,21 @@ class Kimi26TITOTokenizer(TITOTokenizer):
     )
 
     _default_assistant_start_str: str = "<|im_assistant|>"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            special_token_ids=_kimi_segment_special_token_ids(tokenizer),
+            allowed_append_roles=allowed_append_roles,
+        )
 
 
 # ---------------------------------------------------------------------------

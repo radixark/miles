@@ -61,7 +61,13 @@ class TokenSeqComparator:
     ----------
     tokenizer : PreTrainedTokenizerBase
     special_token_ids : set[int] | None
-        Extra IDs treated as segment boundaries (merged with auto-detected ones).
+        Authoritative IDs to treat as segment boundaries. When ``None``,
+        auto-detect from the tokenizer's ``all_special_ids`` and
+        ``added_tokens_decoder``. When provided, **replace** the auto-detected
+        set entirely — lets subclasses drop intra-turn markers that the
+        tokenizer flags as ``special=True`` but that sit *inside* a single
+        role's turn rather than between role boundaries (e.g. Kimi's
+        ``<|im_middle|>`` inside ``<|im_assistant|>assistant<|im_middle|>{body}``).
     assistant_start_str : str
         Decoded text prefix identifying assistant content segments, e.g.
         ``"<|im_start|>assistant"`` (Qwen3) or ``"<|assistant|>"`` (GLM).
@@ -81,9 +87,10 @@ class TokenSeqComparator:
         trim_trailing_ids: set[int] | None = None,
     ):
         self.tokenizer = tokenizer
-        self._special_ids = self._collect_special_ids(tokenizer)
         if special_token_ids is not None:
-            self._special_ids |= set(special_token_ids)
+            self._special_ids = set(special_token_ids)
+        else:
+            self._special_ids = self._collect_special_ids(tokenizer)
         self._assistant_start_str = assistant_start_str
         self._trim_trailing_ids: set[int] | None = set(trim_trailing_ids) if trim_trailing_ids else None
 
