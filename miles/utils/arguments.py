@@ -1115,22 +1115,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
             )
             parser.add_argument(
-                "--multi-lora-dir",
-                type=str,
-                default=None,
-                help="Path to multi-LoRA experiment directory containing adapter subdirectories with adapter.yaml files",
-            )
-            parser.add_argument(
                 "--multi-lora-n-adapters",
                 type=int,
-                default=2,
-                help="Maximum number of concurrent adapter slots for multi-LoRA (default: 2)",
+                default=0,
+                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
+            )
+            parser.add_argument(
+                "--multi-lora-adapter",
+                nargs=2,
+                action="append",
+                type=str,
+                dest="multi_lora_adapters",
+                default=[],
             )
             parser.add_argument(
                 "--multi-lora-idle-poll-s",
                 type=float,
                 default=5.0,
                 help="When no adapter is ACTIVE, the trainer polls for new registrations every this many seconds (default: 5.0)",
+            )
+            parser.add_argument(
+                "--multi-lora-disable-service-mode",
+                action="store_false",
+                dest="multi_lora_service_mode",
+                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
             )
             parser.add_argument(
                 "--custom-generate-state-path",
@@ -2032,10 +2040,10 @@ def miles_validate_args(args):
         args.target_modules = modules
 
     # Multi-LoRA flag — adapter configs are loaded later by the controller
-    args.multi_lora = getattr(args, "multi_lora_dir", None) is not None
+    args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
     if args.multi_lora:
-        assert args.lora_rank > 0, "--lora-rank must be set when using --multi-lora-dir"
-        assert args.target_modules is not None, "--target-modules must be set when using --multi-lora-dir"
+        assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
+        assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
         args.megatron_to_hf_mode = "bridge"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"

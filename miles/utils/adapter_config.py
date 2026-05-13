@@ -34,16 +34,17 @@ ADAPTER_INACTIVE_STATES = {
 
 @dataclass(frozen=True)
 class AdapterConfig:
-    name: str
 
     rank: int
     alpha: int
 
+    # Path to data file
     data: str
-    dir: Path = field(default_factory=lambda: Path("."))
+    # Path to working directory for LoRA (checkpoints, artifacts, etc)
+    dir: str | Path
 
-    input_key: str = "text"
-    label_key: str | None = None
+    input_key: str
+    label_key: str
     metadata_key: str | None = None
 
     rm_type: str | None = None
@@ -55,6 +56,12 @@ class AdapterConfig:
     slot: int = -1
     state: AdapterState = AdapterState.PENDING
 
+    def __post_init__(self):
+        if not self.rm_type and not self.custom_rm_path:
+            raise ValueError(f"Only one of rm_type or custom_rm_path should be set in AdapterConfig")
+        if self.rm_type and self.custom_rm_path:
+            raise ValueError(f"Only one of rm_type or custom_rm_path should be set in AdapterConfig")
+
 
 def parse_adapter_yaml(path: Path) -> AdapterConfig:
     """Parse a single adapter.yaml file."""
@@ -62,11 +69,10 @@ def parse_adapter_yaml(path: Path) -> AdapterConfig:
         raw = yaml.safe_load(f)
 
     return AdapterConfig(
-        name=raw["name"],
         rank=raw["rank"],
         alpha=raw["alpha"],
         data=raw["data"],
-        dir=path.parent,
+        dir=Path(raw["dir"]) if raw.get("dir", None) else path.parent,
         input_key=raw.get("input_key", "text"),
         label_key=raw.get("label_key"),
         metadata_key=raw.get("metadata_key"),

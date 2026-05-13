@@ -3,6 +3,7 @@ import logging
 import json
 import os
 from argparse import Namespace
+from typing import Tuple
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -156,10 +157,16 @@ def initialize_multi_lora_model_and_optimizer(
 
     return model, optimizer, opt_param_scheduler, iteration
 
+def all_megatron_checkpoints_exist(step_dir: Path, tp_size, pp_size) -> bool:
+    return all(
+        (step_dir / f"adapter_megatron_tp{tp}_pp{pp}.pt").exists()
+        for tp in range(tp_size)
+        for pp in range(pp_size)
+    )
 
-def find_latest_checkpoint(ckpt_dir: Path) -> Path | None:
+def find_latest_checkpoint(ckpt_dir: Path) -> Tuple[Path | None, int]:
     if not ckpt_dir.exists():
-        return None
+        return None, 0
 
     from megatron.core import mpu
 
@@ -168,20 +175,19 @@ def find_latest_checkpoint(ckpt_dir: Path) -> Path | None:
     tp_rank = mpu.get_tensor_model_parallel_rank()
     pp_rank = mpu.get_pipeline_model_parallel_rank()
 
+    get_step = lambda d: int(d.name.split("_")[1])
+
     step_dirs = sorted(
         [d for d in ckpt_dir.iterdir() if d.is_dir() and d.name.startswith("step_")],
-        key=lambda d: int(d.name.split("_")[1]),
+        key=get_step,
         reverse=True,
     )
     for step_dir in step_dirs:
-        all_present = all(
-            (step_dir / f"adapter_megatron_tp{tp}_pp{pp}.pt").exists()
-            for tp in range(tp_size)
-            for pp in range(pp_size)
-        )
-        if all_present:
-            return step_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
-    return None
+        step = get_step(step_dir)
+        if all_megatron_checkpoints_exist(step_dir, tp_size, pp_size):
+            return step_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt", step
+
+    return None, 0
 
 
 def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
@@ -327,6 +333,13 @@ def save_multi_lora_checkpoints(
 
         # to avoid partially complete checkpoints, move the checkpoint to the
         # actual directory after everything is complete
+        #
+        # TODO(mathewjhan): it could be nice to have a callback that checks when all
+        # checkpoints are available in final_dir and writes a final marker file to the folder,
+        # useful for distributed file systems and verifying that the checkpoint is complete
+        # Currently, this only guarantees that the trainer processes have written everything,
+        # but doesn't account for the actual visibility of each checkpoint shard on every
+        # node due to network latency, consistency semantics, etc
         if is_global_writer:
             if final_dir.exists():
                 import shutil
@@ -340,12 +353,17 @@ def save_multi_lora_checkpoints(
 def _register_adapter(name: str, config: AdapterConfig, model) -> None:
     """Install one PENDING adapter on this rank's local model shard.
     """
+    from miles.backends.megatron_utils.initialize import is_megatron_main_rank
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
     log_prefix = f"[multilora] ({name})"
 
     ckpt_root = config.dir / "checkpoints"
-    ckpt = find_latest_checkpoint(ckpt_root)
+    ckpt, step = find_latest_checkpoint(ckpt_root)
+
+    if is_megatron_main_rank():
+        ray.get(get_multi_lora_controller().set_train_step.remote(name, step))
+
     if ckpt is None:
         logger.info(f"{log_prefix} no checkpoint under {ckpt_root}, starting from random init")
     else:

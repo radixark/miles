@@ -1,13 +1,4 @@
 #!/bin/bash
-# Multi-LoRA dynamic-lifecycle dev run.
-#
-# Drives a hard-coded register/deregister schedule via
-# train_multi_lora_dynamic.py to exercise the online add/remove path:
-#   wait → +dapo → +gsm8k → -dapo → -gsm8k+wait → +gsm8k → +dapo → end
-#
-# Each productive phase runs 3 rollouts; the final phase runs to
-# --num-rollout. With 18 total productive rollouts, the final phase gets 6.
-
 set -ex
 
 export GPUS_PER_NODE=8
@@ -28,7 +19,7 @@ ray job submit --address="http://127.0.0.1:8265" \
         "CUDA_DEVICE_MAX_CONNECTIONS": "1"
      }
    }' \
-   -- python3 examples/multi_lora/train_multi_lora_dynamic.py \
+   -- python3 examples/multi_lora/train_multi_lora.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node $GPUS_PER_NODE \
    --colocate \
@@ -43,7 +34,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    --lora-alpha 32 \
    --lora-dropout 0.0 \
    --target-modules "all-linear" \
-   --multi-lora-dir "${SCRIPT_DIR}/adapters" \
    --multi-lora-n-adapters 4 \
    --multi-lora-idle-poll-s 5 \
    --sglang-lora-backend triton \

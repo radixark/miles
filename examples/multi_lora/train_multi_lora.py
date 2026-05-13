@@ -1,9 +1,5 @@
 import asyncio
 import logging
-from dataclasses import dataclass
-from pathlib import Path
-
-import ray
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
@@ -17,7 +13,22 @@ from miles.utils.tracking_utils import init_tracking
 
 logger = logging.getLogger(__name__)
 
-async def run_trainer(args, controller, rollout_manager, actor_model, num_rollout_per_epoch, shared_state: list[int]) -> None:
+async def main(args):
+    configure_logger()
+    pgs = create_placement_groups(args)
+    init_tracking(args)
+
+    controller = create_multi_lora_controller(args.multi_lora_n_adapters, args.lora_rank)
+    args.data_source_path = "miles.rollout.multi_lora_data_source.MultiLoRADataSource"
+    args.custom_generate_state_path = "miles.ray.multi_lora_controller.MultiLoRAGenerateState"
+
+    # For cli adapters
+    for name, path in args.multi_lora_adapters:
+        await controller.register_adapter.remote(name, path)
+
+    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    actor_model, _ = await create_training_models(args, pgs, rollout_manager)
+
     if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
@@ -64,11 +75,16 @@ async def run_trainer(args, controller, rollout_manager, actor_model, num_rollou
     def should_update_adapters(adapter_configs):
         return any(config.state in ADAPTER_INACTIVE_STATES for config in adapter_configs.values())
 
-    # TODO: improve loop readability
+    has_seen_adapters = False
+    is_idle = False
+
     while True:
         adapter_configs = await controller.adapter_configs.remote()
         run_train = should_run_train(adapter_configs)
         update_adapters = should_update_adapters(adapter_configs)
+
+        if adapter_configs:
+            has_seen_adapters = True
 
         # Run training
         if run_train:
@@ -78,7 +94,7 @@ async def run_trainer(args, controller, rollout_manager, actor_model, num_rollou
             await actor_model.train(rollout_id, rollout_data_ref)
             await controller.report_training_completed.remote(rollout_id)
 
-        # Load/unload adapteres
+        # Load/unload adapters
         if update_adapters:
             # Train already offloads the rollout
             if not run_train:
@@ -90,12 +106,14 @@ async def run_trainer(args, controller, rollout_manager, actor_model, num_rollou
 
         # Both cases need to push weights
         if run_train or update_adapters:
+            is_idle = False
             # For run train, at the end, update rollout id and checkpoint if needed
             if run_train:
                 if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
+                    # NOTE: rollout_id in save doesn't do that much for multilora since each adapter
+                    # tracks its own steps, but pass anyway as a dummy arg
                     await save(rollout_id)
                 rollout_id += 1
-                shared_state[0] = rollout_id
 
             # Push the weights to sglang
             await offload_train()
@@ -104,35 +122,17 @@ async def run_trainer(args, controller, rollout_manager, actor_model, num_rollou
             await actor_model.update_weights()
             if args.offload_rollout:
                 await rollout_manager.onload_kv.remote()
+        # Nothing to do: either waiting for first adapter or all work is done
         else:
-            print("Nothing to do: sleeping for 5s")
+            if not is_idle:
+                logger.info("Idle: waiting for adapters...")
+                is_idle = True
+            if not args.multi_lora_service_mode and has_seen_adapters:
+                break
             await asyncio.sleep(5)
 
     await rollout_manager.dispose.remote()
 
-
-async def main(args):
-    configure_logger()
-    pgs = create_placement_groups(args)
-    init_tracking(args)
-
-    # No startup registration ‚Äî the schedule task drives all events.
-    controller = create_multi_lora_controller(args.multi_lora_n_adapters, args.lora_rank)
-    args.data_source_path = "miles.rollout.multi_lora_data_source.MultiLoRADataSource"
-    args.custom_generate_state_path = "miles.ray.multi_lora_controller.MultiLoRAGenerateState"
-
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
-    actor_model, _ = await create_training_models(args, pgs, rollout_manager)
-
-    shared_state = [args.start_rollout_id]
-
-    await asyncio.gather(
-        run_trainer(args, controller, rollout_manager, actor_model, num_rollout_per_epoch, shared_state),
-        run_schedule(controller, Path(args.multi_lora_dir), shared_state),
-    )
-
-
 if __name__ == "__main__":
     args = parse_args()
     asyncio.run(main(args))
-

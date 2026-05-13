@@ -21,7 +21,6 @@ class MultiLoRADataSource(DataSource):
         self.controller = get_multi_lora_controller()
         self.sources: dict[str, RolloutDataSource] = {}
         self.configs: dict[str, AdapterConfig] = {}
-        self.epoch_counts: dict[str, int] = {}
 
         self.source_queue = deque()
         self._reconcile(self._fetch_configs())
@@ -33,8 +32,6 @@ class MultiLoRADataSource(DataSource):
         return ray.get(self.controller.adapter_train_steps.remote())
 
     def _update_source_queue(self, active_names):
-        active_names = set(active_names)
-
         # Filter out any adapter names that are gone while retaining order
         new_source_queue = deque()
 
@@ -60,18 +57,16 @@ class MultiLoRADataSource(DataSource):
             if name not in configs:
                 del self.sources[name]
                 del self.configs[name]
-                del self.epoch_counts[name]
                 logger.info(f"Removed data source for adapter '{name}'")
 
         # Create new sources
         for name, config in configs.items():
             if name not in self.sources:
-                self.sources[name] = self._create_adapter_source(config)
-                self.epoch_counts[name] = 0
+                self.sources[name] = self._create_adapter_source(name, config)
                 logger.info(f"Created data source for adapter '{name}' from {config.data}")
             self.configs[name] = config
 
-    def _create_adapter_source(self, config: AdapterConfig) -> RolloutDataSource:
+    def _create_adapter_source(self, name: str, config: AdapterConfig) -> RolloutDataSource:
         steps = self._fetch_adapter_steps()
         adapter_args = copy.copy(self.args)
 
@@ -84,22 +79,26 @@ class MultiLoRADataSource(DataSource):
         # Checkpointing
         adapter_args.save = config.dir or self.args.save
         adapter_args.load = config.dir or self.args.load
-        adapter_args.start_rollout_id = steps.get(config.name, 0)
+        adapter_args.start_rollout_id = steps.get(name, 0)
 
         return RolloutDataSource(adapter_args)
 
     def get_samples(self, num_samples: int) -> list[list[Sample]]:
+        """
+        Runs a round robin around the data sources and preserves the round robin ordering
+        even when new datasources are added or removed.
+        """
         configs = self._fetch_configs()
         self._reconcile(configs)
 
-        active_names = [n for n in self.sources if configs[n].state == AdapterState.ACTIVE]
-        datasource_drained = [n for n in self.sources if configs[n].state == AdapterState.DRAINING_DATASOURCE]
+        active_names = set(n for n in self.sources if configs[n].state == AdapterState.ACTIVE)
+        datasource_drained = set(n for n in self.sources if configs[n].state == AdapterState.DRAINING_DATASOURCE)
 
         assert len(active_names) + len(datasource_drained) > 0, "get_samples called without any active adapters"
 
         # Run one last iter for those being drained, since sglang rollout needs to be able to run one last
         # time for the adapter after the draining has kicked off in order to update the adapter states
-        active_names += datasource_drained
+        active_names |= datasource_drained
         self._update_source_queue(active_names)
 
         refs = {name: AdapterRef(name=name, slot=configs[name].slot) for name in active_names}
@@ -108,25 +107,27 @@ class MultiLoRADataSource(DataSource):
             for name in active_names
         }
 
+        samples_per_adapter, remainder = divmod(num_samples, len(self.source_queue))
+
         # Get samples from each data source
         all_samples: list[list[Sample]] = []
-        for i in range(num_samples):
+        for i in range(len(self.source_queue)):
+            # for samples 0 -> remainder, add an extra sample
+            extra = int(i < remainder)
+            samples_needed = samples_per_adapter + extra
+
+            # If no samples needed, then exit early
+            if samples_needed == 0:
+                break
+
             name = self.source_queue.popleft()
             config = configs[name]
+            # Add the name back into the queue for next time get_samples is called, preserving
+            # round robin ordering
             self.source_queue.append(name)
 
             source: RolloutDataSource = self.sources[name]
-            adapter_samples = source.get_samples(1)
-
-            # Begin deregistration process when out of data
-            # sample_group_index is the same as tracking the row index
-            # Default to length of dataset, override if num rollout is set
-            default_num_row = (getattr(config, "num_epoch", 1) or 1) * len(source.dataset)
-            num_row = getattr(config, "num_row") or default_num_row
-            if source.sample_group_index >= num_row:
-                logger.info(f"Adapter '{name}' reached num_row={num_row}, deregistering")
-                print(f"Adapter '{name}' reached num_row={num_row}, deregistering...")
-                datasource_drained.append(name)
+            adapter_samples = source.get_samples(samples_needed)
 
             # Add LoRA adapter data + per adapter reward fn data
             ref = refs[name]
@@ -137,8 +138,20 @@ class MultiLoRADataSource(DataSource):
                     sample.reward_spec = reward_spec
             all_samples.extend(adapter_samples)
 
+            # Begin deregistration process when out of data
+            # sample_group_index is the same as tracking the row index
+            # Default to length of dataset, override if num rollout is set
+            default_num_row = (getattr(config, "num_epoch", 1) or 1) * len(source.dataset)
+            num_row = getattr(config, "num_row") or default_num_row
+            if source.sample_group_index >= num_row:
+                logger.info(f"Adapter '{name}' reached num_row={num_row}, deregistering")
+                datasource_drained.add(name)
+
         if datasource_drained:
-            ray.get(self.controller.update_adapter_state.remote(datasource_drained, AdapterState.DRAINING_INFLIGHT))
+            ray.get(self.controller.update_adapter_state.remote(list(datasource_drained), AdapterState.DRAINING_INFLIGHT))
+
+        # Verify we always get num_samples at the end
+        assert len(all_samples) == num_samples
 
         return all_samples
 

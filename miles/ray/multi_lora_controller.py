@@ -11,15 +11,16 @@ from miles.rollout.sglang_rollout import GenerateState
 logger = logging.getLogger(__name__)
 
 CONTROLLER_NAME = "miles_multi_lora_controller"
+CONTROLLER_NAMESPACE = "miles"
 
 
 def create_multi_lora_controller(max_adapters: int, max_rank: int):
     """Create the named singleton controller. Call once from the driver."""
-    return MultiLoRAController.options(name=CONTROLLER_NAME).remote(max_adapters, max_rank)
+    return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(max_adapters, max_rank)
 
 
 def get_multi_lora_controller():
-    return ray.get_actor(CONTROLLER_NAME)
+    return ray.get_actor(CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE)
 
 class MultiLoRAGenerateState(GenerateState):
     def __init__(self, args):
@@ -109,7 +110,6 @@ class MultiLoRAGenerateState(GenerateState):
             if res is None:
                 logger.warn(f"{adapter_name} was removed from trainable group count without any in-flight samples, this indicates that either adapter was removed before generating any samples or an underlying trainable group counting error")
 
-
 @ray.remote(num_cpus=0)
 class MultiLoRAController:
     def __init__(self, max_adapters: int, max_rank: int):
@@ -129,37 +129,35 @@ class MultiLoRAController:
         # Map from adapter name to step number, seeded when they are loaded
         self.train_steps: dict[str, int] = {}
 
-    def register_adapter(self, adapter_dir: str) -> dict:
-        config = parse_adapter_yaml(Path(adapter_dir) / "adapter.yaml")
+    def register_adapter(self, name: str, path_or_config: str | AdapterConfig) -> dict:
+        # Handle path vs. config
+        if isinstance(path_or_config, str):
+            config = parse_adapter_yaml(Path(path_or_config))
+        elif isinstance(path_or_config, AdapterConfig):
+            config = path_or_config
+        else:
+            raise ValueError(f"Invalid type {type(path_or_config)} in register_adapter")
+
+        # NOTE: for now, this is a unified directory that contains both rollout + model checkpoint
+        # save data
+        Path(config.dir).mkdir(parents=True, exist_ok=True)
+
         assert config.rank <= self.max_rank, (
-            f"Adapter '{config.name}' rank ({config.rank}) exceeds max rank ({self.max_rank})"
+            f"Adapter '{name}' rank ({config.rank}) exceeds max rank ({self.max_rank})"
         )
-        if config.name in self.configs:
-            raise ValueError(f"Adapter '{config.name}' is already registered")
+        if name in self.configs:
+            raise ValueError(f"Adapter '{name}' is already registered")
         if not self.free_slots:
             raise RuntimeError(f"No free adapter slots (max {self.max_adapters})")
 
         slot = min(self.free_slots)
         self.free_slots.remove(slot)
-        self.configs[config.name] = dataclasses.replace(
+        self.configs[name] = dataclasses.replace(
             config, slot=slot, state=AdapterState.PENDING
         )
 
-        def get_checkpoint_step(ckpt_dir: Path) -> int:
-              if not ckpt_dir.exists():
-                  return 0
-              steps = [
-                  int(d.name.split("_")[1])
-                  for d in ckpt_dir.iterdir()
-                  if d.is_dir() and d.name.startswith("step_")
-              ]
-              return max(steps) if steps else 0
-
-        ckpt_root = config.dir / "checkpoints"
-        self.train_steps[config.name] = get_checkpoint_step(ckpt_root)
-
-        logger.info(f"Registered adapter '{config.name}' at slot {slot} (PENDING)")
-        return {"name": config.name, "slot": slot}
+        logger.info(f"Registered adapter '{name}' at slot {slot} (PENDING)")
+        return {"name": name, "slot": slot}
 
     def update_adapter_state(self, names: str | list[str], state: AdapterState):
         if isinstance(names, str):
@@ -240,8 +238,14 @@ class MultiLoRAController:
         logger.info(f"Removed adapter '{name}' (slot {slot} freed)")
         return slot
 
+    def set_train_step(self, name: str, step: int):
+        self.train_steps[name] = step
+
     def adapter_configs(self) -> dict[str, AdapterConfig]:
         return dict(self.configs)
 
     def adapter_train_steps(self) -> dict[str, int]:
         return dict(self.train_steps)
+
+    def last_trained_rollout_id(self) -> int:
+        return self.last_trained_rollout_id

@@ -1,10 +1,4 @@
 #!/bin/bash
-# Multi-LoRA dev run: 5 rollouts, checkpoint after every rollout.
-#
-# Same model/data setup as ``run.sh`` — just shortened to verify the end-to-end
-# train + save + resume loop quickly. Each adapter writes a checkpoint under
-# ``adapters/{name}/checkpoints/step_{rollout_id}/`` after every rollout.
-
 set -ex
 
 export GPUS_PER_NODE=8
@@ -40,8 +34,11 @@ ray job submit --address="http://127.0.0.1:8265" \
    --lora-alpha 32 \
    --lora-dropout 0.0 \
    --target-modules "all-linear" \
-   --multi-lora-dir "${SCRIPT_DIR}/adapters" \
    --multi-lora-n-adapters 4 \
+   --multi-lora-idle-poll-s 5 \
+   --multi-lora-adapter "dapo_math" "examples/multi_lora/adapters/dapo_math/adapter.yaml" \
+   --multi-lora-adapter "gsm8k" "examples/multi_lora/adapters/gsm8k/adapter.yaml" \
+   --multi-lora-disable-service-mode \
    --sglang-lora-backend triton \
    \
    --prompt-data /root/gsm8k/train.parquet \
@@ -49,14 +46,14 @@ ray job submit --address="http://127.0.0.1:8265" \
    --label-key label \
    --apply-chat-template \
    --rollout-shuffle \
-   --num-rollout 5 \
+   --num-rollout 50 \
    --rollout-batch-size 32 \
    --n-samples-per-prompt 8 \
    --rollout-max-response-len 4096 \
    --rollout-temperature 1 \
    --global-batch-size 256 \
    \
-   --save /tmp/multi_lora_dev_save \
+   --save /tmp/multi_lora_dev2_save \
    --save-interval 1 \
    \
    --advantage-estimator grpo \
@@ -95,4 +92,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    --wandb-host https://wandb.ai/ \
    --wandb-team osmosis-staging \
    --wandb-project miles-multilora \
-   --wandb-group qwen3-4B-dev
+   --wandb-group qwen3-4B-dev2-dynamic
+
