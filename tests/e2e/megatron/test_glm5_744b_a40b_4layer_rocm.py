@@ -197,7 +197,7 @@ def execute():
     # flashmla_sparse -> tilelang (the ROCm NSA backend, matches the upstream
     # MI35x SGLang eval test test_glm5_eval_mi35x.py).
     sglang_args = (
-        "--rollout-num-gpus 4 "
+        f"--rollout-num-gpus {NUM_GPUS // 2} "
         "--rollout-num-gpus-per-engine 2 "
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-enable-dp-attention "
@@ -228,8 +228,8 @@ def execute():
         # ------------
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
-        "--num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
+        f"--num-gpus-per-node {NUM_GPUS} "
         "--update-weights-interval 2 "
         "--dump-details /root/shared_data/dump_details "
         # NOTE: do NOT set --disable-weights-backuper in async mode. It runs
@@ -272,7 +272,7 @@ def execute():
             # per-worker. Otherwise SGLang's import-time is_gfx95_supported()
             # probe fails with "No HIP GPUs are available".
             "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES": "1",
-            "HIP_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+            "HIP_VISIBLE_DEVICES": ",".join(map(str, range(NUM_GPUS))),
         },
     )
 
