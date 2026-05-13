@@ -303,8 +303,19 @@ def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None, is_casual=True, re
     # disable double-buffering on ROCm. NV path unchanged.
     if torch.version.hip is not None:
         bwd_kernel = bwd(
-            B, S, S_kv, H, D, D_tail, topk, kv_group, sm_scale, is_casual,
-            block_size=32, num_stages=1, block_H_override=16,
+            B,
+            S,
+            S_kv,
+            H,
+            D,
+            D_tail,
+            topk,
+            kv_group,
+            sm_scale,
+            is_casual,
+            block_size=32,
+            num_stages=1,
+            block_H_override=16,
         )
     else:
         bwd_kernel = bwd(B, S, S_kv, H, D, D_tail, topk, kv_group, sm_scale, is_casual)

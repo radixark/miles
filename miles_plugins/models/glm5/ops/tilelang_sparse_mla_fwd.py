@@ -70,9 +70,10 @@ def sparse_mla_fwd(
     # original H100-tuned behavior.
     if h_per_block is None:
         h_per_block = padded_H if head_kv <= 64 else 64
-    assert padded_H % h_per_block == 0, (
-        f"padded_H={padded_H} must be divisible by h_per_block={h_per_block}"
-    )
+    # Cap at padded_H so callers passing a larger override don't trip the
+    # divisibility assert below (e.g. h_per_block=32 with head_kv=16, padded_H=16).
+    h_per_block = min(h_per_block, padded_H)
+    assert padded_H % h_per_block == 0, f"padded_H={padded_H} must be divisible by h_per_block={h_per_block}"
     H_per_block = h_per_block
     REPLICATE_H = padded_H // H_per_block
 
@@ -177,7 +178,15 @@ def sparse_mla_fwd(
 
 
 def sparse_mla_fwd_interface(
-    q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512, block_I=64, num_stages=2, threads=256,
+    q,
+    kv,
+    indices,
+    sm_scale=None,
+    return_p_sum: bool = False,
+    d_v=512,
+    block_I=64,
+    num_stages=2,
+    threads=256,
     h_per_block=None,
 ):
     # gfx950 (MI300/MI355) has 160KB LDS per workgroup; the default tile
