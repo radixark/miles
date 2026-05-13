@@ -1,5 +1,6 @@
 from argparse import Namespace
 from collections.abc import Callable
+from typing import Protocol
 
 import torch
 import torch.distributed as dist
@@ -16,6 +17,16 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.misc import load_function
 from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
 from miles.utils.types import RolloutBatch
+
+
+class LossFunction(Protocol):
+    def __call__(
+        self,
+        args: Namespace,
+        batch: RolloutBatch,
+        logits: torch.Tensor,
+        sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]: ...
 
 
 def compute_ess_ratio_contribution(
@@ -478,7 +489,7 @@ def sft_loss_function(
     )
 
 
-def get_loss_function(args) -> Callable:
+def get_loss_function(args: Namespace) -> LossFunction:
     match args.loss_type:
         case "policy_loss":
             return policy_loss_function
