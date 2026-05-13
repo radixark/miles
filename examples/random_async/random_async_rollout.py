@@ -66,9 +66,12 @@ def _rand_ids(n: int) -> list[int]:
     return [random.randrange(VOCAB_SIZE) for _ in range(n)]
 
 
-def _decode_routed_experts(args, encoded: str, token_count: int) -> np.ndarray:
+def _decode_routed_experts(args, encoded: str, token_count: int, start_len: int = 0) -> np.ndarray:
+    row_count = token_count - 1 - start_len
+    if row_count < 0:
+        raise ValueError(f"routed_experts_start_len={start_len} exceeds token_count - 1 ({token_count - 1})")
     return np.frombuffer(pybase64.b64decode(encoded.encode("ascii")), dtype=np.int32).reshape(
-        token_count - 1,
+        row_count,
         args.num_layers,
         args.moe_router_topk,
     )
@@ -92,7 +95,8 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     perfect_cacheable_prefix_len = 0
     sticky_dp_rank = sample.index % args.rollout_num_gpus_per_engine
     use_routing_replay = getattr(args, "use_rollout_routing_replay", False)
-    latest_routed_experts: np.ndarray | None = None
+    routed_experts_chunks: list[np.ndarray] = []
+    routed_experts_start_len = 0
 
     while True:
         turns += 1
@@ -115,6 +119,7 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
         }
         if use_routing_replay:
             payload["return_routed_experts"] = True
+            payload["routed_experts_start_len"] = routed_experts_start_len
         headers = {"x-smg-routing-key": f"random-async-sample-{sample.index}"}
         request_start = time.monotonic()
         try:
@@ -150,11 +155,14 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
                 f"remaining_tokens={remaining_tokens})"
             )
         if use_routing_replay:
-            latest_routed_experts = _decode_routed_experts(
+            routed_experts_chunk = _decode_routed_experts(
                 args,
                 meta["routed_experts"],
                 len(current_ids) + len(out_tokens),
+                routed_experts_start_len,
             )
+            routed_experts_chunks.append(routed_experts_chunk)
+            routed_experts_start_len += routed_experts_chunk.shape[0]
         cached_tokens = meta["cached_tokens"]
         prompt_tokens = meta["prompt_tokens"]
         record_agent_request(
@@ -199,15 +207,16 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     sample.loss_mask = accumulated_loss_mask
     sample.rollout_log_probs = accumulated_log_probs
     if use_routing_replay:
-        if latest_routed_experts is None:
+        if not routed_experts_chunks:
             raise RuntimeError(f"Routing replay enabled but no routed experts were returned for sample {sample.index}")
-        if latest_routed_experts.shape[0] != len(current_ids) - 1:
+        routed_experts = np.concatenate(routed_experts_chunks, axis=0)
+        if routed_experts.shape[0] != len(current_ids) - 1:
             raise RuntimeError(
                 "Routing replay metadata length does not match final sample tokens "
-                f"(sample_index={sample.index}, routed_experts={latest_routed_experts.shape[0]}, "
+                f"(sample_index={sample.index}, routed_experts={routed_experts.shape[0]}, "
                 f"tokens_minus_one={len(current_ids) - 1})"
             )
-        sample.rollout_routed_experts = latest_routed_experts
+        sample.rollout_routed_experts = routed_experts
     sample.status = Sample.Status.COMPLETED
     print(
         f"Random rollout sample finished: group={sample.group_index}, "

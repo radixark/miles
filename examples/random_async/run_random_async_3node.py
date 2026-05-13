@@ -152,7 +152,6 @@ def execute(args: ScriptArgs):
         "--sglang-expert-parallel-size 4 "
         "--sglang-enable-dp-lm-head "
         "--sglang-moe-a2a-backend deepep "
-        "--sglang-disaggregation-transfer-backend nixl "
         "--sglang-context-length 80000 "
         "--sglang-enable-metrics "
         "--sglang-server-concurrency 384 "

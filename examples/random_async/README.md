@@ -5,14 +5,9 @@ rollout ↔ trainer loop **without any real dataset, real reward model, or
 meaningful generation** — useful as an agent infrastructure stress test 
 for bigger agentic workloads.
 
-Currently uses a few patches to fix some issues in SGLang.
-
 ## Quick start
 
 ```bash
-# one-time: apply the SGLang patches in your environment
-./patches/apply_patches.sh
-
 # default (Qwen3.5-35B-A3B), in_place pause + broadcast weight transfer
 python run_random_async_3node.py
 

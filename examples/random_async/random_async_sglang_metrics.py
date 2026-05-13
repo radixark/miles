@@ -173,6 +173,7 @@ class SGLangMetricsReporter:
         self.failure: BaseException | None = None
         self._previous_realtime_tokens: dict[str, float] = {}
         self._previous_time: float | None = None
+        self._last_failure_log_time = 0.0
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -199,11 +200,11 @@ class SGLangMetricsReporter:
                 metrics.update(_pop_agent_metrics())
                 if metrics:
                     self._log_to_wandb(metrics)
-            except Exception as e:
-                self.failure = e
-                logger.exception("random_async SGLang metrics reporter failed")
-                self._stop_event.set()
-                return
+            except Exception:
+                now = time.time()
+                if now - self._last_failure_log_time > 300:
+                    logger.warning("random_async SGLang metrics scrape failed; continuing", exc_info=True)
+                    self._last_failure_log_time = now
             elapsed = time.time() - start
             self._stop_event.wait(max(1.0, METRICS_INTERVAL_SECONDS - elapsed))
 
