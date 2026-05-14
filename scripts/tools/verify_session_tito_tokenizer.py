@@ -70,7 +70,7 @@ def main() -> int:
     parser.add_argument(
         "--hf-checkpoint",
         required=True,
-        help="HuggingFace model ID, e.g. zai-org/GLM-4.7-Flash.",
+        help="HuggingFace model ID or local checkpoint path, e.g. zai-org/GLM-4.7-Flash.",
     )
     parser.add_argument(
         "--tito-model",

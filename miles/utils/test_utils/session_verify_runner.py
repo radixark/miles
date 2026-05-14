@@ -54,8 +54,16 @@ def _ensure_prompt_data() -> str:
 
 
 def _ensure_model_downloaded(hf_checkpoint: str) -> str:
-    """Download the model to ``/root/models/<short-name>`` if not already there."""
+    """Return a local model path, downloading HF repos when needed.
+
+    Lets callers pass either a HuggingFace repo id (downloaded under
+    ``/root/models/<short-name>``) or an existing local checkpoint path
+    (returned as-is, no download).
+    """
     import miles.utils.external_utils.command_utils as U
+
+    if os.path.exists(hf_checkpoint):
+        return hf_checkpoint
 
     short = hf_checkpoint.split("/")[-1]
     local_dir = os.path.join(LOCAL_MODELS_ROOT, short)
