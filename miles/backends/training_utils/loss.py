@@ -7,7 +7,7 @@ from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub import get_loss_function
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
 from miles.backends.training_utils.loss_hub.base_types import LossFnInput
-from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ppo_utils import compute_approx_kl
 from miles.utils.types import RolloutBatch
