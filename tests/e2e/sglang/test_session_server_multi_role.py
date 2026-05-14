@@ -71,6 +71,20 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tp_size=4,
         cycles=2,
     ),
+    "minimaxm2-tool": ModelConfig(
+        # MiniMax-M2.7 shares the M2 chat template (]~!b[ / [e~[ / ]~b] tag
+        # set) — reasoning is gated by last_user_index, so appending a new
+        # ``user`` strips prior assistant <think> blocks and breaks
+        # append-only.  Only the {tool} surface is registered upstream, so
+        # allowed_append_roles is limited to ("tool",).
+        model_name="MiniMaxAI/MiniMax-M2.7",
+        reasoning_parser="minimax-append-think",
+        tool_call_parser="minimax-m2",
+        tito_model="minimax_m2",
+        allowed_append_roles=("tool",),
+        tp_size=4,
+        cycles=2,
+    ),
     "nemotron3-tool-user": ModelConfig(
         # Nemotron-3-Super-120B-A12B-BF16 (~240GB bf16, A12B activated).
         # num_attention_heads=32, num_key_value_heads=2 — same KV-bottleneck
