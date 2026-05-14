@@ -309,7 +309,7 @@ def natural_to_zigzag_slice(tensor: torch.Tensor, dim: int, cp_size: int, cp_ran
     return torch.cat(slices, dim=dim)
 
 
-def _allgather_cp_redistribute(
+def allgather_cp_redistribute(
     res: dict[str, list[torch.Tensor]],
     *,
     logits: torch.Tensor,

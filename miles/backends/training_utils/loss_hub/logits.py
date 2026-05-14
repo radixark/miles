@@ -3,7 +3,7 @@ from collections.abc import Iterator
 
 import torch
 
-from miles.backends.training_utils.cp_utils import _allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
+from miles.backends.training_utils.cp_utils import allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ppo_utils import calculate_log_probs_and_entropy
 
@@ -192,7 +192,7 @@ def get_log_probs_and_entropy(
 
     # we need to turn the all gather kv into zigzag ring attn kv
     if args.allgather_cp:
-        _allgather_cp_redistribute(
+        allgather_cp_redistribute(
             res,
             logits=logits,
             args=args,
@@ -251,7 +251,7 @@ def get_values(
     }
 
     if args.allgather_cp:
-        _allgather_cp_redistribute(
+        allgather_cp_redistribute(
             res,
             logits=logits,
             args=args,
