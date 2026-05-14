@@ -79,7 +79,7 @@ def print_diff(name: str, diff: DiffInfo):
 def ref_dense_attn(q, kv, attn_sink, topk_idxs, sm_scale=None):
     """Dense PyTorch reference for sparse attention with attn_sink.
 
-    Uses full Q @ K^T with mask (no gather), matching dense_attn_torch in attention_core.py.
+    Uses full Q @ K^T with mask (no gather).
     """
     q = q.float()
     kv = kv.float()
