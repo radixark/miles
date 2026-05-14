@@ -130,6 +130,10 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         frozenset({"tool", "user"}),
         {"preserve_thinking": True},
     ),
+    # MiniMax-M2: thinking via reasoning_content; reasoning is rendered only for
+    # assistant turns after the last user (last_user_index gate), so appending a
+    # new user would strip prior <think> blocks.  Only {tool} surface registered.
+    ("minimax_m2", load_hf_chat_template("MiniMaxAI/MiniMax-M2"), True, frozenset({"tool"}), {}),
     # other HF native non-thinking: tool only
     ("qwen3_instruct_2507", load_hf_chat_template("Qwen/Qwen3-4B-Instruct-2507"), False, frozenset({"tool"}), {}),
     ("qwen3_next_instruct", load_hf_chat_template("Qwen/Qwen3-Next-80B-A3B-Instruct"), False, frozenset({"tool"}), {}),

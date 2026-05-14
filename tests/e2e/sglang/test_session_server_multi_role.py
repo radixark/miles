@@ -87,6 +87,22 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tp_size=4,
         cycles=2,
     ),
+    "minimax-m2-tool": ModelConfig(
+        # MiniMax-M2 (~225GB fp8 native, 256 experts x 8 active, 62 layers).
+        # num_key_value_heads=8, so tp_size in {1, 2, 4, 8}; tp=2 is the
+        # smallest that fits (one H200 holds 140GB, model alone is ~225GB).
+        # Only {tool} surface registered: M2's chat template gates
+        # reasoning_content on last_user_index, so appending a new user
+        # strips prior <think> blocks and breaks append-only.  cycles=2 to
+        # keep total wall-time bounded given the 192K context budget.
+        model_name="MiniMaxAI/MiniMax-M2",
+        reasoning_parser="minimax",
+        tool_call_parser="minimax-m2",
+        tito_model="minimax_m2",
+        allowed_append_roles=("tool",),
+        tp_size=2,
+        cycles=2,
+    ),
     "nemotron3-tool-user": ModelConfig(
         # Nemotron-3-Super-120B-A12B-BF16 (~240GB bf16, A12B activated).
         # num_attention_heads=32, num_key_value_heads=2 — same KV-bottleneck
