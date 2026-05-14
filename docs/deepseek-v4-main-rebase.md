@@ -25,6 +25,7 @@
 10. Skipped `b157418af use kl metric`; the metric already exists in the current `loss_hub` refactor.
 11. Rebase stopped on `75b09c798 Fix text-only rollout processor guard`.
 12. Rebase stopped on `c8ab7d4b8 Fix rollout indexer replay shape decoding`.
+13. Rebase stopped on `49ce6ef8d Expose DeepSeek V4 bridge import errors`.
 
 ## Conflict Notes
 
@@ -102,6 +103,17 @@ Decision:
 
 - Kept the indexer replay decode fix: decode `indexer_topk` only when present and derive shape from `num_indexer_layers/index_topk` or `dsv4_compress_ratios/dsa_indexer_topk`.
 - Kept main's `get_rollout_topk_from_response()` public wrapper for routed experts. The underlying target SGLang API returns both replay buffers as base64-encoded int32 arrays, so the shared decode helper remains correct.
+
+### `49ce6ef8d Expose DeepSeek V4 bridge import errors`
+
+Conflicted files:
+
+- `miles_plugins/mbridge/__init__.py`
+
+Decision:
+
+- Switched DeepSeek-V4 bridge loading from optional `try/except ImportError` to an explicit import, matching the commit's intent to expose broken bridge dependencies immediately.
+- Preserved main's `Qwen3_5Bridge` export while adding `DeepseekV4Bridge` to `__all__`.
 
 ## Fix Notes
 
