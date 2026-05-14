@@ -343,6 +343,17 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
+        elif total_gpus == 32:  # 4 nodes × 8 GPUs
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 4 "
+                "--decoder-first-pipeline-num-layers 11 "
+                "--decoder-last-pipeline-num-layers 10 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
         elif total_gpus == 256:  # 32 nodes × 8 GPUs (Pro)
             return (
                 "--tensor-model-parallel-size 8 "
