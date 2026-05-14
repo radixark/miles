@@ -43,9 +43,9 @@ Controls
   ``ROUTER_EQ_MODEL_FAMILY`` overrides this to run a single family, primarily
   for local debugging.
 - The CI suite reserves 8 GPUs to avoid sharing the runner with another GPU
-  job while this SGLang/Ray process tree is alive. The test workload itself
-  still uses a single engine (``--rollout-num-gpus-per-engine 1``) so both
-  variants hit the same underlying sglang process topology.
+  job while this SGLang/Ray process tree is alive. Each model config uses the
+  smallest tensor-parallel size that fits its serving weights on the CI GPU
+  fleet; both variants use the same topology for a given model.
 """
 
 import base64
@@ -75,7 +75,8 @@ class ModelConfig:
     local_dir: str
     megatron_model_type: str
     reasoning_parser: str | None = None
-    num_gpus: int = 1
+    num_gpus: int = 4
+    mem_fraction_static: float = 0.7
 
 
 MODEL_REGISTRY: dict[str, ModelConfig] = {
@@ -85,7 +86,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         local_dir="/root/models/Qwen3-30B-A3B",
         megatron_model_type="qwen3-30B-A3B",
         reasoning_parser=None,
-        num_gpus=1,
     ),
     "glm47_flash": ModelConfig(
         model_name="GLM-4.7-Flash",
@@ -93,7 +93,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         local_dir="/root/models/GLM-4.7-Flash",
         megatron_model_type="glm4.7-flash",
         reasoning_parser="glm45",
-        num_gpus=1,
     ),
 }
 
@@ -170,7 +169,7 @@ def _build_train_args(cfg: ModelConfig, variant: str) -> str:
     sglang_args = (
         f"--rollout-num-gpus-per-engine {cfg.num_gpus} "
         "--sglang-enable-deterministic-inference "
-        "--sglang-mem-fraction-static 0.85 "
+        f"--sglang-mem-fraction-static {cfg.mem_fraction_static} "
     )
     if cfg.reasoning_parser:
         sglang_args += f"--sglang-reasoning-parser {cfg.reasoning_parser} "
