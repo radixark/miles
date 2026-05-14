@@ -18,6 +18,18 @@ from .parallel import get_parallel_state
 logger = logging.getLogger(__name__)
 
 
+def _move_multimodal_value_to_device(value, device: torch.device | int):
+    if torch.is_tensor(value):
+        return value.to(device=device)
+    return torch.as_tensor(value, device=device)
+
+
+def _skip_multimodal_training_key(args: Namespace, key: str) -> bool:
+    # Qwen3-VL processors emit mm_token_type_ids for HF/SGLang, but Megatron's
+    # Qwen3-VL bridge model consumes image/video tensors directly.
+    return getattr(args, "train_backend", None) == "megatron" and key == "mm_token_type_ids"
+
+
 def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -39,7 +51,11 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [
             (
-                {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
+                {
+                    key: _move_multimodal_value_to_device(tensor, torch.cuda.current_device())
+                    for key, tensor in mm_dict.items()
+                    if not _skip_multimodal_training_key(args, key)
+                }
                 if mm_dict is not None
                 else None
             )
