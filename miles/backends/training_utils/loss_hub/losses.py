@@ -20,6 +20,14 @@ from miles.utils.types import RolloutBatch
 
 
 class LossFunction(Protocol):
+    """Common signature of the per-loss-type functions dispatched by `get_loss_function`.
+
+    A loss function consumes the configured args, a rollout batch, the model's
+    logits, and a CP-aware per-sample mean reducer, and returns the scalar
+    loss tensor (with gradient) together with a dict of detached scalar
+    metrics for logging.
+    """
+
     def __call__(
         self,
         args: Namespace,
