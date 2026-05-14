@@ -22,6 +22,8 @@
 7. Resolved the first conflict set by keeping current main infrastructure and replaying only the DeepSeek-V4 semantic additions.
 8. Continued rebase; Git dropped `7fb00e5 cleanup` because its patch is already upstream.
 9. Rebase stopped on `b6fbf677f add pro model training support`.
+10. Skipped `b157418af use kl metric`; the metric already exists in the current `loss_hub` refactor.
+11. Rebase stopped on `75b09c798 Fix text-only rollout processor guard`.
 
 ## Conflict Notes
 
@@ -71,6 +73,23 @@ Decision:
 
 - Adopted the commit's `pipeline_model_parallel_size <= num_layers` check instead of main's stricter `world_size <= num_layers` check. The total world size can legitimately exceed layer count when TP/CP are used, while PP size is the value constrained by layer partitioning.
 - Kept main's later automatic PP-size derivation and fallback config loading from the first conflict resolution.
+
+### `b157418af use kl metric`
+
+Decision:
+
+- Skipped the commit. Its old `miles/backends/training_utils/loss.py` patch adds `train_rollout_kl`, but current main has moved policy loss into `miles/backends/training_utils/loss_hub/losses.py`, where `train_rollout_kl` already exists with active-token masking and NaN/Inf cleanup.
+
+### `75b09c798 Fix text-only rollout processor guard`
+
+Conflicted files:
+
+- `miles/rollout/sglang_rollout.py`
+
+Decision:
+
+- Kept the text-only guard from the commit: only call the processor when a processor exists and the sample has non-empty multimodal inputs.
+- Kept main's `build_processor_kwargs()` wrapper when calling the processor, because it handles current Transformers processor kwargs conventions.
 
 ## Fix Notes
 
