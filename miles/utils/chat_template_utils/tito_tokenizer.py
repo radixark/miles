@@ -509,40 +509,6 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
-# Mistral v3 implementation
-# ---------------------------------------------------------------------------
-
-
-class MistralV3TITOTokenizer(TITOTokenizer):
-    """Mistral v3 instruct family: ``[INST] ... [/INST]`` template.
-
-    Mistral v3 chat template wraps each user turn in ``[INST] ... [/INST]``
-    and assistant content as plain text ending in ``</s>``.  No
-    per-message ``<|im_end|>`` style boundary; the model EOS is ``</s>``.
-
-    Only ``{tool}`` surface is registered because the HF-native template
-    inserts the ``[AVAILABLE_TOOLS]`` block right before the **last**
-    ``user`` turn — adding a new ``user`` shifts that block and breaks
-    append-only.  Multi-user-turn surfaces would need a fixed jinja.
-
-    Reasoning is not separately structured (no ``<think>`` block); the
-    sglang ``mistral`` tool-call parser handles ``[TOOL_CALLS][...]``.
-    """
-
-    reasoning_parser = None
-    tool_call_parser = "mistral"
-
-    SUPPORTED_TEMPLATES = (
-        FixedTemplateRow(
-            allowed_roles=frozenset({"tool"}),
-            template=None,
-        ),
-    )
-
-    _default_assistant_start_str: str = "[/INST]"
-
-
-# ---------------------------------------------------------------------------
 # Kimi K2 implementation
 # ---------------------------------------------------------------------------
 
@@ -550,9 +516,7 @@ class MistralV3TITOTokenizer(TITOTokenizer):
 def _kimi_segment_special_token_ids(tokenizer: Any) -> set[int]:
     """Kimi specials minus ``<|im_middle|>`` (intra-turn role-name/body
     separator, not a role boundary; must not be a segment boundary)."""
-    return TokenSeqComparator._collect_special_ids(tokenizer) - {
-        tokenizer.convert_tokens_to_ids("<|im_middle|>")
-    }
+    return TokenSeqComparator._collect_special_ids(tokenizer) - {tokenizer.convert_tokens_to_ids("<|im_middle|>")}
 
 
 class Kimi25TITOTokenizer(TITOTokenizer):
@@ -680,7 +644,6 @@ class TITOTokenizerType(str, Enum):
     NEMOTRON3 = "nemotron3"
     KIMI25 = "kimi25"
     KIMI26 = "kimi26"
-    MISTRAL_V3 = "mistral_v3"
     MINIMAX_M2 = "minimax_m2"
 
 
@@ -693,7 +656,6 @@ _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
     TITOTokenizerType.NEMOTRON3: Nemotron3TITOTokenizer,
     TITOTokenizerType.KIMI25: Kimi25TITOTokenizer,
     TITOTokenizerType.KIMI26: Kimi26TITOTokenizer,
-    TITOTokenizerType.MISTRAL_V3: MistralV3TITOTokenizer,
     TITOTokenizerType.MINIMAX_M2: MinimaxM2TITOTokenizer,
 }
 
