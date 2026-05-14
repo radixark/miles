@@ -617,7 +617,7 @@ class MinimaxM2TITOTokenizer(TITOTokenizer):
     requires a fixed jinja that always preserves history reasoning.
     """
 
-    reasoning_parser = "minimax"
+    reasoning_parser = "minimax-append-think"
     tool_call_parser = "minimax-m2"
 
     SUPPORTED_TEMPLATES = (
