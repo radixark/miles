@@ -1,7 +1,7 @@
 """Unit tests for DeepSeek-V4 TileLang sparse MLA attention kernels.
 
-Compares tilelang sparse MLA (forward + backward) against the PyTorch reference
-(sparse_attn_torch from attention_core.py) which uses gather-based attention.
+Compares tilelang sparse MLA (forward + backward) against a PyTorch dense
+reference implementation.
 
 Diff metrics follow the dumper comparator convention:
   - rel_diff:      1 - 2*(x·y) / (x² + y²)
