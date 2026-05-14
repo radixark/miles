@@ -49,8 +49,6 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_qwen2_to_hf(args, name, param)
     elif "deepseekv4" in model_name:
         converted_named_tensors = convert_deepseekv4_to_hf(args, name, param)
-    elif "deepseekv3" in model_name:
-        converted_named_tensors = convert_deepseekv3_to_hf(args, name, param)
     elif "llama" in model_name:
         converted_named_tensors = convert_llama_to_hf(args, name, param)
     elif "mimo" in model_name:
