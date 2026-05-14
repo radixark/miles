@@ -3,14 +3,14 @@ from argparse import Namespace
 import torch
 
 from miles.backends.training_utils.cp_utils import get_logits_and_tokens_offset_with_cp
-from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.distributed_utils import distributed_masked_whiten
-from miles.utils.ppo_utils import (
+from miles.backends.training_utils.loss_hub.math_utils import (
     get_advantages_and_returns_batch,
     get_grpo_returns,
     get_reinforce_plus_plus_baseline_advantages,
     get_reinforce_plus_plus_returns,
 )
+from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import distributed_masked_whiten
 
 
 def compute_advantages(
