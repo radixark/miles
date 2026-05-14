@@ -41,7 +41,12 @@ RAY_JOB_SUBMIT_ADDRESS="${RAY_JOB_SUBMIT_ADDRESS:-http://${MASTER_ADDR}:${RAY_DA
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
-export WANDB_KEY=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
+# Prefer WANDB_API_KEY; never hardcode keys in this repo.
+WANDB_KEY_VALUE="${WANDB_API_KEY:-${WANDB_KEY:-}}"
+
+# Single root for host paths (override in K8s / shared FS jobs).
+MILES_DATA_ROOT="${MILES_DATA_ROOT:-/home/yangchengyi/data}"
+DATA_ROOT="${MILES_DATA_ROOT}"
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -50,14 +55,14 @@ else
     HAS_NVLINK=0
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
-model_name=Qwen3.5-35B-A3B
+model_name=MiniMax-M2.5
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3.5-35B-A3B.sh"
-model_dir=/home/yangchengyi/data/models
-ckpt_dir=/home/yangchengyi/data/ckpts
+source "${SCRIPT_DIR}/models/minimax-m2.5.sh"
+model_dir="${DATA_ROOT}/models"
+ckpt_dir="${DATA_ROOT}/ckpts"
 interval=50
-project_name=miles-dev
-variant=${model_name}_miles_moe_test
+project_name=minmax-dev
+variant=${model_name}_minmax_moe_test
 CKPT_ARGS=(
    --hf-checkpoint ${model_dir}/${model_name}
    --ref-load ${model_dir}/${model_name}_torch_dist
@@ -65,30 +70,34 @@ CKPT_ARGS=(
    --save ${ckpt_dir}/${variant}
    --save-interval ${interval}
 )
-data_dir=/home/yangchengyi/data/datasets
+data_dir="${DATA_ROOT}/datasets"
 data_path=${data_dir}/deepmath-103k_miles.jsonl
-log_dir=/home/yangchengyi/data/logs
-log_path=${log_dir}/${model_name}_dapo_miles_$(date +%Y%m%d_%H%M%S).log
-WORKING_DIR=/home/yangchengyi/data/miles
+log_dir="${DATA_ROOT}/logs"
+log_path=${log_dir}/${model_name}_dapo_miles_$(date -d '+8 hours' +%Y%m%d_%H%M%S).log
+WORKING_DIR="${DATA_ROOT}/miles"
+# --rollout-function-path fully_async_rollout.* 需要能 import fully_async_rollout（见 examples/fully_async/）。
+# 官方示例：PYTHONPATH 包含 examples/fully_async。Ray 打包时可用 py_modules，避免各节点绝对路径不一致。
+FULLY_ASYNC_ROLLOUT_DIR="${FULLY_ASYNC_ROLLOUT_DIR:-${WORKING_DIR}/examples/fully_async}"
 mkdir -p "${log_dir}"
 exec > >(tee -a "${log_path}") 2>&1
 
 ROLLOUT_ARGS=(
+   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
    --prompt-data ${data_path}
    --input-key prompt
    --label-key label
    --apply-chat-template
-   --apply-chat-template-kwargs '{"enable_thinking":false}'
    --rollout-shuffle
    --rm-type dapo
    --reward-key score
    --num-rollout 3000
-   --rollout-batch-size 32
+   --rollout-batch-size 8
    --n-samples-per-prompt 8
+   # Keep <= --max-tokens-per-gpu under --use-dynamic-batch-size (Miles docs).
    --rollout-max-response-len 8192
    --rollout-temperature 1
 
-   --global-batch-size 256
+   --global-batch-size 64
    --balance-data
 )
 eval_path=${data_dir}/qwen-cot
@@ -98,12 +107,12 @@ if [ ${#eval_files[@]} -eq 0 ]; then
   exit 1
 fi
 
-EVAL_ARGS=(
-   --eval-interval ${interval}
-   --n-samples-per-eval-prompt 4
-   --eval-max-response-len 8192
-   --eval-top-p 1
-)
+# EVAL_ARGS=(
+#    --eval-interval ${interval}
+#    --n-samples-per-eval-prompt 4
+#    --eval-max-response-len 8192
+#    --eval-top-p 1
+# )
 
 EVAL_PROMPT_DATA_ARGS=()
 for eval_file in "${eval_files[@]}"; do
@@ -113,11 +122,12 @@ done
 EVAL_ARGS+=(--eval-prompt-data "${EVAL_PROMPT_DATA_ARGS[@]}")
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 8
    --sequence-parallel
-   --pipeline-model-parallel-size 4
-   --context-parallel-size 2
-   --expert-model-parallel-size 8
+   # MiniMax-M2.5: num_layers=62 -> PP must divide 62 (valid: 1,2,31,62). PP=2 is safe.
+   --pipeline-model-parallel-size 2
+   --context-parallel-size 1
+   --expert-model-parallel-size 32
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -126,7 +136,9 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 8192
+   # Lower than 8192 to reduce OOM under --colocate with large MoE + grad buffers.
+   --max-tokens-per-gpu 2048
+   --use-precision-aware-optimizer
 )
 
 GRPO_ARGS=(
@@ -137,6 +149,8 @@ GRPO_ARGS=(
    --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 4e-4
+   --use-rollout-routing-replay 
+   --use-tis
 )
 
 OPTIMIZER_ARGS=(
@@ -153,37 +167,34 @@ OPTIMIZER_ARGS=(
 )
 
 
-WANDB_ARGS=(
-   --use-wandb
-   --wandb-project ${project_name}
-   --wandb-group ${variant}
-   --wandb-key ${WANDB_KEY}
-)
+WANDB_ARGS=()
+if [[ -n "${WANDB_KEY_VALUE}" ]]; then
+  WANDB_ARGS+=(
+    --use-wandb
+    --wandb-project "${project_name}"
+    --wandb-group "${variant}"
+    --wandb-key "${WANDB_KEY_VALUE}"
+  )
+else
+  echo "WARN: WANDB_API_KEY / WANDB_KEY unset; skipping --use-wandb"
+fi
 TB_ARGS=(
    --use-tensorboard
-   --tb-dir /home/yangchengyi/data/tb
+   --tb-dir "${DATA_ROOT}/tb"
    --tb-project-name ${project_name}
    --tb-experiment-name ${variant}
 )
+# SGLang: MoE + colocate — leave headroom for Megatron init (Miles walkthrough).
+# Minimum practical engine width is often 4 GPUs (tp_size=4); tune via env if needed.
+
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 8
-   # Colocated 30B MoE: EAGLE draft + KV pool OOM on ~80GB GPUs after main weights (~74GiB).
-   --sglang-mem-fraction-static 0.62
-   --sglang-ep-size 8
+   --sglang-mem-fraction-static 0.7
+   --sglang-cuda-graph-max-bs 512
 
-   # Cap CUDA graph capture batch sizes (large bs=128 graphs steal VRAM needed for KV / drafts).
-   --sglang-cuda-graph-bs 1 2 4 8 16 32 48 64
 
-   # EAGLE/MTP disabled under --colocate; re-enable only if rollout uses dedicated GPUs.
-   # --sglang-speculative-algorithm EAGLE
-   # --sglang-speculative-num-steps 2
-   # --sglang-speculative-eagle-topk 1
-   # --sglang-speculative-num-draft-tokens 3
-   # --sglang-enable-draft-weights-cpu-backup
-
-   --sglang-max-running-requests 256
-   --sglang-chunked-prefill-size 8192
-   --sglang-server-concurrency 256
+   --sglang-moe-a2a-backend deepep
+   --sglang-deepep-mode auto
 )
 
 MISC_ARGS=(
@@ -195,6 +206,7 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+   
 
    --moe-token-dispatcher-type flex
    --moe-enable-deepep
@@ -219,8 +231,9 @@ fi
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"working_dir\": \"${WORKING_DIR}\",
+  \"py_modules\": [\"${FULLY_ASYNC_ROLLOUT_DIR}\"],
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/\",
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${FULLY_ASYNC_ROLLOUT_DIR}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
     \"no_proxy\": \"${no_proxy}\",
@@ -230,10 +243,10 @@ RUNTIME_ENV_JSON="{
 
 ray job submit --address="${RAY_JOB_SUBMIT_ADDRESS}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 train.py \
-   --actor-num-nodes 4 \
+   -- python3 train_async.py \
+   --actor-num-nodes 8 \
    --actor-num-gpus-per-node 8 \
-   --colocate \
+   --rollout-num-gpus 64 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
@@ -242,6 +255,5 @@ ray job submit --address="${RAY_JOB_SUBMIT_ADDRESS}" \
    ${WANDB_ARGS[@]} \
    ${TB_ARGS[@]} \
    ${PERF_ARGS[@]} \
-   ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}

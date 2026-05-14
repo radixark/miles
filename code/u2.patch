@@ -1,0 +1,93 @@
+diff --git a/python/sglang/srt/function_call/function_call_parser.py b/python/sglang/srt/function_call/function_call_parser.py
+index ca066e196..4007d0926 100644
+--- a/python/sglang/srt/function_call/function_call_parser.py
++++ b/python/sglang/srt/function_call/function_call_parser.py
+@@ -31,6 +31,7 @@ from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
+ from sglang.srt.function_call.qwen25_detector import Qwen25Detector
+ from sglang.srt.function_call.step3_detector import Step3Detector
+ from sglang.srt.function_call.trinity_detector import TrinityDetector
++from sglang.srt.function_call.u2 import U2Detector
+ from sglang.srt.function_call.utils import get_json_schema_constraint
+ 
+ logger = logging.getLogger(__name__)
+@@ -69,6 +70,7 @@ class FunctionCallParser:
+         "interns1": InternlmDetector,
+         "hermes": HermesDetector,
+         "gigachat3": GigaChat3Detector,
++        "u2": U2Detector,
+     }
+ 
+     def __init__(self, tools: List[Tool], tool_call_parser: str):
+diff --git a/python/sglang/srt/function_call/u2.py b/python/sglang/srt/function_call/u2.py
+new file mode 100644
+index 000000000..e666ebef9
+--- /dev/null
++++ b/python/sglang/srt/function_call/u2.py
+@@ -0,0 +1,55 @@
++import json
++import logging
++import re
++from typing import Any, Dict, List, Tuple
++
++from sglang.srt.entrypoints.openai.protocol import Tool
++from sglang.srt.function_call.base_format_detector import BaseFormatDetector
++from sglang.srt.function_call.core_types import (
++    StreamingParseResult,
++    ToolCallItem,
++    _GetInfoFunc,
++)
++from sglang.srt.function_call.minimax_m2 import MinimaxM2Detector
++
++logger = logging.getLogger(__name__)
++
++
++class U2Detector(MinimaxM2Detector):
++    """
++    Detector for U2 models.
++    Assumes function call format:
++        <U2:tool_call>
++        <invoke name="func1">
++        <parameter name="param1">value1</parameter>
++        <parameter name="param2">value2</parameter>
++        </invoke>
++        </U2:tool_call>
++    """
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.tool_call_start_token: str = "<U2:tool_call>"
++        self.tool_call_end_token: str = "</U2:tool_call>"
++        self.tool_call_prefix: str = '<invoke name="'
++        self.tool_call_function_end_token: str = "</invoke>"
++        self.tool_call_regex = re.compile(
++            r"<U2:tool_call>(.*?)</U2:tool_call>|<U2:tool_call>(.*?)$",
++            re.DOTALL,
++        )
++        self.tool_call_function_regex = re.compile(
++            r"<invoke name=\"(.*?)</invoke>|<invoke name=\"(.*)$", re.DOTALL
++        )
++        self.tool_call_parameter_regex = re.compile(
++            r"<parameter name=\"(.*?)</parameter>|<parameter name=\"(.*?)$", re.DOTALL
++        )
++        self._buf: str = ""
++
++        # Streaming state variables
++        self._current_function_name: str = ""
++        self._current_parameters: Dict[str, Any] = {}
++        self._streamed_parameters: Dict[str, str] = (
++            {}
++        )  # Track what parameter content we've streamed
++        self._in_tool_call: bool = False
++        self._function_name_sent: bool = False
+diff --git a/python/sglang/srt/models/minimax_m2.py b/python/sglang/srt/models/minimax_m2.py
+index e5ef2d75c..37d2457a7 100644
+--- a/python/sglang/srt/models/minimax_m2.py
++++ b/python/sglang/srt/models/minimax_m2.py
+@@ -360,6 +360,7 @@ class MiniMaxM2MoE(nn.Module):
+         )
+         self.topk = TopK(
+             top_k=config.num_experts_per_tok,
++            layer_id=layer_id,
+             renormalize=True,
+             scoring_func=config.scoring_func,
+             correction_bias=self.e_score_correction_bias,

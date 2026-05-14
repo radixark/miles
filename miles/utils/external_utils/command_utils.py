@@ -17,7 +17,7 @@ from miles.utils.typer_utils import dataclass_cli
 _ = exec_command, exec_command_all_ray_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
-
+print(f"{repo_base_dir=}")
 
 def convert_checkpoint(
     model_name,
@@ -103,6 +103,8 @@ def execute_train(
     extra_env_vars=None,
     config: ExecuteTrainConfig | None = None,
     megatron_path: str = "/root/Megatron-LM",
+    working_dir: str | None = None,
+    skip_cleanup: bool = False,
 ):
     if extra_env_vars is None:
         extra_env_vars = {}
@@ -116,22 +118,23 @@ def execute_train(
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
-    exec_command(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if external_ray else 'ray stop --force; '}"
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # cannot be run in CI, o/w kill the parent script
-        # TODO: do we really need this kill? (or can we instead kill miles)
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "sleep 3; "
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "pkill -9 redis; "
-        "true; "
-    )
+    if not skip_cleanup:
+        exec_command(
+            "pkill -9 sglang; "
+            "sleep 3; "
+            f"{'' if external_ray else 'ray stop --force; '}"
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # cannot be run in CI, o/w kill the parent script
+            # TODO: do we really need this kill? (or can we instead kill miles)
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "sleep 3; "
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "pkill -9 redis; "
+            "true; "
+        )
 
     if not external_ray:
         exec_command(
@@ -143,38 +146,39 @@ def execute_train(
     if (f := before_ray_job_submit) is not None:
         f()
 
-    runtime_env_json = json.dumps(
-        {
-            "env_vars": {
-                "PYTHONPATH": megatron_path,
-                # If setting this in FSDP, the computation communication overlapping may have issues
-                **(
-                    {}
-                    if train_backend_fsdp
-                    else {
-                        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                    }
-                ),
-                "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
-                **{k: os.environ[k] for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME") if k in os.environ},
-                "no_proxy": f"127.0.0.1,{master_addr}",
-                # This is needed by megatron / torch distributed in multi-node setup
-                "MASTER_ADDR": master_addr,
-                **(
-                    {
-                        "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
-                        "CUDA_COREDUMP_SHOW_PROGRESS": "1",
-                        "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
-                        "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
-                    }
-                    if config.cuda_core_dump
-                    else {}
-                ),
-                **extra_env_vars,
-                **_parse_extra_env_vars(config.extra_env_vars),
-            }
+    runtime_env = {
+        "env_vars": {
+            "PYTHONPATH": megatron_path,
+            # If setting this in FSDP, the computation communication overlapping may have issues
+            **(
+                {}
+                if train_backend_fsdp
+                else {
+                    "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                }
+            ),
+            "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+            **{k: os.environ[k] for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME") if k in os.environ},
+            "no_proxy": f"127.0.0.1,{master_addr}",
+            # This is needed by megatron / torch distributed in multi-node setup
+            "MASTER_ADDR": master_addr,
+            **(
+                {
+                    "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
+                    "CUDA_COREDUMP_SHOW_PROGRESS": "1",
+                    "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
+                    "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
+                }
+                if config.cuda_core_dump
+                else {}
+            ),
+            **extra_env_vars,
+            **_parse_extra_env_vars(config.extra_env_vars),
         }
-    )
+    }
+    if working_dir is not None:
+        runtime_env["working_dir"] = working_dir
+    runtime_env_json = json.dumps(runtime_env)
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
         cmd_megatron_model_source = (

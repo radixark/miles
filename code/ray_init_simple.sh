@@ -12,7 +12,7 @@ set -euo pipefail
 # No patches, no custom Ray --resources, no rollout/actor placement logic.
 
 NAMESPACE="${NAMESPACE:-nlp-train}"
-JOB_NAME="${JOB_NAME:-ycy-miles-test-qwen35b-a3b-job}"
+JOB_NAME="${JOB_NAME:-ycy-miles-test-m25-job}"
 GPU_WORKER_PREFIX="${GPU_WORKER_PREFIX:-${JOB_NAME}-worker-}"
 HEAD_SUFFIX="${HEAD_SUFFIX:-0}"
 RAY_PORT="${RAY_PORT:-6379}"

@@ -274,7 +274,15 @@ def verify(
         answer_pattern = ANSWER_PATTERN_BOXED
     else:
         answer_pattern = ANSWER_PATTERN
+    import random
+    
     correct, pred = is_correct_minerva(solution_str, answer, meta_data=meta_data, answer_pattern=answer_pattern)
+    if random.randint(0,1000) == 0:
+        print(f"{solution_str=}")
+        print(f"{answer=}")
+        print(f"{answer_pattern=}")
+        print(f"{correct=}")
+        print(f"{pred=}")
     return correct, pred
 
 

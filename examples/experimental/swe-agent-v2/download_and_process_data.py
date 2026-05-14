@@ -4,7 +4,7 @@
 Supports any task type — SWE-bench, Terminal-Bench, custom datasets, etc.
 Each record's metadata is enriched with ``agent_name`` so that
 downstream components (server.py) can route to the correct Harbor agent.
-All original fields are preserved in metadata so that
+All original fields are preserv`ed in metadata so that
 prepare_harbor_tasks.py can infer the right task directory layout.
 
 Usage examples:
