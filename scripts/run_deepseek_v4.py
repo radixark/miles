@@ -96,7 +96,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_r3: bool = True
     enable_rir: bool = False
     train_partial_deterministic: bool = True
-    fp8_training: bool = False
+    fp8_training: bool = True
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
