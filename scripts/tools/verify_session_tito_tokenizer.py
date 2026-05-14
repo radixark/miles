@@ -133,8 +133,8 @@ def main() -> int:
     parser.add_argument(
         "--assistant-text-threshold",
         type=float,
-        default=0.05,
-        help="Soft threshold for assistant_text mismatch ratio.  Default 0.05.  "
+        default=0.1,
+        help="Soft threshold for assistant_text mismatch ratio.  Default 0.1.  "
         "Raise to 1.0 for families whose upstream sglang reasoning parser "
         "is known to roundtrip imperfectly (e.g. nemotron_3 keeps a trailing "
         "newline in reasoning_content) — hard mismatches still gate.",

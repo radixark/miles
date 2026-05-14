@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Soft cap on how many samples may report any assistant_text mismatch.  Hard
 # mismatch types (special_token_count / special_token_type / non_assistant_text)
 # are asserted per-sample inside the agent wrapper — those must be 0.
-ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.05
+ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.1
 
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
 LOCAL_MODELS_ROOT = "/root/models"

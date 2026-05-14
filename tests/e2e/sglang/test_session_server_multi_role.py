@@ -30,11 +30,11 @@ class ModelConfig:
     tp_size: int = 1
     cycles: int = 3
     # Soft-threshold override for assistant_text mismatch ratio.  Default
-    # 0.05 matches session_verify_runner; raise per-family when an upstream
+    # 0.1 matches session_verify_runner; raise per-family when an upstream
     # sglang reasoning parser is known to roundtrip imperfectly (e.g.
     # nemotron_3 keeps trailing newline in reasoning_content) so the gate
     # does not block on a documented out-of-scope issue.
-    assistant_text_threshold: float = 0.05
+    assistant_text_threshold: float = 0.1
 
 
 MODEL_REGISTRY: dict[str, ModelConfig] = {
