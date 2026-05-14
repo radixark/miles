@@ -1,5 +1,3 @@
-from argparse import Namespace
-
 import torch
 import torch.distributed as dist
 
@@ -8,7 +6,7 @@ from miles.backends.training_utils.cp_utils import (
     get_sum_of_sample_mean,
     slice_loss_masks_for_local_cp,
 )
-from miles.backends.training_utils.loss_hub.base_types import LossFnInput, LossFnOutput, LossFunction
+from miles.backends.training_utils.loss_hub.base_types import LossFnInput, LossFnOutput
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -375,17 +373,3 @@ def sft_loss_function(input: LossFnInput) -> LossFnOutput:
         loss += 0 * logits.sum()
 
     return LossFnOutput(loss=loss, metrics={"loss": loss.clone().detach()})
-
-
-def get_loss_function(args: Namespace) -> LossFunction:
-    match args.loss_type:
-        case "policy_loss":
-            return policy_loss_function
-        case "value_loss":
-            return value_loss_function
-        case "sft_loss":
-            return sft_loss_function
-        case "custom_loss":
-            return load_function(args.custom_loss_function_path)
-        case _:
-            raise ValueError(f"Unknown loss type: {args.loss_type}")
