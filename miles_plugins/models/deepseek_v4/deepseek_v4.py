@@ -81,6 +81,7 @@ class DeepSeekV4Attention(MegatronModule):
         self.window_size = config.dsv4_window_size
         self.compress_ratio = config.dsv4_compress_ratios[layer_id] if config.dsv4_compress_ratios else 0
         self.eps = config.layernorm_epsilon
+        self.use_fp8_qat = config.fp8 is not None
 
         assert self.o_lora_rank == 1024
         assert self.head_dim == 512
@@ -241,7 +242,7 @@ class DeepSeekV4Attention(MegatronModule):
         kv_vanilla = self.kv_norm(kv_after_wkv)
         kv_vanilla = kv_vanilla.clone()
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
-        if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
+        if self.use_fp8_qat:
             kv_vanilla = kv_vanilla.clone()
             kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(
                 kv_vanilla[..., : self.nope_head_dim], 64

@@ -1,5 +1,3 @@
-import os
-
 import einops
 import torch
 import torch.nn as nn
@@ -80,6 +78,7 @@ class DeepSeekV4Compressor(nn.Module):
         self.overlap = compress_ratio == 4
         self.rotate = rotate
         coff = 1 + self.overlap
+        self.use_fp8_qat = config.fp8 is not None
 
         self.cp_group = cp_group
         self.cp_size = cp_group.size() if cp_group is not None else 1
@@ -160,14 +159,12 @@ class DeepSeekV4Compressor(nn.Module):
 
         if self.rotate:
             kv = rotate_activation(kv)
-            if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
+            if self.use_fp8_qat:
                 kv = fp8_simulate_qat(kv, 128)
         else:
-            if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
+            if self.use_fp8_qat:
                 kv = kv.clone()
                 kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
-            else:
-                pass
 
         return kv
 

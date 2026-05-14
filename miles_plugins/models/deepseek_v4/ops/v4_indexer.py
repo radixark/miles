@@ -1,5 +1,3 @@
-import os
-
 import einops
 import torch
 from megatron.core import parallel_state
@@ -28,6 +26,7 @@ class V4Indexer(MegatronModule):
         self.index_topk = config.dsa_indexer_topk
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
+        self.use_fp8_qat = config.fp8 is not None
 
         if pg_collection is None:
             from megatron.core.process_groups_config import ProcessGroupCollection
@@ -112,7 +111,7 @@ class V4Indexer(MegatronModule):
         q = einops.rearrange(q, "b s ... -> s b ...")
 
         q = rotate_activation(q)
-        if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
+        if self.use_fp8_qat:
             q = fp8_simulate_qat(q, block_size=128)
 
         k = self.compressor(x)

@@ -564,7 +564,6 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
         extra_env_vars |= {
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-            "MEGATRON_USE_KV_QAT": "1",
         }
 
     train_args = (
