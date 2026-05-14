@@ -41,6 +41,13 @@ def _load_fixed(tito_model: TITOTokenizerType) -> str:
         return f.read()
 
 
+def _load_fixed_for_roles(tito_model: TITOTokenizerType, roles: list[str]) -> str:
+    path, _kwargs = resolve_fixed_chat_template(tito_model, roles)
+    assert path is not None, f"resolve_fixed_chat_template should resolve {tito_model.value} for roles={roles}"
+    with open(path) as f:
+        return f.read()
+
+
 # ---------------------------------------------------------------------------
 # Per-template capability declarations
 # ---------------------------------------------------------------------------
@@ -132,8 +139,17 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
     ),
     # MiniMax-M2: thinking via reasoning_content; reasoning is rendered only for
     # assistant turns after the last user (last_user_index gate), so appending a
-    # new user would strip prior <think> blocks.  Only {tool} surface registered.
+    # new user would strip prior <think> blocks.  {tool} uses HF-native template;
+    # {tool, user} requires the fixed jinja with clear_thinking=False to preserve
+    # history reasoning across user turns.
     ("minimax_m2", load_hf_chat_template("MiniMaxAI/MiniMax-M2"), True, frozenset({"tool"}), {}),
+    (
+        "minimax_m2_fixed_clear_thinking_off",
+        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M2, ["tool", "user"]),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
     # other HF native non-thinking: tool only
     ("qwen3_instruct_2507", load_hf_chat_template("Qwen/Qwen3-4B-Instruct-2507"), False, frozenset({"tool"}), {}),
     ("qwen3_next_instruct", load_hf_chat_template("Qwen/Qwen3-Next-80B-A3B-Instruct"), False, frozenset({"tool"}), {}),

@@ -608,13 +608,17 @@ class MinimaxM2TITOTokenizer(TITOTokenizer):
     """MiniMax-M2 family: bespoke ``]~!b[`` / ``[e~[`` / ``]~b]`` tag set.
 
     M2 chat template uses ``]~!b[`` (BOS), ``[e~[`` (EOS), ``]~b]`` (role
-    open marker).  Reasoning is gated by a per-message ``last_user_index``
-    check: ``reasoning_content`` is only rendered for assistant turns
-    *after* the last ``user`` — appending a new ``user`` therefore strips
-    prior assistant ``<think>`` blocks and breaks append-only.
+    open marker).  Like Qwen3, the chat template emits ``[e~[\\n`` after
+    every message, but the model stops at ``[e~[`` without generating the
+    trailing ``\\n``.  ``merge_tokens`` inserts the missing newline so that
+    the pretokenized prefix matches the canonical template output.
 
-    Only ``{tool}`` surface is registered for that reason; multi-user-turn
-    requires a fixed jinja that always preserves history reasoning.
+    Reasoning is gated by a per-message ``last_user_index`` check:
+    ``reasoning_content`` is only rendered for assistant turns *after* the
+    last ``user`` — appending a new ``user`` therefore strips prior assistant
+    ``<think>`` blocks and breaks append-only.  Only ``{tool}`` surface is
+    registered for that reason; multi-user-turn requires a fixed jinja that
+    always preserves history reasoning.
     """
 
     reasoning_parser = "minimax-append-think"
@@ -625,9 +629,46 @@ class MinimaxM2TITOTokenizer(TITOTokenizer):
             allowed_roles=frozenset({"tool"}),
             template=None,
         ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="minimax_m2_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
+        ),
     )
 
     _default_assistant_start_str: str = "]~b]ai"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            allowed_append_roles=allowed_append_roles,
+        )
+        nl_ids = tokenizer.encode("\n", add_special_tokens=False)
+        assert len(nl_ids) == 1, f"Expected single newline token, got {nl_ids}"
+        self._newline_id: int = nl_ids[0]
+        self._eos_id: int = tokenizer.convert_tokens_to_ids("[e~[")
+        self.trailing_token_ids = frozenset({self._newline_id})
+
+    def merge_tokens(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        pretokenized_token_ids: list[int],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        prefix = list(pretokenized_token_ids)
+        if prefix and prefix[-1] == self._eos_id:
+            prefix.append(self._newline_id)
+        return prefix + incremental
 
 
 # ---------------------------------------------------------------------------
