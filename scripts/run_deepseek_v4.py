@@ -242,6 +242,7 @@ def _prepare_spmd(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=num_gpus_for_convert,
         multinode=True if args.num_nodes > 1 else False,
+        num_nodes=args.num_nodes,
         extra_args=extra_args,
         dir_dst=f"{args.model_dir}",
         megatron_path=args.megatron_path,
