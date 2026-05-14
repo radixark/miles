@@ -12,7 +12,7 @@ from miles.backends.training_utils.cp_utils import (
     slice_loss_masks_for_local_cp,
 )
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
-from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.misc import load_function
 from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
