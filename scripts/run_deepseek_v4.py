@@ -7,7 +7,7 @@ Supports:
                                   Verified full-model profiles: 8 nodes x 8 GPUs on H200
                                   or 8 nodes x 4 GPUs on GB300.
   - DeepSeek-V4-Flash-FP8-4layer  4-layer prune of the above for single-node
-                                  smoke testing. **Cannot generate meaningful output —
+                                  smoke testing. **Cannot generate meaningful output -
                                   pipeline-only sanity check.**
   - DeepSeek-V4-Pro-FP8           Verified profile: 32 nodes x 8 GPUs on H200.
 
@@ -18,7 +18,7 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Individual steps (download → FP8->BF16 → BF16->torch_dist → rsync → train):
+  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
@@ -147,7 +147,7 @@ def _patch_4layer_model_type(args: ScriptArgs):
     `deepseek_ref` (via `srt/utils/hf_transformers_utils.py:319,334`). The full
     Pro/Flash models work because SGLANG_APPLY_CONFIG_BACKUP=auto substitutes
     a `deepseek_ref` backup config. For 4-layer prunes we keep `=none` so
-    num_hidden_layers stays 4 — but then we need to patch model_type ourselves.
+    num_hidden_layers stays 4, but then we need to patch model_type ourselves.
     """
     if args.model_name != "DeepSeek-V4-Flash-FP8-4layer":
         return
@@ -157,11 +157,11 @@ def _patch_4layer_model_type(args: ScriptArgs):
     text = cfg.read_text()
     if '"model_type": "deepseek_v4"' in text:
         cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
-        print(f"[patch] {cfg}: model_type deepseek_v4 → deepseek_ref")
+        print(f"[patch] {cfg}: model_type deepseek_v4 -> deepseek_ref")
 
 
 def _prepare_download(args: ScriptArgs):
-    """Download HF checkpoint + task dataset. Idempotent — huggingface-cli skips existing blobs."""
+    """Download HF checkpoint + task dataset. Idempotent: huggingface-cli skips existing blobs."""
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
@@ -195,7 +195,7 @@ def _prepare_single(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def prepare_single(args: ScriptArgs):
-    """FP8 → BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
+    """FP8 -> BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
     _prepare_single(args)
 
 
@@ -578,14 +578,14 @@ def full_train(args: ScriptArgs):
     if not bf16_sentinel.exists():
         _prepare_single(args)
     else:
-        print(f"[full_train] Skipping FP8→BF16 cast: {bf16_sentinel} already exists.")
+        print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
 
     torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
     torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
     if not torch_dist_sentinel.exists():
         _prepare_spmd(args)
     else:
-        print(f"[full_train] Skipping BF16→torch_dist conversion: {torch_dist_sentinel} already exists.")
+        print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
 
     if args.model_local_dir != args.model_dir:
         _prepare_cp(args)
