@@ -4,10 +4,12 @@ DeepSeek V4 training script.
 Supports:
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
-                                  Needs >= 7 nodes on H200 / GB300.
-  - DeepSeek-V4-Flash-FP8-4layer  4-layer prune of the above (Pinaster/...) for single-node
+                                  Verified full-model profiles: 8 nodes × 8 GPUs on H200 or
+                                  or 8 nodes × 4 GPUs on GB300.
+  - DeepSeek-V4-Flash-FP8-4layer  4-layer prune of the above for single-node
                                   smoke testing. **Cannot generate meaningful output —
                                   pipeline-only sanity check.**
+  - DeepSeek-V4-Pro-FP8           Verified profile: 32 nodes × 8 GPUs on H200.
 
 Usage patterns:
 
@@ -21,10 +23,11 @@ Usage patterns:
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
-           --num-nodes 7
+           --num-nodes 8 --num-gpus-per-node 8
        python scripts/run_deepseek_v4.py prepare-cp       --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
-           --num-nodes 7 --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
+           --num-nodes 8 --num-gpus-per-node 8 \
+           --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
 from dataclasses import dataclass
@@ -55,50 +58,53 @@ _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
-    model_org: str = ""  # filled in from _DEFAULT_MODEL_ORG in __post_init__ if empty
+    model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
         "DeepSeek-V4-Pro-FP8",
     ] = "DeepSeek-V4-Flash-FP8"
-    hf_checkpoint: str | None = None
-    num_gpus_per_node: int = 8
-    enable_eval: bool = True
-    extra_args: str = ""
+
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    enable_eval: bool = True
+
+    hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    # Defaults to model_dir (resolved in __post_init__). Set explicitly when
-    # multi-node fan-out from shared NFS to per-node local NVMe is needed.
-    model_local_dir: str | None = None
+    model_local_dir: str | None = None # model_local_dir: Defaults to model_dir. Set explicitly when shared NFS -> per-node local NVMe copy is needed.
     save_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
-    enable_r3: bool = True
-    enable_rir: bool = False
+
+    # preformance configs
+    num_gpus_per_node: int = 8 # need to specify
     enable_mtp: bool = False
-    test_pp_single_node: bool = False
-    test_cp_single_node: bool = False
-    optimizer_offload: bool = False
+    optimizer_offload: bool = True
     use_fault_tolerance: bool = True
-    dump_details: bool = True
+    cp_size: int = 1
+
+    # debug configs
+    dump_details: bool = False
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
+    debug_data_root: str = "/root/shared_data"
+    skip_saving: bool = False
+
+    # precision configs
+    enable_r3: bool = True
+    enable_rir: bool = False
     train_partial_deterministic: bool = True
     fp8_training: bool = False
     enable_mis: bool = False
-    skip_saving: bool = False
-    cp_size: int = 1
+
+    # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
+    extra_args: str = ""
 
     def __post_init__(self):
         if not self.model_org:
             self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
         if self.model_local_dir is None:
             self.model_local_dir = self.model_dir
-        # Pro defaults: validated one-liner reproducer:
-        #   python scripts/run_deepseek_v4.py full-train \
-        #       --model-name DeepSeek-V4-Pro-FP8 --num-nodes 32 --num-gpus-per-node 8
         if self.model_name in _PRO_MODEL_NAMES:
-            self.optimizer_offload = True
             self.enable_r3 = False
 
     @property
@@ -199,16 +205,15 @@ def _prepare_spmd(args: ScriptArgs):
             "--pipeline-model-parallel-size 1 "
             "--expert-model-parallel-size 1 "
         )
-    elif args.num_nodes == 7 and args.model_name == "DeepSeek-V4-Flash-FP8":
+    elif args.num_nodes == 8 and args.model_name == "DeepSeek-V4-Flash-FP8":
         extra_args += (
-            "--tensor-model-parallel-size 4 "
-            "--pipeline-model-parallel-size 7 "
+            "--tensor-model-parallel-size 1 "
+            "--pipeline-model-parallel-size 8 "
             "--expert-model-parallel-size 4 "
-            "--decoder-first-pipeline-num-layers 4 "
-            "--decoder-last-pipeline-num-layers 4 "
-            "--make-vocab-size-divisible-by 64 "
+            "--decoder-first-pipeline-num-layers 7 "
+            "--decoder-last-pipeline-num-layers 6 "
         )
-    elif args.num_nodes == 32 and args.model_name == "DeepSeek-V4-Pro-FP8":
+    elif args.num_nodes == 32 and args.num_gpus_per_node == 8 and args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_args += (
             "--tensor-model-parallel-size 8 "
             "--pipeline-model-parallel-size 8 "
@@ -218,12 +223,10 @@ def _prepare_spmd(args: ScriptArgs):
             "--make-vocab-size-divisible-by 32 "
         )
     else:
-        extra_args += (
-            "--tensor-model-parallel-size 1 "
-            "--pipeline-model-parallel-size 8 "
-            "--expert-model-parallel-size 4 "
-            "--decoder-first-pipeline-num-layers 7 "
-            "--decoder-last-pipeline-num-layers 6 "
+        raise NotImplementedError(
+            f"No verified SPMD conversion config for {args.model_name} "
+            f"({args.num_nodes} nodes × {args.num_gpus_per_node} GPUs/node)."
+            f"Please specify your conversion parallel config in `run_deepseek_v4.py`."
         )
 
     num_gpus_for_convert = args.num_gpus_per_node
@@ -273,7 +276,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     """
     total_gpus = args.num_nodes * args.num_gpus_per_node
 
-    # Single-node configs (any GPU count)
+    # Single-node smoke-test configs
     if args.num_nodes == 1:
         return (
             f"--tensor-model-parallel-size {args.num_gpus_per_node} "
@@ -287,35 +290,13 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     # GB300: 4 GPUs/node
     if args.num_gpus_per_node == 4:
         if total_gpus == 32:  # 8 nodes × 4 GPUs
-            if args.cp_size == 2:
-                return (
-                    "--tensor-model-parallel-size 2 "
-                    "--sequence-parallel "
-                    "--pipeline-model-parallel-size 8 "
-                    "--decoder-first-pipeline-num-layers 4 "
-                    "--decoder-last-pipeline-num-layers 3 "
-                    "--context-parallel-size 2 "
-                    "--expert-model-parallel-size 4 "
-                    "--expert-tensor-parallel-size 1 "
-                )
             return (
-                "--tensor-model-parallel-size 8 "
+                "--tensor-model-parallel-size 2 "
                 "--sequence-parallel "
-                "--pipeline-model-parallel-size 4 "
-                "--decoder-first-pipeline-num-layers 11 "
-                "--decoder-last-pipeline-num-layers 10 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
-        elif total_gpus == 28:  # 7 nodes × 4 GPUs
-            return (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 7 "
-                "--decoder-first-pipeline-num-layers 7 "
-                "--decoder-last-pipeline-num-layers 6 "
-                "--context-parallel-size 1 "
+                "--pipeline-model-parallel-size 8 "
+                "--decoder-first-pipeline-num-layers 4 "
+                "--decoder-last-pipeline-num-layers 3 "
+                "--context-parallel-size 2 "
                 "--expert-model-parallel-size 4 "
                 "--expert-tensor-parallel-size 1 "
             )
@@ -324,33 +305,12 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     if args.num_gpus_per_node == 8:
         if total_gpus == 64:  # 8 nodes × 8 GPUs
             return (
-                "--tensor-model-parallel-size 8 "
+                "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 8 "
                 "--decoder-first-pipeline-num-layers 4 "
                 "--decoder-last-pipeline-num-layers 3 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
-        elif total_gpus == 56:  # 7 nodes × 8 GPUs
-            return (
-                "--tensor-model-parallel-size 8 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 7 "
-                "--pipeline-model-parallel-layout 'E,t*4\\|t*7\\|t*7\\|t*7\\|t*7\\|t*7\\|t*4,L' "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
-        elif total_gpus == 32:  # 4 nodes × 8 GPUs
-            return (
-                "--tensor-model-parallel-size 8 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 4 "
-                "--decoder-first-pipeline-num-layers 11 "
-                "--decoder-last-pipeline-num-layers 10 "
-                "--context-parallel-size 1 "
+                "--context-parallel-size 2 "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
@@ -365,10 +325,10 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-model-parallel-size 32 "
                 "--expert-tensor-parallel-size 1 "
             )
+
     raise NotImplementedError(
-        f"No verified parallel config for {total_gpus} GPUs "
-        f"({args.num_nodes} nodes × {args.num_gpus_per_node} GPUs/node). "
-        f"Add a tested config to _get_parallel_config()."
+        f"No pre-set parallel config for {total_gpus} GPUs. "
+        f"Please specify your parallel config in `run_deepseek_v4._get_parallel_config`."
     )
 
 
@@ -487,7 +447,6 @@ def _train(args: ScriptArgs):
         "--sglang-max-running-requests 64 "
         "--sglang-chunked-prefill-size 8192 "
         "--sglang-server-concurrency 1024 "
-        "--sglang-weight-loader-drop-cache-after-load "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
@@ -537,7 +496,7 @@ def _train(args: ScriptArgs):
     )
 
     if args.dump_details:
-        misc_args += f"--dump-details /root/shared_data/{args.run_id}/dump_details "
+        misc_args += f"--dump-details {args.debug_data_root}/{args.run_id}/dump_details "
 
     if args.enable_mis:
         misc_args += (
@@ -552,8 +511,10 @@ def _train(args: ScriptArgs):
     if args.debug_train_run_id is not None:
         if args.debug_train_rollout_id is None:
             args.debug_train_rollout_id = 1
-        misc_args += f"--load-debug-rollout-data \
-            /root/shared_data/{args.debug_train_run_id}/dump_details/rollout_data/{args.debug_train_rollout_id}.pt "
+        misc_args += (
+            f"--load-debug-rollout-data "
+            f"{args.debug_data_root}/{args.debug_train_run_id}/dump_details/rollout_data/{args.debug_train_rollout_id}.pt "
+        )
         misc_args += "--debug-train-only "
 
     if args.enable_r3:
