@@ -39,7 +39,7 @@ def patch_weight_to_mcore_format_preserve_fp32():
     print("[Patch] Applied patch to preserve FP32 precision in _weight_to_mcore_format")
 
 
-def add_convertion_args(parser):
+def add_conversion_args(parser):
     """Add conversion arguments to the parser"""
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
     parser.add_argument(
@@ -56,7 +56,7 @@ def add_convertion_args(parser):
 
 
 def get_args():
-    args = parse_args(add_convertion_args)
+    args = parse_args(add_conversion_args)
     args = set_default_megatron_args(args)
 
     # set to pass megatron validate_args
