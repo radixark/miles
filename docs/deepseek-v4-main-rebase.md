@@ -24,6 +24,7 @@
 9. Rebase stopped on `b6fbf677f add pro model training support`.
 10. Skipped `b157418af use kl metric`; the metric already exists in the current `loss_hub` refactor.
 11. Rebase stopped on `75b09c798 Fix text-only rollout processor guard`.
+12. Rebase stopped on `c8ab7d4b8 Fix rollout indexer replay shape decoding`.
 
 ## Conflict Notes
 
@@ -90,6 +91,17 @@ Decision:
 
 - Kept the text-only guard from the commit: only call the processor when a processor exists and the sample has non-empty multimodal inputs.
 - Kept main's `build_processor_kwargs()` wrapper when calling the processor, because it handles current Transformers processor kwargs conventions.
+
+### `c8ab7d4b8 Fix rollout indexer replay shape decoding`
+
+Conflicted files:
+
+- `miles/rollout/generate_utils/generate_endpoint_utils.py`
+
+Decision:
+
+- Kept the indexer replay decode fix: decode `indexer_topk` only when present and derive shape from `num_indexer_layers/index_topk` or `dsv4_compress_ratios/dsa_indexer_topk`.
+- Kept main's `get_rollout_topk_from_response()` public wrapper for routed experts. The underlying target SGLang API returns both replay buffers as base64-encoded int32 arrays, so the shared decode helper remains correct.
 
 ## Fix Notes
 
