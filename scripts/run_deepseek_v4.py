@@ -4,12 +4,12 @@ DeepSeek V4 training script.
 Supports:
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
-                                  Verified full-model profiles: 8 nodes × 8 GPUs on H200 or
-                                  or 8 nodes × 4 GPUs on GB300.
+                                  Verified full-model profiles: 8 nodes x 8 GPUs on H200
+                                  or 8 nodes x 4 GPUs on GB300.
   - DeepSeek-V4-Flash-FP8-4layer  4-layer prune of the above for single-node
                                   smoke testing. **Cannot generate meaningful output —
                                   pipeline-only sanity check.**
-  - DeepSeek-V4-Pro-FP8           Verified profile: 32 nodes × 8 GPUs on H200.
+  - DeepSeek-V4-Pro-FP8           Verified profile: 32 nodes x 8 GPUs on H200.
 
 Usage patterns:
 
@@ -33,6 +33,7 @@ Usage patterns:
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -41,7 +42,8 @@ app = typer.Typer()
 
 _DEFAULT_MODEL_ORG = {
     "DeepSeek-V4-Flash-FP8": "sgl-project",
-    "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",        # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8
+    # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
+    "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
     "DeepSeek-V4-Pro-FP8": "sgl-project",
 }
 
@@ -71,12 +73,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    model_local_dir: str | None = None # model_local_dir: Defaults to model_dir. Set explicitly when shared NFS -> per-node local NVMe copy is needed.
+    # Defaults to model_dir. Set explicitly when shared NFS -> per-node local NVMe copy is needed.
+    model_local_dir: str | None = None
     save_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
 
-    # preformance configs
-    num_gpus_per_node: int = 8 # need to specify
+    # performance configs
+    num_gpus_per_node: int = 8
     enable_mtp: bool = False
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
@@ -225,7 +228,7 @@ def _prepare_spmd(args: ScriptArgs):
     else:
         raise NotImplementedError(
             f"No verified SPMD conversion config for {args.model_name} "
-            f"({args.num_nodes} nodes × {args.num_gpus_per_node} GPUs/node)."
+            f"({args.num_nodes} nodes x {args.num_gpus_per_node} GPUs/node). "
             f"Please specify your conversion parallel config in `run_deepseek_v4.py`."
         )
 
@@ -289,7 +292,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # GB300: 4 GPUs/node
     if args.num_gpus_per_node == 4:
-        if total_gpus == 32:  # 8 nodes × 4 GPUs
+        if total_gpus == 32:  # 8 nodes x 4 GPUs
             return (
                 "--tensor-model-parallel-size 2 "
                 "--sequence-parallel "
@@ -303,7 +306,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # H200: 8 GPUs/node
     if args.num_gpus_per_node == 8:
-        if total_gpus == 64:  # 8 nodes × 8 GPUs
+        if total_gpus == 64:  # 8 nodes x 8 GPUs
             return (
                 "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
@@ -314,7 +317,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
-        elif total_gpus == 256:  # 32 nodes × 8 GPUs (Pro)
+        elif total_gpus == 256:  # 32 nodes x 8 GPUs (Pro)
             return (
                 "--tensor-model-parallel-size 8 "
                 "--sequence-parallel "
