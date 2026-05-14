@@ -189,11 +189,13 @@ def compute_opsm_mask(
         # Calculate sequence-level KL
         seq_kl = ((full_old_log_prob - full_log_prob) * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
 
+        # Compute sequence-level advantage (masked mean) for the OPSM decision
+        seq_adv = (advantage * loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
         # Create mask: 0 if (advantage < 0 and seq_kl > delta), else 1
-        mask = ((advantage < 0) & (seq_kl > args.opsm_delta)).float()
-        opsm_clipfrac += mask.sum() / torch.clamp_min(loss_mask.sum(), 1)
+        mask = ((seq_adv < 0) & (seq_kl > args.opsm_delta)).float()
+        opsm_clipfrac += mask * loss_mask.sum() / torch.clamp_min(loss_mask.sum(), 1)
 
-        opsm_mask_list.append(1 - mask)
+        opsm_mask_list.append((1 - mask) * loss_mask + (1 - loss_mask))
 
     opsm_mask = torch.cat(opsm_mask_list, dim=0)
     return opsm_mask, opsm_clipfrac
