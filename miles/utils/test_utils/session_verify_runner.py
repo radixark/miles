@@ -80,6 +80,7 @@ def build_train_args(
     tool_call_parser: str | None,
     n_samples_per_prompt: int = 4,
     cycles: int = 3,
+    tool_call_failure_mode: str = "rollback",
 ) -> str:
     """Compose the ``train_args`` string for ``execute_train``.
 
@@ -115,6 +116,7 @@ def build_train_args(
         "--custom-agent-function-path "
         "miles.utils.test_utils.session_verify_agent.run_agent "
         f"--session-verify-cycles {cycles} "
+        f"--tool-call-failure-mode {tool_call_failure_mode} "
     )
 
     router_args = (
@@ -158,6 +160,7 @@ def run_session_verify(
     n_samples_per_prompt: int = 4,
     cycles: int = 3,
     assistant_text_threshold: float = ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD,
+    tool_call_failure_mode: str = "rollback",
 ) -> None:
     """Boot ``miles`` rollout pipeline and run the multi-role driver.
 
@@ -192,6 +195,7 @@ def run_session_verify(
         tool_call_parser=tool_call_parser,
         n_samples_per_prompt=n_samples_per_prompt,
         cycles=cycles,
+        tool_call_failure_mode=tool_call_failure_mode,
     )
 
     # Per-sample token-seq metrics file: rollout workers append one JSONL line

@@ -35,6 +35,47 @@ _S = DriverAction.SYSTEM_REMINDER
 _R = DriverAction.ROLLBACK
 _F = DriverAction.FORCE_FINAL
 
+
+class ToolCallFailureMode(Enum):
+    """Recovery strategy when a TOOL_RESULT step finds the assistant emitted no tool_calls.
+
+    APPEND_TOOL  : Splice a sentinel ``tool`` message and continue.  Works on
+                   lenient templates; strict templates that hard-assert any
+                   ``tool`` role must follow an assistant with ``tool_calls``
+                   (e.g. MiniMax-M2) will reject the next request at server-side.
+    APPEND_USER  : Splice a ``user`` message carrying the same failure text as
+                   APPEND_TOOL.  Requires "user" in ``allowed_append_roles`` —
+                   raises ValueError at agent start otherwise, so misconfig is
+                   immediately visible instead of silently downgrading.
+    ROLLBACK     : Pop the offending assistant and let the loop's chat call at
+                   the bottom re-inference.  Universal — no role-surface
+                   dependency — and the default.
+    """
+
+    APPEND_TOOL = "append_tool"
+    APPEND_USER = "append_user"
+    ROLLBACK = "rollback"
+
+
+DEFAULT_TOOL_CALL_FAILURE_MODE = ToolCallFailureMode.ROLLBACK
+
+# Hard cap on consecutive ROLLBACK fallbacks per sample.  Each ROLLBACK fallback
+# pops the offending assistant and re-inferences against the same context — if
+# the model is permanently stuck not tool-calling, this would silently burn HTTP
+# calls bounded only by the schedule length.  Fail-fast when the streak crosses
+# this threshold so the test surfaces "model can't tool-call on this prompt"
+# instead of a slow wall-time creep.  APPEND_TOOL / APPEND_USER fallbacks
+# inject new messages so they cannot loop silently — only ROLLBACK is gated.
+MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS = 3
+
+# Sentinel content shared by APPEND_TOOL and APPEND_USER modes — the user asked
+# both fallbacks to surface the same parse-failure message to the model so the
+# only difference between the two modes is the message role.
+TOOL_CALL_PARSE_FAILURE_TEXT = (
+    "Tool call parsing failed: the previous assistant turn did not emit a "
+    "parseable tool_call. Please retry with a valid tool invocation."
+)
+
 # Override per call: ``--session-verify-cycles N`` (CLI) or ``cycles=N``
 # (pytest via ``run_session_verify``).  Smaller-context models with a 4K
 # response budget should drop to 2 to avoid context overflow.
@@ -151,6 +192,18 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     cycles = metadata.get("session_verify_cycles", DEFAULT_CYCLES)
     schedule = select_schedule(allowed_roles, cycles=cycles)
 
+    failure_mode = ToolCallFailureMode(
+        metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value)
+    )
+    # APPEND_USER would inject a user turn that the registered TITO surface
+    # never declared safe; fail loudly here instead of silently downgrading.
+    if failure_mode is ToolCallFailureMode.APPEND_USER and "user" not in allowed_roles:
+        raise ValueError(
+            f"tool_call_failure_mode=APPEND_USER requires 'user' in allowed_append_roles, "
+            f"got {sorted(allowed_roles)}.  Pick ROLLBACK (universal) or APPEND_TOOL "
+            "(lenient-template) for tool-only surfaces."
+        )
+
     rk = {k: v for k, v in request_kwargs.items() if k not in ("tools",)}
     messages = build_initial_messages()
     events: list[str] = []
@@ -161,6 +214,11 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
         "tool_result_count": 0,
         "tool_call_count": 0,
     }
+    # Streak of TOOL_RESULT steps that fell into the ROLLBACK fallback without
+    # the model recovering to a real tool_call.  Reset on any successful
+    # tool_call; gated by MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS to keep
+    # silently-stuck samples from burning wall-time.
+    consecutive_failure_rollbacks = 0
 
     async with httpx.AsyncClient(timeout=180) as client:
         # Initial completion — no driver action yet.
@@ -176,6 +234,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             if action is DriverAction.TOOL_RESULT:
                 tool_calls = assistant.get("tool_calls") or []
                 if tool_calls:
+                    consecutive_failure_rollbacks = 0
                     for i, tc in enumerate(tool_calls):
                         result_idx = (counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)
                         messages.append(
@@ -188,21 +247,51 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                     counters["tool_result_count"] += len(tool_calls)
                     events.append("append_tool")
                 else:
-                    # Model didn't tool-call — append a sentinel tool message
-                    # so a ``{tool}``-only session is not rejected by the
-                    # server's append-role check.  Coverage still flags this
-                    # via the missing ``append_tool`` event.
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": "none",
-                            "content": (
-                                "Driver note: the previous assistant turn did not "
-                                "emit a tool_call, so no tool was actually invoked."
-                            ),
-                        }
-                    )
-                    events.append("tool_result_skipped_no_tool_call")
+                    # Model didn't tool-call — recover via the configured
+                    # failure mode.  Event names are distinct from the
+                    # schedule's intentional events so coverage counters
+                    # (append_tool / append_user / rollback) stay honest;
+                    # these failure events are diagnostic, not deterministic
+                    # surface coverage.
+                    if failure_mode is ToolCallFailureMode.APPEND_TOOL:
+                        # Strict templates that hard-assert "tool follows an
+                        # assistant with tool_calls" will reject this at the
+                        # server; that's the user's signal to pick ROLLBACK
+                        # for this family instead.
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": "none",
+                                "content": TOOL_CALL_PARSE_FAILURE_TEXT,
+                            }
+                        )
+                        events.append("tool_call_failure_append_tool")
+                    elif failure_mode is ToolCallFailureMode.APPEND_USER:
+                        messages.append({"role": "user", "content": TOOL_CALL_PARSE_FAILURE_TEXT})
+                        counters["user_count"] += 1
+                        events.append("tool_call_failure_append_user")
+                    elif failure_mode is ToolCallFailureMode.ROLLBACK:
+                        # Same shape as the schedule's ROLLBACK action: pop the
+                        # offending assistant, fall through to the loop's _chat
+                        # call which will re-inference a replacement assistant.
+                        assert messages and messages[-1]["role"] == "assistant", (
+                            f"tool_call_failure_mode=ROLLBACK: tail role is "
+                            f"{messages[-1]['role'] if messages else 'EMPTY'}, expected assistant"
+                        )
+                        consecutive_failure_rollbacks += 1
+                        if consecutive_failure_rollbacks > MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS:
+                            raise AssertionError(
+                                f"ROLLBACK fallback hit {consecutive_failure_rollbacks} consecutive "
+                                f"tool_call failures (limit={MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS}). "
+                                "Model is not tool-calling on this prompt — check sampling temperature, "
+                                "the tool spec, or switch tool_call_failure_mode to APPEND_TOOL/APPEND_USER "
+                                "if sentinel-driven retry is preferred."
+                            )
+                        messages.pop()
+                        counters["rollback_count"] += 1
+                        events.append("tool_call_failure_rollback")
+                    else:
+                        raise AssertionError(f"Unknown ToolCallFailureMode {failure_mode!r}")
 
             elif action is DriverAction.USER_FOLLOWUP:
                 messages.append({"role": "user", "content": USER_FOLLOWUP_TEXT})
@@ -254,9 +343,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """
     allowed_roles = list(input.args.tito_allowed_append_roles)
     cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
+    failure_mode = getattr(
+        input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value
+    )
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["allowed_append_roles"] = allowed_roles
     input.sample.metadata["session_verify_cycles"] = cycles
+    input.sample.metadata["tool_call_failure_mode"] = failure_mode
 
     output = await _base_generate(input)
 
@@ -352,6 +445,17 @@ def _add_arguments(parser):
         "surface plus a rollback; more cycles stress the TITO accumulator "
         "longer but expand context length.  Drop to 2 on tighter-context "
         "models (e.g. Qwen3 32K with 4K response budget).",
+    )
+    parser.add_argument(
+        "--tool-call-failure-mode",
+        type=str,
+        default=DEFAULT_TOOL_CALL_FAILURE_MODE.value,
+        choices=[m.value for m in ToolCallFailureMode],
+        help="Recovery mode when a TOOL_RESULT step sees no tool_calls on the "
+        "assistant.  'rollback' (default, universal) pops the assistant and "
+        "re-inferences.  'append_tool' splices a sentinel tool message (only "
+        "works on lenient templates).  'append_user' splices a user message "
+        "with the same failure text — requires 'user' in allowed_append_roles.",
     )
 
 

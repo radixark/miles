@@ -34,7 +34,11 @@ import logging
 import sys
 
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.test_utils.session_verify_agent import select_schedule
+from miles.utils.test_utils.session_verify_agent import (
+    DEFAULT_TOOL_CALL_FAILURE_MODE,
+    ToolCallFailureMode,
+    select_schedule,
+)
 from miles.utils.test_utils.session_verify_runner import run_session_verify
 
 
@@ -139,6 +143,17 @@ def main() -> int:
         "is known to roundtrip imperfectly (e.g. nemotron_3 keeps a trailing "
         "newline in reasoning_content) — hard mismatches still gate.",
     )
+    parser.add_argument(
+        "--tool-call-failure-mode",
+        type=str,
+        default=DEFAULT_TOOL_CALL_FAILURE_MODE.value,
+        choices=[m.value for m in ToolCallFailureMode],
+        help="Recovery mode when a TOOL_RESULT step sees no tool_calls on the "
+        "assistant.  'rollback' (default, universal) pops the assistant and "
+        "re-inferences.  'append_tool' splices a sentinel tool message (only "
+        "lenient templates accept this).  'append_user' splices a user message "
+        "with the same failure text — requires 'user' in --tito-allowed-append-roles.",
+    )
 
     args = parser.parse_args()
 
@@ -160,6 +175,7 @@ def main() -> int:
     print(f"Actor GPUs per node:   {args.num_gpus}")
     print(f"Samples per prompt:    {args.n_samples}")
     print(f"Cycles per sample:     {args.cycles}")
+    print(f"Tool-call failure mode:{args.tool_call_failure_mode}")
     print()
 
     try:
@@ -182,6 +198,7 @@ def main() -> int:
             n_samples_per_prompt=args.n_samples,
             cycles=args.cycles,
             assistant_text_threshold=args.assistant_text_threshold,
+            tool_call_failure_mode=args.tool_call_failure_mode,
         )
     except Exception as e:
         print()

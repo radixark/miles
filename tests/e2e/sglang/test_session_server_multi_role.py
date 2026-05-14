@@ -35,6 +35,10 @@ class ModelConfig:
     # nemotron_3 keeps trailing newline in reasoning_content) so the gate
     # does not block on a documented out-of-scope issue.
     assistant_text_threshold: float = 0.1
+    # Recovery mode when a TOOL_RESULT step finds the assistant emitted no
+    # tool_calls.  Default "rollback" is universal (pop assistant + retry);
+    # see ToolCallFailureMode for "append_tool" / "append_user" variants.
+    tool_call_failure_mode: str = "rollback"
 
 
 MODEL_REGISTRY: dict[str, ModelConfig] = {
@@ -45,6 +49,10 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tito_model="glm47",
         allowed_append_roles=("tool", "user", "system"),
         tp_size=4,
+        # Lenient template: tool message is rendered without validating that
+        # the preceding assistant carries a matching tool_call.id, so the
+        # APPEND_TOOL sentinel ("tool_call_id": "none") roundtrips cleanly.
+        tool_call_failure_mode="append_tool",
     ),
     "qwen3-tool-user": ModelConfig(
         model_name="Qwen/Qwen3-30B-A3B",
@@ -54,6 +62,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         allowed_append_roles=("tool", "user"),
         tp_size=2,
         cycles=2,
+        tool_call_failure_mode="append_tool",
     ),
     "qwen35-tool-user": ModelConfig(
         model_name="Qwen/Qwen3.5-35B-A3B",
@@ -63,6 +72,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         allowed_append_roles=("tool", "user"),
         tp_size=2,
         cycles=2,
+        tool_call_failure_mode="append_tool",
     ),
     "qwennext-tool-user": ModelConfig(
         model_name="Qwen/Qwen3-Next-80B-A3B-Thinking",
@@ -72,6 +82,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         allowed_append_roles=("tool", "user"),
         tp_size=4,
         cycles=2,
+        tool_call_failure_mode="append_tool",
     ),
     "minimaxm2-tool": ModelConfig(
         # MiniMax-M2.7 shares the M2 chat template (]~!b[ / [e~[ / ]~b] tag
@@ -87,21 +98,43 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tp_size=4,
         cycles=2,
     ),
-    "minimax-m2-tool": ModelConfig(
+    "minimax-m2-tool-user": ModelConfig(
         # MiniMax-M2 (~225GB fp8 native, 256 experts x 8 active, 62 layers).
         # num_key_value_heads=8, so tp_size in {1, 2, 4, 8}; tp=2 is the
         # smallest that fits (one H200 holds 140GB, model alone is ~225GB).
-        # Only {tool} surface registered: M2's chat template gates
-        # reasoning_content on last_user_index, so appending a new user
-        # strips prior <think> blocks and breaks append-only.  cycles=2 to
-        # keep total wall-time bounded given the 192K context budget.
+        # cycles=2 to keep wall-time bounded given the 192K context budget.
+        #
+        # Surface is {tool, user}: M2's chat template gates reasoning_content
+        # on last_user_index, so a scheduled USER_FOLLOWUP step strips prior
+        # <think> blocks — that's a documented template behavior; the TITO
+        # subclass tolerates it via the same last-user gating in its segment
+        # boundary computation.
+        #
+        # tool_call_failure_mode="append_user": M2's strict template hard-
+        # asserts that any ``tool`` role MUST follow an assistant with
+        # non-empty ``tool_calls``, so APPEND_TOOL would be server-rejected.
+        # Splicing a user-role parse-failure message gives the model a clean
+        # retry hint without breaking the tool-call invariant.
+        #
+        # assistant_text_threshold=1.0 because sglang's ``minimax`` reasoning
+        # parser is bound to ``Qwen3Detector`` (parser/reasoning_parser.py),
+        # which does not strip the trailing ``\n`` from the captured
+        # reasoning_text (the newline that immediately precedes ``</think>``).
+        # The M2 chat template re-renders ``<think>\n{reasoning_content}\n</think>``
+        # without stripping when ``reasoning_content`` is provided as a string
+        # field, so canonical render gains an extra ``\n`` before ``</think>``
+        # vs. the model's raw decode.  Same documented upstream-parser issue
+        # as the nemotron3 row below; hard mismatches (special_token_count /
+        # special_token_type / non_assistant_text) still gate at 0.
         model_name="MiniMaxAI/MiniMax-M2",
         reasoning_parser="minimax",
         tool_call_parser="minimax-m2",
         tito_model="minimax_m2",
-        allowed_append_roles=("tool",),
+        allowed_append_roles=("tool", "user"),
         tp_size=2,
         cycles=2,
+        assistant_text_threshold=1.0,
+        tool_call_failure_mode="append_user",
     ),
     "nemotron3-tool-user": ModelConfig(
         # Nemotron-3-Super-120B-A12B-BF16 (~240GB bf16, A12B activated).
@@ -122,6 +155,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tp_size=2,
         cycles=2,
         assistant_text_threshold=1.0,
+        tool_call_failure_mode="append_tool",
     ),
 }
 
@@ -156,6 +190,7 @@ def _run_one(model_family: str):
         tp_size=cfg.tp_size,
         cycles=cfg.cycles,
         assistant_text_threshold=cfg.assistant_text_threshold,
+        tool_call_failure_mode=cfg.tool_call_failure_mode,
     )
 
 
