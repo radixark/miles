@@ -19,6 +19,7 @@ import pytest
 import torch
 
 from miles.backends.training_utils.loss import compute_advantages_and_returns, loss_function
+from miles.backends.training_utils.loss_hub.base_types import LossFnContext
 from miles.backends.training_utils.loss_hub.corrections import icepop_function, vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss_hub.losses import policy_loss_function, sft_loss_function, value_loss_function
@@ -87,6 +88,16 @@ CONFIGS = [
         2,
         [30, 50],
         [15, 35],
+    ),
+    # recompute path through torch.utils.checkpoint — exercises loss_function's
+    # checkpoint branch and guards against regressions in the LossFnContext
+    # wrapping.
+    (
+        "grpo_recompute_b3",
+        dict(advantage_estimator="grpo", loss_type="policy_loss", recompute_loss_function=True),
+        3,
+        [20, 64, 40],
+        [10, 48, 32],
     ),
 ]
 
@@ -179,7 +190,7 @@ def run_loss_fn(args, parallel_state, inputs):
     fn = {"policy_loss": policy_loss_function, "value_loss": value_loss_function, "sft_loss": sft_loss_function}[
         loss_type
     ]
-    loss, metrics = fn(args, batch, logits, som)
+    loss, metrics = fn(logits, LossFnContext(args=args, batch=batch, sum_of_sample_mean=som))
     loss.backward()
     result = {"loss": loss.detach(), "metrics": {k: v.detach() for k, v in metrics.items()}}
     result["logits_grad"] = logits.grad.clone()

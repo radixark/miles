@@ -1,7 +1,3 @@
-from argparse import Namespace
-from collections.abc import Callable
-from typing import Protocol
-
 import torch
 import torch.distributed as dist
 
@@ -10,30 +6,12 @@ from miles.backends.training_utils.cp_utils import (
     get_sum_of_sample_mean,
     slice_loss_masks_for_local_cp,
 )
+from miles.backends.training_utils.loss_hub.base_types import LossFnContext
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.misc import load_function
 from miles.utils.ppo_utils import compute_approx_kl, compute_gspo_kl, compute_opsm_mask, compute_policy_loss
-from miles.utils.types import RolloutBatch
-
-
-class LossFunction(Protocol):
-    """Common signature of the per-loss-type functions dispatched by `get_loss_function`.
-
-    A loss function consumes the configured args, a rollout batch, the model's
-    logits, and a CP-aware per-sample mean reducer, and returns the scalar
-    loss tensor (with gradient) together with a dict of detached scalar
-    metrics for logging.
-    """
-
-    def __call__(
-        self,
-        args: Namespace,
-        batch: RolloutBatch,
-        logits: torch.Tensor,
-        sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]: ...
 
 
 def compute_ess_ratio_contribution(
@@ -89,12 +67,7 @@ def compute_ess_ratio_contribution(
     return ess_ratio_sum
 
 
-def policy_loss_function(
-    args: Namespace,
-    batch: RolloutBatch,
-    logits: torch.Tensor,
-    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+def policy_loss_function(logits: torch.Tensor, ctx: LossFnContext) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute policy loss (PPO/GSPO) and metrics.
 
     Computes current log-probabilities and entropy from model logits, then
@@ -103,22 +76,14 @@ def policy_loss_function(
     KL. Optionally applies TIS (Truncated Importance Sampling) correction and
     adds KL loss term if configured.
 
-    Args:
-        args: Configuration controlling advantage estimator, clipping thresholds,
-            entropy/KL coefficients, and TIS settings.
-        batch: Mini-batch containing "advantages", "log_probs" (old policy),
-            "unconcat_tokens", "response_lengths", "total_lengths", "loss_masks",
-            and optionally "ref_log_probs" and "rollout_log_probs".
-        logits: Policy logits with shape `[1, T, V]`.
-        sum_of_sample_mean: Reduction function that averages per-sample values.
-
-    Returns:
-        Tuple of `(loss, metrics)` where `loss` is a scalar tensor and `metrics`
-        is a dict containing detached scalars: "loss", "pg_loss",
-        "entropy_loss", "pg_clipfrac", "ppo_kl". Additional keys "kl_loss",
-        "tis", "ois", "tis_clipfrac" are included when the respective features
-        are enabled.
+    Metrics:
+      * Always: "loss", "pg_loss", "entropy_loss", "pg_clipfrac", "ppo_kl", "ess_ratio".
+      * `args.use_kl_loss`: "kl_loss".
+      * `args.use_tis` / `args.get_mismatch_metrics`: "ois", "tis", "tis_clipfrac", "tis_abs".
+      * `args.use_opsm`: "opsm_clipfrac".
+      * `rollout_log_probs` in batch: "train_rollout_logprob_abs_diff", "train_rollout_kl".
     """
+    args, batch, sum_of_sample_mean = ctx.args, ctx.batch, ctx.sum_of_sample_mean
     parallel_state = get_parallel_state()
     advantages = torch.cat(batch["advantages"], dim=0)
     old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
@@ -329,29 +294,16 @@ def policy_loss_function(
     return loss, reported_loss
 
 
-def value_loss_function(
-    args: Namespace,
-    batch: RolloutBatch,
-    logits: torch.Tensor,
-    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+def value_loss_function(logits: torch.Tensor, ctx: LossFnContext) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute clipped value loss and metrics.
 
     Extracts current value predictions from `logits`, compares them against
     stored old values with clipping, and computes the maximum of clipped and
     unclipped squared errors (PPO-style value clipping).
 
-    Args:
-        args: Configuration containing `value_clip` threshold.
-        batch: Mini-batch with "values" (old predictions), "returns",
-            "unconcat_tokens", "total_lengths", and "response_lengths".
-        logits: Value head output with shape `[1, T, 1]`.
-        sum_of_sample_mean: Reduction function that averages per-sample values.
-
-    Returns:
-        Tuple of `(loss, metrics)` where `loss` is a scalar tensor and
-        `metrics` contains detached scalars "value_loss" and "value_clipfrac".
+    Metrics: "value_loss", "value_clipfrac".
     """
+    args, batch, sum_of_sample_mean = ctx.args, ctx.batch, ctx.sum_of_sample_mean
     old_values = torch.cat(batch["values"], dim=0)
 
     values = get_values(
@@ -387,28 +339,15 @@ def value_loss_function(
     return loss, reported_loss
 
 
-def sft_loss_function(
-    args: Namespace,
-    batch: RolloutBatch,
-    logits: torch.Tensor,
-    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+def sft_loss_function(logits: torch.Tensor, ctx: LossFnContext) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute supervised fine-tuning loss over response tokens.
 
     Computes log-probabilities of the ground-truth tokens in the response
     segments and returns the negative log-likelihood as the loss.
 
-    Args:
-        args: Configuration (passed through to helpers).
-        batch: Mini-batch with "unconcat_tokens", "response_lengths", and
-            "total_lengths".
-        logits: Policy logits with shape `[1, T, V]`.
-        sum_of_sample_mean: Reduction function that averages per-sample values.
-
-    Returns:
-        Tuple of `(loss, metrics)` where `metrics` contains a single detached
-        scalar "loss".
+    Metrics: "loss".
     """
+    args, batch, sum_of_sample_mean = ctx.args, ctx.batch, ctx.sum_of_sample_mean
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
 
@@ -430,23 +369,4 @@ def sft_loss_function(
     if log_probs.numel() == 0:
         loss += 0 * logits.sum()
 
-    return (
-        loss,
-        {
-            "loss": loss.clone().detach(),
-        },
-    )
-
-
-def get_loss_function(args: Namespace) -> LossFunction:
-    match args.loss_type:
-        case "policy_loss":
-            return policy_loss_function
-        case "value_loss":
-            return value_loss_function
-        case "sft_loss":
-            return sft_loss_function
-        case "custom_loss":
-            return load_function(args.custom_loss_function_path)
-        case _:
-            raise ValueError(f"Unknown loss type: {args.loss_type}")
+    return loss, {"loss": loss.clone().detach()}
