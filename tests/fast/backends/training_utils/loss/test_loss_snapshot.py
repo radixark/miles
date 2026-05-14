@@ -19,6 +19,7 @@ import pytest
 import torch
 
 from miles.backends.training_utils.loss import compute_advantages_and_returns, loss_function
+from miles.backends.training_utils.loss_hub.base_types import LossFnInput
 from miles.backends.training_utils.loss_hub.corrections import icepop_function, vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss_hub.losses import policy_loss_function, sft_loss_function, value_loss_function
@@ -179,9 +180,9 @@ def run_loss_fn(args, parallel_state, inputs):
     fn = {"policy_loss": policy_loss_function, "value_loss": value_loss_function, "sft_loss": sft_loss_function}[
         loss_type
     ]
-    loss, metrics = fn(args, batch, logits, som)
-    loss.backward()
-    result = {"loss": loss.detach(), "metrics": {k: v.detach() for k, v in metrics.items()}}
+    output = fn(LossFnInput(args=args, batch=batch, logits=logits, sum_of_sample_mean=som))
+    output.loss.backward()
+    result = {"loss": output.loss.detach(), "metrics": {k: v.detach() for k, v in output.metrics.items()}}
     result["logits_grad"] = logits.grad.clone()
     return result
 

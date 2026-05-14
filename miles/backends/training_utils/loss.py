@@ -5,6 +5,7 @@ from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
+from miles.backends.training_utils.loss_hub.base_types import LossFnInput
 from miles.backends.training_utils.loss_hub.logits import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -123,17 +124,13 @@ def loss_function(
     )
 
     func = get_loss_function(args)
+    fn_input = LossFnInput(args=args, batch=batch, logits=logits, sum_of_sample_mean=sum_of_sample_mean)
 
     if args.recompute_loss_function:
-        loss, log = checkpoint(
-            func,
-            args,
-            batch,
-            logits,
-            sum_of_sample_mean,
-        )
+        output = checkpoint(func, fn_input)
     else:
-        loss, log = func(args, batch, logits, sum_of_sample_mean)
+        output = func(fn_input)
+    loss, log = output.loss, output.metrics
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
     if parallel_state.cp.size > 1 and args.allgather_cp:
