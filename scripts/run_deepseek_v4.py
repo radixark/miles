@@ -463,7 +463,13 @@ def _train(args: ScriptArgs):
             "--sglang-cuda-graph-max-bs 8 "
         )
     if sglang_a2a_backend and args.enable_mtp:
-        raise NotImplementedError("MTP rollout is not supported yet for DeepSeek V4 Pro.")
+        assert False, "MTP rollout is not supported yet"
+        sglang_args += (
+            "--sglang-speculative-algorithm EAGLE "
+            "--sglang-speculative-num-steps 3 "
+            "--sglang-speculative-eagle-topk 1 "
+            "--sglang-speculative-num-draft-tokens 4 "
+        )
     sglang_args += f"--sglang-ep-size {sglang_ep_size} "
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
