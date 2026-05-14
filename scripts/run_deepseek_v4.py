@@ -265,10 +265,12 @@ def _prepare_cp(args: ScriptArgs):
     U.rsync_simple(
         path_src=f"{args.model_dir}/{args.torch_dist_name}",
         path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
+        num_nodes=args.num_nodes,
     )
     U.rsync_simple(
         path_src=f"{args.model_dir}/{args.model_name}",
         path_dst=f"{args.model_local_dir}/{args.model_name}",
+        num_nodes=args.num_nodes,
     )
 
 
