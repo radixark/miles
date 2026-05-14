@@ -28,7 +28,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from .ops.attention_core import dense_attn_torch, sparse_attn_tilelang, sparse_attn_torch
+from .ops.attention_core import dense_attn_torch, sparse_attn_tilelang
 from .ops.compressor import DeepSeekV4Compressor
 from .ops.cp_utils import (
     all_gather_cp,
@@ -301,10 +301,14 @@ class DeepSeekV4Attention(MegatronModule):
         attn_impl = os.environ.get("MEGATRON_SPARSE_ATTN_IMPL", "tilelang")
         if attn_impl == "tilelang":
             o = sparse_attn_tilelang(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
-        elif attn_impl == "sparse":
-            o = sparse_attn_torch(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
-        else:
+        elif attn_impl == "dense_reference":
             o = dense_attn_torch(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
+        else:
+            raise ValueError(
+                "Unsupported MEGATRON_SPARSE_ATTN_IMPL="
+                f"{attn_impl!r}. Use 'tilelang' or 'dense_reference' "
+                "(PyTorch reference implementation, slow)."
+            )
 
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 
