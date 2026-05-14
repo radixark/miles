@@ -133,9 +133,6 @@ class V4Indexer(MegatronModule):
             cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
-        topk_k = min(self.index_topk, index_scores.size(-1))
-        topk_indices = index_scores.topk(topk_k, dim=-1)[1]
-
         from miles.utils.replay_base import indexer_replay_manager
 
         def _original_topk(scores, k, **kwargs):
