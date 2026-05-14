@@ -7,9 +7,11 @@ and coverage assertions live in ``session_verify_agent``).  Requires 8 GPUs.
 
 from tests.ci.ci_register import register_cuda_ci
 
-# Four model families run sequentially in one job, so est_time is roughly 4x
-# of a single family.
-register_cuda_ci(est_time=2400, suite="stage-b-sglang-8-gpu", num_gpus=8)
+# Five model families run sequentially in one file, including large TP4 models.
+# Keep est_time in sync with the full sweep so the CI runner does not kill an
+# otherwise progressing session-server verification before it reaches the later
+# families.
+register_cuda_ci(est_time=4200, suite="stage-b-sglang-8-gpu", num_gpus=8)
 
 
 import os
