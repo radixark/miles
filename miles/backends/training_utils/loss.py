@@ -131,13 +131,15 @@ def loss_function(
     )
 
     func = get_loss_function(args)
-    fn_input = LossFnInput(args=args, batch=batch, logits=logits, sum_of_sample_mean=sum_of_sample_mean)
+
+    def call(logits_tensor: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        out = func(LossFnInput(args=args, batch=batch, logits=logits_tensor, sum_of_sample_mean=sum_of_sample_mean))
+        return out.loss, out.metrics
 
     if args.recompute_loss_function:
-        output = checkpoint(func, fn_input)
+        loss, log = checkpoint(call, logits)
     else:
-        output = func(fn_input)
-    loss, log = output.loss, output.metrics
+        loss, log = call(logits)
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
     if parallel_state.cp.size > 1 and args.allgather_cp:

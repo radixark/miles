@@ -89,6 +89,16 @@ CONFIGS = [
         [30, 50],
         [15, 35],
     ),
+    # recompute path through torch.utils.checkpoint — exercises loss_function's
+    # checkpoint branch and guards against regressions in the LossFnInput
+    # wrapping.
+    (
+        "grpo_recompute_b3",
+        dict(advantage_estimator="grpo", loss_type="policy_loss", recompute_loss_function=True),
+        3,
+        [20, 64, 40],
+        [10, 48, 32],
+    ),
 ]
 
 
