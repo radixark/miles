@@ -20,13 +20,7 @@ from miles.utils.types import RolloutBatch
 
 
 class LossFunction(Protocol):
-    """Common signature of the per-loss-type functions dispatched by `get_loss_function`.
-
-    A loss function consumes the configured args, a rollout batch, the model's
-    logits, and a CP-aware per-sample mean reducer, and returns the scalar
-    loss tensor (with gradient) together with a dict of detached scalar
-    metrics for logging.
-    """
+    """Common signature of the per-loss-type functions dispatched by `get_loss_function`."""
 
     def __call__(
         self,
@@ -34,7 +28,31 @@ class LossFunction(Protocol):
         batch: RolloutBatch,
         logits: torch.Tensor,
         sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]: ...
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute a scalar loss with gradient + a dict of detached scalar metrics.
+
+        Args:
+            args: Configuration. Each loss type reads its own subset of flags
+                (PPO eps, KL coefficients, value clip, TIS settings, OPSM, etc.).
+            batch: Mini-batch (`miles.utils.types.RolloutBatch`). Loss-type-
+                dependent keys; common ones are `unconcat_tokens`, `response_lengths`,
+                `total_lengths`, `loss_masks`, optional `max_seq_lens` (required for
+                qkv_format="bshd"). Per-implementation docstrings list extras.
+            logits: Float32. Last dim is vocab_size (policy/sft) or 1 (value).
+                Outer shape is `[1, T, ...]` for qkv_format="thd" (T = sum of
+                total_lengths) or `[B, max_seq_len, ...]` for "bshd".
+            sum_of_sample_mean: CP-aware reducer; takes a flat per-token tensor
+                and returns a scalar, sample-mean-weighted by `loss_masks`.
+
+        Returns:
+            `(loss, metrics)`:
+              * `loss`: scalar tensor with grad, un-rescaled (the dispatcher
+                applies Megatron scaling on top).
+              * `metrics`: dict of detached 0-d scalars; surfaced under `train/`
+                in the training log / wandb. Keys per loss type are documented
+                on each implementation.
+        """
+        ...
 
 
 def compute_ess_ratio_contribution(
