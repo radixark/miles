@@ -13,16 +13,6 @@ try:
 except ImportError:
     pq = None
 
-try:
-    from sglang.srt.entrypoints.openai.encoding_dsv4 import encode_messages as encode_dsv4_messages
-except ImportError:
-    encode_dsv4_messages = None
-
-try:
-    from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages as encode_dsv32_messages
-except ImportError:
-    encode_dsv32_messages = None
-
 from miles.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
@@ -187,14 +177,12 @@ def _get_deepseek_encode_messages(tokenizer):
             model_type = ""
 
     if model_type.startswith("deepseek_v4"):
-        if encode_dsv4_messages is None:
-            raise ImportError("sglang DeepSeek-V4 encoder is required for deepseek_v4 chat-template fallback")
-        encode_messages = encode_dsv4_messages
+        from sglang.srt.entrypoints.openai.encoding_dsv4 import encode_messages
+
         encoder_name = "encoding_dsv4"
     elif model_type.startswith("deepseek_v32"):
-        if encode_dsv32_messages is None:
-            raise ImportError("sglang DeepSeek-V3.2 encoder is required for deepseek_v32 chat-template fallback")
-        encode_messages = encode_dsv32_messages
+        from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+
         encoder_name = "encoding_dsv32"
     else:
         return None, model_type
