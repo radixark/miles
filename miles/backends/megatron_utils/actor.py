@@ -111,7 +111,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+        self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
             args, role
         )
 
@@ -317,6 +317,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 data_iterator,
                 num_microbatches,
                 store_prefix=store_prefix,
+                supports_chunked_output=True,
             )
 
     def train(self, rollout_id: int, rollout_data_ref: Box) -> None:

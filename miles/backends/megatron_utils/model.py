@@ -198,6 +198,7 @@ def forward_only(
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
     store_prefix: str = "",
+    supports_chunked_output: bool = False,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -211,6 +212,13 @@ def forward_only(
         data_iterator: Iterable(s) yielding batches for inference.
         num_microbatches: Number of microbatches per rollout step.
         store_prefix: Prefix to prepend to stored output keys.
+        supports_chunked_output: When True and ``args.log_probs_chunk_size > 0``,
+            bypass the model's ``output_layer`` on the last pipeline stage and
+            forward the raw ``[T, H]`` hidden states to ``f`` together with a
+            ``_chunked_logits_params`` kwarg carrying the LM head. The callback
+            (e.g. :func:`~miles.backends.training_utils.loss.get_log_probs_and_entropy`)
+            then performs the projection in chunks. Must be False for callbacks
+            whose outputs are not vocab-shaped (e.g. ``get_values``).
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -262,7 +270,7 @@ def forward_only(
         packed_seq_params = get_packed_seq_params(batch, args)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
-        output_tensor = model(
+        model_kwargs = dict(
             input_ids=tokens,
             position_ids=None,
             attention_mask=None,
@@ -272,6 +280,34 @@ def forward_only(
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
         )
 
+        # When ``log_probs_chunk_size > 0`` we want the loss callback to project
+        # hidden states to logits in chunks, so we temporarily turn off the
+        # model's post-process (LM head) for this single forward call. The full
+        # ``[T, V]`` logits tensor is what otherwise dominates peak memory at
+        # large vocab + long sequence; emitting ``[T, H]`` instead drops it from
+        # ``T*V`` to ``T*H`` (typically a ~vocab/H reduction).
+        chunked_kwargs: dict = {}
+        use_chunked_output = (
+            supports_chunked_output and getattr(args, "log_probs_chunk_size", -1) > 0 and mpu.is_pipeline_last_stage()
+        )
+        if use_chunked_output:
+            unwrapped = model
+            while hasattr(unwrapped, "module"):
+                unwrapped = unwrapped.module
+            unwrapped.post_process = False
+            output_tensor = model(**model_kwargs)
+            unwrapped.post_process = True
+
+            output_weight = None
+            if unwrapped.share_embeddings_and_output_weights:
+                output_weight = unwrapped.shared_embedding_or_output_weight()
+            chunked_kwargs["_chunked_logits_params"] = {
+                "output_layer": unwrapped.output_layer,
+                "output_weight": output_weight,
+            }
+        else:
+            output_tensor = model(**model_kwargs)
+
         return output_tensor, partial(
             f,
             args=args,
@@ -280,6 +316,7 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            **chunked_kwargs,
         )
 
     # Turn on evaluation mode which disables dropout.
@@ -441,7 +478,30 @@ def train_one_step(
             if batch["multimodal_train_inputs"] is not None:
                 forward_kwargs.update(batch["multimodal_train_inputs"])
 
-            output_tensor = model(**forward_kwargs)
+            # Mirror the ``forward_only`` chunked path: when
+            # ``log_probs_chunk_size > 0`` we emit hidden states and let the
+            # loss callback (``policy_loss_function`` / ``sft_loss_function``)
+            # project them to logits in chunks. ``train_one_step`` is always an
+            # actor / SFT step, so unlike ``forward_only`` we do not gate on a
+            # ``supports_chunked_output`` flag here.
+            use_chunked_output = getattr(args, "log_probs_chunk_size", -1) > 0 and mpu.is_pipeline_last_stage()
+            if use_chunked_output:
+                unwrapped = model
+                while hasattr(unwrapped, "module"):
+                    unwrapped = unwrapped.module
+                unwrapped.post_process = False
+                output_tensor = model(**forward_kwargs)
+                unwrapped.post_process = True
+
+                output_weight = None
+                if unwrapped.share_embeddings_and_output_weights:
+                    output_weight = unwrapped.shared_embedding_or_output_weight()
+                batch["_chunked_logits_params"] = {
+                    "output_layer": unwrapped.output_layer,
+                    "output_weight": output_weight,
+                }
+            else:
+                output_tensor = model(**forward_kwargs)
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
