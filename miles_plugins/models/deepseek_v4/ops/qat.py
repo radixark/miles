@@ -1,5 +1,6 @@
 import torch
-from .kernel.act_quant import act_quant
+
+from miles_plugins.models.deepseek_v4.ops.kernel.act_quant import act_quant
 
 
 def fp8_simulate(x: torch.Tensor, block_size: int):

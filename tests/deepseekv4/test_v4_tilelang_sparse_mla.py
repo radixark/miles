@@ -24,6 +24,18 @@ from dataclasses import dataclass
 import pytest
 import torch
 
+try:
+    import tilelang  # noqa: F401
+except ImportError:
+    tilelang = None
+
+if tilelang is not None:
+    from miles_plugins.models.deepseek_v4.ops.attention_core import sparse_attn_tilelang
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+else:
+    sparse_attn_tilelang = None
+    sparse_mqa_fwd_interface = None
+
 
 # ---------------------------------------------------------------------------
 # Diff computation (same as dumper comparator)
@@ -120,12 +132,7 @@ def requires_cuda():
 
 
 def requires_tilelang():
-    try:
-        import tilelang  # noqa: F401
-
-        return pytest.mark.skipif(False, reason="")
-    except ImportError:
-        return pytest.mark.skip(reason="tilelang not installed")
+    return pytest.mark.skipif(tilelang is None, reason="tilelang not installed")
 
 
 def make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk, device="cuda", sink_mode="random"):
@@ -195,8 +202,6 @@ FORWARD_IDS = [f"b{b}_s{s}_h{h}_d{d}_kv{kv}_top{tk}" for b, s, h, d, kv, tk in F
 @pytest.mark.parametrize("batch,seqlen,heads,dim,seqlen_kv,topk", FORWARD_CONFIGS, ids=FORWARD_IDS)
 def test_sparse_mla_forward(batch, seqlen, heads, dim, seqlen_kv, topk):
     """Compare tilelang sparse MLA forward against PyTorch reference."""
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
-
     q, kv, attn_sink, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
     sm_scale = (1.0 / dim) ** 0.5
 
@@ -219,8 +224,6 @@ def test_sparse_mla_forward(batch, seqlen, heads, dim, seqlen_kv, topk):
 @pytest.mark.parametrize("sink_mode", ["zero", "positive", "negative", "random"])
 def test_attn_sink_modes(sink_mode):
     """Test that attn_sink is correctly incorporated for different value ranges."""
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
-
     batch, seqlen, heads, dim, seqlen_kv, topk = 1, 256, 8, 512, 320, 128
     q, kv, attn_sink, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk, sink_mode=sink_mode)
     sm_scale = (1.0 / dim) ** 0.5
@@ -239,8 +242,6 @@ def test_attn_sink_modes(sink_mode):
 @requires_tilelang()
 def test_attn_sink_effect():
     """Verify attn_sink actually changes output (not ignored)."""
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
-
     batch, seqlen, heads, dim, seqlen_kv, topk = 1, 128, 8, 512, 160, 64
     q, kv, _, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
     sm_scale = (1.0 / dim) ** 0.5
@@ -316,8 +317,6 @@ def ref_dense_attn_with_grad(q, kv, attn_sink, topk_idxs, sm_scale):
 @pytest.mark.parametrize("batch,seqlen,heads,dim,seqlen_kv,topk", BACKWARD_CONFIGS, ids=BACKWARD_IDS)
 def test_sparse_mla_backward(batch, seqlen, heads, dim, seqlen_kv, topk):
     """Compare tilelang backward gradients against PyTorch autograd reference."""
-    from miles_plugins.models.deepseek_v4.ops.attention_core import sparse_attn_tilelang
-
     q_base, kv_base, attn_sink_base, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
     sm_scale = (1.0 / dim) ** 0.5
 
@@ -362,8 +361,6 @@ def test_sparse_mla_backward(batch, seqlen, heads, dim, seqlen_kv, topk):
 @requires_tilelang()
 def test_partial_invalid_indices():
     """Test with some indices set to -1 (invalid)."""
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
-
     batch, seqlen, heads, dim, seqlen_kv, topk = 1, 256, 8, 512, 320, 128
     q, kv, attn_sink, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
     sm_scale = (1.0 / dim) ** 0.5
@@ -389,8 +386,6 @@ def test_partial_invalid_indices():
 @requires_tilelang()
 def test_diff_summary():
     """Print a comprehensive diff summary across all forward configs."""
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
-
     configs = [
         (1, 128, 8, 512, 160, 64),
         (1, 256, 16, 512, 320, 128),

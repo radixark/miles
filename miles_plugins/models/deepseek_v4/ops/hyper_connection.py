@@ -5,7 +5,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from .kernel.sinkhorn import hc_split_sinkhorn
+from miles_plugins.models.deepseek_v4.ops.kernel.sinkhorn import hc_split_sinkhorn
 
 _HYPER_CONNECTION_MIXER_NO_GRAD = True
 
