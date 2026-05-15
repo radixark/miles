@@ -30,7 +30,7 @@ except ImportError:
     tilelang = None
 
 if tilelang is not None:
-    from miles_plugins.models.deepseek_v4.ops.attention_core import sparse_attn_tilelang
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
     from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 else:
     sparse_attn_tilelang = None
@@ -86,7 +86,7 @@ def print_diff(name: str, diff: DiffInfo):
 
 
 # ---------------------------------------------------------------------------
-# PyTorch reference (from attention_core.py)
+# PyTorch reference for TileLang sparse MLA
 # ---------------------------------------------------------------------------
 def ref_dense_attn(q, kv, attn_sink, topk_idxs, sm_scale=None):
     """Dense PyTorch reference for sparse attention with attn_sink.
