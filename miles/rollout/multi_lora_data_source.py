@@ -14,22 +14,21 @@ from miles.utils.types import AdapterRef, RewardSpec, Sample
 
 logger = logging.getLogger(__name__)
 
+def fetch_configs() -> dict[str, AdapterConfig]:
+    return ray.get(get_multi_lora_controller().adapter_configs.remote())
+
+def fetch_adapter_steps() -> dict[str, int]:
+    return ray.get(get_multi_lora_controller().adapter_train_steps.remote())
 
 class MultiLoRADataSource(DataSource):
     def __init__(self, args: Namespace):
         self.args = args
-        self.controller = get_multi_lora_controller()
         self.sources: dict[str, RolloutDataSource] = {}
         self.configs: dict[str, AdapterConfig] = {}
 
         self.source_queue = deque()
-        self._reconcile(self._fetch_configs())
+        self._reconcile(fetch_configs())
 
-    def _fetch_configs(self) -> dict[str, AdapterConfig]:
-        return ray.get(self.controller.adapter_configs.remote())
-
-    def _fetch_adapter_steps(self) -> dict[str, int]:
-        return ray.get(self.controller.adapter_train_steps.remote())
 
     def _update_source_queue(self, active_names):
         # Filter out any adapter names that are gone while retaining order
@@ -67,7 +66,7 @@ class MultiLoRADataSource(DataSource):
             self.configs[name] = config
 
     def _create_adapter_source(self, name: str, config: AdapterConfig) -> RolloutDataSource:
-        steps = self._fetch_adapter_steps()
+        steps = fetch_adapter_steps()
         adapter_args = copy.copy(self.args)
 
         # Data
@@ -88,7 +87,7 @@ class MultiLoRADataSource(DataSource):
         Runs a round robin around the data sources and preserves the round robin ordering
         even when new datasources are added or removed.
         """
-        configs = self._fetch_configs()
+        configs = fetch_configs()
         self._reconcile(configs)
 
         active_names = set(n for n in self.sources if configs[n].state == AdapterState.ACTIVE)
@@ -148,7 +147,7 @@ class MultiLoRADataSource(DataSource):
                 datasource_drained.add(name)
 
         if datasource_drained:
-            ray.get(self.controller.update_adapter_state.remote(list(datasource_drained), AdapterState.DRAINING_INFLIGHT))
+            ray.get(get_multi_lora_controller().update_adapter_state.remote(list(datasource_drained), AdapterState.DRAINING_INFLIGHT))
 
         # Verify we always get num_samples at the end
         assert len(all_samples) == num_samples
@@ -157,7 +156,7 @@ class MultiLoRADataSource(DataSource):
 
     def add_samples(self, samples: list[list[Sample]]):
         """Re-queue retried groups; drops groups for non-ACTIVE adapters."""
-        configs = self._fetch_configs()
+        configs = fetch_configs()
         self._reconcile(configs)
 
         for group in samples:
@@ -175,14 +174,14 @@ class MultiLoRADataSource(DataSource):
     def save(self, rollout_id):
         # Note: the rollout_id is unused for multilora in favor
         # of the actual last train step that was tracked for that lora
-        steps = self._fetch_adapter_steps()
+        steps = fetch_adapter_steps()
 
         for adapter_name, source in self.sources.items():
             step = steps.get(adapter_name, 0)
             source.save(step)
 
     def load(self, rollout_id=None):
-        steps = self._fetch_adapter_steps()
+        steps = fetch_adapter_steps()
 
         for adapter_name, source in self.sources.items():
             step = steps.get(adapter_name, 0)
