@@ -152,6 +152,7 @@ def get_log_probs_and_entropy(
     with_entropy: bool = False,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
+    _chunked_logits_params: dict | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -162,13 +163,23 @@ def get_log_probs_and_entropy(
     when requested.
 
     Args:
-        logits: Policy logits with shape `[1, T, V]`.
+        logits: Policy logits with shape `[1, T, V]`. When ``_chunked_logits_params``
+            is provided, this argument actually carries hidden states with
+            shape `[1, T, H]` (or `[S, B, H]` under bshd) — the model's
+            output_layer was bypassed upstream so the per-chunk projection
+            could be done inside the chunked operator.
         args: Configuration (temperature applied in `get_responses`).
         unconcat_tokens: List of token tensors per sample.
         total_lengths: Total sequence lengths per sample.
         response_lengths: Response segment lengths per sample.
         with_entropy: If True, include "entropy" key in result.
         non_loss_data: Unused; kept for API compatibility.
+        _chunked_logits_params: When non-None, route through
+            :func:`chunked_log_probs_from_hidden_states` instead of the
+            full-vocab softmax path. Must contain ``output_layer`` and
+            ``output_weight`` keys; populated by
+            :func:`miles.backends.megatron_utils.model.forward_only` /
+            :func:`train_one_step` when ``args.log_probs_chunk_size > 0``.
 
     Returns:
         Dict with key "log_probs" mapping to a list of `[R]` tensors per
@@ -177,6 +188,23 @@ def get_log_probs_and_entropy(
     """
     parallel_state = get_parallel_state()
     assert non_loss_data
+
+    if _chunked_logits_params is not None:
+        from .chunked_cross_entropy import chunked_log_probs_from_hidden_states
+
+        return chunked_log_probs_from_hidden_states(
+            logits,
+            args=args,
+            parallel_state=parallel_state,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=with_entropy,
+            max_seq_lens=max_seq_lens,
+            output_layer=_chunked_logits_params["output_layer"],
+            output_weight=_chunked_logits_params["output_weight"],
+        )
+
     log_probs_list = []
     entropy_list = []
     for logits_chunk, tokens_chunk in get_responses(
@@ -598,6 +626,7 @@ def policy_loss_function(
         response_lengths=response_lengths,
         with_entropy=True,
         max_seq_lens=max_seq_lens,
+        _chunked_logits_params=batch.get("_chunked_logits_params"),
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
@@ -883,6 +912,7 @@ def sft_loss_function(
         response_lengths=response_lengths,
         with_entropy=False,
         max_seq_lens=batch.get("max_seq_lens", None),
+        _chunked_logits_params=batch.get("_chunked_logits_params"),
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
