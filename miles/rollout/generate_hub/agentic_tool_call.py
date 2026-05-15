@@ -121,29 +121,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
-    samples = _take_samples_until_terminal(samples)
-
     if not input.args.generate_multi_samples:
         samples = merge_samples(samples, input.state.tokenizer)
         samples.metadata.update(session_metadata)
     else:
         samples[-1].metadata.update(session_metadata)
     return GenerateFnOutput(samples=samples)
-
-
-def _take_samples_until_terminal(samples: list[Sample]) -> list[Sample]:
-    """Keep the completed prefix plus the first terminal sample, if any."""
-    for i, sample in enumerate(samples):
-        if sample.status != Sample.Status.COMPLETED:
-            if i < len(samples) - 1:
-                logger.warning(
-                    "Session record %d ended with status=%s; ignoring %d later record(s) for merge",
-                    i,
-                    sample.status,
-                    len(samples) - i - 1,
-                )
-            return samples[: i + 1]
-    return samples
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
