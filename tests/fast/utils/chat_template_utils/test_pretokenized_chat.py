@@ -150,6 +150,31 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
+    # Nemotron 3 Super: HF-native template is append-only.  No fixed jinja is
+    # shipped (SUPPORTED_TEMPLATES.template=None on all surfaces); multi-user
+    # surfaces require truncate_history_thinking=False to preserve reasoning
+    # across user turns, while {tool}-only does not.
+    (
+        "nemotron3",
+        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
+        True,
+        frozenset({"tool"}),
+        {},
+    ),
+    (
+        "nemotron3_truncate_history_thinking_off",
+        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
+        True,
+        frozenset({"tool", "user"}),
+        {"truncate_history_thinking": False},
+    ),
+    (
+        "nemotron3_truncate_history_thinking_off_with_system",
+        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
+        True,
+        frozenset({"tool", "user", "system"}),
+        {"truncate_history_thinking": False},
+    ),
     # other HF native non-thinking: tool only
     ("qwen3_instruct_2507", load_hf_chat_template("Qwen/Qwen3-4B-Instruct-2507"), False, frozenset({"tool"}), {}),
     ("qwen3_next_instruct", load_hf_chat_template("Qwen/Qwen3-Next-80B-A3B-Instruct"), False, frozenset({"tool"}), {}),
