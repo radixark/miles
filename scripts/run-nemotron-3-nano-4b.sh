@@ -15,7 +15,7 @@ pkill -9 python
 
 set -ex
 
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=16
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then

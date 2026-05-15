@@ -129,7 +129,7 @@ runtime_env_json = json.dumps(
 )
 
 cmd = (
-    f"export PYTHONBUFFERED=16 && "
+    f"export PYTHONUNBUFFERED=16 && "
     f'source "{repo_base_dir}/scripts/models/{MODEL_TYPE}.sh" && '
     f'ray job submit --address="http://127.0.0.1:8265" '
     f"--runtime-env-json='{runtime_env_json}' "

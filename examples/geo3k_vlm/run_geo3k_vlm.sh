@@ -57,7 +57,7 @@ pkill -9 redis
 
 set -ex
 
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=16
 
 # Detect NVLink
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
