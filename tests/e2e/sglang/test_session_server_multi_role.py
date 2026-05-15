@@ -89,26 +89,12 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         # special-token segment structure under real session-server output.
         tool_call_failure_mode="append_user",
     ),
-    "minimaxm2-tool": ModelConfig(
-        # MiniMax-M2.7 shares the M2 chat template (]~!b[ / [e~[ / ]~b] tag
-        # set) — reasoning is gated by last_user_index, so appending a new
-        # ``user`` strips prior assistant <think> blocks and breaks
-        # append-only.  Only the {tool} surface is registered upstream, so
-        # allowed_append_roles is limited to ("tool",).
-        model_name="MiniMaxAI/MiniMax-M2.7",
-        reasoning_parser="minimax-append-think",
-        tool_call_parser="minimax-m2",
-        tito_model="minimax_m2",
-        allowed_append_roles=("tool",),
-        tp_size=4,
-        cycles=2,
-    ),
     "minimax-m2-tool-user": ModelConfig(
         # MiniMax-M2 (~225GB fp8 native, 256 experts x 8 active, 62 layers).
-        # num_key_value_heads=8, so tp_size in {1, 2, 4, 8}.  CI currently
-        # runs this lane on 80GB GPUs; tp=2 OOMs while SGLang allocates fp8
-        # MoE weights, so use tp=4 like the MiniMax-M2.7 lane above.
-        # cycles=2 to keep wall-time bounded given the 192K context budget.
+        # num_key_value_heads=8, so tp_size in {1, 2, 4, 8}.  CI runs this
+        # lane on 80GB GPUs; tp=2 OOMs while SGLang allocates fp8 MoE
+        # weights, so use tp=4.  cycles=2 to keep wall-time bounded given
+        # the 192K context budget.
         #
         # Surface is {tool, user}: M2's chat template gates reasoning_content
         # on last_user_index, so a scheduled USER_FOLLOWUP step strips prior
@@ -125,10 +111,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         # ``reasoning_parser="minimax-append-think"`` matches the binding on
         # ``MinimaxM2TITOTokenizer``; ``resolve_reasoning_and_tool_call_parser``
         # hard-asserts equality with the class-bound value.
-        # ``assistant_text_threshold=1.0`` is kept conservative for the first
-        # tool+user run — tighten once the empirical mismatch rate is known.
-        # Hard mismatches (special_token_count / special_token_type /
-        # non_assistant_text) still gate at 0.
         model_name="MiniMaxAI/MiniMax-M2",
         reasoning_parser="minimax-append-think",
         tool_call_parser="minimax-m2",
@@ -136,7 +118,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         allowed_append_roles=("tool", "user"),
         tp_size=4,
         cycles=2,
-        assistant_text_threshold=1.0,
         tool_call_failure_mode="append_user",
     ),
     "nemotron3-tool-user": ModelConfig(
