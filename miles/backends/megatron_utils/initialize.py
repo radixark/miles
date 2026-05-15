@@ -99,12 +99,6 @@ def init(args):
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True, warn_only=False)
 
-    if bool(int(os.environ.get("MILES_HACK_TRAIN_TORCH_DETERMINISTIC", "0"))):
-        print("see MILES_HACK_TRAIN_TORCH_DETERMINISTIC, thus set some torch configs", flush=True)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True, warn_only=False)
-
     if bool(int(os.environ.get("MILES_HACK_TORCH_SET_DETECT_ANOMALY", "0"))):
         print("see MILES_HACK_TORCH_SET_DETECT_ANOMALY, enabling torch.autograd.set_detect_anomaly(True)", flush=True)
         torch.autograd.set_detect_anomaly(True)

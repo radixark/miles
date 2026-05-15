@@ -95,7 +95,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     enable_rir: bool = False
-    train_partial_deterministic: bool = True
+    train_deterministic: bool = True
     fp8_training: bool = True
     enable_mis: bool = False
 
@@ -530,9 +530,9 @@ def _train(args: ScriptArgs):
     if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
-    if args.train_partial_deterministic:
+    if args.train_deterministic:
+        misc_args += "--deterministic-mode "
         extra_env_vars |= {
-            "MILES_HACK_TRAIN_TORCH_DETERMINISTIC": "1",
             "NCCL_ALGO": "Ring",
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
