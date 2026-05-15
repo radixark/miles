@@ -116,18 +116,15 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         # Splicing a user-role parse-failure message gives the model a clean
         # retry hint without breaking the tool-call invariant.
         #
-        # assistant_text_threshold=1.0 because sglang's ``minimax`` reasoning
-        # parser is bound to ``Qwen3Detector`` (parser/reasoning_parser.py),
-        # which does not strip the trailing ``\n`` from the captured
-        # reasoning_text (the newline that immediately precedes ``</think>``).
-        # The M2 chat template re-renders ``<think>\n{reasoning_content}\n</think>``
-        # without stripping when ``reasoning_content`` is provided as a string
-        # field, so canonical render gains an extra ``\n`` before ``</think>``
-        # vs. the model's raw decode.  Same documented upstream-parser issue
-        # as the nemotron3 row below; hard mismatches (special_token_count /
-        # special_token_type / non_assistant_text) still gate at 0.
+        # ``reasoning_parser="minimax-append-think"`` matches the binding on
+        # ``MinimaxM2TITOTokenizer``; ``resolve_reasoning_and_tool_call_parser``
+        # hard-asserts equality with the class-bound value.
+        # ``assistant_text_threshold=1.0`` is kept conservative for the first
+        # tool+user run — tighten once the empirical mismatch rate is known.
+        # Hard mismatches (special_token_count / special_token_type /
+        # non_assistant_text) still gate at 0.
         model_name="MiniMaxAI/MiniMax-M2",
-        reasoning_parser="minimax",
+        reasoning_parser="minimax-append-think",
         tool_call_parser="minimax-m2",
         tito_model="minimax_m2",
         allowed_append_roles=("tool", "user"),
