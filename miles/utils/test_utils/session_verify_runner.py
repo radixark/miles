@@ -81,7 +81,7 @@ def build_train_args(
     n_samples_per_prompt: int = 4,
     cycles: int = 3,
     tool_call_failure_mode: str = "rollback",
-    rollout_max_response_len: int = 4096,
+    rollout_max_response_len: int = 8192,
 ) -> str:
     """Compose the ``train_args`` string for ``execute_train``.
 
@@ -162,7 +162,7 @@ def run_session_verify(
     cycles: int = 3,
     assistant_text_threshold: float = ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD,
     tool_call_failure_mode: str = "rollback",
-    rollout_max_response_len: int = 4096,
+    rollout_max_response_len: int = 8192,
 ) -> None:
     """Boot ``miles`` rollout pipeline and run the multi-role driver.
 

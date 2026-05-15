@@ -39,9 +39,6 @@ class ModelConfig:
     # tool_calls.  Default "rollback" is universal (pop assistant + retry);
     # see ToolCallFailureMode for "append_tool" / "append_user" variants.
     tool_call_failure_mode: str = "rollback"
-    # Per-assistant response budget.  Thinking models can need more than the
-    # 4K default to finish intermediate tool-call turns before merge.
-    rollout_max_response_len: int = 4096
 
 
 MODEL_REGISTRY: dict[str, ModelConfig] = {
@@ -91,7 +88,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         # after an assistant with no tool_calls and breaks QwenNext TITO's
         # special-token segment structure under real session-server output.
         tool_call_failure_mode="append_user",
-        rollout_max_response_len=8192,
     ),
     "minimaxm2-tool": ModelConfig(
         # MiniMax-M2.7 shares the M2 chat template (]~!b[ / [e~[ / ]~b] tag
@@ -200,7 +196,6 @@ def _run_one(model_family: str):
         cycles=cfg.cycles,
         assistant_text_threshold=cfg.assistant_text_threshold,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
-        rollout_max_response_len=cfg.rollout_max_response_len,
     )
 
 

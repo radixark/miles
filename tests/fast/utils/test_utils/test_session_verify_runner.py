@@ -25,13 +25,13 @@ def _build_args(**overrides) -> str:
 def test_build_train_args_uses_default_rollout_max_response_len():
     train_args = _build_args()
 
-    assert "--rollout-max-response-len 4096" in train_args
+    assert "--rollout-max-response-len 8192" in train_args
 
 
 def test_build_train_args_allows_model_specific_rollout_max_response_len():
-    train_args = _build_args(rollout_max_response_len=8192)
+    train_args = _build_args(rollout_max_response_len=16384)
 
-    assert "--rollout-max-response-len 8192" in train_args
+    assert "--rollout-max-response-len 16384" in train_args
 
 
 def _write_metrics(path, entries: list[dict]) -> None:
