@@ -192,9 +192,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     cycles = metadata.get("session_verify_cycles", DEFAULT_CYCLES)
     schedule = select_schedule(allowed_roles, cycles=cycles)
 
-    failure_mode = ToolCallFailureMode(
-        metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value)
-    )
+    failure_mode = ToolCallFailureMode(metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value))
     # APPEND_USER would inject a user turn that the registered TITO surface
     # never declared safe; fail loudly here instead of silently downgrading.
     if failure_mode is ToolCallFailureMode.APPEND_USER and "user" not in allowed_roles:
@@ -343,9 +341,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """
     allowed_roles = list(input.args.tito_allowed_append_roles)
     cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
-    failure_mode = getattr(
-        input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value
-    )
+    failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value)
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["allowed_append_roles"] = allowed_roles
     input.sample.metadata["session_verify_cycles"] = cycles
