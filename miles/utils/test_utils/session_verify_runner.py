@@ -221,7 +221,7 @@ def run_session_verify(
             },
         )
         try:
-            _assert_assistant_text_mismatch_ratio(metrics_path, threshold=assistant_text_threshold)
+            _assert_session_verify_metrics(metrics_path, assistant_text_threshold=assistant_text_threshold)
         except AssertionError:
             import shutil
 
@@ -236,8 +236,8 @@ def run_session_verify(
             pass
 
 
-def _assert_assistant_text_mismatch_ratio(metrics_path: str, *, threshold: float) -> None:
-    """Read the per-sample JSONL metrics and assert the soft threshold.
+def _assert_session_verify_metrics(metrics_path: str, *, assistant_text_threshold: float) -> None:
+    """Read per-sample JSONL metrics and assert cross-sample verifier gates.
 
     Forbidden mismatch types (special_*, non_assistant_text) are caught
     per-sample in the agent wrapper and would have already raised by now.
@@ -249,6 +249,7 @@ def _assert_assistant_text_mismatch_ratio(metrics_path: str, *, threshold: float
     """
     samples_with_mismatch = 0
     total_samples = 0
+    has_append_tool = False
     with open(metrics_path) as f:
         for line in f:
             line = line.strip()
@@ -256,6 +257,7 @@ def _assert_assistant_text_mismatch_ratio(metrics_path: str, *, threshold: float
                 continue
             entry = json.loads(line)
             total_samples += 1
+            has_append_tool = has_append_tool or "append_tool" in entry.get("driver_events", [])
             if entry.get("had_assistant_mismatch"):
                 samples_with_mismatch += 1
 
@@ -266,19 +268,26 @@ def _assert_assistant_text_mismatch_ratio(metrics_path: str, *, threshold: float
             "run before any sample completed.  Check rollout logs."
         )
 
+    if not has_append_tool:
+        raise AssertionError(
+            "Session multi-role e2e: no sample produced an append_tool action — "
+            "the model may not be tool-calling.  Check sampling temperature, "
+            "the tool spec, or parser configuration."
+        )
+
     ratio = samples_with_mismatch / total_samples
     logger.info(
         "Token-seq metric summary: samples=%d, with_assistant_text_mismatch=%d, ratio=%.3f, threshold=%.3f",
         total_samples,
         samples_with_mismatch,
         ratio,
-        threshold,
+        assistant_text_threshold,
     )
-    if ratio > threshold:
+    if ratio > assistant_text_threshold:
         raise AssertionError(
             f"Session multi-role e2e: assistant_text mismatch ratio "
             f"{samples_with_mismatch}/{total_samples}={ratio:.3f} exceeds "
-            f"threshold {threshold}.  TITO "
+            f"threshold {assistant_text_threshold}.  TITO "
             "tokenization for assistant content has drifted from the chat "
             "template's canonical render — investigate via "
             "verify_session_tito_tokenizer.py + sample-level mismatch logs."

@@ -351,6 +351,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     samples = output.samples if isinstance(output.samples, list) else [output.samples]
     events_per_sample = [s.metadata.get("driver_events", []) for s in samples]
+    metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
 
     required_per_sample = ["rollback"]
     if "user" in allowed_roles:
@@ -366,7 +367,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 f"{missing}. allowed_roles={allowed_roles}, events={events}"
             )
 
-    if not any("append_tool" in events for events in events_per_sample):
+    if not metrics_path and not any("append_tool" in events for events in events_per_sample):
         raise AssertionError(
             "Session multi-role e2e: no sample produced an append_tool action — "
             f"the model may not be tool-calling.  events_per_sample={events_per_sample}"
@@ -379,7 +380,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     # not match the chat template's canonical tokenization) and are aggregated
     # across samples via a metrics file.
     forbidden_types = {"special_token_count", "special_token_type", "non_assistant_text"}
-    metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
     for i, sample in enumerate(samples):
         mismatches = sample.metadata.get("tito_session_mismatch")
         if mismatches is None:
@@ -412,6 +412,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                     json.dumps(
                         {
                             "sample_index": i,
+                            "driver_events": events_per_sample[i],
                             "had_assistant_mismatch": had_assistant_mismatch,
                             "total_mismatches": len(mismatches),
                             "assistant_mismatch_count": len(assistant_mismatches),
