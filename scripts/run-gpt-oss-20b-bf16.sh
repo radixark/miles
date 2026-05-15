@@ -13,7 +13,7 @@ pkill -9 python
 set -ex
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 export HF_HOME=/workspace/hf_cache
 
 # Load model architecture config

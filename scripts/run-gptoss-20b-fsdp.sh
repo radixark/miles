@@ -47,7 +47,7 @@ python3 convert_model.py
 
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=4,5,6,7
 
 CKPT_ARGS=(

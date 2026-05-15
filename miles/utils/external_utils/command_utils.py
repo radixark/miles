@@ -136,7 +136,7 @@ def execute_train(
     if not external_ray:
         exec_command(
             # will prevent ray from buffering stdout/stderr
-            f"export PYTHONUNBUFFERED=16 && "
+            f"export PYTHONUNBUFFERED=1 && "
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
 
@@ -146,6 +146,8 @@ def execute_train(
     runtime_env_json = json.dumps(
         {
             "env_vars": {
+                # also set on the worker side so train.py stdout/stderr is unbuffered
+                "PYTHONUNBUFFERED": "1",
                 "PYTHONPATH": megatron_path,
                 # If setting this in FSDP, the computation communication overlapping may have issues
                 **(
@@ -183,7 +185,7 @@ def execute_train(
             else ""
         )
         exec_command(
-            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=16 && "
+            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"{cmd_megatron_model_source}"
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
             f"--runtime-env-json='{runtime_env_json}' "

@@ -121,6 +121,7 @@ train_args = (
 runtime_env_json = json.dumps(
     {
         "env_vars": {
+            "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": "/root/Megatron-LM/",
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             "NCCL_NVLS_ENABLE": "1",
@@ -129,7 +130,7 @@ runtime_env_json = json.dumps(
 )
 
 cmd = (
-    f"export PYTHONUNBUFFERED=16 && "
+    f"export PYTHONUNBUFFERED=1 && "
     f'source "{repo_base_dir}/scripts/models/{MODEL_TYPE}.sh" && '
     f'ray job submit --address="http://127.0.0.1:8265" '
     f"--runtime-env-json='{runtime_env_json}' "

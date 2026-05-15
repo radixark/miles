@@ -2,7 +2,7 @@
 export FLASHINFER_DISABLE_VERSION_CHECK=1
 export GPUS_PER_NODE=8
 # will prevent ray from buffering stdout/stderr
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 # for rerun the task
 pkill sglang

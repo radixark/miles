@@ -15,7 +15,7 @@ pkill -9 python
 
 set -ex
 
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 export MILES_HOST_IP=${MILES_HOST_IP:-"127.0.0.1"}
 
 MODEL_DIR="${MODEL_DIR:-/root/.cache}"

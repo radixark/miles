@@ -829,6 +829,7 @@ def cmd_run(
     # --- Build runtime env JSON ---
     nccl_nvls_val = "1" if cfg.enable_nccl_nvls else "0"
     env_vars = {
+        "PYTHONUNBUFFERED": "1",
         "RAY_DEBUG": "1",
         "PYTHONPATH": "/root/Megatron-LM/",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",

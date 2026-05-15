@@ -18,7 +18,7 @@
 
 set -ex
 
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 # ---------------------------------------------------------------------------
 # Positional arguments
