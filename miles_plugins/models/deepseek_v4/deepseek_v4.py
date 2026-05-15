@@ -28,18 +28,18 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from .ops.attention_core import sparse_attn_tilelang
-from .ops.compressor import DeepSeekV4Compressor
-from .ops.cp_utils import (
+from miles_plugins.models.deepseek_v4.ops.attention_core import sparse_attn_tilelang
+from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
+from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
     get_compress_topk_idxs_cp,
     get_freqs_cis_for_cp,
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
-from .ops.qat import fp8_simulate_qat
-from .ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from .ops.v4_indexer import V4Indexer
+from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
 
 class DeepSeekV4Attention(MegatronModule):

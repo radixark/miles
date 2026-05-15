@@ -2,12 +2,21 @@ import einops
 import torch
 from megatron.core import parallel_state
 from megatron.core.extensions.transformer_engine import TELinear
+from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from .cp_utils import all_gather_cp
-from .utils import rotate_activation
+from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
+from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
+from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
+    _make_causal_cu_seqlens,
+    batched_indexer_fwd,
+)
+from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 
 class V4Indexer(MegatronModule):
@@ -15,9 +24,6 @@ class V4Indexer(MegatronModule):
 
     def __init__(self, config: TransformerConfig, pg_collection=None):
         super().__init__(config=config)
-
-        from .compressor import DeepSeekV4Compressor
-        from .rope import wrapped_precompute_freqs_cis
 
         self.hidden_size = config.hidden_size
         self.q_lora_rank = config.q_lora_rank if config.q_lora_rank is not None else config.hidden_size
@@ -29,8 +35,6 @@ class V4Indexer(MegatronModule):
         self.use_fp8_qat = config.fp8 is not None
 
         if pg_collection is None:
-            from megatron.core.process_groups_config import ProcessGroupCollection
-
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
         self.pg_collection = pg_collection
 
@@ -68,8 +72,6 @@ class V4Indexer(MegatronModule):
         freqs_cis = wrapped_precompute_freqs_cis(config, rope_head_dim=self.rope_head_dim, base=rope_base)
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
-        from miles.utils.replay_base import indexer_replay_manager
-
         indexer_replay_manager.register_to_module(self, "indexer_replay")
 
     def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
@@ -84,10 +86,6 @@ class V4Indexer(MegatronModule):
         Returns:
             topk_indices: [batch, seqlen, index_topk] int64
         """
-        from .cp_utils import get_freqs_cis_for_cp
-        from .kernel.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
-        from .qat import fp8_simulate_qat
-        from .rope import apply_rotary_emb
 
         # =========================================
         # Gather inputs if SP is enabled
@@ -132,8 +130,6 @@ class V4Indexer(MegatronModule):
             cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
             cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
-
-        from miles.utils.replay_base import indexer_replay_manager
 
         def _original_topk(scores, k, **kwargs):
             k = min(k, scores.size(-1))

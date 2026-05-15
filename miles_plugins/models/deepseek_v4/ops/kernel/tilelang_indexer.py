@@ -6,8 +6,11 @@ Provides both a low-level per-sample interface and a batched autograd Function.
 """
 import torch
 
-from .tilelang_indexer_bwd import batched_indexer_bwd
-from .tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
+from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_bwd import batched_indexer_bwd
+from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
+    _make_causal_cu_seqlens,
+    batched_indexer_fwd,
+)
 
 
 def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):

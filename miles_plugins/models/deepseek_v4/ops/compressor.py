@@ -4,10 +4,10 @@ import torch.nn as nn
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.nn import Linear
 
-from .cp_utils import all_gather_cp, get_freqs_cis_for_cp
-from .qat import fp8_simulate_qat
-from .rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from .utils import rotate_activation
+from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
+from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 
 class RMSNorm(nn.Module):
