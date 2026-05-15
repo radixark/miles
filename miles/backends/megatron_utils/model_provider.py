@@ -23,6 +23,109 @@ from miles.utils.replay_base import routing_replay_manager
 logger = logging.getLogger(__name__)
 
 
+_ROCM_TE_BGRADB_WRAPPER_INSTALLED = False
+
+
+def _install_rocm_te_bgradb_fallback() -> None:
+    """Wrap TE's `tex.generic_gemm` so that the bias-fused wgrad GEMM
+    (HIPBLASLT_EPILOGUE_BGRADB) transparently falls back to the unfused
+    path when hipBLASLt has no algorithm for the (M, N, K) being issued.
+
+    On ROCm/gfx950 (MI350-355) hipBLASLt's algorithm catalog has holes in
+    the BGRADB epilogue for some shapes (e.g. Qwen2.5-0.5B's QKV wgrad:
+    BF16, M ~ max_tokens_per_gpu, N=1152, K=896), raising
+    `RuntimeError: Unable to find any suitable algorithms` from
+    `tex.generic_gemm`. We catch that specific error when the call is a
+    bias-fused wgrad (bias != None, grad == True), retry the GEMM with
+    bias=None (default epilogue, which has working algorithms for every
+    shape we've seen on gfx950), and compute the bias gradient ourselves
+    via `grad_output.sum(dim=0)`. Mathematically identical to BGRADB; just
+    not fused into the same kernel.
+
+    This keeps the full TE module stack (LayerNormLinear, fused norm+linear
+    forward, etc.) and only diverges from TE's behaviour for the specific
+    catalog miss, so there are no model-parameter-name changes and no perf
+    cost when hipBLASLt has the algorithm.
+
+    The wrapper is a no-op on non-ROCm platforms.
+    """
+    global _ROCM_TE_BGRADB_WRAPPER_INSTALLED
+    if _ROCM_TE_BGRADB_WRAPPER_INSTALLED:
+        return
+    if torch.version.hip is None:
+        _ROCM_TE_BGRADB_WRAPPER_INSTALLED = True
+        return
+
+    try:
+        import transformer_engine_torch as tex
+    except ImportError:
+        logger.warning(
+            "transformer_engine_torch not importable; skipping ROCm BGRADB "
+            "fallback install."
+        )
+        _ROCM_TE_BGRADB_WRAPPER_INSTALLED = True
+        return
+
+    if getattr(tex, "_miles_rocm_bgradb_wrapped", False):
+        _ROCM_TE_BGRADB_WRAPPER_INSTALLED = True
+        return
+
+    original_generic_gemm = tex.generic_gemm
+
+    # Index layout of positional args to tex.generic_gemm, mirrored from
+    # transformer_engine/pytorch/cpp_extensions/gemm.py::general_gemm:
+    #   0: A, 1: transa, 2: B, 3: transb, 4: out, 5: quantization_params,
+    #   6: out_dtype, 7: bias, 8: bias_dtype, 9: gelu, 10: gelu_in,
+    #   11: grad, 12: workspace, 13: workspace_size, 14: accumulate,
+    #   15: use_split_accumulator
+    _BIAS_IDX = 7
+    _GRAD_IDX = 11
+    _B_IDX = 2
+
+    def wrapped_generic_gemm(*args, **kwargs):
+        try:
+            return original_generic_gemm(*args, **kwargs)
+        except RuntimeError as e:
+            if "Unable to find any suitable algorithms" not in str(e):
+                raise
+            # Only fall back when this is the bias-fused wgrad case.
+            if len(args) <= _GRAD_IDX:
+                raise
+            bias = args[_BIAS_IDX]
+            grad = args[_GRAD_IDX]
+            if bias is None or not grad:
+                raise
+            logger.warning(
+                "hipBLASLt has no algorithm for the bias-fused wgrad GEMM "
+                "(HIPBLASLT_EPILOGUE_BGRADB) at this shape; retrying with "
+                "bias=None and computing bias_grad via sum(dim=0)."
+            )
+            # Retry the GEMM without the bias-grad epilogue.
+            new_args = list(args)
+            new_args[_BIAS_IDX] = None
+            out, _, gelu_input, extra_output = original_generic_gemm(*new_args, **kwargs)
+            # TE issues this call with layout="NT" for wgrad: B is the
+            # grad_output, shape (M, N). The BGRADB epilogue would have
+            # computed bias_grad = B.sum over M -> (N,). Replicate that.
+            B = args[_B_IDX]
+            bias_dtype = bias.dtype if hasattr(bias, "dtype") else B.dtype
+            bias_grad = B.sum(dim=0).to(dtype=bias_dtype)
+            return out, bias_grad, gelu_input, extra_output
+
+    tex.generic_gemm = wrapped_generic_gemm
+    tex._miles_rocm_bgradb_wrapped = True
+    _ROCM_TE_BGRADB_WRAPPER_INSTALLED = True
+    logger.info(
+        "Installed ROCm BGRADB fallback wrapper around "
+        "transformer_engine_torch.generic_gemm."
+    )
+
+
+# Install the ROCm BGRADB fallback as soon as this module is imported, before
+# any model is built so that TE backwards passes go through the wrapper.
+_install_rocm_te_bgradb_fallback()
+
+
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
 class LinearForLastLayer(torch.nn.Linear):
     def __init__(
