@@ -38,9 +38,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    --multi-lora-idle-poll-s 5 \
    --sglang-lora-backend triton \
    \
-   --prompt-data /root/gsm8k/train.parquet \
-   --input-key messages \
-   --label-key label \
    --apply-chat-template \
    --rollout-shuffle \
    --num-rollout 50 \
@@ -50,7 +47,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --rollout-temperature 1 \
    --global-batch-size 256 \
    \
-   --save /tmp/multi_lora_dev2_save \
+   --save /tmp/multi_lora \
    --save-interval 1 \
    \
    --advantage-estimator grpo \
@@ -87,6 +84,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    \
    --use-wandb \
    --wandb-host https://wandb.ai/ \
-   --wandb-team osmosis-staging \
+   --wandb-team staging \
    --wandb-project miles-multilora \
-   --wandb-group qwen3-4B-dev2-dynamic
+   --wandb-group qwen3-4B
