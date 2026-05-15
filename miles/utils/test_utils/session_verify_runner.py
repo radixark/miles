@@ -81,6 +81,7 @@ def build_train_args(
     n_samples_per_prompt: int = 4,
     cycles: int = 3,
     tool_call_failure_mode: str = "rollback",
+    rollout_max_response_len: int = 4096,
 ) -> str:
     """Compose the ``train_args`` string for ``execute_train``.
 
@@ -105,7 +106,7 @@ def build_train_args(
         "--num-rollout 1 "
         "--rollout-batch-size 16 "
         f"--n-samples-per-prompt {n_samples_per_prompt} "
-        "--rollout-max-response-len 4096 "
+        f"--rollout-max-response-len {rollout_max_response_len} "
         "--rollout-temperature 0.7 "
         "--global-batch-size 64 "
     )
@@ -161,6 +162,7 @@ def run_session_verify(
     cycles: int = 3,
     assistant_text_threshold: float = ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD,
     tool_call_failure_mode: str = "rollback",
+    rollout_max_response_len: int = 4096,
 ) -> None:
     """Boot ``miles`` rollout pipeline and run the multi-role driver.
 
@@ -196,6 +198,7 @@ def run_session_verify(
         n_samples_per_prompt=n_samples_per_prompt,
         cycles=cycles,
         tool_call_failure_mode=tool_call_failure_mode,
+        rollout_max_response_len=rollout_max_response_len,
     )
 
     # Per-sample token-seq metrics file: rollout workers append one JSONL line
