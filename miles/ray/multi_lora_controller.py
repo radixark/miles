@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+from functools import cache
 from pathlib import Path
 
 import ray
@@ -19,6 +20,7 @@ def create_multi_lora_controller(max_adapters: int, max_rank: int):
     return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(max_adapters, max_rank)
 
 
+@cache
 def get_multi_lora_controller():
     return ray.get_actor(CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE)
 
