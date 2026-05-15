@@ -145,10 +145,12 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     "nemotron3-tool-user": ModelConfig(
         # Nemotron-3-Super-120B-A12B-BF16 (~240GB bf16, A12B activated).
-        # num_attention_heads=32, num_key_value_heads=2 — same KV-bottleneck
-        # as Qwen3-Next, so tp_size=2 is the safe ceiling.  Tool calls use
-        # the same <tool_call><function=...><parameter=...> XML wrapping as
-        # Qwen3.5, so qwen3_coder is the right tool_call_parser.  The
+        # num_attention_heads=32, num_key_value_heads=2.  SGLang replicates
+        # KV heads when tp_size > num_key_value_heads, requiring tp_size to be
+        # divisible by num_key_value_heads; tp=4 satisfies that and avoids
+        # 80GB-runner OOM while creating unquantized MoE expert weights.
+        # Tool calls use the same <tool_call><function=...><parameter=...> XML
+        # wrapping as Qwen3.5, so qwen3_coder is the right tool_call_parser.  The
         # nemotron_3 reasoning parser is documented (in Nemotron3TITOTokenizer)
         # to leave a trailing newline in reasoning_content — assistant_text
         # roundtrip mismatches on every plain-text turn until upstream sglang
@@ -159,7 +161,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_parser="qwen3_coder",
         tito_model="nemotron3",
         allowed_append_roles=("tool", "user"),
-        tp_size=2,
+        tp_size=4,
         cycles=2,
         assistant_text_threshold=1.0,
         tool_call_failure_mode="append_tool",
