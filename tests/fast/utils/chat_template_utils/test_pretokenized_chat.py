@@ -16,12 +16,15 @@ from copy import deepcopy
 
 import pytest
 
-from miles.utils.chat_template_utils.autofix import try_get_fixed_chat_template
+from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
 from miles.utils.chat_template_utils.template import load_hf_chat_template
 from miles.utils.test_utils.chat_template_verify import (
+    CaseSpec,
     assert_pretokenized_equals_standard,
+    enable_thinking_variants,
+    format_case_id,
+    select_cases,
     simulate_pretokenized_path,
-    verify_append_only,
 )
 from miles.utils.test_utils.mock_trajectories import (
     MultiTurnTrajectory,
@@ -30,34 +33,92 @@ from miles.utils.test_utils.mock_trajectories import (
     last_user_index,
 )
 
-# ---------------------------------------------------------------------------
-# Load chat templates
-# ---------------------------------------------------------------------------
 
-
-def _load_fixed(hf_id: str) -> str:
-    path = try_get_fixed_chat_template(hf_id)
-    assert path is not None, f"try_get_fixed_chat_template should resolve {hf_id}"
+def _load_fixed(tito_model: TITOTokenizerType) -> str:
+    path, _kwargs = resolve_fixed_chat_template(tito_model, ["tool"])
+    assert path is not None, f"resolve_fixed_chat_template should resolve {tito_model.value}"
     with open(path) as f:
         return f.read()
 
 
-TEMPLATES_WITH_THINKING = {
-    "qwen3_fixed": _load_fixed("Qwen/Qwen3-0.6B"),
-    "qwen3.5_fixed": _load_fixed("Qwen/Qwen3.5-0.8B"),
-    "glm5": load_hf_chat_template("zai-org/GLM-5"),
-    "glm47_flash": load_hf_chat_template("zai-org/GLM-4.7-Flash"),
-    "qwen3_thinking_2507_fixed": _load_fixed("Qwen/Qwen3-4B-Thinking-2507"),
-    "qwen3_next_thinking_fixed": _load_fixed("Qwen/Qwen3-Next-80B-A3B-Thinking"),
-}
+# ---------------------------------------------------------------------------
+# Per-template capability declarations
+# ---------------------------------------------------------------------------
+#
+# Each entry: (name, content, supports_thinking, allowed_append_roles, extra_template_kwargs)
+#
+# Design:
+# * fixed templates default to {tool} only.  When a fixed template carries a
+#   clear_thinking kwarg gate (Qwen3 today), a *_clear_thinking_off entry with
+#   {tool, user} + clear_thinking=False covers the multi-user-append surface
+#   the same way GLM does on its HF-native template.
+# * GLM thinking templates are covered twice: a default entry (tool only, no
+#   kwargs) matching production behavior, and a *_clear_thinking_off entry that
+#   adds {user} to allowed roles with clear_thinking=False to preserve
+#   reasoning across user turns (GLM's canonical pattern for session reset).
+# * Other non-thinking HF native templates only test {tool} — scope aligned
+#   with fixed.
+# * system role is never tested here; those trajectories remain in ALL_CASES
+#   for CLI use but are filtered out of this test by the above role sets.
 
-ALL_TEMPLATES = {
-    **TEMPLATES_WITH_THINKING,
-    "qwen3_instruct_2507": load_hf_chat_template("Qwen/Qwen3-4B-Instruct-2507"),
-    "qwen3_next_instruct": load_hf_chat_template("Qwen/Qwen3-Next-80B-A3B-Instruct"),
-    "qwen3_coder_next": load_hf_chat_template("Qwen/Qwen3-Coder-Next"),
-    "glm4": load_hf_chat_template("THUDM/glm-4-9b-chat"),
-}
+_TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
+    # fixed templates: tool only
+    ("qwen3_fixed", _load_fixed(TITOTokenizerType.QWEN3), True, frozenset({"tool"}), {}),
+    (
+        "qwen3_fixed_clear_thinking_off",
+        _load_fixed(TITOTokenizerType.QWEN3),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    ("qwen3.5_fixed", _load_fixed(TITOTokenizerType.QWEN35), True, frozenset({"tool"}), {}),
+    (
+        "qwen3.5_fixed_clear_thinking_off",
+        _load_fixed(TITOTokenizerType.QWEN35),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    ("qwen3_thinking_2507_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
+    ("qwen3_next_thinking_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
+    (
+        "qwen3_next_thinking_fixed_clear_thinking_off",
+        _load_fixed(TITOTokenizerType.QWENNEXT),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    # GLM thinking: default (tool only) + user-append variant with clear_thinking=False
+    ("glm5", load_hf_chat_template("zai-org/GLM-5"), True, frozenset({"tool"}), {}),
+    (
+        "glm5_clear_thinking_off",
+        load_hf_chat_template("zai-org/GLM-5"),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    ("glm47_flash", load_hf_chat_template("zai-org/GLM-4.7-Flash"), True, frozenset({"tool"}), {}),
+    (
+        "glm47_flash_clear_thinking_off",
+        load_hf_chat_template("zai-org/GLM-4.7-Flash"),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    (
+        "glm47_flash_clear_thinking_off_with_system",
+        load_hf_chat_template("zai-org/GLM-4.7-Flash"),
+        True,
+        frozenset({"tool", "user", "system"}),
+        {"clear_thinking": False},
+    ),
+    # other HF native non-thinking: tool only
+    ("qwen3_instruct_2507", load_hf_chat_template("Qwen/Qwen3-4B-Instruct-2507"), False, frozenset({"tool"}), {}),
+    ("qwen3_next_instruct", load_hf_chat_template("Qwen/Qwen3-Next-80B-A3B-Instruct"), False, frozenset({"tool"}), {}),
+    ("qwen3_coder_next", load_hf_chat_template("Qwen/Qwen3-Coder-Next"), False, frozenset({"tool"}), {}),
+    ("glm4", load_hf_chat_template("THUDM/glm-4-9b-chat"), False, frozenset({"tool"}), {}),
+]
+
 
 # Original (unfixed) HF templates referenced by negative tests
 _ORIGINAL_TEMPLATES = {
@@ -67,29 +128,46 @@ _ORIGINAL_TEMPLATES = {
 }
 
 
+def _build_pretokenized_params():
+    # Thinking templates: every selected trajectory × {enable_thinking=True, False}.
+    # Non-thinking templates: only non-thinking trajectories, no enable_thinking kwarg.
+    params = []
+    for name, content, supports_thinking, allowed_roles, extra_kwargs in _TEMPLATES:
+        cases = select_cases(
+            allowed_append_roles=allowed_roles,
+            is_thinking=None if supports_thinking else False,
+        )
+        variants = enable_thinking_variants("both" if supports_thinking else "off")
+        for case in cases:
+            for variant in variants:
+                kwargs = {**variant, **extra_kwargs}
+                ident = f"{name}-{format_case_id(case, kwargs)}"
+                params.append(pytest.param(content, case, kwargs, id=ident))
+    return params
+
+
 # ===========================================================================
-# Auto-generate test cases from PRETOKENIZE_POSITIONS
+# Core tests: every (template, case, kwargs) tuple satisfies append-only
 # ===========================================================================
 
-from miles.utils.test_utils.chat_template_verify import (  # noqa: E402
-    INTERMEDIATE_SYSTEM_CASES,
-    INTERMEDIATE_SYSTEM_THINKING_CASES,
-    STANDARD_CASES,
-    THINKING_CASES,
-)
+
+@pytest.mark.parametrize("chat_template, case, kwargs", _build_pretokenized_params())
+def test_pretokenized(chat_template: str, case: CaseSpec, kwargs: dict):
+    assert_pretokenized_equals_standard(
+        chat_template=chat_template,
+        messages=deepcopy(case.traj_cls.MESSAGES),
+        pretokenized_num_message=case.pretokenize_n,
+        tools=case.tools,
+        **kwargs,
+    )
 
 
-def _to_pytest_params(cases):
-    """Convert (name, cls, n, tools) tuples to pytest.param list."""
-    return [pytest.param(cls, n, tools, id=name) for name, cls, n, tools in cases]
+# ===========================================================================
+# Negative tests: original (unfixed) templates fail prefix invariant
+# ===========================================================================
 
 
-_STANDARD_PARAMS = _to_pytest_params(STANDARD_CASES)
-_THINKING_PARAMS = _to_pytest_params(THINKING_CASES)
-_INTERMEDIATE_SYSTEM_PARAMS = _to_pytest_params(INTERMEDIATE_SYSTEM_CASES)
-_INTERMEDIATE_SYSTEM_THINKING_PARAMS = _to_pytest_params(INTERMEDIATE_SYSTEM_THINKING_CASES)
-
-# (chat_template, trajectory_cls, pretokenize_n) — original templates that break prefix invariant
+# (chat_template, trajectory_cls, pretokenize_n)
 _MISMATCH_CASES = [
     pytest.param(_ORIGINAL_TEMPLATES["qwen3_original"], SingleToolTrajectory, 3, id="qwen3_original-single_tool"),
     pytest.param(_ORIGINAL_TEMPLATES["qwen3_original"], MultiTurnTrajectory, 3, id="qwen3_original-multi_turn"),
@@ -103,147 +181,6 @@ _MISMATCH_CASES = [
         _ORIGINAL_TEMPLATES["qwen3_next_thinking"], MultiTurnTrajectory, 3, id="qwen3_next_thinking-multi_turn"
     ),
 ]
-
-
-def _template_params(templates: dict[str, str]) -> list:
-    """Convert a {name: template_str} dict to a list of pytest.param(template_str, id=name)."""
-    return [pytest.param(v, id=k) for k, v in templates.items()]
-
-
-# Intermediate-system compatibility: only qwen3.5_fixed is known to reject them.
-# test_intermediate_system_probe_matrix locks this set against drift.
-_INTERMEDIATE_SYSTEM_FORBIDDEN = {"qwen3.5_fixed"}
-_INTERMEDIATE_SYSTEM_TEMPLATES = {k: v for k, v in ALL_TEMPLATES.items() if k not in _INTERMEDIATE_SYSTEM_FORBIDDEN}
-_INTERMEDIATE_SYSTEM_THINKING_TEMPLATES = {
-    k: v for k, v in TEMPLATES_WITH_THINKING.items() if k not in _INTERMEDIATE_SYSTEM_FORBIDDEN
-}
-
-
-def _collect_intermediate_system_failures(template_id: str, chat_template: str) -> list[str]:
-    failures: list[str] = []
-    for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_CASES:
-        result = verify_append_only(chat_template, deepcopy(traj_cls.MESSAGES), n, tools=tools, case_name=case_name)
-        if not result.passed:
-            failures.append(f"{case_name}: {result.error}")
-
-    if template_id in TEMPLATES_WITH_THINKING:
-        for enable in (True, False):
-            suffix = "thinking_on" if enable else "thinking_off"
-            for case_name, traj_cls, n, tools in INTERMEDIATE_SYSTEM_THINKING_CASES:
-                full_case_name = f"{case_name}[{suffix}]"
-                result = verify_append_only(
-                    chat_template,
-                    deepcopy(traj_cls.MESSAGES),
-                    n,
-                    tools=tools,
-                    case_name=full_case_name,
-                    enable_thinking=enable,
-                )
-                if not result.passed:
-                    failures.append(f"{full_case_name}: {result.error}")
-
-    return failures
-
-
-def _format_failure_map(failure_map: dict[str, list[str]]) -> str:
-    lines: list[str] = []
-    for template_id in sorted(failure_map):
-        lines.append(f"{template_id}:")
-        lines.extend(f"  - {item}" for item in failure_map[template_id])
-    return "\n".join(lines)
-
-
-# ===========================================================================
-# Core tests: all templates × all trajectory/position combinations
-# ===========================================================================
-
-
-@pytest.mark.parametrize("chat_template", _template_params(ALL_TEMPLATES))
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _STANDARD_PARAMS)
-def test_pretokenized_equals_standard(chat_template, trajectory_cls, pretokenize_n, tools):
-    """Pretokenized incremental path produces same text as standard full render."""
-    assert_pretokenized_equals_standard(
-        chat_template=chat_template,
-        messages=deepcopy(trajectory_cls.MESSAGES),
-        pretokenized_num_message=pretokenize_n,
-        tools=tools,
-    )
-
-
-# ===========================================================================
-# Thinking tests: thinking-capable templates × trajectories × enable_thinking
-# ===========================================================================
-
-
-@pytest.mark.parametrize("chat_template", _template_params(TEMPLATES_WITH_THINKING))
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _THINKING_PARAMS)
-@pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
-def test_pretokenized_thinking(chat_template, trajectory_cls, pretokenize_n, tools, enable_thinking):
-    """Thinking-capable templates work with pretokenized path and enable_thinking flag."""
-    assert_pretokenized_equals_standard(
-        chat_template=chat_template,
-        messages=deepcopy(trajectory_cls.MESSAGES),
-        pretokenized_num_message=pretokenize_n,
-        tools=tools,
-        enable_thinking=enable_thinking,
-    )
-
-
-# ===========================================================================
-# Intermediate system message tests: templates that support them
-# ===========================================================================
-
-
-def test_intermediate_system_probe_matrix():
-    """Probe ALL_TEMPLATES and lock the allow/forbid intermediate-system matrix."""
-    failure_map: dict[str, list[str]] = {}
-    for template_id, chat_template in ALL_TEMPLATES.items():
-        failures = _collect_intermediate_system_failures(template_id, chat_template)
-        if failures:
-            failure_map[template_id] = failures
-
-    detected_forbidden = set(failure_map.keys())
-    assert detected_forbidden == _INTERMEDIATE_SYSTEM_FORBIDDEN, (
-        f"Intermediate-system forbidden set changed.\n"
-        f"expected={sorted(_INTERMEDIATE_SYSTEM_FORBIDDEN)}\n"
-        f"detected={sorted(detected_forbidden)}\n"
-        f"{_format_failure_map(failure_map)}"
-    )
-    qwen35_failures = failure_map.get("qwen3.5_fixed", [])
-    assert any("System message must be at the beginning." in failure for failure in qwen35_failures), qwen35_failures
-
-
-@pytest.mark.parametrize("chat_template", _template_params(_INTERMEDIATE_SYSTEM_TEMPLATES))
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_PARAMS)
-def test_pretokenized_intermediate_system(chat_template, trajectory_cls, pretokenize_n, tools):
-    """Templates in the allowlist support intermediate system messages."""
-    assert_pretokenized_equals_standard(
-        chat_template=chat_template,
-        messages=deepcopy(trajectory_cls.MESSAGES),
-        pretokenized_num_message=pretokenize_n,
-        tools=tools,
-    )
-
-
-@pytest.mark.parametrize("chat_template", _template_params(_INTERMEDIATE_SYSTEM_THINKING_TEMPLATES))
-@pytest.mark.parametrize("trajectory_cls,pretokenize_n,tools", _INTERMEDIATE_SYSTEM_THINKING_PARAMS)
-@pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
-def test_pretokenized_intermediate_system_thinking(
-    chat_template, trajectory_cls, pretokenize_n, tools, enable_thinking
-):
-    """Thinking templates in the allowlist support intermediate system messages."""
-    assert_pretokenized_equals_standard(
-        chat_template=chat_template,
-        messages=deepcopy(trajectory_cls.MESSAGES),
-        pretokenized_num_message=pretokenize_n,
-        tools=tools,
-        enable_thinking=enable_thinking,
-    )
-
-
-# ===========================================================================
-# Negative tests: original (unfixed) templates fail prefix invariant
-# ===========================================================================
 
 
 @pytest.mark.parametrize("chat_template,trajectory_cls,pretokenize_n", _MISMATCH_CASES)
@@ -268,7 +205,20 @@ def test_original_template_prefix_mismatch(chat_template, trajectory_cls, pretok
 _CROSS_USER_THINKING_N = last_user_index(MultiUserTurnThinkingTrajectory.MESSAGES)
 
 
-@pytest.mark.parametrize("chat_template", _template_params(TEMPLATES_WITH_THINKING))
+def _unique_thinking_templates():
+    seen: set[str] = set()
+    out = []
+    for name, content, supports_thinking, _, _ in _TEMPLATES:
+        if not supports_thinking:
+            continue
+        if content in seen:
+            continue
+        seen.add(content)
+        out.append(pytest.param(content, id=name))
+    return out
+
+
+@pytest.mark.parametrize("chat_template", _unique_thinking_templates())
 @pytest.mark.parametrize("enable_thinking", [True, False], ids=["thinking_on", "thinking_off"])
 def test_cross_user_turn_thinking_prefix_mismatch(chat_template, enable_thinking):
     """Thinking templates compress reasoning_content from earlier user turns, breaking prefix invariant."""

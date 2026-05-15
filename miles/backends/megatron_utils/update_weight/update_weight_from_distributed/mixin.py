@@ -3,10 +3,9 @@ from collections.abc import Callable
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
-
 from tqdm import tqdm
 
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.timer import timer
 
@@ -80,7 +79,7 @@ class DistBucketedWeightUpdateMixin:
             param_size = param.numel() * param.element_size()
             if (
                 buffer_size + param_size
-            ) * mpu.get_expert_model_parallel_world_size() > self.args.update_weight_buffer_size and named_tensors:
+            ) * get_parallel_state().ep.size > self.args.update_weight_buffer_size and named_tensors:
                 self._update_expert_bucket_weights(named_tensors, update_bucket_weight_func, pbar)
                 named_tensors = []
                 buffer_size = 0
@@ -101,24 +100,22 @@ class DistBucketedWeightUpdateMixin:
         Gather EP → HF → update weights. Clears buffer.
         """
         names = [name for name, _ in named_tensors]
-        all_names: list[list[str] | None] = [None] * mpu.get_expert_model_parallel_world_size()
-        dist.all_gather_object(all_names, names, group=mpu.get_expert_model_parallel_group())
+        all_names: list[list[str] | None] = [None] * get_parallel_state().ep.size
+        dist.all_gather_object(all_names, names, group=get_parallel_state().ep.group)
 
         for ep_names in all_names:
             assert len(named_tensors) == len(
                 ep_names
             ), f"mismatch names length: {len(named_tensors)} != {len(ep_names)}"
 
-        all_gathered_params: list[list[tuple[str, torch.Tensor]]] = [
-            [] for _ in range(mpu.get_expert_model_parallel_world_size())
-        ]
+        all_gathered_params: list[list[tuple[str, torch.Tensor]]] = [[] for _ in range(get_parallel_state().ep.size)]
         handles = []
         for i, (_name, param) in enumerate(named_tensors):
             params = [
                 torch.empty_like(param.data, device=torch.cuda.current_device())
-                for _ in range(mpu.get_expert_model_parallel_world_size())
+                for _ in range(get_parallel_state().ep.size)
             ]
-            handle = dist.all_gather(params, param.data, group=mpu.get_expert_model_parallel_group(), async_op=True)
+            handle = dist.all_gather(params, param.data, group=get_parallel_state().ep.group, async_op=True)
             handles.append(handle)
             for ep_rank, ep_names in enumerate(all_names):
                 all_gathered_params[ep_rank].append((ep_names[i], params[ep_rank]))

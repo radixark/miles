@@ -248,6 +248,7 @@ class TestChatCompletionsEndpoint:
             json={
                 "model": "test-model",
                 "messages": messages,
+                "return_prompt_token_ids": True,
             },
             timeout=5.0,
         )
@@ -288,6 +289,7 @@ class TestChatCompletionsEndpoint:
                     "model": "test",
                     "messages": [{"role": "user", "content": "What year is it?"}],
                     "tools": SAMPLE_TOOLS,
+                    "return_prompt_token_ids": True,
                 },
                 timeout=5.0,
             )
@@ -326,6 +328,7 @@ class TestChatCompletionsEndpoint:
                     "model": "test",
                     "messages": [{"role": "user", "content": "What's the weather?"}],
                     "tools": SAMPLE_TOOLS,
+                    "return_prompt_token_ids": True,
                 },
                 timeout=5.0,
             )
@@ -362,6 +365,7 @@ class TestChatCompletionsEndpoint:
                     "model": "test",
                     "messages": [{"role": "user", "content": "What year and temperature?"}],
                     "tools": SAMPLE_TOOLS,
+                    "return_prompt_token_ids": True,
                 },
                 timeout=5.0,
             )

@@ -224,7 +224,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 )
                 server_args = self.session_id_to_server_args[session_id]
 
-                model_replica = self.create_cpu_replica(
+                model_replica = self._create_cpu_replica(
                     parallelism_config,
                     self.args.hf_checkpoint,
                     server_args,
@@ -247,7 +247,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
                 self._transfer_engine_meta_list.append((model_replica, remote_infos))
 
-    def create_cpu_replica(
+    def _create_cpu_replica(
         self,
         parallelism_config: RankParallelismConfig,
         model_path: str,

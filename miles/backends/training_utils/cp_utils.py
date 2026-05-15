@@ -242,6 +242,30 @@ def slice_with_cp(
     return torch.cat([tokens[start_1:end_1], tokens[start_2:end_2]])
 
 
+def natural_to_zigzag_slice(tensor: torch.Tensor, dim: int, cp_size: int, cp_rank: int) -> torch.Tensor:
+    """Slice a full-length tensor into the zigzag ring-attention CP layout.
+
+    Rank ``cp_rank`` owns chunks ``[cp_rank, 2*cp_size - 1 - cp_rank]`` from the
+    ``2*cp_size`` equal-sized partitions along ``dim``. This is the inverse of
+    an all-gather over the zigzag CP layout (hence "natural → zigzag").
+
+    Unlike :func:`slice_with_cp`, this helper does not pad — it expects the
+    input to already be divisible by ``2 * cp_size`` along ``dim``. If not, it
+    prints a warning and returns the tensor unchanged.
+    """
+    total = tensor.shape[dim]
+    num_chunks = 2 * cp_size
+    if total % num_chunks != 0:
+        print(f"Warning: dim {dim} size {total} not divisible by 2*cp_size={num_chunks}")
+        return tensor
+
+    chunk_size = total // num_chunks
+    chunk_indices = [cp_rank, 2 * cp_size - 1 - cp_rank]
+
+    slices = [tensor.narrow(dim, idx * chunk_size, chunk_size) for idx in chunk_indices]
+    return torch.cat(slices, dim=dim)
+
+
 def _allgather_cp_redistribute(
     res: dict[str, list[torch.Tensor]],
     *,
