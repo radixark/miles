@@ -109,8 +109,9 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     "minimax-m2-tool-user": ModelConfig(
         # MiniMax-M2 (~225GB fp8 native, 256 experts x 8 active, 62 layers).
-        # num_key_value_heads=8, so tp_size in {1, 2, 4, 8}; tp=2 is the
-        # smallest that fits (one H200 holds 140GB, model alone is ~225GB).
+        # num_key_value_heads=8, so tp_size in {1, 2, 4, 8}.  CI currently
+        # runs this lane on 80GB GPUs; tp=2 OOMs while SGLang allocates fp8
+        # MoE weights, so use tp=4 like the MiniMax-M2.7 lane above.
         # cycles=2 to keep wall-time bounded given the 192K context budget.
         #
         # Surface is {tool, user}: M2's chat template gates reasoning_content
@@ -137,7 +138,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_parser="minimax-m2",
         tito_model="minimax_m2",
         allowed_append_roles=("tool", "user"),
-        tp_size=2,
+        tp_size=4,
         cycles=2,
         assistant_text_threshold=1.0,
         tool_call_failure_mode="append_user",
