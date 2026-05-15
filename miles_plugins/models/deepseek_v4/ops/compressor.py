@@ -5,6 +5,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.nn import Linear
 
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
+from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
@@ -12,10 +13,7 @@ from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 class RMSNorm(nn.Module):
     """
-    Kept in pure PyTorch (FP32 weight + FP32 forward compute) rather than
-    :class:`TENorm` because the Compressor runs its whole pipeline in FP32
-    and explicitly requires it for numerical stability of the compressed-KV
-    variance accumulation.
+    Kept in pure PyTorch with FP32 weights to match SGLang's compressor norm.
 
     Args:
         dim: Dimension of the input tensor.
@@ -85,12 +83,11 @@ class DeepSeekV4Compressor(nn.Module):
         self.cp_rank = cp_group.rank() if cp_group is not None else 0
 
         self.ape = nn.Parameter(torch.empty(compress_ratio, coff * self.head_dim, dtype=torch.float32))
-        self.wkv = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.float32)
-        self.wgate = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.float32)
+        self.wkv = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.bfloat16)
+        self.wgate = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.bfloat16)
         self.norm = RMSNorm(self.head_dim, norm_eps)
 
-        for p in [self.ape, self.wkv.weight, self.wgate.weight]:
-            p._keep_fp32 = True
+        self.ape._keep_fp32 = True
 
         base = config.dsv4_compress_rope_theta
         assert rope_head_dim == 64
@@ -126,8 +123,8 @@ class DeepSeekV4Compressor(nn.Module):
 
     def forward_raw(self, x: torch.Tensor) -> torch.Tensor:
         assert self.ape.dtype == torch.float32
-        assert self.wkv.weight.dtype == torch.float32
-        assert self.wgate.weight.dtype == torch.float32
+        assert self.wkv.weight.dtype == torch.bfloat16
+        assert self.wgate.weight.dtype == torch.bfloat16
 
         bsz, seqlen_local, _ = x.size()
         ratio, overlap, _ = self.compress_ratio, self.overlap, self.head_dim
@@ -137,9 +134,8 @@ class DeepSeekV4Compressor(nn.Module):
         if self.cp_size > 1:
             assert seqlen_local % (ratio * 2) == 0
 
-        x_fp32 = x.float()
-        kv = self.wkv(x_fp32)
-        score = self.wgate(x_fp32)
+        kv = linear_bf16_fp32(x, self.wkv.weight)
+        score = linear_bf16_fp32(x, self.wgate.weight)
 
         kv = kv.unflatten(1, (-1, ratio))
         score = score.unflatten(1, (-1, ratio)) + self.ape
