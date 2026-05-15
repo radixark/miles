@@ -110,8 +110,7 @@ class MultiLoRAGenerateState(GenerateState):
             if res is None:
                 logger.warn(f"{adapter_name} was removed from trainable group count without any in-flight samples, this indicates that either adapter was removed before generating any samples or an underlying trainable group counting error")
 
-@ray.remote(num_cpus=0)
-class MultiLoRAController:
+class MultiLoRAControllerImpl:
     def __init__(self, max_adapters: int, max_rank: int):
         self.max_adapters = max_adapters
         self.max_rank = max_rank
@@ -249,3 +248,7 @@ class MultiLoRAController:
 
     def last_trained_rollout_id(self) -> int:
         return self.last_trained_rollout_id
+
+@ray.remote(num_cpus=0)
+class MultiLoRAController(MultiLoRAControllerImpl):
+    ...
