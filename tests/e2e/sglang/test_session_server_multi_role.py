@@ -82,12 +82,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         allowed_append_roles=("tool", "user"),
         tp_size=4,
         cycles=2,
-        # QwenNext sometimes emits prose or malformed tool tags instead of a
-        # parser-visible tool_call.  Treat that as a real user retry hint, not
-        # a synthetic tool response: APPEND_TOOL would render a <tool_response>
-        # after an assistant with no tool_calls and breaks QwenNext TITO's
-        # special-token segment structure under real session-server output.
-        tool_call_failure_mode="append_user",
+        tool_call_failure_mode="append_tool",
     ),
     "minimax-m2-tool-user": ModelConfig(
         # MiniMax-M2 (~225GB fp8 native, 256 experts x 8 active, 62 layers).
