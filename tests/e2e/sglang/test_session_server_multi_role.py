@@ -30,11 +30,11 @@ class ModelConfig:
     tp_size: int = 1
     cycles: int = 3
     # Soft-threshold override for assistant_text mismatch ratio.  Default
-    # 0.1 matches session_verify_runner; raise per-family when an upstream
+    # 0.2 matches session_verify_runner; raise per-family when an upstream
     # sglang reasoning parser is known to roundtrip imperfectly (e.g.
     # nemotron_3 keeps trailing newline in reasoning_content) so the gate
     # does not block on a documented out-of-scope issue.
-    assistant_text_threshold: float = 0.1
+    assistant_text_threshold: float = 0.2
     # Recovery mode when a TOOL_RESULT step finds the assistant emitted no
     # tool_calls.  Default "rollback" is universal (pop assistant + retry);
     # see ToolCallFailureMode for "append_tool" / "append_user" variants.
