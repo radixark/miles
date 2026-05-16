@@ -84,36 +84,59 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         cycles=2,
         tool_call_failure_mode="append_tool",
     ),
-    "minimax-m2-tool-user": ModelConfig(
-        # MiniMax-M2 (~225GB fp8 native, 256 experts x 8 active, 62 layers).
-        # num_key_value_heads=8, so tp_size in {1, 2, 4, 8}.  CI runs this
-        # lane on 80GB GPUs; tp=2 OOMs while SGLang allocates fp8 MoE
-        # weights, so use tp=4.  cycles=2 to keep wall-time bounded given
-        # the 192K context budget.
+    "minimax-m25-tool-user": ModelConfig(
+        # MiniMax-M2.5: same tokenizer.json (sha256-identical to M2.7) and arch
+        # (MiniMaxM2ForCausalLM, 62 layers, 8 KV heads, ~215GB fp8).  CI runs
+        # this lane on 80GB GPUs; tp=2 OOMs while SGLang allocates fp8 MoE
+        # weights, so use tp=4.  cycles=2 to keep wall-time bounded.
         #
-        # Surface is {tool, user}: M2's chat template gates reasoning_content
+        # Surface and failure-mode constraints mirror M2.7 (chat template only
+        # differs by default system identity string, not by role/structure):
+        # last_user_index gating for reasoning, strict tool role assertion,
+        # APPEND_USER recovery.
+        #
+        # ``reasoning_parser="minimax-append-think"`` matches the binding on
+        # ``MinimaxM25TITOTokenizer``; ``resolve_reasoning_and_tool_call_parser``
+        # hard-asserts equality with the class-bound value.
+        model_name="MiniMaxAI/MiniMax-M2.5",
+        reasoning_parser="minimax-append-think",
+        tool_call_parser="minimax-m2",
+        tito_model="minimax_m25",
+        allowed_append_roles=("tool", "user"),
+        tp_size=4,
+        cycles=2,
+        assistant_text_threshold=0.1,
+        tool_call_failure_mode="append_user",
+    ),
+    "minimax-m27-tool-user": ModelConfig(
+        # MiniMax-M2.7 (MiniMaxM2ForCausalLM arch, 62 layers, 8 KV heads,
+        # ~215GB fp8).  CI runs this lane on 80GB GPUs; tp=2 OOMs while SGLang
+        # allocates fp8 MoE weights, so use tp=4.  cycles=2 to keep wall-time
+        # bounded given the 192K context budget.
+        #
+        # Surface is {tool, user}: M2.7's chat template gates reasoning_content
         # on last_user_index, so a scheduled USER_FOLLOWUP step strips prior
-        # <think> blocks — that's a documented template behavior; the TITO
-        # subclass tolerates it via the same last-user gating in its segment
-        # boundary computation.
+        # <think> blocks — that's a documented template behavior; the fixed
+        # jinja (clear_thinking=False) preserves history reasoning across user
+        # turns to keep append-only.
         #
-        # tool_call_failure_mode="append_user": M2's strict template hard-
+        # tool_call_failure_mode="append_user": M2.7's strict template hard-
         # asserts that any ``tool`` role MUST follow an assistant with
         # non-empty ``tool_calls``, so APPEND_TOOL would be server-rejected.
         # Splicing a user-role parse-failure message gives the model a clean
         # retry hint without breaking the tool-call invariant.
         #
         # ``reasoning_parser="minimax-append-think"`` matches the binding on
-        # ``MinimaxM2TITOTokenizer``; ``resolve_reasoning_and_tool_call_parser``
+        # ``MinimaxM27TITOTokenizer``; ``resolve_reasoning_and_tool_call_parser``
         # hard-asserts equality with the class-bound value.
-        model_name="MiniMaxAI/MiniMax-M2",
+        model_name="MiniMaxAI/MiniMax-M2.7",
         reasoning_parser="minimax-append-think",
         tool_call_parser="minimax-m2",
-        tito_model="minimax_m2",
+        tito_model="minimax_m27",
         allowed_append_roles=("tool", "user"),
         tp_size=4,
         cycles=2,
-        assistant_text_threshold=0.25,
+        assistant_text_threshold=0.1,
         tool_call_failure_mode="append_user",
     ),
     "nemotron3-tool-user": ModelConfig(
