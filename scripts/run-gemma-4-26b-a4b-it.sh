@@ -113,10 +113,8 @@ SGLANG_ARGS=(
    # Gemma 4 has head_dim=512 on global layers, above the FlashAttention
    # cap of 256. Triton attention backend handles any head_dim.
    --sglang-attention-backend triton
-   # Replay the exact rollout routing during training forward so
-   # train logprobs match rollout logprobs (needed for MoE).
    --use-miles-router
-   --use-rollout-routing-replay
+   # --use-rollout-routing-replay  # disabled while we debug update_weights illegal memory access
 )
 
 MISC_ARGS=(
