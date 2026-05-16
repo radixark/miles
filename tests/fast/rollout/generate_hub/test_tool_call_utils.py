@@ -20,8 +20,8 @@ TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen3-Coder-Next",
     # "meta-llama/Llama-3.2-1B-Instruct",  # Skipped: gated repo, requires HF_TOKEN in CI
     "mistralai/Mistral-7B-Instruct-v0.3",
-    "MiniMaxAI/MiniMax-M2",
     "MiniMaxAI/MiniMax-M2.5",
+    "MiniMaxAI/MiniMax-M2.7",
     "internlm/internlm3-8b-instruct",
     "zai-org/GLM-4.7-Flash",
     "stepfun-ai/Step-3.5-Flash",
