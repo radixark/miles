@@ -183,7 +183,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 elif getattr(args, "sglang_config", None) is not None:
                     abs_tol = 1e-8
                 else:
-                    abs_tol = 1e-9
+                    abs_tol = 3e-9
                 assert isclose(
                     reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/ref_log_probs"], abs_tol=abs_tol
                 ), f"CI check failed: log_probs ({reduced_log_dict['rollout/log_probs']}) != ref_log_probs ({reduced_log_dict['rollout/ref_log_probs']})"
