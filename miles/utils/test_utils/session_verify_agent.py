@@ -42,7 +42,7 @@ class ToolCallFailureMode(Enum):
     APPEND_TOOL  : Splice a sentinel ``tool`` message and continue.  Works on
                    lenient templates; strict templates that hard-assert any
                    ``tool`` role must follow an assistant with ``tool_calls``
-                   (e.g. MiniMax-M2) will reject the next request at server-side.
+                   (e.g. MiniMax-M2.7) will reject the next request at server-side.
     APPEND_USER  : Splice a ``user`` message carrying the same failure text as
                    APPEND_TOOL.  Requires "user" in ``allowed_append_roles`` —
                    raises ValueError at agent start otherwise, so misconfig is
