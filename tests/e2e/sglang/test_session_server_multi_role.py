@@ -55,7 +55,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_failure_mode="append_tool",
     ),
     "qwen3-tool-user": ModelConfig(
-        model_name="Qwen/Qwen3-30B-A3B",
+        model_name="Qwen/Qwen3-30B-A3B-FP8",
         reasoning_parser="qwen3",
         tool_call_parser="qwen25",
         tito_model="qwen3",
@@ -65,7 +65,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_failure_mode="append_tool",
     ),
     "qwen35-tool-user": ModelConfig(
-        model_name="Qwen/Qwen3.5-35B-A3B",
+        model_name="Qwen/Qwen3.5-35B-A3B-FP8",
         reasoning_parser="qwen3",
         tool_call_parser="qwen3_coder",
         tito_model="qwen35",
@@ -75,7 +75,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_failure_mode="append_tool",
     ),
     "qwennext-tool-user": ModelConfig(
-        model_name="Qwen/Qwen3-Next-80B-A3B-Thinking",
+        model_name="Qwen/Qwen3-Next-80B-A3B-Thinking-FP8",
         reasoning_parser="qwen3",
         tool_call_parser="qwen25",
         tito_model="qwennext",
