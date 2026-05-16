@@ -119,8 +119,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 initialize_multi_lora_model_and_optimizer(args, role)
             )
         else:
-            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = (
-                initialize_model_and_optimizer(args, role)
+            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+                args, role
             )
 
         parallel_state = get_parallel_state()
@@ -484,6 +484,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
+
         configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
         if not any(c.state == AdapterState.PENDING for c in configs.values()):
             return 0
@@ -507,11 +508,13 @@ class MegatronTrainRayActor(TrainRayActor):
             return 0
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
+
         configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
         if not any(c.state == AdapterState.DRAINED for c in configs.values()):
             return 0
 
         from miles.backends.megatron_utils.multi_lora_utils import unload_drained_adapters
+
         n = unload_drained_adapters(self.args, self.model, self.optimizer, rollout_id)
         if n > 0:
             self.weights_backuper.backup("actor")
@@ -533,9 +536,8 @@ class MegatronTrainRayActor(TrainRayActor):
             maybe_finalize_async_save(blocking=True)
 
         if is_multi_lora_enabled(self.args):
-            from miles.ray.multi_lora_controller import get_multi_lora_controller
-
             from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
+            from miles.ray.multi_lora_controller import get_multi_lora_controller
 
             controller = get_multi_lora_controller()
             adapter_configs = ray.get(controller.adapter_configs.remote())

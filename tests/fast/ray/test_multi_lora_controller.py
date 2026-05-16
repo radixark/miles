@@ -14,10 +14,12 @@ from miles.utils.adapter_config import AdapterConfig, AdapterState
 
 def make_config(tmp_path, **overrides) -> AdapterConfig:
     defaults = dict(
-        rank=8, alpha=16,
+        rank=8,
+        alpha=16,
         data="/data.parquet",
         dir=str(tmp_path / "adapter_dir"),
-        input_key="text", label_key="label",
+        input_key="text",
+        label_key="label",
         rm_type="math",
     )
     return AdapterConfig(**(defaults | overrides))
@@ -92,13 +94,18 @@ class TestRegisterAdapter:
 
     def test_register_from_yaml_path(self, controller, tmp_path):
         yaml_path = tmp_path / "adapter.yaml"
-        yaml_path.write_text(yaml.safe_dump({
-            "rank": 16, "alpha": 32,
-            "data": "/d.parquet",
-            "label_key": "label",
-            "rm_type": "math",
-            "dir": str(tmp_path / "out"),
-        }))
+        yaml_path.write_text(
+            yaml.safe_dump(
+                {
+                    "rank": 16,
+                    "alpha": 32,
+                    "data": "/d.parquet",
+                    "label_key": "label",
+                    "rm_type": "math",
+                    "dir": str(tmp_path / "out"),
+                }
+            )
+        )
         controller.register_adapter("a", str(yaml_path))
         assert controller.configs["a"].rank == 16
         assert controller.configs["a"].slot == 0
@@ -106,12 +113,16 @@ class TestRegisterAdapter:
     def test_yaml_falls_back_to_controller_defaults(self, tmp_path):
         c = MultiLoRAControllerImpl(max_adapters=1, max_rank=32, default_alpha=64)
         yaml_path = tmp_path / "adapter.yaml"
-        yaml_path.write_text(yaml.safe_dump({
-            "data": "/d.parquet",
-            "label_key": "label",
-            "rm_type": "math",
-            "dir": str(tmp_path / "out"),
-        }))
+        yaml_path.write_text(
+            yaml.safe_dump(
+                {
+                    "data": "/d.parquet",
+                    "label_key": "label",
+                    "rm_type": "math",
+                    "dir": str(tmp_path / "out"),
+                }
+            )
+        )
         c.register_adapter("a", str(yaml_path))
         assert c.configs["a"].rank == 32
         assert c.configs["a"].alpha == 64
@@ -177,12 +188,15 @@ class TestDeregisterAdapter:
         controller.deregister_adapter("a")
         assert controller.configs["a"].state == AdapterState.DRAINING_DATASOURCE
 
-    @pytest.mark.parametrize("state", [
-        AdapterState.DRAINING_DATASOURCE,
-        AdapterState.DRAINING_INFLIGHT,
-        AdapterState.DRAINING_TRAINABLE,
-        AdapterState.DRAINED,
-    ])
+    @pytest.mark.parametrize(
+        "state",
+        [
+            AdapterState.DRAINING_DATASOURCE,
+            AdapterState.DRAINING_INFLIGHT,
+            AdapterState.DRAINING_TRAINABLE,
+            AdapterState.DRAINED,
+        ],
+    )
     def test_already_draining_is_noop(self, controller, tmp_path, state):
         controller.register_adapter("a", make_config(tmp_path))
         controller.update_adapter_state("a", AdapterState.ACTIVE)

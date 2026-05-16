@@ -1,11 +1,10 @@
 import dataclasses
-import logging
 import json
+import logging
 import os
 from argparse import Namespace
-from typing import Tuple
-from pathlib import Path
 from collections.abc import Mapping
+from pathlib import Path
 
 import ray
 import torch
@@ -31,9 +30,11 @@ def create_multi_lora(args: Namespace):
     lora_type_name = getattr(args, "lora_type", "lora").lower()
     if lora_type_name == "canonical_lora":
         from megatron.bridge.peft.canonical_lora import CanonicalLoRA
+
         lora_cls = CanonicalLoRA
     else:
         from megatron.bridge.peft.lora import LoRA
+
         lora_cls = LoRA
 
     return MultiLoRA(
@@ -97,6 +98,7 @@ def build_multi_lora_model(args: Namespace):
 
     if args.offload_train:
         from miles.backends.megatron_utils.lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
+
         patch_param_grad_buffer_for_colocate_mode_lora()
 
     model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
@@ -144,7 +146,9 @@ def initialize_multi_lora_model_and_optimizer(
     clear_memory()
     with hide_adapters(model):
         iteration, _ = load_checkpoint(
-            model, optimizer, opt_param_scheduler,
+            model,
+            optimizer,
+            opt_param_scheduler,
             checkpointing_context={},
             skip_load_to_model_and_opt=False,
         )
@@ -157,14 +161,14 @@ def initialize_multi_lora_model_and_optimizer(
 
     return model, optimizer, opt_param_scheduler, iteration
 
+
 def all_megatron_checkpoints_exist(step_dir: Path, tp_size, pp_size) -> bool:
     return all(
-        (step_dir / f"adapter_megatron_tp{tp}_pp{pp}.pt").exists()
-        for tp in range(tp_size)
-        for pp in range(pp_size)
+        (step_dir / f"adapter_megatron_tp{tp}_pp{pp}.pt").exists() for tp in range(tp_size) for pp in range(pp_size)
     )
 
-def find_latest_checkpoint(ckpt_dir: Path) -> Tuple[Path | None, int]:
+
+def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
     if not ckpt_dir.exists():
         return None, 0
 
@@ -191,10 +195,7 @@ def find_latest_checkpoint(ckpt_dir: Path) -> Tuple[Path | None, int]:
 
 
 def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
-    from megatron.bridge.peft.multi_lora_layers import (
-        MultiLoRALinear,
-        _iter_multi_lora_modules,
-    )
+    from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear, _iter_multi_lora_modules
 
     target_main_params = set()
     for module in _iter_multi_lora_modules(model):
@@ -215,6 +216,7 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
                 state["exp_avg"].zero_()
             if "exp_avg_sq" in state:
                 state["exp_avg_sq"].zero_()
+
 
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:
     if "lora_A" in hf_name and adapter_rank < tensor.shape[0]:
@@ -292,15 +294,14 @@ def save_multi_lora_checkpoints(
                 }
                 native_path = tmp_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
                 torch.save(shard, native_path)
-                logger.info(
-                    f"{log_prefix} saved Megatron shard "
-                    f"({len(shard)} tensors) to {native_path}"
-                )
+                logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
 
             hf_state: dict[str, torch.Tensor] = {}
             with megatron_bridge_utils.patch_megatron_model(model):
                 for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
-                    model, cpu=True, show_progress=False,
+                    model,
+                    cpu=True,
+                    show_progress=False,
                 ):
                     # Safetensors format can't save aliased tensors, so need clone()
                     hf_state[hf_name] = weight.clone()
@@ -323,10 +324,7 @@ def save_multi_lora_checkpoints(
             with open(tmp_dir / "adapter_config.json", "w") as f:
                 json.dump(adapter_config_json, f, indent=2)
             os.sync()
-            logger.info(
-                f"{log_prefix} saved HF PEFT to {tmp_dir} "
-                f"({len(hf_state)} tensors)"
-            )
+            logger.info(f"{log_prefix} saved HF PEFT to {tmp_dir} " f"({len(hf_state)} tensors)")
 
         if dist.is_initialized():
             dist.barrier()
@@ -343,6 +341,7 @@ def save_multi_lora_checkpoints(
         if is_global_writer:
             if final_dir.exists():
                 import shutil
+
                 shutil.rmtree(final_dir)
             os.replace(tmp_dir, final_dir)
             logger.info(f"{log_prefix} promoted checkpoint to {final_dir}")
@@ -351,10 +350,10 @@ def save_multi_lora_checkpoints(
 
 
 def _register_adapter(name: str, config: AdapterConfig, model) -> None:
-    """Install one PENDING adapter on this rank's local model shard.
-    """
-    from miles.backends.megatron_utils.initialize import is_megatron_main_rank
+    """Install one PENDING adapter on this rank's local model shard."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
+
+    from miles.backends.megatron_utils.initialize import is_megatron_main_rank
 
     log_prefix = f"[multilora] ({name})"
 
@@ -380,8 +379,7 @@ def _register_adapter(name: str, config: AdapterConfig, model) -> None:
 
 
 def _deregister_adapter(name: str, config: AdapterConfig, rollout_id: int, args, model, optimizer) -> None:
-    """Model-side cleanup for one DRAINED adapter.
-    """
+    """Model-side cleanup for one DRAINED adapter."""
     from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
 
     log_prefix = f"[multilora] ({name})"
@@ -434,8 +432,7 @@ def load_pending_adapters(args, model, optimizer) -> int:
 
 
 def unload_drained_adapters(args, model, optimizer, rollout_id: int) -> int:
-    """DRAINED adapters model-side cleanup.
-    """
+    """DRAINED adapters model-side cleanup."""
     from miles.backends.megatron_utils.initialize import is_megatron_main_rank
     from miles.utils.adapter_config import AdapterState
     from miles.utils.distributed_utils import get_gloo_group

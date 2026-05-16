@@ -4,8 +4,8 @@ Each adapter directory contains an adapter.yaml. Lifecycle state is owned
 by ``MultiLoRAController`` and snapshotted onto each ``AdapterConfig``.
 """
 
+from dataclasses import dataclass
 from enum import IntEnum, auto
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -14,12 +14,13 @@ import yaml
 class AdapterState(IntEnum):
     """PENDING → ACTIVE → DRAINING → DRAINED → REMOVED."""
 
-    PENDING = auto()             # registered, awaiting install
-    ACTIVE = auto()              # installed, emitting samples
-    DRAINING_DATASOURCE = auto() # data source will emit samples for at most one last train iteration
-    DRAINING_INFLIGHT = auto()   # data source blocked, waiting for all in-flight requests to be drained
+    PENDING = auto()  # registered, awaiting install
+    ACTIVE = auto()  # installed, emitting samples
+    DRAINING_DATASOURCE = auto()  # data source will emit samples for at most one last train iteration
+    DRAINING_INFLIGHT = auto()  # data source blocked, waiting for all in-flight requests to be drained
     DRAINING_TRAINABLE = auto()  # inflight samples complete, waiting for all trainable to be drained
-    DRAINED = auto()             # all in-flight work trained; ready for cleanup
+    DRAINED = auto()  # all in-flight work trained; ready for cleanup
+
 
 # Adapter in this state can generate samples during rollout
 ADAPTER_ROLLOUT_STATES = {
@@ -27,10 +28,8 @@ ADAPTER_ROLLOUT_STATES = {
     AdapterState.DRAINING_DATASOURCE,
 }
 # Adapters in this state should not be trained on or have any generated samples
-ADAPTER_INACTIVE_STATES = {
-    AdapterState.PENDING,
-    AdapterState.DRAINED
-}
+ADAPTER_INACTIVE_STATES = {AdapterState.PENDING, AdapterState.DRAINED}
+
 
 @dataclass(frozen=True)
 class AdapterConfig:
@@ -60,9 +59,9 @@ class AdapterConfig:
 
     def __post_init__(self):
         if not self.rm_type and not self.custom_rm_path:
-            raise ValueError(f"Only one of rm_type or custom_rm_path should be set in AdapterConfig")
+            raise ValueError("Only one of rm_type or custom_rm_path should be set in AdapterConfig")
         if self.rm_type and self.custom_rm_path:
-            raise ValueError(f"Only one of rm_type or custom_rm_path should be set in AdapterConfig")
+            raise ValueError("Only one of rm_type or custom_rm_path should be set in AdapterConfig")
 
 
 def parse_adapter_yaml(path: Path) -> AdapterConfig:

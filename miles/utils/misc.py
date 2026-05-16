@@ -56,10 +56,12 @@ def load_function(path):
     module = importlib.import_module(module_path)
     return getattr(module, attr)
 
+
 def load_class(path):
     module_path, _, class_name = path.rpartition(".")
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
+
 
 class SingletonMeta(type):
     """

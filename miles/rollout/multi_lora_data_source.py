@@ -1,11 +1,9 @@
-import os
 import copy
 import logging
-from collections import deque
 from argparse import Namespace
+from collections import deque
 
 import ray
-import torch
 
 from miles.ray.multi_lora_controller import get_multi_lora_controller
 from miles.rollout.data_source import DataSource, RolloutDataSource
@@ -14,11 +12,14 @@ from miles.utils.types import AdapterRef, RewardSpec, Sample
 
 logger = logging.getLogger(__name__)
 
+
 def fetch_configs() -> dict[str, AdapterConfig]:
     return ray.get(get_multi_lora_controller().adapter_configs.remote())
 
+
 def fetch_adapter_steps() -> dict[str, int]:
     return ray.get(get_multi_lora_controller().adapter_train_steps.remote())
+
 
 class MultiLoRADataSource(DataSource):
     def __init__(self, args: Namespace):
@@ -28,7 +29,6 @@ class MultiLoRADataSource(DataSource):
 
         self.source_queue = deque()
         self._reconcile(fetch_configs())
-
 
     def _update_source_queue(self, active_names):
         # Filter out any adapter names that are gone while retaining order
@@ -141,13 +141,17 @@ class MultiLoRADataSource(DataSource):
             # sample_group_index is the same as tracking the row index
             # Default to length of dataset, override if num rollout is set
             default_num_row = (getattr(config, "num_epoch", 1) or 1) * len(source.dataset)
-            num_row = getattr(config, "num_row") or default_num_row
+            num_row = config.num_row or default_num_row
             if source.sample_group_index >= num_row:
                 logger.info(f"Adapter '{name}' reached num_row={num_row}, deregistering")
                 datasource_drained.add(name)
 
         if datasource_drained:
-            ray.get(get_multi_lora_controller().update_adapter_state.remote(list(datasource_drained), AdapterState.DRAINING_INFLIGHT))
+            ray.get(
+                get_multi_lora_controller().update_adapter_state.remote(
+                    list(datasource_drained), AdapterState.DRAINING_INFLIGHT
+                )
+            )
 
         # Verify we always get num_samples at the end
         assert len(all_samples) == num_samples

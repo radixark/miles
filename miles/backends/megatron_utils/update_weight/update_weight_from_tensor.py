@@ -204,6 +204,7 @@ class UpdateWeightFromTensor:
                 # For multi_lora, hide the multi-adapter layer entirely so it doesn't
                 # intefere with the hf_weight_iterator
                 from megatron.bridge.peft.multi_lora_layers import hide_adapters
+
                 base_ctx = hide_adapters(self.model)
 
             with base_ctx:
@@ -253,7 +254,9 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
     @torch.no_grad()
-    def update_multi_lora_weights(self, adapter_configs: dict[str, dict], active_slots: set[int] | None = None) -> None:
+    def update_multi_lora_weights(
+        self, adapter_configs: dict[str, dict], active_slots: set[int] | None = None
+    ) -> None:
         """Sync multiple LoRA adapters. Pause/resume once, loop export+send per adapter."""
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
@@ -297,10 +300,13 @@ class UpdateWeightFromTensor:
             logger.info(f"[multi_lora_sync] Exposing adapter {adapter_name} (slot {idx}, rank {adapter_rank})")
             with expose_adapter_slot(self.model, idx):
                 megatron_local_weights = self.weights_getter()
-                for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights, weight_type="lora"):
+                for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
+                    megatron_local_weights, weight_type="lora"
+                ):
                     weight_tensors = [
                         (n, slice_lora_to_rank(n, t, adapter_rank))
-                        for n, t in hf_named_tensors if is_lora_weight_name(n)
+                        for n, t in hf_named_tensors
+                        if is_lora_weight_name(n)
                     ]
                     if not weight_tensors:
                         continue
@@ -426,9 +432,7 @@ class UpdateWeightFromTensor:
                 megatron_local_weights, weight_type="lora"
             ):
                 weight_tensors = [
-                    (n, slice_lora_to_rank(n, t, adapter_rank))
-                    for n, t in hf_named_tensors
-                    if is_lora_weight_name(n)
+                    (n, slice_lora_to_rank(n, t, adapter_rank)) for n, t in hf_named_tensors if is_lora_weight_name(n)
                 ]
                 if not weight_tensors:
                     continue

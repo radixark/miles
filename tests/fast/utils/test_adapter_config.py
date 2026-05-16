@@ -56,13 +56,16 @@ class TestParseAdapterYaml:
         assert cfg.state == AdapterState.PENDING
 
     def test_optional_fields_passthrough(self, tmp_path):
-        path = write_yaml(tmp_path / "adapter.yaml", {
-            **MINIMAL_YAML,
-            "input_key": "messages",
-            "metadata_key": "meta",
-            "num_epoch": 3,
-            "num_row": 100,
-        })
+        path = write_yaml(
+            tmp_path / "adapter.yaml",
+            {
+                **MINIMAL_YAML,
+                "input_key": "messages",
+                "metadata_key": "meta",
+                "num_epoch": 3,
+                "num_row": 100,
+            },
+        )
         cfg = parse_adapter_yaml(path)
         assert cfg.input_key == "messages"
         assert cfg.metadata_key == "meta"
@@ -104,8 +107,12 @@ class TestParseAdapterYaml:
 class TestAdapterConfigValidation:
     def make(self, **overrides):
         defaults = dict(
-            rank=8, alpha=16, data="/d", dir="/x",
-            input_key="text", label_key="label",
+            rank=8,
+            alpha=16,
+            data="/d",
+            dir="/x",
+            input_key="text",
+            label_key="label",
             rm_type="math",
         )
         return AdapterConfig(**(defaults | overrides))

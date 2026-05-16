@@ -6,7 +6,6 @@ from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
-from importlib import import_module
 
 import numpy as np
 import pybase64
@@ -23,7 +22,7 @@ from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
-from miles.utils.misc import SingletonMeta, load_function, load_class
+from miles.utils.misc import SingletonMeta, load_class, load_function
 from miles.utils.processing_utils import (
     build_processor_kwargs,
     encode_image_for_rollout_engine,
@@ -127,14 +126,14 @@ class GenerateState(metaclass=SingletonMeta):
     def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
         for group in samples:
             task = asyncio.create_task(
-                    # submit a group of samples as a single task.
-                    generate_and_rm_group(
-                        self.args,
-                        group,
-                        sampling_params=self.sampling_params.copy(),
-                        evaluation=False,
-                    )
+                # submit a group of samples as a single task.
+                generate_and_rm_group(
+                    self.args,
+                    group,
+                    sampling_params=self.sampling_params.copy(),
+                    evaluation=False,
                 )
+            )
             self.on_group_submit(group, task)
             self.pendings.add(task)
 
@@ -144,23 +143,21 @@ class GenerateState(metaclass=SingletonMeta):
     # Run on group submit - can be used to add callbacks on completion + update
     # state based on submitted groups
     # TODO: make this async
-    def on_group_submit(self, group: list[Sample], task) -> None:
-        ...
+    def on_group_submit(self, group: list[Sample], task) -> None: ...
 
     # Run when adding the group to the batch selected for that rollout id
-    async def on_group_selected(self, group: list[Sample] | list[list[Sample]]) -> None:
-        ...
+    async def on_group_selected(self, group: list[Sample] | list[list[Sample]]) -> None: ...
 
     # Run at the beginning of generate_rollout_async
-    async def on_generate_rollout_start(self, rollout_id: int) -> None:
-        ...
+    async def on_generate_rollout_start(self, rollout_id: int) -> None: ...
 
     # Run at the end of generate_rollout_async
-    async def on_generate_rollout_complete(self, rollout_id: int,
-       completed_samples: list[list[Sample]] | list[list[list[Sample]]],
-       aborted_samples: list[list[Sample]]
-    ) -> None:
-        ...
+    async def on_generate_rollout_complete(
+        self,
+        rollout_id: int,
+        completed_samples: list[list[Sample]] | list[list[list[Sample]]],
+        aborted_samples: list[list[Sample]],
+    ) -> None: ...
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:

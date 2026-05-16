@@ -1,4 +1,3 @@
-
 """Dynamic test for the multi-LoRA online add/remove lifecycle.
 
 Runs the standard train loop alongside a small scheduler task that fires
@@ -15,6 +14,7 @@ Schedule:
   6. register gsm8k       -> wait 3 productive cycles
   7. register dapo_math   -> trainer runs to --num-rollout
 """
+
 import argparse
 import asyncio
 import time
@@ -24,6 +24,7 @@ from pathlib import Path
 import ray
 
 from miles.ray.multi_lora_controller import get_multi_lora_controller
+
 
 @dataclass
 class Step:
@@ -35,14 +36,15 @@ class Step:
 
 
 SCHEDULE: tuple[Step, ...] = (
-    Step("idle1",              wait_seconds=30.0),
-    Step("load_dapo",          register=("dapo_math",), wait_cycles=2),
-    Step("load_gsm8k",         register=("gsm8k",),     wait_cycles=2),
-    Step("unload_dapo",        deregister=("dapo_math",), wait_cycles=2),
-    Step("unload_gsm8k_idle",  deregister=("gsm8k",),   wait_seconds=30.0),
-    Step("reload_gsm8k",       register=("gsm8k",),     wait_cycles=2),
+    Step("idle1", wait_seconds=30.0),
+    Step("load_dapo", register=("dapo_math",), wait_cycles=2),
+    Step("load_gsm8k", register=("gsm8k",), wait_cycles=2),
+    Step("unload_dapo", deregister=("dapo_math",), wait_cycles=2),
+    Step("unload_gsm8k_idle", deregister=("gsm8k",), wait_seconds=30.0),
+    Step("reload_gsm8k", register=("gsm8k",), wait_cycles=2),
     Step("reload_dapo_to_end", register=("dapo_math",)),
 )
+
 
 async def run_schedule(controller, multi_lora_dir: Path) -> None:
     """Drive register/deregister events. Talks only to the controller."""
@@ -89,10 +91,13 @@ async def run_schedule(controller, multi_lora_dir: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a multi-LoRA adapter schedule against a live trainer.")
-    parser.add_argument("--multi-lora-dir", type=str, required=True,
-                        help="Path to directory containing adapter subdirectories with adapter.yaml files")
-    parser.add_argument("--ray-address", type=str, default="auto",
-                        help="Ray cluster address (default: auto)")
+    parser.add_argument(
+        "--multi-lora-dir",
+        type=str,
+        required=True,
+        help="Path to directory containing adapter subdirectories with adapter.yaml files",
+    )
+    parser.add_argument("--ray-address", type=str, default="auto", help="Ray cluster address (default: auto)")
     args = parser.parse_args()
 
     # Wait for Ray cluster to be available

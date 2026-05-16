@@ -5,13 +5,14 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.ray.multi_lora_controller import create_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
-from miles.utils.adapter_config import AdapterState, ADAPTER_INACTIVE_STATES, ADAPTER_ROLLOUT_STATES
+from miles.utils.adapter_config import ADAPTER_INACTIVE_STATES, ADAPTER_ROLLOUT_STATES
 from miles.utils.arguments import parse_args
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils import init_tracking
 
 logger = logging.getLogger(__name__)
+
 
 async def main(args):
     configure_logger()
@@ -132,6 +133,7 @@ async def main(args):
             await asyncio.sleep(5)
 
     await rollout_manager.dispose.remote()
+
 
 if __name__ == "__main__":
     args = parse_args()

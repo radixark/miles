@@ -5,9 +5,9 @@ from pathlib import Path
 
 import ray
 
+from miles.rollout.sglang_rollout import GenerateState
 from miles.utils.adapter_config import AdapterConfig, AdapterState, parse_adapter_yaml
 from miles.utils.types import Sample
-from miles.rollout.sglang_rollout import GenerateState
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +17,15 @@ CONTROLLER_NAMESPACE = "miles"
 
 def create_multi_lora_controller(max_adapters: int, max_rank: int, default_alpha: int):
     """Create the named singleton controller. Call once from the driver."""
-    return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(max_adapters, max_rank, default_alpha)
+    return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(
+        max_adapters, max_rank, default_alpha
+    )
 
 
 @cache
 def get_multi_lora_controller():
     return ray.get_actor(CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE)
+
 
 class MultiLoRAGenerateState(GenerateState):
     def __init__(self, args):
@@ -44,7 +47,9 @@ class MultiLoRAGenerateState(GenerateState):
 
         def callback(task):
             self.in_flight_group_count[adapter_name] -= 1
-            assert self.in_flight_group_count[adapter_name] >= 0, "in-flight group count went below zero, there is an error tracking in-flight groups"
+            assert (
+                self.in_flight_group_count[adapter_name] >= 0
+            ), "in-flight group count went below zero, there is an error tracking in-flight groups"
 
         task.add_done_callback(callback)
 
@@ -59,10 +64,12 @@ class MultiLoRAGenerateState(GenerateState):
 
         self.trainable_group_count[adapter_name] += 1
 
-    async def on_generate_rollout_complete(self,
+    async def on_generate_rollout_complete(
+        self,
         rollout_id: int,
         completed_samples: list[list[Sample]] | list[list[list[Sample]]],
-        aborted_samples: list[list[Sample]]) -> None:
+        aborted_samples: list[list[Sample]],
+    ) -> None:
 
         controller = get_multi_lora_controller()
         adapter_configs = await controller.adapter_configs.remote()
@@ -89,7 +96,9 @@ class MultiLoRAGenerateState(GenerateState):
             adapter_name = sample.adapter.name
             self.trainable_group_count[adapter_name] -= 1
 
-            assert self.trainable_group_count[adapter_name] >= 0, "trainable group count went below zero, there is an error tracking trainable groups"
+            assert (
+                self.trainable_group_count[adapter_name] >= 0
+            ), "trainable group count went below zero, there is an error tracking trainable groups"
             assert adapter_name in adapter_configs
 
         # Update the rollout id on the multilora controller to indicate this is the last rollout id to be trained before lora deregistration for any adapters in draining trainable state and have no more samples left
@@ -106,11 +115,16 @@ class MultiLoRAGenerateState(GenerateState):
         for adapter_name in inflight_drained:
             res = self.in_flight_group_count.pop(adapter_name, None)
             if res is None:
-                logger.warn(f"{adapter_name} was removed from in_flight without any in-flight samples, this indicates that either adapter was removed before generating any samples or an underlying inflight counting error")
+                logger.warn(
+                    f"{adapter_name} was removed from in_flight without any in-flight samples, this indicates that either adapter was removed before generating any samples or an underlying inflight counting error"
+                )
         for adapter_name in to_mark:
             res = self.trainable_group_count.pop(adapter_name, None)
             if res is None:
-                logger.warn(f"{adapter_name} was removed from trainable group count without any in-flight samples, this indicates that either adapter was removed before generating any samples or an underlying trainable group counting error")
+                logger.warn(
+                    f"{adapter_name} was removed from trainable group count without any in-flight samples, this indicates that either adapter was removed before generating any samples or an underlying trainable group counting error"
+                )
+
 
 class MultiLoRAControllerImpl:
     def __init__(self, max_adapters: int, max_rank: int, default_alpha: int):
@@ -150,9 +164,9 @@ class MultiLoRAControllerImpl:
         # save data
         Path(config.dir).mkdir(parents=True, exist_ok=True)
 
-        assert config.rank <= self.max_rank, (
-            f"Adapter '{name}' rank ({config.rank}) exceeds max rank ({self.max_rank})"
-        )
+        assert (
+            config.rank <= self.max_rank
+        ), f"Adapter '{name}' rank ({config.rank}) exceeds max rank ({self.max_rank})"
         if name in self.configs:
             raise ValueError(f"Adapter '{name}' is already registered")
         if not self.free_slots:
@@ -160,9 +174,7 @@ class MultiLoRAControllerImpl:
 
         slot = min(self.free_slots)
         self.free_slots.remove(slot)
-        self.configs[name] = dataclasses.replace(
-            config, slot=slot, state=AdapterState.PENDING
-        )
+        self.configs[name] = dataclasses.replace(config, slot=slot, state=AdapterState.PENDING)
 
         logger.info(f"Registered adapter '{name}' at slot {slot} (PENDING)")
         return {"name": name, "slot": slot}
@@ -258,6 +270,6 @@ class MultiLoRAControllerImpl:
     def last_trained_rollout_id(self) -> int:
         return self.last_trained_rollout_id
 
+
 @ray.remote(num_cpus=0)
-class MultiLoRAController(MultiLoRAControllerImpl):
-    ...
+class MultiLoRAController(MultiLoRAControllerImpl): ...
