@@ -148,7 +148,7 @@ class TestAdapterState:
             AdapterState.DRAINING_TRAINABLE,
             AdapterState.DRAINED,
         ]
-        for prev, nxt in zip(order, order[1:]):
+        for prev, nxt in zip(order, order[1:], strict=True):
             assert prev < nxt
 
     def test_rollout_states(self):

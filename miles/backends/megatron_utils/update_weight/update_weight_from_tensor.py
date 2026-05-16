@@ -258,7 +258,9 @@ class UpdateWeightFromTensor:
         self, adapter_configs: dict[str, dict], active_slots: set[int] | None = None
     ) -> None:
         """Sync multiple LoRA adapters. Pause/resume once, loop export+send per adapter."""
-        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
+        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot, hide_adapters
+
+        from miles.backends.megatron_utils.multi_lora_utils import slice_lora_to_rank
 
         self.weight_version += 1
 
@@ -273,8 +275,6 @@ class UpdateWeightFromTensor:
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         logger.info("[multi_lora_sync] Barrier after pause/flush")
         dist.barrier(group=get_gloo_group())
-
-        from megatron.bridge.peft.multi_lora_layers import hide_adapters
 
         megatron_local_weights = self.weights_getter()
         with hide_adapters(self.model):

@@ -62,7 +62,6 @@ async def run_schedule(controller, multi_lora_dir: Path) -> None:
         # any, is included).
         cycle_target = None
         if step.wait_cycles > 0:
-            track_name = step.register[0] if step.register else step.deregister[0]
             start = await controller.last_trained_rollout_id.remote()
             cycle_target = start + step.wait_cycles
 

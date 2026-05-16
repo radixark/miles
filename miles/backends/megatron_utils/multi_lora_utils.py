@@ -179,7 +179,8 @@ def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
     tp_rank = mpu.get_tensor_model_parallel_rank()
     pp_rank = mpu.get_pipeline_model_parallel_rank()
 
-    get_step = lambda d: int(d.name.split("_")[1])
+    def get_step(d):
+        return int(d.name.split("_")[1])
 
     step_dirs = sorted(
         [d for d in ckpt_dir.iterdir() if d.is_dir() and d.name.startswith("step_")],

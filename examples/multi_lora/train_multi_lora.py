@@ -102,8 +102,8 @@ async def main(args):
                 await offload_rollout()
                 await actor_model.onload()
 
-            n_loaded = await actor_model.load_pending_adapters()
-            n_unloaded = await actor_model.unload_drained_adapters(rollout_id)
+            await actor_model.load_pending_adapters()
+            await actor_model.unload_drained_adapters(rollout_id)
 
         # Both cases need to push weights
         if run_train or update_adapters:

@@ -198,7 +198,7 @@ def get_batch(
         n_adapters = data_iterator.rollout_data["n_adapters"]
         total_tokens = tokens.numel()
         counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())
-        for slot, length in zip(adapter_slots, sample_token_lengths):
+        for slot, length in zip(adapter_slots, sample_token_lengths, strict=True):
             counts[slot] += length
         counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
         batch["adapter_token_counts"] = counts
