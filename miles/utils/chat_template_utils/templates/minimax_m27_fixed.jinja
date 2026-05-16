@@ -18,8 +18,6 @@
                 {{- item }}
             {%- endif -%}
         {%- endfor -%}
-    {%- elif content is none -%}
-        {{- '' }}
     {%- else -%}
         {{- content }}
     {%- endif -%}
@@ -30,11 +28,11 @@
         {{- visible_text(system_message.content) }}
     {%- else -%}
         {%- if model_identity is not defined -%}
-            {%- set model_identity = "You are MiniMax-M2, a helpful AI assistant built by MiniMax. Knowledge cutoff: 2025-06." -%}
+            {%- set model_identity = "You are a helpful assistant. Your name is MiniMax-M2.7 and is built by MiniMax." -%}
         {%- endif -%}
         {{- model_identity }}
     {%- endif -%}
-
+    
     {#- Handle current_date -#}
     {%- if system_message and system_message.current_date -%}
         {{- '\n' ~ 'Current date: ' + system_message.current_date }}
@@ -52,7 +50,7 @@
     {%- set system_message = messages[0] -%}
     {%- set conversation_messages = messages[1:] -%}
 {%- endif -%}
-{#- Get the last user message turn, for interleaved thinking -#}
+{#- Get the last user message turn, for interleved thinking -#}
 {%- set ns = namespace(last_user_index=-1) %}
 {% for m in conversation_messages %}
     {%- if m.role == 'user' %}
@@ -118,18 +116,14 @@
                 {% endfor %}
                 {{- '</invoke>' ~ '\n' }}
             {%- endfor -%}
-
+            
             {{- toolcall_end_token}}
-            {%- if message.tool_calls[-1].function -%}
-                {%- set last_tool_call.name = message.tool_calls[-1].function.name -%}
-            {%- else -%}
-                {%- set last_tool_call.name = message.tool_calls[-1].name -%}
-            {%- endif -%}
+            {%- set last_tool_call.name = message.tool_calls[-1].name -%}
         {%- else -%}
             {%- set last_tool_call.name = none -%}
         {%- endif -%}
         {{- '[e~[' ~ '\n' }}
-
+        
     {%- elif message.role == 'tool' -%}
     {%- if last_tool_call.name is none -%}
         {{- raise_exception("Message has tool role, but there was no previous assistant message with a tool call!") }}
@@ -151,7 +145,7 @@
     {%- if loop.last or (conversation_messages[loop.index0 + 1].role != 'tool') -%}
         {{- '[e~[\n' -}}
     {%- endif -%}
-
+        
     {%- elif message.role == 'user' -%}
         {{- ']~b]user' ~ '\n' }}
         {{- visible_text(message.content) }}
