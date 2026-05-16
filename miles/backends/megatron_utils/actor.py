@@ -478,6 +478,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @timer
     def load_pending_adapters(self) -> int:
+        # NOTE: this requires wake_up()
         if not is_multi_lora_enabled(self.args):
             return 0
 
@@ -486,9 +487,6 @@ class MegatronTrainRayActor(TrainRayActor):
         configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
         if not any(c.state == AdapterState.PENDING for c in configs.values()):
             return 0
-        # TODO: verify if it fits in patterns to offload and wakeup here
-        # if self.args.offload_train:
-        #     self.wake_up()
 
         from miles.backends.megatron_utils.multi_lora_utils import load_pending_adapters
 
@@ -500,12 +498,11 @@ class MegatronTrainRayActor(TrainRayActor):
             # pattern at the end of train().
             self.weights_backuper.backup("actor")
 
-        # if self.args.offload_train:
-        #     self.sleep()
         return n
 
     @timer
     def unload_drained_adapters(self, rollout_id: int) -> int:
+        # NOTE: this requires wake_up()
         if not is_multi_lora_enabled(self.args):
             return 0
         from miles.ray.multi_lora_controller import get_multi_lora_controller
@@ -514,17 +511,11 @@ class MegatronTrainRayActor(TrainRayActor):
         if not any(c.state == AdapterState.DRAINED for c in configs.values()):
             return 0
 
-        # TODO: check if needed/semantics
-        # if self.args.offload_train:
-        #     self.wake_up()
-
         from miles.backends.megatron_utils.multi_lora_utils import unload_drained_adapters
         n = unload_drained_adapters(self.args, self.model, self.optimizer, rollout_id)
         if n > 0:
             self.weights_backuper.backup("actor")
 
-        # if self.args.offload_train:
-        #     self.sleep()
         return n
 
     @timer
