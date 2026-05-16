@@ -192,9 +192,6 @@ def setup_session_routes(app, backend, args):
                     "an empty content rather than None. Please check your modified SGLang version."
                 )
 
-            choice["prompt_token_ids"] = prompt_token_ids
-            # This must be re-encoded to return the prompt token ids
-            result["response_body"] = json.dumps(response).encode()
             output_token_logprobs = meta_info["output_token_logprobs"]
             completion_tokens = meta_info["completion_tokens"]
 
