@@ -152,7 +152,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         # roundtrip mismatches on every plain-text turn until upstream sglang
         # is patched, so the soft threshold is relaxed to 1.0 for this row;
         # hard mismatches (special tokens / non-assistant text) still gate.
-        model_name="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+        model_name="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
         reasoning_parser="nemotron_3",
         tool_call_parser="qwen3_coder",
         tito_model="nemotron3",
