@@ -137,15 +137,23 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         frozenset({"tool", "user"}),
         {"preserve_thinking": True},
     ),
-    # MiniMax-M2: thinking via reasoning_content; reasoning is rendered only for
-    # assistant turns after the last user (last_user_index gate), so appending a
-    # new user would strip prior <think> blocks.  {tool} uses HF-native template;
-    # {tool, user} requires the fixed jinja with clear_thinking=False to preserve
-    # history reasoning across user turns.
-    ("minimax_m2", load_hf_chat_template("MiniMaxAI/MiniMax-M2"), True, frozenset({"tool"}), {}),
+    # MiniMax-M2 family (M2.5, M2.7): thinking via reasoning_content; reasoning
+    # is rendered only for assistant turns after the last user (last_user_index
+    # gate), so appending a new user would strip prior <think> blocks.  {tool}
+    # uses HF-native template; {tool, user} requires the fixed jinja with
+    # clear_thinking=False to preserve history reasoning across user turns.
+    ("minimax_m25", load_hf_chat_template("MiniMaxAI/MiniMax-M2.5"), True, frozenset({"tool"}), {}),
     (
-        "minimax_m2_fixed_clear_thinking_off",
-        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M2, ["tool", "user"]),
+        "minimax_m25_fixed_clear_thinking_off",
+        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M25, ["tool", "user"]),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    ("minimax_m27", load_hf_chat_template("MiniMaxAI/MiniMax-M2.7"), True, frozenset({"tool"}), {}),
+    (
+        "minimax_m27_fixed_clear_thinking_off",
+        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M27, ["tool", "user"]),
         True,
         frozenset({"tool", "user"}),
         {"clear_thinking": False},
