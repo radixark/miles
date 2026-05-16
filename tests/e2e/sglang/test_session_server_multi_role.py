@@ -140,11 +140,12 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         tool_call_failure_mode="append_user",
     ),
     "nemotron3-tool-user": ModelConfig(
-        # Nemotron-3-Super-120B-A12B-BF16 (~240GB bf16, A12B activated).
+        # Nemotron-3-Super-120B-A12B-FP8 (~120GB fp8, A12B activated).
         # num_attention_heads=32, num_key_value_heads=2.  SGLang replicates
         # KV heads when tp_size > num_key_value_heads, requiring tp_size to be
         # divisible by num_key_value_heads; tp=4 satisfies that and avoids
-        # 80GB-runner OOM while creating unquantized MoE expert weights.
+        # 80GB-runner OOM while creating MoE expert weights.  FP8 also loads
+        # ~2x faster than the BF16 variant, cutting Stage 3 wall-time.
         # Tool calls use the same <tool_call><function=...><parameter=...> XML
         # wrapping as Qwen3.5, so qwen3_coder is the right tool_call_parser.  The
         # nemotron_3 reasoning parser is documented (in Nemotron3TITOTokenizer)
