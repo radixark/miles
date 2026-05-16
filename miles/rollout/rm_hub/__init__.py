@@ -30,7 +30,9 @@ async def remote_rm(args, sample: Sample):
 def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
     if sample.reward_spec is not None:
         return sample.reward_spec.custom_rm_path, (sample.reward_spec.rm_type or "").strip()
-    return getattr(args, "custom_rm_path", None), (getattr(args, "rm_type", None) or "").strip()
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+    rm_type = (metadata.get("rm_type") or getattr(args, "rm_type", None) or "").strip()
+    return getattr(args, "custom_rm_path", None), rm_type
 
 
 async def async_rm(args, sample: Sample, **kwargs):
