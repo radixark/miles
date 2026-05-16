@@ -113,6 +113,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         allowed_append_roles=("tool", "user"),
         tp_size=4,
         cycles=2,
+        assistant_text_threshold=0.25,
         tool_call_failure_mode="append_user",
     ),
     "nemotron3-tool-user": ModelConfig(
