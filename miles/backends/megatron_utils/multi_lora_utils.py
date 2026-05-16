@@ -172,12 +172,11 @@ def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
     if not ckpt_dir.exists():
         return None, 0
 
-    from megatron.core import mpu
-
-    tp_size = mpu.get_tensor_model_parallel_world_size()
-    pp_size = mpu.get_pipeline_model_parallel_world_size()
-    tp_rank = mpu.get_tensor_model_parallel_rank()
-    pp_rank = mpu.get_pipeline_model_parallel_rank()
+    parallel_state = get_parallel_state()
+    tp_size = parallel_state.tp.size
+    pp_size = parallel_state.pp.size
+    tp_rank = parallel_state.tp.rank
+    pp_rank = parallel_state.pp.rank
 
     def get_step(d):
         return int(d.name.split("_")[1])
@@ -254,15 +253,15 @@ def save_multi_lora_checkpoints(
     """
     from megatron.bridge import AutoBridge
     from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
-    from megatron.core import mpu
     from safetensors.torch import save_file as save_safetensors
 
     from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
     from miles.utils import megatron_bridge_utils
 
-    tp_rank = mpu.get_tensor_model_parallel_rank()
-    pp_rank = mpu.get_pipeline_model_parallel_rank()
-    is_dp_rank_0 = get_parallel_state().intra_dp.rank == 0
+    parallel_state = get_parallel_state()
+    tp_rank = parallel_state.tp.rank
+    pp_rank = parallel_state.pp.rank
+    is_dp_rank_0 = parallel_state.intra_dp.rank == 0
     is_global_writer = is_dp_rank_0 and tp_rank == 0 and pp_rank == 0
 
     target_modules_hf = (
