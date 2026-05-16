@@ -113,9 +113,12 @@ def _build_bridge_subclass():
             # MoE latent bottleneck (Super-120B-A12B). Upstream NemotronHBridge does
             # not surface this; without it, fc1/fc2 latent projections are not built
             # and routed experts get the wrong input dim (hidden_size vs moe_latent_size).
+            # Megatron's moe_layer.preprocess() asserts the two are mutually exclusive,
+            # so disable shared-expert overlap whenever a latent bottleneck is in use.
             latent_size = getattr(hf, "moe_latent_size", None)
             if latent_size is not None:
                 provider.moe_latent_size = int(latent_size)
+                provider.moe_shared_expert_overlap = False
 
             # MTP head: Super-120B's HF config has num_nextn_predict_layers=1, which
             # the base CONFIG_MAPPING translates to provider.mtp_num_layers=1. Miles'
