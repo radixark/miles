@@ -35,8 +35,10 @@ ADAPTER_INACTIVE_STATES = {
 @dataclass(frozen=True)
 class AdapterConfig:
 
-    rank: int
-    alpha: int
+    # rank/alpha may be None straight out of YAML; the multi-LoRA controller
+    # resolves them to CLI defaults (--lora-rank / --lora-alpha) on register.
+    rank: int | None
+    alpha: int | None
 
     # Path to data file
     data: str
@@ -64,13 +66,17 @@ class AdapterConfig:
 
 
 def parse_adapter_yaml(path: Path) -> AdapterConfig:
-    """Parse a single adapter.yaml file."""
+    """Parse a single adapter.yaml file.
+
+    ``rank`` and ``alpha`` are optional in the YAML; when absent the caller
+    (e.g. the multi-LoRA controller) is responsible for resolving them.
+    """
     with open(path) as f:
         raw = yaml.safe_load(f)
 
     return AdapterConfig(
-        rank=raw["rank"],
-        alpha=raw["alpha"],
+        rank=raw.get("rank"),
+        alpha=raw.get("alpha"),
         data=raw["data"],
         dir=Path(raw["dir"]) if raw.get("dir", None) else path.parent,
         input_key=raw.get("input_key", "text"),

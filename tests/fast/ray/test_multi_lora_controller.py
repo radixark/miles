@@ -36,7 +36,7 @@ def drain_to_trainable(controller: MultiLoRAControllerImpl, name: str) -> None:
 
 @pytest.fixture
 def controller():
-    return MultiLoRAControllerImpl(max_adapters=2, max_rank=32)
+    return MultiLoRAControllerImpl(max_adapters=2, max_rank=32, default_alpha=32)
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ class TestRegisterAdapter:
         assert controller.free_slots == set()
 
     def test_creates_dir(self, tmp_path):
-        c = MultiLoRAControllerImpl(max_adapters=1, max_rank=32)
+        c = MultiLoRAControllerImpl(max_adapters=1, max_rank=32, default_alpha=32)
         target = tmp_path / "deep" / "nested" / "adapter"
         assert not target.exists()
         c.register_adapter("a", make_config(tmp_path, dir=str(target)))
@@ -102,6 +102,24 @@ class TestRegisterAdapter:
         controller.register_adapter("a", str(yaml_path))
         assert controller.configs["a"].rank == 16
         assert controller.configs["a"].slot == 0
+
+    def test_yaml_falls_back_to_controller_defaults(self, tmp_path):
+        c = MultiLoRAControllerImpl(max_adapters=1, max_rank=32, default_alpha=64)
+        yaml_path = tmp_path / "adapter.yaml"
+        yaml_path.write_text(yaml.safe_dump({
+            "data": "/d.parquet",
+            "label_key": "label",
+            "rm_type": "math",
+            "dir": str(tmp_path / "out"),
+        }))
+        c.register_adapter("a", str(yaml_path))
+        assert c.configs["a"].rank == 32
+        assert c.configs["a"].alpha == 64
+
+    def test_config_with_none_rank_alpha_resolved(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path, rank=None, alpha=None))
+        assert controller.configs["a"].rank == controller.max_rank
+        assert controller.configs["a"].alpha == controller.default_alpha
 
 
 # ---------------------------------------------------------------------------

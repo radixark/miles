@@ -15,9 +15,9 @@ CONTROLLER_NAME = "miles_multi_lora_controller"
 CONTROLLER_NAMESPACE = "miles"
 
 
-def create_multi_lora_controller(max_adapters: int, max_rank: int):
+def create_multi_lora_controller(max_adapters: int, max_rank: int, default_alpha: int):
     """Create the named singleton controller. Call once from the driver."""
-    return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(max_adapters, max_rank)
+    return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(max_adapters, max_rank, default_alpha)
 
 
 @cache
@@ -113,9 +113,10 @@ class MultiLoRAGenerateState(GenerateState):
                 logger.warn(f"{adapter_name} was removed from trainable group count without any in-flight samples, this indicates that either adapter was removed before generating any samples or an underlying trainable group counting error")
 
 class MultiLoRAControllerImpl:
-    def __init__(self, max_adapters: int, max_rank: int):
+    def __init__(self, max_adapters: int, max_rank: int, default_alpha: int):
         self.max_adapters = max_adapters
         self.max_rank = max_rank
+        self.default_alpha = default_alpha
         self.configs: dict[str, AdapterConfig] = {}
         self.free_slots: set[int] = set(range(max_adapters))
 
@@ -138,6 +139,12 @@ class MultiLoRAControllerImpl:
             config = path_or_config
         else:
             raise ValueError(f"Invalid type {type(path_or_config)} in register_adapter")
+
+        # Fill in rank/alpha from CLI defaults if the YAML didn't set them
+        if config.rank is None:
+            config = dataclasses.replace(config, rank=self.max_rank)
+        if config.alpha is None:
+            config = dataclasses.replace(config, alpha=self.default_alpha)
 
         # NOTE: for now, this is a unified directory that contains both rollout + model checkpoint
         # save data

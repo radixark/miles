@@ -81,12 +81,19 @@ class TestParseAdapterYaml:
         cfg = parse_adapter_yaml(path)
         assert Path(cfg.dir) == tmp_path
 
-    @pytest.mark.parametrize("missing", ["rank", "alpha", "data"])
-    def test_missing_required_key_raises(self, tmp_path, missing):
-        bad = {k: v for k, v in MINIMAL_YAML.items() if k != missing}
+    def test_missing_data_raises(self, tmp_path):
+        bad = {k: v for k, v in MINIMAL_YAML.items() if k != "data"}
         path = write_yaml(tmp_path / "adapter.yaml", bad)
         with pytest.raises(KeyError):
             parse_adapter_yaml(path)
+
+    @pytest.mark.parametrize("missing", ["rank", "alpha"])
+    def test_missing_rank_or_alpha_yields_none(self, tmp_path, missing):
+        """Parser passes through None; the controller resolves CLI defaults."""
+        raw = {k: v for k, v in MINIMAL_YAML.items() if k != missing}
+        path = write_yaml(tmp_path / "adapter.yaml", raw)
+        cfg = parse_adapter_yaml(path)
+        assert getattr(cfg, missing) is None
 
 
 # ---------------------------------------------------------------------------
