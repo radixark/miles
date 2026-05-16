@@ -126,6 +126,7 @@ def _build_bridge_subclass():
             # set, so building the head adds dead weights. Disable unless explicitly
             # requested via the MILES_NEMOTRONH_KEEP_MTP env var.
             import os
+
             if not os.environ.get("MILES_NEMOTRONH_KEEP_MTP"):
                 provider.mtp_num_layers = None
             return provider
