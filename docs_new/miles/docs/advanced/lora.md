@@ -6,9 +6,6 @@ Miles supports LoRA adapters for both SFT and RL recipes. Adapters trained by
 miles load directly into SGLang for rollout, so there is no separate merge or
 conversion step in the training-serving loop.
 
-This page is a stub; the full LoRA tutorial is being written. In the meantime,
-the pieces below are enough to get a recipe running.
-
 ## Example launchers
 
 The canonical LoRA recipes live under
