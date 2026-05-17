@@ -61,13 +61,12 @@ class TokenSeqComparator:
     ----------
     tokenizer : PreTrainedTokenizerBase
     special_token_ids : set[int] | None
-        Authoritative IDs to treat as segment boundaries. When ``None``,
-        auto-detect from the tokenizer's ``all_special_ids`` and
-        ``added_tokens_decoder``. When provided, **replace** the auto-detected
-        set entirely — lets subclasses drop intra-turn markers that the
-        tokenizer flags as ``special=True`` but that sit *inside* a single
-        role's turn rather than between role boundaries (e.g. Kimi's
-        ``<|im_middle|>`` inside ``<|im_assistant|>assistant<|im_middle|>{body}``).
+        Token IDs that mark segment boundaries.  Default None auto-detects
+        them (see :meth:`_collect_special_ids`).  Pass an explicit set to
+        override — needed when the tokenizer flags a token ``special=True``
+        even though it lives inside a role's turn (e.g. Kimi's
+        ``<|im_middle|>`` between role name and body) and so must not
+        split the segment.
     assistant_start_str : str
         Decoded text prefix identifying assistant content segments, e.g.
         ``"<|im_start|>assistant"`` (Qwen3) or ``"<|assistant|>"`` (GLM).

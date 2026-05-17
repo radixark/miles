@@ -59,18 +59,12 @@ class ToolCallFailureMode(Enum):
 
 DEFAULT_TOOL_CALL_FAILURE_MODE = ToolCallFailureMode.ROLLBACK
 
-# Hard cap on consecutive ROLLBACK fallbacks per sample.  Each ROLLBACK fallback
-# pops the offending assistant and re-inferences against the same context — if
-# the model is permanently stuck not tool-calling, this would silently burn HTTP
-# calls bounded only by the schedule length.  Fail-fast when the streak crosses
-# this threshold so the test surfaces "model can't tool-call on this prompt"
-# instead of a slow wall-time creep.  APPEND_TOOL / APPEND_USER fallbacks
-# inject new messages so they cannot loop silently — only ROLLBACK is gated.
+# Cap consecutive ROLLBACK retries — same context every time, so a model that
+# never tool-calls would loop forever.
 MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS = 3
 
-# Sentinel content shared by APPEND_TOOL and APPEND_USER modes — the user asked
-# both fallbacks to surface the same parse-failure message to the model so the
-# only difference between the two modes is the message role.
+# Same body for both APPEND_TOOL and APPEND_USER fallbacks; only the role of
+# the spliced message differs between the two modes.
 TOOL_CALL_PARSE_FAILURE_TEXT = (
     "Tool call parsing failed: the previous assistant turn did not emit a "
     "parseable tool_call. Please retry with a valid tool invocation."
@@ -193,8 +187,8 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     schedule = select_schedule(allowed_roles, cycles=cycles)
 
     failure_mode = ToolCallFailureMode(metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value))
-    # APPEND_USER would inject a user turn that the registered TITO surface
-    # never declared safe; fail loudly here instead of silently downgrading.
+    # APPEND_USER injects a user message — only valid if 'user' is in
+    # allowed_append_roles.  Refuse up front instead of silently downgrading.
     if failure_mode is ToolCallFailureMode.APPEND_USER and "user" not in allowed_roles:
         raise ValueError(
             f"tool_call_failure_mode=APPEND_USER requires 'user' in allowed_append_roles, "
@@ -245,17 +239,16 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                     counters["tool_result_count"] += len(tool_calls)
                     events.append("append_tool")
                 else:
-                    # Model didn't tool-call — recover via the configured
-                    # failure mode.  Event names are distinct from the
-                    # schedule's intentional events so coverage counters
-                    # (append_tool / append_user / rollback) stay honest;
-                    # these failure events are diagnostic, not deterministic
-                    # surface coverage.
+                    # Model emitted no tool_calls — apply the configured fallback.
+                    # Templates differ on what role may follow a "no tool_calls"
+                    # assistant:
+                    #   - GLM / Nemotron (lenient): a tool message is fine -> APPEND_TOOL.
+                    #   - Kimi: a tool message must carry the id from a valid
+                    #     tool_call, which we don't have -> APPEND_TOOL not OK.
+                    #   - MiniMax: a tool message must follow an assistant with
+                    #     non-empty tool_calls -> APPEND_TOOL not OK.
+                    # If APPEND_TOOL not ok, use APPEND_USER as instead.
                     if failure_mode is ToolCallFailureMode.APPEND_TOOL:
-                        # Strict templates that hard-assert "tool follows an
-                        # assistant with tool_calls" will reject this at the
-                        # server; that's the user's signal to pick ROLLBACK
-                        # for this family instead.
                         messages.append(
                             {
                                 "role": "tool",
@@ -269,9 +262,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                         counters["user_count"] += 1
                         events.append("tool_call_failure_append_user")
                     elif failure_mode is ToolCallFailureMode.ROLLBACK:
-                        # Same shape as the schedule's ROLLBACK action: pop the
-                        # offending assistant, fall through to the loop's _chat
-                        # call which will re-inference a replacement assistant.
+                        # Same as the schedule's ROLLBACK
                         assert messages and messages[-1]["role"] == "assistant", (
                             f"tool_call_failure_mode=ROLLBACK: tail role is "
                             f"{messages[-1]['role'] if messages else 'EMPTY'}, expected assistant"
@@ -302,9 +293,11 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 events.append("append_system")
 
             elif action is DriverAction.ROLLBACK:
-                # Drop the last assistant; the next request's messages list
-                # is shorter than the session accumulator, so the server walks
-                # _detect_and_rollback before re-inferencing the assistant.
+                # Pop the last assistant from our local copy.  The next
+                # request therefore has one fewer message than what the
+                # server has stored, which is the trigger for its
+                # ``_detect_and_rollback`` path — the server rewinds its
+                # state, then re-inferences.
                 if not messages or messages[-1]["role"] != "assistant":
                     raise AssertionError(
                         f"Cannot rollback at step {step_idx}: tail role is "
@@ -373,12 +366,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             f"the model may not be tool-calling.  events_per_sample={events_per_sample}"
         )
 
-    # Token-seq comparator metrics (server-computed in sessions.py:83).  Any of
-    # special_token_count / special_token_type / non_assistant_text mismatches
-    # is a hard TITO bug and must be 0 per-sample; assistant_text mismatches
-    # are softer (assistant tokens inherited from the pretokenized prefix may
-    # not match the chat template's canonical tokenization) and are aggregated
-    # across samples via a metrics file.
+    # Mismatch tiers (computed server-side in sessions.py:83).
+    # special_token_count / special_token_type / non_assistant_text are hard
+    # TITO bugs — any occurrence fails the sample.  assistant_text is soft
+    # (prefix tokens may not match canonical re-tokenize), gated by a ratio
+    # aggregated across samples in the metrics file.
     forbidden_types = {"special_token_count", "special_token_type", "non_assistant_text"}
     for i, sample in enumerate(samples):
         mismatches = sample.metadata.get("tito_session_mismatch")
