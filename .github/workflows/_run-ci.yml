@@ -12,7 +12,8 @@ on:
       runs_on:
         type: string
         required: false
-        default: '8gpu'
+        default: '["8gpu"]'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["h100", "8gpu"]'' picks runners that carry BOTH labels. Default ''["8gpu"]'' preserves the previous bare ''8gpu'' single-label routing.'
       container_image:
         type: string
         required: false
@@ -40,7 +41,11 @@ on:
 jobs:
   run:
     if: ${{ !inputs.cpu_runner }}
-    runs-on: ${{ inputs.runs_on }}
+    # fromJSON parses the input list so `runs-on` receives an actual array.
+    # Without this, GitHub treats the string verbatim as one label literal
+    # (e.g. the label name '["h100", "8gpu"]' with brackets), which no
+    # runner carries, and the job queues forever.
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: ${{ inputs.container_image }}
       options: >
