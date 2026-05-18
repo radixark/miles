@@ -19,7 +19,7 @@ __all__ = [
 _POSITIONAL_PARAMS = ("est_time", "suite")
 
 # All accepted keyword arguments (in addition to the positional pair above).
-_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "always_on", "nightly", "disabled"})
+_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled"})
 
 _REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci"})
 
@@ -38,7 +38,6 @@ class CIRegistry:
     est_time: float
     suite: str
     labels: list[str] = field(default_factory=list)
-    always_on: bool = False
     nightly: bool = False
     disabled: str | None = None  # None = enabled, string = disabled reason
 
@@ -47,12 +46,17 @@ def register_cpu_ci(
     est_time: float,
     suite: str,
     *,
-    labels: list[str],
-    always_on: bool = False,
+    labels: list[str] | None = None,
     nightly: bool = False,
     disabled: str | None = None,
 ):
-    """Marker for CPU CI registration (parsed via AST; runtime no-op)."""
+    """Marker for CPU CI registration (parsed via AST; runtime no-op).
+
+    `labels=None` and `labels=[]` are equivalent: the test runs on every PR
+    regardless of `run-ci-*` labels. A non-empty `labels` list gates the test
+    on PR labels — the test runs when the PR carries `run-ci-<x>` for any
+    `<x>` in `labels`.
+    """
     return None
 
 
@@ -60,12 +64,14 @@ def register_cuda_ci(
     est_time: float,
     suite: str,
     *,
-    labels: list[str],
-    always_on: bool = False,
+    labels: list[str] | None = None,
     nightly: bool = False,
     disabled: str | None = None,
 ):
-    """Marker for CUDA CI registration (parsed via AST; runtime no-op)."""
+    """Marker for CUDA CI registration (parsed via AST; runtime no-op).
+
+    See `register_cpu_ci` for label semantics.
+    """
     return None
 
 
@@ -89,10 +95,16 @@ def _extract_constant(node: ast.AST) -> object:
 def _extract_list_constant(node: ast.AST, *, context: str = "value") -> list:
     """Return a list of literal string constants from `ast.List`.
 
-    Raises ValueError when the node is not a list literal of string constants.
+    Accepts `None` (as `ast.Constant(None)`) and treats it as an empty list,
+    so callers may write `labels=None` interchangeably with `labels=[]`.
+
+    Raises ValueError when the node is neither a list literal of string
+    constants nor a literal `None`.
     """
+    if isinstance(node, ast.Constant) and node.value is None:
+        return []
     if not isinstance(node, ast.List):
-        raise ValueError(f"{context} must be a list of string literals (got {type(node).__name__})")
+        raise ValueError(f"{context} must be a list of string literals or None (got {type(node).__name__})")
     out: list = []
     for elt in node.elts:
         v = _extract_constant(elt)
@@ -149,19 +161,17 @@ class RegistryVisitor(ast.NodeVisitor):
             raise ValueError(f"{self.filename}: est_time is required in {func_name}()")
         if "suite" not in parsed:
             raise ValueError(f"{self.filename}: suite is required in {func_name}()")
-        if "labels" not in parsed:
-            raise ValueError(f"{self.filename}: labels is required in {func_name}()")
 
         if not isinstance(parsed["est_time"], (int, float)):
             raise ValueError(f"{self.filename}: est_time must be a number in {func_name}()")
         if not isinstance(parsed["suite"], str):
             raise ValueError(f"{self.filename}: suite must be a string in {func_name}()")
-        if not isinstance(parsed["labels"], list):
-            raise ValueError(f"{self.filename}: labels must be a list in {func_name}()")
 
-        always_on = parsed.get("always_on", False)
-        if not isinstance(always_on, bool):
-            raise ValueError(f"{self.filename}: always_on must be a boolean in {func_name}()")
+        # `labels` is optional. Missing / None / [] all mean "always run on
+        # every PR"; only a non-empty list gates the test on PR labels.
+        labels = parsed.get("labels", [])
+        if not isinstance(labels, list):
+            raise ValueError(f"{self.filename}: labels must be a list or None in {func_name}()")
 
         nightly = parsed.get("nightly", False)
         if not isinstance(nightly, bool):
@@ -170,12 +180,6 @@ class RegistryVisitor(ast.NodeVisitor):
         disabled = parsed.get("disabled", None)
         if disabled is not None and not isinstance(disabled, str):
             raise ValueError(f"{self.filename}: disabled must be a string or None in {func_name}()")
-
-        labels = parsed["labels"]
-        if not labels and not always_on:
-            raise ValueError(
-                f"{self.filename}: labels=[] requires always_on=True " f"(never-run is forbidden) in {func_name}()"
-            )
 
         unknown = [label for label in labels if label not in KNOWN_LABELS]
         if unknown:
@@ -193,7 +197,6 @@ class RegistryVisitor(ast.NodeVisitor):
             est_time=float(parsed["est_time"]),
             suite=parsed["suite"],
             labels=list(labels),
-            always_on=always_on,
             nightly=nightly,
             disabled=disabled,
         )

@@ -1,9 +1,10 @@
 """AST-time validation tests for register_cuda_ci / register_cpu_ci.
 
-Covers the AST-collection behavior added in the suite-as-runner-class refactor:
-labels keyword is required, labels=[] alone is rejected, num_gpus is gone,
-labels content is checked against the canonical KNOWN_LABELS set, and labels
-must be passed by keyword (not as a positional third argument).
+Covers the AST-collection behavior of the suite-as-runner-class refactor:
+`labels` is optional (default None ≡ []); a non-empty list of canonical
+domain labels gates the test on PR labels, while None / [] / omitted means
+the test runs on every PR; `num_gpus` is gone; `labels` must be passed
+by keyword (not as a positional third argument).
 """
 
 import ast
@@ -38,20 +39,46 @@ class TestRegisterPositive:
         assert r.backend == HWBackend.CUDA
         assert r.suite == "stage-c-8-gpu-h100"
         assert r.labels == ["megatron"]
-        assert r.always_on is False
         assert not hasattr(r, "num_gpus")
+        assert not hasattr(r, "always_on")
 
-    def test_cuda_always_on_with_empty_labels(self, tmp_path):
+    def test_labels_omitted_is_always_run(self, tmp_path):
+        # No `labels=` keyword at all: defaults to [] (always-run semantics).
         path = _make_fixture(
             """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-c-8-gpu-h100", labels=[], always_on=True)
+            from tests.ci.ci_register import register_cpu_ci
+            register_cpu_ci(est_time=30, suite="stage-a-cpu")
             """,
             tmp_path,
         )
-        registries = ut_parse_one_file(path)
-        assert registries[0].always_on is True
-        assert registries[0].labels == []
+        r = ut_parse_one_file(path)[0]
+        assert r.backend == HWBackend.CPU
+        assert r.suite == "stage-a-cpu"
+        assert r.labels == []
+
+    def test_labels_none_is_always_run(self, tmp_path):
+        # Explicit `labels=None` is equivalent to omitting / `labels=[]`.
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(est_time=60, suite="stage-b-8-gpu-h100", labels=None)
+            """,
+            tmp_path,
+        )
+        r = ut_parse_one_file(path)[0]
+        assert r.labels == []
+
+    def test_labels_empty_list_is_always_run(self, tmp_path):
+        # `labels=[]` is also legal and means always-run; no never-run rule.
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(est_time=60, suite="stage-b-8-gpu-h100", labels=[])
+            """,
+            tmp_path,
+        )
+        r = ut_parse_one_file(path)[0]
+        assert r.labels == []
 
     def test_cuda_multiple_labels(self, tmp_path):
         path = _make_fixture(
@@ -66,39 +93,6 @@ class TestRegisterPositive:
             tmp_path,
         )
         assert ut_parse_one_file(path)[0].labels == ["megatron", "sglang"]
-
-    def test_cpu_basic_always_on(self, tmp_path):
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cpu_ci
-            register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[], always_on=True)
-            """,
-            tmp_path,
-        )
-        r = ut_parse_one_file(path)[0]
-        assert r.backend == HWBackend.CPU
-        assert r.suite == "stage-a-cpu"
-        assert r.always_on is True
-        assert r.labels == []
-
-    def test_always_on_with_nonempty_labels_is_legal(self, tmp_path):
-        # always_on=True with non-empty labels: labels become categorization-only;
-        # rule is one-way (labels=[] requires always_on=True, not vice versa).
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(
-                est_time=600,
-                suite="stage-c-8-gpu-h100",
-                labels=["megatron"],
-                always_on=True,
-            )
-            """,
-            tmp_path,
-        )
-        r = ut_parse_one_file(path)[0]
-        assert r.always_on is True
-        assert r.labels == ["megatron"]
 
     def test_disabled_string_passthrough(self, tmp_path):
         path = _make_fixture(
@@ -121,28 +115,6 @@ class TestRegisterPositive:
 
 
 class TestRegisterNegative:
-    def test_missing_labels(self, tmp_path):
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100")
-            """,
-            tmp_path,
-        )
-        with pytest.raises(ValueError, match="labels is required"):
-            ut_parse_one_file(path)
-
-    def test_empty_labels_without_always_on(self, tmp_path):
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=[])
-            """,
-            tmp_path,
-        )
-        with pytest.raises(ValueError, match=r"labels=\[\] requires always_on=True"):
-            ut_parse_one_file(path)
-
     def test_unknown_label_rejected(self, tmp_path):
         path = _make_fixture(
             """
@@ -167,6 +139,20 @@ class TestRegisterNegative:
         with pytest.raises(ValueError, match=r"unknown argument 'num_gpus'"):
             ut_parse_one_file(path)
 
+    def test_always_on_kwarg_rejected(self, tmp_path):
+        # `always_on` is gone in the new design; passing it must error.
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=600, suite="stage-c-8-gpu-h100", labels=[], always_on=True
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"unknown argument 'always_on'"):
+            ut_parse_one_file(path)
+
     def test_labels_string_rejected(self, tmp_path):
         path = _make_fixture(
             """
@@ -175,7 +161,7 @@ class TestRegisterNegative:
             """,
             tmp_path,
         )
-        with pytest.raises(ValueError, match=r"must be a list of string literals"):
+        with pytest.raises(ValueError, match=r"must be a list of string literals or None"):
             ut_parse_one_file(path)
 
     def test_positional_third_arg_rejected(self, tmp_path):
@@ -232,9 +218,14 @@ class TestExtractionHelpers:
         node = ast.parse("[]", mode="eval").body
         assert _extract_list_constant(node) == []
 
+    def test_extract_list_constant_none_is_empty(self):
+        # Treat literal `None` as equivalent to `[]` (always-run intent).
+        node = ast.parse("None", mode="eval").body
+        assert _extract_list_constant(node) == []
+
     def test_extract_list_constant_non_list(self):
         node = ast.parse("some_var", mode="eval").body
-        with pytest.raises(ValueError, match=r"must be a list of string literals"):
+        with pytest.raises(ValueError, match=r"must be a list of string literals or None"):
             _extract_list_constant(node)
 
     def test_extract_list_constant_non_literal_element(self):
