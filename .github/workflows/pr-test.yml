@@ -177,6 +177,18 @@ jobs:
       execute_command: "python tests/ci/gpu_lock_exec.py --count 8 -- python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
     secrets: inherit
 
+  # Stage C: Dense true-on-policy E2E gate (8 GPU)
+  stage-c-true-on-policy:
+    needs: [stage-b-sglang, stage-b-short]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-true-on-policy')))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      gpu_count: 8
+      execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-true-on-policy-8-gpu"
+    secrets: inherit
+
   # Stage C: All suites (triggered by run-ci-image label)
   stage-c-all:
     needs: [stage-b-sglang, stage-b-short]
@@ -193,6 +205,7 @@ jobs:
           - stage-c-ckpt-8-gpu
           - stage-c-long-8-gpu
           - stage-c-lora-8-gpu
+          - stage-c-true-on-policy-8-gpu
           - stage-b-short-8-gpu
     uses: ./.github/workflows/_run-ci.yml
     with:

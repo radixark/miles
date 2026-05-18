@@ -448,6 +448,14 @@ def log_train_step(
 
     log_dict_out["train/step"] = accumulated_step_id
 
+    if getattr(args, "ci_test", False) and getattr(args, "true_on_policy_mode", False) and role == "actor":
+        diff_key = "train/train_rollout_logprob_abs_diff"
+        assert diff_key in log_dict_out, f"CI check failed: missing {diff_key} in true_on_policy_mode"
+        assert log_dict_out[diff_key] == 0.0, (
+            "CI check failed: true_on_policy_mode requires exact train/rollout logprob equality, "
+            f"but {diff_key} is {log_dict_out[diff_key]}"
+        )
+
     if should_log is None:
         should_log = dist.get_rank() == 0
 

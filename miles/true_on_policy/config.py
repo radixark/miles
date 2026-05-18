@@ -208,7 +208,6 @@ class TrueOnPolicyConfig:
             (
                 "--deterministic-mode",
                 "--true-on-policy-mode",
-                "--recompute-logprobs-via-prefill",
             )
         )
 

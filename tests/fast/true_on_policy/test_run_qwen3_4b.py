@@ -34,7 +34,7 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
     assert "--sglang-rl-on-policy-target" not in train_args
     assert "--sglang-attention-backend fa3" in train_args
     assert "--true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
-    assert "--recompute-logprobs-via-prefill" in train_args
+    assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--load /root/models/Qwen3-4B_torch_dist" in train_args
     assert "--save /root/shared_data/unit-test/checkpoints" in train_args
     assert "--use-sglang" not in train_args
@@ -61,13 +61,13 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
         true_on_policy=True,
         enable_eval=False,
         use_kl_loss=False,
-        tensor_model_parallel_size=2,
-        context_parallel_size=4,
-        pipeline_model_parallel_size=1,
-        cp_comm_type="a2a",
-        rollout_num_gpus=8,
-        rollout_num_gpus_per_engine=8,
     )
+    args.tensor_model_parallel_size = 2
+    args.context_parallel_size = 4
+    args.pipeline_model_parallel_size = 1
+    args.cp_comm_type = "a2a"
+    args.rollout_num_gpus_per_engine = 8
+    args.extra_args = "--rollout-num-gpus 8 "
 
     assert args.sglang_rl_on_policy_target is None
     assert args.use_sequence_parallel is False
@@ -87,7 +87,7 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
     assert "--sglang-rl-on-policy-target" not in train_args
     assert "--sglang-attention-backend fa3" in train_args
-    assert "--recompute-logprobs-via-prefill" in train_args
+    assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--use-sglang" not in train_args
     assert "--batch-invariant-mode" in train_args
     assert "--no-bias-swiglu-fusion" in train_args

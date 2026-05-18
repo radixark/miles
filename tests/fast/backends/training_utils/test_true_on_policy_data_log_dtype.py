@@ -1,6 +1,7 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.backends.training_utils import cp_utils
@@ -60,3 +61,30 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
     )
 
     assert captured["log_dict"]["log_probs"] == captured["log_dict"]["rollout_log_probs"]
+
+
+def test_true_on_policy_train_step_checker_passes_on_exact_logprob_match():
+    log_dict = log_utils.log_train_step(
+        args=Namespace(ci_test=True, true_on_policy_mode=True),
+        loss_dict={"train_rollout_logprob_abs_diff": 0.0},
+        grad_norm=0.0,
+        rollout_id=0,
+        step_id=0,
+        num_steps_per_rollout=1,
+        should_log=False,
+    )
+
+    assert log_dict["train/train_rollout_logprob_abs_diff"] == 0.0
+
+
+def test_true_on_policy_train_step_checker_rejects_nonzero_logprob_diff():
+    with pytest.raises(AssertionError, match="exact train/rollout logprob equality"):
+        log_utils.log_train_step(
+            args=Namespace(ci_test=True, true_on_policy_mode=True),
+            loss_dict={"train_rollout_logprob_abs_diff": 1e-6},
+            grad_norm=0.0,
+            rollout_id=0,
+            step_id=0,
+            num_steps_per_rollout=1,
+            should_log=False,
+        )

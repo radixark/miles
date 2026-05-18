@@ -27,6 +27,7 @@ PER_COMMIT_SUITES = {
         "stage-c-long-8-gpu",
         "stage-c-lora-8-gpu",
         "stage-c-glm5-8-gpu",
+        "stage-c-true-on-policy-8-gpu",
     ],
 }
 
