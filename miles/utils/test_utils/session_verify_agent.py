@@ -70,6 +70,15 @@ TOOL_CALL_PARSE_FAILURE_TEXT = (
     "parseable tool_call. Please retry with a valid tool invocation."
 )
 
+# Mismatch tiers reported by the session-server's per-sample comparator
+# (sessions.py:83).  Any occurrence of these "hard" types in a sample's
+# tito_session_mismatch indicates a TITO bug and fails the sample.  The
+# soft `assistant_text` tier is excluded — it is aggregated across samples
+# and gated by a ratio threshold instead.
+_FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
+    {"special_token_count", "special_token_type", "non_assistant_text"}
+)
+
 # Override per call: ``--session-verify-cycles N`` (CLI) or ``cycles=N``
 # (pytest via ``run_session_verify``).  Smaller-context models with a 4K
 # response budget should drop to 2 to avoid context overflow.
@@ -366,12 +375,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             f"the model may not be tool-calling.  events_per_sample={events_per_sample}"
         )
 
-    # Mismatch tiers (computed server-side in sessions.py:83).
-    # special_token_count / special_token_type / non_assistant_text are hard
-    # TITO bugs — any occurrence fails the sample.  assistant_text is soft
-    # (prefix tokens may not match canonical re-tokenize), gated by a ratio
-    # aggregated across samples in the metrics file.
-    forbidden_types = {"special_token_count", "special_token_type", "non_assistant_text"}
     for i, sample in enumerate(samples):
         mismatches = sample.metadata.get("tito_session_mismatch")
         if mismatches is None:
@@ -381,7 +384,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 f"TokenizationError (sessions.py:83 swallows it) — this always "
                 f"indicates a TITO subclass / setup bug, not a real PASS."
             )
-        forbidden = [m for m in mismatches if m.get("type") in forbidden_types]
+        forbidden = [m for m in mismatches if m.get("type") in _FORBIDDEN_MISMATCH_TYPES]
         if forbidden:
             raise AssertionError(
                 f"Session multi-role e2e: sample {i} has forbidden mismatches "

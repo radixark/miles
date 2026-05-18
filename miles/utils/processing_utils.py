@@ -4,6 +4,8 @@ import logging
 import os
 from pathlib import Path
 
+from huggingface_hub import hf_hub_download
+from tokenizers import Tokenizer as RawTokenizer
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
 logger = logging.getLogger(__name__)
@@ -21,18 +23,14 @@ def _fix_v5_tokenizer_components(tokenizer: PreTrainedTokenizerBase, model_name_
         return
 
     try:
-        from tokenizers import Tokenizer as RawTokenizer
-
         local_path = Path(model_name_or_path) / "tokenizer.json"
         if local_path.is_file():
             tok_file = str(local_path)
         else:
-            from huggingface_hub import hf_hub_download
-
             tok_file = hf_hub_download(model_name_or_path, "tokenizer.json", local_files_only=True)
         raw = RawTokenizer.from_file(tok_file)
     except Exception as e:
-        logger.debug("Could not load tokenizer.json for %s: %s", model_name_or_path, e)
+        logger.warning("Could not load tokenizer.json for %s: %s", model_name_or_path, e)
         return
 
     raw_pre = type(raw.pre_tokenizer).__name__ if raw.pre_tokenizer else None

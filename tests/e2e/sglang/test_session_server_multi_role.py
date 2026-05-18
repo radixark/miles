@@ -17,7 +17,7 @@ register_cuda_ci(est_time=9600, suite="stage-b-sglang-8-gpu", num_gpus=8)
 import os
 from dataclasses import dataclass
 
-from miles.utils.test_utils.session_verify_runner import run_session_verify
+from miles.utils.test_utils.session_verify_runner import ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD, run_session_verify
 
 
 @dataclass(frozen=True)
@@ -30,11 +30,11 @@ class ModelConfig:
     tp_size: int = 1
     cycles: int = 3
     # Soft-threshold override for assistant_text mismatch ratio.  Default
-    # 0.2 matches session_verify_runner; raise per-family when an upstream
-    # sglang reasoning parser is known to roundtrip imperfectly (e.g.
-    # nemotron_3 keeps trailing newline in reasoning_content) so the gate
-    # does not block on a documented out-of-scope issue.
-    assistant_text_threshold: float = 0.2
+    # mirrors session_verify_runner; raise per-family when an upstream sglang
+    # reasoning parser is known to roundtrip imperfectly (e.g. nemotron_3
+    # keeps trailing newline in reasoning_content) so the gate does not
+    # block on a documented out-of-scope issue.
+    assistant_text_threshold: float = ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD
     # Recovery mode when a TOOL_RESULT step finds the assistant emitted no
     # tool_calls.  Default "rollback" is universal (pop assistant + retry);
     # see ToolCallFailureMode for "append_tool" / "append_user" variants.

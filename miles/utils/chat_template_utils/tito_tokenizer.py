@@ -507,6 +507,20 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
 
     _default_assistant_start_str: str = "<|im_start|>assistant\n"
 
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            allowed_append_roles=allowed_append_roles,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Kimi K2 implementation
@@ -516,7 +530,7 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
 def _kimi_segment_special_token_ids(tokenizer: Any) -> set[int]:
     """Kimi specials minus ``<|im_middle|>`` (intra-turn role-name/body
     separator, not a role boundary; must not be a segment boundary)."""
-    return TokenSeqComparator._collect_special_ids(tokenizer) - {tokenizer.convert_tokens_to_ids("<|im_middle|>")}
+    return TokenSeqComparator.collect_special_ids(tokenizer) - {tokenizer.convert_tokens_to_ids("<|im_middle|>")}
 
 
 class Kimi25TITOTokenizer(TITOTokenizer):
