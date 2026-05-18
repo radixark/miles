@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -714,7 +714,7 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
 # ---------------------------------------------------------------------------
 
 
-class TITOTokenizerType(str, Enum):
+class TITOTokenizerType(StrEnum):
     DEFAULT = "default"
     QWEN3 = "qwen3"
     QWEN35 = "qwen35"
@@ -725,6 +725,10 @@ class TITOTokenizerType(str, Enum):
     KIMI26 = "kimi26"
     MINIMAX_M25 = "minimax_m25"
     MINIMAX_M27 = "minimax_m27"
+
+    def get_tokenizer_class(self) -> type[TITOTokenizer]:
+        """Resolve the concrete ``TITOTokenizer`` subclass for this family."""
+        return _TOKENIZER_REGISTRY[self]
 
 
 _TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
@@ -766,7 +770,7 @@ def get_tito_tokenizer(
         raise ValueError("tokenizer must not be None")
     if isinstance(tokenizer_type, str):
         tokenizer_type = TITOTokenizerType(tokenizer_type)
-    cls = _TOKENIZER_REGISTRY[tokenizer_type]
+    cls = tokenizer_type.get_tokenizer_class()
     kwargs: dict[str, Any] = {"chat_template_kwargs": chat_template_kwargs}
     if assistant_start_str is not None:
         kwargs["assistant_start_str"] = assistant_start_str
@@ -808,7 +812,7 @@ def resolve_fixed_chat_template(
             f"Unknown roles in allowed_append_roles: {sorted(invalid)}. " f"Supported: {sorted(_VALID_ROLES)}."
         )
 
-    cls = _TOKENIZER_REGISTRY[tito_model]
+    cls = tito_model.get_tokenizer_class()
     candidates = [row for row in cls.SUPPORTED_TEMPLATES if requested.issubset(row.allowed_roles)]
     if not candidates:
         raise ValueError(
@@ -870,7 +874,7 @@ def resolve_reasoning_and_tool_call_parser(
     """
     if isinstance(tito_model, str):
         tito_model = TITOTokenizerType(tito_model)
-    cls = _TOKENIZER_REGISTRY[tito_model]
+    cls = tito_model.get_tokenizer_class()
 
     def _resolve_one(field: str, bound: str | None, user: str | None) -> str | None:
         if user is None:

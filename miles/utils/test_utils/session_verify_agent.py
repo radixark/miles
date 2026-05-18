@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from enum import Enum
+from enum import Enum, StrEnum
 
 import httpx
 
@@ -36,7 +36,7 @@ _R = DriverAction.ROLLBACK
 _F = DriverAction.FORCE_FINAL
 
 
-class ToolCallFailureMode(Enum):
+class ToolCallFailureMode(StrEnum):
     """Recovery strategy when a TOOL_RESULT step finds the assistant emitted no tool_calls.
 
     APPEND_TOOL  : Splice a sentinel ``tool`` message and continue.  Works on
@@ -195,7 +195,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     cycles = metadata.get("session_verify_cycles", DEFAULT_CYCLES)
     schedule = select_schedule(allowed_roles, cycles=cycles)
 
-    failure_mode = ToolCallFailureMode(metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value))
+    failure_mode = ToolCallFailureMode(metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE))
     # APPEND_USER injects a user message — only valid if 'user' is in
     # allowed_append_roles.  Refuse up front instead of silently downgrading.
     if failure_mode is ToolCallFailureMode.APPEND_USER and "user" not in allowed_roles:
@@ -257,39 +257,40 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                     #   - MiniMax: a tool message must follow an assistant with
                     #     non-empty tool_calls -> APPEND_TOOL not OK.
                     # If APPEND_TOOL not ok, use APPEND_USER as instead.
-                    if failure_mode is ToolCallFailureMode.APPEND_TOOL:
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": "none",
-                                "content": TOOL_CALL_PARSE_FAILURE_TEXT,
-                            }
-                        )
-                        events.append("tool_call_failure_append_tool")
-                    elif failure_mode is ToolCallFailureMode.APPEND_USER:
-                        messages.append({"role": "user", "content": TOOL_CALL_PARSE_FAILURE_TEXT})
-                        counters["user_count"] += 1
-                        events.append("tool_call_failure_append_user")
-                    elif failure_mode is ToolCallFailureMode.ROLLBACK:
-                        # Same as the schedule's ROLLBACK
-                        assert messages and messages[-1]["role"] == "assistant", (
-                            f"tool_call_failure_mode=ROLLBACK: tail role is "
-                            f"{messages[-1]['role'] if messages else 'EMPTY'}, expected assistant"
-                        )
-                        consecutive_failure_rollbacks += 1
-                        if consecutive_failure_rollbacks > MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS:
-                            raise AssertionError(
-                                f"ROLLBACK fallback hit {consecutive_failure_rollbacks} consecutive "
-                                f"tool_call failures (limit={MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS}). "
-                                "Model is not tool-calling on this prompt — check sampling temperature, "
-                                "the tool spec, or switch tool_call_failure_mode to APPEND_TOOL/APPEND_USER "
-                                "if sentinel-driven retry is preferred."
+                    match failure_mode:
+                        case ToolCallFailureMode.APPEND_TOOL:
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": "none",
+                                    "content": TOOL_CALL_PARSE_FAILURE_TEXT,
+                                }
                             )
-                        messages.pop()
-                        counters["rollback_count"] += 1
-                        events.append("tool_call_failure_rollback")
-                    else:
-                        raise AssertionError(f"Unknown ToolCallFailureMode {failure_mode!r}")
+                            events.append("tool_call_failure_append_tool")
+                        case ToolCallFailureMode.APPEND_USER:
+                            messages.append({"role": "user", "content": TOOL_CALL_PARSE_FAILURE_TEXT})
+                            counters["user_count"] += 1
+                            events.append("tool_call_failure_append_user")
+                        case ToolCallFailureMode.ROLLBACK:
+                            # Same as the schedule's ROLLBACK
+                            assert messages and messages[-1]["role"] == "assistant", (
+                                f"tool_call_failure_mode=ROLLBACK: tail role is "
+                                f"{messages[-1]['role'] if messages else 'EMPTY'}, expected assistant"
+                            )
+                            consecutive_failure_rollbacks += 1
+                            if consecutive_failure_rollbacks > MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS:
+                                raise AssertionError(
+                                    f"ROLLBACK fallback hit {consecutive_failure_rollbacks} consecutive "
+                                    f"tool_call failures (limit={MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS}). "
+                                    "Model is not tool-calling on this prompt — check sampling temperature, "
+                                    "the tool spec, or switch tool_call_failure_mode to APPEND_TOOL/APPEND_USER "
+                                    "if sentinel-driven retry is preferred."
+                                )
+                            messages.pop()
+                            counters["rollback_count"] += 1
+                            events.append("tool_call_failure_rollback")
+                        case _:
+                            raise AssertionError(f"Unknown ToolCallFailureMode {failure_mode!r}")
 
             elif action is DriverAction.USER_FOLLOWUP:
                 messages.append({"role": "user", "content": USER_FOLLOWUP_TEXT})
@@ -343,7 +344,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """
     allowed_roles = list(input.args.tito_allowed_append_roles)
     cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
-    failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE.value)
+    failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE)
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["allowed_append_roles"] = allowed_roles
     input.sample.metadata["session_verify_cycles"] = cycles

@@ -525,9 +525,7 @@ class TestParserBinding:
         ],
     )
     def test_subclass_binding(self, tito_model, expected_reasoning, expected_tool_call):
-        from miles.utils.chat_template_utils.tito_tokenizer import _TOKENIZER_REGISTRY
-
-        cls = _TOKENIZER_REGISTRY[tito_model]
+        cls = tito_model.get_tokenizer_class()
         assert cls.reasoning_parser == expected_reasoning
         assert cls.tool_call_parser == expected_tool_call
 
