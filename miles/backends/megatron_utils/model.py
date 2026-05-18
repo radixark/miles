@@ -48,6 +48,12 @@ from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridg
 from .lora_utils import save_lora_checkpoint
 
 
+def _megatron_multimodal_forward_kwargs(multimodal_train_inputs: dict[str, torch.Tensor] | None) -> dict[str, torch.Tensor]:
+    if multimodal_train_inputs is None:
+        return {}
+    return {key: value for key, value in multimodal_train_inputs.items() if key != "mm_token_type_ids"}
+
+
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
     """Create and configure the optimizer learning-rate/weight-decay scheduler.
 
@@ -269,7 +275,7 @@ def forward_only(
             labels=None,
             packed_seq_params=packed_seq_params,
             loss_mask=batch["full_loss_masks"],
-            **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+            **_megatron_multimodal_forward_kwargs(batch["multimodal_train_inputs"]),
         )
 
         return output_tensor, partial(
@@ -438,8 +444,7 @@ def train_one_step(
             if args.enable_mtp_training:
                 forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
 
-            if batch["multimodal_train_inputs"] is not None:
-                forward_kwargs.update(batch["multimodal_train_inputs"])
+            forward_kwargs.update(_megatron_multimodal_forward_kwargs(batch["multimodal_train_inputs"]))
 
             output_tensor = model(**forward_kwargs)
 
