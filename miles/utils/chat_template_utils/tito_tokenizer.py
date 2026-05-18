@@ -710,7 +710,7 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
-# Enum + Registry + Factory
+# Enum + Factory
 # ---------------------------------------------------------------------------
 
 
@@ -726,23 +726,32 @@ class TITOTokenizerType(StrEnum):
     MINIMAX_M25 = "minimax_m25"
     MINIMAX_M27 = "minimax_m27"
 
-    def get_tokenizer_class(self) -> type[TITOTokenizer]:
-        """Resolve the concrete ``TITOTokenizer`` subclass for this family."""
-        return _TOKENIZER_REGISTRY[self]
-
-
-_TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
-    TITOTokenizerType.DEFAULT: TITOTokenizer,
-    TITOTokenizerType.QWEN3: Qwen3TITOTokenizer,
-    TITOTokenizerType.QWEN35: Qwen35TITOTokenizer,
-    TITOTokenizerType.QWENNEXT: QwenNextTITOTokenizer,
-    TITOTokenizerType.GLM47: GLM47TITOTokenizer,
-    TITOTokenizerType.NEMOTRON3: Nemotron3TITOTokenizer,
-    TITOTokenizerType.KIMI25: Kimi25TITOTokenizer,
-    TITOTokenizerType.KIMI26: Kimi26TITOTokenizer,
-    TITOTokenizerType.MINIMAX_M25: MinimaxM25TITOTokenizer,
-    TITOTokenizerType.MINIMAX_M27: MinimaxM27TITOTokenizer,
-}
+    @classmethod
+    def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
+        """Resolve the concrete ``TITOTokenizer`` subclass for *t*."""
+        match t:
+            case cls.DEFAULT:
+                return TITOTokenizer
+            case cls.QWEN3:
+                return Qwen3TITOTokenizer
+            case cls.QWEN35:
+                return Qwen35TITOTokenizer
+            case cls.QWENNEXT:
+                return QwenNextTITOTokenizer
+            case cls.GLM47:
+                return GLM47TITOTokenizer
+            case cls.NEMOTRON3:
+                return Nemotron3TITOTokenizer
+            case cls.KIMI25:
+                return Kimi25TITOTokenizer
+            case cls.KIMI26:
+                return Kimi26TITOTokenizer
+            case cls.MINIMAX_M25:
+                return MinimaxM25TITOTokenizer
+            case cls.MINIMAX_M27:
+                return MinimaxM27TITOTokenizer
+            case _:
+                raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 
 
 def get_tito_tokenizer(
@@ -770,7 +779,7 @@ def get_tito_tokenizer(
         raise ValueError("tokenizer must not be None")
     if isinstance(tokenizer_type, str):
         tokenizer_type = TITOTokenizerType(tokenizer_type)
-    cls = tokenizer_type.get_tokenizer_class()
+    cls = TITOTokenizerType.get_tokenizer_class(tokenizer_type)
     kwargs: dict[str, Any] = {"chat_template_kwargs": chat_template_kwargs}
     if assistant_start_str is not None:
         kwargs["assistant_start_str"] = assistant_start_str
@@ -812,7 +821,7 @@ def resolve_fixed_chat_template(
             f"Unknown roles in allowed_append_roles: {sorted(invalid)}. " f"Supported: {sorted(_VALID_ROLES)}."
         )
 
-    cls = tito_model.get_tokenizer_class()
+    cls = TITOTokenizerType.get_tokenizer_class(tito_model)
     candidates = [row for row in cls.SUPPORTED_TEMPLATES if requested.issubset(row.allowed_roles)]
     if not candidates:
         raise ValueError(
@@ -874,7 +883,7 @@ def resolve_reasoning_and_tool_call_parser(
     """
     if isinstance(tito_model, str):
         tito_model = TITOTokenizerType(tito_model)
-    cls = tito_model.get_tokenizer_class()
+    cls = TITOTokenizerType.get_tokenizer_class(tito_model)
 
     def _resolve_one(field: str, bound: str | None, user: str | None) -> str | None:
         if user is None:
