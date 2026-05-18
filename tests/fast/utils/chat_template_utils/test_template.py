@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-fast")
+register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[], always_on=True)
 
 import copy
 from unittest.mock import MagicMock

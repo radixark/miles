@@ -6,7 +6,7 @@ route to LoRA-specific code paths depending on configuration — without GPU.
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-fast")
+register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[], always_on=True)
 
 
 from argparse import Namespace

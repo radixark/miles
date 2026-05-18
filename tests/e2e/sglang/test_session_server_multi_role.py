@@ -11,7 +11,7 @@ from tests.ci.ci_register import register_cuda_ci
 # Keep est_time in sync with the full sweep so the CI runner does not kill an
 # otherwise progressing session-server verification before it reaches the later
 # families.
-register_cuda_ci(est_time=9600, suite="stage-b-sglang-8-gpu", num_gpus=8)
+register_cuda_ci(est_time=9600, suite="stage-c-8-gpu-h100", labels=["sglang"])
 
 
 import os

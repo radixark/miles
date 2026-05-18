@@ -6,7 +6,7 @@ import miles.utils.external_utils.command_utils as U
 
 # Covers two ckpt modes back-to-back in one job (save + async_save, each
 # followed by a load roundtrip), so est_time is roughly 2x of a single mode.
-register_cuda_ci(est_time=2400, suite="stage-c-ckpt-8-gpu", num_gpus=8)
+register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h100", labels=["ckpt"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))

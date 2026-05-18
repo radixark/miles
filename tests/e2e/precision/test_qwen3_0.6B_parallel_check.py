@@ -6,8 +6,8 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=1200,
-    suite="stage-c-precision-8-gpu",
-    num_gpus=8,
+    suite="stage-c-8-gpu-h100",
+    labels=["precision"],
     disabled="Timeout after 1800s on CI (pre-existing, not caused by CI refactor)",
 )
 
