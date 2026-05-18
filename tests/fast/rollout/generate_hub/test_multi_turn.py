@@ -18,7 +18,7 @@ from miles.utils.types import Sample
 
 # generate_hub tests use generation_env → parse_args(fsdp) → fsdp_utils
 # import chain that requires flash_attn. Run in GPU fast suite.
-register_cuda_ci(est_time=60, suite="stage-c-8-gpu-h100", labels=[], always_on=True)
+register_cuda_ci(est_time=60, suite="stage-b-8-gpu-h100", labels=[])
 
 _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 

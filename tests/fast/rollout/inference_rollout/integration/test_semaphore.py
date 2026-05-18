@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Rollout integration tests pull in miles' experimental FSDP utils
 # (ring_flash_attn → flash_attn) via parse_args. Run in GPU fast suite.
-register_cuda_ci(est_time=60, suite="stage-c-8-gpu-h100", labels=[], always_on=True)
+register_cuda_ci(est_time=60, suite="stage-b-8-gpu-h100", labels=[])
 
 import pytest
 

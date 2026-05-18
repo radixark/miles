@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Multi-turn rollout exercises a code path that pulls in miles' experimental
 # FSDP utils (ring_flash_attn → flash_attn). Runs in GPU fast suite.
-register_cuda_ci(est_time=60, suite="stage-c-8-gpu-h100", labels=[], always_on=True)
+register_cuda_ci(est_time=60, suite="stage-b-8-gpu-h100", labels=[])
 
 from typing import Any
 
