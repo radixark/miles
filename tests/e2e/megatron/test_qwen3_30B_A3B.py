@@ -4,14 +4,14 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h100", labels=["megatron"])
+register_cuda_ci(est_time=3600, suite="stage-c-4-gpu-h200", labels=["megatron"])
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 CONFIGS: list[dict] = [
     {
@@ -104,11 +104,11 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
-        "--expert-model-parallel-size 8 "
+        "--expert-model-parallel-size 4 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -149,7 +149,7 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
         )
     else:
         sglang_args = (
-            "--rollout-num-gpus-per-engine 8 "
+            "--rollout-num-gpus-per-engine 4 "
             f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
             "--sglang-max-running-requests 512 "
             "--sglang-enable-metrics "
@@ -170,7 +170,7 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        "--actor-num-gpus-per-node 4 "
         "--colocate "
     )
 
