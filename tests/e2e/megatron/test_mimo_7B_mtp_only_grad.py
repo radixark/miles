@@ -91,8 +91,7 @@ def execute():
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 2 "
-        "--rollout-num-gpus 8 "
+        "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-enable-metrics "
         "--sglang-speculative-algorithm EAGLE "

@@ -1,8 +1,17 @@
+from tests.ci.ci_register import register_cuda_ci
+
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
+
+
+register_cuda_ci(
+    est_time=600,
+    suite="stage-c-8-gpu-h100",
+    labels=["megatron"],
+)
 
 
 def prepare():
@@ -22,12 +31,12 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--num-rollout 2 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 0.8 "
-        "--global-batch-size 32 "
+        "--global-batch-size 8 "
         "--balance-data "
     )
 

@@ -7,7 +7,6 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(est_time=1500, suite="stage-c-4-gpu-h200", labels=["ckpt"])
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -75,7 +74,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
+        "--max-tokens-per-gpu 16384 "
     )
 
     ppo_args = (

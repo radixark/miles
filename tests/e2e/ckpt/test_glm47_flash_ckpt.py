@@ -10,7 +10,6 @@ register_cuda_ci(est_time=3240, suite="stage-c-4-gpu-h200", labels=["ckpt"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "0")))
 
 MODEL_NAME = "GLM-4.7-Flash"
@@ -92,12 +91,12 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 32768} "
+        "--max-tokens-per-gpu 32768 "
     )
 
     grpo_args = (
         "--advantage-estimator grpo "
-        f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
+        "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--entropy-coef 0.00 "
@@ -121,7 +120,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 4 "
-        f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
+        "--sglang-mem-fraction-static 0.8 "
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "
