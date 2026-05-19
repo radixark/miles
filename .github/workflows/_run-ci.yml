@@ -3,9 +3,6 @@ name: CI Job
 on:
   workflow_call:
     inputs:
-      gpu_count:
-        type: number
-        required: true
       execute_command:
         type: string
         required: true
@@ -32,11 +29,11 @@ on:
         required: false
         default: '0'
         description: 'Value for the MILES_TEST_FEW_GPU env var inside the container. Default 0 (H100 8-GPU behavior). The 4-GPU H200 stage passes 1 so FSDP conditional tests take their <=4-GPU branch.'
-      skip_gpu_lock:
-        type: boolean
+      data_root:
+        type: string
         required: false
-        default: false
-        description: 'Skip the gpu_lock_exec.py wrapper around execute_command. Default false (current H100 behavior preserved). The H200 split-worker fleet shares host /dev/shm via --ipc=host and sets CUDA_VISIBLE_DEVICES at worker-launch time; the wrapper would unconditionally overwrite that CVD via tests/ci/gpu_lock_exec.py:28, so the H200 stage passes true and runs execute_command directly.'
+        default: '/data'
+        description: 'Host-side path to the miles CI data tree. Default /data matches scitix-72 and any host following that convention. H100/8gpu callers on novita pass /mnt/nvme0n1. Container-side targets (/data/miles_ci, /root/models, /root/datasets, /root/.cache/huggingface) stay fixed because 50+ test files hardcode them.'
 
 jobs:
   run:
@@ -50,16 +47,17 @@ jobs:
       image: ${{ inputs.container_image }}
       options: >
         --gpus all
+        --env CUDA_VISIBLE_DEVICES
         --ipc=host
         --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        -v /mnt/nvme0n1/miles_ci/hf_cache:/root/.cache/huggingface
+        -v ${{ inputs.data_root }}/miles_ci:/data/miles_ci
+        -v ${{ inputs.data_root }}/miles_ci/models:/root/models
+        -v ${{ inputs.data_root }}/miles_ci/datasets:/root/datasets
+        -v ${{ inputs.data_root }}/miles_ci/hf_cache:/root/.cache/huggingface
         --privileged
         --ulimit nofile=65535:65535
         -v /tmp:/tmp
@@ -138,20 +136,13 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
-      # The H100 fleet runs many CI jobs concurrently on the same physical
-      # 8-GPU host, so the wrapper acts as an in-host GPU arbiter via host
-      # /dev/shm file locks. The H200 fleet splits one physical node into
-      # two 4-GPU self-hosted workers that share host /dev/shm (--ipc=host)
-      # and inject CUDA_VISIBLE_DEVICES at worker-launch time; the wrapper
-      # would clobber that CVD and cause cross-worker GPU collisions. The
-      # H200 stage passes skip_gpu_lock=true and runs the bare command.
-      - name: Execute (with gpu_lock_exec wrapper)
-        if: ${{ !inputs.skip_gpu_lock }}
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ inputs.gpu_count }} -- ${{ inputs.execute_command }}
-
-      - name: Execute (bare, no gpu_lock_exec wrapper)
-        if: ${{ inputs.skip_gpu_lock }}
+      # GPU partitioning happens at the CUDA layer: each runner pins its own
+      # CUDA_VISIBLE_DEVICES in its compose env, and the bare `--env CUDA_VISIBLE_DEVICES`
+      # flag in container.options inherits that value into the inner job container.
+      # Multi-runner H200 hosts (scitix-72-0/1, scitix-73-0/1) pin disjoint subsets
+      # (0,1,2,3 vs 4,5,6,7); single-runner H100 hosts (novita-host2/4) leave CVD
+      # unset so jobs see all 8 GPUs.
+      - name: Execute
         shell: bash
         run: ${{ inputs.execute_command }}
 

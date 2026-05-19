@@ -44,7 +44,6 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 0
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
@@ -59,8 +58,8 @@ jobs:
       (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-unit-test'))
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 8
       runs_on: '["h100", "8gpu"]'
+      data_root: '/mnt/nvme0n1'
       execute_command: "pytest tests/e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py -x -v"
     secrets: inherit
 
@@ -71,7 +70,6 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 0
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
@@ -90,8 +88,8 @@ jobs:
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 8
       runs_on: '["h100", "8gpu"]'
+      data_root: '/mnt/nvme0n1'
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-8-gpu-h100
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
@@ -112,8 +110,8 @@ jobs:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 8
       runs_on: '["h100", "8gpu"]'
+      data_root: '/mnt/nvme0n1'
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
@@ -122,9 +120,9 @@ jobs:
     secrets: inherit
 
   # Stage C: GLM5 8-GPU tests (exception job; custom Docker image, single
-  # test file invoked directly via gpu_lock_exec.py — does NOT go through
-  # run_suite.py, so --match-all-labels is NOT passed; meta-label coverage
-  # is achieved by widening this job's `if:` gate instead.
+  # test file invoked directly — does NOT go through run_suite.py, so
+  # --match-all-labels is NOT passed; meta-label coverage is achieved by
+  # widening this job's `if:` gate instead.
   stage-c-glm5:
     needs: [stage-a-cpu]
     if: |
@@ -137,23 +135,24 @@ jobs:
        )))
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 8
       runs_on: '["h100", "8gpu"]'
+      data_root: '/mnt/nvme0n1'
       container_image: "radixark/miles:glm5"
       skip_dependency_install: true
-      execute_command: "python tests/ci/gpu_lock_exec.py --count 8 -- python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
+      execute_command: "python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
     secrets: inherit
 
   # Stage C: 4-GPU H200 tests (2 partitions). The H200 fleet is one physical
   # 8-GPU node split into two 4-GPU self-hosted workers (worker-1 pinned to
-  # GPUs 0-3, worker-2 to 4-7) via runner-launch-time CUDA_VISIBLE_DEVICES.
-  # Both worker containers share host /dev/shm via --ipc=host, so the
-  # gpu_lock_exec.py wrapper would overwrite the worker-injected CVD and
-  # cause cross-worker GPU collisions. This stage passes skip_gpu_lock=true
-  # to bypass the wrapper. miles_test_few_gpu=1 so FSDP conditional tests
-  # take their <=4-GPU branch. `runs_on` requires BOTH the `h200` hw-type
-  # label and the `4gpu` gpu-count label simultaneously, so H100 work can't
-  # accidentally land here.
+  # GPUs 0-3, worker-2 to 4-7) via runner-launch-time CUDA_VISIBLE_DEVICES
+  # set in the runner container's compose environment; the bare
+  # `--env CUDA_VISIBLE_DEVICES` flag in _run-ci.yml's container.options
+  # inherits that value into the inner job container, giving each worker
+  # CUDA-level visibility into its disjoint 4-GPU subset. miles_test_few_gpu=1
+  # so FSDP conditional tests take their <=4-GPU branch. `runs_on` requires
+  # BOTH the `h200` hw-type label and the `4gpu` gpu-count label
+  # simultaneously, so H100 work can't accidentally land here. data_root
+  # is omitted to use the default '/data' (matching scitix-72/73 hosts).
   stage-c-4-gpu-h200:
     needs: [stage-a-cpu]
     if: |
@@ -170,10 +169,8 @@ jobs:
         partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-ci.yml
     with:
-      gpu_count: 4
       runs_on: '["h200", "4gpu"]'
       miles_test_few_gpu: '1'
-      skip_gpu_lock: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4

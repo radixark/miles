@@ -1,17 +1,29 @@
-# Please refer to `README.md` for how to setup this GitHub action runner
-version: "3.9"
-
+# Please refer to `README.md` for how to setup this GitHub action runner.
+#
+# DATA_ROOT must resolve to the same path on host AND in container (both sides
+# of the bind mount use the same variable). This is a docker-out-of-docker
+# requirement: when this runner spawns sibling job containers via the mounted
+# /var/run/docker.sock, it passes its in-container --work path through to the
+# host daemon, which resolves it against the HOST filesystem. If host source
+# and container target differ, the daemon looks at a host directory the runner
+# never wrote to and the job container mounts the wrong (or empty) tree.
+#
+# Default '/data' matches scitix-72; novita hosts override DATA_ROOT=/mnt/nvme0n1
+# in their per-host .env file. Each concrete runner service (scitix-72-0, etc.)
+# is defined in docker-compose.override.yml; the base service below is a
+# template only — kept at replicas: 1 so a stray `docker compose up` without
+# the override never silently spins up many runners.
 services:
   runner:
     # NOTE need to use the latest, o/w the runner will want to upgrade itself
-    image: ghcr.io/actions/actions-runner:2.329.0
+    image: ghcr.io/actions/actions-runner:2.334.0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /data/miles_ci:/data/miles_ci
+      - ${DATA_ROOT:-/data}/miles_ci:${DATA_ROOT:-/data}/miles_ci
       # it requires this folder
       - /home/runner/externals:/home/runner/externals
     deploy:
-      replicas: 8
+      replicas: 1
     restart: always
     environment:
       RUNNER_ALLOW_RUNASROOT: "1"
@@ -20,10 +32,9 @@ services:
     # ref: https://github.com/actions/runner/issues/367#issuecomment-2007558723
     # ref: https://github.com/actions/runner
     # args ref: https://github.com/actions/runner/blob/68ff57dbc4c836d50f46602a8a53301fb9513eb4/src/Runner.Listener/CommandSettings.cs#L53
-    # TODO seems we should not run config.sh repeatedly
     entrypoint: >
       sh -c "
-      cd /data/miles_ci &&
-      /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) --disableupdate &&
+      cd ${DATA_ROOT:-/data}/miles_ci &&
+      /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work ${DATA_ROOT:-/data}/miles_ci/runner_$(hostname) --disableupdate &&
       /home/runner/run.sh
       "
