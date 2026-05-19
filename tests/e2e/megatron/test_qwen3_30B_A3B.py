@@ -4,9 +4,6 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-# Sweeps enabled rollout / dispatcher variants in one job so the previously
-# matrix-parameterized CI is back. est_time stays conservative while the
-# bridge + DeepEP variant below is disabled pending a fix.
 register_cuda_ci(est_time=3600, suite="stage-c-megatron-8-gpu", num_gpus=8)
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
@@ -16,7 +13,6 @@ MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 
-# Each entry is one matrix variant from the legacy parameterized job.
 CONFIGS: list[dict] = [
     {
         "USE_DEEPEP": True,
@@ -24,13 +20,6 @@ CONFIGS: list[dict] = [
         "USE_INT4_ROLLOUT": False,
         "USE_BRIDGE": False,
     },
-    # TODO: This deepep test need fix.
-    # {
-    #     "USE_DEEPEP": True,
-    #     "USE_FP8_ROLLOUT": True,
-    #     "USE_INT4_ROLLOUT": False,
-    #     "USE_BRIDGE": True,
-    # },
     {
         "USE_DEEPEP": False,
         "USE_FP8_ROLLOUT": False,
@@ -42,6 +31,12 @@ CONFIGS: list[dict] = [
         "USE_FP8_ROLLOUT": False,
         "USE_INT4_ROLLOUT": True,
         "USE_BRIDGE": False,
+    },
+    {
+        "USE_DEEPEP": True,
+        "USE_FP8_ROLLOUT": True,
+        "USE_INT4_ROLLOUT": False,
+        "USE_BRIDGE": True,
     },
 ]
 

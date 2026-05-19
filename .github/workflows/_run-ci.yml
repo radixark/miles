@@ -12,7 +12,7 @@ on:
       runs_on:
         type: string
         required: false
-        default: 'self-hosted'
+        default: '8gpu'
       container_image:
         type: string
         required: false

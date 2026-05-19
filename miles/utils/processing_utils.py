@@ -2,10 +2,52 @@ import base64
 import io
 import logging
 import os
+from pathlib import Path
 
+from huggingface_hub import hf_hub_download
+from tokenizers import Tokenizer as RawTokenizer
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
 logger = logging.getLogger(__name__)
+
+
+def _fix_v5_tokenizer_components(tokenizer: PreTrainedTokenizerBase, model_name_or_path: str) -> None:
+    # transformers v5's LlamaTokenizerFast rebuilds pre_tokenizer/decoder in
+    # __init__, discarding the originals from tokenizer.json.  DeepSeek-V3.2
+    # declares LlamaTokenizerFast but actually uses ByteLevel, so without this
+    # fix the loaded tokenizer decodes Metaspace ▁ instead of ByteLevel Ġ/Ċ
+    # and diverges from the sglang-served tokenizer.  Mirrors sglang's
+    # _fix_v5_tokenizer_components (hf_transformers_utils.py).
+    backend = getattr(tokenizer, "_tokenizer", None)
+    if backend is None:
+        return
+
+    try:
+        local_path = Path(model_name_or_path) / "tokenizer.json"
+        if local_path.is_file():
+            tok_file = str(local_path)
+        else:
+            tok_file = hf_hub_download(model_name_or_path, "tokenizer.json", local_files_only=True)
+        raw = RawTokenizer.from_file(tok_file)
+    except Exception as e:
+        logger.warning("Could not load tokenizer.json for %s: %s", model_name_or_path, e)
+        return
+
+    raw_pre = type(raw.pre_tokenizer).__name__ if raw.pre_tokenizer else None
+    loaded_pre = type(backend.pre_tokenizer).__name__ if backend.pre_tokenizer else None
+
+    if raw_pre and loaded_pre and raw_pre != loaded_pre:
+        logger.info(
+            "Fixing v5 tokenizer component mismatch for %s: pre_tokenizer %s -> %s, decoder %s -> %s",
+            model_name_or_path,
+            loaded_pre,
+            raw_pre,
+            type(backend.decoder).__name__ if backend.decoder else None,
+            type(raw.decoder).__name__ if raw.decoder else None,
+        )
+        backend.pre_tokenizer = raw.pre_tokenizer
+        backend.decoder = raw.decoder
+
 
 # Default image patch size for vision-language models
 # Note: Qwen3-VL uses 16, Qwen2.5-VL uses 14
@@ -34,6 +76,7 @@ def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **k
         return _TOKENIZER_CACHE[cache_key]
 
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
+    _fix_v5_tokenizer_components(tokenizer, name_or_path)
     if chat_template_path:
         assert os.path.isfile(chat_template_path), (
             f"chat_template_path not found: {chat_template_path}. "

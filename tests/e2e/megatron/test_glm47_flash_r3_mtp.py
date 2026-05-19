@@ -8,7 +8,6 @@ register_cuda_ci(
     est_time=900,
     suite="stage-c-megatron-8-gpu",
     num_gpus=8,
-    disabled="CalledProcessError exit code 1 on CI (pre-existing, not caused by CI refactor)",
 )
 
 ENABLE_EVAL = False

@@ -3,7 +3,6 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(
     est_time=60,
     suite="stage-a-fast",
-    disabled="stepfun-ai/Step-3.5-Flash config num_hidden_layers/layer_types mismatch breaks huggingface_hub strict validation",
 )
 
 import pytest
@@ -20,11 +19,11 @@ TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen3-Coder-Next",
     # "meta-llama/Llama-3.2-1B-Instruct",  # Skipped: gated repo, requires HF_TOKEN in CI
     "mistralai/Mistral-7B-Instruct-v0.3",
-    "MiniMaxAI/MiniMax-M2",
     "MiniMaxAI/MiniMax-M2.5",
+    "MiniMaxAI/MiniMax-M2.7",
     "internlm/internlm3-8b-instruct",
     "zai-org/GLM-4.7-Flash",
-    "stepfun-ai/Step-3.5-Flash",
+    # "stepfun-ai/Step-3.5-Flash",  # Disabled: config num_hidden_layers/layer_types mismatch breaks huggingface_hub strict validation
     "moonshotai/Kimi-K2-Instruct",
     "moonshotai/Kimi-K2.5",
     "XiaomiMiMo/MiMo-7B-RL",
