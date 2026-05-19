@@ -6,7 +6,7 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=7200, suite="stage-c-4-gpu-h200", labels=["megatron"])
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
+ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"

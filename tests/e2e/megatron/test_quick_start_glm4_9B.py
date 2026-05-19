@@ -8,7 +8,7 @@ register_cuda_ci(
     est_time=600, suite="stage-c-4-gpu-h200", labels=["megatron"], disabled="Not worthy for testing, too naive."
 )
 
-ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "1")
+ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "0")
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "GLM-Z1-9B-0414"

@@ -6,7 +6,7 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["megatron"])
 
-ENABLE_EVAL = False
+ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "0")
 USE_DEEPEP = False
 
 MODEL_NAME = "GLM-4.7-Flash"
