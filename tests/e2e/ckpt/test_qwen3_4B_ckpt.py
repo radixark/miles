@@ -58,7 +58,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--rm-type deepscaler "
         "--num-rollout 3 "
         "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 8 "
+        "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
