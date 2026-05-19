@@ -4,6 +4,7 @@ import subprocess
 import sys
 import warnings
 from collections.abc import Iterable
+from pathlib import Path
 
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests
 from tests.ci.ci_utils import run_unittest_files
@@ -138,6 +139,20 @@ def auto_partition(files: list[CIRegistry], rank, size):
     return []
 
 
+def _is_e2e_discovery_file(filename: str) -> bool:
+    basename = Path(filename).name
+    return (
+        basename != "conftest.py"
+        and basename != "__init__.py"
+        and not basename.startswith("_")
+        and not filename.endswith(".gitkeep")
+        # Exclude helper modules that aren't test files
+        and "/sglang_patch/sglang_server.py" not in filename
+        and "/sglang/utils/" not in filename
+        and "short/test_dumper.py" not in filename
+    )
+
+
 def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIRegistry]):
     hw = HW_MAPPING[args.hw]
     suite = args.suite
@@ -180,13 +195,7 @@ def run_a_suite(args):
     auto_partition_size = args.auto_partition_size
 
     # Discover test files: e2e/ for CUDA, fast/ for CPU
-    e2e_files = [
-        f
-        for f in glob.glob("tests/e2e/**/*.py", recursive=True)
-        if not f.endswith("/conftest.py") and not f.endswith("/__init__.py") and not f.endswith(".gitkeep")
-        # Exclude helper modules that aren't test files
-        and "/sglang_patch/sglang_server.py" not in f and "/sglang/utils/" not in f and "short/test_dumper.py" not in f
-    ]
+    e2e_files = [f for f in glob.glob("tests/e2e/**/*.py", recursive=True) if _is_e2e_discovery_file(f)]
     fast_files = [
         f
         for f in glob.glob("tests/fast/**/*.py", recursive=True)

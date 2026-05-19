@@ -1,4 +1,4 @@
-"""Unit tests for `run_suite.py` label handling.
+"""Unit tests for `run_suite.py`.
 
 These cover the Python-side label pipeline:
 
@@ -19,7 +19,7 @@ import warnings
 
 import pytest
 from tests.ci.ci_register import CIRegistry, HWBackend
-from tests.ci.run_suite import PER_COMMIT_SUITES, filter_tests, strip_run_ci_prefix
+from tests.ci.run_suite import PER_COMMIT_SUITES, _is_e2e_discovery_file, filter_tests, strip_run_ci_prefix
 
 
 def _make(
@@ -118,6 +118,20 @@ class TestStripRunCiPrefix:
             result = strip_run_ci_prefix(["", "run-ci-megatron"])
         assert result == {"megatron"}
         assert len(caught) == 0
+
+
+# --- e2e discovery file filtering -------------------------------------------
+
+
+class TestE2EDiscoveryFiles:
+    def test_excludes_private_helper_modules_by_basename(self):
+        assert not _is_e2e_discovery_file("tests/e2e/megatron/test_qwen3_30B_A3B/_common.py")
+
+    def test_keeps_test_files_inside_underscore_named_directories(self):
+        assert _is_e2e_discovery_file("tests/e2e/megatron/test_qwen3_30B_A3B/test_baseline.py")
+
+    def test_keeps_regular_e2e_test_files(self):
+        assert _is_e2e_discovery_file("tests/e2e/sglang/test_session_server_multi_role.py")
 
 
 # --- `filter_tests` six scenarios -------------------------------------------
