@@ -1,31 +1,39 @@
 import os
-
-from tests.ci.ci_register import register_cuda_ci
+from dataclasses import dataclass
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["megatron"])
-
-ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "0")
-USE_DEEPEP = False
-
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 
-def prepare():
+@dataclass(frozen=True)
+class CaseConfig:
+    use_deepep: bool
+
+
+def prepare() -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
+    U.convert_checkpoint(
+        model_name=MODEL_NAME,
+        megatron_model_type=MODEL_TYPE,
+        num_gpus_per_node=NUM_GPUS,
+    )
 
 
-def execute():
-    # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
-    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
+def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
+    """Build the train_args string for `case`.
+
+    MTP (EAGLE speculative decoding) and R3 (`--use-rollout-routing-replay`)
+    are always on for this suite; the only knob exposed via CaseConfig is
+    whether DeepEP is used for MoE token dispatch.
+    """
+    enable_eval = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
@@ -45,7 +53,7 @@ def execute():
     )
 
     eval_args = (
-        f"{'--eval-interval 20 ' if ENABLE_EVAL else ''}"
+        f"{'--eval-interval 20 ' if enable_eval else ''}"
         "--eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 16384 "
@@ -58,13 +66,13 @@ def execute():
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
+        "--expert-model-parallel-size 4 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 32768 "
+        "--max-tokens-per-gpu 16384 "
     )
 
     grpo_args = (
@@ -100,7 +108,7 @@ def execute():
         "--sglang-speculative-num-draft-tokens 3 "
     )
 
-    if USE_DEEPEP:
+    if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
 
     mtp_args = "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
@@ -114,11 +122,11 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        "--actor-num-gpus-per-node 4 "
         "--colocate "
     )
 
-    if USE_DEEPEP:
+    if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
     else:
         misc_args += "--moe-token-dispatcher-type alltoall "
@@ -128,7 +136,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{U.get_default_wandb_args(wandb_file)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -136,16 +144,17 @@ def execute():
         f"{ci_args} "
         f"{misc_args} "
     )
+    return train_args
+
+
+def execute(case: CaseConfig, *, wandb_file: str) -> None:
+    # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
+    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
+
+    train_args = build_train_args(case, wandb_file=wandb_file)
 
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
     )
-
-
-if __name__ == "__main__":
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    execute()
