@@ -102,7 +102,7 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node 8 "
+        "--actor-num-gpus-per-node 8 "
         "--colocate "
         "--megatron-to-hf-mode bridge "
     )

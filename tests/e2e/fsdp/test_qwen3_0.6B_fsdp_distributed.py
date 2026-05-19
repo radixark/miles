@@ -71,12 +71,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-enable-metrics "
 
-    misc_args = (
-        "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node 4 "
-        f"--rollout-num-gpus 4 "
-        "--train-backend fsdp "
-    )
+    misc_args = "--actor-num-nodes 1 " "--actor-num-gpus-per-node 4 " "--rollout-num-gpus 4 " "--train-backend fsdp "
 
     ci_args = (
         "--ci-test "

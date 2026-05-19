@@ -99,8 +99,8 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node 2 "
-        f"--rollout-num-gpus 6 "
+        "--actor-num-gpus-per-node 2 "
+        "--rollout-num-gpus 6 "
         "--megatron-to-hf-mode bridge "
     )
 
