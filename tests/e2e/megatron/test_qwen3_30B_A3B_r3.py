@@ -4,7 +4,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=3600, suite="stage-c-4-gpu-h200", labels=["megatron"])
+register_cuda_ci(est_time=3000, suite="stage-c-4-gpu-h200", labels=["megatron"])
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 

@@ -29,7 +29,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Two model families run sequentially in one job, so est_time is roughly 2x
 # of a single family.
-register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=600, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
 
 import json

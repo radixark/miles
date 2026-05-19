@@ -75,6 +75,27 @@ jobs:
           rm -rf /tmp/ray/* 2>/dev/null || true
           sleep 3
 
+      - name: Wait for GPU ready
+        shell: bash
+        run: |
+          # When a self-hosted runner accepts a new job seconds after the
+          # previous job's container exits, the NVIDIA driver subsystem may
+          # still be tearing down its prior CUDA context. The next process
+          # to call cudaGetDeviceCount() then hits Error 802 ("system not
+          # yet initialized"). Block here until nvidia-smi succeeds, with
+          # a bounded retry budget so a genuinely-broken GPU fails fast.
+          for i in $(seq 1 60); do
+            if nvidia-smi -L >/dev/null 2>&1; then
+              echo "GPU ready after $((i-1)) retry(s)"
+              nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: nvidia-smi did not become ready after 120s" >&2
+          nvidia-smi 2>&1 | tail -20 || true
+          exit 1
+
       - name: Resolve dependency refs
         if: ${{ !inputs.skip_dependency_install }}
         id: resolve-refs

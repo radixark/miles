@@ -5,7 +5,7 @@ from tests.ci.ci_register import register_cuda_ci
 import miles.utils.external_utils.command_utils as U
 
 # est_time calibrated against historical CI runtime: ~5071–5923s on 8×H100.
-register_cuda_ci(est_time=6000, suite="stage-c-8-gpu-h100", labels=["long"])
+register_cuda_ci(est_time=4920, suite="stage-c-8-gpu-h100", labels=["long"])
 
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
