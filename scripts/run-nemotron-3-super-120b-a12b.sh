@@ -1,50 +1,49 @@
 #!/bin/bash
-# Two-node (2x 8x H200, 16 GPUs) RL smoke test for Nemotron-3-Super-120B-A12B MoE.
-# Variant of scripts/run-nemotron-3-super-120b-a12b.sh scaled to 2 nodes.
-# Parallelism is TP=4xPP=2xEP=8 (DP=2): TP+PP stay intra-node via NVLink and
-# DP=2 fans rollouts/grads across the two nodes. Memory is just inside the
-# per-node H200 envelope when colocating sglang rollout with the actor.
-#
-# Usage (run on each pod, head first or in parallel):
-#   head:   bash run-nemotron-3-super-120b-a12b-2node.sh head   <head_pod_ip>
-#   worker: bash run-nemotron-3-super-120b-a12b-2node.sh worker <head_pod_ip>
-# The worker process blocks while joined to the ray cluster; the head submits
-# the training job and tails its logs.
 
-set -ex
+# Two-node (2x 8x H200, 16 GPUs) launcher for Nemotron-3-Super-120B-A12B.
+# Usage on each pod:
+#   head:   bash run-nemotron-3-super-120b-a12b.sh head   <head_pod_ip>
+#   worker: bash run-nemotron-3-super-120b-a12b.sh worker <head_pod_ip>
 
 ROLE=${1:?Usage: $0 <head|worker> <head_pod_ip>}
 HEAD_IP=${2:?Usage: $0 <head|worker> <head_pod_ip>}
 
-cd "$(dirname -- "${BASH_SOURCE[0]}")/.."  # repo root: train.py lives here
+cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-pkill -9 sglang || true
+# for rerun the task
+pkill -9 sglang
 sleep 3
-ray stop --force || true
-pkill -9 ray || true
-pkill -9 python || true
+ray stop --force
+pkill -9 ray
+pkill -9 python
 sleep 3
-pkill -9 ray || true
-pkill -9 python || true
+pkill -9 ray
+pkill -9 python
 
+set -ex
+
+# will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-if [ "$NVLINK_COUNT" -gt 0 ]; then HAS_NVLINK=1; else HAS_NVLINK=0; fi
-echo "HAS_NVLINK: $HAS_NVLINK"
+if [ "$NVLINK_COUNT" -gt 0 ]; then
+    HAS_NVLINK=1
+else
+    HAS_NVLINK=0
+fi
+echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
+# Worker just joins the head's ray cluster and blocks.
 if [[ "$ROLE" == "worker" ]]; then
-  # Block until the head's ray GCS is reachable, then join and stay attached.
-  for i in $(seq 1 60); do
-    if nc -z "$HEAD_IP" 6379 2>/dev/null; then break; fi
-    echo "waiting for head $HEAD_IP:6379 ..."
-    sleep 5
-  done
-  ray start --address="${HEAD_IP}:6379" --num-gpus=8 --disable-usage-stats --block
-  exit 0
+    for i in $(seq 1 60); do
+        if nc -z "$HEAD_IP" 6379 2>/dev/null; then break; fi
+        echo "waiting for head $HEAD_IP:6379 ..."
+        sleep 5
+    done
+    ray start --address="${HEAD_IP}:6379" --num-gpus=8 --disable-usage-stats --block
+    exit 0
 fi
 
-# Head from here on.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/nemotron-3-super-120b-a12b.sh"
 
@@ -71,6 +70,7 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 4
    --rollout-max-response-len 1024
    --rollout-temperature 1
+
    --global-batch-size 128
    --balance-data
 )
@@ -85,9 +85,12 @@ PERF_ARGS=(
    --context-parallel-size 1
    --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
+
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
+
+   # --micro-batch-size 1
    --use-dynamic-batch-size
    --max-tokens-per-gpu 1024
    --log-probs-chunk-size 128
@@ -116,7 +119,12 @@ OPTIMIZER_ARGS=(
    --use-precision-aware-optimizer
 )
 
-WANDB_ARGS=()
+WANDB_ARGS=(
+   # --use-wandb
+   # --wandb-project miles-dev
+   # --wandb-group nemotron-3-super-120b-a12b
+   # --wandb-key ${WANDB_KEY}
+)
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 8
@@ -128,27 +136,31 @@ SGLANG_ARGS=(
 )
 
 MISC_ARGS=(
+   # default dropout in megatron is 0.1
    --attention-dropout 0.0
    --hidden-dropout 0.0
+   # should be good for model performance
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
    --attention-backend auto
 )
 
+# launch the master node of ray in container
 export MASTER_ADDR=${HEAD_IP}
-ray start --head --node-ip-address ${HEAD_IP} --num-gpus 8 \
-  --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
+# wait for the worker to join so the cluster has 16 GPUs before submitting
 echo "Waiting for ray cluster to have 16 GPUs..."
 for i in $(seq 1 120); do
-  if ray status 2>/dev/null | grep -q '16.0 GPU'; then
-    echo "[ray] cluster ready: 16 GPUs"
-    break
-  fi
-  sleep 5
+    if ray status 2>/dev/null | grep -q '16.0 GPU'; then
+        echo "[ray] cluster ready: 16 GPUs"
+        break
+    fi
+    sleep 5
 done
 ray status
 
+# Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
@@ -160,10 +172,10 @@ RUNTIME_ENV_JSON="{
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --colocate \
    --actor-num-nodes 2 \
    --actor-num-gpus-per-node 8 \
    --rollout-num-gpus 16 \
+   --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
