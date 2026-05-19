@@ -195,5 +195,4 @@ _examples_synced/
 
 # Humanize plugin local state and plan artifacts (kept local; not part of repo history)
 .humanize/
-docs/plans/
 
