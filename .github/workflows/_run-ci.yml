@@ -12,7 +12,7 @@ on:
       runs_on:
         type: string
         required: false
-        default: 'self-hosted'
+        default: '8gpu'
       container_image:
         type: string
         required: false
@@ -85,8 +85,8 @@ jobs:
           MEGATRON_PR="${INPUT_MEGATRON_PR}"
           SGLANG_PR="${INPUT_SGLANG_PR}"
           if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
+            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
             [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
             [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
           fi
@@ -95,7 +95,7 @@ jobs:
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
+              echo "refs/pull/${BASH_REMATCH[1]}/head"
             else
               echo "$ref"
             fi
@@ -160,18 +160,50 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Resolve dependency refs
+        id: resolve-refs
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+        run: |
+          MEGATRON_PR="${INPUT_MEGATRON_PR}"
+          SGLANG_PR="${INPUT_SGLANG_PR}"
+          if [ -n "$PR_BODY" ]; then
+            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
+            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
+            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+          fi
+          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
+          resolve_fetch_ref() {
+            local ref="$1"
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+              echo "refs/pull/${BASH_REMATCH[1]}/head"
+            else
+              echo "$ref"
+            fi
+          }
+          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
+          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
+          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
+          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+
       - name: Checkout sglang
         uses: actions/checkout@v4
         with:
           repository: sgl-project/sglang
-          ref: sglang-miles
+          ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
           path: sglang
 
       - name: Checkout Megatron-LM
         uses: actions/checkout@v4
         with:
           repository: radixark/Megatron-LM
-          ref: miles-main
+          ref: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
           path: Megatron-LM
 
       - name: Install dependencies

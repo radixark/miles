@@ -1,0 +1,9 @@
+/* Regular-weight model links inside the homepage CardGroup.
+   The Card body applies a bold weight to its children, so the family
+   name (e.g. **Qwen**) and the comma-separated model links would both
+   render bold without this override. */
+.model-list,
+.model-list a {
+  font-weight: 400 !important;
+}
+

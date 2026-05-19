@@ -5,10 +5,9 @@ from tests.ci.ci_register import register_cuda_ci
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
-    est_time=1800,
+    est_time=3600,
     suite="stage-c-megatron-8-gpu",
     num_gpus=8,
-    disabled="Timeout after 1800s on CI (pre-existing, not caused by CI refactor)",
 )
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))

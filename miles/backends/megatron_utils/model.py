@@ -482,6 +482,10 @@ def train_one_step(
 
         check_mtp_only_grad(model, step_id)
 
+    # Dump backward tensors while gradients are still attached. The optimizer
+    # step and subsequent zero_grad release them.
+    dumper_phase_util.finalize(model)
+
     if not disable_optimizer and valid_step:
         # Update parameters.
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
@@ -495,8 +499,6 @@ def train_one_step(
         model_chunk.zero_grad_buffer()
     if not disable_optimizer:
         optimizer.zero_grad()
-
-    dumper_phase_util.finalize(model)
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced)
@@ -750,7 +752,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
     """
-    should_log = get_parallel_state().intra_dp_cp.rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
+    should_log = get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     try:
         from megatron.bridge import AutoBridge

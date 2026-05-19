@@ -18,6 +18,15 @@ from .parallel import get_parallel_state
 logger = logging.getLogger(__name__)
 
 
+def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
+    if getattr(args, "true_on_policy_mode", False):
+        if getattr(args, "bf16", False):
+            return torch.bfloat16
+        if getattr(args, "fp16", False):
+            return torch.float16
+    return torch.float32
+
+
 def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -57,6 +66,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
     if "rollout_log_probs" in rollout_data:
+        rollout_logprob_dtype = _rollout_logprob_dtype(args)
         rollout_data["rollout_log_probs"] = [
             torch.tensor(
                 slice_log_prob_with_cp(
@@ -67,7 +77,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
                     rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                 ),
                 device=torch.cuda.current_device(),
-                dtype=torch.float32,
+                dtype=rollout_logprob_dtype,
             )
             for i, (log_prob, total_length, response_length) in enumerate(
                 zip(

@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import torch
-from megatron.core import parallel_state as mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -61,10 +60,10 @@ def compute_model_hashes_by_layer(model: Sequence[DDP]) -> dict[str, str]:
 
 
 def _hash_file_path(base_dir: str | Path, iteration: int) -> Path:
-    tp_rank = mpu.get_tensor_model_parallel_rank()
-    pp_rank = mpu.get_pipeline_model_parallel_rank()
+    tp_rank = get_parallel_state().tp.rank
+    pp_rank = get_parallel_state().pp.rank
     dp_rank = get_parallel_state().intra_dp_cp.rank
-    cp_rank = mpu.get_context_parallel_rank()
+    cp_rank = get_parallel_state().cp.rank
     base = Path(base_dir)
     iter_dir = base if base.name.startswith("iter_") else base / f"iter_{int(iteration):07d}"
     return iter_dir / f"model_hash_tp{tp_rank}_pp{pp_rank}_dp{dp_rank}_cp{cp_rank}.json"

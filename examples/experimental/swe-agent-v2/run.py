@@ -171,7 +171,6 @@ def execute(args: ScriptArgs):
         "--rollout-function-path generate.RolloutFn "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model glm47 "
-        "--chat-template-path autofix "
         "--use-session-server "
         "--session-server-port 30000 "
         # This is required by terminus-2 harness

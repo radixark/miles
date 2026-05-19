@@ -6,11 +6,7 @@ from typing import Any
 
 from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.session_types import SessionRecord
-from miles.utils.chat_template_utils import (
-    apply_chat_template,
-    assert_messages_append_only_with_allowed_role,
-    message_matches,
-)
+from miles.utils.chat_template_utils import assert_messages_append_only_with_allowed_role, message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 logger = logging.getLogger(__name__)
@@ -19,19 +15,6 @@ logger = logging.getLogger(__name__)
 # TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
 #  raise this limit or make it configurable and remove the restriction.
 MAX_ASSISTANT_ROLLBACK_STEPS = 1
-
-
-def _assert_no_user_after_assistant(messages: list[dict[str, Any]]) -> None:
-    """Assert no user message appears after the first assistant message."""
-    seen_assistant = False
-    for i, msg in enumerate(messages):
-        role = msg.get("role")
-        if role == "assistant":
-            seen_assistant = True
-        elif role == "user" and seen_assistant:
-            raise MessageValidationError(
-                f"invalid message structure: user message at index {i} " f"appears after the first assistant message"
-            )
 
 
 @dataclass
@@ -67,14 +50,24 @@ class LinearTrajectory:
         tools: list[dict[str, Any]] | None = None,
         *,
         tito_tokenizer: TITOTokenizer,
-    ) -> dict[str, Any] | None:
-        """Validate messages, rollback if needed, and compute merged input_ids.
+    ) -> list[int]:
+        """Build the full prompt input_ids for *request_messages*.
 
-        Returns ``None`` on the first turn (no stored token_ids yet).
+        On the first turn (no stored token_ids), renders *request_messages*
+        from scratch via the chat template.  On subsequent turns, validates
+        that *request_messages* extends the stored history (rolling back at
+        most one assistant step on agent retries) and reuses the stored
+        token_ids as the pretokenized prefix.
+
         Must be called under ``self.lock``.
         """
         if not self.token_ids:
-            return None
+            return tito_tokenizer.render_messages(
+                request_messages,
+                tools=tools,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
 
         # 1. Detect agent retries and roll back (at most one assistant step).
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
@@ -87,13 +80,12 @@ class LinearTrajectory:
         except ValueError as e:
             raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
 
-        merged = tito_tokenizer.merge_tokens(
+        return tito_tokenizer.merge_tokens(
             old_messages=self.messages,
             new_messages=request_messages,
             pretokenized_token_ids=self.token_ids,
             tools=tools,
         )
-        return {"input_ids": merged}
 
     def update_pretokenized_state(
         self,
@@ -281,9 +273,8 @@ class SessionRegistry:
             return None
         try:
             tools = session.records[-1].request.get("tools") if session.records else None
-            expected_ids = apply_chat_template(
+            expected_ids = self.tito_tokenizer.render_messages(
                 session.messages,
-                tokenizer=self.tokenizer,
                 tools=tools,
                 add_generation_prompt=False,
                 tokenize=True,

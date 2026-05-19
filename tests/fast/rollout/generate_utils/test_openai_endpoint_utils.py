@@ -82,11 +82,10 @@ def _make_record(
         method="POST",
         path="/v1/chat/completions",
         status_code=200,
-        request={"messages": [{"role": "user", "content": "hello"}]},
+        request={"messages": [{"role": "user", "content": "hello"}], "input_ids": prompt_token_ids},
         response={
             "choices": [
                 {
-                    "prompt_token_ids": prompt_token_ids,
                     "message": {"role": "assistant", "content": "response"},
                     "finish_reason": finish_reason,
                     "logprobs": {"content": logprobs_content},

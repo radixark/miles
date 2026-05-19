@@ -6,7 +6,6 @@ from collections.abc import Callable, Mapping, Sequence
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
@@ -60,7 +59,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         # For TP:
         #   1. AllGather parameters to rank 0
         #   2. Broadcast parameters from rank 0 to all sglang engines
-        pp_rank = mpu.get_pipeline_model_parallel_rank()
+        pp_rank = get_parallel_state().pp.rank
         if self._is_source:
             self._group_name = f"miles-pp_{pp_rank}"
 
@@ -76,7 +75,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
     @property
     def _is_source(self):
         """If it's the source gpu that broadcasting weights to rollout side"""
-        return get_parallel_state().intra_dp_cp.rank == 0 and mpu.get_tensor_model_parallel_rank() == 0
+        return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
