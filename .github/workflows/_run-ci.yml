@@ -29,11 +29,6 @@ on:
         required: false
         default: '0'
         description: 'Value for the MILES_TEST_FEW_GPU env var inside the container. Default 0 (H100 8-GPU behavior). The 4-GPU H200 stage passes 1 so FSDP conditional tests take their <=4-GPU branch.'
-      data_root:
-        type: string
-        required: false
-        default: '/data'
-        description: 'Host-side path to the miles CI data tree. Default /data matches scitix-72 and any host following that convention. H100/8gpu callers on novita pass /mnt/nvme0n1. Container-side targets (/data/miles_ci, /root/models, /root/datasets, /root/.cache/huggingface) stay fixed because 50+ test files hardcode them.'
 
 jobs:
   run:
@@ -54,10 +49,10 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -v ${{ inputs.data_root }}/miles_ci:/data/miles_ci
-        -v ${{ inputs.data_root }}/miles_ci/models:/root/models
-        -v ${{ inputs.data_root }}/miles_ci/datasets:/root/datasets
-        -v ${{ inputs.data_root }}/miles_ci/hf_cache:/root/.cache/huggingface
+        -v /data/miles_ci:/data/miles_ci
+        -v /data/miles_ci/models:/root/models
+        -v /data/miles_ci/datasets:/root/datasets
+        -v /data/miles_ci/hf_cache:/root/.cache/huggingface
         --privileged
         --ulimit nofile=65535:65535
         -v /tmp:/tmp

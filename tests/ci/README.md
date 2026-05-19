@@ -8,17 +8,29 @@ https://github.com/radixark/miles/settings/secrets/actions
 
 ## Setup new GitHub runners
 
+### Step 0: Prepare `/data/miles_ci`
+
+The miles CI workflow bind-mounts `/data/miles_ci` (and its `models`,
+`datasets`, `hf_cache` subdirectories) from the host into every job container.
+Every CI host must provide `/data/miles_ci` either as a real directory on its
+biggest disk or as a symlink to wherever the big disk is.
+[`tests/ci/skills/setup-ci-host`](skills/setup-ci-host/) automates this:
+
+```shell
+cd /root/miles/tests/ci/skills/setup-ci-host
+./setup-host.sh
+```
+
+The script probes mounts with `df`, picks the biggest non-system mount, and
+ensures `/data/miles_ci` resolves there (real dir if `/data` is biggest;
+symlink otherwise). Idempotent.
+
 ### Step 1: Env
 
 Write `.env` mimicking `.env.example`.
 The token can be found at https://github.com/radixark/miles/settings/actions/runners/new?arch=x64&os=linux.
 
 WARN: The `GITHUB_RUNNER_TOKEN` changes after a while.
-
-Required variables:
-
-* `GITHUB_RUNNER_URL`, `GITHUB_RUNNER_TOKEN` — registration credentials.
-* `DATA_ROOT` — host-side path to the CI data tree. `/data` on scitix-72 (default); `/mnt/nvme0n1` on novita. If unset, compose falls back to `/data`.
 
 ### Step 2: Prepare `/home/runner/externals`
 
@@ -73,27 +85,29 @@ Host conventions:
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
 
-## DATA_ROOT path identity rule
+## /data/miles_ci path identity rule
 
-`docker-compose.yml` mounts `${DATA_ROOT}/miles_ci:${DATA_ROOT}/miles_ci` —
-the SAME variable on both sides of the colon. This is mandatory: the runner
-process spawns sibling job containers through the mounted `/var/run/docker.sock`,
-and the runner's in-container `--work` path is forwarded verbatim to the host
-daemon. If the host source and container target differ, the daemon resolves a
-host path the runner never wrote to, and the sibling container mounts an
-unrelated (or empty) tree.
+`docker-compose.yml` mounts `/data/miles_ci:/data/miles_ci` — the SAME path on
+both sides of the colon. This is mandatory: the runner process spawns sibling
+job containers through the mounted `/var/run/docker.sock`, and the runner's
+in-container `--work` path is forwarded verbatim to the host daemon. If the
+host source and container target differ, the daemon resolves a host path the
+runner never wrote to, and the sibling container mounts an unrelated (or
+empty) tree.
 
-The workflow `.github/workflows/_run-ci.yml`'s four data mounts
-(`/root/models`, `/root/datasets`, `/root/.cache/huggingface`, plus an
-extra `/data/miles_ci` aggregator) are NOT subject to the identity rule
-because they are pure data mounts, not work-dir forwarding. Only the host
-side is parameterized via `${{ inputs.data_root }}`; the container targets
-stay fixed because miles tests hardcode them (e.g. `/root/models` is
-referenced by 50+ test files).
+Step 0's `setup-host.sh` guarantees `/data/miles_ci` exists on the host
+(either as a real directory if `/data` is the big disk, or as a symlink to
+wherever the big disk is). Either way, the bind mount works uniformly across
+hosts.
+
+The workflow `.github/workflows/_run-ci.yml`'s four data mounts use the same
+literal path (no parameterization). Tests hardcode the container-side targets
+(`/root/models`, `/root/datasets`, `/root/.cache/huggingface`); the host side
+is always `/data/miles_ci/...`.
 
 ## Restarting runners after compose changes
 
-* **env-only changes** (e.g. adjusting `CUDA_VISIBLE_DEVICES` or `DATA_ROOT`):
+* **env-only changes** (e.g. adjusting `CUDA_VISIBLE_DEVICES`):
   recreate the container so it picks up the new compose env.
 
   ```shell

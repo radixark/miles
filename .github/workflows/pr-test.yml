@@ -59,7 +59,6 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
-      data_root: '/mnt/nvme0n1'
       execute_command: "pytest tests/e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py -x -v"
     secrets: inherit
 
@@ -89,7 +88,6 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
-      data_root: '/mnt/nvme0n1'
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-8-gpu-h100
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
@@ -111,7 +109,6 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
-      data_root: '/mnt/nvme0n1'
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
@@ -136,7 +133,6 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
-      data_root: '/mnt/nvme0n1'
       container_image: "radixark/miles:glm5"
       skip_dependency_install: true
       execute_command: "python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
@@ -151,8 +147,9 @@ jobs:
   # CUDA-level visibility into its disjoint 4-GPU subset. miles_test_few_gpu=1
   # so FSDP conditional tests take their <=4-GPU branch. `runs_on` requires
   # BOTH the `h200` hw-type label and the `4gpu` gpu-count label
-  # simultaneously, so H100 work can't accidentally land here. data_root
-  # is omitted to use the default '/data' (matching scitix-72/73 hosts).
+  # simultaneously, so H100 work can't accidentally land here. The host-side
+  # /data/miles_ci is canonical on every CI host (see
+  # tests/ci/skills/setup-ci-host); _run-ci.yml mounts that literal path.
   stage-c-4-gpu-h200:
     needs: [stage-a-cpu]
     if: |
