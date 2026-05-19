@@ -1,0 +1,52 @@
+services:
+  runner:
+    deploy:
+      replicas: 0
+    profiles:
+      - disabled
+
+  scitix-72-0:
+    image: ghcr.io/actions/actions-runner:2.334.0
+    container_name: scitix-72-0
+    hostname: scitix-72-0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /data/miles_ci:/data/miles_ci
+      - /home/runner/externals:/home/runner/externals
+    restart: always
+    environment:
+      RUNNER_ALLOW_RUNASROOT: "1"
+    privileged: true
+    user: root
+    entrypoint:
+      - sh
+      - -c
+      - |
+        cd /data/miles_ci && \
+        if [ ! -f /home/runner/.runner ]; then \
+          /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --name scitix-72-0 --labels gpu-runner,h200,4gpu,scitix-72-0 --unattended --work /data/miles_ci/runner_scitix-72-0 --disableupdate --replace; \
+        fi && \
+        /home/runner/run.sh
+
+  scitix-72-1:
+    image: ghcr.io/actions/actions-runner:2.334.0
+    container_name: scitix-72-1
+    hostname: scitix-72-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /data/miles_ci:/data/miles_ci
+      - /home/runner/externals:/home/runner/externals
+    restart: always
+    environment:
+      RUNNER_ALLOW_RUNASROOT: "1"
+    privileged: true
+    user: root
+    entrypoint:
+      - sh
+      - -c
+      - |
+        cd /data/miles_ci && \
+        if [ ! -f /home/runner/.runner ]; then \
+          /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --name scitix-72-1 --labels gpu-runner,h200,4gpu,scitix-72-1 --unattended --work /data/miles_ci/runner_scitix-72-1 --disableupdate --replace; \
+        fi && \
+        /home/runner/run.sh

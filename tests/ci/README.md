@@ -28,7 +28,7 @@ ls -alh /home/runner/externals
 ### Step 3: Run
 
 ```shell
-cd /mnt/data/tom/primary_synced/miles/tests/ci/github_runner
+cd /root/miles/tests/ci/github_runner
 docker compose up -d
 ```
 
