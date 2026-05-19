@@ -1,33 +1,53 @@
 #!/bin/bash
-# Single-node (8x H200) RL smoke test for Nemotron-3-Super-120B-A12B MoE
-# via AutoBridge + miles NemotronHBridge MoE shim. Mirrors
-# scripts/run-nemotron-3-nano-30b-a3b.sh. Parallelism is TP=4xPP=2xEP=4
-# (TP*DP=4 == ETP*EP=4 so Megatron's expert-parallel grouping is valid on 8 GPUs).
-# Routed experts use moe_latent_size=1024, so per-rank MoE memory is much
-# smaller than a hidden-size-fed MoE of the same expert count would suggest.
-# For longer rollouts or larger global batches, scale to 2 nodes and use
-# TP=4xPP=2xEP=8 (DP=2) or TP=8xPP=2xEP=8.
-
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
+# Two-node (2x 8x H200, 16 GPUs) RL smoke test for Nemotron-3-Super-120B-A12B MoE.
+# Variant of scripts/run-nemotron-3-super-120b-a12b.sh scaled to 2 nodes.
+# Parallelism is TP=4xPP=2xEP=8 (DP=2): TP+PP stay intra-node via NVLink and
+# DP=2 fans rollouts/grads across the two nodes. Memory is just inside the
+# per-node H200 envelope when colocating sglang rollout with the actor.
+#
+# Usage (run on each pod, head first or in parallel):
+#   head:   bash run-nemotron-3-super-120b-a12b-2node.sh head   <head_pod_ip>
+#   worker: bash run-nemotron-3-super-120b-a12b-2node.sh worker <head_pod_ip>
+# The worker process blocks while joined to the ray cluster; the head submits
+# the training job and tails its logs.
 
 set -ex
+
+ROLE=${1:?Usage: $0 <head|worker> <head_pod_ip>}
+HEAD_IP=${2:?Usage: $0 <head|worker> <head_pod_ip>}
+
+cd "$(dirname -- "${BASH_SOURCE[0]}")/.."  # repo root: train.py lives here
+
+pkill -9 sglang || true
+sleep 3
+ray stop --force || true
+pkill -9 ray || true
+pkill -9 python || true
+sleep 3
+pkill -9 ray || true
+pkill -9 python || true
+
 export PYTHONBUFFERED=16
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then HAS_NVLINK=1; else HAS_NVLINK=0; fi
 echo "HAS_NVLINK: $HAS_NVLINK"
 
+if [[ "$ROLE" == "worker" ]]; then
+  # Block until the head's ray GCS is reachable, then join and stay attached.
+  for i in $(seq 1 60); do
+    if nc -z "$HEAD_IP" 6379 2>/dev/null; then break; fi
+    echo "waiting for head $HEAD_IP:6379 ..."
+    sleep 5
+  done
+  ray start --address="${HEAD_IP}:6379" --num-gpus=8 --disable-usage-stats --block
+  exit 0
+fi
+
+# Head from here on.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/nemotron-3-super-120b-a12b.sh"
 
-# Models + datasets live under /cluster_public/miles_data/ on this cluster.
 MODELS_DIR=${MODELS_DIR:-/cluster_public/miles_data/models}
 DATASETS_DIR=${DATASETS_DIR:-/cluster_public/miles_data/datasets}
 
@@ -63,7 +83,7 @@ PERF_ARGS=(
    --sequence-parallel
    --pipeline-model-parallel-size 2
    --context-parallel-size 1
-   --expert-model-parallel-size 4
+   --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
    --recompute-granularity full
    --recompute-method uniform
@@ -115,8 +135,19 @@ MISC_ARGS=(
    --attention-backend auto
 )
 
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+export MASTER_ADDR=${HEAD_IP}
+ray start --head --node-ip-address ${HEAD_IP} --num-gpus 8 \
+  --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+
+echo "Waiting for ray cluster to have 16 GPUs..."
+for i in $(seq 1 120); do
+  if ray status 2>/dev/null | grep -q '16.0 GPU'; then
+    echo "[ray] cluster ready: 16 GPUs"
+    break
+  fi
+  sleep 5
+done
+ray status
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -130,9 +161,9 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --colocate \
-   --actor-num-nodes 1 \
+   --actor-num-nodes 2 \
    --actor-num-gpus-per-node 8 \
-   --rollout-num-gpus 8 \
+   --rollout-num-gpus 16 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
