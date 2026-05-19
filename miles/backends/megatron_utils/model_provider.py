@@ -110,6 +110,15 @@ def get_model_provider_func(
             provider.moe_router_bias_update_rate = args.moe_router_bias_update_rate
         if getattr(args, "moe_aux_loss_coeff", None) is not None:
             provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
+        # The bridge provider defaults gradient_accumulation_fusion=True
+        # (via fusions.can_enable_gradient_accumulation_fusion). On ROCm/gfx950,
+        # this makes TE's LayerNormLinear backward issue a bias-fused wgrad GEMM
+        # with bf16 inputs → fp32 output + HIPBLASLT_EPILOGUE_BGRADB + accumulate,
+        # for which hipBLASLt has no algorithm. Honor the Megatron CLI flag so
+        # that --no-gradient-accumulation-fusion actually takes effect.
+        provider.gradient_accumulation_fusion = getattr(
+            args, "gradient_accumulation_fusion", provider.gradient_accumulation_fusion
+        )
         provider.finalize()
 
         def wrapped_bridge_provider(
