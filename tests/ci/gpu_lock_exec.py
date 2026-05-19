@@ -26,6 +26,8 @@ def main():
 
         dev_list = ",".join(str(x.gpu_id) for x in fd_locks)
         os.environ[args.target_env_name] = dev_list
+        if args.target_env_name == "CUDA_VISIBLE_DEVICES" and _is_rocm_host():
+            os.environ["HIP_VISIBLE_DEVICES"] = dev_list
         print(f"[gpu_lock_exec] Acquired GPUs: {dev_list}", flush=True)
 
     _os_execvp(args)
@@ -192,6 +194,10 @@ def _get_lock_path(path_pattern: str, gpu_id: int) -> str:
 
 def _parse_devices(s: str) -> list[int]:
     return [int(x) for x in s.split(",") if x.strip() != ""]
+
+
+def _is_rocm_host() -> bool:
+    return os.path.exists("/dev/kfd")
 
 
 if __name__ == "__main__":
