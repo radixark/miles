@@ -140,9 +140,9 @@ jobs:
 
   # Stage C: 4-GPU H200 tests. This stage hosts ONLY tests that are statically
   # sized for <=4 GPUs; the world_size <=4 budget is enforced by
-  # tests/utils/test_gpu_cardinality_lint.py. FEW_GPU-conditional tests (those
-  # that previously branched on a runtime env var to dynamically shrink to
-  # <=4 GPUs) have been migrated to `stage-c-8-gpu-h100`.
+  # tests/utils/test_gpu_cardinality_lint.py. Tests that previously branched on
+  # a runtime env var to dynamically shrink to <=4 GPUs have been migrated to
+  # `stage-c-8-gpu-h100` and run with the 8-GPU branch unconditionally.
   #
   # The H200 fleet is one physical 8-GPU node split into two 4-GPU self-hosted
   # workers (worker-1 pinned to GPUs 0-3, worker-2 to 4-7) via runner-launch-time
