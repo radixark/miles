@@ -1,8 +1,11 @@
 import os
 
+import torch
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
+
+IS_ROCM = torch.version.hip is not None
 
 # est_time calibrated against historical CI runtime: ~4124–4182s on 8×H100.
 register_cuda_ci(est_time=5000, suite="stage-c-long-8-gpu", num_gpus=8)
@@ -89,7 +92,10 @@ def execute():
     ci_args = (
         "--ci-test "
         "--ci-disable-kl-checker "
-        "--ci-metric-checker-key eval/gsm8k "
+        # ROCm (gfx950): the unfused bf16 wgrad path (needed to avoid a
+        # hipBLASLt BGRADB catalog gap) has ~1e-9 numerical drift.
+        + ("--ci-disable-logprobs-checker " if IS_ROCM else "")
+        + "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.55 "  # loose threshold at 250 step
     )
 
@@ -99,7 +105,8 @@ def execute():
         "--hidden-dropout 0.0 "
         # should be good for model performance
         "--accumulate-allreduce-grads-in-fp32 "
-        "--attention-softmax-in-fp32 "
+        + ("--no-gradient-accumulation-fusion " if IS_ROCM else "")
+        + "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
