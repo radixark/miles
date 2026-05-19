@@ -2,8 +2,8 @@
 
 Wired through ``--custom-generate-function-path`` /
 ``--custom-agent-function-path``; consumed by
-``tests/e2e/sglang/test_session_server_multi_role.py`` and
-``scripts/tools/verify_session_tito_tokenizer.py``.
+``tests/e2e/sglang/test_session_server_multi_role/`` (one test file per
+model family) and ``scripts/tools/verify_session_tito_tokenizer.py``.
 """
 
 from __future__ import annotations

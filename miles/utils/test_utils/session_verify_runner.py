@@ -2,7 +2,8 @@
 
 Used by both consumers:
 
-- pytest e2e: ``tests/e2e/sglang/test_session_server_multi_role.py``
+- pytest e2e: ``tests/e2e/sglang/test_session_server_multi_role/`` (one test
+  file per model family)
 - CLI: ``scripts/tools/verify_session_tito_tokenizer.py``
 
 Both forms run the same ``execute_train(--debug-rollout-only)`` path: full miles

@@ -131,7 +131,7 @@ class TestE2EDiscoveryFiles:
         assert _is_e2e_discovery_file("tests/e2e/megatron/test_qwen3_30B_A3B/test_baseline.py")
 
     def test_keeps_regular_e2e_test_files(self):
-        assert _is_e2e_discovery_file("tests/e2e/sglang/test_session_server_multi_role.py")
+        assert _is_e2e_discovery_file("tests/e2e/sglang/test_chat_input_ids_equivalence.py")
 
 
 # --- `filter_tests` six scenarios -------------------------------------------
