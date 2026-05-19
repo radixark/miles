@@ -28,6 +28,7 @@ _H100_EXCLUSIONS = (
     "tests/e2e/ckpt/test_glm47_flash_ckpt.py",
     "tests/e2e/megatron/test_glm47_flash_r3_mtp.py",
     "tests/e2e/megatron/test_qwen3_30B_A3B_r3.py",
+    "tests/e2e/megatron/test_qwen3_4B_ppo.py",
     "tests/e2e/megatron/test_qwen3_5_35B_A3B_cp.py",
 )
 

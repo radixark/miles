@@ -8,10 +8,11 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(est_time=5000, suite="stage-c-8-gpu-h100", labels=["long"])
 
 TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
+NUM_GPUS = 2 if FEW_GPU else 8
 
 
 def prepare():
@@ -102,8 +103,8 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 2 "
-        "--rollout-num-gpus 6 "
+        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
+        f"--rollout-num-gpus {1 if FEW_GPU else 6} "
         "--megatron-to-hf-mode bridge "
     )
 
