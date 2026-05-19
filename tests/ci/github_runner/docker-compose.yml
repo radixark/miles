@@ -10,11 +10,12 @@
 #
 # Every CI host is expected to provide /data/miles_ci as a real directory or
 # as a symlink to the host's big disk; tests/ci/skills/setup-ci-host/setup-host.sh
-# automates this (df probe + symlink). Each concrete runner service
-# (scitix-72-0, etc.) is defined in docker-compose.override.yml; the base
-# service below is a template only — kept at replicas: 1 so a stray
-# `docker compose up` without the override never silently spins up many
-# runners.
+# automates this (df probe + symlink). Concrete per-runner services live in
+# a host-local docker-compose.override.yml (gitignored): each host defines
+# its own runners there with stable names, labels, and CUDA_VISIBLE_DEVICES
+# partitioning. The base service below is a template only — kept at
+# replicas: 1 so a stray `docker compose up` without a host override never
+# silently spins up many runners.
 services:
   runner:
     # NOTE need to use the latest, o/w the runner will want to upgrade itself
