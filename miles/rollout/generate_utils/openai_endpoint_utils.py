@@ -115,7 +115,7 @@ def compute_samples_from_openai_records(
 
     for i, record in enumerate(records):
         is_last = i == len(records) - 1
-        prompt_ids = record.response["choices"][0]["prompt_token_ids"]
+        prompt_ids = record.request["input_ids"]
         output_ids = [t[1] for t in record.response["choices"][0]["meta_info"]["output_token_logprobs"]]
 
         trim_count = 0
@@ -165,21 +165,14 @@ def _compute_sample_from_openai_record(
 ) -> Sample:
     choice = record.response["choices"][0]
 
-    if "prompt_token_ids" in choice:
-        prompt_token_ids = choice["prompt_token_ids"]
-    else:
-        raise ValueError("prompt_token_ids not found in response choice — the session server should populate it")
+    prompt_token_ids = record.request.get("input_ids")
+    if prompt_token_ids is None:
+        raise ValueError("input_ids not found in request — the session server should populate it")
 
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
     sample = deepcopy(input_sample)
-    request_input_ids = record.request.get("input_ids")
-    if request_input_ids is not None:
-        assert (
-            request_input_ids == prompt_token_ids
-        ), "for prompt part, input_ids return by sglang should match with the request input_ids"
-
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)

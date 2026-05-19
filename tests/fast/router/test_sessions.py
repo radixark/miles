@@ -132,8 +132,6 @@ class TestSessionProxy:
         body = resp.json()
         assert "choices" in body
         assert body["choices"]
-        assert isinstance(body["choices"][0]["prompt_token_ids"], list)
-        assert body["choices"][0]["prompt_token_ids"]
 
         get_resp = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
         records = get_resp.json()["records"]
