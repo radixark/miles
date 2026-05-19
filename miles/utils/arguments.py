@@ -146,6 +146,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable true-on-policy mode.",
             )
             parser.add_argument(
+                "--recompute-logprobs-via-prefill",
+                action="store_true",
+                default=False,
+                help=(
+                    "Recompute rollout logprobs via SGLang prefill instead of decode kernels. "
+                    "Only needed for models whose prefill and decode paths are not numerically identical."
+                ),
+            )
+            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -1688,7 +1697,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_user_provided_function_arguments(parser):
-            args_partial, _ = parser.parse_known_args()
+            try:
+                args_partial, _ = parser.parse_known_args()
+            except SystemExit:
+                return parser
             for path in [
                 args_partial.rollout_function_path,
                 args_partial.custom_generate_function_path,
@@ -1869,6 +1881,9 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if args.recompute_logprobs_via_prefill:
+        assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
     # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
@@ -2224,10 +2239,19 @@ def _maybe_apply_dumper_overrides(args) -> None:
     args.router_disable_health_check = True
     args.rollout_health_check_interval = 1e18
 
-    logger.info("Dumper mode: forced num_rollout=%d, disabled eval and save", args.num_rollout)
+    if args.start_rollout_id is None:
+        args.start_rollout_id = 0
+
     args.num_rollout = (args.start_rollout_id or 0) + 1
+    logger.info(
+        "Dumper mode: forced rollout range [%d, %d), disabled eval and save",
+        args.start_rollout_id,
+        args.num_rollout,
+    )
     args.eval_interval = None
+    args.save = None
     args.save_interval = None
+    args.save_retain_interval = None
 
 
 def hf_validate_args(args, hf_config):

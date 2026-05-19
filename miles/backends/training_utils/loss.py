@@ -145,7 +145,12 @@ def loss_function(
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
-            loss = loss * num_microbatches / global_batch_size * parallel_state.intra_dp_cp.size
+            loss_parallel_size = (
+                parallel_state.intra_dp.size
+                if args.true_on_policy_mode and parallel_state.is_ulysses_cp
+                else parallel_state.intra_dp_cp.size
+            )
+            loss = loss * num_microbatches / global_batch_size * loss_parallel_size
         else:
             loss = loss / global_batch_size * parallel_state.intra_dp.size
     else:

@@ -41,7 +41,8 @@ def get_responses(
     """
     qkv_format = args.qkv_format
 
-    assert logits.dtype == torch.float32, f"{logits.dtype}"
+    if not args.true_on_policy_mode:
+        assert logits.dtype == torch.float32, f"{logits.dtype}"
     assert len(logits.shape) == 3, f"{logits.shape}"
 
     if qkv_format == "thd":
@@ -52,6 +53,11 @@ def get_responses(
         logits = logits.view(-1, logits.size(-1))
 
     logits = logits.div(args.rollout_temperature)
+    if args.true_on_policy_mode:
+        if getattr(args, "bf16", False):
+            logits = logits.to(torch.bfloat16)
+        elif getattr(args, "fp16", False):
+            logits = logits.to(torch.float16)
 
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
@@ -66,10 +72,11 @@ def get_responses(
             if qkv_format == "bshd":
                 end = max_seq_len * i + total_length
                 start = end - response_length
+                logits_chunk = logits[start - 1 : end - 1]
             else:
                 end += total_length
                 start = end - response_length
-            logits_chunk = logits[start - 1 : end - 1]
+                logits_chunk = logits[start - 1 : end - 1]
             tokens_chunk = tokens[-response_length:]
         elif args.allgather_cp:
             # DSA: global concat then contiguous CP split. Each rank owns logits for
@@ -172,6 +179,7 @@ def get_log_probs_and_entropy(
             with_entropy=with_entropy,
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
+            vocab_size=getattr(args, "vocab_size", None),
         )
 
         log_probs_list.append(log_prob.squeeze(-1))
