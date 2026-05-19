@@ -56,18 +56,31 @@ or a symlink. `readlink` succeeds only when `/data/miles_ci` is a symlink.
 
 ## When to re-run
 
-- After adding a larger disk to the host (the script will re-detect and may
-  resymlink — but only if `/data/miles_ci` does not already exist or already
-  matches the new biggest disk; mismatch exits with a diagnostic rather than
-  moving data).
+- After adding a larger disk to the host (the script will re-detect; if
+  `/data/miles_ci` already exists pointing at a smaller disk, the script
+  prompts before moving anything — see [Safety](#safety)).
 - After noticing CI mount errors that suggest `/data/miles_ci` is wrong.
 
 ## Safety
 
-The script refuses to silently overwrite a `/data/miles_ci` that already
-exists and points somewhere unexpected, since that could mask a data-loss
-risk. In that case it prints a diagnostic and exits non-zero; the operator
-should manually consolidate before re-running.
+The script never silently overwrites a `/data/miles_ci` that already exists
+and points somewhere unexpected. When run from a terminal, it prompts the
+operator interactively; in non-interactive contexts (cron, CI, scripts) it
+refuses and exits non-zero so a human always makes the destructive call.
+
+Two prompts can appear:
+
+1. **Existing real directory on the wrong disk** — `/data/miles_ci` has data
+   but the biggest disk is elsewhere. Options:
+   - `[m] migrate`: `rsync` the data to the big disk, then `rm -rf` the
+     original and symlink. Preserves data.
+   - `[w] wipe`: `rm -rf` the original (data lost), then symlink. Requires
+     typing `yes` to confirm.
+   - `[a] abort` (default): leave everything as-is, exit non-zero.
+2. **Existing symlink pointing at the wrong target** — `/data/miles_ci`
+   already symlinks somewhere, but not to the current biggest disk. The
+   prompt asks `[y/N]` to re-point. Re-pointing does NOT migrate data from
+   the old target; only the symlink changes.
 
 The script requires root (or write access to `/data`). It will detect a
 non-root invocation and suggest `sudo ./setup-host.sh`.
