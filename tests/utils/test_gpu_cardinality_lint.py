@@ -10,9 +10,8 @@ the formula `world_size = max(TP * CP, EP * ETP) * PP`. Single-axis bounds
 checked here are necessary (not sufficient) — a file passes if every individual
 parallelism flag is within the per-axis ceiling that 4 GPUs can support.
 
-Specificity is enforced by a negative sanity check: the two h100-exclusion
-files (test_glm47_flash_r3_mtp.py, test_qwen3_5_35B_A3B_cp.py) MUST still
-trigger at least one match, otherwise the regex set is vacuous.
+Specificity is enforced by a negative sanity check: h100-exclusion files MUST
+still trigger at least one match, otherwise the regex set is vacuous.
 """
 
 import glob
@@ -26,7 +25,9 @@ register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
 _H200_SUITE = "stage-c-4-gpu-h200"
 _H100_EXCLUSIONS = (
+    "tests/e2e/ckpt/test_glm47_flash_ckpt.py",
     "tests/e2e/megatron/test_glm47_flash_r3_mtp.py",
+    "tests/e2e/megatron/test_qwen3_30B_A3B_r3.py",
     "tests/e2e/megatron/test_qwen3_5_35B_A3B_cp.py",
 )
 
@@ -123,10 +124,9 @@ def test_h200_suite_has_no_eight_gpu_anchors():
 def test_h100_exclusion_files_still_trip_the_lint():
     """Specificity check: ensure the regex set is not vacuous.
 
-    The two files explicitly kept on stage-c-8-gpu-h100 by user spec must
-    still contain at least one >=5-GPU reference each — otherwise the
-    pattern set would have lost specificity and the positive test above
-    becomes a no-op.
+    Files explicitly kept on stage-c-8-gpu-h100 by user spec must still
+    contain at least one >=5-GPU reference each — otherwise the pattern set
+    would have lost specificity and the positive test above becomes a no-op.
     """
     for path in _H100_EXCLUSIONS:
         hits = _scan_file(path)
