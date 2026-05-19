@@ -124,19 +124,14 @@ class RayTrainGroup:
         await self._broadcast("update_weights")
 
     async def load_pending_adapters(self) -> int:
-        """Multi-LoRA: model-side install of PENDING adapters on every rank.
-        Returns the number installed so the caller can decide whether the next
-        ``update_weights`` needs to push them to SGLang. No-op (returns 0)
-        when multi-LoRA is disabled. All ranks return the same count."""
+        """Multi-LoRA: model-side install of PENDING adapters on every rank."""
         results = await self._broadcast("load_pending_adapters")
         return results[0] if results else 0
 
-    async def unload_drained_adapters(self, rollout_id):
+    async def unload_drained_adapters(self):
         """Multi-LoRA: model-side cleanup of DRAINED adapters (save final ckpt,
-        clear slot, zero optimizer). Caller must run ``update_weights`` first so
-        SGLang has unloaded the adapter. No-op if multi-LoRA is disabled."""
-        # TODO: track iteration individually?
-        results = await self._broadcast("unload_drained_adapters", rollout_id)
+        clear slot, zero optimizer)."""
+        results = await self._broadcast("unload_drained_adapters")
         return results[0] if results else 0
 
     async def onload(self):

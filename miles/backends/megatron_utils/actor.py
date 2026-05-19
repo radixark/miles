@@ -502,7 +502,7 @@ class MegatronTrainRayActor(TrainRayActor):
         return n
 
     @timer
-    def unload_drained_adapters(self, rollout_id: int) -> int:
+    def unload_drained_adapters(self) -> int:
         # NOTE: this requires wake_up()
         if not is_multi_lora_enabled(self.args):
             return 0
@@ -515,7 +515,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         from miles.backends.megatron_utils.multi_lora_utils import unload_drained_adapters
 
-        n = unload_drained_adapters(self.args, self.model, self.optimizer, rollout_id)
+        n = unload_drained_adapters(self.args, self.model, self.optimizer)
         if n > 0:
             self.weights_backuper.backup("actor")
 

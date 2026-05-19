@@ -135,7 +135,6 @@ class MultiLoRAControllerImpl:
         self.free_slots: set[int] = set(range(max_adapters))
 
         #### Used for dynamic register/deregister lora adapters
-        # Last rollout id that started generating
         # Last rollout id that was trained
         self.last_trained_rollout_id: int = -1
         # Map from adapter name -> rollout id

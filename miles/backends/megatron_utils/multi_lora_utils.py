@@ -378,7 +378,7 @@ def _register_adapter(name: str, config: AdapterConfig, model) -> None:
     logger.info(f"{log_prefix} installed at slot {config.slot}")
 
 
-def _deregister_adapter(name: str, config: AdapterConfig, rollout_id: int, args, model, optimizer) -> None:
+def _deregister_adapter(name: str, config: AdapterConfig, args, model, optimizer) -> None:
     """Model-side cleanup for one DRAINED adapter."""
     from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
 
@@ -431,7 +431,7 @@ def load_pending_adapters(args, model, optimizer) -> int:
     return len(pending)
 
 
-def unload_drained_adapters(args, model, optimizer, rollout_id: int) -> int:
+def unload_drained_adapters(args, model, optimizer) -> int:
     """DRAINED adapters model-side cleanup."""
     from miles.backends.megatron_utils.initialize import is_megatron_main_rank
     from miles.utils.adapter_config import AdapterState
@@ -443,7 +443,7 @@ def unload_drained_adapters(args, model, optimizer, rollout_id: int) -> int:
     if not drained:
         return 0
     for name, config in drained:
-        _deregister_adapter(name, config, rollout_id, args, model, optimizer)
+        _deregister_adapter(name, config, args, model, optimizer)
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
     if is_megatron_main_rank():
