@@ -21,8 +21,10 @@ _RUN_CI_PREFIX = "run-ci-"
 # Per-commit test suites (run on every PR; per-domain selection is done at
 # runtime by `filter_tests` via the `--labels` arg, not via per-suite jobs).
 #
-# CUDA: `stage-c-4-gpu-h200` is reserved here so registered tests can target
-# it, but no workflow job exists yet (will land in the H200 follow-up PR).
+# CUDA suites: each is served by a matching workflow job in
+# .github/workflows/pr-test.yml. `stage-c-4-gpu-h200` runs on the H200
+# split-worker fleet (per-runner CUDA_VISIBLE_DEVICES partition); the other
+# CUDA suites run on full-node 8-GPU H100/H200 hosts.
 PER_COMMIT_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",

@@ -24,11 +24,6 @@ on:
         required: false
         default: false
         description: 'Run on GitHub-hosted ubuntu-latest with bare pip install (for CPU-only fast tests)'
-      miles_test_few_gpu:
-        type: string
-        required: false
-        default: '0'
-        description: 'Value for the MILES_TEST_FEW_GPU env var inside the container. Default 0 (H100 8-GPU behavior). The 4-GPU H200 stage passes 1 so FSDP conditional tests take their <=4-GPU branch.'
 
 jobs:
   run:
@@ -64,7 +59,6 @@ jobs:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_FEW_GPU: ${{ inputs.miles_test_few_gpu }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

@@ -138,18 +138,22 @@ jobs:
       execute_command: "python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
     secrets: inherit
 
-  # Stage C: 4-GPU H200 tests (2 partitions). The H200 fleet is one physical
-  # 8-GPU node split into two 4-GPU self-hosted workers (worker-1 pinned to
-  # GPUs 0-3, worker-2 to 4-7) via runner-launch-time CUDA_VISIBLE_DEVICES
-  # set in the runner container's compose environment; the bare
-  # `--env CUDA_VISIBLE_DEVICES` flag in _run-ci.yml's container.options
+  # Stage C: 4-GPU H200 tests. This stage hosts ONLY tests that are statically
+  # sized for <=4 GPUs; the world_size <=4 budget is enforced by
+  # tests/utils/test_gpu_cardinality_lint.py. FEW_GPU-conditional tests (those
+  # that previously branched on a runtime env var to dynamically shrink to
+  # <=4 GPUs) have been migrated to `stage-c-8-gpu-h100`.
+  #
+  # The H200 fleet is one physical 8-GPU node split into two 4-GPU self-hosted
+  # workers (worker-1 pinned to GPUs 0-3, worker-2 to 4-7) via runner-launch-time
+  # CUDA_VISIBLE_DEVICES set in the runner container's compose environment; the
+  # bare `--env CUDA_VISIBLE_DEVICES` flag in _run-ci.yml's container.options
   # inherits that value into the inner job container, giving each worker
-  # CUDA-level visibility into its disjoint 4-GPU subset. miles_test_few_gpu=1
-  # so FSDP conditional tests take their <=4-GPU branch. `runs_on` requires
-  # BOTH the `h200` hw-type label and the `4gpu` gpu-count label
-  # simultaneously, so H100 work can't accidentally land here. The host-side
-  # /data/miles_ci is canonical on every CI host (see
-  # tests/ci/skills/setup-ci-host); _run-ci.yml mounts that literal path.
+  # CUDA-level visibility into its disjoint 4-GPU subset. `runs_on` requires
+  # BOTH the `h200` hw-type label and the `4gpu` gpu-count label simultaneously,
+  # so H100 work can't accidentally land here. The host-side /data/miles_ci is
+  # canonical on every CI host (see tests/ci/skills/setup-ci-host); _run-ci.yml
+  # mounts that literal path.
   stage-c-4-gpu-h200:
     needs: [stage-a-cpu]
     if: |
@@ -167,7 +171,6 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "4gpu"]'
-      miles_test_few_gpu: '1'
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
