@@ -116,28 +116,6 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage C: GLM5 8-GPU tests (exception job; custom Docker image, single
-  # test file invoked directly — does NOT go through run_suite.py, so
-  # --match-all-labels is NOT passed; meta-label coverage is achieved by
-  # widening this job's `if:` gate instead.
-  stage-c-glm5:
-    needs: [stage-a-cpu]
-    if: |
-      always() && !failure() && !cancelled() &&
-      ((github.event_name == 'workflow_dispatch') ||
-       (github.event.pull_request && (
-         contains(github.event.pull_request.labels.*.name, 'run-ci-glm5') ||
-         contains(github.event.pull_request.labels.*.name, 'run-ci-image') ||
-         contains(github.event.pull_request.labels.*.name, 'run-ci-all')
-       )))
-    uses: ./.github/workflows/_run-ci.yml
-    with:
-      runs_on: '["h100", "8gpu"]'
-      container_image: "radixark/miles:glm5"
-      skip_dependency_install: true
-      execute_command: "python tests/e2e/megatron/test_glm5_744b_a40b_4layer.py"
-    secrets: inherit
-
   # Stage C: 4-GPU H200 tests. This stage hosts ONLY tests that are statically
   # sized for <=4 GPUs; the world_size <=4 budget is enforced by
   # tests/utils/test_gpu_cardinality_lint.py. Tests that previously branched on

@@ -7,7 +7,7 @@ def test_known_labels_is_dict():
     assert isinstance(KNOWN_LABELS, dict)
 
 
-def test_known_labels_initial_nine_present():
+def test_known_labels_initial_eight_present():
     expected = {
         "megatron",
         "sglang",
@@ -17,7 +17,6 @@ def test_known_labels_initial_nine_present():
         "ckpt",
         "lora",
         "precision",
-        "glm5",
     }
     assert expected <= set(KNOWN_LABELS), f"Missing canonical labels: {expected - set(KNOWN_LABELS)}"
 

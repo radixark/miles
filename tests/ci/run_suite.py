@@ -34,7 +34,6 @@ PER_COMMIT_SUITES = {
         "stage-b-8-gpu-h100",
         "stage-c-8-gpu-h100",
         "stage-c-4-gpu-h200",
-        "stage-c-glm5-8-gpu",
     ],
 }
 

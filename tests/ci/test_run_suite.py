@@ -59,7 +59,6 @@ class TestPerCommitSuites:
             "stage-b-8-gpu-h100",
             "stage-c-8-gpu-h100",
             "stage-c-4-gpu-h200",
-            "stage-c-glm5-8-gpu",
         ]
 
     def test_no_legacy_suite_names_remain(self):
@@ -252,11 +251,11 @@ class TestFilterTestsLabels:
 
 class TestFilterTestsBaseDimensions:
     def test_cross_suite_isolation(self):
-        # A test registered to stage-c-glm5-8-gpu must not surface in
+        # A test registered to stage-c-4-gpu-h200 must not surface in
         # stage-c-8-gpu-h100, even with match_all_labels=True.
         tests = [
             _make("tests/e2e/h100/t.py", suite="stage-c-8-gpu-h100", labels=[]),
-            _make("tests/e2e/glm5/t.py", suite="stage-c-glm5-8-gpu", labels=["glm5"]),
+            _make("tests/e2e/h200/t.py", suite="stage-c-4-gpu-h200", labels=[]),
         ]
         enabled, _ = filter_tests(
             tests,
