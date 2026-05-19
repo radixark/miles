@@ -1,55 +1,27 @@
-import os
-
-from tests.ci.ci_register import register_cuda_ci
+from dataclasses import dataclass
 
 import miles.utils.external_utils.command_utils as U
-
-register_cuda_ci(est_time=7200, suite="stage-c-4-gpu-h200", labels=["megatron"])
-
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 4
 
-CONFIGS: list[dict] = [
-    {
-        "USE_DEEPEP": True,
-        "USE_FP8_ROLLOUT": True,
-        "USE_INT4_ROLLOUT": False,
-        "USE_BRIDGE": False,
-    },
-    {
-        "USE_DEEPEP": False,
-        "USE_FP8_ROLLOUT": False,
-        "USE_INT4_ROLLOUT": False,
-        "USE_BRIDGE": False,
-    },
-    {
-        "USE_DEEPEP": False,
-        "USE_FP8_ROLLOUT": False,
-        "USE_INT4_ROLLOUT": True,
-        "USE_BRIDGE": False,
-    },
-    {
-        "USE_DEEPEP": True,
-        "USE_FP8_ROLLOUT": True,
-        "USE_INT4_ROLLOUT": False,
-        "USE_BRIDGE": True,
-    },
-]
+
+@dataclass(frozen=True)
+class CaseConfig:
+    use_deepep: bool
+    use_fp8_rollout: bool
+    use_int4_rollout: bool
+    use_bridge: bool
+    use_r3: bool
 
 
-def _any_config(key: str) -> bool:
-    return any(c[key] for c in CONFIGS)
-
-
-def prepare():
+def prepare(*, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
-    if _any_config("USE_FP8_ROLLOUT"):
+    if need_fp8:
         U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
-    if _any_config("USE_INT4_ROLLOUT"):
+    if need_int4:
         U.exec_command(
             f"python tools/convert_hf_to_int4_direct.py "
             f"--model-dir /root/models/{MODEL_NAME} "
@@ -58,10 +30,10 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    # Bridge mode reads the HF checkpoint directly without the torch_dist
-    # conversion, but every non-bridge variant needs it, so do the conversion
-    # if any variant requires it.
-    if not all(c["USE_BRIDGE"] for c in CONFIGS):
+    # Bridge mode reads the HF checkpoint directly; non-bridge variants need
+    # the torch_dist conversion. With one case per file, "all_bridge" reduces
+    # to the single case being a bridge case.
+    if not all_bridge:
         U.convert_checkpoint(
             model_name=MODEL_NAME,
             megatron_model_type=MODEL_TYPE,
@@ -69,11 +41,23 @@ def prepare():
         )
 
 
-def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE_BRIDGE: bool):
-    ref_load = f"/root/models/{MODEL_NAME}" if USE_BRIDGE else f"/root/{MODEL_NAME}_torch_dist"
-    if USE_INT4_ROLLOUT:
+def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
+    """Build the train_args string for `case`.
+
+    Split out from `execute()` so the CPU-only golden test can inspect the
+    string without monkeypatching `execute_train`.
+    """
+    if case.use_int4_rollout and case.use_fp8_rollout:
+        raise ValueError("use_int4_rollout and use_fp8_rollout are mutually exclusive")
+
+    import os
+
+    enable_eval = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
+
+    ref_load = f"/root/models/{MODEL_NAME}" if case.use_bridge else f"/root/{MODEL_NAME}_torch_dist"
+    if case.use_int4_rollout:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load {ref_load} "
-    elif USE_FP8_ROLLOUT:
+    elif case.use_fp8_rollout:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load {ref_load} "
     else:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {ref_load} "
@@ -95,7 +79,7 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
     )
 
     eval_args = (
-        f"{'--eval-interval 20 ' if ENABLE_EVAL else ''}"
+        f"{'--eval-interval 20 ' if enable_eval else ''}"
         "--eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 16384 "
@@ -116,6 +100,8 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
         "--max-tokens-per-gpu 16384 "
     )
 
+    # r3 path uses --use-rollout-routing-replay; non-r3 uses --use-routing-replay.
+    routing_flag = "--use-rollout-routing-replay" if case.use_r3 else "--use-routing-replay"
     grpo_args = (
         "--advantage-estimator gspo "
         "--use-kl-loss "
@@ -125,7 +111,7 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
         "--entropy-coef 0.00 "
         "--eps-clip 4e-4 "
         "--use-tis "
-        "--use-routing-replay "
+        f"{routing_flag} "
     )
 
     optimizer_args = (
@@ -140,7 +126,7 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
         "--use-precision-aware-optimizer "
     )
 
-    if USE_INT4_ROLLOUT:
+    if case.use_int4_rollout:
         sglang_args = (
             "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.8 " "--sglang-cuda-graph-max-bs 512 "
         )
@@ -152,29 +138,26 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
             "--sglang-enable-metrics "
         )
 
-    if USE_DEEPEP:
+    if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
 
     ci_args = "--ci-test "
 
     misc_args = (
-        # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
-        # should be good for model performance
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 4 "
         "--colocate "
     )
 
-    if USE_BRIDGE:
+    if case.use_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
 
-    if USE_DEEPEP:
+    if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
     else:
         misc_args += "--moe-token-dispatcher-type alltoall "
@@ -184,16 +167,21 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{U.get_default_wandb_args(wandb_file)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
     )
+    return train_args
+
+
+def execute(case: CaseConfig, *, wandb_file: str) -> None:
+    train_args = build_train_args(case, wandb_file=wandb_file)
 
     extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
-    if USE_INT4_ROLLOUT:
+    if case.use_int4_rollout:
         extra_env_vars |= {
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
@@ -205,12 +193,3 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
         megatron_model_type=MODEL_TYPE,
         extra_env_vars=extra_env_vars,
     )
-
-
-if __name__ == "__main__":
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    for config in CONFIGS:
-        print(f"\n{'=' * 60}\nRunning config: {config}\n{'=' * 60}\n", flush=True)
-        execute(**config)
