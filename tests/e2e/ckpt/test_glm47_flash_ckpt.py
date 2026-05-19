@@ -10,12 +10,11 @@ register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h100", labels=["ckpt"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "0")))
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 
 def _get_latest_checkpointed_iteration() -> int:
@@ -65,10 +64,10 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--rm-type deepscaler "
         "--num-rollout 3 "
         "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 8 "
+        "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 1 "
-        "--global-batch-size 32 "
+        "--global-batch-size 8 "
         "--balance-data "
     )
 
@@ -86,18 +85,18 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
+        "--expert-model-parallel-size 4 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 32768} "
+        "--max-tokens-per-gpu 32768 "
     )
 
     grpo_args = (
         "--advantage-estimator grpo "
-        f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
+        "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--entropy-coef 0.00 "
@@ -121,7 +120,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 4 "
-        f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
+        "--sglang-mem-fraction-static 0.8 "
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "

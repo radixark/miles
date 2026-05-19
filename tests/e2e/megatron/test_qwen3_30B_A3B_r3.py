@@ -4,13 +4,11 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h100", labels=["megatron"])
-
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+register_cuda_ci(est_time=3600, suite="stage-c-4-gpu-h200", labels=["megatron"])
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 CONFIGS = [
     {"USE_DEEPEP": False, "USE_FP8_ROLLOUT": False},
@@ -58,22 +56,22 @@ def execute(USE_DEEPEP=False, USE_FP8_ROLLOUT=False):
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
-        "--expert-model-parallel-size 8 "
+        "--expert-model-parallel-size 4 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
+        "--max-tokens-per-gpu 16384 "
     )
 
     grpo_args = (
         "--advantage-estimator gspo "
-        f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
+        "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--kl-coef 0.00 "
@@ -96,8 +94,8 @@ def execute(USE_DEEPEP=False, USE_FP8_ROLLOUT=False):
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
-        f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
+        "--rollout-num-gpus-per-engine 4 "
+        "--sglang-mem-fraction-static 0.8 "
         "--sglang-max-running-requests 512 "
         "--sglang-enable-metrics "
     )
