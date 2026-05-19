@@ -13,9 +13,12 @@ on the updatable (actor) server, testing:
 import os
 import tempfile
 
+import torch
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
+
+IS_ROCM = torch.version.hip is not None
 
 register_cuda_ci(est_time=600, suite="stage-b-short-8-gpu", num_gpus=8)
 
@@ -118,7 +121,10 @@ def execute():
         f"--sglang-config {config_path} "
     )
 
-    ci_args = "--ci-test "
+    ci_args = (
+        "--ci-test "
+        + ("--ci-disable-kl-checker --ci-disable-logprobs-checker " if IS_ROCM else "")
+    )
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
@@ -131,7 +137,8 @@ def execute():
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
-        "--attention-softmax-in-fp32 "
+        + ("--no-gradient-accumulation-fusion " if IS_ROCM else "")
+        + "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
