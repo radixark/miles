@@ -61,7 +61,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.8 "
-        "--global-batch-size 32 "
+        "--global-batch-size 8 "
         "--balance-data "
     )
 
