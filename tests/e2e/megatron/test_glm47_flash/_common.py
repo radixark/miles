@@ -11,16 +11,16 @@ TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")
 
 @dataclass
 class CaseConfig:
-    use_deepep: bool
-    use_fp8_rollout: bool
-    use_int4_rollout: bool
-    use_bridge: bool
-    use_r3: bool
     num_gpus_per_node: int
     cp_size: int
     pp_size: int
     tp_size: int = None
     ep_size: int = None
+    use_deepep: bool = False
+    use_fp8_rollout: bool = False
+    use_int4_rollout: bool = False
+    use_bridge: bool = False
+    use_r3: bool = False
     max_tokens_per_gpu: int = 8192
 
     def __post_init__(self):
@@ -61,7 +61,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
