@@ -112,7 +112,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     routing_flag = "--use-rollout-routing-replay" if case.use_r3 else "--use-routing-replay"
     grpo_args = (
         "--advantage-estimator gspo "
-        "--use-kl-loss "
+        f"{'' if case.use_bridge else '--use-kl-loss '}"
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--kl-coef 0.00 "
