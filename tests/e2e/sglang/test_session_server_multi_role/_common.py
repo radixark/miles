@@ -18,6 +18,7 @@ class ModelConfig:
     tool_call_parser: str | None
     tito_model: str
     allowed_append_roles: tuple[str, ...]
+    num_gpus: int = 4
     tp_size: int = 1
     cycles: int = 3
     # Soft-threshold override for assistant_text mismatch ratio.  Default
@@ -43,7 +44,7 @@ def run_one(cfg: ModelConfig) -> None:
         cycles=cfg.cycles,
         # run_session_verify defaults num_gpus=8 (H100 era); the suite runs on
         # 4-GPU H200, so allocate 4 actor GPUs to match the runner.
-        num_gpus=4,
+        num_gpus=cfg.num_gpus,
         assistant_text_threshold=cfg.assistant_text_threshold,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
     )
