@@ -84,6 +84,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 2 "
+        "--decoder-last-pipeline-num-layers 23 "
         "--context-parallel-size 2 "
         "--expert-model-parallel-size 8 "
         "--expert-tensor-parallel-size 1 "
@@ -91,7 +92,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 16384 "
+        "--max-tokens-per-gpu 8192 "
     )
 
     if TIGHT_HOST_MEMORY:
