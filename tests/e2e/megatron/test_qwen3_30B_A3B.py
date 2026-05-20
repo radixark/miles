@@ -1,5 +1,7 @@
 import os
 
+import torch
+
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -13,32 +15,50 @@ MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 
-CONFIGS: list[dict] = [
-    {
-        "USE_DEEPEP": True,
-        "USE_FP8_ROLLOUT": True,
-        "USE_INT4_ROLLOUT": False,
-        "USE_BRIDGE": False,
-    },
-    {
-        "USE_DEEPEP": False,
-        "USE_FP8_ROLLOUT": False,
-        "USE_INT4_ROLLOUT": False,
-        "USE_BRIDGE": False,
-    },
-    {
-        "USE_DEEPEP": False,
-        "USE_FP8_ROLLOUT": False,
-        "USE_INT4_ROLLOUT": True,
-        "USE_BRIDGE": False,
-    },
-    {
-        "USE_DEEPEP": True,
-        "USE_FP8_ROLLOUT": True,
-        "USE_INT4_ROLLOUT": False,
-        "USE_BRIDGE": True,
-    },
-]
+IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
+
+if IS_ROCM:
+    CONFIGS: list[dict] = [
+        {
+            "USE_DEEPEP": False,
+            "USE_FP8_ROLLOUT": False,
+            "USE_INT4_ROLLOUT": False,
+            "USE_BRIDGE": False,
+        },
+        {
+            "USE_DEEPEP": False,
+            "USE_FP8_ROLLOUT": False,
+            "USE_INT4_ROLLOUT": False,
+            "USE_BRIDGE": True,
+        },
+    ]
+else:
+    CONFIGS: list[dict] = [
+        {
+            "USE_DEEPEP": True,
+            "USE_FP8_ROLLOUT": True,
+            "USE_INT4_ROLLOUT": False,
+            "USE_BRIDGE": False,
+        },
+        {
+            "USE_DEEPEP": False,
+            "USE_FP8_ROLLOUT": False,
+            "USE_INT4_ROLLOUT": False,
+            "USE_BRIDGE": False,
+        },
+        {
+            "USE_DEEPEP": False,
+            "USE_FP8_ROLLOUT": False,
+            "USE_INT4_ROLLOUT": True,
+            "USE_BRIDGE": False,
+        },
+        {
+            "USE_DEEPEP": True,
+            "USE_FP8_ROLLOUT": True,
+            "USE_INT4_ROLLOUT": False,
+            "USE_BRIDGE": True,
+        },
+    ]
 
 
 def _any_config(key: str) -> bool:
@@ -196,6 +216,8 @@ def execute(USE_DEEPEP: bool, USE_FP8_ROLLOUT: bool, USE_INT4_ROLLOUT: bool, USE
     )
 
     extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    if IS_ROCM:
+        extra_env_vars["SGLANG_USE_AITER"] = "0"
     if USE_INT4_ROLLOUT:
         extra_env_vars |= {
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
