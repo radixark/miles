@@ -6,7 +6,7 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=360, suite="stage-c-8-gpu-h100", labels=["short"])
 
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
+FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
