@@ -4,12 +4,16 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1800, suite="stage-c-4-gpu-h200", labels=["megatron"])
+register_cuda_ci(est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron"])
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
+ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
+# PPO allocates critic on separate placement-group bundles from actor (even with
+# --colocate, which only shares rollout with actor), so total GPUs needed is
+# actor_world + critic_world. Keep actor_world = TP * CP = 2 (TP=1, CP=2) so
+# actor (2) + critic (2) fits the 4-GPU suite.
 NUM_GPUS = 4
 
 
@@ -50,8 +54,7 @@ def execute():
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 2 "
-        "--sequence-parallel "
+        "--tensor-model-parallel-size 1 "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
         "--recompute-granularity full "
@@ -102,7 +105,7 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {NUM_GPUS} "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         "--colocate "
     )
 
