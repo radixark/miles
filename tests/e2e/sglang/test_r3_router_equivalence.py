@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Two model families run sequentially in one job, so est_time is roughly 2x
 # of a single family.
-register_cuda_ci(est_time=1800, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
 """E2E test: verify sglang router and miles router produce identical rollout
 routing replay results across MoE models.

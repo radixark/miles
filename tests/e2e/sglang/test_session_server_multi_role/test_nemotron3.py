@@ -1,7 +1,7 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_one
 
-register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
 
 # Nemotron-3-Super-120B-A12B-FP8 (~120GB fp8, A12B activated).
