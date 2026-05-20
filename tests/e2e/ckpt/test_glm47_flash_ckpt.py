@@ -135,7 +135,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
     mtp_args = "--enable-mtp-training --mtp-loss-scaling-factor 0.2 "
 
-    # TODO: add optimizer equality check here.
+    # FIXME: add optimizer equality check here.
     ci_args = "--ci-test "
     if mode in {"save", "async_save"}:
         ci_args += "--ci-save-model-hash "
