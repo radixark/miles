@@ -72,7 +72,7 @@ def execute():
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 2 "
-        "--rollout-num-gpus 4 "
+        f"--rollout-num-gpus {NUM_GPUS // 2} "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     )
@@ -86,7 +86,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
         "--check-weight-update-equal "
         "--update-weight-transfer-mode p2p "
