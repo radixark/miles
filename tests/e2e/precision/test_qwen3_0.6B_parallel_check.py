@@ -63,7 +63,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 " "--rollout-num-gpus 8 " "--sglang-mem-fraction-static 0.8 "
+    sglang_args = "--rollout-num-gpus-per-engine 2 " "--sglang-mem-fraction-static 0.8 "
 
     ci_args = "--ci-test "
 

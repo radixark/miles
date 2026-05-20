@@ -12,6 +12,7 @@ register_cuda_ci(
 )
 
 MODEL_NAME = "Qwen3-0.6B"
+NUM_GPUS = 8
 
 
 def prepare():
@@ -71,7 +72,12 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-enable-metrics "
 
-    misc_args = "--actor-num-nodes 1 " "--actor-num-gpus-per-node 4 " "--rollout-num-gpus 4 " "--train-backend fsdp "
+    misc_args = (
+        "--actor-num-nodes 1 "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
+        f"--rollout-num-gpus {NUM_GPUS // 2} "
+        "--train-backend fsdp "
+    )
 
     ci_args = (
         "--ci-test "
@@ -94,7 +100,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=8,
+        num_gpus_per_node=NUM_GPUS,
         megatron_model_type=None,
         train_script="train_async.py",
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},

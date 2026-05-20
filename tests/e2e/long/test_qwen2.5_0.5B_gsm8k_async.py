@@ -98,8 +98,8 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {1 if FEW_GPU else 6} "
+        f"--actor-num-gpus-per-node {max(1, NUM_GPUS // 4)} "
+        f"--rollout-num-gpus {max(1, NUM_GPUS * 3 // 4)} "
         "--megatron-to-hf-mode bridge "
     )
 
