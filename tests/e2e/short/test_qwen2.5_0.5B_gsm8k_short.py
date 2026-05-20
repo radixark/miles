@@ -4,13 +4,11 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=360, suite="stage-c-4-gpu-h200", labels=["short"])
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
+register_cuda_ci(est_time=360, suite="stage-c-2-gpu-h200", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4 if FEW_GPU else 8
+NUM_GPUS = 2
 
 
 def prepare():

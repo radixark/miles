@@ -76,14 +76,7 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage B: 2-GPU H200 always-run tests (fast GPU smoke; e.g. quantizer
-  # and rollout integration). Every test registered to this suite carries
-  # `labels=[]`, so run_suite.py's predicate runs them on every PR. These
-  # are single-process unit-style GPU tests with no parallelism dependency,
-  # so a 2-GPU worker is sufficient. Runs on the H200 2+2+4 split fleet
-  # (see stage-c-4-gpu-h200 comment for the CUDA_VISIBLE_DEVICES partition
-  # model). `needs: [stage-a-cpu]` preserves CPU-gates-GPU sequencing; no
-  # partition.
+ 
   stage-b-2-gpu-h200:
     needs: [stage-a-cpu]
     if: |
@@ -98,9 +91,7 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage C: 8-GPU H100 tests (2 partitions). Runs every PR; the labels
-  # predicate inside run_suite.py controls which tests actually execute.
-  # `needs: [stage-a-cpu]` preserves today's CPU-gates-GPU sequencing.
+
   stage-c-8-gpu-h100:
     needs: [stage-a-cpu]
     if: |
@@ -120,22 +111,7 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage C: 4-GPU H200 tests. This stage hosts ONLY tests that are statically
-  # sized for <=4 GPUs; the world_size <=4 budget is enforced by
-  # tests/utils/test_gpu_cardinality_lint.py. Tests that previously branched on
-  # a runtime env var to dynamically shrink to <=4 GPUs have been migrated to
-  # `stage-c-8-gpu-h100` and run with the 8-GPU branch unconditionally.
-  #
-  # The H200 fleet is one physical 8-GPU node split into two 4-GPU self-hosted
-  # workers (worker-1 pinned to GPUs 0-3, worker-2 to 4-7) via runner-launch-time
-  # CUDA_VISIBLE_DEVICES set in the runner container's compose environment; the
-  # bare `--env CUDA_VISIBLE_DEVICES` flag in _run-ci.yml's container.options
-  # inherits that value into the inner job container, giving each worker
-  # CUDA-level visibility into its disjoint 4-GPU subset. `runs_on` requires
-  # BOTH the `h200` hw-type label and the `4gpu` gpu-count label simultaneously,
-  # so H100 work can't accidentally land here. The host-side /data/miles_ci is
-  # canonical on every CI host (see tests/ci/skills/setup-ci-host); _run-ci.yml
-  # mounts that literal path.
+
   stage-c-4-gpu-h200:
     needs: [stage-a-cpu]
     if: |
@@ -144,11 +120,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 4 partitions on 2 workers: each worker runs 2 partitions sequentially.
-        # Same total wall time as 2 partitions (bounded by the longest single
-        # test, currently test_session_server_multi_role.py at 9600s), but
-        # smaller retry blast radius. Will collapse back when that long test
-        # is split in a follow-up PR.
         partition_id: [0, 1, 2]
     uses: ./.github/workflows/_run-ci.yml
     with:
@@ -160,12 +131,6 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage C: 2-GPU H200 long-running tests (currently the two long gsm8k
-  # convergence checks, est_time ~5000s each). Runs on the H200 2+2+4
-  # split fleet's 2-GPU workers. Hosts tests that exercise full RL
-  # convergence on a tiny model where rollout throughput dominates wall
-  # time; GPU count past 2 doesn't speed them up. Same labels predicate
-  # as other stage-c jobs.
   stage-c-2-gpu-h200:
     needs: [stage-a-cpu]
     if: |
