@@ -5,15 +5,15 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["short"])
+register_cuda_ci(est_time=600, suite="stage-c-2-gpu-h200", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
+NUM_GPUS = 2
 
 # Inline sglang config: same model, 2 engine groups with different sizes.
-# Group 1: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
-# Group 2: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
+# Group 1: 1 GPU, 1 GPU/engine (tp=1) -> 1 engine
+# Group 2: 1 GPU, 1 GPU/engine (tp=1) -> 1 engine
 # Tests that ServerGroup/RolloutServer correctly manages multiple groups
 # behind a single router, with separate port cursors per group.
 SGLANG_CONFIG_YAML = """\
@@ -21,10 +21,10 @@ sglang:
   - name: default
     server_groups:
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: 1
         num_gpus_per_engine: 1
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: 1
         num_gpus_per_engine: 1
 """
 
