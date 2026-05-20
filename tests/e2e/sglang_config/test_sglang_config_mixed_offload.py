@@ -22,8 +22,6 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=300, suite="stage-c-8-gpu-h100", labels=["short"])
 
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
-
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 8
@@ -114,7 +112,7 @@ def execute():
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
-        f"--sglang-mem-fraction-static {0.6 if TIGHT_DEVICE_MEMORY else 0.7} "
+        f"--sglang-mem-fraction-static 0.7 "
         "--sglang-cuda-graph-max-bs 32 "
         f"--sglang-config {config_path} "
     )

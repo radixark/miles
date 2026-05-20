@@ -7,7 +7,6 @@ import miles.utils.external_utils.command_utils as U
 # est_time calibrated against historical CI runtime: ~4124–4182s on 8×H100.
 register_cuda_ci(est_time=5000, suite="stage-c-8-gpu-h100", labels=["long"])
 
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
@@ -80,11 +79,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        f"--sglang-mem-fraction-static {0.6 if TIGHT_DEVICE_MEMORY else 0.7} "
-        "--sglang-enable-metrics "
-    )
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.7 " "--sglang-enable-metrics "
 
     ci_args = (
         "--ci-test "

@@ -9,7 +9,6 @@ register_cuda_ci(
 )
 
 ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "0")
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "GLM-Z1-9B-0414"
 MODEL_TYPE = "glm4-9B"
@@ -63,7 +62,7 @@ def execute():
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_DEVICE_MEMORY else 4608} "
+        "--max-tokens-per-gpu 4608 "
     )
 
     grpo_args = (
