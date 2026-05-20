@@ -21,7 +21,7 @@ class CaseConfig:
     pp_size: int
     tp_size: int = None
     ep_size: int = None
-    max_tokens_per_gpu: int = 16384
+    max_tokens_per_gpu: int = 8192
 
     def __post_init__(self):
         if self.tp_size is None:

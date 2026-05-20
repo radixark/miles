@@ -15,7 +15,7 @@ CASE = CaseConfig(
     num_gpus_per_node=8,
     cp_size=1,
     pp_size=2,
-    max_tokens_per_gpu=4096,
+    max_tokens_per_gpu=2048,
 )
 
 
