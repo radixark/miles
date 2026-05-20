@@ -90,7 +90,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 32768 "
+        "--max-tokens-per-gpu 16384 "
     )
 
     if TIGHT_HOST_MEMORY:

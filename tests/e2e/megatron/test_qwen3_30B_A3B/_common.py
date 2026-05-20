@@ -101,7 +101,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 32768 "
+        "--max-tokens-per-gpu 16384 "
     )
 
     if TIGHT_HOST_MEMORY:
