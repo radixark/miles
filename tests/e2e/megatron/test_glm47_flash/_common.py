@@ -106,7 +106,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 4 "
-        "--sglang-mem-fraction-static 0.8 "
+        "--sglang-mem-fraction-static 0.7 "
         # EAGLE speculative decoding (MTP)
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "

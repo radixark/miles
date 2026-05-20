@@ -95,7 +95,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.8 --sglang-cuda-graph-bs 1 2 4 8 16 "
+    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.7 --sglang-cuda-graph-bs 1 2 4 8 16 "
 
     ci_args = "--ci-test "
     if mode in {"save", "async_save"}:

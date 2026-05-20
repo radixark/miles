@@ -121,7 +121,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 4 "
-        "--sglang-mem-fraction-static 0.8 "
+        "--sglang-mem-fraction-static 0.7 "
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "

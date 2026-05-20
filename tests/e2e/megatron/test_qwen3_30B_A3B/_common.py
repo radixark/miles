@@ -141,7 +141,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     else:
         sglang_args = (
             "--rollout-num-gpus-per-engine 4 "
-            "--sglang-mem-fraction-static 0.8 "
+            "--sglang-mem-fraction-static 0.7 "
             "--sglang-max-running-requests 512 "
             "--sglang-enable-metrics "
         )
