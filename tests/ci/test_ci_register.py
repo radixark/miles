@@ -61,7 +61,7 @@ class TestRegisterPositive:
         path = _make_fixture(
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-8-gpu-h100", labels=None)
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=None)
             """,
             tmp_path,
         )
@@ -73,7 +73,7 @@ class TestRegisterPositive:
         path = _make_fixture(
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-8-gpu-h100", labels=[])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
             """,
             tmp_path,
         )

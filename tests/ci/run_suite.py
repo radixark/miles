@@ -23,18 +23,20 @@ _RUN_CI_PREFIX = "run-ci-"
 # runtime by `filter_tests` via the `--labels` arg, not via per-suite jobs).
 #
 # CUDA suites: each is served by a matching workflow job in
-# .github/workflows/pr-test.yml. `stage-c-4-gpu-h200` runs on the H200
-# split-worker fleet (per-runner CUDA_VISIBLE_DEVICES partition); the other
-# CUDA suites run on full-node 8-GPU H100/H200 hosts.
+# .github/workflows/pr-test.yml. `stage-c-8-gpu-h100` runs on the full-node
+# 8-GPU H100 host; the H200 fleet is one 8-GPU node split into 2+2+4 workers
+# via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml stage-c-4-gpu-h200 /
+# stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job comments).
 PER_COMMIT_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
         "stage-b-cpu",
     ],
     HWBackend.CUDA: [
-        "stage-b-8-gpu-h100",
+        "stage-b-2-gpu-h200",
         "stage-c-8-gpu-h100",
         "stage-c-4-gpu-h200",
+        "stage-c-2-gpu-h200",
     ],
 }
 

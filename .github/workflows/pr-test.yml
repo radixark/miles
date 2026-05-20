@@ -76,20 +76,24 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage B: 8-GPU H100 always-run tests (fast GPU smoke; e.g. quantizer
+  # Stage B: 2-GPU H200 always-run tests (fast GPU smoke; e.g. quantizer
   # and rollout integration). Every test registered to this suite carries
-  # `labels=[]`, so run_suite.py's predicate runs them on every PR.
-  # `needs: [stage-a-cpu]` preserves CPU-gates-GPU sequencing; no partition.
-  stage-b-8-gpu-h100:
+  # `labels=[]`, so run_suite.py's predicate runs them on every PR. These
+  # are single-process unit-style GPU tests with no parallelism dependency,
+  # so a 2-GPU worker is sufficient. Runs on the H200 2+2+4 split fleet
+  # (see stage-c-4-gpu-h200 comment for the CUDA_VISIBLE_DEVICES partition
+  # model). `needs: [stage-a-cpu]` preserves CPU-gates-GPU sequencing; no
+  # partition.
+  stage-b-2-gpu-h200:
     needs: [stage-a-cpu]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
-      runs_on: '["h100", "8gpu"]'
+      runs_on: '["h200", "2gpu"]'
       execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-b-8-gpu-h100
+        python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
@@ -145,13 +149,38 @@ jobs:
         # test, currently test_session_server_multi_role.py at 9600s), but
         # smaller retry blast radius. Will collapse back when that long test
         # is split in a follow-up PR.
-        partition_id: [0, 1, 2, 3]
+        partition_id: [0, 1, 2]
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "4gpu"]'
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
+
+  # Stage C: 2-GPU H200 long-running tests (currently the two long gsm8k
+  # convergence checks, est_time ~5000s each). Runs on the H200 2+2+4
+  # split fleet's 2-GPU workers. Hosts tests that exercise full RL
+  # convergence on a tiny model where rollout throughput dominates wall
+  # time; GPU count past 2 doesn't speed them up. Same labels predicate
+  # as other stage-c jobs.
+  stage-c-2-gpu-h200:
+    needs: [stage-a-cpu]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "2gpu"]'
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit

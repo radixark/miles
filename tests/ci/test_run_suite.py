@@ -8,7 +8,7 @@ These cover the Python-side label pipeline:
   `--match-all-labels` with the new "empty labels means always run"
   semantic.
 * `PER_COMMIT_SUITES`: locked to the new taxonomy including the
-  always-run GPU bucket `stage-b-8-gpu-h100`.
+  always-run GPU bucket `stage-b-2-gpu-h200`.
 
 We build `CIRegistry` instances directly via a small factory rather than
 parsing fixture files -- the AST-side validation lives in
@@ -56,9 +56,10 @@ class TestPerCommitSuites:
 
     def test_cuda_suites_exact(self):
         assert PER_COMMIT_SUITES[HWBackend.CUDA] == [
-            "stage-b-8-gpu-h100",
+            "stage-b-2-gpu-h200",
             "stage-c-8-gpu-h100",
             "stage-c-4-gpu-h200",
+            "stage-c-2-gpu-h200",
         ]
 
     def test_no_legacy_suite_names_remain(self):
@@ -68,6 +69,7 @@ class TestPerCommitSuites:
             "stage-b-fast-gpu",
             "stage-b-short-8-gpu",
             "stage-b-sglang-8-gpu",
+            "stage-b-8-gpu-h100",
             "stage-c-fsdp-8-gpu",
             "stage-c-megatron-8-gpu",
             "stage-c-precision-8-gpu",
@@ -307,16 +309,16 @@ class TestFilterTestsBaseDimensions:
         )
         assert _names(enabled) == {"tests/e2e/per_commit.py"}
 
-    def test_stage_b_8_gpu_h100_is_addressable(self):
-        # The new always-run GPU bucket must be a first-class suite that
+    def test_stage_b_2_gpu_h200_is_addressable(self):
+        # The always-run GPU bucket must be a first-class suite that
         # filter_tests can route to without a "unknown suite" warning fail.
         tests = [
-            _make("tests/fast/q.py", suite="stage-b-8-gpu-h100", labels=[]),
+            _make("tests/fast/q.py", suite="stage-b-2-gpu-h200", labels=[]),
         ]
         enabled, _ = filter_tests(
             tests,
             HWBackend.CUDA,
-            "stage-b-8-gpu-h100",
+            "stage-b-2-gpu-h200",
             labels=set(),
         )
         assert _names(enabled) == {"tests/fast/q.py"}

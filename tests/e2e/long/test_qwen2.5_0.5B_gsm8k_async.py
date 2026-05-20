@@ -4,14 +4,14 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-# est_time calibrated against historical CI runtime: ~4124–4182s on 8×H100.
-register_cuda_ci(est_time=5000, suite="stage-c-8-gpu-h100", labels=["long"], disabled="Too slow for CI debug.")
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+# est_time baseline: ~4124–4182s on 8×H100; preserved on 2×H200 since
+# rollout throughput dominates wall time and is GPU-count-insensitive for
+# a 0.5B model. Re-calibrate after the first real run on the new bucket.
+register_cuda_ci(est_time=5000, suite="stage-c-2-gpu-h200", labels=["long"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 2 if FEW_GPU else 8
+NUM_GPUS = 2
 
 
 def prepare():
