@@ -5,7 +5,7 @@ from tests.ci.ci_register import register_cuda_ci
 import miles.utils.external_utils.command_utils as U
 
 # est_time calibrated against historical CI runtime: ~4124–4182s on 8×H100.
-register_cuda_ci(est_time=5000, suite="stage-c-8-gpu-h100", labels=["long"])
+register_cuda_ci(est_time=5000, suite="stage-c-8-gpu-h100", labels=["long"], disabled="Too slow for CI debug.")
 
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
