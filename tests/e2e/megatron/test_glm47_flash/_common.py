@@ -80,6 +80,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if TIGHT_HOST_MEMORY:
         perf_args += "--exp-avg-dtype fp16 "
         perf_args += "--exp-avg-sq-dtype fp16 "
+        perf_args += "--main-params-dtype fp16 "
 
     grpo_args = (
         "--advantage-estimator grpo "

@@ -107,6 +107,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if TIGHT_HOST_MEMORY:
         perf_args += "--exp-avg-dtype fp16 "
         perf_args += "--exp-avg-sq-dtype fp16 "
+        perf_args += "--main-params-dtype fp16 "
 
     # r3 path uses --use-rollout-routing-replay; non-r3 uses --use-routing-replay.
     routing_flag = "--use-rollout-routing-replay" if case.use_r3 else "--use-routing-replay"
