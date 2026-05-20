@@ -45,11 +45,18 @@ def convert_checkpoint(
             "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
         )
 
+    rocm_env = ""
+    if os.path.exists("/opt/rocm"):
+        for var in ("NVTE_FUSED_ATTN", "NVTE_FLASH_ATTN", "NVTE_UNFUSED_ATTN"):
+            os.environ.pop(var, None)
+        rocm_env = "unset NVTE_FUSED_ATTN NVTE_FLASH_ATTN NVTE_UNFUSED_ATTN && "
+
     if multinode:
         fn = partial(exec_command_all_ray_node, num_nodes=num_nodes)
     else:
         fn = exec_command
     fn(
+        f"{rocm_env}"
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH={megatron_path} "
         f"torchrun "
@@ -132,6 +139,18 @@ def execute_train(
         "pkill -9 redis; "
         "true; "
     )
+
+    rocm_env = ""
+    if os.path.exists("/opt/rocm"):
+        for var in ("NVTE_FUSED_ATTN", "NVTE_FLASH_ATTN", "NVTE_UNFUSED_ATTN"):
+            os.environ.pop(var, None)
+        os.environ.setdefault("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES", "1")
+        os.environ.setdefault("HIP_VISIBLE_DEVICES", ",".join(str(i) for i in range(num_gpus_per_node)))
+        rocm_env = (
+            f"unset NVTE_FUSED_ATTN NVTE_FLASH_ATTN NVTE_UNFUSED_ATTN && "
+            f"export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 && "
+            f"export HIP_VISIBLE_DEVICES={os.environ['HIP_VISIBLE_DEVICES']} && "
+        )
 
     if not external_ray:
         exec_command(

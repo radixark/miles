@@ -8,6 +8,7 @@ register_cuda_ci(est_time=1200, suite="stage-c-ckpt-8-gpu", num_gpus=8)
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+IS_ROCM = os.path.exists("/opt/rocm")
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -66,17 +67,33 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--balance-data "
     )
 
-    perf_args = (
-        "--tensor-model-parallel-size 2 "
-        "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 2 "
-        "--recompute-granularity full "
-        "--recompute-method uniform "
-        "--recompute-num-layers 1 "
-        "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
-    )
+    if IS_ROCM:
+        # ROCm async 4+4: TP=1, CP=1 (full model per GPU)
+        actor_gpus = 4
+        perf_args = (
+            "--tensor-model-parallel-size 1 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 1 "
+            "--context-parallel-size 1 "
+            "--recompute-granularity full "
+            "--recompute-method uniform "
+            "--recompute-num-layers 1 "
+            "--use-dynamic-batch-size "
+            "--max-tokens-per-gpu 2048 "
+        )
+    else:
+        actor_gpus = NUM_GPUS
+        perf_args = (
+            "--tensor-model-parallel-size 2 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 1 "
+            "--context-parallel-size 2 "
+            "--recompute-granularity full "
+            "--recompute-method uniform "
+            "--recompute-num-layers 1 "
+            "--use-dynamic-batch-size "
+            f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
+        )
 
     ppo_args = (
         "--advantage-estimator grpo "
@@ -87,16 +104,38 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--eps-clip 0.2 "
     )
 
-    optimizer_args = (
-        "--optimizer adam "
-        "--lr 1e-6 "
-        "--lr-decay-style constant "
-        "--weight-decay 0.1 "
-        "--adam-beta1 0.9 "
-        "--adam-beta2 0.98 "
-    )
+    if IS_ROCM:
+        optimizer_args = (
+            "--optimizer adam "
+            "--lr 1e-6 "
+            "--lr-decay-style constant "
+            "--weight-decay 0.1 "
+            "--adam-beta1 0.9 "
+            "--adam-beta2 0.98 "
+            "--optimizer-cpu-offload "
+            "--overlap-cpu-optimizer-d2h-h2d "
+            "--use-precision-aware-optimizer "
+        )
+    else:
+        optimizer_args = (
+            "--optimizer adam "
+            "--lr 1e-6 "
+            "--lr-decay-style constant "
+            "--weight-decay 0.1 "
+            "--adam-beta1 0.9 "
+            "--adam-beta2 0.98 "
+        )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.8 --sglang-cuda-graph-bs 1 2 4 8 16 "
+    if IS_ROCM:
+        rollout_gpus = 4
+        sglang_args = (
+            f"--rollout-num-gpus {rollout_gpus} "
+            "--rollout-num-gpus-per-engine 2 "
+            "--sglang-mem-fraction-static 0.8 "
+            "--sglang-disable-custom-all-reduce "
+        )
+    else:
+        sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.8 --sglang-cuda-graph-bs 1 2 4 8 16 "
 
     ci_args = "--ci-test "
     if mode in {"save", "async_save"}:
@@ -104,19 +143,34 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     if mode == "load":
         ci_args += "--ci-check-model-hash "
 
-    misc_args = (
-        # default dropout in megatron is 0.1
-        "--attention-dropout 0.0 "
-        "--hidden-dropout 0.0 "
-        # should be good for model performance
-        "--accumulate-allreduce-grads-in-fp32 "
-        "--attention-softmax-in-fp32 "
-        # need to comment this when using model with MLA
-        "--attention-backend flash "
-        "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
-        "--colocate "
-    )
+    if IS_ROCM:
+        misc_args = (
+            "--attention-dropout 0.0 "
+            "--hidden-dropout 0.0 "
+            "--accumulate-allreduce-grads-in-fp32 "
+            "--attention-softmax-in-fp32 "
+            "--attention-backend auto "
+            "--update-weights-interval 2 "
+            "--actor-num-nodes 1 "
+            f"--actor-num-gpus-per-node {actor_gpus} "
+        )
+    else:
+        misc_args = (
+            "--attention-dropout 0.0 "
+            "--hidden-dropout 0.0 "
+            "--accumulate-allreduce-grads-in-fp32 "
+            "--attention-softmax-in-fp32 "
+            "--attention-backend flash "
+            "--actor-num-nodes 1 "
+            "--actor-num-gpus-per-node 8 "
+            "--colocate "
+        )
+
+    extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    if IS_ROCM:
+        extra_env_vars["SGLANG_SET_CPU_AFFINITY"] = "0"
+        extra_env_vars["RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"] = "1"
+        extra_env_vars["HIP_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 
     train_args = (
         f"{ckpt_args} "
@@ -134,7 +188,8 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+        train_script="train_async.py" if IS_ROCM else "train.py",
+        extra_env_vars=extra_env_vars,
     )
 
 

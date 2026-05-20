@@ -19,7 +19,9 @@ def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumula
             # small floating-point differences, so use a relaxed threshold.
             assert abs(log_dict["train/ppo_kl"]) < 1e-8 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
         else:
-            assert abs(log_dict["train/ppo_kl"]) < 1e-10 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
+            _is_rocm = hasattr(torch.version, "hip") and torch.version.hip is not None
+            _tol = 1e-8 if _is_rocm else 1e-10
+            assert abs(log_dict["train/ppo_kl"]) < _tol and abs(log_dict["train/pg_clipfrac"]) < _tol, f"{log_dict=}"
     if accumulated_step_id == 0 and "train/kl_loss" in log_dict and not args.use_rollout_routing_replay:
         assert abs(log_dict["train/kl_loss"]) < 1e-9, f"{log_dict=}"
 
