@@ -5,16 +5,29 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
-CP_SIZE = 2
-PP_SIZE = 2
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 
-@dataclass(frozen=True)
+@dataclass
 class CaseConfig:
     use_deepep: bool
+    use_fp8_rollout: bool
+    use_int4_rollout: bool
+    use_bridge: bool
+    use_r3: bool
     num_gpus_per_node: int
+    cp_size: int
+    pp_size: int
+    tp_size: int = None
+    ep_size: int = None
+    max_tokens_per_gpu: int = 16384
+
+    def __post_init__(self):
+        if self.tp_size is None:
+            self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
+        if self.ep_size is None:
+            self.ep_size = self.num_gpus_per_node // self.pp_size
 
 
 def prepare(case: CaseConfig) -> None:
@@ -64,22 +77,19 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--eval-top-k 1 "
     )
 
-    # GLM-4.7-Flash has 20 attention heads, so tp_size must divide 20.
-    tp_size = case.num_gpus_per_node // CP_SIZE // PP_SIZE
-    ep_size = case.num_gpus_per_node
-
     perf_args = (
-        f"--tensor-model-parallel-size {tp_size} "
+        f"--tensor-model-parallel-size {case.tp_size} "
         "--sequence-parallel "
-        f"--pipeline-model-parallel-size {PP_SIZE} "
-        f"--context-parallel-size {CP_SIZE} "
-        f"--expert-model-parallel-size {ep_size} "
+        f"--pipeline-model-parallel-size {case.pp_size} "
+        f"{'--decoder-last-pipeline-num-layers 23 ' if case.pp_size == 2 else ''}"
+        f"--context-parallel-size {case.cp_size} "
+        f"--expert-model-parallel-size {case.ep_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 16384 "
+        f"--max-tokens-per-gpu {case.max_tokens_per_gpu} "
     )
 
     if TIGHT_HOST_MEMORY:

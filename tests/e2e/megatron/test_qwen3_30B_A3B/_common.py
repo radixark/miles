@@ -5,13 +5,11 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
-CP_SIZE = 2
-PP_SIZE = 1
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 
-@dataclass(frozen=True)
+@dataclass
 class CaseConfig:
     use_deepep: bool
     use_fp8_rollout: bool
@@ -19,6 +17,17 @@ class CaseConfig:
     use_bridge: bool
     use_r3: bool
     num_gpus_per_node: int
+    cp_size: int
+    pp_size: int
+    tp_size: int = None
+    ep_size: int = None
+    max_tokens_per_gpu: int = 16384
+
+    def __post_init__(self):
+        if self.tp_size is None:
+            self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
+        if self.ep_size is None:
+            self.ep_size = self.num_gpus_per_node // self.pp_size
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
@@ -91,21 +100,18 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--eval-top-k 1 "
     )
 
-    tp_size = case.num_gpus_per_node // CP_SIZE // PP_SIZE
-    ep_size = case.num_gpus_per_node
-
     perf_args = (
-        f"--tensor-model-parallel-size {tp_size} "
+        f"--tensor-model-parallel-size {case.tp_size} "
         "--sequence-parallel "
-        f"--pipeline-model-parallel-size {PP_SIZE} "
-        f"--context-parallel-size {CP_SIZE} "
-        f"--expert-model-parallel-size {ep_size} "
+        f"--pipeline-model-parallel-size {case.pp_size} "
+        f"--context-parallel-size {case.cp_size} "
+        f"--expert-model-parallel-size {case.ep_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 16384 "
+        f"--max-tokens-per-gpu {case.max_tokens_per_gpu} "
     )
 
     if TIGHT_HOST_MEMORY:
