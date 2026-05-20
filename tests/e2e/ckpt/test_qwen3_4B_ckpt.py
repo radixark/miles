@@ -113,7 +113,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 

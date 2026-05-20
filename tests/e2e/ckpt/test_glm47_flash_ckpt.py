@@ -4,6 +4,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
+# limited by host memory (usually > 1TB when saving ckpt), so 1 node is required.
 register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h100", labels=["ckpt"])
 
 ENABLE_EVAL = 0
@@ -147,7 +148,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 

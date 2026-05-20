@@ -106,7 +106,7 @@ def execute():
         "--calculate-per-token-loss "
         "--use-miles-router "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 

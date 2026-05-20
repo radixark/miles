@@ -177,7 +177,7 @@ def execute():
         # ------------
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--num-gpus-per-node 8 "
         "--colocate "
         "--dump-details /root/shared_data/dump_details "

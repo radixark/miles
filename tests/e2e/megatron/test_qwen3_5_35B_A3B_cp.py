@@ -122,7 +122,7 @@ def _execute_with_cp(cp_size: int):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
         "--moe-token-dispatcher-type flex "
     )

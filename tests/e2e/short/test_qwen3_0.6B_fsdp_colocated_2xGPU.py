@@ -12,6 +12,7 @@ register_cuda_ci(
 )
 
 MODEL_NAME = "Qwen3-0.6B"
+NUM_GPUS = 8
 
 
 def prepare():
@@ -84,7 +85,7 @@ def execute():
         "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step
     )
 
-    misc_args = "--actor-num-nodes 1 " "--actor-num-gpus-per-node 8 " "--colocate " "--train-backend fsdp "
+    misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " "--colocate " "--train-backend fsdp "
 
     train_args = (
         f"{ckpt_args} "
@@ -101,7 +102,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=8,
+        num_gpus_per_node=NUM_GPUS,
         megatron_model_type=None,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
