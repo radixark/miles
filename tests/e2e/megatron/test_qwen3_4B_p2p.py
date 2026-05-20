@@ -43,7 +43,7 @@ def execute():
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
+        "--pipeline-model-parallel-size 1 "  # FIXME: better add moe ci with pp2, ep4
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
