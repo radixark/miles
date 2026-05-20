@@ -7,6 +7,8 @@ MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
 NUM_GPUS = 4
 
+TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+
 
 @dataclass(frozen=True)
 class CaseConfig:
@@ -74,6 +76,10 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 16384 "
     )
+
+    if TIGHT_HOST_MEMORY:
+        perf_args += "--exp-avg-dtype fp16 "
+        perf_args += "--exp-avg-sq-dtype fp16 "
 
     grpo_args = (
         "--advantage-estimator grpo "

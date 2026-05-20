@@ -9,6 +9,8 @@ register_cuda_ci(est_time=2400, suite="stage-c-4-gpu-h200", labels=["ckpt"])
 ENABLE_EVAL = 0
 USE_DEEPEP = 0
 
+TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
 NUM_GPUS = 4
@@ -91,6 +93,10 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--max-tokens-per-gpu 32768 "
     )
 
+    if TIGHT_HOST_MEMORY:
+        perf_args += "--exp-avg-dtype fp16 "
+        perf_args += "--exp-avg-sq-dtype fp16 "
+
     grpo_args = (
         "--advantage-estimator grpo "
         "--use-kl-loss "
@@ -100,7 +106,6 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
         "--use-rollout-routing-replay "
-        "--use-miles-router "
     )
 
     optimizer_args = (

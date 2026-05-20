@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 
 import miles.utils.external_utils.command_utils as U
@@ -5,6 +6,9 @@ import miles.utils.external_utils.command_utils as U
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 4
+
+
+TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 
 @dataclass(frozen=True)
@@ -97,8 +101,12 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 16384 "
+        "--max-tokens-per-gpu 32768 "
     )
+
+    if TIGHT_HOST_MEMORY:
+        perf_args += "--exp-avg-dtype fp16 "
+        perf_args += "--exp-avg-sq-dtype fp16 "
 
     # r3 path uses --use-rollout-routing-replay; non-r3 uses --use-routing-replay.
     routing_flag = "--use-rollout-routing-replay" if case.use_r3 else "--use-routing-replay"
