@@ -91,13 +91,13 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--eval-top-k 1 "
     )
 
-    tp_size = case.num_gpus_per_node // 2
+    tp_size = case.num_gpus_per_node // CP_SIZE // PP_SIZE
     ep_size = case.num_gpus_per_node
 
     perf_args = (
         f"--tensor-model-parallel-size {tp_size} "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size {PP_SIZE} "
+        f"--pipeline-model-parallel-size {PP_SIZE} "
         f"--context-parallel-size {CP_SIZE} "
         f"--expert-model-parallel-size {ep_size} "
         "--expert-tensor-parallel-size 1 "

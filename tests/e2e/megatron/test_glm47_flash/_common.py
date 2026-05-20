@@ -5,7 +5,8 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
-NUM_GPUS = 4
+CP_SIZE = 2
+PP_SIZE = 2
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
@@ -13,9 +14,10 @@ TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")
 @dataclass(frozen=True)
 class CaseConfig:
     use_deepep: bool
+    num_gpus_per_node: int
 
 
-def prepare() -> None:
+def prepare(case: CaseConfig) -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -24,7 +26,7 @@ def prepare() -> None:
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
-        num_gpus_per_node=NUM_GPUS,
+        num_gpus_per_node=case.num_gpus_per_node,
     )
 
 
@@ -62,13 +64,16 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--eval-top-k 1 "
     )
 
-    # tp=4 because GLM-4.7-Flash has 20 attention heads (tp must divide num_heads)
+    # GLM-4.7-Flash has 20 attention heads, so tp_size must divide 20.
+    tp_size = case.num_gpus_per_node // CP_SIZE // PP_SIZE
+    ep_size = case.num_gpus_per_node
+
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        f"--tensor-model-parallel-size {tp_size} "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
-        "--expert-model-parallel-size 4 "
+        f"--pipeline-model-parallel-size {PP_SIZE} "
+        f"--context-parallel-size {CP_SIZE} "
+        f"--expert-model-parallel-size {ep_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -129,7 +134,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {NUM_GPUS} "
+        f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
     )
 
@@ -162,6 +167,6 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=NUM_GPUS,
+        num_gpus_per_node=case.num_gpus_per_node,
         megatron_model_type=MODEL_TYPE,
     )
