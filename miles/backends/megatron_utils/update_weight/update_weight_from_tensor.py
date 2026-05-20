@@ -16,7 +16,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import post_process_weights
 from .hf_weight_iterator_base import HfWeightIteratorBase
-from .update_weight_from_distributed.broadcast import (
+from .update_weight_from_distributed.broadcast_utils import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
     update_weights_from_distributed,

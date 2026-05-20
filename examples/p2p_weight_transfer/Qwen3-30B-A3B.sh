@@ -1,7 +1,7 @@
 #!/bin/bash
 # Qwen3-30B-A3B: 4 nodes, disaggregated.
 # Usage: bash Qwen3-30B-A3B.sh [MODE] [NODE_RANK] [HEAD_NODE_IP]
-#   MODE         : p2p (default) | broadcast
+#   MODE         : p2p (default) | broadcast | sendrecv_broadcast
 #   NODE_RANK    : 0 (head, default) | 1..3 (workers)
 #   HEAD_NODE_IP : IP address of the head node
 set -ex

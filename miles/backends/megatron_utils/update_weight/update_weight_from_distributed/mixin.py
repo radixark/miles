@@ -22,7 +22,7 @@ class DistBucketedWeightUpdateMixin:
         self.model: Sequence[torch.nn.Module] (Megatron model chunks).
         self.model_name: str (for HF conversion).
         self.quantization_config: dict | None.
-        self._is_source: bool (whether it's the rank broadcasting weights after `all_gather`).
+        self._is_source: bool (Defaults to the broadcast-style source rank after `all_gather`). Consuming classes can override it when their transfer plan uses a different source mapping.
         self.weight_version: int.
         self.rollout_engines: Sequence[ActorHandle]. engines of rollout side.
         self._group_name: str. Identifier shown in the tqdm progress bar.
@@ -30,6 +30,10 @@ class DistBucketedWeightUpdateMixin:
             Transfer a bucket of HF-format ``(name, tensor)`` pairs to rollout
             engines (via NCCL broadcast, p2p write, etc.).
     """
+
+    @property
+    def _is_source(self):
+        return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     def _gather_and_update_non_expert_weights(
         self,
