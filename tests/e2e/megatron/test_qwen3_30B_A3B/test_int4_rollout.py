@@ -11,11 +11,12 @@ CASE = CaseConfig(
     use_int4_rollout=True,
     use_bridge=False,
     use_r3=False,
+    num_gpus_per_node=4,
 )
 
 
 if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    prepare(need_fp8=CASE.use_fp8_rollout, need_int4=CASE.use_int4_rollout, all_bridge=CASE.use_bridge)
+    prepare(CASE, need_fp8=CASE.use_fp8_rollout, need_int4=CASE.use_int4_rollout, all_bridge=CASE.use_bridge)
     execute(CASE, wandb_file=__file__)

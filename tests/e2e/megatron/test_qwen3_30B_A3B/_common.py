@@ -5,8 +5,8 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
-NUM_GPUS = 4
-
+CP_SIZE = 2
+PP_SIZE = 1
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
@@ -18,9 +18,10 @@ class CaseConfig:
     use_int4_rollout: bool
     use_bridge: bool
     use_r3: bool
+    num_gpus_per_node: int
 
 
-def prepare(*, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
+def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
     if need_fp8:
@@ -41,7 +42,7 @@ def prepare(*, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
         U.convert_checkpoint(
             model_name=MODEL_NAME,
             megatron_model_type=MODEL_TYPE,
-            num_gpus_per_node=NUM_GPUS,
+            num_gpus_per_node=case.num_gpus_per_node,
         )
 
 
@@ -90,12 +91,15 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--eval-top-k 1 "
     )
 
+    tp_size = case.num_gpus_per_node // 2
+    ep_size = case.num_gpus_per_node
+
     perf_args = (
-        "--tensor-model-parallel-size 2 "
+        f"--tensor-model-parallel-size {tp_size} "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 2 "
-        "--expert-model-parallel-size 4 "
+        "--pipeline-model-parallel-size {PP_SIZE} "
+        f"--context-parallel-size {CP_SIZE} "
+        f"--expert-model-parallel-size {ep_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -159,7 +163,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {NUM_GPUS} "
+        f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
     )
 
@@ -198,7 +202,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=NUM_GPUS,
+        num_gpus_per_node=case.num_gpus_per_node,
         megatron_model_type=MODEL_TYPE,
         extra_env_vars=extra_env_vars,
     )
