@@ -485,8 +485,8 @@ class MegatronTrainRayActor(TrainRayActor):
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
-        configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
-        if not any(c.state == AdapterState.PENDING for c in configs.values()):
+        pending = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.PENDING))
+        if not pending:
             return 0
 
         from miles.backends.megatron_utils.multi_lora_utils import load_pending_adapters
@@ -509,8 +509,8 @@ class MegatronTrainRayActor(TrainRayActor):
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
-        configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
-        if not any(c.state == AdapterState.DRAINED for c in configs.values()):
+        drained = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.DRAINED))
+        if not drained:
             return 0
 
         from miles.backends.megatron_utils.multi_lora_utils import unload_drained_adapters
@@ -540,9 +540,9 @@ class MegatronTrainRayActor(TrainRayActor):
             from miles.ray.multi_lora_controller import get_multi_lora_controller
 
             controller = get_multi_lora_controller()
-            adapter_configs = ray.get(controller.adapter_configs.remote())
+            adapters = ray.get(controller.active_adapters.remote())
             adapter_steps = ray.get(controller.adapter_train_steps.remote())
-            save_multi_lora_checkpoints(self.args, self.model, adapter_steps, adapter_configs)
+            save_multi_lora_checkpoints(self.args, self.model, adapter_steps, adapters)
         else:
             save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
 

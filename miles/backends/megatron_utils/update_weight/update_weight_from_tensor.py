@@ -390,7 +390,7 @@ class UpdateWeightFromTensor:
         every ipc_engine call here is safe.
 
         Per adapter:
-        - ACTIVE: push weights. ``lora_loaded=False`` on first push for an
+        - RUNNING: push weights. ``lora_loaded=False`` on first push for an
           adapter (creates SGLang slot), ``True`` on subsequent pushes
           (unload + reload SGLang refresh).
         - DRAINED: unload from SGLang and forget. Model-side cleanup is
@@ -399,13 +399,13 @@ class UpdateWeightFromTensor:
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
-        configs = ray.get(get_multi_lora_controller().adapter_configs.remote())
-        for name, config in configs.items():
-            if config.state == AdapterState.ACTIVE:
+        adapters = ray.get(get_multi_lora_controller().active_adapters.remote())
+        for name, adapter in adapters.items():
+            if adapter.state == AdapterState.RUNNING:
                 lora_loaded = name in self._multi_lora_loaded
-                self.send_one_multi_lora_adapter(name, config, lora_loaded=lora_loaded)
+                self.send_one_multi_lora_adapter(adapter, lora_loaded=lora_loaded)
                 self._multi_lora_loaded.add(name)
-            elif config.state == AdapterState.DRAINED and name in self._multi_lora_loaded:
+            elif adapter.state == AdapterState.DRAINED and name in self._multi_lora_loaded:
                 if dist.get_rank() == self._ipc_gather_src:
                     try:
                         ray.get(self._ipc_engine.unload_lora_adapter.remote(lora_name=name))
@@ -413,7 +413,7 @@ class UpdateWeightFromTensor:
                         pass
                 self._multi_lora_loaded.discard(name)
 
-    def send_one_multi_lora_adapter(self, adapter_name: str, config, lora_loaded: bool) -> None:
+    def send_one_multi_lora_adapter(self, adapter, lora_loaded: bool) -> None:
         """Push one adapter's weights to SGLang. ``lora_loaded=False`` on the
         first push (creates the SGLang slot using ``lora_config``);
         ``lora_loaded=True`` on subsequent per-cycle refreshes."""
@@ -421,12 +421,13 @@ class UpdateWeightFromTensor:
 
         from miles.backends.megatron_utils.multi_lora_utils import slice_lora_to_rank
 
+        config = adapter.config
         adapter_rank = config.rank
         lora_config = build_lora_sync_config(self.args)
         lora_config["r"] = adapter_rank
         lora_config["lora_alpha"] = config.alpha
 
-        with expose_adapter_slot(self.model, config.slot):
+        with expose_adapter_slot(self.model, adapter.slot):
             megatron_local_weights = self.weights_getter()
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="lora"
@@ -442,7 +443,7 @@ class UpdateWeightFromTensor:
                     ipc_gather_src=self._ipc_gather_src,
                     ipc_gather_group=self._ipc_gather_group,
                     lora_config=lora_config,
-                    lora_name=adapter_name,
+                    lora_name=adapter.name,
                     lora_loaded=lora_loaded,
                 )
                 if refs:

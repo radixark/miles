@@ -1141,7 +1141,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--multi-lora-idle-poll-s",
                 type=float,
                 default=5.0,
-                help="When no adapter is ACTIVE, the trainer polls for new registrations every this many seconds (default: 5.0)",
+                help="When no adapter is RUNNING, the trainer polls for new registrations every this many seconds (default: 5.0)",
             )
             parser.add_argument(
                 "--multi-lora-disable-service-mode",

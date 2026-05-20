@@ -53,8 +53,6 @@ class TestParseAdapterYaml:
         assert cfg.custom_rm_path is None
         assert cfg.num_epoch is None
         assert cfg.num_row is None
-        assert cfg.slot == -1
-        assert cfg.state == AdapterState.PENDING
 
     def test_optional_fields_passthrough(self, tmp_path):
         path = write_yaml(
@@ -143,7 +141,7 @@ class TestAdapterState:
         """Controller relies on `state < new_state` for forward-only transitions."""
         order = [
             AdapterState.PENDING,
-            AdapterState.ACTIVE,
+            AdapterState.RUNNING,
             AdapterState.DRAINING_DATASOURCE,
             AdapterState.DRAINING_INFLIGHT,
             AdapterState.DRAINING_TRAINABLE,
@@ -154,7 +152,7 @@ class TestAdapterState:
 
     def test_rollout_states(self):
         assert ADAPTER_ROLLOUT_STATES == {
-            AdapterState.ACTIVE,
+            AdapterState.RUNNING,
             AdapterState.DRAINING_DATASOURCE,
         }
 

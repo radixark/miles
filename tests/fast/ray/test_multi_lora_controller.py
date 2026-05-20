@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from miles.ray.multi_lora_controller import MultiLoRAControllerImpl
-from miles.utils.adapter_config import AdapterConfig, AdapterState
+from miles.utils.adapter_config import ADAPTER_INACTIVE_STATES, ADAPTER_ROLLOUT_STATES, AdapterConfig, AdapterState
 
 
 def make_config(tmp_path, **overrides) -> AdapterConfig:
@@ -26,9 +26,9 @@ def make_config(tmp_path, **overrides) -> AdapterConfig:
 
 
 def drain_to_trainable(controller: MultiLoRAControllerImpl, name: str) -> None:
-    """Walk an adapter through ACTIVE → DRAINING_TRAINABLE."""
+    """Walk an adapter through RUNNING → DRAINING_TRAINABLE."""
     for s in (
-        AdapterState.ACTIVE,
+        AdapterState.RUNNING,
         AdapterState.DRAINING_DATASOURCE,
         AdapterState.DRAINING_INFLIGHT,
         AdapterState.DRAINING_TRAINABLE,
@@ -50,14 +50,14 @@ class TestRegisterAdapter:
     def test_pending_state_and_slot_zero(self, controller, tmp_path):
         result = controller.register_adapter("a", make_config(tmp_path))
         assert result == {"name": "a", "slot": 0}
-        assert controller.configs["a"].state == AdapterState.PENDING
-        assert controller.configs["a"].slot == 0
+        assert controller.states["a"] == AdapterState.PENDING
+        assert controller.slots["a"] == 0
 
     def test_lowest_slot_allocated_first(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
         controller.register_adapter("b", make_config(tmp_path))
-        assert controller.configs["a"].slot == 0
-        assert controller.configs["b"].slot == 1
+        assert controller.slots["a"] == 0
+        assert controller.slots["b"] == 1
         assert controller.free_slots == set()
 
     def test_creates_dir(self, tmp_path):
@@ -108,7 +108,7 @@ class TestRegisterAdapter:
         )
         controller.register_adapter("a", str(yaml_path))
         assert controller.configs["a"].rank == 16
-        assert controller.configs["a"].slot == 0
+        assert controller.slots["a"] == 0
 
     def test_yaml_falls_back_to_controller_defaults(self, tmp_path):
         c = MultiLoRAControllerImpl(max_adapters=1, max_rank=32, default_alpha=64)
@@ -141,23 +141,23 @@ class TestRegisterAdapter:
 class TestUpdateAdapterState:
     def test_single_name(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
-        controller.update_adapter_state("a", AdapterState.ACTIVE)
-        assert controller.configs["a"].state == AdapterState.ACTIVE
+        controller.update_adapter_state("a", AdapterState.RUNNING)
+        assert controller.states["a"] == AdapterState.RUNNING
 
     def test_list_of_names(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
         controller.register_adapter("b", make_config(tmp_path))
-        controller.update_adapter_state(["a", "b"], AdapterState.ACTIVE)
-        assert controller.configs["a"].state == AdapterState.ACTIVE
-        assert controller.configs["b"].state == AdapterState.ACTIVE
+        controller.update_adapter_state(["a", "b"], AdapterState.RUNNING)
+        assert controller.states["a"] == AdapterState.RUNNING
+        assert controller.states["b"] == AdapterState.RUNNING
 
     def test_unknown_name_raises(self, controller):
         with pytest.raises(KeyError, match="not registered"):
-            controller.update_adapter_state("ghost", AdapterState.ACTIVE)
+            controller.update_adapter_state("ghost", AdapterState.RUNNING)
 
     def test_backward_transition_raises(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
-        controller.update_adapter_state("a", AdapterState.ACTIVE)
+        controller.update_adapter_state("a", AdapterState.RUNNING)
         with pytest.raises(AssertionError, match="Cannot transition"):
             controller.update_adapter_state("a", AdapterState.PENDING)
 
@@ -180,13 +180,13 @@ class TestDeregisterAdapter:
     def test_pending_goes_to_drained(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
         controller.deregister_adapter("a")
-        assert controller.configs["a"].state == AdapterState.DRAINED
+        assert controller.states["a"] == AdapterState.DRAINED
 
-    def test_active_goes_to_draining_datasource(self, controller, tmp_path):
+    def test_running_goes_to_draining_datasource(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
-        controller.update_adapter_state("a", AdapterState.ACTIVE)
+        controller.update_adapter_state("a", AdapterState.RUNNING)
         controller.deregister_adapter("a")
-        assert controller.configs["a"].state == AdapterState.DRAINING_DATASOURCE
+        assert controller.states["a"] == AdapterState.DRAINING_DATASOURCE
 
     @pytest.mark.parametrize(
         "state",
@@ -199,10 +199,10 @@ class TestDeregisterAdapter:
     )
     def test_already_draining_is_noop(self, controller, tmp_path, state):
         controller.register_adapter("a", make_config(tmp_path))
-        controller.update_adapter_state("a", AdapterState.ACTIVE)
+        controller.update_adapter_state("a", AdapterState.RUNNING)
         controller.update_adapter_state("a", state)
         controller.deregister_adapter("a")
-        assert controller.configs["a"].state == state
+        assert controller.states["a"] == state
 
 
 # ---------------------------------------------------------------------------
@@ -235,29 +235,29 @@ class TestMarkLastTrainingRolloutId:
 class TestReportTrainingCompleted:
     def test_monotonic_last_trained(self, controller):
         controller.report_training_completed(5)
-        assert controller.last_trained_rollout_id == 5
+        assert controller.last_trained_rollout_id() == 5
         controller.report_training_completed(3)
-        assert controller.last_trained_rollout_id == 5
+        assert controller.last_trained_rollout_id() == 5
 
     def test_drains_when_target_reached(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
         drain_to_trainable(controller, "a")
         controller.mark_last_training_rollout_id("a", 5)
         controller.report_training_completed(5)
-        assert controller.configs["a"].state == AdapterState.DRAINED
+        assert controller.states["a"] == AdapterState.DRAINED
 
     def test_does_not_drain_when_target_not_reached(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
         drain_to_trainable(controller, "a")
         controller.mark_last_training_rollout_id("a", 10)
         controller.report_training_completed(5)
-        assert controller.configs["a"].state == AdapterState.DRAINING_TRAINABLE
+        assert controller.states["a"] == AdapterState.DRAINING_TRAINABLE
 
     def test_only_drains_in_draining_trainable(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
         controller.mark_last_training_rollout_id("a", 5)
         controller.report_training_completed(10)
-        assert controller.configs["a"].state == AdapterState.PENDING
+        assert controller.states["a"] == AdapterState.PENDING
 
     def test_train_steps_increment(self, controller):
         controller.set_train_step("a", 0)
@@ -278,8 +278,14 @@ class TestMarkRemoved:
         slot = controller.mark_removed("a")
         assert slot == 0
         assert "a" not in controller.configs
+        assert "a" not in controller.slots
         assert "a" not in controller.train_steps
         assert 0 in controller.free_slots
+
+    def test_leaves_removed_tombstone(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        controller.mark_removed("a")
+        assert controller.states["a"] == AdapterState.REMOVED
 
     def test_idempotent_returns_minus_one(self, controller, tmp_path):
         controller.register_adapter("a", make_config(tmp_path))
@@ -297,21 +303,74 @@ class TestMarkRemoved:
         controller.set_train_step("b", 0)
         controller.mark_removed("a")
         controller.register_adapter("c", make_config(tmp_path))
-        assert controller.configs["c"].slot == 0
+        assert controller.slots["c"] == 0
+
+    def test_re_register_clears_tombstone(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        controller.mark_removed("a")
+        controller.register_adapter("a", make_config(tmp_path))
+        assert controller.states["a"] == AdapterState.PENDING
 
 
 # ---------------------------------------------------------------------------
-# adapter_configs / adapter_train_steps snapshots
+# active_adapters / adapter_state / adapter_train_steps snapshots
 # ---------------------------------------------------------------------------
+
+
+class TestActiveAdapters:
+    def test_returns_registered_only(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        controller.register_adapter("b", make_config(tmp_path))
+        controller.mark_removed("a")
+        snap = controller.active_adapters()
+        assert set(snap) == {"b"}
+        assert snap["b"].slot == 1
+        assert snap["b"].state == AdapterState.PENDING
+
+    def test_single_state_filter(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        controller.register_adapter("b", make_config(tmp_path))
+        controller.update_adapter_state("a", AdapterState.RUNNING)
+        assert set(controller.active_adapters(AdapterState.RUNNING)) == {"a"}
+        assert set(controller.active_adapters(AdapterState.PENDING)) == {"b"}
+
+    def test_iterable_state_filter(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        controller.register_adapter("b", make_config(tmp_path))
+        controller.update_adapter_state("a", AdapterState.RUNNING)
+        # Both PENDING and RUNNING should match via the inactive/rollout state sets.
+        assert set(controller.active_adapters(ADAPTER_ROLLOUT_STATES)) == {"a"}
+        assert set(controller.active_adapters(ADAPTER_INACTIVE_STATES)) == {"b"}
+
+    def test_view_carries_config_and_slot(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        view = controller.active_adapters()["a"]
+        assert view.name == "a"
+        assert view.slot == 0
+        assert view.state == AdapterState.PENDING
+        assert view.config.rank == 8
+
+
+class TestAdapterState:
+    def test_returns_none_for_unknown(self, controller):
+        assert controller.adapter_state(["ghost"]) == {"ghost": None}
+
+    def test_returns_live_state(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        controller.update_adapter_state("a", AdapterState.RUNNING)
+        assert controller.adapter_state(["a"]) == {"a": AdapterState.RUNNING}
+
+    def test_returns_removed_tombstone(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        controller.mark_removed("a")
+        assert controller.adapter_state(["a"]) == {"a": AdapterState.REMOVED}
+
+    def test_dedupes_input(self, controller, tmp_path):
+        controller.register_adapter("a", make_config(tmp_path))
+        assert controller.adapter_state(["a", "a"]) == {"a": AdapterState.PENDING}
 
 
 class TestSnapshots:
-    def test_adapter_configs_returns_copy(self, controller, tmp_path):
-        controller.register_adapter("a", make_config(tmp_path))
-        snap = controller.adapter_configs()
-        snap.clear()
-        assert "a" in controller.configs
-
     def test_adapter_train_steps_reflects_set(self, controller):
         controller.set_train_step("a", 7)
         assert controller.adapter_train_steps() == {"a": 7}

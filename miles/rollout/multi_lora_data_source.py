@@ -7,14 +7,14 @@ import ray
 
 from miles.ray.multi_lora_controller import get_multi_lora_controller
 from miles.rollout.data_source import DataSource, RolloutDataSource
-from miles.utils.adapter_config import AdapterConfig, AdapterState
+from miles.utils.adapter_config import AdapterConfig, AdapterState, RegisteredAdapter
 from miles.utils.types import AdapterRef, RewardSpec, Sample
 
 logger = logging.getLogger(__name__)
 
 
-def fetch_configs() -> dict[str, AdapterConfig]:
-    return ray.get(get_multi_lora_controller().adapter_configs.remote())
+def fetch_active_adapters() -> dict[str, RegisteredAdapter]:
+    return ray.get(get_multi_lora_controller().active_adapters.remote())
 
 
 def fetch_adapter_steps() -> dict[str, int]:
@@ -28,7 +28,7 @@ class MultiLoRADataSource(DataSource):
         self.configs: dict[str, AdapterConfig] = {}
 
         self.source_queue = deque()
-        self._reconcile(fetch_configs())
+        self._reconcile(fetch_active_adapters())
 
     def _update_source_queue(self, active_names):
         # Filter out any adapter names that are gone while retaining order
@@ -50,20 +50,20 @@ class MultiLoRADataSource(DataSource):
 
         self.source_queue = new_source_queue
 
-    def _reconcile(self, configs: dict[str, AdapterConfig]) -> None:
+    def _reconcile(self, adapters: dict[str, RegisteredAdapter]) -> None:
         # Clean up old sources
         for name in list(self.sources):
-            if name not in configs:
+            if name not in adapters:
                 del self.sources[name]
                 del self.configs[name]
                 logger.info(f"Removed data source for adapter '{name}'")
 
         # Create new sources
-        for name, config in configs.items():
+        for name, adapter in adapters.items():
             if name not in self.sources:
-                self.sources[name] = self._create_adapter_source(name, config)
-                logger.info(f"Created data source for adapter '{name}' from {config.data}")
-            self.configs[name] = config
+                self.sources[name] = self._create_adapter_source(name, adapter.config)
+                logger.info(f"Created data source for adapter '{name}' from {adapter.config.data}")
+            self.configs[name] = adapter.config
 
     def _create_adapter_source(self, name: str, config: AdapterConfig) -> RolloutDataSource:
         steps = fetch_adapter_steps()
@@ -87,11 +87,11 @@ class MultiLoRADataSource(DataSource):
         Runs a round robin around the data sources and preserves the round robin ordering
         even when new datasources are added or removed.
         """
-        configs = fetch_configs()
-        self._reconcile(configs)
+        adapters = fetch_active_adapters()
+        self._reconcile(adapters)
 
-        active_names = set(n for n in self.sources if configs[n].state == AdapterState.ACTIVE)
-        datasource_drained = set(n for n in self.sources if configs[n].state == AdapterState.DRAINING_DATASOURCE)
+        active_names = set(n for n in self.sources if adapters[n].state == AdapterState.RUNNING)
+        datasource_drained = set(n for n in self.sources if adapters[n].state == AdapterState.DRAINING_DATASOURCE)
 
         assert len(active_names) + len(datasource_drained) > 0, "get_samples called without any active adapters"
 
@@ -100,9 +100,12 @@ class MultiLoRADataSource(DataSource):
         active_names |= datasource_drained
         self._update_source_queue(active_names)
 
-        refs = {name: AdapterRef(name=name, slot=configs[name].slot) for name in active_names}
+        refs = {name: AdapterRef(name=name, slot=adapters[name].slot) for name in active_names}
         reward_specs = {
-            name: RewardSpec(rm_type=configs[name].rm_type, custom_rm_path=configs[name].custom_rm_path)
+            name: RewardSpec(
+                rm_type=adapters[name].config.rm_type,
+                custom_rm_path=adapters[name].config.custom_rm_path,
+            )
             for name in active_names
         }
 
@@ -120,7 +123,7 @@ class MultiLoRADataSource(DataSource):
                 break
 
             name = self.source_queue.popleft()
-            config = configs[name]
+            config = adapters[name].config
             # Add the name back into the queue for next time get_samples is called, preserving
             # round robin ordering
             self.source_queue.append(name)
@@ -159,16 +162,16 @@ class MultiLoRADataSource(DataSource):
         return all_samples
 
     def add_samples(self, samples: list[list[Sample]]):
-        """Re-queue retried groups; drops groups for non-ACTIVE adapters."""
-        configs = fetch_configs()
-        self._reconcile(configs)
+        """Re-queue retried groups; drops groups for non-RUNNING adapters."""
+        adapters = fetch_active_adapters()
+        self._reconcile(adapters)
 
         for group in samples:
             name = group[0].adapter.name if group and group[0].adapter else None
             if not name or name not in self.sources:
                 continue
-            config = self.configs.get(name)
-            if config is None or config.state != AdapterState.ACTIVE:
+            adapter = adapters.get(name)
+            if adapter is None or adapter.state != AdapterState.RUNNING:
                 continue
             self.sources[name].add_samples([group])
 

@@ -80,7 +80,7 @@ async def run_schedule(controller, multi_lora_dir: Path) -> None:
         # registered" (deregister flips state to DRAINING/DRAINED; only
         # unload_drained_adapters frees the slot and removes the entry).
         for name in step.deregister:
-            while name in (await controller.adapter_configs.remote()):
+            while name in (await controller.active_adapters.remote()):
                 await asyncio.sleep(2.0)
             print(f"[schedule] {name} removed from controller")
 

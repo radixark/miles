@@ -70,21 +70,21 @@ async def main(args):
 
     # Note: in colocated, rollout is inherently tied to train (1 rollout means 1 train) --
     # In async, we should have a run_rollout to gate the rollout.
-    def should_run_train(adapter_configs):
-        return any(config.state in ADAPTER_ROLLOUT_STATES for config in adapter_configs.values())
+    def should_run_train(adapters):
+        return any(a.state in ADAPTER_ROLLOUT_STATES for a in adapters.values())
 
-    def should_update_adapters(adapter_configs):
-        return any(config.state in ADAPTER_INACTIVE_STATES for config in adapter_configs.values())
+    def should_update_adapters(adapters):
+        return any(a.state in ADAPTER_INACTIVE_STATES for a in adapters.values())
 
     has_seen_adapters = False
     is_idle = False
 
     while True:
-        adapter_configs = await controller.adapter_configs.remote()
-        run_train = should_run_train(adapter_configs)
-        update_adapters = should_update_adapters(adapter_configs)
+        adapters = await controller.active_adapters.remote()
+        run_train = should_run_train(adapters)
+        update_adapters = should_update_adapters(adapters)
 
-        if adapter_configs:
+        if adapters:
             has_seen_adapters = True
 
         # Run training
