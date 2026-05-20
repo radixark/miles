@@ -10,7 +10,7 @@ ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 
 def prepare():
