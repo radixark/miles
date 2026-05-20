@@ -105,7 +105,6 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
-        "--use-rollout-routing-replay "
     )
 
     optimizer_args = (
