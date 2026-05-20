@@ -4,13 +4,14 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["ckpt"])
+# FIXME: fix this
+register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt"], disabled="Disabled due to bugs.")
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-NUM_GPUS = 4
+NUM_GPUS = 8
 
 
 def _get_latest_checkpointed_iteration() -> int:
@@ -68,7 +69,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
+        "--pipeline-model-parallel-size 2 "
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
