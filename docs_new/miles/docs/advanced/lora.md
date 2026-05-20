@@ -12,7 +12,7 @@ The canonical LoRA recipes live under
 [`examples/lora/`](https://github.com/radixark/miles/tree/main/examples/lora) in
 the miles repo:
 
-- `examples/lora/run-qwen2.5-0.5B-megatron-lora.sh` — small dense, single GPU.
+- `examples/lora/run-qwen2.5-0.5B-megatron-lora.sh` — small dense model, single GPU.
 - `examples/lora/run-qwen3-4B-megatron-lora.sh` — Qwen3-4B, RL with LoRA.
 - `examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh` — MoE example.
 
@@ -29,12 +29,15 @@ the miles repo:
 | `--lora-adapter-path` | Path to a pre-trained adapter to resume from. |
 | `--lora-sync-from-tensor` | Sync adapter weights to SGLang via in-memory tensors instead of a file round-trip. |
 
-Two existing arguments also have LoRA-specific requirements that are easy to
-miss: the launcher has to pass `--megatron-to-hf-mode bridge` (the LoRA path
-goes through Megatron-Bridge's PEFT integration; the default `raw` converter
-does not understand LoRA layers), and the Ray job has to run with
-`--colocate`. Distributed (PD-disaggregated) rollout with LoRA is not
-supported today.
+<Warning>
+Two existing arguments are easy to miss when configuring LoRA:
+
+- **`--megatron-to-hf-mode bridge`** is required. The LoRA path goes through
+  Megatron-Bridge's PEFT integration; the default `raw` converter does not
+  understand LoRA layers.
+- **`--colocate`** is required. Distributed (PD-disaggregated) rollout with
+  LoRA is not supported today.
+</Warning>
 
 ## MoE
 
@@ -70,10 +73,13 @@ reason.
 * **Low-precision training**: the LoRA branch follows the surrounding
   precision, so block-wise FP8, MXFP8, and INT4 QAT recipes are compatible.
   See [Low Precision RL](/miles/docs/advanced/fp8-low-precision) and [INT4 QAT](/miles/docs/advanced/int4-qat).
-* **`--target-modules` is mandatory** when `--lora-rank > 0`. There is no
-  auto-detection; the launcher asserts at startup.
-* **Single adapter per run**: multi-LoRA training in a single job is not
-  implemented today.
+* **Target modules**: `--target-modules` is required whenever
+  `--lora-rank > 0`. There is no auto-detection; the launcher asserts at
+  startup.
+* **Single adapter per run**: only one set of `--lora-*` arguments is
+  honored per training job. Training multiple LoRA adapters in parallel
+  within a single `train.py` run is not implemented today — run separate
+  jobs if you need multiple adapters.
 
 ## Internals
 
@@ -87,7 +93,7 @@ The bridge between Megatron's LoRA path and SGLang adapter loading is in:
 - `miles/backends/megatron_utils/checkpoint.py` — adapter-aware save and load.
 - `miles/backends/megatron_utils/update_weight/update_weight_from_tensor.py`
   — colocate-mode weight sync from the trainer's LoRA tensors into the SGLang
-  rollout engine. We will merge this [PR](https://github.com/radixark/miles/pull/988) soon to support disaggregate mode.
+  rollout engine. Disaggregate-mode weight sync is not supported yet.
 
 A worked tutorial covering checkpoint conversion, SGLang adapter loading, and
 LoRA-specific evaluation will land here in a future doc pass.
