@@ -1,36 +1,56 @@
 import os
-
-from tests.ci.ci_register import register_cuda_ci
+from dataclasses import dataclass
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(
-    est_time=900,
-    suite="stage-c-megatron-8-gpu",
-    num_gpus=8,
-)
-
-ENABLE_EVAL = False
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = False
-
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
-NUM_GPUS = 8
+
+TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 
-def prepare():
+@dataclass
+class CaseConfig:
+    num_gpus_per_node: int
+    cp_size: int
+    pp_size: int
+    tp_size: int = None
+    ep_size: int = None
+    use_deepep: bool = False
+    use_fp8_rollout: bool = False
+    use_int4_rollout: bool = False
+    use_bridge: bool = False
+    use_r3: bool = False
+    max_tokens_per_gpu: int = 8192
+
+    def __post_init__(self):
+        if self.tp_size is None:
+            self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
+        if self.ep_size is None:
+            self.ep_size = self.num_gpus_per_node // self.pp_size
+
+
+def prepare(case: CaseConfig) -> None:
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
+    U.convert_checkpoint(
+        model_name=MODEL_NAME,
+        megatron_model_type=MODEL_TYPE,
+        num_gpus_per_node=case.num_gpus_per_node,
+    )
 
 
-def execute():
-    # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
-    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
+def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
+    """Build the train_args string for `case`.
+
+    MTP (EAGLE speculative decoding) and R3 (`--use-rollout-routing-replay`)
+    are always on for this suite; the only knob exposed via CaseConfig is
+    whether DeepEP is used for MoE token dispatch.
+    """
+    enable_eval = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
@@ -41,7 +61,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
@@ -50,31 +70,36 @@ def execute():
     )
 
     eval_args = (
-        f"{'--eval-interval 20 ' if ENABLE_EVAL else ''}"
+        f"{'--eval-interval 20 ' if enable_eval else ''}"
         "--eval-prompt-data aime24 /root/datasets/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 16384 "
         "--eval-top-k 1 "
     )
 
-    # tp=4 because GLM-4.7-Flash has 20 attention heads (tp must divide num_heads)
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        f"--tensor-model-parallel-size {case.tp_size} "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
+        f"--pipeline-model-parallel-size {case.pp_size} "
+        f"{'--decoder-last-pipeline-num-layers 23 ' if case.pp_size == 2 else ''}"
+        f"--context-parallel-size {case.cp_size} "
+        f"--expert-model-parallel-size {case.ep_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 32768} "
+        f"--max-tokens-per-gpu {case.max_tokens_per_gpu} "
     )
+
+    if TIGHT_HOST_MEMORY:
+        perf_args += "--exp-avg-dtype fp16 "
+        perf_args += "--exp-avg-sq-dtype fp16 "
+        perf_args += "--main-params-dtype fp16 "
 
     grpo_args = (
         "--advantage-estimator grpo "
-        f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
+        "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--entropy-coef 0.00 "
@@ -97,7 +122,7 @@ def execute():
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 4 "
-        f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
+        "--sglang-mem-fraction-static 0.7 "
         # EAGLE speculative decoding (MTP)
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
@@ -105,7 +130,7 @@ def execute():
         "--sglang-speculative-num-draft-tokens 3 "
     )
 
-    if USE_DEEPEP:
+    if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
 
     mtp_args = "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
@@ -119,11 +144,11 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
     )
 
-    if USE_DEEPEP:
+    if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
     else:
         misc_args += "--moe-token-dispatcher-type alltoall "
@@ -133,7 +158,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{U.get_default_wandb_args(wandb_file)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -141,16 +166,17 @@ def execute():
         f"{ci_args} "
         f"{misc_args} "
     )
+    return train_args
+
+
+def execute(case: CaseConfig, *, wandb_file: str) -> None:
+    # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
+    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
+
+    train_args = build_train_args(case, wandb_file=wandb_file)
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=NUM_GPUS,
+        num_gpus_per_node=case.num_gpus_per_node,
         megatron_model_type=MODEL_TYPE,
     )
-
-
-if __name__ == "__main__":
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    execute()

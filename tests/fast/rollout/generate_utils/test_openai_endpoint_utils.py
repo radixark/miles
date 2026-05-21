@@ -6,7 +6,7 @@ and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-fast")
+register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 
 from types import SimpleNamespace
