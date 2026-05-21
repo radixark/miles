@@ -1,9 +1,15 @@
+---
+name: manage-gh-runners
+description: Add, remove, list, or swap GitHub Actions self-hosted runners on a CI host that uses the env-var-driven `gh-runner` docker image (raw `docker run`, no compose). Triggers, "add gh runner", "remove gh runner", "list ci runners", "增删 ci runner", "切 runner gpu 配比", or similar. Run `setup-ci-host` first if /data/miles_ci is not yet provisioned. Boundary vs the `actions-runner` + docker-compose flow documented in `tests/ci/README.md`, only use this skill when `docker ps` shows the `gh-runner` image. Does NOT prepare the host filesystem layout — that is `setup-ci-host`'s job.
+user_invocable: true
+---
+
 # Manage gh-runner Containers
 
 Add, remove, or swap GitHub Actions self-hosted runners on a CI host that
 uses the `gh-runner` image (raw `docker run`, env-var driven). This is
 distinct from the `actions-runner` + `docker-compose` flow documented in
-[`tests/ci/README.md`](../../README.md).
+[`tests/ci/README.md`](../../../tests/ci/README.md).
 
 If you don't already know which flow your host uses, check:
 
@@ -20,7 +26,7 @@ operations below if `/data/miles_ci` is not yet provisioned on the host.
 ## Usage
 
 ```shell
-cd /root/miles/tests/ci/skills/manage-gh-runners
+cd /root/miles/.claude/skills/manage-gh-runners
 export REPO_URL=https://github.com/<org>/<repo>
 
 ./manage-runners.sh list
