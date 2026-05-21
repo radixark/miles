@@ -17,6 +17,7 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 # ======================================== Arguments =============================================
 
 ARG SGLANG_BRANCH=sglang-miles-v0.5.12
+ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
@@ -135,7 +136,11 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # Install sglang from sglang-miles branch
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
-    git checkout FETCH_HEAD && \
+    if [ -n "${SGLANG_COMMIT}" ]; then \
+      git checkout ${SGLANG_COMMIT}; \
+    else \
+      git checkout FETCH_HEAD; \
+    fi && \
     pip install -e "python[all]" --no-deps
 
 # ====================================== Install main package ============================================
