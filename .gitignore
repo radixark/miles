@@ -193,6 +193,5 @@ _examples_synced/
 .env
 .DS_Store
 
-# Humanize plugin local state and plan artifacts (kept local; not part of repo history)
 .humanize/
 
