@@ -314,7 +314,6 @@ class UpdateWeightSendRecvBroadcast(DistBucketedWeightUpdateMixin):
             relay_receive_ref = update_weights_from_distributed_send_recv(
                 self._group_name,
                 self._relay_update_group,
-                None,
                 self._relay_engine,
                 converted_named_tensors,
             )

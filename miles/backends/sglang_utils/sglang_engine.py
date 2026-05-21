@@ -467,7 +467,6 @@ class SGLangEngine(RayActor):
         world_size,
         group_name,
         backend,
-        transfer_mode="broadcast",
     ):
         return self._make_request(
             "init_weights_update_group",
@@ -478,7 +477,27 @@ class SGLangEngine(RayActor):
                 "world_size": world_size,
                 "group_name": group_name,
                 "backend": backend,
-                "transfer_mode": transfer_mode,
+            },
+        )
+
+    def init_relay_weights_update_group(
+        self,
+        master_address,
+        master_port,
+        rank_offset,
+        world_size,
+        group_name,
+        backend,
+    ):
+        return self._make_request(
+            "init_relay_weights_update_group",
+            {
+                "master_address": master_address,
+                "master_port": master_port,
+                "rank_offset": rank_offset,
+                "world_size": world_size,
+                "group_name": group_name,
+                "backend": backend,
             },
         )
 
@@ -538,7 +557,6 @@ class SGLangEngine(RayActor):
         group_name,
         flush_cache=False,
         weight_version: str | None = None,
-        transfer_mode: str = "broadcast",
     ):
         payload = {
             "names": names,
@@ -546,13 +564,31 @@ class SGLangEngine(RayActor):
             "shapes": shapes,
             "group_name": group_name,
             "flush_cache": flush_cache,
-            "transfer_mode": transfer_mode,
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
         return self._make_request(
             "update_weights_from_distributed",
             payload,
+        )
+
+    def update_relay_weights_from_distributed(
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        flush_cache=False,
+    ):
+        return self._make_request(
+            "update_relay_weights_from_distributed",
+            {
+                "names": names,
+                "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
+                "shapes": shapes,
+                "group_name": group_name,
+                "flush_cache": flush_cache,
+            },
         )
 
     def pause_generation(self, mode: str = "retract"):

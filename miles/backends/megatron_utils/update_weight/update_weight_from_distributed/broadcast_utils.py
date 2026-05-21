@@ -99,14 +99,13 @@ def connect_rollout_relay_from_distributed(
         master_port = sock.getsockname()[1]
     world_size = 2
 
-    ref = relay_engine.init_weights_update_group.remote(
+    ref = relay_engine.init_relay_weights_update_group.remote(
         master_address,
         master_port,
         1,
         world_size,
         group_name,
         backend="nccl",
-        transfer_mode="relay",
     )
     model_update_groups = init_process_group(
         backend="nccl",
@@ -172,7 +171,6 @@ def update_weights_from_distributed(
 def update_weights_from_distributed_send_recv(
     group_name: str,
     group: dist.ProcessGroup,
-    weight_version: int | None,
     rollout_engine: ActorHandle,
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
 ) -> ObjectRef:
@@ -187,13 +185,11 @@ def update_weights_from_distributed_send_recv(
             f"world_size=2, but got {group_world_size}."
         )
 
-    ref = rollout_engine.update_weights_from_distributed.remote(
+    ref = rollout_engine.update_relay_weights_from_distributed.remote(
         names=[name for name, _ in converted_named_tensors],
         dtypes=[param.dtype for _, param in converted_named_tensors],
         shapes=[param.shape for _, param in converted_named_tensors],
         group_name=group_name,
-        weight_version=str(weight_version) if weight_version is not None else None,
-        transfer_mode="relay",
     )
 
     _run_batched_p2p_ops(
