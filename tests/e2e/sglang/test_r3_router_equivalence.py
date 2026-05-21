@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Two model families run sequentially in one job, so est_time is roughly 2x
 # of a single family.
-register_cuda_ci(est_time=1200, suite="stage-b-sglang-8-gpu", num_gpus=8)
+register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
 """E2E test: verify sglang router and miles router produce identical rollout
 routing replay results across MoE models.
@@ -42,10 +42,6 @@ Controls
 - :data:`CONFIGS` (``qwen3_30b_a3b``, ``glm47_flash``): default CI sweep.
   ``ROUTER_EQ_MODEL_FAMILY`` overrides this to run a single family, primarily
   for local debugging.
-- The CI suite reserves 8 GPUs to avoid sharing the runner with another GPU
-  job while this SGLang/Ray process tree is alive. Each model config uses the
-  smallest tensor-parallel size that fits its serving weights on the CI GPU
-  fleet; both variants use the same topology for a given model.
 """
 
 import base64

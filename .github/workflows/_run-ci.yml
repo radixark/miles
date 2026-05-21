@@ -3,16 +3,14 @@ name: CI Job
 on:
   workflow_call:
     inputs:
-      gpu_count:
-        type: number
-        required: true
       execute_command:
         type: string
         required: true
       runs_on:
         type: string
         required: false
-        default: '8gpu'
+        default: '["8gpu"]'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["h100", "8gpu"]'' picks runners that carry BOTH labels. Default ''["8gpu"]'' preserves the previous bare ''8gpu'' single-label routing.'
       container_image:
         type: string
         required: false
@@ -30,24 +28,28 @@ on:
 jobs:
   run:
     if: ${{ !inputs.cpu_runner }}
-    runs-on: ${{ inputs.runs_on }}
+    # fromJSON parses the input list so `runs-on` receives an actual array.
+    # Without this, GitHub treats the string verbatim as one label literal
+    # (e.g. the label name '["h100", "8gpu"]' with brackets), which no
+    # runner carries, and the job queues forever.
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: ${{ inputs.container_image }}
       options: >
         --gpus all
+        --env CUDA_VISIBLE_DEVICES
         --ipc=host
         --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        -v /mnt/nvme0n1/miles_ci/hf_cache:/root/.cache/huggingface
+        -v /data/miles_ci:/data/miles_ci
+        -v /data/miles_ci/models:/root/models
+        -v /data/miles_ci/datasets:/root/datasets
+        -v /data/miles_ci/hf_cache:/root/.cache/huggingface
         --privileged
         --ulimit nofile=65535:65535
-        -v /tmp:/tmp
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -56,7 +58,6 @@ jobs:
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_FEW_GPU: '0'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,8 +71,28 @@ jobs:
           pkill -9 -f 'ray-dashboard' 2>/dev/null || true
           pkill -9 sglang 2>/dev/null || true
           ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
           sleep 3
+
+      - name: Wait for GPU ready
+        shell: bash
+        run: |
+          # When a self-hosted runner accepts a new job seconds after the
+          # previous job's container exits, the NVIDIA driver subsystem may
+          # still be tearing down its prior CUDA context. The next process
+          # to call cudaGetDeviceCount() then hits Error 802 ("system not
+          # yet initialized"). Block here until nvidia-smi succeeds, with
+          # a bounded retry budget so a genuinely-broken GPU fails fast.
+          for i in $(seq 1 60); do
+            if nvidia-smi -L >/dev/null 2>&1; then
+              echo "GPU ready after $((i-1)) retry(s)"
+              nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: nvidia-smi did not become ready after 120s" >&2
+          nvidia-smi 2>&1 | tail -20 || true
+          exit 1
 
       - name: Resolve dependency refs
         if: ${{ !inputs.skip_dependency_install }}
@@ -125,7 +146,7 @@ jobs:
 
       - name: Execute
         shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ inputs.gpu_count }} -- ${{ inputs.execute_command }}
+        run: ${{ inputs.execute_command }}
 
   # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.
   # Used for fast CPU tests so they don't occupy GPU-fleet runner slots.
