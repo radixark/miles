@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated
+from tests.ci.ci_register import register_cuda_ci
 
 _MILES_ROOT: Path = Path(__file__).resolve().parents[3]
 if str(_MILES_ROOT) not in sys.path:
@@ -29,6 +30,11 @@ from tests.e2e.conftest_dumper import (
 )
 
 import miles.utils.external_utils.command_utils as U
+
+
+# FIXME: this CI is buggy.
+register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"], disabled="Disabled due to bugs.")
+
 
 app: typer.Typer = typer.Typer()
 
