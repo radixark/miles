@@ -1,17 +1,32 @@
-# Please refer to `README.md` for how to setup this GitHub action runner
-version: "3.9"
-
+# Please refer to `README.md` for how to setup this GitHub action runner.
+#
+# Both sides of the /data/miles_ci bind mount must be the SAME path. This is
+# a docker-out-of-docker requirement: when this runner spawns sibling job
+# containers via the mounted /var/run/docker.sock, it passes its in-container
+# --work path through to the host daemon, which resolves the path against
+# the HOST filesystem. If host source and container target differ, the
+# daemon looks at a host directory the runner never wrote to and the job
+# container mounts the wrong (or empty) tree.
+#
+# Every CI host is expected to provide /data/miles_ci as a real directory or
+# as a symlink to the host's big disk; tests/ci/skills/setup-ci-host/setup-host.sh
+# automates this (df probe + symlink). Concrete per-runner services live in
+# a host-local docker-compose.override.yml (gitignored): each host defines
+# its own runners there with stable names, labels, and CUDA_VISIBLE_DEVICES
+# partitioning. The base service below is a template only — kept at
+# replicas: 1 so a stray `docker compose up` without a host override never
+# silently spins up many runners.
 services:
   runner:
     # NOTE need to use the latest, o/w the runner will want to upgrade itself
-    image: ghcr.io/actions/actions-runner:2.329.0
+    image: ghcr.io/actions/actions-runner:2.334.0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /data/miles_ci:/data/miles_ci
       # it requires this folder
       - /home/runner/externals:/home/runner/externals
     deploy:
-      replicas: 8
+      replicas: 1
     restart: always
     environment:
       RUNNER_ALLOW_RUNASROOT: "1"
@@ -20,7 +35,6 @@ services:
     # ref: https://github.com/actions/runner/issues/367#issuecomment-2007558723
     # ref: https://github.com/actions/runner
     # args ref: https://github.com/actions/runner/blob/68ff57dbc4c836d50f46602a8a53301fb9513eb4/src/Runner.Listener/CommandSettings.cs#L53
-    # TODO seems we should not run config.sh repeatedly
     entrypoint: >
       sh -c "
       cd /data/miles_ci &&
