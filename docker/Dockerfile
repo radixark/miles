@@ -11,7 +11,7 @@
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu130 \
 #    build-arg:WHEELS_TAG=cu130-x86_64 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.12
+ARG SGLANG_IMAGE_TAG=v0.5.12-cu129
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
