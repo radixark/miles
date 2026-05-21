@@ -25,7 +25,7 @@ ARG MEGATRON_BRANCH=miles-main
 ARG ENABLE_CUDA_13=0
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
-ARG WHEELS_TAG=cu129-x86_64
+ARG WHEELS_TAG=cu129-x86_64-v0.5.12
 
 # ======================================== Setup =============================================
 
@@ -61,13 +61,7 @@ RUN mkdir -p /tmp/wheels && \
 # ====================================== Python dependencies ============================================
 
 # flash-attn
-# The CUDA 12 FA2 wheel is built against an older torch ABI than the
-# v0.5.12-cu129 base image. Hopper paths use FA3 below.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install /tmp/wheels/flash_attn-*.whl; \
-    else \
-      echo "Skipping flash-attn 2 wheel for CUDA 12"; \
-    fi
+RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
 RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
