@@ -144,7 +144,11 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
-      - name: Execute
+      - name: Resolve suite plan
+        shell: bash
+        run: ${{ inputs.execute_command }} --list-only
+
+      - name: Run tests
         shell: bash
         run: ${{ inputs.execute_command }}
 
@@ -254,6 +258,10 @@ jobs:
           # local stub so imports succeed at module load.
           uv pip install tests/ci/cpu_stubs
 
-      - name: Execute
+      - name: Resolve suite plan
+        shell: bash
+        run: ${{ inputs.execute_command }} --list-only
+
+      - name: Run tests
         shell: bash
         run: ${{ inputs.execute_command }}
