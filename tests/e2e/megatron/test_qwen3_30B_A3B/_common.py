@@ -64,8 +64,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.use_int4_rollout and case.use_fp8_rollout:
         raise ValueError("use_int4_rollout and use_fp8_rollout are mutually exclusive")
 
-    import os
-
     enable_eval = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
     ref_load = f"/root/models/{MODEL_NAME}" if case.use_bridge else f"/root/{MODEL_NAME}_torch_dist"

@@ -1,12 +1,13 @@
 import json
 import os
-import sys
 from pathlib import Path
+
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-sys.exit("test_glm5_744b_a40b_4layer.py is disabled (stage-c-glm5 retired)")
-
+# FIXME: not critical, but better fix later.
+register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["megatron"], disabled="Disabled due to outdated.")
 
 USE_FP8_ROLLOUT = U.get_bool_env_var("MILES_TEST_USE_FP8_ROLLOUT", "false")
 
