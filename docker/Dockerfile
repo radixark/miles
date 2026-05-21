@@ -17,7 +17,7 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 # ======================================== Arguments =============================================
 
 ARG SGLANG_BRANCH=sglang-miles-v0.5.12
-ARG SGLANG_COMMIT=""
+ARG SGLANG_COMMIT=e687c743b568e07750124d6441dbe639684a2a76
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
