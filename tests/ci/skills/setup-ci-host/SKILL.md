@@ -11,7 +11,8 @@ real directory on its biggest disk OR as a symlink to wherever the real big
 disk is. This script automates that.
 
 Run this once on each new CI host, before the runner-setup steps in
-[`tests/ci/README.md`](../../README.md).
+[`tests/ci/README.md`](../../README.md) or the externally-managed flow in
+[`manage-gh-runners`](../manage-gh-runners/).
 
 ## Usage
 

@@ -32,6 +32,9 @@ The token can be found at https://github.com/radixark/miles/settings/actions/run
 
 WARN: The `GITHUB_RUNNER_TOKEN` changes after a while.
 
+> Steps 1-3 cover the `docker-compose` flow. For hosts that use the
+> `gh-runner` image flow instead, see [`manage-gh-runners`](skills/manage-gh-runners/).
+
 ### Step 2: Prepare `/home/runner/externals`
 
 ```shell
@@ -77,9 +80,11 @@ Host conventions:
 * **scitix-72** (H200, 2 runners): `scitix-72-0` pins `CUDA_VISIBLE_DEVICES=0,1,2,3`;
   `scitix-72-1` pins `4,5,6,7`. Per-runner CVD is defined in
   `docker-compose.override.yml`.
-* **scitix-73** (H200, 2 runners, externally managed): already injects CVD via
-  `actions-runner/.env` per the historical H200 split-worker convention; no
-  change needed in this repo.
+* **scitix-73** (H200, 3 runners, externally managed via `gh-runner` image):
+  `scitix-73-4gpu-0` pins `0,1,2,3` (label `4gpu`); `scitix-73-2gpu-0` pins
+  `4,5` and `scitix-73-2gpu-1` pins `6,7` (label `2gpu`). CVD is injected
+  via the container's `RUNNER_LABELS` + `CUDA_VISIBLE_DEVICES` env at
+  `docker run` time — see [`manage-gh-runners`](skills/manage-gh-runners/).
 * **novita-host2 / novita-host4** (H100, 1 runner each, externally managed):
   CVD intentionally left unset so jobs see all 8 GPUs. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
