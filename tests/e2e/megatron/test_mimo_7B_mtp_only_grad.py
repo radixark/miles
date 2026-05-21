@@ -10,6 +10,7 @@ to only the MTP layers when the main model loss is zero (due to truncation).
 
 import os
 
+import torch
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -19,6 +20,7 @@ register_cuda_ci(est_time=600, suite="stage-c-megatron-8-gpu", num_gpus=8)
 MODEL_NAME = "MiMo-7B-RL"
 MODEL_TYPE = "mimo-7B-rl"
 NUM_GPUS = 8
+IS_ROCM = torch.version.hip is not None
 
 
 def prepare():
@@ -59,8 +61,11 @@ def execute():
         "--global-batch-size 8 "
     )
 
+    actor_gpus = 4 if IS_ROCM else NUM_GPUS
+    rollout_gpus = 4 if IS_ROCM else NUM_GPUS
+
     perf_args = (
-        "--tensor-model-parallel-size 2 "
+        f"--tensor-model-parallel-size {1 if IS_ROCM else 2} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -88,18 +93,22 @@ def execute():
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
+    ) + (
+        "--optimizer-cpu-offload "
+        "--overlap-cpu-optimizer-d2h-h2d "
+        "--use-precision-aware-optimizer " if IS_ROCM else ""
     )
 
     sglang_args = (
+        f"--rollout-num-gpus {rollout_gpus} "
         "--rollout-num-gpus-per-engine 2 "
-        "--rollout-num-gpus 8 "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-enable-metrics "
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "
         "--sglang-speculative-num-draft-tokens 3 "
-    )
+    ) + ("--sglang-disable-custom-all-reduce " if IS_ROCM else "")
 
     # Enable MTP training with loss scaling
     mtp_args = "--mtp-num-layers 1 " "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
@@ -115,10 +124,13 @@ def execute():
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        "--attention-backend flash "
+        f"--attention-backend {'auto' if IS_ROCM else 'flash'} "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
-        "--colocate "
+        f"--actor-num-gpus-per-node {actor_gpus} "
+    ) + (
+        "--update-weights-interval 2 --no-gradient-accumulation-fusion "
+        if IS_ROCM
+        else "--colocate "
     )
 
     train_args = (
@@ -134,11 +146,18 @@ def execute():
         f"{misc_args} "
     )
 
+    extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    if IS_ROCM:
+        extra_env_vars["SGLANG_SET_CPU_AFFINITY"] = "0"
+        extra_env_vars["RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"] = "1"
+        extra_env_vars["HIP_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+        train_script="train_async.py" if IS_ROCM else "train.py",
+        extra_env_vars=extra_env_vars,
     )
 
 
