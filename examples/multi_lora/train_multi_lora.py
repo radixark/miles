@@ -19,7 +19,7 @@ async def main(args):
     pgs = create_placement_groups(args)
     init_tracking(args)
 
-    controller = create_multi_lora_controller(args.multi_lora_n_adapters, args.lora_rank, args.lora_alpha)
+    controller = create_multi_lora_controller(args)
     args.data_source_path = "miles.rollout.multi_lora_data_source.MultiLoRADataSource"
     args.custom_generate_state_path = "miles.ray.multi_lora_controller.MultiLoRAGenerateState"
 

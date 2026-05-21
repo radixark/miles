@@ -5,11 +5,27 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=60, suite="stage-a-fast")
 
 
+from types import SimpleNamespace
+
 import pytest
 import yaml
 
 from miles.ray.multi_lora_controller import MultiLoRAControllerImpl
 from miles.utils.adapter_config import ADAPTER_INACTIVE_STATES, ADAPTER_ROLLOUT_STATES, AdapterConfig, AdapterState
+
+
+def make_args(*, max_adapters: int = 2, max_rank: int = 32, default_alpha: int = 32) -> SimpleNamespace:
+    return SimpleNamespace(
+        multi_lora_n_adapters=max_adapters,
+        lora_rank=max_rank,
+        lora_alpha=default_alpha,
+        model_name=None,
+        hf_checkpoint=None,
+        rollout_max_context_len=None,
+        rollout_max_prompt_len=None,
+        rollout_max_response_len=None,
+        target_modules=None,
+    )
 
 
 def make_config(tmp_path, **overrides) -> AdapterConfig:
@@ -38,7 +54,7 @@ def drain_to_trainable(controller: MultiLoRAControllerImpl, name: str) -> None:
 
 @pytest.fixture
 def controller():
-    return MultiLoRAControllerImpl(max_adapters=2, max_rank=32, default_alpha=32)
+    return MultiLoRAControllerImpl(make_args(max_adapters=2, max_rank=32, default_alpha=32))
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +77,7 @@ class TestRegisterAdapter:
         assert controller.free_slots == set()
 
     def test_creates_dir(self, tmp_path):
-        c = MultiLoRAControllerImpl(max_adapters=1, max_rank=32, default_alpha=32)
+        c = MultiLoRAControllerImpl(make_args(max_adapters=1, max_rank=32, default_alpha=32))
         target = tmp_path / "deep" / "nested" / "adapter"
         assert not target.exists()
         c.register_adapter("a", make_config(tmp_path, dir=str(target)))
@@ -111,7 +127,7 @@ class TestRegisterAdapter:
         assert controller.slots["a"] == 0
 
     def test_yaml_falls_back_to_controller_defaults(self, tmp_path):
-        c = MultiLoRAControllerImpl(max_adapters=1, max_rank=32, default_alpha=64)
+        c = MultiLoRAControllerImpl(make_args(max_adapters=1, max_rank=32, default_alpha=64))
         yaml_path = tmp_path / "adapter.yaml"
         yaml_path.write_text(
             yaml.safe_dump(

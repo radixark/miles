@@ -17,11 +17,9 @@ CONTROLLER_NAME = "miles_multi_lora_controller"
 CONTROLLER_NAMESPACE = "miles"
 
 
-def create_multi_lora_controller(max_adapters: int, max_rank: int, default_alpha: int):
-    """Create the named singleton controller. Call once from the driver."""
-    return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(
-        max_adapters, max_rank, default_alpha
-    )
+def create_multi_lora_controller(args):
+    """Create the named singleton controller from parsed CLI args."""
+    return MultiLoRAController.options(name=CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE).remote(args)
 
 
 @cache
@@ -129,15 +127,16 @@ class MultiLoRAGenerateState(GenerateState):
 
 
 class MultiLoRAControllerImpl:
-    def __init__(self, max_adapters: int, max_rank: int, default_alpha: int):
-        self.max_adapters = max_adapters
-        self.max_rank = max_rank
-        self.default_alpha = default_alpha
+    def __init__(self, args):
+        self.args = args
+        self.max_adapters = args.multi_lora_n_adapters
+        self.max_rank = args.lora_rank
+        self.default_alpha = args.lora_alpha
 
         self.configs: dict[str, AdapterConfig] = {}
         self.slots: dict[str, int] = {}
         self.states: dict[str, AdapterState] = {}
-        self.free_slots: set[int] = set(range(max_adapters))
+        self.free_slots: set[int] = set(range(self.max_adapters))
 
         # Monotonically increasing training iteration used for register/deregister lora adapters
         self._last_trained_rollout_id: int = -1
@@ -318,6 +317,21 @@ class MultiLoRAControllerImpl:
             "active": self.active_adapters(),
             "adapter_train_steps": dict(self.train_steps),
             "last_trained_rollout_id": self._last_trained_rollout_id,
+        }
+
+    def controller_info(self) -> dict:
+        """Static configuration of this controller. Doesn't change at runtime;
+        callers can cache the result for the lifetime of the trainer."""
+        a = self.args
+        return {
+            "max_adapters": a.multi_lora_n_adapters,
+            "max_rank": a.lora_rank,
+            "default_alpha": a.lora_alpha,
+            "model_name": a.model_name or a.hf_checkpoint,
+            "max_context_len": a.rollout_max_context_len,
+            "max_prompt_len": a.rollout_max_prompt_len,
+            "max_response_len": a.rollout_max_response_len,
+            "target_modules": a.target_modules,
         }
 
 
