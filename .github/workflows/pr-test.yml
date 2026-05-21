@@ -20,12 +20,43 @@ on:
         required: false
         type: string
         default: 'sglang-miles'
+      ci_image_tag:
+        description: 'Miles Docker image tag (default: dev)'
+        required: false
+        type: string
+        default: 'dev'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  resolve-ci-image:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    runs-on: ubuntu-latest
+    outputs:
+      container_image: ${{ steps.resolve.outputs.container_image }}
+    steps:
+      - name: Resolve CI image
+        id: resolve
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+        run: |
+          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          if [ -n "$PR_BODY" ]; then
+            PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
+            [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
+          fi
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="dev"
+          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
+            exit 1
+          fi
+          echo "container_image=radixark/miles:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
+
   # Stage A: CPU-only fast tests (always runs on PR)
   # Runs on GitHub-hosted ubuntu-latest (cpu_runner: true) to avoid
   # occupying GPU-fleet runner slots.
@@ -40,12 +71,14 @@ jobs:
 
   # Stage A: Unit test (single FSDP test, 8 GPU)
   stage-a-unit-test:
+    needs: [resolve-ci-image]
     if: |
       (github.event_name == 'workflow_dispatch') ||
       (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-unit-test'))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "pytest tests/e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py -x -v"
     secrets: inherit
 
@@ -53,55 +86,59 @@ jobs:
   # For fast tests that require GPU (e.g. deterministic inference paths that
   # pull in flash_attn). Parallel with stage-b-sglang; one self-hosted daemon slot.
   stage-b-fast-gpu:
-    needs: [stage-a-fast]
+    needs: [resolve-ci-image, stage-a-fast]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 1
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-fast-1-gpu"
     secrets: inherit
 
   # Stage B: SGLang patch tests (8 GPU)
   stage-b-sglang:
-    needs: [stage-a-fast]
+    needs: [resolve-ci-image, stage-a-fast]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-sglang')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-sglang-8-gpu"
     secrets: inherit
 
   # Stage B: Short 8-GPU tests
   stage-b-short:
-    needs: [stage-a-fast]
+    needs: [resolve-ci-image, stage-a-fast]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-b-short-8-gpu"
     secrets: inherit
 
   # Stage C: FSDP 8-GPU tests
   stage-c-fsdp:
-    needs: [stage-b-sglang, stage-b-short]
+    needs: [resolve-ci-image, stage-b-sglang, stage-b-short]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-fsdp-8-gpu"
     secrets: inherit
 
   # Stage C: Megatron 8-GPU tests (3 partitions)
   stage-c-megatron:
-    needs: [stage-b-sglang, stage-b-short]
+    needs: [resolve-ci-image, stage-b-sglang, stage-b-short]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron')))
@@ -112,54 +149,59 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-megatron-8-gpu --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3"
     secrets: inherit
 
   # Stage C: Precision 8-GPU tests
   stage-c-precision:
-    needs: [stage-b-sglang, stage-b-short]
+    needs: [resolve-ci-image, stage-b-sglang, stage-b-short]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-precision-8-gpu"
     secrets: inherit
 
   # Stage C: Checkpoint 8-GPU tests
   stage-c-ckpt:
-    needs: [stage-b-sglang, stage-b-short]
+    needs: [resolve-ci-image, stage-b-sglang, stage-b-short]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-ckpt-8-gpu"
     secrets: inherit
 
   # Stage C: Long 8-GPU tests
   stage-c-long:
-    needs: [stage-b-sglang, stage-b-short]
+    needs: [resolve-ci-image, stage-b-sglang, stage-b-short]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-long-8-gpu"
     secrets: inherit
 
   # Stage C: LoRA 8-GPU tests
   stage-c-lora:
-    needs: [stage-b-sglang, stage-b-short]
+    needs: [resolve-ci-image, stage-b-sglang, stage-b-short]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-lora')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite stage-c-lora-8-gpu"
     secrets: inherit
 
@@ -179,7 +221,7 @@ jobs:
 
   # Stage C: All suites (triggered by run-ci-image label)
   stage-c-all:
-    needs: [stage-b-sglang, stage-b-short]
+    needs: [resolve-ci-image, stage-b-sglang, stage-b-short]
     if: |
       always() && !failure() && !cancelled() &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image')))
@@ -197,5 +239,6 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       gpu_count: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: "python tests/ci/run_suite.py --hw cuda --suite ${{ matrix.suite }}"
     secrets: inherit
