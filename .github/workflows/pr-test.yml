@@ -10,16 +10,6 @@ on:
         required: false
         type: boolean
         default: false
-      ci_megatron_pr:
-        description: 'Megatron-LM branch/commit (default: miles-main)'
-        required: false
-        type: string
-        default: 'miles-main'
-      ci_sglang_pr:
-        description: 'SGLang branch/commit (default: sglang-miles)'
-        required: false
-        type: string
-        default: 'sglang-miles'
       ci_image_tag:
         description: 'Miles Docker image tag (default: dev)'
         required: false
