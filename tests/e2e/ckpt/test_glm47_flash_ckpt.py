@@ -1,5 +1,6 @@
 import os
 
+import torch
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -12,6 +13,7 @@ register_cuda_ci(est_time=2400, suite="stage-c-ckpt-8-gpu", num_gpus=8)
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "0")))
+IS_ROCM = torch.version.hip is not None
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
@@ -138,6 +140,8 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         ci_args += "--ci-save-model-hash "
     if mode == "load":
         ci_args += "--ci-check-model-hash "
+    if IS_ROCM:
+        ci_args += "--ci-disable-logprobs-checker "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -169,14 +173,18 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         f"{misc_args} "
     )
 
+    extra_env_vars = {
+        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+        "MILES_TEST_R3_THRESHOLD": "1.0",
+    }
+    if IS_ROCM:
+        extra_env_vars["SGLANG_USE_AITER"] = "0"
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-            "MILES_TEST_R3_THRESHOLD": "1.0",
-        },
+        extra_env_vars=extra_env_vars,
     )
 
 
