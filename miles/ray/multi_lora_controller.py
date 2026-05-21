@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import os
 from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
@@ -162,17 +163,13 @@ class MultiLoRAControllerImpl:
         if config.alpha is None:
             config = dataclasses.replace(config, alpha=self.default_alpha)
 
+        # Validate before committing so a rejected register leaves no trace.
+        self._validate_register(name, config)
+
+        # ----- Commit -----
         # NOTE: for now, this is a unified directory that contains both rollout + model checkpoint
         # save data
         Path(config.dir).mkdir(parents=True, exist_ok=True)
-
-        assert (
-            config.rank <= self.max_rank
-        ), f"Adapter '{name}' rank ({config.rank}) exceeds max rank ({self.max_rank})"
-        if name in self.configs:
-            raise ValueError(f"Adapter '{name}' is already registered")
-        if not self.free_slots:
-            raise RuntimeError(f"No free adapter slots (max {self.max_adapters})")
 
         slot = min(self.free_slots)
         self.free_slots.remove(slot)
@@ -183,6 +180,28 @@ class MultiLoRAControllerImpl:
 
         logger.info(f"Registered adapter '{name}' at slot {slot} (PENDING)")
         return {"name": name, "slot": slot}
+
+    def _validate_register(self, name: str, config: AdapterConfig) -> None:
+        """Verify a register_adapter call before any state is mutated.
+
+        Raises on any problem (rank cap, duplicate name, no free slot, bad
+        dataset path); on success the caller may safely commit.
+        """
+        assert (
+            config.rank <= self.max_rank
+        ), f"Adapter '{name}' rank ({config.rank}) exceeds max rank ({self.max_rank})"
+        if name in self.configs:
+            raise ValueError(f"Adapter '{name}' is already registered")
+        if not self.free_slots:
+            raise RuntimeError(f"No free adapter slots (max {self.max_adapters})")
+        # Strip the optional ``@[start:end]`` row-slice suffix that read_file accepts.
+        data_path = config.data.split("@[", 1)[0]
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Adapter '{name}': dataset path '{data_path}' does not exist")
+        if not data_path.endswith((".jsonl", ".parquet")):
+            raise ValueError(
+                f"Adapter '{name}': dataset path '{data_path}' must be .jsonl or .parquet"
+            )
 
     def update_adapter_state(self, names: str | list[str], state: AdapterState):
         if isinstance(names, str):
