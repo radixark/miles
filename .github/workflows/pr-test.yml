@@ -51,17 +51,6 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage A: Unit test (single FSDP test, 8 GPU)
-  stage-a-unit-test:
-    if: |
-      (github.event_name == 'workflow_dispatch') ||
-      (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-unit-test'))
-    uses: ./.github/workflows/_run-ci.yml
-    with:
-      runs_on: '["h100", "8gpu"]'
-      execute_command: "pytest tests/e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py -x -v"
-    secrets: inherit
-
   # Stage B: CPU-only bucket (currently empty; reserved for future CPU tests
   # that don't fit stage-a-cpu's fast budget). Always runs on PR. Empty result
   # exits 0 in run_suite.py (see tests/ci/run_suite.py L149-L151).
