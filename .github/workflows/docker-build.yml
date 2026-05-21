@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'third_party/sglang'
+      - 'third_party/Megatron-LM'
 
   schedule:
     # Every 12 hours: midnight and noon UTC
@@ -118,6 +120,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The submodules under third_party/ are gitfile-linked (`.git` is a file
+      # pointing at <outer>/.git/modules/...), which Docker COPY would carry
+      # into the image as a dangling reference. Replace each gitlink with the
+      # SHA the submodule points at, then drop the gitlink itself — the image
+      # only needs the source tree, not git history.
+      - name: Strip submodule .git pointers for Docker COPY
+        run: |
+          set -eux
+          for sub in third_party/sglang third_party/Megatron-LM; do
+            git -C "$sub" rev-parse HEAD > "$sub/.miles-submodule-sha"
+            rm -f "$sub/.git"
+          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

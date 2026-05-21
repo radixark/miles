@@ -15,12 +15,10 @@ ARG SGLANG_IMAGE_TAG=v0.5.10
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
-
-ARG SGLANG_BRANCH=sglang-miles
-ARG SGLANG_COMMIT=""
-
-ARG MEGATRON_REPO=radixark/Megatron-LM
-ARG MEGATRON_BRANCH=miles-main
+#
+# sglang and Megatron-LM are pulled from the miles repo's git submodules
+# under third_party/, so their versions are recorded by the submodule
+# pointers rather than by branch/commit build args.
 
 ARG ENABLE_CUDA_13=0
 
@@ -105,9 +103,8 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
 # apex
 RUN pip install /tmp/wheels/apex-*.whl
 
-RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
-    cd Megatron-LM && \
-    pip install -e .
+COPY third_party/Megatron-LM /root/Megatron-LM
+RUN cd /root/Megatron-LM && pip install -e .
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 # RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
@@ -133,15 +130,15 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 
 # ====================================== Install sglang-miles ============================================
 
-# Install sglang from sglang-miles branch
-RUN cd /sgl-workspace/sglang && \
-    git fetch origin ${SGLANG_BRANCH} && \
-    if [ -n "${SGLANG_COMMIT}" ]; then \
-      git checkout ${SGLANG_COMMIT}; \
-    else \
-      git checkout FETCH_HEAD; \
-    fi && \
-    pip install -e "python[all]" --no-deps
+# Overlay the sglang source from the third_party/sglang submodule onto the
+# base image's /sgl-workspace/sglang directory. The submodule pointer is
+# the source of truth for which sglang revision the image carries. The
+# base image ships a stale `.git/` dir at this path — drop it before COPY
+# so the resulting image isn't carrying a git index that disagrees with
+# the working tree.
+RUN rm -rf /sgl-workspace/sglang/.git
+COPY third_party/sglang /sgl-workspace/sglang
+RUN cd /sgl-workspace/sglang && pip install -e "python[all]" --no-deps
 
 # ====================================== Install main package ============================================
 
