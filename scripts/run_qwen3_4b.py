@@ -4,11 +4,16 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.true_on_policy import (
+    apply_true_on_policy_script_defaults,
+    build_true_on_policy_launch_plan,
+    get_megatron_model_type,
+)
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["normal", "debug_minimal"] = "normal"
+    mode: Literal["normal", "debug_minimal", "debug_one_sample"] = "normal"
     run_id: str = U.create_run_id()
     model_name: str = "Qwen3-4B"
     megatron_model_type: str | None = None
@@ -27,19 +32,31 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_fp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
-    # TODO improve, should be able to override more easily
+    use_kl_loss: bool = True
     tis_use_rs: bool = True
 
     def __post_init__(self):
         if self.train_backend == "megatron":
-            self.megatron_model_type = {
-                "Qwen3-0.6B": "qwen3-0.6B",
-                "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
-                "Qwen3-4B-Base": "qwen3-4B",
-                "Qwen3-4B": "qwen3-4B",
-            }[self.model_name]
+            self.megatron_model_type = get_megatron_model_type(self.model_name)
 
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+
+        # Derived parallelism defaults for Qwen3 dense models
+        self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2
+        self.pipeline_model_parallel_size = 1
+        self.context_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 4
+        self.cp_comm_type = "a2a" if self.context_parallel_size > 1 else None
+        self.use_sequence_parallel = self.tensor_model_parallel_size > 1
+        self.max_tokens_per_gpu = 32768 if self.train_backend == "fsdp" else 9216
+        self.rollout_num_gpus_per_engine = 1
+        self.train_memory_margin_bytes = 3221225472
+
+        apply_true_on_policy_script_defaults(self)
+        if self.train_backend == "megatron" and self.enable_megatron_bridge and self.use_kl_loss:
+            raise ValueError(
+                "Megatron bridge mode does not provide a Megatron-format ref checkpoint for KL. "
+                "Disable KL loss or disable bridge mode."
+            )
 
 
 def prepare(args: ScriptArgs):
@@ -67,22 +84,34 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    is_debug_mode = args.mode != "normal"
+    is_debug_one_sample = args.mode == "debug_one_sample"
+    model_parallel_size = (
+        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
+    )
+    actor_num_gpus_per_node = model_parallel_size
+    train_world_size = args.num_nodes * actor_num_gpus_per_node
+    data_parallel_size = max(1, train_world_size // model_parallel_size)
+    debug_num_rollout = max(2, data_parallel_size)
+    debug_global_batch_size = data_parallel_size
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
-
-    ref_load_path = f"{args.model_dir}/{args.model_name}"
-    if args.train_backend == "megatron" and not args.enable_megatron_bridge:
-        ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
+    megatron_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
 
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name}{'-FP8' if args.rollout_fp8 else ''} "
-        f"--load {load_save_path} "
-        f"--ref-load {ref_load_path} "
         f"--save {load_save_path} "
-        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
+        f"--save-interval {2 if is_debug_mode else 20} "
     )
+    if not args.enable_megatron_bridge:
+        ckpt_args += f"--load {megatron_load_path} "
+    if args.use_kl_loss:
+        ref_load_path = f"{args.model_dir}/{args.model_name}"
+        if args.train_backend == "megatron":
+            ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
+        ckpt_args += f"--ref-load {ref_load_path} "
 
     if args.train_backend == "megatron":
-        ckpt_args += f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
+        ckpt_args += f"--save-retain-interval {2 if is_debug_mode else 20} "
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -93,16 +122,16 @@ def execute(args: ScriptArgs):
         # """--apply-chat-template-kwargs '{"enable_thinking":false}' """
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
+        f"--num-rollout {debug_num_rollout if is_debug_one_sample else 3000} "
+        f"--rollout-batch-size {1 if is_debug_one_sample else 32} "
+        f"--n-samples-per-prompt {1 if is_debug_one_sample else 8} "
+        f"--rollout-max-response-len {2 if is_debug_one_sample else (100 if args.mode == 'debug_minimal' else 8192)} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {debug_global_batch_size if is_debug_one_sample else 256} "
         "--balance-data "
     )
 
-    if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
+    if args.dynamic_sampling and not is_debug_mode:
         rollout_args += (
             "--over-sampling-batch-size 64 "
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
@@ -110,7 +139,7 @@ def execute(args: ScriptArgs):
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
-    if (args.mode != "debug_minimal") and args.enable_eval:
+    if (not is_debug_mode) and args.enable_eval:
         eval_max_response_len = 16384
         eval_args += "--eval-interval 20 "
         if args.multi_eval:
@@ -142,15 +171,9 @@ eval:
                 "--eval-top-p 1 "
             )
 
-    grpo_args = (
-        "--advantage-estimator grpo "
-        "--use-kl-loss "
-        "--kl-loss-coef 0.00 "
-        "--kl-loss-type low_var_kl "
-        "--entropy-coef 0.00 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
-    )
+    grpo_args = "--advantage-estimator grpo " "--entropy-coef 0.00 " "--eps-clip 0.2 " "--eps-clip-high 0.28 "
+    if args.use_kl_loss:
+        grpo_args += "--use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl "
 
     optimizer_args = (
         "--optimizer adam "
@@ -162,7 +185,12 @@ eval:
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-chunked-prefill-size 4096 "
+    sglang_args = (
+        f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
+        "--sglang-chunked-prefill-size 4096 "
+        f"{'--sglang-disable-cuda-graph ' if is_debug_one_sample else ''}"
+    )
+    ci_args = "--ci-test --ci-disable-kl-checker " if is_debug_one_sample else ""
 
     match args.train_backend:
         case "fsdp":
@@ -174,20 +202,15 @@ eval:
                 """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
             )
             sglang_args += "--sglang-mem-fraction-static 0.75 "
-            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 32768 "
+            perf_args = f"--use-dynamic-batch-size --max-tokens-per-gpu {args.max_tokens_per_gpu} "
 
         case "megatron":
-            if args.model_name in ("Qwen3-0.6B",):
-                tp_size = 1
-                cp_size = 1
-            else:
-                tp_size = 2 if args.num_gpus_per_node == 8 else 1
-                cp_size = 4 if args.num_gpus_per_node == 8 else 1
             train_backend_args = (
-                f"--tensor-model-parallel-size {tp_size} "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                f"--context-parallel-size {cp_size} "
+                f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
+                f"{'--sequence-parallel ' if args.use_sequence_parallel and args.tensor_model_parallel_size > 1 else ''}"
+                f"--pipeline-model-parallel-size {args.pipeline_model_parallel_size} "
+                f"--context-parallel-size {args.context_parallel_size} "
+                f"{f'--cp-comm-type {args.cp_comm_type} ' if args.cp_comm_type is not None else ''}"
                 "--expert-model-parallel-size 1 "
                 "--expert-tensor-parallel-size 1 "
                 "--recompute-granularity full "
@@ -201,21 +224,21 @@ eval:
                 "--attention-softmax-in-fp32 "
                 # need to comment this when using model with MLA
                 "--attention-backend flash "
-                "--train-memory-margin-bytes 3221225472 "
+                f"--train-memory-margin-bytes {args.train_memory_margin_bytes} "
             )
             # TODO improve
             sglang_args += "--sglang-mem-fraction-static 0.7 "
-            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
+            perf_args = f"--use-dynamic-batch-size --max-tokens-per-gpu {args.max_tokens_per_gpu} "
 
         case _:
             raise NotImplementedError
 
     misc_args = (
         f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--actor-num-gpus-per-node {actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        f"{'--use-fault-tolerance ' if args.mode != 'debug_minimal' else ''}"
+        f"{'--use-fault-tolerance ' if not is_debug_mode else ''}"
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
@@ -260,22 +283,9 @@ tis_batch_normalize: true
             "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
-    true_on_policy_args = ""
-    true_on_policy_envs = {}
-    if args.true_on_policy:
-        true_on_policy_args = (
-            "--sglang-enable-deterministic-inference "
-            "--sglang-rl-on-policy-target fsdp "
-            "--sglang-attention-backend fa3 "
-            "--attn-implementation flash_attention_3 "
-            "--deterministic-mode "
-            "--true-on-policy-mode "
-        )
-        true_on_policy_envs = {
-            "NCCL_ALGO": "allreduce:tree",
-            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-        }
+    true_on_policy_plan = build_true_on_policy_launch_plan(args)
+    true_on_policy_args = true_on_policy_plan.train_args
+    true_on_policy_envs = true_on_policy_plan.env_vars
 
     train_args = (
         f"{ckpt_args} "
@@ -285,6 +295,7 @@ tis_batch_normalize: true
         f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
+        f"{ci_args} "
         f"{sglang_args} "
         f"{train_backend_args} "
         f"{misc_args} "

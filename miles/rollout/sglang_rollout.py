@@ -31,6 +31,7 @@ from miles.utils.processing_utils import (
 )
 from miles.utils.types import Sample
 
+from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
@@ -466,6 +467,13 @@ async def generate_rollout_async(
     if args.rollout_all_samples_process_path is not None:
         process_func = load_function(args.rollout_all_samples_process_path)
         process_func(args, all_samples, data_source)
+
+    await recompute_samples_rollout_logprobs_via_prefill(
+        args,
+        [sample for group in data for sample in group],
+        url=get_model_url(args, "default"),
+        sampling_params=state.sampling_params,
+    )
 
     return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
 

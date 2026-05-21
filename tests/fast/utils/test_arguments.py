@@ -74,7 +74,9 @@ class TestMaybeApplyDumperOverrides:
         start_rollout_id: int | None = None,
         num_rollout: int = 10,
         eval_interval: int | None = 5,
+        save: str | None = "/tmp/checkpoint",
         save_interval: int | None = 5,
+        save_retain_interval: int | None = 10,
     ) -> SimpleNamespace:
         return SimpleNamespace(
             dumper_enable=dumper_enable,
@@ -84,7 +86,9 @@ class TestMaybeApplyDumperOverrides:
             start_rollout_id=start_rollout_id,
             num_rollout=num_rollout,
             eval_interval=eval_interval,
+            save=save,
             save_interval=save_interval,
+            save_retain_interval=save_retain_interval,
         )
 
     def test_noop_when_dumper_disabled(self) -> None:
@@ -100,7 +104,9 @@ class TestMaybeApplyDumperOverrides:
         assert args.rollout_health_check_interval == 30.0
         assert args.num_rollout == 10
         assert args.eval_interval == 5
+        assert args.save == "/tmp/checkpoint"
         assert args.save_interval == 5
+        assert args.save_retain_interval == 10
 
     def test_disables_all_heartbeats(self) -> None:
         args = self._make_args(
@@ -118,12 +124,24 @@ class TestMaybeApplyDumperOverrides:
         args = self._make_args(dumper_enable=True, num_rollout=100)
         _maybe_apply_dumper_overrides(args)
 
+        assert args.start_rollout_id == 0
         assert args.num_rollout == 1
         assert args.eval_interval is None
+        assert args.save is None
         assert args.save_interval is None
+        assert args.save_retain_interval is None
 
     def test_respects_start_rollout_id(self) -> None:
         args = self._make_args(dumper_enable=True, start_rollout_id=5, num_rollout=100)
         _maybe_apply_dumper_overrides(args)
 
         assert args.num_rollout == 6
+
+
+def test_recompute_logprobs_via_prefill_flag_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
+
+    assert args.recompute_logprobs_via_prefill is True
