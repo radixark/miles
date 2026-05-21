@@ -1,5 +1,7 @@
 import os
 
+import torch
+
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -16,16 +18,24 @@ MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 
-CONFIGS = [
-    {"USE_DEEPEP": False, "USE_FP8_ROLLOUT": False},
-    {"USE_DEEPEP": True, "USE_FP8_ROLLOUT": True},
-]
+IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
+
+if IS_ROCM:
+    CONFIGS = [
+        {"USE_DEEPEP": False, "USE_FP8_ROLLOUT": False},
+    ]
+else:
+    CONFIGS = [
+        {"USE_DEEPEP": False, "USE_FP8_ROLLOUT": False},
+        {"USE_DEEPEP": True, "USE_FP8_ROLLOUT": True},
+    ]
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+    if any(c.get("USE_FP8_ROLLOUT") for c in CONFIGS):
+        U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
@@ -104,6 +114,7 @@ def execute(USE_DEEPEP=False, USE_FP8_ROLLOUT=False):
         f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
         "--sglang-max-running-requests 512 "
         "--sglang-enable-metrics "
+        "--use-miles-router "
     )
 
     if USE_DEEPEP:
@@ -143,10 +154,15 @@ def execute(USE_DEEPEP=False, USE_FP8_ROLLOUT=False):
         f"{misc_args} "
     )
 
+    extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    if IS_ROCM:
+        extra_env_vars["SGLANG_USE_AITER"] = "0"
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
+        extra_env_vars=extra_env_vars,
     )
 
 
