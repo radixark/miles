@@ -9,7 +9,8 @@ attributes that ``_process_messages`` / ``_apply_jinja_template`` read:
 - ``tokenizer_manager.tokenizer`` — the HF tokenizer under test
 - ``template_manager.chat_template_name = None`` → selects the Jinja path
 - ``template_manager.jinja_template_content_format = "string"`` → text-only
-- ``use_dpsk_v32_encoding = False`` / ``is_gpt_oss = False``
+- ``use_dpsk_v32_encoding = False`` / ``chat_encoding_spec = None``
+- ``is_gpt_oss = False`` / ``is_gemma4 = False``
 
 Each test asserts that our ``apply_chat_template`` produces identical token IDs.
 """
@@ -58,7 +59,9 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.template_manager.chat_template_name = None
     serving.template_manager.jinja_template_content_format = "string"
     serving.use_dpsk_v32_encoding = False
+    serving.chat_encoding_spec = None
     serving.is_gpt_oss = False
+    serving.is_gemma4 = False
     serving.tool_call_parser = None
     serving.reasoning_parser = None
     return serving
