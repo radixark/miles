@@ -809,24 +809,29 @@ def policy_loss_function(
     train_scored_log_probs = old_log_probs
     train_rollout_logprob_abs_diff = None
     train_rollout_kl = None
+    current_policy_rollout_logprob_abs_diff = None
+    current_policy_rollout_kl = None
     if "rollout_log_probs" in batch and batch["rollout_log_probs"]:
         rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
-        abs_diff = (train_scored_log_probs - rollout_log_probs).abs()
-        abs_diff = torch.where(
-            active_tokens,
-            torch.nan_to_num(abs_diff, nan=0.0, posinf=0.0, neginf=0.0),
-            abs_diff.new_zeros(()),
-        )
-        train_rollout_logprob_abs_diff = sum_of_sample_mean(abs_diff)
 
-        # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
-        rollout_train_kl = compute_approx_kl(rollout_log_probs, train_scored_log_probs, kl_loss_type="low_var_kl")
-        rollout_train_kl = torch.where(
-            active_tokens,
-            torch.nan_to_num(rollout_train_kl, nan=0.0, posinf=0.0, neginf=0.0),
-            rollout_train_kl.new_zeros(()),
-        )
-        train_rollout_kl = sum_of_sample_mean(rollout_train_kl)
+        def compute_rollout_metrics(scored_log_probs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            abs_diff = (scored_log_probs - rollout_log_probs).abs()
+            abs_diff = torch.where(
+                active_tokens,
+                torch.nan_to_num(abs_diff, nan=0.0, posinf=0.0, neginf=0.0),
+                abs_diff.new_zeros(()),
+            )
+            # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
+            kl = compute_approx_kl(rollout_log_probs, scored_log_probs, kl_loss_type="low_var_kl")
+            kl = torch.where(
+                active_tokens,
+                torch.nan_to_num(kl, nan=0.0, posinf=0.0, neginf=0.0),
+                kl.new_zeros(()),
+            )
+            return sum_of_sample_mean(abs_diff), sum_of_sample_mean(kl)
+
+        train_rollout_logprob_abs_diff, train_rollout_kl = compute_rollout_metrics(train_scored_log_probs)
+        current_policy_rollout_logprob_abs_diff, current_policy_rollout_kl = compute_rollout_metrics(log_probs)
 
     reported_loss = {
         "loss": loss.clone().detach(),
@@ -841,6 +846,12 @@ def policy_loss_function(
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()
     if train_rollout_kl is not None:
         reported_loss["train_rollout_kl"] = train_rollout_kl.clone().detach()
+    if current_policy_rollout_logprob_abs_diff is not None:
+        reported_loss["current_policy_rollout_logprob_abs_diff"] = (
+            current_policy_rollout_logprob_abs_diff.clone().detach()
+        )
+    if current_policy_rollout_kl is not None:
+        reported_loss["current_policy_rollout_kl"] = current_policy_rollout_kl.clone().detach()
 
     if args.use_kl_loss:
         reported_loss["kl_loss"] = kl_loss.clone().detach()
