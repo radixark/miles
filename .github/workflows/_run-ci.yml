@@ -50,7 +50,6 @@ jobs:
         -v /data/miles_ci/hf_cache:/root/.cache/huggingface
         --privileged
         --ulimit nofile=65535:65535
-        -v /tmp:/tmp
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -72,7 +71,6 @@ jobs:
           pkill -9 -f 'ray-dashboard' 2>/dev/null || true
           pkill -9 sglang 2>/dev/null || true
           ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
           sleep 3
 
       - name: Wait for GPU ready
