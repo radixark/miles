@@ -1,6 +1,6 @@
 ---
 name: setup-ci-host
-description: Prepare a new physical CI host so /data/miles_ci is canonical — a real directory on the biggest disk, or a symlink to it — before installing miles GitHub Actions runners. Triggers, "setup ci host", "新机器加入 ci", "/data/miles_ci 没准备好", "miles ci 主机初始化", or similar. Idempotent; safe to re-run. Run once per host before either the README's docker-compose runner flow or `manage-gh-runners`. Boundary vs `manage-gh-runners`, this skill only prepares the host filesystem layout (big-disk detection, mkdir, symlink); it does NOT add, remove, or talk to GitHub runners.
+description: Prepare a new physical CI host so /data/miles_ci is canonical — a real directory on the biggest disk, or a symlink to it — before installing miles GitHub Actions runners. Triggers, "setup ci host", "/data/miles_ci not ready", "miles ci host bootstrap", or similar. Idempotent; safe to re-run. Run once per host before either the README's docker-compose runner flow or `manage-gh-runners`. Boundary vs `manage-gh-runners`, this skill only prepares the host filesystem layout (big-disk detection, mkdir, symlink); it does NOT add, remove, or talk to GitHub runners.
 user_invocable: true
 ---
 
