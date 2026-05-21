@@ -61,7 +61,13 @@ RUN mkdir -p /tmp/wheels && \
 # ====================================== Python dependencies ============================================
 
 # flash-attn
-RUN pip install /tmp/wheels/flash_attn-*.whl
+# The CUDA 12 FA2 wheel is built against an older torch ABI than the
+# v0.5.12-cu129 base image. Hopper paths use FA3 below.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      pip install /tmp/wheels/flash_attn-*.whl; \
+    else \
+      echo "Skipping flash-attn 2 wheel for CUDA 12"; \
+    fi
 
 # flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
 RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
