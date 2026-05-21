@@ -131,13 +131,14 @@ class MultiLoRADataSource(DataSource):
             source: RolloutDataSource = self.sources[name]
             adapter_samples = source.get_samples(samples_needed)
 
-            # Add LoRA adapter data + per adapter reward fn data
+            # Add LoRA adapter data + per adapter reward fn data, also merge adapter meta
             ref = refs[name]
             reward_spec = reward_specs[name]
             for group in adapter_samples:
                 for sample in group:
                     sample.adapter = ref
                     sample.reward_spec = reward_spec
+                    sample.metadata = {**config.metadata, **sample.metadata}
             all_samples.extend(adapter_samples)
 
             # Begin deregistration process when out of data
