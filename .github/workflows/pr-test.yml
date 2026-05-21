@@ -72,6 +72,7 @@ jobs:
   # Runs on GitHub-hosted ubuntu-latest (cpu_runner: true) to avoid
   # occupying GPU-fleet runner slots.
   stage-a-cpu:
+    needs: [resolve-ci-image]
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
