@@ -105,7 +105,7 @@ class ServerGroup:
 
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
-        pg, reordered_bundle_indices, reordered_gpu_ids = self.pg
+        pg, reordered_bundle_indices, _ = self.pg
 
         RolloutRayActor = ray.remote(SGLangEngine)
 
@@ -119,7 +119,12 @@ class ServerGroup:
             num_cpus = num_gpus
 
             gpu_index = self.gpu_offset + i * num_gpu_per_engine
-            base_gpu_id = int(reordered_gpu_ids[gpu_index])
+
+            # Each SGLang engine should use local GPU 0 as its base, regardless of
+            # its position in the placement group. The placement_group_bundle_index
+            # selects which physical GPU bundle to use, and CUDA_VISIBLE_DEVICES
+            # handles the mapping to local device indices for the spawned server process.
+            base_gpu_id = 0
 
             scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg,
