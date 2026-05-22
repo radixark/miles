@@ -7,11 +7,12 @@ This plugin is a non-invasive drop-in that:
    Super-120B-A12B) round-trip correctly through the HF↔Megatron
    ``mapping_registry`` and get the right ``moe_router_*`` fields on the
    provider.
-2. Patches :class:`~megatron.core.transformer.transformer_layer.TransformerLayer`
-   so hybrid layers whose ``self_attention`` / ``mlp`` is an ``IdentityOp``
-   don't blow up on the 2-tuple unpack in ``_forward_attention`` /
-   ``_forward_mlp``.
-3. Patches :class:`~megatron.core.models.mamba.MambaModel` ``forward`` to
+2. For Nemotron-H models, patches
+   :class:`~megatron.core.transformer.transformer_layer.TransformerLayer` so
+   hybrid layers whose ``self_attention`` / ``mlp`` is an ``IdentityOp`` don't
+   blow up on the 2-tuple unpack in ``_forward_attention`` / ``_forward_mlp``.
+3. For Nemotron-H models, patches
+   :class:`~megatron.core.models.mamba.MambaModel` ``forward`` to
    transparently swallow the ``loss_mask`` kwarg so miles' generic training
    loop (which was designed around ``GPTModel``) can keep passing it
    unconditionally.
@@ -75,6 +76,8 @@ def _build_bridge_subclass():
         """
 
         def provider_bridge(self, hf_pretrained):
+            _install_nemotronh_hybrid_layer_shims()
+            _install_mamba_model_loss_mask_shim()
             provider = super().provider_bridge(hf_pretrained)
             hf = hf_pretrained.config
 
@@ -199,12 +202,8 @@ def _install_mamba_model_loss_mask_shim() -> None:
 
 
 def install() -> None:
-    """Apply all Nemotron-H shims and register the miles bridge subclass."""
-    for fn in (
-        _install_nemotronh_hybrid_layer_shims,
-        _install_mamba_model_loss_mask_shim,
-        _build_bridge_subclass,
-    ):
+    """Register the Nemotron-H bridge subclass."""
+    for fn in (_build_bridge_subclass,):
         try:
             fn()
         except Exception as e:  # best-effort; avoid breaking unrelated models

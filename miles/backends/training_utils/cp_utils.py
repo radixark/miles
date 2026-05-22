@@ -245,10 +245,18 @@ def slice_with_cp(
     pad_value: tuple[int, float, Callable],
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
+    parallel_state: object | None = None,
 ) -> torch.Tensor:
-    parallel_state = get_parallel_state()
-    cp_rank = parallel_state.cp.rank
-    cp_size = parallel_state.cp.size
+    """
+    Slice tokens into the local zigzag CP layout.
+    """
+    if parallel_state is None:
+        parallel_state = get_parallel_state()
+        cp_rank = parallel_state.cp.rank
+        cp_size = parallel_state.cp.size
+    else:
+        cp_rank = parallel_state.cp_rank
+        cp_size = parallel_state.cp_size
 
     if qkv_format == "bshd":
         assert max_seq_len is not None
