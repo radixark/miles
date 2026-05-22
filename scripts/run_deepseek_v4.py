@@ -140,24 +140,17 @@ def _hf_checkpoint_path(args: ScriptArgs) -> str:
     return args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
 
 
-def _patch_4layer_model_type(args: ScriptArgs):
-    """TMP: patch sglang model type for 4-layer prunes.
-
-    HF transformers doesn't know `deepseek_v4` model_type; SGLang only registers
-    `deepseek_ref` (via `srt/utils/hf_transformers_utils.py:319,334`). The full
-    Pro/Flash models work because SGLANG_APPLY_CONFIG_BACKUP=auto substitutes
-    a `deepseek_ref` backup config. For 4-layer prunes we keep `=none` so
-    num_hidden_layers stays 4, but then we need to patch model_type ourselves.
-    """
+def _ensure_4layer_model_type(args: ScriptArgs):
+    """Undo the old deepseek_ref workaround for local 4-layer prunes."""
     if args.model_name != "DeepSeek-V4-Flash-FP8-4layer":
         return
     cfg = Path(_hf_checkpoint_path(args)) / "config.json"
     if not cfg.exists():
         return
     text = cfg.read_text()
-    if '"model_type": "deepseek_v4"' in text:
-        cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
-        print(f"[patch] {cfg}: model_type deepseek_v4 -> deepseek_ref")
+    if '"model_type": "deepseek_ref"' in text:
+        cfg.write_text(text.replace('"model_type": "deepseek_ref"', '"model_type": "deepseek_v4"'))
+        print(f"[patch] {cfg}: model_type deepseek_ref -> deepseek_v4")
 
 
 def _prepare_download(args: ScriptArgs):
@@ -171,7 +164,7 @@ def _prepare_download(args: ScriptArgs):
             f"huggingface-cli download {args.model_org}/{args.model_name} "
             f"--local-dir {dest}"
         )
-    _patch_4layer_model_type(args)
+    _ensure_4layer_model_type(args)
     _download_dataset(args)
 
 
@@ -340,7 +333,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 def _train(args: ScriptArgs):
     print(f"running on {args.num_nodes} nodes")
-    _patch_4layer_model_type(args)
+    _ensure_4layer_model_type(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
@@ -475,8 +468,6 @@ def _train(args: ScriptArgs):
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
     }
-    if args.model_name == "DeepSeek-V4-Flash-FP8-4layer":
-        extra_env_vars["SGLANG_APPLY_CONFIG_BACKUP"] = "none"
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
         extra_env_vars["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"

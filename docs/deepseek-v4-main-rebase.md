@@ -28,6 +28,8 @@
 13. Rebase stopped on `49ce6ef8d Expose DeepSeek V4 bridge import errors`.
 14. Rebase stopped on `4926137a3 hyper_connection: route MHC through deepseek-ai/TileKernels`.
 15. Rebase stopped on `28d42c735 quant: route qat cast-back + fp8_cast_bf16 tool through TileKernels`.
+16. Completed `git rebase upstream/main`; final branch has 47 commits on top of `upstream/main`.
+17. Post-rebase cleanup: updated Docker defaults to `sglang-miles-v0.5.12`, replaced the obsolete SGLang `_load_deepseek_temp_model` patch, and removed the old `deepseek_ref` launcher workaround.
 
 ## Conflict Notes
 
@@ -138,6 +140,13 @@ Decision:
 
 - Kept the TileKernels QAT cast-back path (`tile_kernels.quant.per_token_cast_back`) while preserving the local `act_quant` cast path.
 - `tools/fp8_cast_bf16.py` applied cleanly to the TileKernels `cast_back` implementation.
+
+## Post-Rebase Fixes
+
+- `docker/Dockerfile` now defaults to `SGLANG_IMAGE_TAG=v0.5.12` and `SGLANG_BRANCH=sglang-miles-v0.5.12`; CUDA 13 comments were updated to `v0.5.12-cu130`.
+- `docker/Dockerfile.rocm_MI300` and `docker/Dockerfile.rocm_MI350-5` now fetch `sglang-miles-v0.5.12`; MI350 also defaults to `v0.5.12-rocm720-mi35x`.
+- `miles/utils/transformers_patch.py` now uses the target SGLang v0.5.12 supported path: importing `sglang.srt.utils.hf_transformers.common` to register custom HF config aliases. The removed private helper `_load_deepseek_temp_model` is not present in `sglang-miles-v0.5.12`.
+- `scripts/run_deepseek_v4.py` no longer rewrites 4-layer prune configs from `deepseek_v4` to the obsolete `deepseek_ref` model type. It now repairs old local `deepseek_ref` configs back to `deepseek_v4`.
 
 ## Fix Notes
 

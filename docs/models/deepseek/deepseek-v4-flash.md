@@ -117,7 +117,7 @@ Alternatively, you can set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` t
 
 ### 4.4 Notable quirks
 
-- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognizes `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
+- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) to import SGLang's HF config registry so HF's `AutoConfig.from_pretrained` recognizes `model_type=deepseek_v4`.
 
 ## 5. Example Recipe Configuration
 
