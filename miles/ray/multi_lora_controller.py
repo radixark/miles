@@ -181,11 +181,7 @@ class MultiLoRAControllerImpl:
         return {"name": name, "slot": slot}
 
     def _validate_register(self, name: str, config: AdapterConfig) -> None:
-        """Verify a register_adapter call before any state is mutated.
-
-        Raises on any problem (rank cap, duplicate name, no free slot, bad
-        dataset path); on success the caller may safely commit.
-        """
+        """Verify a register_adapter call before any state is mutated."""
         assert (
             config.rank <= self.max_rank
         ), f"Adapter '{name}' rank ({config.rank}) exceeds max rank ({self.max_rank})"
@@ -201,6 +197,14 @@ class MultiLoRAControllerImpl:
             raise ValueError(
                 f"Adapter '{name}': dataset path '{data_path}' must be .jsonl or .parquet"
             )
+        # Ensure no checkpoint path collisions
+        new_dir = Path(config.dir).absolute()
+        for other_name, other_config in self.configs.items():
+            if Path(other_config.dir).absolute() == new_dir:
+                raise ValueError(
+                    f"Adapter '{name}': dir '{config.dir}' is already used by registered "
+                    f"adapter '{other_name}'; each adapter needs its own directory"
+                )
 
     def update_adapter_state(self, names: str | list[str], state: AdapterState):
         if isinstance(names, str):
