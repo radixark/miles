@@ -147,6 +147,7 @@ Decision:
 - `docker/Dockerfile.rocm_MI300` and `docker/Dockerfile.rocm_MI350-5` now fetch `sglang-miles-v0.5.12`; MI350 also defaults to `v0.5.12-rocm720-mi35x`.
 - `miles/utils/transformers_patch.py` now uses the target SGLang v0.5.12 supported path: importing `sglang.srt.utils.hf_transformers.common` to register custom HF config aliases. The removed private helper `_load_deepseek_temp_model` is not present in `sglang-miles-v0.5.12`.
 - `scripts/run_deepseek_v4.py` no longer rewrites 4-layer prune configs from `deepseek_v4` to the obsolete `deepseek_ref` model type. It now repairs old local `deepseek_ref` configs back to `deepseek_v4`.
+- Fixed a syntax error in the V4 replay `allgather_cp` padding branch that was introduced while resolving `miles/backends/megatron_utils/actor.py`.
 
 ## Fix Notes
 

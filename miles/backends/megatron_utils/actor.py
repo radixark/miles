@@ -309,7 +309,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     global_pad_size = cp_size * pad_size
                     pad = (global_pad_size - replay_data.size(0) % global_pad_size) % global_pad_size
                     if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
+                        replay_data = pad_func(replay_data, pad)
                     replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
                 else:
                     replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
