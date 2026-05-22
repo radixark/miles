@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 
 _config_registry_applied = False
+_DEEPSEEK_V3_ALIASES = ("deepseek_v32", "deepseek_v4", "kimi_k2")
 
 
 @contextmanager
@@ -11,18 +12,33 @@ def with_transformers_patch():
 
 
 def apply_transformers_patch():
-    """Register SGLang's custom HF config aliases with transformers.
+    """Register the DeepSeek V3-family HF config aliases used by SGLang.
 
-    SGLang v0.5.12 registers DeepSeek V4 through
-    ``sglang.srt.utils.hf_transformers.common``. Importing that module is the
-    supported hook; the older private ``_load_deepseek_temp_model`` helper no
-    longer exists on the target branch.
+    SGLang v0.5.12 registers these model types as thin aliases of
+    ``transformers.DeepseekV3Config``. Mirroring that small registry locally
+    avoids importing the whole SGLang package just to load Miles-side configs.
+    The older private ``_load_deepseek_temp_model`` helper no longer exists on
+    the target SGLang branch.
     """
     global _config_registry_applied
     if _config_registry_applied:
         return
 
-    import sglang.srt.utils.hf_transformers.common  # noqa: F401
+    from transformers import DeepseekV3Config
+    from transformers.models.auto.configuration_auto import AutoConfig
+
+    for model_type in _DEEPSEEK_V3_ALIASES:
+        config_cls = type(
+            f"_{model_type.title().replace('_', '')}ConfigAlias",
+            (DeepseekV3Config,),
+            {"model_type": model_type},
+        )
+        try:
+            AutoConfig.register(model_type, config_cls)
+        except ValueError as e:
+            err = str(e).lower()
+            if "already registered" not in err and "already used" not in err:
+                raise
 
     _config_registry_applied = True
 
