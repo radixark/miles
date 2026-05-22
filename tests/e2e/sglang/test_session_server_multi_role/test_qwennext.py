@@ -12,6 +12,7 @@ CONFIG = ModelConfig(
     allowed_append_roles=("tool", "user"),
     tp_size=4,
     cycles=2,
+    n_samples_per_prompt=1,
     tool_call_failure_mode="append_tool",
 )
 

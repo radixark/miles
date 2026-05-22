@@ -21,6 +21,7 @@ class ModelConfig:
     num_gpus: int = 4
     tp_size: int = 1
     cycles: int = 3
+    n_samples_per_prompt: int = 4
     # Soft-threshold override for assistant_text mismatch ratio.  Default
     # mirrors session_verify_runner; raise per-family when an upstream sglang
     # reasoning parser is known to roundtrip imperfectly (e.g. nemotron_3
@@ -42,6 +43,7 @@ def run_one(cfg: ModelConfig) -> None:
         tool_call_parser=cfg.tool_call_parser,
         tp_size=cfg.tp_size,
         cycles=cfg.cycles,
+        n_samples_per_prompt=cfg.n_samples_per_prompt,
         # run_session_verify defaults num_gpus=8 (H100 era); the suite runs on
         # 4-GPU H200, so allocate 4 actor GPUs to match the runner.
         num_gpus=cfg.num_gpus,
