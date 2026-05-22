@@ -120,11 +120,11 @@ class ServerGroup:
 
             gpu_index = self.gpu_offset + i * num_gpu_per_engine
 
-            # Each SGLang engine should use local GPU 0 as its base, regardless of
-            # its position in the placement group. The placement_group_bundle_index
-            # selects which physical GPU bundle to use, and CUDA_VISIBLE_DEVICES
-            # handles the mapping to local device indices for the spawned server process.
-            base_gpu_id = 0
+            # Use the local loop index as the base GPU ID for each engine.
+            # For TP=4, engine 0 uses GPUs 0,1,2,3; engine 1 uses GPUs 4,5,6,7; etc.
+            # Ray's placement_group_bundle_index selects which physical GPU bundle to use,
+            # and CUDA_VISIBLE_DEVICES handles the physical-to-local mapping.
+            base_gpu_id = i * num_gpu_per_engine
 
             scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg,
