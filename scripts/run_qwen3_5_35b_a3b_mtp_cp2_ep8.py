@@ -21,6 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     enable_spec: bool = True
     enable_spec_v2: bool = True
+    enable_r3: bool = False
 
 
 def prepare(args: ScriptArgs):
@@ -119,6 +120,10 @@ def execute(args: ScriptArgs):
         "--sglang-ep-size 8 "
         "--sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256 "
     )
+
+    if args.enable_r3:
+        sglang_args += "--use-rollout-routing-replay "
+
     if args.hardware == "B300":
         # B300 (sm103) needs triton backends — flashinfer MoE/attention not yet supported
         # has weight update reshape issue.
