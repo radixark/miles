@@ -10,6 +10,9 @@ def _parallel_state(*, cp_size: int, cp_rank: int = 0, cp_comm_type: str | None 
         intra_dp_cp=GroupInfo(rank=0, size=cp_size, group=None),
         cp=GroupInfo(rank=cp_rank, size=cp_size, group=None),
         tp=GroupInfo(rank=0, size=1, group=None),
+        pp=GroupInfo(rank=0, size=1, group=None),
+        ep=GroupInfo(rank=0, size=1, group=None),
+        etp=GroupInfo(rank=0, size=1, group=None),
         cp_comm_type=cp_comm_type,
     )
 
