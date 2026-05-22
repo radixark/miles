@@ -14,13 +14,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "qwen3.5-35B-A3B"
     num_gpus_per_node: int = 8
     hardware: Literal["H200", "B300"] = "H200"
-    enable_eval: bool = True
+    enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     enable_spec: bool = True
-    enable_spec_v2: bool = False
+    enable_spec_v2: bool = True
 
 
 def prepare(args: ScriptArgs):
@@ -80,7 +80,7 @@ def execute(args: ScriptArgs):
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
+        "--pipeline-model-parallel-size 2 "
         "--context-parallel-size 2 "
         "--expert-model-parallel-size 8 "
         "--expert-tensor-parallel-size 1 "
@@ -122,10 +122,7 @@ def execute(args: ScriptArgs):
     if args.hardware == "B300":
         # B300 (sm103) needs triton backends — flashinfer MoE/attention not yet supported
         # has weight update reshape issue.
-        sglang_args += (
-            "--sglang-moe-runner-backend triton "
-            "--sglang-attention-backend triton "
-        )
+        sglang_args += "--sglang-moe-runner-backend flashinfer_cutlass " "--sglang-attention-backend trtllm_mha "
     if args.enable_spec:
         sglang_args += (
             # mtp speculative decoding
@@ -135,14 +132,7 @@ def execute(args: ScriptArgs):
             "--sglang-speculative-num-draft-tokens 3 "
         )
         if args.enable_spec_v2:
-            sglang_args += (
-                f"--sglang-mamba-scheduler-strategy extra_buffer "
-            )
-        else:
-            # Might slow without radix cache.
-            sglang_args += (
-                "--sglang-disable-radix-cache"
-            )
+            sglang_args += "--sglang-mamba-scheduler-strategy extra_buffer "
 
     mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
