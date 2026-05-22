@@ -12,7 +12,7 @@ def init_tracking(args, primary: bool = True, **kwargs):
 
 def log(args, metrics, step_key: str):
     step = metrics.get(step_key)
-    _manager.log(metrics, step=step)
+    _manager.log(metrics, step=step, step_key=step_key)
 
 
 def finish_tracking():
