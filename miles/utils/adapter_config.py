@@ -60,8 +60,6 @@ class AdapterConfig:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if not self.rm_type and not self.custom_rm_path:
-            raise ValueError("Only one of rm_type or custom_rm_path should be set in AdapterConfig")
         if self.rm_type and self.custom_rm_path:
             raise ValueError("Only one of rm_type or custom_rm_path should be set in AdapterConfig")
 
