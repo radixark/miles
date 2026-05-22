@@ -513,6 +513,18 @@ class SGLangEngine(RayActor):
             # catch the case there the engine is just created and does not have the group.
             pass
 
+    def destroy_relay_weights_update_group(self, group_name):
+        try:
+            return self._make_request(
+                "destroy_relay_weights_update_group",
+                {
+                    "group_name": group_name,
+                },
+            )
+        except requests.exceptions.RequestException:
+            # catch the case there the engine is just created and does not have the group.
+            pass
+
     def init_weights_send_group_for_remote_instance(
         self,
         master_address: str,

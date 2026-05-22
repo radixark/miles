@@ -127,6 +127,15 @@ def disconnect_rollout_engines_from_distributed(args, group_name, model_update_g
     ray.get(refs)
 
 
+def disconnect_rollout_relay_from_distributed(group_name, model_update_groups, relay_engine):
+    """
+    Destroy NCCL on training and the relay engine TP0.
+    """
+    ref = relay_engine.destroy_relay_weights_update_group.remote(group_name)
+    dist.destroy_process_group(model_update_groups)
+    ray.get([ref])
+
+
 def acquire_rollout_engine_lock(rollout_engine_lock: ActorHandle) -> None:
     while not ray.get(rollout_engine_lock.acquire.remote()):
         time.sleep(0.1)

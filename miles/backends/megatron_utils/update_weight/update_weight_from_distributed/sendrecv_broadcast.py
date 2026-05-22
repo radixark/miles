@@ -14,7 +14,7 @@ from ..common import post_process_weights
 from .broadcast_utils import (
     acquire_rollout_engine_lock,
     connect_rollout_relay_from_distributed,
-    disconnect_rollout_engines_from_distributed,
+    disconnect_rollout_relay_from_distributed,
     update_weights_from_distributed_send_recv,
 )
 from .mixin import DistBucketedWeightUpdateMixin
@@ -273,11 +273,10 @@ class UpdateWeightSendRecvBroadcast(DistBucketedWeightUpdateMixin):
         if self._is_source:
             self._group_name = f"miles-sendrecv-broadcast-train-pp_{self._pp_rank}"
             if self._relay_update_group is not None:
-                disconnect_rollout_engines_from_distributed(
-                    self.args,
+                disconnect_rollout_relay_from_distributed(
                     self._group_name,
                     self._relay_update_group,
-                    [self._relay_engine],
+                    self._relay_engine,
                 )
             self._relay_update_group = connect_rollout_relay_from_distributed(
                 self._group_name,
