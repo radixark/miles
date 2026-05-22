@@ -20,19 +20,6 @@ from miles.utils.http_utils import get_host_info
 logger = logging.getLogger(__name__)
 
 
-def get_base_gpu_id(args, rank):
-    num_gpus = min(args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
-    if args.colocate:
-        start_index = (rank * num_gpus) % args.num_gpus_per_node
-    else:
-        num_actor_gpus = 0 if args.debug_rollout_only else args.actor_num_gpus_per_node * args.actor_num_nodes
-        start_index = (num_actor_gpus + rank * num_gpus) % args.num_gpus_per_node
-        if args.use_critic:
-            num_critic_gpus = args.critic_num_gpus_per_node * args.critic_num_nodes
-            start_index = (num_actor_gpus + num_critic_gpus + rank * num_gpus) % args.num_gpus_per_node
-    return start_index
-
-
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
@@ -585,9 +572,9 @@ def _compute_server_args(
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
-    base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
-    # base_gpu_id is now always a local ID (0, 1, 2, ...), skip _to_local_gpu_id conversion
-    # to avoid device mapping inconsistency between Ray actor and spawned server process
+    base = base_gpu_id if base_gpu_id is not None else 0
+    # Ray's placement group ensures each engine sees its assigned GPU as local GPU 0.
+    # No conversion needed - Ray handles the physical-to-local mapping via CUDA_VISIBLE_DEVICES.
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
