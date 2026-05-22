@@ -2,7 +2,6 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
-import logging
 from copy import deepcopy
 from typing import Any
 
@@ -11,8 +10,6 @@ import pybase64
 
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
-
-logger = logging.getLogger(__name__)
 
 
 # Make this an isolated function because users may want to compute their own
@@ -110,24 +107,4 @@ def get_rollout_topk_from_response(args, output, sample, key):
     if info is None:
         return None
     x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
-    per_token_size = args.num_layers * args.moe_router_topk
-    assert x.size % per_token_size == 0, (
-        f"{key} flat size ({x.size}) is not divisible by " f"num_layers * moe_router_topk ({per_token_size})"
-    )
-
-    expected_tokens = len(sample.tokens) - 1
-    actual_tokens = x.size // per_token_size
-    if actual_tokens == expected_tokens + 1 and getattr(args, "sglang_speculative_algorithm", None):
-        logger.warning(
-            "Trimming one trailing %s row from speculative SGLang response: actual=%d expected=%d",
-            key,
-            actual_tokens,
-            expected_tokens,
-        )
-        x = x[: expected_tokens * per_token_size]
-        actual_tokens = expected_tokens
-
-    assert (
-        actual_tokens == expected_tokens
-    ), f"{key} token length ({actual_tokens}) != len(tokens) - 1 ({expected_tokens})"
-    return x.reshape(expected_tokens, args.num_layers, args.moe_router_topk)
+    return x.reshape(len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
