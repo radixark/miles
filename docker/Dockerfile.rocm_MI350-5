@@ -1,14 +1,14 @@
 # 1. rlsys/miles:MI350-355-latest
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-rocm720-mi35x
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 
-ARG SGLANG_IMAGE_TAG=v0.5.12-rocm720-mi35x
+ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
 # ======================================== Arguments =============================================
 
-ARG SGLANG_BRANCH=sglang-miles-v0.5.12
+ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM

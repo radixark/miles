@@ -7,7 +7,7 @@
 # Target GPU: MI300 (gfx942)
 #
 # Key Dependencies:
-# - sglang: sglang-miles-v0.5.12 branch
+# - sglang: sglang-miles branch
 # - sgl_kernel: built from selected sglang commit
 # - Megatron-LM: radixark/Megatron-LM
 # - TransformerEngine: commit 90c04bcdc3c109505b318f40a39680263af55edf
@@ -26,7 +26,7 @@ SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
 ARG MAX_JOBS=128
 ARG SGLANG_REPO=sgl-project/sglang
-ARG SGLANG_BRANCH=sglang-miles-v0.5.12
+ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main

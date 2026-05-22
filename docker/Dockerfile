@@ -3,20 +3,20 @@
 #
 # 2. radixark/miles:dev-cu13-arm64 (arm64 CUDA 13 / GB300)
 #    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu130 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-cu130 \
 #    build-arg:WHEELS_TAG=cu130-aarch64 \
 #
 # 3. radixark/miles:dev-cu13-x86 (x86 CUDA 13 / B300, sm_103a)
 #    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu130 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-cu130 \
 #    build-arg:WHEELS_TAG=cu130-x86_64 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.12
+ARG SGLANG_IMAGE_TAG=v0.5.10
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
 
-ARG SGLANG_BRANCH=sglang-miles-v0.5.12
+ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
