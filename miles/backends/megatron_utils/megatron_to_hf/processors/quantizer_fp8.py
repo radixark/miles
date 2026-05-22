@@ -4,7 +4,12 @@ import torch
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
-from ...sglang import quant_weight_ue8m0, should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
+from ...sglang import (
+    per_block_cast_to_fp8,
+    quant_weight_ue8m0,
+    should_deepgemm_weight_requant_ue8m0,
+    transform_scale_ue8m0,
+)
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -99,6 +104,8 @@ def _quantize_param(args, name, weight, weight_block_size):
         if _get_scale_format(args, name, weight_block_size) == "ue8m0":
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
+        elif per_block_cast_to_fp8 is not None and list(weight_block_size) == [128, 128]:
+            qweight, scale = per_block_cast_to_fp8(weight)
         else:
             qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
