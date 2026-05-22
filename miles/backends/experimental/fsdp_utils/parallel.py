@@ -30,6 +30,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
 
     # Setup Ring Flash Attention with CP group from mesh (only when cp_size > 1)
     if cp_size > 1:
+        # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
         from ring_flash_attn import substitute_hf_flash_attn
 
         substitute_hf_flash_attn(mesh.get_group("cp"), heads_k_stride=1)

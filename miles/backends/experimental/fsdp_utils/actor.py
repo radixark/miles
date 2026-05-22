@@ -626,6 +626,7 @@ class FSDPTrainRayActor(TrainRayActor):
         position_ids = batch["position_ids"]
 
         if get_parallel_state().cp.size > 1:
+            # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
             from ring_flash_attn import update_ring_flash_attn_params
 
             if "cu_seqlens" in batch:
