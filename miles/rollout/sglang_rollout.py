@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
-import pybase64
 import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
@@ -31,6 +30,7 @@ from miles.utils.processing_utils import (
 )
 from miles.utils.types import Sample
 
+from .generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
@@ -217,15 +217,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             sample.rollout_log_probs = []
         sample.rollout_log_probs += new_response_log_probs
 
-    if "routed_experts" in output["meta_info"]:
-        sample.rollout_routed_experts = np.frombuffer(
-            pybase64.b64decode(output["meta_info"]["routed_experts"].encode("ascii")),
-            dtype=np.int32,
-        ).reshape(
-            len(sample.tokens) - 1,
-            args.num_layers,
-            args.moe_router_topk,
-        )
+    sample.rollout_routed_experts = get_rollout_topk_from_response(args, output, sample, "routed_experts")
 
     sample.update_from_meta_info(args, output["meta_info"])
 
