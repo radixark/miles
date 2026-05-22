@@ -61,7 +61,7 @@ def execute(args: ScriptArgs):
         f"--num-rollout {64 if args.mode == 'debug_minimal' else 3000} "
         f"--rollout-batch-size {8 if args.mode == 'debug_minimal' else 32} "
         f"--n-samples-per-prompt {2 if args.mode == 'debug_minimal' else 8} "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 16384} "
         "--rollout-temperature 1 "
         f"--global-batch-size {16 if args.mode == 'debug_minimal' else 256} "
         "--balance-data "
@@ -80,7 +80,7 @@ def execute(args: ScriptArgs):
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 2 "
+        "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
         "--expert-model-parallel-size 8 "
         "--expert-tensor-parallel-size 1 "
