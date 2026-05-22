@@ -134,6 +134,9 @@ class ServerGroup:
                     "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
                     "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
                     "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+                    "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
+                        "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"
+                    ),
                     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
                     "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
                     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
