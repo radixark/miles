@@ -99,7 +99,6 @@ def execute():
 
     true_on_policy_args = (
         "--sglang-enable-deterministic-inference "
-        "--sglang-rl-on-policy-target fsdp "
         "--deterministic-mode "
         "--true-on-policy-mode "
     )

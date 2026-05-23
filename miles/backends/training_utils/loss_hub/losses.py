@@ -108,8 +108,6 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
-    train_log_probs_list = log_probs
-    old_log_probs_list = old_log_probs
 
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
     need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"
@@ -176,21 +174,6 @@ def policy_loss_function(
     )
 
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
-
-    if getattr(args, "dump_details", None) is not None:
-        from .debug_dump import maybe_dump_policy_loss_debug
-
-        maybe_dump_policy_loss_debug(
-            args=args,
-            batch=batch,
-            train_log_probs=train_log_probs_list,
-            old_log_probs=old_log_probs_list,
-            rollout_log_probs=batch.get("rollout_log_probs"),
-            advantages=batch["advantages"],
-            local_loss_masks=local_loss_mask_list,
-            ppo_kl=ppo_kl,
-            pg_loss=pg_loss,
-        )
 
     if args.use_opsm:
         pg_loss = pg_loss * opsm_mask

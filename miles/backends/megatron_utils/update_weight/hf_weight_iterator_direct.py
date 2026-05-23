@@ -56,9 +56,14 @@ def _get_megatron_full_params(
     params = []
     for info in megatron_local_param_infos:
         if dist.get_rank() == info.src_rank:
+            local_param = megatron_local_weights[info.name].to(
+                device=torch.cuda.current_device(), non_blocking=True
+            )
+            if not local_param.is_contiguous():
+                local_param = local_param.contiguous()
             params.append(
                 torch.nn.Parameter(
-                    megatron_local_weights[info.name].to(device=torch.cuda.current_device(), non_blocking=True),
+                    local_param,
                     requires_grad=False,
                 )
             )
