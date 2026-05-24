@@ -113,13 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # Megatron-LM's pyproject declares `packages.find.include = ["megatron.core", "megatron.core.*"]`,
-      # so `pip install -e` only exposes megatron.core — not megatron.training / legacy / rl.
-      # miles imports from megatron.training, so put the third_party/Megatron-LM
-      # submodule checkout on PYTHONPATH directly and skip the pip install for
-      # Megatron-LM entirely (its deps — torch, numpy, packaging — arrive via
-      # miles/requirements.txt transitively).
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/third_party/Megatron-LM
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Free disk space
         shell: bash
@@ -155,7 +149,7 @@ jobs:
           UV_SYSTEM_PYTHON: "1"
         run: |
           uv pip install -e third_party/sglang/python --no-deps
-          # Megatron-LM is surfaced via PYTHONPATH (see job env); no pip install.
+          uv pip install -e third_party/Megatron-LM --no-deps
           uv pip install -r requirements.txt
           uv pip install -e . --no-deps
           # sglang is installed --no-deps above, but miles' import chain loads
