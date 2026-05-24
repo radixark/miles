@@ -1581,12 +1581,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
             )
             parser.add_argument(
-                "--fp8-indexer",
-                action="store_true",
-                default=False,
-                help=("Enable V3.2/GLM5 indexer transfom + FP8 fake quant-dequant for q/k."),
-            )
-            parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,
                 default=None,
