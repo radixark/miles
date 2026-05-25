@@ -150,9 +150,7 @@ def _validate_glm_checkpoint(args: ScriptArgs):
             f"and num_hidden_layers={expected_num_layers}"
         )
     if "auto_map" in config:
-        raise RuntimeError(
-            f"{config_path} must not contain auto_map. Try update your checkpoint."
-        )
+        raise RuntimeError(f"{config_path} must not contain auto_map. Try update your checkpoint.")
 
 
 def _convert_to_fp8(args: ScriptArgs):
