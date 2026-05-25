@@ -1,5 +1,7 @@
 import os
 
+# This CI test is an example smoke test for the DSA model code path used by DeepSeek V3.2 and GLM-5. It only verifies that the training script is functional, not model accuracy.
+
 from scripts.run_glm5_744b_a40b import (
     ScriptArgs,
     _convert_to_fp8,
