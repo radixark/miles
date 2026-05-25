@@ -55,7 +55,6 @@ II. Usage for multi node (20 layers, 6 nodes as an example):
 """
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,14 +65,6 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
-
-_CUDA13_LIB_PATH = "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib"
-
-
-def _prepend_env_path(name: str, path: str) -> str:
-    existing = os.environ.get(name)
-    return f"{path}:{existing}" if existing else path
-
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -406,7 +397,6 @@ def _execute_train(args: ScriptArgs):
         extra_env_vars={
             **sglang_extra_env_vars,
             "INDEXER_ROPE_NEOX_STYLE": "0",
-            "LD_LIBRARY_PATH": _prepend_env_path("LD_LIBRARY_PATH", _CUDA13_LIB_PATH),
             "NVSHMEM_DISABLE_NCCL": "1",
         },
         megatron_path=args.megatron_path,
