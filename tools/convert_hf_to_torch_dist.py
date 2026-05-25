@@ -1,6 +1,7 @@
 import gc
 import os
 import shutil
+import sys
 
 import torch
 import torch.distributed as dist
@@ -36,6 +37,11 @@ def add_convertion_args(parser):
 
 
 def get_args():
+    pipeline_parallel_explicit = any(
+        arg == "--pipeline-model-parallel-size"
+        or arg.startswith("--pipeline-model-parallel-size=")
+        for arg in sys.argv[1:]
+    )
     args = parse_args(add_convertion_args)
     args = set_default_megatron_args(args)
 
@@ -53,7 +59,11 @@ def get_args():
     def ceildiv(a, b):
         return -(a // -b)
 
-    if args.pipeline_model_parallel_size == 1 and world_size > 1:
+    if (
+        args.pipeline_model_parallel_size == 1
+        and world_size > 1
+        and not pipeline_parallel_explicit
+    ):
         pp_size = world_size
         while True:
             args.pipeline_model_parallel_size = pp_size

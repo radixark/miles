@@ -45,7 +45,7 @@ def test_qwen3_dense_profile_resolves_model_names():
     assert profile.contract is contract
     assert contract.schema.name == "qwen3_dense_true_on_policy_v1"
     assert contract.schema.model_family == "qwen3_dense"
-    assert profile.supported_train_layouts == ("dp", "tp", "pp", "ulysses_cp")
+    assert profile.supported_train_layouts == ("dp", "tp", "sp", "pp", "ulysses_cp")
     assert profile.supported_rollout_layouts == ("dp", "tp")
     assert profile.required_kernel_contracts == ("qwen3_dense_sglang_math",)
     assert profile.logprob_contract == "sglang_prefill"
@@ -128,6 +128,7 @@ def test_qwen3_moe_ep_is_separate_from_tp_invariant_rollout():
     assert plan.parallel_layout is not None
     assert plan.parallel_layout.uses_train_ep
     assert not plan.parallel_layout.uses_train_tp
+    assert not plan.parallel_layout.uses_train_sp
     assert not plan.parallel_layout.uses_train_expert_tp
     assert plan.kernel_policy is not None
     assert not plan.kernel_policy.tp_invariant_row_linear
@@ -169,7 +170,9 @@ def test_qwen3_moe_rollout_tp_still_enables_tp_invariant_math():
         tensor_model_parallel_size=1,
         context_parallel_size=2,
         expert_model_parallel_size=4,
+        expert_tensor_parallel_size=2,
         rollout_num_gpus_per_engine=8,
+        sglang_expert_parallel_size=4,
     )
 
     plan = build_true_on_policy_launch_plan(args)
@@ -184,16 +187,17 @@ def test_qwen3_moe_rollout_tp_still_enables_tp_invariant_math():
 
 
 @pytest.mark.parametrize(
-    ("tp_size", "ep_size", "cp_size"),
+    ("tp_size", "ep_size", "cp_size", "rollout_engine_size"),
     [
-        (1, 4, 2),
-        (4, 1, 2),
+        (1, 4, 2, 4),
+        (4, 1, 2, 1),
     ],
 )
 def test_qwen3_moe_valid_8_gpu_megatron_training_topologies(
     tp_size: int,
     ep_size: int,
     cp_size: int,
+    rollout_engine_size: int,
 ):
     args = _args(
         model_name="Qwen3-30B-A3B",
@@ -201,7 +205,7 @@ def test_qwen3_moe_valid_8_gpu_megatron_training_topologies(
         context_parallel_size=cp_size,
         expert_model_parallel_size=ep_size,
         expert_tensor_parallel_size=1,
-        rollout_num_gpus_per_engine=max(tp_size, ep_size),
+        rollout_num_gpus_per_engine=rollout_engine_size,
         sglang_expert_parallel_size=ep_size,
         num_nodes=1,
         num_gpus_per_node=8,
@@ -213,9 +217,29 @@ def test_qwen3_moe_valid_8_gpu_megatron_training_topologies(
     assert plan.parallel_layout.train_tensor_parallel_size == tp_size
     assert plan.parallel_layout.train_expert_model_parallel_size == ep_size
     assert plan.parallel_layout.train_context_parallel_size == cp_size
+    assert plan.parallel_layout.uses_train_sp == (tp_size > 1)
 
 
-def test_qwen3_moe_rejects_train_tp_with_ep_until_sequence_parallel_is_supported():
+def test_qwen3_moe_rejects_rollout_moe_tp_mismatch():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=2,
+        context_parallel_size=1,
+        pipeline_model_parallel_size=2,
+        expert_model_parallel_size=2,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=2,
+        use_sequence_parallel=True,
+        num_nodes=1,
+        num_gpus_per_node=8,
+    )
+
+    with pytest.raises(ValueError, match="SGLang MoE TP to match Megatron"):
+        build_true_on_policy_launch_plan(args)
+
+
+def test_qwen3_moe_rejects_train_tp_with_ep_when_sequence_parallel_is_disabled():
     args = _args(
         model_name="Qwen3-30B-A3B",
         tensor_model_parallel_size=2,
@@ -224,12 +248,62 @@ def test_qwen3_moe_rejects_train_tp_with_ep_until_sequence_parallel_is_supported
         expert_tensor_parallel_size=1,
         rollout_num_gpus_per_engine=4,
         sglang_expert_parallel_size=4,
+        use_sequence_parallel=False,
         num_nodes=1,
         num_gpus_per_node=8,
     )
 
-    with pytest.raises(ValueError, match="does not support train TP with EP yet"):
+    with pytest.raises(ValueError, match="requires sequence parallel"):
         build_true_on_policy_launch_plan(args)
+
+
+def test_qwen3_moe_allows_train_tp_with_ep_when_sequence_parallel_is_enabled():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=2,
+        context_parallel_size=1,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=4,
+        use_sequence_parallel=True,
+        num_nodes=1,
+        num_gpus_per_node=8,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.parallel_layout is not None
+    assert plan.parallel_layout.uses_train_tp
+    assert plan.parallel_layout.uses_train_sp
+    assert plan.parallel_layout.uses_train_ep
+    assert plan.kernel_policy is not None
+    assert plan.kernel_policy.tp_invariant_row_linear
+    assert plan.kernel_policy.ep_invariant_moe
+
+
+def test_qwen3_moe_allows_pipeline_parallel_when_ep_fits_train_dp():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=1,
+        context_parallel_size=1,
+        pipeline_model_parallel_size=2,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=4,
+        num_nodes=1,
+        num_gpus_per_node=8,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.parallel_layout is not None
+    assert plan.parallel_layout.uses_train_pp
+    assert plan.parallel_layout.uses_train_ep
+    assert plan.parallel_layout.train_pipeline_parallel_size == 2
+    assert plan.kernel_policy is not None
+    assert plan.kernel_policy.ep_invariant_moe
 
 
 def test_qwen3_moe_rejects_ep_that_does_not_fit_8_gpu_megatron_dp():
@@ -270,13 +344,13 @@ def test_contract_object_owns_miles_kernel_policy_values():
     assert plan.kernel_policy.deterministic_tp_allreduce
 
 
-def test_megatron_true_on_policy_disables_sequence_parallel_and_enables_backend_flags():
+def test_megatron_true_on_policy_keeps_sequence_parallel_and_enables_backend_flags():
     args = _args(train_backend="megatron", use_sequence_parallel=True)
 
     apply_true_on_policy_script_defaults(args)
     plan = build_true_on_policy_launch_plan(args)
 
-    assert args.use_sequence_parallel is False
+    assert args.use_sequence_parallel is True
     assert "--use-sglang" not in plan.train_args
     assert "--true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
     assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in plan.train_args
@@ -302,9 +376,10 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
     apply_true_on_policy_script_defaults(args)
     plan = build_true_on_policy_launch_plan(args)
 
-    assert args.use_sequence_parallel is False
+    assert args.use_sequence_parallel is True
     assert plan.parallel_layout is not None
     assert plan.parallel_layout.train_tensor_parallel_size == 2
+    assert plan.parallel_layout.uses_train_sp
     assert plan.parallel_layout.train_context_parallel_size == 4
     assert plan.parallel_layout.rollout_num_gpus_per_engine == 8
     assert plan.parallel_layout.uses_train_tp

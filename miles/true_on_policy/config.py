@@ -33,6 +33,7 @@ class TrueOnPolicyParallelLayout:
     """Training and rollout topology relevant to true-on-policy parity."""
 
     train_tensor_parallel_size: int
+    train_sequence_parallel: bool
     train_context_parallel_size: int
     train_pipeline_parallel_size: int
     train_expert_model_parallel_size: int
@@ -43,6 +44,10 @@ class TrueOnPolicyParallelLayout:
     @property
     def uses_train_tp(self) -> bool:
         return self.train_tensor_parallel_size > 1
+
+    @property
+    def uses_train_sp(self) -> bool:
+        return self.train_sequence_parallel and self.uses_train_tp
 
     @property
     def uses_ulysses_cp(self) -> bool:
@@ -192,6 +197,7 @@ class TrueOnPolicyConfig:
     model_profile: TrueOnPolicyModelProfile
     train_backend: TrainBackend
     tensor_model_parallel_size: int
+    sequence_parallel: bool
     context_parallel_size: int
     pipeline_model_parallel_size: int
     rollout_num_gpus_per_engine: int
@@ -205,6 +211,7 @@ class TrueOnPolicyConfig:
     def parallel_layout(self) -> TrueOnPolicyParallelLayout:
         return TrueOnPolicyParallelLayout(
             train_tensor_parallel_size=self.tensor_model_parallel_size,
+            train_sequence_parallel=self.sequence_parallel,
             train_context_parallel_size=self.context_parallel_size,
             train_pipeline_parallel_size=self.pipeline_model_parallel_size,
             train_expert_model_parallel_size=self.expert_model_parallel_size,
@@ -245,6 +252,8 @@ class TrueOnPolicyConfig:
             raise ValueError(f"{self.model_profile.family} does not support Ulysses CP true-on-policy")
         if layout.uses_train_pp and "pp" not in self.model_profile.supported_train_layouts:
             raise ValueError(f"{self.model_profile.family} does not support PP true-on-policy")
+        if layout.uses_train_sp and "sp" not in self.model_profile.supported_train_layouts:
+            raise ValueError(f"{self.model_profile.family} does not support SP true-on-policy")
         if layout.uses_train_ep and "ep" not in self.model_profile.supported_train_layouts:
             raise ValueError(f"{self.model_profile.family} does not support EP true-on-policy")
         if layout.uses_train_expert_tp and "expert_tp" not in self.model_profile.supported_train_layouts:
@@ -253,15 +262,48 @@ class TrueOnPolicyConfig:
             raise ValueError(f"{self.model_profile.family} does not support rollout EP true-on-policy")
         if self.sglang_target == "fsdp_tp" and not self.model_profile.supports_tp_invariant:
             raise ValueError(f"{self.model_profile.family} does not support TP-invariant true-on-policy")
-        if self.train_backend == "megatron" and layout.uses_train_tp and layout.uses_train_ep:
-            # TODO: Enable this once true-on-policy supports Megatron sequence parallel
-            # for MoE + tensor-parallel training.
+        self._validate_megatron_moe_rollout_topology()
+        if (
+            self.train_backend == "megatron"
+            and layout.uses_train_tp
+            and layout.uses_train_ep
+            and not layout.uses_train_sp
+        ):
             raise ValueError(
-                "Megatron MoE true-on-policy does not support train TP with EP yet. "
-                "Megatron requires sequence parallel for MoE + tensor-parallel training, "
-                "and the current true-on-policy path intentionally disables sequence parallel."
+                "Megatron MoE true-on-policy requires sequence parallel when train TP and EP "
+                "are both enabled."
             )
         self._validate_megatron_train_topology()
+
+    def _validate_megatron_moe_rollout_topology(self) -> None:
+        if self.train_backend != "megatron" or self.model_profile.family != "qwen3_moe":
+            return
+
+        if self.rollout_expert_parallel_size < 1:
+            raise ValueError("SGLang rollout EP must be at least 1 for MoE true-on-policy.")
+        if self.rollout_num_gpus_per_engine % self.rollout_expert_parallel_size != 0:
+            raise ValueError(
+                "Qwen3 MoE true-on-policy requires rollout_num_gpus_per_engine to be "
+                "divisible by sglang_expert_parallel_size "
+                f"({self.rollout_num_gpus_per_engine} % {self.rollout_expert_parallel_size} != 0)."
+            )
+
+        # TODO(true-on-policy): factor in sglang_moe_data_parallel_size when that
+        # flag is wired through the qwen3_moe true-on-policy launch path. The
+        # SGLang MoE TP is rollout_num_gpus_per_engine / (sglang_ep * sglang_moe_dp);
+        # today no script sets sglang_moe_data_parallel_size > 1, so dividing by
+        # rollout_expert_parallel_size alone is correct, but enabling MoE DP later
+        # will need this validation to multiply rollout_expert_parallel_size by
+        # sglang_moe_data_parallel_size before computing rollout_moe_tp_size.
+        rollout_moe_tp_size = self.rollout_num_gpus_per_engine // self.rollout_expert_parallel_size
+        if rollout_moe_tp_size != self.expert_tensor_parallel_size:
+            raise ValueError(
+                "Qwen3 MoE true-on-policy requires SGLang MoE TP to match Megatron "
+                "expert tensor parallelism: "
+                "rollout_num_gpus_per_engine / sglang_expert_parallel_size "
+                f"= {rollout_moe_tp_size}, but expert_tensor_parallel_size "
+                f"= {self.expert_tensor_parallel_size}."
+            )
 
     def _validate_megatron_train_topology(self) -> None:
         if self.train_backend != "megatron" or self.train_world_size is None:
@@ -370,6 +412,7 @@ def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
         model_profile=profile,
         train_backend=args.train_backend,
         tensor_model_parallel_size=_get_required_int(args, "tensor_model_parallel_size"),
+        sequence_parallel=bool(getattr(args, "use_sequence_parallel", False)),
         context_parallel_size=_get_required_int(args, "context_parallel_size"),
         pipeline_model_parallel_size=_get_required_int(args, "pipeline_model_parallel_size"),
         expert_model_parallel_size=_get_optional_int(args, "expert_model_parallel_size", 1),

@@ -20,7 +20,7 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
         use_kl_loss=False,
     )
 
-    assert args.use_sequence_parallel is False
+    assert args.use_sequence_parallel is True
 
     run_qwen3_4b.execute(args)
 
@@ -38,7 +38,7 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
     assert "--use-sglang" not in train_args
     assert "--batch-invariant-mode" in train_args
     assert "--no-rope-fusion" in train_args
-    assert "--sequence-parallel" not in train_args
+    assert "--sequence-parallel" in train_args
     assert "ROW_LINEAR_ENABLE_INV" not in env_vars
     assert "MEGATRON_USE_DETERMINISTIC_ALLREDUCE" not in env_vars
 
@@ -67,7 +67,7 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     args.rollout_num_gpus_per_engine = 8
     args.extra_args = "--rollout-num-gpus 8 "
 
-    assert args.use_sequence_parallel is False
+    assert args.use_sequence_parallel is True
 
     run_qwen3_4b.execute(args)
 
@@ -88,7 +88,7 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     assert "--batch-invariant-mode" in train_args
     assert "--no-bias-swiglu-fusion" in train_args
     assert "--no-rope-fusion" in train_args
-    assert "--sequence-parallel" not in train_args
+    assert "--sequence-parallel" in train_args
     assert env_vars["NCCL_ALGO"] == "Ring"
     assert env_vars["NCCL_NVLS_ENABLE"] == "0"
     assert env_vars["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] == "0"

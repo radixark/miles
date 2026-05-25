@@ -81,7 +81,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
             assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8 to be enabled"
 
 
-def prepare(args: ScriptArgs):
+def prepare(args: ScriptArgs, *, convert_checkpoint_kwargs: dict | None = None):
+    """Download HF assets and (optionally) convert to torch-dist.
+
+    `convert_checkpoint_kwargs` lets callers (e.g. the deterministic variant)
+    override or extend the convert_checkpoint call without baking
+    true-on-policy concerns into this base script.
+    """
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -111,17 +117,19 @@ def prepare(args: ScriptArgs):
             dir_dst=args.model_dir,
             hf_checkpoint=f"{args.model_dir}/{args.model_name}",
             megatron_path=args.megatron_path,
+            **(convert_checkpoint_kwargs or {}),
         )
 
 
 # TODO improve layering: split algorithm vs infra
 def execute(args: ScriptArgs):
     is_debug_mode = args.mode == "debug_minimal"
-    ref_load_path = (
+    megatron_load_path = (
         f"{args.model_dir}/{args.model_name}/"
         if args.enable_megatron_bridge
         else f"{args.model_dir}/{args.model_name}_torch_dist"
     )
+    ref_load_path = megatron_load_path
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     if args.rollout_fp8:
@@ -135,7 +143,7 @@ def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint}/ "
         f"--ref-load {ref_load_path} "
-        f"--load {load_save_path} "
+        f"--load {megatron_load_path} "
         f"--save {load_save_path} "
         f"--save-interval {2 if is_debug_mode else 20} "
         f"--save-retain-interval {2 if is_debug_mode else 20} "

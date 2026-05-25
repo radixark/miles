@@ -344,6 +344,16 @@ class MegatronTrainRayActor(TrainRayActor):
         else:
             return self.train_actor(rollout_id, rollout_data)
 
+    def _sync_before_rank_subset_logging(self) -> None:
+        if not getattr(self.args, "true_on_policy_mode", False):
+            return
+        if (
+            self.args.tensor_model_parallel_size <= 1
+            and self.args.pipeline_model_parallel_size <= 1
+        ):
+            return
+        dist.barrier(group=get_gloo_group())
+
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -438,7 +448,9 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.rollout_data_postprocess is not None:
                 self.rollout_data_postprocess(self.args)
 
+            self._sync_before_rank_subset_logging()
             log_rollout_data(rollout_id, self.args, rollout_data)
+            self._sync_before_rank_subset_logging()
 
             # Train
             self._set_replay_stage("replay_backward")

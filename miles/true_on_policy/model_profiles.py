@@ -83,7 +83,7 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
         "Qwen3-4B-Base": "qwen3-4B",
         "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
     },
-    supported_train_layouts=("dp", "tp", "pp", "ulysses_cp"),
+    supported_train_layouts=("dp", "tp", "sp", "pp", "ulysses_cp"),
     supported_rollout_layouts=("dp", "tp"),
     contract=QWEN3_DENSE_TRUE_ON_POLICY_V1,
 )
@@ -92,7 +92,7 @@ QWEN3_MOE_PROFILE = TrueOnPolicyModelProfile(
     family="qwen3_moe",
     model_names=("Qwen3-30B-A3B",),
     megatron_model_types={"Qwen3-30B-A3B": "qwen3-30B-A3B"},
-    supported_train_layouts=("dp", "tp", "expert_tp", "ep", "pp", "ulysses_cp"),
+    supported_train_layouts=("dp", "tp", "sp", "expert_tp", "ep", "pp", "ulysses_cp"),
     supported_rollout_layouts=("dp", "tp", "ep"),
     contract=QWEN3_MOE_TRUE_ON_POLICY_V1,
 )

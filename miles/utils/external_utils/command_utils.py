@@ -54,13 +54,14 @@ def convert_checkpoint(
     num_nodes: int | None = None,
     extra_args: str = "",
     dir_dst: str = "/root",
+    path_dst: str | None = None,
     hf_checkpoint: str | None = None,
     megatron_path: str = "/root/Megatron-LM",
 ):
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
     # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
-    path_dst = f"{dir_dst}/{model_name}_torch_dist"
+    path_dst = path_dst or f"{dir_dst}/{model_name}_torch_dist"
     tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
     if tracker.exists() and tracker.read_text().strip() == "release":
         print(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
@@ -78,6 +79,7 @@ def convert_checkpoint(
         fn = exec_command
     fn(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
+        f"export CUDA_DEVICE_MAX_CONNECTIONS=1 && "
         f"PYTHONPATH={megatron_path} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
