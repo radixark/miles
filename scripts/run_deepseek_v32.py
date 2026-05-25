@@ -9,6 +9,13 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
+DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_HF = (".kv_b_proj.",)
+DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
+    ".linear_kv_up_proj",
+    ".linear_k_up_proj",
+    ".linear_v_up_proj",
+)
+
 _DEEPSEEK_V32_CONFIG_SHIM = """from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 
 
@@ -126,10 +133,15 @@ def _prepare_bf16_ckpt(args: ScriptArgs):
 def _prepare_mxfp8_ckpt(args: ScriptArgs):
     mxfp8_checkpoint = Path(args.model_dir) / f"{args.model_name}-MXFP8"
     if args.rollout_mxfp8:
+        extra_args = args.extra_args
+        if "--extra-high-precision-layers-hf" not in extra_args:
+            extra_args += (
+                f" --extra-high-precision-layers-hf {' '.join(DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_HF)} "
+            )
         U.exec_command(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name}-bf16 "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
-            f"{args.extra_args} "
+            f"{extra_args} "
         )
         _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
 
@@ -373,16 +385,10 @@ def _execute_train(args: ScriptArgs):
                     # "--sglang-moe-dense-tp-size 1 "
                 )
 
-                default_extra_high_precision_layers_hf = [".kv_b_proj."]
-                default_extra_high_precision_layers_megatron = [
-                    ".linear_kv_up_proj",
-                    ".linear_k_up_proj",
-                    ".linear_v_up_proj",
-                ]
                 if "--extra-high-precision-layers-hf" not in args.extra_args:
                     misc_args += (
-                        f"--extra-high-precision-layers-hf {' '.join(default_extra_high_precision_layers_hf)} "
-                        f"--extra-high-precision-layers-megatron {' '.join(default_extra_high_precision_layers_megatron)} "
+                        f"--extra-high-precision-layers-hf {' '.join(DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_HF)} "
+                        f"--extra-high-precision-layers-megatron {' '.join(DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_MEGATRON)} "
                     )
 
                 te_precision_config_text = """
