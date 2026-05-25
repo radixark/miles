@@ -132,6 +132,21 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
+  stage-c-8-gpu-b200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["b200", "8gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-b200
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
+
   stage-c-4-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |

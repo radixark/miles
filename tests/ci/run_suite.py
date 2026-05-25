@@ -35,6 +35,7 @@ PER_COMMIT_SUITES = {
     HWBackend.CUDA: [
         "stage-b-2-gpu-h200",
         "stage-c-8-gpu-h100",
+        "stage-c-8-gpu-b200",
         "stage-c-4-gpu-h200",
         "stage-c-2-gpu-h200",
     ],
