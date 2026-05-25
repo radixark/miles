@@ -1,3 +1,5 @@
+import copy
+
 import torch
 
 from mbridge.core import register_model
@@ -14,6 +16,31 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
         "self_attention.k_norm.bias": ["model.layers.{layer_number}.self_attn.indexer.k_norm.bias"],
     }
     _ATTENTION_MAPPING = {**DeepseekV3Bridge._ATTENTION_MAPPING, **_DSA_ATTENTION_MAPPING}
+
+    @property
+    def rope_theta(self):
+        return self.hf_config.rope_theta
+
+    def _hf_config_with_rope_theta(self):
+        hf_config = copy.copy(self.hf_config)
+        hf_config.rope_theta = self.rope_theta
+        return hf_config
+
+    def _build_config(self):
+        original_hf_config = self.hf_config
+        self.hf_config = self._hf_config_with_rope_theta()
+        try:
+            return super()._build_config()
+        finally:
+            self.hf_config = original_hf_config
+
+    def _get_gptmodel_args(self) -> dict:
+        original_hf_config = self.hf_config
+        self.hf_config = self._hf_config_with_rope_theta()
+        try:
+            return super()._get_gptmodel_args()
+        finally:
+            self.hf_config = original_hf_config
 
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
@@ -73,4 +100,6 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
 
 @register_model("glm_moe_dsa")
 class GlmMoeDsaBridge(DeepseekV32Bridge):
-    pass
+    @property
+    def rope_theta(self):
+        return self.hf_config.rope_parameters["rope_theta"]
