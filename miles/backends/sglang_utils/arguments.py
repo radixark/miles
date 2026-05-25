@@ -143,10 +143,6 @@ def validate_args(args):
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
 
-    if getattr(args, "recompute_logprobs_via_prefill", False):
-        args.sglang_enable_prefill_only_deterministic_inference = True
-        args.sglang_enable_deterministic_inference = True
-
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 

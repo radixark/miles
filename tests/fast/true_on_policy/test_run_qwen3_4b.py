@@ -32,7 +32,6 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
     assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
     assert "--sglang-attention-backend fa3" in train_args
     assert "--true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
-    assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--load /root/models/Qwen3-4B_torch_dist" in train_args
     assert "--save /root/shared_data/unit-test/checkpoints" in train_args
     assert "--use-sglang" not in train_args
@@ -83,7 +82,6 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     assert "--save /root/shared_data/unit-test-tp2-cp4/checkpoints" in train_args
     assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
     assert "--sglang-attention-backend fa3" in train_args
-    assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--use-sglang" not in train_args
     assert "--batch-invariant-mode" in train_args
     assert "--no-bias-swiglu-fusion" in train_args
@@ -122,6 +120,5 @@ def test_qwen3_script_off_policy_does_not_emit_true_on_policy_contract(monkeypat
     assert "--true-on-policy-mode" not in train_args
     assert "--sglang-true-on-policy-contract" not in train_args
     assert "--true-on-policy-contract" not in train_args
-    assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--use-sglang" not in train_args
     assert "ROW_LINEAR_ENABLE_INV" not in env_vars

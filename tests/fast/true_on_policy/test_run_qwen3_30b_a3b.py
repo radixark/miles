@@ -49,7 +49,6 @@ def test_qwen3_moe_script_true_on_policy_tp1_ep4_cp2_contract(monkeypatch):
     assert "--sglang-enable-dp-attention" not in train_args
     assert "--sglang-true-on-policy-contract qwen3_moe_true_on_policy_v1" in train_args
     assert "--true-on-policy-contract qwen3_moe_true_on_policy_v1" in train_args
-    assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--sequence-parallel" not in train_args
     assert "--no-gradient-accumulation-fusion" not in train_args
     assert "--use-sglang" not in train_args

@@ -140,15 +140,6 @@ class TestMaybeApplyDumperOverrides:
         assert args.num_rollout == 6
 
 
-def test_recompute_logprobs_via_prefill_flag_is_parsed():
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-
-    args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
-
-    assert args.recompute_logprobs_via_prefill is True
-
-
 @pytest.mark.parametrize(
     (
         "rollout_num_gpus_per_engine",
@@ -174,7 +165,6 @@ def test_true_on_policy_args_propagate_to_sglang_server_args(
         sglang_router_policy=None,
         sglang_router_ip=None,
         true_on_policy_mode=True,
-        recompute_logprobs_via_prefill=False,
         sglang_true_on_policy_contract="qwen3_dense_true_on_policy_v1",
         sglang_enable_deterministic_inference=False,
         sglang_enable_prefill_only_deterministic_inference=False,
