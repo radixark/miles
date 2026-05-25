@@ -32,7 +32,6 @@ Args:
 =====================
 
 I. Usage for single node minimal test:
-  `ray stop --force && pkill -9 -f sglang || true && sleep 3 && ray start --head --port=6378 --dashboard-port=8266`
   `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1`
 
 =====================
@@ -43,7 +42,7 @@ II. Usage for multi node (20 layers, 6 nodes as an example):
 
   2. Start Ray cluster on all nodes
 
-  3. Download model/data + patch checkpoint + convert to megatron.
+  3. Download model/data + validate checkpoint + convert to megatron.
      Run on **head node**; megatron conversion uses Ray to coordinate multi-node work.
        `python scripts/run_glm5_744b_a40b.py prepare --model-name GLM-5_20layer --num-nodes 6`
 
@@ -116,30 +115,34 @@ def _is_pruned(args: ScriptArgs):
     return re.search(r"(\d+)layer", args.model_name) is not None
 
 
-def _process_glm_checkpoint(args: ScriptArgs):
-    """Patch config.json to use DeepseekV32 architecture if not already patched."""
+def _validate_glm_checkpoint(args: ScriptArgs):
+    """Validate the basic native GLM-5 config fields."""
     config_path = Path(args.model_dir) / args.model_name / "config.json"
     if not config_path.exists():
-        print(f"Warning: {config_path} not found, skipping checkpoint processing")
-        return
+        raise FileNotFoundError(f"{config_path} not found")
 
     with open(config_path) as f:
         config = json.load(f)
 
-    if config.get("model_type") == "deepseek_v32":
-        print("Checkpoint already patched, skipping")
-        return
+    if args.model_name == "GLM-5":
+        expected_num_layers = 78
+    elif (m := re.search(r"(\d+)layer", args.model_name)) is not None:
+        expected_num_layers = int(m.group(1))
+    else:
+        raise NotImplementedError(f"{args.model_name} is not supported")
 
-    config["architectures"] = ["DeepseekV32ForCausalLM"]
-    config["auto_map"] = {
-        "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
-        "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
-    }
-    config["model_type"] = "deepseek_v32"
-
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-    print(f"Patched {config_path}")
+    if (
+        config.get("model_type") != "glm_moe_dsa"
+        or config.get("architectures") != ["GlmMoeDsaForCausalLM"]
+        or config.get("num_hidden_layers") != expected_num_layers
+    ):
+        raise RuntimeError(
+            f"{config_path} must use native GLM-5 config with "
+            f"model_type=glm_moe_dsa, architectures=[GlmMoeDsaForCausalLM], "
+            f"and num_hidden_layers={expected_num_layers}"
+        )
+    if "auto_map" in config:
+        raise RuntimeError(f"{config_path} must not contain auto_map. Try update your checkpoint.")
 
 
 def _convert_to_fp8(args: ScriptArgs):
@@ -155,7 +158,6 @@ def _convert_to_fp8(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    # Skip model download for pruned variants (assumed to already exist in model_dir)
     U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
@@ -339,11 +341,11 @@ def _execute_train(args: ScriptArgs):
     if args.enable_pd:
         sglang_args += "--prefill-num-servers 1 "
     sglang_args += (
-        # dsa
-        "--sglang-page-size 64 "
+        # use flashmla backend for better precision
         "--sglang-nsa-decode-backend flashmla_sparse "
         "--sglang-nsa-prefill-backend flashmla_sparse "
         "--sglang-attention-backend nsa "
+        "--sglang-page-size 64 "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # concurrency
         f"--sglang-max-running-requests 512 "
@@ -410,7 +412,7 @@ def _execute_train(args: ScriptArgs):
 def full_train(args: ScriptArgs):
     """Full pipeline: download, convert, copy, train."""
     _prepare_download(args)
-    _process_glm_checkpoint(args)
+    _validate_glm_checkpoint(args)
     if args.fp8_rollout:
         _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
@@ -423,7 +425,7 @@ def full_train(args: ScriptArgs):
 def prepare(args: ScriptArgs):
     """Download model/data and convert to megatron checkpoint (run on head node)."""
     _prepare_download(args)
-    _process_glm_checkpoint(args)
+    _validate_glm_checkpoint(args)
     if args.fp8_rollout:
         _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
