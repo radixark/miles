@@ -43,7 +43,7 @@ II. Usage for multi node (20 layers, 6 nodes as an example):
 
   2. Start Ray cluster on all nodes
 
-  3. Download model/data + patch checkpoint + convert to megatron.
+  3. Download model/data + validate checkpoint + convert to megatron.
      Run on **head node**; megatron conversion uses Ray to coordinate multi-node work.
        `python scripts/run_glm5_744b_a40b.py prepare --model-name GLM-5_20layer --num-nodes 6`
 
@@ -117,45 +117,84 @@ def _is_pruned(args: ScriptArgs):
 
 
 def _validate_glm_checkpoint(args: ScriptArgs):
-    """Validate GLM-5 checkpoint config expected by current Miles/SGLang support."""
-    config_path = Path(args.model_dir) / args.model_name / "config.json"
+    """Validate that the checkpoint uses the native GLM-5 HF layout."""
+    checkpoint_dir = Path(args.model_dir) / args.model_name
+    config_path = checkpoint_dir / "config.json"
     if not config_path.exists():
-        print(f"Warning: {config_path} not found, skipping checkpoint validation")
-        return
+        raise FileNotFoundError(f"{config_path} not found")
 
     with open(config_path) as f:
         config = json.load(f)
 
     architectures = config.get("architectures") or []
+    if config.get("model_type") != "glm_moe_dsa" or architectures != ["GlmMoeDsaForCausalLM"]:
+        raise RuntimeError(
+            f"{config_path} must use the native GLM-5 config: model_type=glm_moe_dsa "
+            "and architectures=[GlmMoeDsaForCausalLM]."
+        )
+
+    if "auto_map" in config:
+        raise RuntimeError(f"{config_path} must not contain auto_map; GLM-5 should not require remote code")
+
+    stale_remote_code = ["configuration_deepseek_v32.py", "modeling_deepseek_v32.py"]
+    stale_files = [name for name in stale_remote_code if (checkpoint_dir / name).exists()]
+    if stale_files:
+        raise RuntimeError(f"{checkpoint_dir} contains stale DeepseekV32 remote-code files: {', '.join(stale_files)}")
+
     if args.model_name == "GLM-5":
-        auto_map = config.get("auto_map") or {}
-        stale_auto_map = any("deepseek_v32" in str(v) or "DeepseekV32" in str(v) for v in auto_map.values())
-        if (
-            config.get("model_type") != "glm_moe_dsa"
-            or "GlmMoeDsaForCausalLM" not in architectures
-            or stale_auto_map
-        ):
-            raise RuntimeError(
-                f"{config_path} is not a native GLM-5 config. Expected model_type=glm_moe_dsa "
-                "and architecture GlmMoeDsaForCausalLM. If this directory was patched by an older "
-                "script, remove it and re-run prepare to download a fresh zai-org/GLM-5 checkpoint."
-            )
-        print("Full GLM-5 checkpoint config is valid")
-        return
+        expected_num_layers = 78
+    elif (m := re.search(r"(\d+)layer", args.model_name)) is not None:
+        expected_num_layers = int(m.group(1))
+    else:
+        raise NotImplementedError(f"{args.model_name} is not supported")
 
-    if config.get("model_type") != "deepseek_v32" or "DeepseekV32ForCausalLM" not in architectures:
+    if config.get("num_hidden_layers") != expected_num_layers:
         raise RuntimeError(
-            f"{config_path} is not a supported pruned GLM-5 config. Expected model_type=deepseek_v32 "
-            "and architecture DeepseekV32ForCausalLM."
+            f"{config_path} has num_hidden_layers={config.get('num_hidden_layers')}, "
+            f"expected {expected_num_layers} for {args.model_name}"
         )
 
-    required_remote_code = ["configuration_deepseek_v32.py", "modeling_deepseek_v32.py"]
-    missing_remote_code = [name for name in required_remote_code if not (config_path.parent / name).exists()]
-    if missing_remote_code:
+    required_files = [
+        "chat_template.jinja",
+        "generation_config.json",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ]
+    missing_files = [name for name in required_files if not (checkpoint_dir / name).exists()]
+    if missing_files:
+        raise FileNotFoundError(f"{checkpoint_dir} is missing required files: {', '.join(missing_files)}")
+
+    index_path = checkpoint_dir / "model.safetensors.index.json"
+    with open(index_path) as f:
+        weight_map = json.load(f)["weight_map"]
+
+    missing_shards = sorted({shard for shard in weight_map.values() if not (checkpoint_dir / shard).exists()})
+    if missing_shards:
+        raise FileNotFoundError(f"{checkpoint_dir} is missing safetensor shards: {', '.join(missing_shards)}")
+
+    layer_ids = sorted(
+        {
+            int(match.group(1))
+            for key in weight_map
+            if (match := re.search(r"model\.layers\.(\d+)\.", key)) is not None
+        }
+    )
+    expected_main_layers = set(range(expected_num_layers))
+    missing_layers = sorted(expected_main_layers - set(layer_ids))
+    if missing_layers:
+        raise RuntimeError(f"{index_path} is missing model layers: {missing_layers}")
+
+    num_nextn_layers = int(config.get("num_nextn_predict_layers") or 0)
+    expected_extra_layers = set(range(expected_num_layers, expected_num_layers + num_nextn_layers))
+    actual_extra_layers = {layer_id for layer_id in layer_ids if layer_id >= expected_num_layers}
+    if actual_extra_layers != expected_extra_layers:
         raise RuntimeError(
-            f"{config_path} references deepseek_v32 but is missing remote-code files: {', '.join(missing_remote_code)}"
+            f"{index_path} has extra layer ids {sorted(actual_extra_layers)}, "
+            f"but num_nextn_predict_layers={num_nextn_layers} expects {sorted(expected_extra_layers)}"
         )
-    print("Pruned GLM-5 checkpoint config is valid")
+
+    print(f"{args.model_name} checkpoint config is valid")
 
 
 def _convert_to_fp8(args: ScriptArgs):
