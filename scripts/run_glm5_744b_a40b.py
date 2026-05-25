@@ -32,7 +32,7 @@ Args:
 =====================
 
 I. Usage for single node minimal test:
-  `ray stop --force && pkill -9 -f sglang || true && sleep 3 && ray start --head --port=6378 --dashboard-port=8266`
+  `ray stop --force && pkill -9 -f sglang || true`
   `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1`
 
 =====================
@@ -127,32 +127,25 @@ def _validate_glm_checkpoint(args: ScriptArgs):
 
     if args.model_name == "GLM-5":
         expected_num_layers = 78
-        expected_nextn_layers = 1
     elif (m := re.search(r"(\d+)layer", args.model_name)) is not None:
         expected_num_layers = int(m.group(1))
-        expected_nextn_layers = 0
     else:
         raise NotImplementedError(f"{args.model_name} is not supported")
 
-    expected_fields = {
-        "model_type": "glm_moe_dsa",
-        "architectures": ["GlmMoeDsaForCausalLM"],
-        "num_hidden_layers": expected_num_layers,
-        "num_nextn_predict_layers": expected_nextn_layers,
-    }
-    mismatches = {
-        key: (config.get(key), expected)
-        for key, expected in expected_fields.items()
-        if config.get(key) != expected
-    }
-    if mismatches:
-        raise RuntimeError(f"{config_path} has invalid GLM-5 config fields: {mismatches}")
+    if (
+        config.get("model_type") != "glm_moe_dsa"
+        or config.get("architectures") != ["GlmMoeDsaForCausalLM"]
+        or config.get("num_hidden_layers") != expected_num_layers
+    ):
+        raise RuntimeError(
+            f"{config_path} must use native GLM-5 config with "
+            f"model_type=glm_moe_dsa, architectures=[GlmMoeDsaForCausalLM], "
+            f"and num_hidden_layers={expected_num_layers}"
+        )
     if "auto_map" in config:
         raise RuntimeError(
-            f"{config_path} must not contain auto_map; native GLM-5 does not require remote code"
+            f"{config_path} must not contain auto_map. Try update your checkpoint."
         )
-
-    print(f"{args.model_name} checkpoint config is valid")
 
 
 def _convert_to_fp8(args: ScriptArgs):
