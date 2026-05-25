@@ -23,6 +23,7 @@ def _args() -> ScriptArgs:
         model_name="GLM-5_4layer",
         num_nodes=1,
         num_gpus_per_node=8,
+        num_rollout=2,
         extra_args=(
             "--ci-test "
             "--ci-disable-logprobs-checker "
