@@ -86,7 +86,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    model_local_dir: str = "/root/models"
+    model_local_dir: str = "/root/local_data"
     megatron_path: str = "/root/Megatron-LM"
     hardware: Literal["H200", "B200", "GB300"] = "H200"
 
@@ -116,30 +116,46 @@ def _is_pruned(args: ScriptArgs):
     return re.search(r"(\d+)layer", args.model_name) is not None
 
 
-def _process_glm_checkpoint(args: ScriptArgs):
-    """Patch config.json to use DeepseekV32 architecture if not already patched."""
+def _validate_glm_checkpoint(args: ScriptArgs):
+    """Validate GLM-5 checkpoint config expected by current Miles/SGLang support."""
     config_path = Path(args.model_dir) / args.model_name / "config.json"
     if not config_path.exists():
-        print(f"Warning: {config_path} not found, skipping checkpoint processing")
+        print(f"Warning: {config_path} not found, skipping checkpoint validation")
         return
 
     with open(config_path) as f:
         config = json.load(f)
 
-    if config.get("model_type") == "deepseek_v32":
-        print("Checkpoint already patched, skipping")
+    architectures = config.get("architectures") or []
+    if args.model_name == "GLM-5":
+        auto_map = config.get("auto_map") or {}
+        stale_auto_map = any("deepseek_v32" in str(v) or "DeepseekV32" in str(v) for v in auto_map.values())
+        if (
+            config.get("model_type") != "glm_moe_dsa"
+            or "GlmMoeDsaForCausalLM" not in architectures
+            or stale_auto_map
+        ):
+            raise RuntimeError(
+                f"{config_path} is not a native GLM-5 config. Expected model_type=glm_moe_dsa "
+                "and architecture GlmMoeDsaForCausalLM. If this directory was patched by an older "
+                "script, remove it and re-run prepare to download a fresh zai-org/GLM-5 checkpoint."
+            )
+        print("Full GLM-5 checkpoint config is valid")
         return
 
-    config["architectures"] = ["DeepseekV32ForCausalLM"]
-    config["auto_map"] = {
-        "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
-        "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
-    }
-    config["model_type"] = "deepseek_v32"
+    if config.get("model_type") != "deepseek_v32" or "DeepseekV32ForCausalLM" not in architectures:
+        raise RuntimeError(
+            f"{config_path} is not a supported pruned GLM-5 config. Expected model_type=deepseek_v32 "
+            "and architecture DeepseekV32ForCausalLM."
+        )
 
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-    print(f"Patched {config_path}")
+    required_remote_code = ["configuration_deepseek_v32.py", "modeling_deepseek_v32.py"]
+    missing_remote_code = [name for name in required_remote_code if not (config_path.parent / name).exists()]
+    if missing_remote_code:
+        raise RuntimeError(
+            f"{config_path} references deepseek_v32 but is missing remote-code files: {', '.join(missing_remote_code)}"
+        )
+    print("Pruned GLM-5 checkpoint config is valid")
 
 
 def _convert_to_fp8(args: ScriptArgs):
@@ -155,7 +171,6 @@ def _convert_to_fp8(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    # Skip model download for pruned variants (assumed to already exist in model_dir)
     U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
@@ -339,11 +354,8 @@ def _execute_train(args: ScriptArgs):
     if args.enable_pd:
         sglang_args += "--prefill-num-servers 1 "
     sglang_args += (
-        # dsa
+        # GLM-5/DSA uses SGLang's native NSA path; backend selection is hardware-aware.
         "--sglang-page-size 64 "
-        "--sglang-nsa-decode-backend flashmla_sparse "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
-        "--sglang-attention-backend nsa "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # concurrency
         f"--sglang-max-running-requests 512 "
@@ -410,7 +422,7 @@ def _execute_train(args: ScriptArgs):
 def full_train(args: ScriptArgs):
     """Full pipeline: download, convert, copy, train."""
     _prepare_download(args)
-    _process_glm_checkpoint(args)
+    _validate_glm_checkpoint(args)
     if args.fp8_rollout:
         _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
@@ -423,7 +435,7 @@ def full_train(args: ScriptArgs):
 def prepare(args: ScriptArgs):
     """Download model/data and convert to megatron checkpoint (run on head node)."""
     _prepare_download(args)
-    _process_glm_checkpoint(args)
+    _validate_glm_checkpoint(args)
     if args.fp8_rollout:
         _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
