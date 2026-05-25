@@ -252,8 +252,8 @@ def slice_with_cp(
     """
     if parallel_state is None:
         parallel_state = get_parallel_state()
-    cp_rank = parallel_state.cp_rank
-    cp_size = parallel_state.cp_size
+    cp_rank = parallel_state.cp.rank
+    cp_size = parallel_state.cp.size
 
     if qkv_format == "bshd":
         assert max_seq_len is not None
