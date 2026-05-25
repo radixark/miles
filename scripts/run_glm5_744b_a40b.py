@@ -32,7 +32,6 @@ Args:
 =====================
 
 I. Usage for single node minimal test:
-  `ray stop --force && pkill -9 -f sglang || true`
   `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1`
 
 =====================
@@ -56,6 +55,7 @@ II. Usage for multi node (20 layers, 6 nodes as an example):
 """
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +66,13 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
+
+_CUDA13_LIB_PATH = "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib"
+
+
+def _prepend_env_path(name: str, path: str) -> str:
+    existing = os.environ.get(name)
+    return f"{path}:{existing}" if existing else path
 
 
 @dataclass
@@ -401,6 +408,7 @@ def _execute_train(args: ScriptArgs):
         extra_env_vars={
             **sglang_extra_env_vars,
             "INDEXER_ROPE_NEOX_STYLE": "0",
+            "LD_LIBRARY_PATH": _prepend_env_path("LD_LIBRARY_PATH", _CUDA13_LIB_PATH),
             "NVSHMEM_DISABLE_NCCL": "1",
         },
         megatron_path=args.megatron_path,
