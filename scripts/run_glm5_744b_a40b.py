@@ -85,7 +85,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
-    model_local_dir: str = "/root/local_data"
+    model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     hardware: Literal["H200", "B200", "GB300"] = "H200"
 
