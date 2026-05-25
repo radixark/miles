@@ -340,7 +340,10 @@ def _execute_train(args: ScriptArgs):
     if args.enable_pd:
         sglang_args += "--prefill-num-servers 1 "
     sglang_args += (
-        # GLM-5/DSA uses SGLang's native NSA path; backend selection is hardware-aware.
+        # use flashmla backend for better precision
+        "--sglang-nsa-decode-backend flashmla_sparse "
+        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # concurrency
