@@ -15,7 +15,7 @@ from tests.ci.ci_register import register_cuda_ci
 import miles.utils.external_utils.command_utils as U
 
 
-register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h100", labels=["megatron"])
+register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
 
 
 def _args() -> ScriptArgs:
