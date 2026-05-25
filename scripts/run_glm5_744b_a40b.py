@@ -66,6 +66,7 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
