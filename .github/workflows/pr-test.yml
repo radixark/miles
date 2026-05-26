@@ -1,33 +1,6 @@
-################################################################################
-# This file is auto-generated from the .j2 file via generate_github_workflows.py. Do not edit manually.
-################################################################################
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 name: PR Test
 
 on:
-  # Do not run CI on push to reduce CI time
-  # push:
-  #   branches: [main]
   pull_request:
     types: [synchronize, labeled]
   workflow_dispatch:
@@ -47,1420 +20,154 @@ on:
         required: false
         type: string
         default: 'sglang-miles'
+      ci_image_tag:
+        description: 'Miles Docker image tag (default: dev)'
+        required: false
+        type: string
+        default: 'dev'
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# PR labels are passed through to run_suite.py as raw `run-ci-<X>` strings via
+# `--labels`. run_suite.py strips the `run-ci-` prefix internally and ignores
+# any label that does not start with `run-ci-` (see tests/ci/run_suite.py
+# `strip_run_ci_prefix`). For `workflow_dispatch`, no PR labels exist, so the
+# `--labels` list collapses to empty; `--match-all-labels` is then added
+# unconditionally to bypass the labels predicate inside run_suite.py and run
+# every enabled test in the suite.
+
 jobs:
-
-  fast:
+  resolve-ci-image:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 0, "test_file": "fast"}, {"num_gpus": 0, "test_file": "utils/test_sglang_config.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
+    runs-on: ubuntu-latest
+    outputs:
+      container_image: ${{ steps.resolve.outputs.container_image }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
+      - name: Resolve CI image
+        id: resolve
         shell: bash
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
         run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
+          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
           if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+            PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
+            [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
           fi
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="dev"
+          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
+            exit 1
+          fi
+          echo "container_image=radixark/miles:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
 
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
+  # Stage A: CPU-only fast tests (always runs on PR)
+  # Runs on GitHub-hosted ubuntu-latest (cpu_runner: true) to avoid
+  # occupying GPU-fleet runner slots.
+  stage-a-cpu:
+    needs: [resolve-ci-image]
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      cpu_runner: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
 
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+  # Stage B: CPU-only bucket (currently empty; reserved for future CPU tests
+  # that don't fit stage-a-cpu's fast budget). Always runs on PR. Empty result
+  # exits 0 in run_suite.py (see tests/ci/run_suite.py L149-L151).
+  stage-b-cpu:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      cpu_runner: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
 
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+  stage-b-2-gpu-h200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "2gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
 
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- pytest tests/${{ matrix.info.test_file }}
-
-  unit-test:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-unit-test'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
+  stage-c-8-gpu-h100:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h100", "8gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-sglang:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-sglang'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
+  stage-c-4-gpu-h200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 1, "test_file": "e2e/sglang/test_chat_input_ids_equivalence.py"}, {"model_family": "qwen3", "num_gpus": 1, "test_file": "e2e/sglang/test_session_server_tool_call.py"}, {"model_family": "glm47", "num_gpus": 1, "test_file": "e2e/sglang/test_session_server_tool_call.py"}, {"model_family": "qwen3", "num_gpus": 1, "test_file": "e2e/sglang/test_tito_logprob_equivalence.py"}, {"model_family": "glm47", "num_gpus": 1, "test_file": "e2e/sglang/test_tito_logprob_equivalence.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
+        partition_id: [0, 1, 2]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "4gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- pytest tests/${{ matrix.info.test_file }}
-
-  e2e-test-short:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-short'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
+  stage-c-2-gpu-h200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !failure() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
       matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py"}, {"num_gpus": 8, "test_file": "e2e/short/test_qwen2.5_0.5B_gsm8k_short.py"}, {"num_gpus": 8, "test_file": "e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}, {"num_gpus": 8, "test_file": "e2e/sglang_config/test_sglang_config.py"}, {"num_gpus": 8, "test_file": "e2e/sglang_config/test_sglang_config_mixed_offload.py"}, {"num_gpus": 8, "test_file": "e2e/sglang_config/test_sglang_config_mixed_offload_ft.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-fsdp:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-fsdp'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py"}, {"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_vl_4B_fsdp.py"}, {"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py"}, {"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-megatron:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-megatron'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/megatron/test_quick_start_glm4_9B.py"}, {"name": "qwen3-30B-A3B-deepep-fp8", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"name": "qwen3-30B-A3B-bridge", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_bridge": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_mimo_7B_mtp_only_grad.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_glm47_flash_r3_mtp.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-precision:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-precision'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/precision/test_qwen3_0.6B_parallel_check.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-ckpt:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-ckpt'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/ckpt/test_qwen3_4B_ckpt.py"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_qwen3_4B_ckpt.py --async-save"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_glm47_flash_ckpt.py"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_glm47_flash_ckpt.py --async-save"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-long:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-long'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/long/test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 8, "test_file": "e2e/long/test_qwen2.5_0.5B_gsm8k_async.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-lora:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-lora'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/lora/test_lora_qwen2.5_0.5B.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-low-precision:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-low-precision'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"name": "qwen3-30B-A3B-bf16", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0"}, {"name": "qwen3-30B-A3B-rollout-fp8", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"name": "qwen3-30B-A3B-rollout-int4", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0", "use_int4_rollout": "1"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-glm5:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-glm5'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:glm5
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/megatron/test_glm5_744b_a40b_4layer.py"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Install
-        shell: bash
-        run: |
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
-
-  e2e-test-image:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, 'run-ci-image'))
-    runs-on: self-hosted
-    container:
-      image: radixark/miles:dev
-      options: >
-        --gpus all
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /mnt/nvme0n1/miles_ci:/data/miles_ci
-        -v /mnt/nvme0n1/miles_ci/models:/root/models
-        -v /mnt/nvme0n1/miles_ci/datasets:/root/datasets
-        --privileged
-        --ulimit nofile=65535:65535
-        -v /tmp:/tmp
-    strategy:
-      fail-fast: false
-      matrix:
-        info: [{"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_4B_fsdp_true_on_policy.py"}, {"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_vl_4B_fsdp.py"}, {"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_0.6B_fsdp_distributed.py"}, {"num_gpus": 8, "test_file": "e2e/fsdp/test_qwen3_0.6B_megatron_fsdp_align.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_quick_start_glm4_9B.py"}, {"name": "qwen3-30B-A3B-deepep-fp8", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"name": "qwen3-30B-A3B-bridge", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_bridge": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_4B_ppo.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_moonlight_16B_A3B_r3.py"}, {"num_gpus": 8, "test_file": "e2e/megatron/test_mimo_7B_mtp_only_grad.py"}, {"enable_eval": "0", "num_gpus": 8, "test_file": "e2e/megatron/test_glm47_flash_r3_mtp.py"}, {"num_gpus": 8, "test_file": "e2e/lora/test_lora_qwen2.5_0.5B.py"}, {"num_gpus": 8, "test_file": "e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py"}, {"num_gpus": 8, "test_file": "e2e/short/test_qwen2.5_0.5B_gsm8k_short.py"}, {"num_gpus": 8, "test_file": "e2e/short/test_qwen3_0.6B_fsdp_colocated_2xGPU.py"}, {"num_gpus": 8, "test_file": "e2e/sglang_config/test_sglang_config.py"}, {"num_gpus": 8, "test_file": "e2e/sglang_config/test_sglang_config_mixed_offload.py"}, {"num_gpus": 8, "test_file": "e2e/sglang_config/test_sglang_config_mixed_offload_ft.py"}, {"num_gpus": 8, "test_file": "e2e/precision/test_qwen3_0.6B_parallel_check.py"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_qwen3_4B_ckpt.py"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_qwen3_4B_ckpt.py --async-save"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_glm47_flash_ckpt.py"}, {"num_gpus": 8, "test_file": "e2e/ckpt/test_glm47_flash_ckpt.py --async-save"}, {"num_gpus": 8, "test_file": "e2e/long/test_qwen2.5_0.5B_gsm8k.py"}, {"num_gpus": 8, "test_file": "e2e/long/test_qwen2.5_0.5B_gsm8k_async.py"}, {"name": "qwen3-30B-A3B-bf16", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0"}, {"name": "qwen3-30B-A3B-rollout-fp8", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "1", "use_fp8_rollout": "1"}, {"name": "qwen3-30B-A3B-rollout-int4", "num_gpus": 8, "test_file": "e2e/megatron/test_qwen3_30B_A3B.py", "use_deepep": "0", "use_fp8_rollout": "0", "use_int4_rollout": "1"}]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      MILES_TEST_USE_DEEPEP: ${{ matrix.info.use_deepep || '0' }}
-      MILES_TEST_USE_FP8_ROLLOUT: ${{ matrix.info.use_fp8_rollout || '0' }}
-      MILES_TEST_USE_INT4_ROLLOUT: ${{ matrix.info.use_int4_rollout || '0' }}
-      MILES_TEST_USE_BRIDGE: ${{ matrix.info.use_bridge || '0' }}
-      MILES_TEST_ENABLE_EVAL: ${{ matrix.info.enable_eval || '1' }}
-      MILES_TEST_FEW_GPU: '0'
-      SESSION_TEST_MODEL_FAMILY: ${{ matrix.info.model_family || '' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          rm -rf /tmp/ray/* 2>/dev/null || true
-          sleep 3
-
-
-      - name: Resolve dependency refs
-        id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          # Priority: workflow_dispatch input > PR description > default
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-
-          # Parse PR description for "ci-megatron-pr:" and "ci-sglang-pr:"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-megatron-pr:\s)\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -oP '(?<=ci-sglang-pr:\s)\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-
-          # Defaults
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-
-          # Convert "#N" PR syntax to git fetch ref: "pull/N/head"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
-
-      - name: Install
-        shell: bash
-        env:
-          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
-          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install pytest-asyncio --break-system-packages
-
-
-      - name: Execute
-        shell: bash
-        run: python tests/ci/gpu_lock_exec.py --count ${{ matrix.info.num_gpus }} -- python tests/${{ matrix.info.test_file }}
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "2gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit

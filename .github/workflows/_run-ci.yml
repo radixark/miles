@@ -1,0 +1,283 @@
+name: CI Job
+
+on:
+  workflow_call:
+    inputs:
+      execute_command:
+        type: string
+        required: true
+      runs_on:
+        type: string
+        required: false
+        default: '["8gpu"]'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["h100", "8gpu"]'' picks runners that carry BOTH labels. Default ''["8gpu"]'' preserves the previous bare ''8gpu'' single-label routing.'
+      container_image:
+        type: string
+        required: false
+        default: 'radixark/miles:dev'
+      skip_dependency_install:
+        type: boolean
+        required: false
+        default: false
+      cpu_runner:
+        type: boolean
+        required: false
+        default: false
+        description: 'Run on GitHub-hosted ubuntu-latest with bare pip install (for CPU-only fast tests)'
+
+jobs:
+  run:
+    if: ${{ !inputs.cpu_runner }}
+    # fromJSON parses the input list so `runs-on` receives an actual array.
+    # Without this, GitHub treats the string verbatim as one label literal
+    # (e.g. the label name '["h100", "8gpu"]' with brackets), which no
+    # runner carries, and the job queues forever.
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    container:
+      image: ${{ inputs.container_image }}
+      options: >
+        --gpus all
+        --env CUDA_VISIBLE_DEVICES
+        --ipc=host
+        --shm-size=32g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --memory=0
+        --memory-swap=0
+        -v /data/miles_ci:/data/miles_ci
+        -v /data/miles_ci/models:/root/models
+        -v /data/miles_ci/datasets:/root/datasets
+        -v /data/miles_ci/hf_cache:/root/.cache/huggingface
+        --privileged
+        --ulimit nofile=65535:65535
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup Ray processes
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          pkill -9 -f gcs_server 2>/dev/null || true
+          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
+          pkill -9 sglang 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          sleep 3
+
+      - name: Wait for GPU ready
+        shell: bash
+        run: |
+          # When a self-hosted runner accepts a new job seconds after the
+          # previous job's container exits, the NVIDIA driver subsystem may
+          # still be tearing down its prior CUDA context. The next process
+          # to call cudaGetDeviceCount() then hits Error 802 ("system not
+          # yet initialized"). Block here until nvidia-smi succeeds, with
+          # a bounded retry budget so a genuinely-broken GPU fails fast.
+          for i in $(seq 1 60); do
+            if nvidia-smi -L >/dev/null 2>&1; then
+              echo "GPU ready after $((i-1)) retry(s)"
+              nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: nvidia-smi did not become ready after 120s" >&2
+          nvidia-smi 2>&1 | tail -20 || true
+          exit 1
+
+      - name: Resolve dependency refs
+        if: ${{ !inputs.skip_dependency_install }}
+        id: resolve-refs
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+        run: |
+          MEGATRON_PR="${INPUT_MEGATRON_PR}"
+          SGLANG_PR="${INPUT_SGLANG_PR}"
+          if [ -n "$PR_BODY" ]; then
+            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
+            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
+            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+          fi
+          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
+          resolve_fetch_ref() {
+            local ref="$1"
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+              echo "refs/pull/${BASH_REMATCH[1]}/head"
+            else
+              echo "$ref"
+            fi
+          }
+          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
+          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
+          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
+          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+
+      - name: Install dependencies
+        if: ${{ !inputs.skip_dependency_install }}
+        shell: bash
+        env:
+          MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
+          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
+        run: |
+          if command -v rustup >/dev/null 2>&1; then
+            rustup default stable
+          fi
+          if ! command -v protoc >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y protobuf-compiler
+          fi
+          rustc --version
+          protoc --version
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+
+      - name: Install (miles only)
+        if: ${{ inputs.skip_dependency_install }}
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+
+      - name: Resolve suite plan
+        shell: bash
+        run: ${{ inputs.execute_command }} --list-only
+
+      - name: Run tests
+        shell: bash
+        run: ${{ inputs.execute_command }}
+
+  # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.
+  # Used for fast CPU tests so they don't occupy GPU-fleet runner slots.
+  run-cpu:
+    if: ${{ inputs.cpu_runner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Megatron-LM's pyproject declares `packages.find.include = ["megatron.core", "megatron.core.*"]`,
+      # so `pip install -e` only exposes megatron.core — not megatron.training / legacy / rl.
+      # miles imports from megatron.training, so put the checkout on PYTHONPATH directly
+      # and skip the pip install for Megatron-LM entirely (its deps — torch, numpy,
+      # packaging — arrive via miles/requirements.txt transitively).
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/Megatron-LM
+    steps:
+      - name: Free disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h
+
+      - name: Checkout miles
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # 3.11 required for BaseException.add_note (PEP 678), used in miles
+          # source (e.g. miles/rollout/generate_utils/sample_utils.py).
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Resolve dependency refs
+        id: resolve-refs
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+        run: |
+          MEGATRON_PR="${INPUT_MEGATRON_PR}"
+          SGLANG_PR="${INPUT_SGLANG_PR}"
+          if [ -n "$PR_BODY" ]; then
+            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
+            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
+            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+          fi
+          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
+          resolve_fetch_ref() {
+            local ref="$1"
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+              echo "refs/pull/${BASH_REMATCH[1]}/head"
+            else
+              echo "$ref"
+            fi
+          }
+          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
+          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
+          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
+          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+
+      - name: Checkout sglang
+        uses: actions/checkout@v4
+        with:
+          repository: sgl-project/sglang
+          ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
+          path: sglang
+
+      - name: Checkout Megatron-LM
+        uses: actions/checkout@v4
+        with:
+          repository: radixark/Megatron-LM
+          ref: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
+          path: Megatron-LM
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install -e sglang/python --no-deps
+          # Megatron-LM is surfaced via PYTHONPATH (see job env); no pip install.
+          uv pip install -r requirements.txt
+          uv pip install -e . --no-deps
+          # sglang is installed --no-deps above, but miles' import chain loads
+          # many sglang modules. Install sglang's pure-python runtime deps
+          # upfront; skip GPU-only ones (cuda-python, flashinfer, flash-attn-4,
+          # sglang-kernel, torchao, torchcodec, torch_memory_saver, quack-kernels,
+          # nvidia-cutlass-dsl, apache-tvm-ffi, kernels, decord2, av).
+          # torch itself comes via accelerate (in requirements.txt).
+          uv pip install \
+            IPython aiohttp anthropic build compressed-tensors einops fastapi \
+            gguf interegular jsonschema llguidance mistral_common modelscope \
+            msgspec ninja nvidia-ml-py openai openai-harmony orjson outlines \
+            partial_json_parser prometheus-client psutil py-spy pydantic \
+            python-multipart pyzmq scipy sentencepiece setproctitle soundfile \
+            tiktoken timm torchvision uvicorn uvloop watchfiles xgrammar
+          # sglang's memory_pool_host.py unconditionally imports sgl_kernel
+          # on non-NPU/XPU/MPS hardware. sgl_kernel is GPU-only — install a
+          # local stub so imports succeed at module load.
+          uv pip install tests/ci/cpu_stubs
+
+      - name: Resolve suite plan
+        shell: bash
+        run: ${{ inputs.execute_command }} --list-only
+
+      - name: Run tests
+        shell: bash
+        run: ${{ inputs.execute_command }}

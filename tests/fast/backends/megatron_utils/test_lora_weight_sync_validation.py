@@ -7,6 +7,11 @@ Verifies that silent failures are caught:
 - FlattenedTensorBucket round-trip preserves tensor values
 """
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+
+
 from argparse import Namespace
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
@@ -141,7 +146,7 @@ class TestSendHfParamsEmptyLoraDetection:
         updater.use_distribute = False
 
         with pytest.raises(RuntimeError, match="no LoRA weights"):
-            updater._send_hf_params(SAMPLE_BASE_ONLY_WEIGHTS)
+            updater._send_lora_params(SAMPLE_BASE_ONLY_WEIGHTS)
 
     @patch(f"{_UW_MODULE}._send_to_colocated_engine", return_value=([], []))
     @patch(f"{_UW_MODULE}.dist")
@@ -168,7 +173,7 @@ class TestSendHfParamsEmptyLoraDetection:
         updater._ipc_gather_group = MagicMock()
         updater.use_distribute = False
 
-        refs, _ = updater._send_hf_params(SAMPLE_LORA_WEIGHTS)
+        refs, _ = updater._send_lora_params(SAMPLE_LORA_WEIGHTS)
         # Should not raise; mock_send was called with the LoRA tensors
         assert mock_send.called
 

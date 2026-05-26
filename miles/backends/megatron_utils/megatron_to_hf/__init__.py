@@ -32,7 +32,13 @@ _cached_tensors = {}
 
 # TODO optimize code details
 def _convert_to_hf_core(args, model_name, name, param):
-    if "glm4moelite" in model_name or "deepseekv3" in model_name:
+    model_name = model_name.lower()
+    if (
+        "glm4moelite" in model_name
+        or "deepseekv3" in model_name
+        or "glmmoedsa" in model_name
+        or "glm_moe_dsa" in model_name
+    ):
         converted_named_tensors = convert_deepseekv3_to_hf(args, name, param)
     elif "glm4moe" in model_name:
         converted_named_tensors = convert_glm4moe_to_hf(args, name, param)
@@ -42,7 +48,7 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_qwen3moe_to_hf(args, name, param)
     elif "qwen3next" in model_name:
         converted_named_tensors = convert_qwen3_next_to_hf(args, name, param)
-    elif "qwen3_5" in model_name:
+    elif "qwen3_5" in model_name or "qwen3_6" in model_name:
         converted_named_tensors = convert_qwen3_5_to_hf(args, name, param)
     elif "qwen2" in model_name or "qwen3" in model_name:
         converted_named_tensors = convert_qwen2_to_hf(args, name, param)

@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
-[**Latest Updates**](#latest-updates) | [**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Documentation**](docs/en/get_started/quick_start.md)
+[**Latest Updates**](#latest-updates) | [**Quick Start**](#quick-start) | [**Key Features**](#key-features) | [**Documentation**](https://www.radixark.com/miles/docs)
 
 </div>
 
@@ -31,7 +31,7 @@
 
 **Miles** is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. Built as a powerful fork of **[slime](https://github.com/THUDM/slime)**, Miles bridges the gap between research-grade RL and production-grade reliability by integrating **SGLang** for high-throughput rollout and **Megatron-LM** for scalable training.
 
-> *"A journey of a thousand miles begins with a single step."* — Miles focuses on the low-level system optimizations that make large-scale RL stable, efficient, and reproducible.
+> *"A journey of a thousand miles begins with a single rollout."* — Miles focuses on the low-level system optimizations that make large-scale RL stable, efficient, and reproducible.
 
 ---
 

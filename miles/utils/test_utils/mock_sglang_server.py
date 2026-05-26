@@ -146,11 +146,13 @@ class MockSGLangServer:
             messages, tokenize=False, add_generation_prompt=True, tools=tools
         )
 
-        input_ids = payload.get("input_ids")
-        if input_ids is not None:
-            prompt_ids = list(input_ids)
-        else:
-            prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
+        prompt_ids = None
+        if payload.get("return_prompt_token_ids"):
+            input_ids = payload.get("input_ids")
+            if input_ids is not None:
+                prompt_ids = list(input_ids)
+            else:
+                prompt_ids = self.tokenizer.encode(prompt_str, add_special_tokens=False)
 
         process_result = self.process_fn(prompt_str)
         output_ids = self.tokenizer.encode(process_result.text, add_special_tokens=False)
@@ -187,29 +189,30 @@ class MockSGLangServer:
 
         output_token_logprobs = [(-1 / 128 * i, tid) for i, tid in enumerate(output_ids)]
 
+        choice = {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": message_content,
+                "tool_calls": tool_calls,
+            },
+            "logprobs": {"content": logprobs_content},
+            "finish_reason": finish_reason,
+            "meta_info": {
+                "output_token_logprobs": output_token_logprobs,
+                "completion_tokens": len(output_ids),
+                **process_result.meta_info.to_dict(),
+            },
+        }
+        if prompt_ids is not None:
+            choice["prompt_token_ids"] = prompt_ids
+
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": "mock-model",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": message_content,
-                        "tool_calls": tool_calls,
-                    },
-                    "logprobs": {"content": logprobs_content},
-                    "prompt_token_ids": prompt_ids,
-                    "finish_reason": finish_reason,
-                    "meta_info": {
-                        "output_token_logprobs": output_token_logprobs,
-                        "completion_tokens": len(output_ids),
-                        **process_result.meta_info.to_dict(),
-                    },
-                }
-            ],
+            "choices": [choice],
         }
 
 

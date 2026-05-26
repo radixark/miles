@@ -19,6 +19,7 @@ if str(_MILES_ROOT) not in sys.path:
     sys.path.insert(0, str(_MILES_ROOT))
 
 import typer
+from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.conftest_dumper import (
     MEGATRON_PATCHER_YAMLS,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
@@ -29,6 +30,9 @@ from tests.e2e.conftest_dumper import (
 )
 
 import miles.utils.external_utils.command_utils as U
+
+register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
+
 
 app: typer.Typer = typer.Typer()
 
@@ -143,7 +147,7 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
         "--attention-backend flash "
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
         "--moe-token-dispatcher-type alltoall "
-        "--use-miles-router --use-rollout-routing-replay "
+        "--use-rollout-routing-replay "
     )
 
     train_args = " ".join(
