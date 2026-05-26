@@ -1,6 +1,6 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 # The comparator must report all-passed with zero failures — no exceptions.
-# FIXME: this CI is buggy.
+
 # Usage: This is a typer CLI with 2 commands:
 #   python test_run_megatron.py run --mode <mode>         Full: prepare + run baseline + run target + compare
 #   python test_run_megatron.py compare --mode <mode> --dump-dir <path>
@@ -12,13 +12,13 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated
-from tests.ci.ci_register import register_cuda_ci
 
 _MILES_ROOT: Path = Path(__file__).resolve().parents[3]
 if str(_MILES_ROOT) not in sys.path:
     sys.path.insert(0, str(_MILES_ROOT))
 
 import typer
+from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
 
 import miles.utils.external_utils.command_utils as U
@@ -35,8 +35,7 @@ NUM_LAYERS: int = 5
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
-# FIXME: this CI is buggy.
-register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"], disabled="Disabled due to bugs.")
+register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
 
 
 @dataclasses.dataclass(frozen=True)

@@ -51,7 +51,8 @@ def get_responses(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
-    logits = logits.div(args.rollout_temperature)
+    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+        logits = logits.div(args.rollout_temperature)
     if args.true_on_policy_mode:
         if getattr(args, "bf16", False):
             logits = logits.to(torch.bfloat16)
