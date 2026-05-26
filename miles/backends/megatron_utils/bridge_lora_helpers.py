@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
 
+from miles.utils.hf_config import load_hf_config
+
 from .lora_utils import create_lora_instance, patch_param_grad_buffer_for_colocate_mode_lora
 
 
@@ -80,9 +82,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     """
     from megatron.bridge import AutoBridge
     from megatron.bridge.training.config import DistributedDataParallelConfig
-    from transformers import AutoConfig
 
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    hf_config = load_hf_config(args.hf_checkpoint)
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
