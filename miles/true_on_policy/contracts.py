@@ -51,11 +51,20 @@ class TrueOnPolicyContract:
         self,
         *,
         train_backend: str,
-        sglang_target: str,
+        parallel_layout=None,
+        sglang_target: str | None = None,
     ) -> dict[str, object]:
         uses_megatron = train_backend == "megatron"
-        uses_tp_invariant_rollout = sglang_target == "fsdp_tp"
-        uses_ep_invariant_moe = False
+        if parallel_layout is not None:
+            uses_tp_invariant_rollout = (
+                parallel_layout.uses_train_tp
+                or parallel_layout.uses_train_expert_tp
+                or parallel_layout.uses_rollout_tp
+            )
+            uses_ep_invariant_moe = parallel_layout.uses_train_ep or parallel_layout.uses_rollout_ep
+        else:
+            uses_tp_invariant_rollout = sglang_target == "fsdp_tp"
+            uses_ep_invariant_moe = False
         is_moe = self.model_family == "qwen3_moe"
         # SGLang attention-DP + EP is not parity-gated for Qwen3-30B-A3B yet.
         # Keep the true-on-policy launch on the verified EP-only rollout path.
