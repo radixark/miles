@@ -2,6 +2,7 @@ import ast
 import warnings
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 
 from tests.ci.labels import KNOWN_LABELS
 
@@ -40,6 +41,10 @@ class CIRegistry:
     labels: list[str] = field(default_factory=list)
     nightly: bool = False
     disabled: str | None = None  # None = enabled, string = disabled reason
+    # True only when collect_tests synthesized this entry by directory
+    # convention (currently for tests/fast/ files that declare no register
+    # call); False for every entry parsed from a register_*_ci() call.
+    implicit: bool = False
 
 
 def register_cpu_ci(
@@ -199,6 +204,7 @@ class RegistryVisitor(ast.NodeVisitor):
             labels=list(labels),
             nightly=nightly,
             disabled=disabled,
+            implicit=False,
         )
 
     def _collect_ci_registry(self, func_call: ast.Call):
@@ -226,10 +232,79 @@ def ut_parse_one_file(filename: str) -> list[CIRegistry]:
     return visitor.registries
 
 
+def _is_implicit_fast_cpu_path(filename: str) -> bool:
+    """True when `filename` is a file under the tests/fast/ subtree.
+
+    Segment-aware so the check is robust against same-prefix sibling
+    directories: tests/fast-gpu/, tests/fastish/, tests/fastfoo/ all return
+    False. Bare `tests/fast` (directory, no file segment after) also returns
+    False -- the helper is meant for file paths, not directory paths.
+
+    Accepts relative paths (tests/fast/x.py), `./`-prefixed paths, and
+    absolute paths whose path components contain a contiguous ("tests",
+    "fast") segment pair followed by at least one more segment.
+    """
+    parts = Path(filename).parts
+    for i in range(len(parts) - 2):
+        if parts[i] == "tests" and parts[i + 1] == "fast":
+            return True
+    return False
+
+
+def _file_text_mentions_register(filename: str) -> bool:
+    """True when the file's text contains `register_cpu_ci` or
+    `register_cuda_ci` as a substring anywhere.
+
+    Used as a defense-in-depth check before synthesizing an implicit CPU
+    registry for a tests/fast/ file with zero parsed registries: if the
+    file mentions either symbol but the AST visitor found no top-level
+    Expr(Call), the file probably has an aliased import, a non-toplevel
+    call, or an attribute-style call (`ci_register.register_cpu_ci(...)`)
+    -- silently treating it as unregistered would mask the intent.
+    """
+    try:
+        with open(filename) as f:
+            content = f.read()
+    except OSError:
+        return False
+    return "register_cpu_ci" in content or "register_cuda_ci" in content
+
+
+def _make_implicit_cpu_registry(filename: str) -> CIRegistry:
+    return CIRegistry(
+        backend=HWBackend.CPU,
+        filename=filename,
+        est_time=10.0,
+        suite="stage-a-cpu",
+        labels=[],
+        nightly=False,
+        disabled=None,
+        implicit=True,
+    )
+
+
 def collect_tests(files: list[str], sanity_check: bool = True) -> list[CIRegistry]:
     ci_tests: list[CIRegistry] = []
     for file in files:
         registries = ut_parse_one_file(file)
+        if _is_implicit_fast_cpu_path(file):
+            # tests/fast/ is CPU-only by location; register_cuda_ci must
+            # live under tests/fast-gpu/ instead.
+            for r in registries:
+                if r.backend == HWBackend.CUDA:
+                    raise ValueError(
+                        f"{file}: register_cuda_ci is forbidden in tests/fast/; "
+                        f"move the file to tests/fast-gpu/ instead"
+                    )
+            if len(registries) == 0:
+                if _file_text_mentions_register(file):
+                    raise ValueError(
+                        f"{file}: file mentions register_cpu_ci or register_cuda_ci "
+                        f"textually but no top-level call was parsed; check for "
+                        f"aliased import, non-toplevel call, or attribute access"
+                    )
+                ci_tests.append(_make_implicit_cpu_registry(file))
+                continue
         if len(registries) == 0:
             msg = f"No CI registry found in {file}"
             if sanity_check:

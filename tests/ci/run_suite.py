@@ -184,7 +184,8 @@ def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIR
         total_est_time = sum(t.est_time for t in ci_tests)
         msg += f"Enabled {len(ci_tests)} test(s) (est total {total_est_time:.0f}s):\n"
         for t in ci_tests:
-            msg += f"  - {t.filename} (est_time={t.est_time}s)\n"
+            suffix = " [implicit]" if t.implicit else ""
+            msg += f"  - {t.filename} (est_time={t.est_time}s){suffix}\n"
 
     print(msg, flush=True)
 
@@ -196,19 +197,28 @@ def run_a_suite(args):
     auto_partition_id = args.auto_partition_id
     auto_partition_size = args.auto_partition_size
 
-    # Discover test files: e2e/ for CUDA, fast/ for CPU
+    # Discover test files. tests/e2e/ holds full e2e training suites;
+    # tests/fast/ is CPU-only (location-as-registration: collect_tests
+    # synthesizes stage-a-cpu for files with no register_*_ci call);
+    # tests/fast-gpu/ is the GPU-fast sibling whose files must explicitly
+    # call register_cuda_ci. tests/utils/test_*.py is a small set of
+    # cross-cutting CPU utilities discovered alongside fast.
     e2e_files = [f for f in glob.glob("tests/e2e/**/*.py", recursive=True) if _is_e2e_discovery_file(f)]
-    fast_files = [
-        f
-        for f in glob.glob("tests/fast/**/*.py", recursive=True)
-        if "/test_" in f
-        and not f.endswith("/conftest.py")
-        and not f.endswith("/__init__.py")
-        and not f.endswith("/utils.py")
-    ] + glob.glob("tests/utils/test_*.py")
+
+    def _fast_subtree(root: str) -> list[str]:
+        return [
+            f
+            for f in glob.glob(f"{root}/**/*.py", recursive=True)
+            if "/test_" in f
+            and not f.endswith("/conftest.py")
+            and not f.endswith("/__init__.py")
+            and not f.endswith("/utils.py")
+        ]
+
+    fast_files = _fast_subtree("tests/fast") + _fast_subtree("tests/fast-gpu") + glob.glob("tests/utils/test_*.py")
     files = e2e_files + fast_files
 
-    all_tests = collect_tests(files, sanity_check=False)
+    all_tests = collect_tests(files, sanity_check=True)
     stripped_labels = strip_run_ci_prefix(args.labels or [])
     ci_tests, skipped_tests = filter_tests(
         all_tests,
