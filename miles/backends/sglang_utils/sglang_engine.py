@@ -13,7 +13,11 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import (
+    LORA_ADAPTER_NAME,
+    convert_target_modules_to_hf,
+    is_lora_enabled,
+)
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
@@ -334,17 +338,17 @@ class SGLangEngine(RayActor):
     def load_lora_adapter_from_tensors(
         self,
         lora_name: str,
-        serialized_tensors: str,
         config_dict: dict,
+        serialized_named_tensors: list,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
     ):
-        """Load a LoRA adapter from serialized tensor data."""
+        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
         payload = {
             "lora_name": lora_name,
-            "serialized_tensors": serialized_tensors,
             "config_dict": config_dict,
+            "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
         if load_format is not None:

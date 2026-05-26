@@ -1123,6 +1123,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
             )
+            parser.add_argument(
+                "--experts-shared-outer-loras",
+                action="store_true",
+                default=False,
+                help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
+                "down lora_B shared across experts, expert_dim=1). Matches SGLang "
+                "PR #21466's experts_shared_outer_loras=True serving contract.",
+            )
             return parser
 
         def add_router_arguments(parser):
@@ -2021,6 +2029,14 @@ def miles_validate_args(args):
             modules = [m for m in modules if m not in exclude_set]
 
         args.target_modules = modules
+
+        # Training and serving must agree on shared-outer grouped-expert LoRA
+        # (expert_dim=1 buffers in SGLang).
+        if args.experts_shared_outer_loras:
+            args.sglang_experts_shared_outer_loras = True
+        assert args.experts_shared_outer_loras == bool(
+            args.sglang_experts_shared_outer_loras
+        ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
