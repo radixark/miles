@@ -165,6 +165,75 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
     return prompt
 
 
+_DEEPSEEK_ENCODER_PASSTHROUGH_KEYS = (
+    "thinking_mode",
+    "drop_thinking",
+    "add_default_bos_token",
+    "context",
+    "reasoning_effort",
+)
+
+
+def _read_model_type(tokenizer):
+    # transformers.AutoConfig does not recognize deepseek_v4 / deepseek_v32,
+    # so inspect config.json on disk directly. Hub-only tokenizers (name_or_path
+    # is a repo id, not a path) fall through to an empty string and the caller
+    # picks the standard HF encoder.
+    name_or_path = getattr(tokenizer, "name_or_path", "") or ""
+    config_path = os.path.join(name_or_path, "config.json")
+    if not os.path.isfile(config_path):
+        return ""
+    with open(config_path) as f:
+        return json.load(f).get("model_type", "") or ""
+
+
+def _build_deepseek_encode_config(apply_chat_template_kwargs):
+    encode_config = {"thinking_mode": "thinking", "drop_thinking": True, "add_default_bos_token": True}
+    # HF passes `thinking` (bool); the DeepSeek encoder takes `thinking_mode` ("thinking"/"chat").
+    if "thinking" in apply_chat_template_kwargs:
+        encode_config["thinking_mode"] = "thinking" if apply_chat_template_kwargs["thinking"] else "chat"
+    for key in _DEEPSEEK_ENCODER_PASSTHROUGH_KEYS:
+        if key in apply_chat_template_kwargs:
+            encode_config[key] = apply_chat_template_kwargs[key]
+    return encode_config
+
+
+def _resolve_chat_template_encoder(tokenizer, apply_chat_template_kwargs):
+    """Return a callable ``(prompt, tools) -> str`` for chat-template encoding.
+
+    DeepSeek V4 / V3.2 are not recognized by HF's chat-template machinery; sglang
+    ships custom encoders we delegate to when those model types are detected on
+    disk. All other models go through ``tokenizer.apply_chat_template`` unchanged.
+    """
+    model_type = _read_model_type(tokenizer)
+
+    if model_type.startswith("deepseek_v4"):
+        from sglang.srt.entrypoints.openai.encoding_dsv4 import encode_messages
+    elif model_type.startswith("deepseek_v32"):
+        from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+    else:
+
+        def encode(prompt, tools):
+            return tokenizer.apply_chat_template(
+                prompt,
+                tools=tools,
+                tokenize=False,
+                add_generation_prompt=True,
+                **apply_chat_template_kwargs,
+            )
+
+        return encode
+
+    encode_config = _build_deepseek_encode_config(apply_chat_template_kwargs)
+    logger.info("Using sglang chat-template encoder for model_type=%r", model_type)
+
+    def encode(prompt, tools):
+        # sglang DeepSeek encoders don't accept a tools argument.
+        return encode_messages(prompt, **encode_config)
+
+    return encode
+
+
 class Dataset:
     def __init__(
         self,
@@ -182,6 +251,12 @@ class Dataset:
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
     ):
+        encode_chat_template = (
+            _resolve_chat_template_encoder(tokenizer, apply_chat_template_kwargs or {})
+            if apply_chat_template
+            else None
+        )
+
         origin_samples = []
         for data in read_file(path):
             # Both chat templates and multimodal inputs require conversation format (list of message dicts)
@@ -200,13 +275,7 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                output_prompt = tokenizer.apply_chat_template(
-                    prompt,
-                    tools=tools,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    **(apply_chat_template_kwargs or {}),
-                )
+                output_prompt = encode_chat_template(prompt, tools)
             else:
                 output_prompt = prompt
 
