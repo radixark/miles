@@ -208,7 +208,7 @@ def setup_session_routes(app, backend, args):
             completion_token_ids = [t[1] for t in output_token_logprobs]
 
             decoded_text = await asyncio.to_thread(
-                tokenizer.decode, completion_token_ids, skip_special_tokens=False
+                tokenizer.decode, completion_token_ids, skip_special_tokens=True
             )
             choice["message"]["content"] = decoded_text
             result["response_body"] = json.dumps(response).encode()
