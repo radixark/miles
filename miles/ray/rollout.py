@@ -2,7 +2,6 @@ import dataclasses
 import itertools
 import logging
 import multiprocessing
-import os
 import random
 import time
 import uuid
@@ -46,7 +45,8 @@ from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
 
 from ..utils.metric_utils import has_repetition
-from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
+from .rollout_env import build_sglang_rollout_env_vars
+from .utils import Lock
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -127,22 +127,12 @@ class ServerGroup:
                 placement_group_bundle_index=reordered_bundle_indices[gpu_index],
             )
 
-            env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
-                key: os.environ.get(key, default_val)
-                for key, default_val in {
-                    "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-                    "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-                    "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
-                        "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"
-                    ),
-                    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
-                    "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
-                    "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
-                }.items()
-            }
-            env_vars.update(dumper_utils.get_sglang_env(self.args))
+            env_vars = build_sglang_rollout_env_vars(
+                dumper_utils.get_sglang_env(self.args),
+                custom_all_reduce_v2_default=(
+                    "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"
+                ),
+            )
 
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
@@ -543,7 +533,20 @@ class RolloutManager:
             srv.num_new_engines = 0
 
     def check_weights(self, action: str):
-        return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+        results = ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+        failures = []
+        for index, result in enumerate(results):
+            if isinstance(result, dict):
+                success = result.get("success", True)
+                message = result.get("message", result)
+            else:
+                success = getattr(result, "success", True)
+                message = getattr(result, "message", result)
+            if success is False:
+                failures.append(f"engine[{index}]: {message}")
+        if failures:
+            raise RuntimeError(f"SGLang weight checker failed for action={action}: " + "; ".join(failures))
+        return results
 
     def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
@@ -689,6 +692,14 @@ class RolloutManager:
             "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
             "sample_indices": [sample.index for sample in samples],
         }
+        rollout_dp_ranks = [
+            sample.metadata.get("rollout_log_probs_dp_rank") if isinstance(sample.metadata, dict) else None
+            for sample in samples
+        ]
+        if any(dp_rank is not None for dp_rank in rollout_dp_ranks):
+            train_data["rollout_dp_ranks"] = [
+                int(dp_rank) if dp_rank is not None else -1 for dp_rank in rollout_dp_ranks
+            ]
 
         # loss mask
         # TODO: compress the loss mask
@@ -773,6 +784,7 @@ class RolloutManager:
                 "loss_masks",
                 "round_number",
                 "sample_indices",
+                "rollout_dp_ranks",
                 "rollout_log_probs",
                 "rollout_routed_experts",
                 "prompt",
