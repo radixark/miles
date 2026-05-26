@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -206,6 +207,18 @@ def setup_session_routes(app, backend, args):
 
             completion_token_ids = [t[1] for t in output_token_logprobs]
 
+            decoded_text = await asyncio.to_thread(
+                tokenizer.decode, completion_token_ids, skip_special_tokens=False
+            )
+            choice["message"]["content"] = decoded_text
+            result["response_body"] = json.dumps(response).encode()
+            stored_assistant_message = {
+                "role": "assistant",
+                "content": decoded_text,
+                "tool_calls": None,
+                "reasoning_content": None,
+            }
+
             # --- Phase 3: update state (lock held briefly) ---
             async with session.lock:
                 if session.closing:
@@ -222,7 +235,7 @@ def setup_session_routes(app, backend, args):
 
                 session.update_pretokenized_state(
                     request_messages,
-                    assistant_message,
+                    stored_assistant_message,
                     prompt_token_ids=prompt_token_ids,
                     completion_token_ids=completion_token_ids,
                     max_trim_tokens=registry.tito_tokenizer.max_trim_tokens,
