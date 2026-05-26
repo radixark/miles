@@ -16,6 +16,7 @@ from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import print_memory
+from miles_plugins.models.hf_attention import _load_hf_config
 
 
 def add_convertion_args(parser):
@@ -111,7 +112,11 @@ def main():
 
     # Load model
     hf_model_path = args.hf_checkpoint
-    bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
+    try:
+        bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
+    except (ValueError, KeyError):
+        # Fallback for configs with model_type unknown to installed transformers.
+        bridge = AutoBridge.from_config(_load_hf_config(hf_model_path))
 
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
