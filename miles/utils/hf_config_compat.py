@@ -24,10 +24,6 @@ _CONFIG_ALIASES = (
     ),
 )
 
-_INDEXER_ROPE_INTERLEAVE_DEFAULTS = {
-    "deepseek_v32": False,
-}
-
 
 def register_hf_config_compat() -> None:
     """Register local HF config aliases for model types missing in Transformers."""
@@ -62,13 +58,3 @@ def register_hf_config_compat() -> None:
                 logger.warning("Failed to register %s HF config alias: %s", alias.model_type, exc)
         else:
             _REGISTERED_CONFIG_ALIASES.add(alias.model_type)
-
-
-def get_indexer_rope_interleave(hf_config) -> bool:
-    """Return the DSA indexer RoPE style, preserving the V3.2 default."""
-    if hasattr(hf_config, "indexer_rope_interleave"):
-        return bool(hf_config.indexer_rope_interleave)
-    model_type = getattr(hf_config, "model_type", None)
-    if model_type in _INDEXER_ROPE_INTERLEAVE_DEFAULTS:
-        return _INDEXER_ROPE_INTERLEAVE_DEFAULTS[model_type]
-    raise AttributeError(f"{type(hf_config).__name__} has no indexer_rope_interleave")

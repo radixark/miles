@@ -5,7 +5,6 @@ import torch
 
 from mbridge.core import register_model
 from mbridge.models import DeepseekV3Bridge
-from miles.utils.hf_config_compat import get_indexer_rope_interleave
 
 
 @register_model("deepseek_v32")
@@ -78,7 +77,7 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
         Our training uses last half for rope while DeepSeek uses first half,
         so we swap the two halves.
         """
-        if not get_indexer_rope_interleave(self.hf_config):
+        if not bool(getattr(self.hf_config, "indexer_rope_interleave", False)):
             return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
 
         if "self_attention.wq_b.weight" in mcore_weights_name:
@@ -109,7 +108,7 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
 
         The swap operation is its own inverse: swap the two halves back.
         """
-        if not get_indexer_rope_interleave(self.hf_config):
+        if not bool(getattr(self.hf_config, "indexer_rope_interleave", False)):
             return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
         if "self_attention.wq_b.weight" in mcore_weights_name:
