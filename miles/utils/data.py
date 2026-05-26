@@ -13,6 +13,7 @@ try:
 except ImportError:
     pq = None
 
+from miles.utils.chat_template_utils import resolve_chat_template_encoder
 from miles.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
@@ -182,6 +183,10 @@ class Dataset:
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
     ):
+        encode_chat_template = (
+            resolve_chat_template_encoder(tokenizer, apply_chat_template_kwargs or {}) if apply_chat_template else None
+        )
+
         origin_samples = []
         for data in read_file(path):
             # Both chat templates and multimodal inputs require conversation format (list of message dicts)
@@ -200,30 +205,7 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                try:
-                    output_prompt = tokenizer.apply_chat_template(
-                        prompt,
-                        tools=tools,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                        **(apply_chat_template_kwargs or {}),
-                    )
-                except ValueError as e:
-                    # DeepSeek-v3.2 checkpoints do not ship a Jinja chat template.
-                    if (
-                        "tokenizer.chat_template is not set" in str(e)
-                        and str(getattr(tokenizer, "model_type", "")).lower() == "deepseek_v32"
-                    ):
-                        from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
-
-                        output_prompt = encode_messages(
-                            prompt,
-                            thinking_mode="thinking",
-                            drop_thinking=True,
-                            add_default_bos_token=True,
-                        )
-                    else:
-                        raise
+                output_prompt = encode_chat_template(prompt, tools)
             else:
                 output_prompt = prompt
 
