@@ -51,7 +51,7 @@ def get_responses(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
-    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+    if args.rollout_temperature != 1:
         logits = logits.div(args.rollout_temperature)
     if args.true_on_policy_mode:
         if getattr(args, "bf16", False):
@@ -182,7 +182,7 @@ def get_log_probs_and_entropy(
             vocab_size=getattr(args, "vocab_size", None),
         )
 
-        log_probs_list.append(log_prob.squeeze(-1))
+        log_probs_list.append(log_prob.reshape(-1))
         entropy_list.append(entropy)
 
     res = {

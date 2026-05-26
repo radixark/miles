@@ -140,11 +140,16 @@ def get_batch(
 
     cp_size = parallel_state.cp.size
 
+    valid_tokens = [torch.ones_like(t, dtype=torch.bool) for t in tokens]
+
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
         tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        valid_tokens = [slice_with_cp(t, False, qkv_format, max_seqlen) for t in valid_tokens]
+        batch["local_token_counts"] = None
         tokens = torch.stack(tokens)
+        padding_mask = ~torch.stack(valid_tokens)
 
     elif qkv_format == "thd":
         cp_rank = parallel_state.cp.rank
@@ -157,6 +162,7 @@ def get_batch(
                 cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
 
             tokens = torch.cat(tokens, dim=0)
+            valid_tokens = torch.cat(valid_tokens, dim=0)
 
             # Pad global stream so (1) divisible by cp_size (equal chunks),
             # (2) divisible by pad_size (reduce fragmentation).
@@ -164,23 +170,30 @@ def get_batch(
             pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+                valid_tokens = F.pad(valid_tokens, (0, pad), value=False)
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
             cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
+            valid_tokens = valid_tokens.chunk(cp_size, dim=0)[cp_rank]
+            batch["local_token_counts"] = None
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
+            valid_tokens = [slice_with_cp(t, False, qkv_format) for t in valid_tokens]
+            batch["local_token_counts"] = [int(v.sum().item()) for v in valid_tokens]
 
             cu_seqlens = [0]
             for t in tokens:
                 cu_seqlens.append(cu_seqlens[-1] + t.size(0))
 
             tokens = torch.cat(tokens)
+            valid_tokens = torch.cat(valid_tokens)
 
             # Always pad to reduce memory fragmentation and maybe make the computation faster
             pad = (pad_size - tokens.size(0) % pad_size) % pad_size
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+                valid_tokens = F.pad(valid_tokens, (0, pad), value=False)
                 cu_seqlens.append(cu_seqlens[-1] + pad)
 
             # thd requires the cu_seqlens to be of the origin length
@@ -189,6 +202,7 @@ def get_batch(
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
 
         tokens = tokens.unsqueeze(0)
+        padding_mask = ~valid_tokens.unsqueeze(0)
 
         batch["cu_seqlens"] = cu_seqlens
         batch["max_seqlen"] = max_seqlen
@@ -196,6 +210,7 @@ def get_batch(
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
 
     batch["tokens"] = tokens
+    batch["padding_mask"] = padding_mask
 
     if get_position_ids:
         assert not allgather_cp, "allgather CP is not supported for FSDP"
