@@ -24,12 +24,7 @@ def _args() -> ScriptArgs:
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=2,
-        extra_args=(
-            "--ci-test "
-            "--ci-disable-logprobs-checker "
-            "--dump-details /root/shared_data/dump_details "
-            "--disable-weights-backuper "
-        ),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
     )
 
 
