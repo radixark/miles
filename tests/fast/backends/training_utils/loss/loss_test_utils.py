@@ -93,6 +93,7 @@ _ARGS_DEFAULTS = dict(
     use_opsm=False,
     opsm_delta=0.1,
     calculate_per_token_loss=False,
+    dump_details=None,
     # value_loss_function
     value_clip=0.2,
     # loss_function dispatcher
