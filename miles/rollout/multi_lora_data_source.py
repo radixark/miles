@@ -13,6 +13,10 @@ from miles.utils.types import AdapterRef, RewardSpec, Sample
 
 logger = logging.getLogger(__name__)
 
+# Cap parallelism for adapter source creation. Each worker tokenizes/renders a full
+# dataset; with too many threads the GIL/IO contention outweighs the speedup.
+_MAX_RECONCILE_WORKERS = 16
+
 
 def fetch_active_adapters() -> dict[str, RegisteredAdapter]:
     return ray.get(get_multi_lora_controller().active_adapters.remote())
@@ -51,40 +55,42 @@ class MultiLoRADataSource(DataSource):
 
         self.source_queue = new_source_queue
 
-    # def _reconcile(self, adapters: dict[str, RegisteredAdapter]) -> None:
-    #     # Clean up old sources
-    #     for name in list(self.sources):
-    #         if name not in adapters:
-    #             del self.sources[name]
-    #             del self.configs[name]
-    #             logger.info(f"Removed data source for adapter '{name}'")
-
-    #     # Create new sources
-    #     for name, adapter in adapters.items():
-    #         if name not in self.sources:
-    #             self.sources[name] = self._create_adapter_source(name, adapter.config)
-    #             logger.info(f"Created data source for adapter '{name}' from {adapter.config.data}")
-    #         self.configs[name] = adapter.config
-
     def _reconcile(self, adapters: dict[str, RegisteredAdapter]) -> None:
+        # Clean up old sources
         for name in list(self.sources):
             if name not in adapters:
-                del self.sources[name]; del self.configs[name]
-        to_create = [(n, a) for n, a in adapters.items() if n not in self.sources]
-        new_sources = []
-        if to_create:
-            with ThreadPoolExecutor(max_workers=min(16, len(to_create))) as ex:
-                new_sources = list(ex.map(
-                    lambda na: (na[0], self._create_adapter_source(na[0], na[1].config)),
-                    to_create,
-                    ))
-        for name, src in new_sources:
-            self.sources[name] = src
+                del self.sources[name]
+                del self.configs[name]
+                logger.info(f"Removed data source for adapter '{name}'")
+
+        # Collect adapters that need new data sources. Each source spins up a fresh
+        # Dataset which reads + tokenizes the prompt file, so this is the slow path
+        # we parallelize below.
+        pending = [(name, adapter) for name, adapter in adapters.items() if name not in self.sources]
+        if pending:
+            # Fetch steps once for the whole batch instead of one Ray RPC per adapter.
+            steps = fetch_adapter_steps()
+            workers = min(_MAX_RECONCILE_WORKERS, len(pending))
+            if workers > 1:
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="miles-datasource") as ex:
+                    built = list(
+                        ex.map(
+                            lambda na: (na[0], self._create_adapter_source(na[0], na[1].config, steps)),
+                            pending,
+                        )
+                    )
+            else:
+                built = [(name, self._create_adapter_source(name, adapter.config, steps)) for name, adapter in pending]
+            for name, source in built:
+                self.sources[name] = source
+                logger.info(f"Created data source for adapter '{name}' from {adapters[name].config.data}")
+
         for name, adapter in adapters.items():
             self.configs[name] = adapter.config
 
-    def _create_adapter_source(self, name: str, config: AdapterConfig) -> RolloutDataSource:
-        steps = fetch_adapter_steps()
+    def _create_adapter_source(
+        self, name: str, config: AdapterConfig, steps: dict[str, int]
+    ) -> RolloutDataSource:
         adapter_args = copy.copy(self.args)
 
         # Data
