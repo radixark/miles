@@ -1,6 +1,9 @@
 """Tests for the canonical CI label registry."""
 
+from tests.ci.ci_register import register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
+
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
 def test_known_labels_is_dict():

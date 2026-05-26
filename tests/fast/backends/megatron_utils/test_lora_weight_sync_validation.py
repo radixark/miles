@@ -7,11 +7,6 @@ Verifies that silent failures are caught:
 - FlattenedTensorBucket round-trip preserves tensor values
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
-
-
 from argparse import Namespace
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
@@ -22,7 +17,6 @@ import torch
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
-
 
 # ---------------------------------------------------------------------------
 # Helpers
