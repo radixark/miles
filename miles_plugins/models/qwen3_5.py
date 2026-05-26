@@ -7,6 +7,7 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+from transformers import AutoConfig
 from transformers.activations import ACT2FN
 
 try:
@@ -15,7 +16,7 @@ try:
 except ImportError:
     pass
 
-from .hf_attention import HuggingfaceAttention, _load_hf_config
+from .hf_attention import HuggingfaceAttention
 
 
 def _get_text_config(hf_config):
@@ -202,7 +203,7 @@ def get_qwen3_5_spec(args, config, vp_stage):
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
 
-    hf_config = _load_hf_config(args.hf_checkpoint)
+    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
     text_config = _get_text_config(hf_config)
 
     # Compute layer_types if the config class doesn't expose it
