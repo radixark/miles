@@ -182,7 +182,7 @@ def get_log_probs_and_entropy(
             vocab_size=getattr(args, "vocab_size", None),
         )
 
-        log_probs_list.append(log_prob.squeeze(-1))
+        log_probs_list.append(log_prob.reshape(-1))
         entropy_list.append(entropy)
 
     res = {

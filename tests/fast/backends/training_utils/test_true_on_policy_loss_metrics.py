@@ -52,6 +52,40 @@ def _patch_single_rank_masks(monkeypatch):
     )
 
 
+def test_log_probs_remain_1d_for_single_token_true_on_policy_chunks(monkeypatch):
+    args = _make_args(use_rollout_logprobs=False)
+    args.true_on_policy_mode = True
+    args.bf16 = True
+    args.fp16 = False
+    args.vocab_size = 8
+
+    monkeypatch.setattr(
+        loss_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
+    )
+    monkeypatch.setattr(
+        loss_utils,
+        "get_responses",
+        lambda *args, **kwargs: iter([(torch.zeros((1, 8), dtype=torch.bfloat16), torch.tensor([3]))]),
+    )
+    monkeypatch.setattr(
+        loss_utils,
+        "calculate_log_probs_and_entropy",
+        lambda *args, **kwargs: (torch.tensor([-2.0], dtype=torch.bfloat16), None),
+    )
+
+    result = loss_utils.get_log_probs_and_entropy(
+        torch.zeros((1, 1, 8), dtype=torch.bfloat16),
+        args=args,
+        unconcat_tokens=[torch.tensor([3])],
+        total_lengths=[1],
+        response_lengths=[1],
+    )
+
+    assert result["log_probs"][0].shape == (1,)
+
+
 @pytest.mark.parametrize(
     ("use_rollout_logprobs", "train_log_probs", "old_log_probs", "rollout_log_probs", "expected_abs_diff"),
     [
