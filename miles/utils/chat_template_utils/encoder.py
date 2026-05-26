@@ -26,10 +26,12 @@ _DEEPSEEK_KNOWN_KWARGS = _DEEPSEEK_PASSTHROUGH_KEYS | {"thinking"}
 
 def _read_model_type(tokenizer) -> str:
     name_or_path = getattr(tokenizer, "name_or_path", "") or ""
+    if not name_or_path:
+        return ""
     config_path = os.path.join(name_or_path, "config.json")
     if not os.path.isfile(config_path):
         return ""
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         return json.load(f).get("model_type", "") or ""
 
 
