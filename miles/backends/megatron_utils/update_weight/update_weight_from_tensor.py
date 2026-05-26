@@ -6,6 +6,7 @@ from typing import Any
 import ray
 import torch
 import torch.distributed as dist
+from megatron.core import mpu
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
@@ -21,7 +22,6 @@ from .update_weight_from_distributed.broadcast import (
     disconnect_rollout_engines_from_distributed,
     update_weights_from_distributed,
 )
-
 logger = logging.getLogger(__name__)
 
 
@@ -65,14 +65,9 @@ class UpdateWeightFromTensor:
             self._lora_loaded = False
             self._lora_base_synced = False
 
-        # Create IPC gather groups within megatron.
-        for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
-            end_rank = start_rank + self.args.rollout_num_gpus_per_engine
-            group_ranks = list(range(start_rank, end_rank))
-            new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-            if dist.get_rank() in group_ranks:
-                self._ipc_gather_group = new_group
-                self._ipc_gather_src = start_rank
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        self._ipc_engine = None
 
         self._model_update_groups = None
 
@@ -134,38 +129,86 @@ class UpdateWeightFromTensor:
 
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
         colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]
+        colocate_ipc_group_ranks = self._get_colocated_ipc_group_ranks(
+            colocate_engine_nums,
+            colocate_gpu_offsets,
+            colocate_gpu_counts,
+        )
 
         # Determine whether this rank is covered by any colocated engine.
-        all_colocated_ranks = set()
-        for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True):
-            all_colocated_ranks.update(range(offset, offset + count))
+        all_colocated_ranks = {rank for group_ranks in colocate_ipc_group_ranks for rank in group_ranks}
         rank_has_engine = dist.get_rank() in all_colocated_ranks
 
         # Create IPC Gloo gather groups matching actual engine layout.
-        # Re-create on first call or when engine layout changes (placeholder ranks
-        # that had a group from __init__ but no actual engine need to be reset).
-        if rank_has_engine:
-            if self._ipc_gather_group is None:
-                for i in range(colocate_engine_nums):
-                    group_ranks = list(
-                        range(colocate_gpu_offsets[i], colocate_gpu_offsets[i] + colocate_gpu_counts[i])
-                    )
-                    new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-                    if dist.get_rank() in group_ranks:
-                        self._ipc_gather_group = new_group
-                        self._ipc_gather_src = colocate_gpu_offsets[i]
-        else:
-            # Ranks not covered by any engine (e.g. placeholder GPU slots)
-            self._ipc_gather_group = None
-            self._ipc_gather_src = None
+        # Re-create on connect because MoE EP rollout groups are not necessarily
+        # contiguous global ranks once CP is present.
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        for group_ranks in colocate_ipc_group_ranks:
+            new_group = dist.new_group(ranks=group_ranks, backend="gloo")
+            if rank_has_engine and dist.get_rank() in group_ranks:
+                self._ipc_gather_group = new_group
+                self._ipc_gather_src = group_ranks[0]
 
         # Map training ranks to colocated engine actors.
         self._ipc_engine = None
-        for i, engine in enumerate(self.rollout_engines):
-            start = colocate_gpu_offsets[i]
-            end = start + colocate_gpu_counts[i]
-            if start <= dist.get_rank() < end:
+        for engine, group_ranks in zip(
+            self.rollout_engines[:colocate_engine_nums],
+            colocate_ipc_group_ranks,
+            strict=True,
+        ):
+            if dist.get_rank() in group_ranks:
                 self._ipc_engine = engine
+
+    def _get_colocated_ipc_group_ranks(
+        self,
+        colocate_engine_nums: int,
+        colocate_gpu_offsets: Sequence[int],
+        colocate_gpu_counts: Sequence[int],
+    ) -> list[list[int]]:
+        if colocate_engine_nums == 0:
+            return []
+
+        rollout_ep_size = (
+            getattr(self.args, "sglang_expert_parallel_size", None) or getattr(self.args, "sglang_ep_size", 1) or 1
+        )
+        if rollout_ep_size <= 1:
+            return [
+                list(range(offset, offset + count))
+                for offset, count in zip(
+                    colocate_gpu_offsets,
+                    colocate_gpu_counts,
+                    strict=True,
+                )
+            ]
+
+        train_ep_size = mpu.get_expert_model_parallel_world_size()
+        if train_ep_size != rollout_ep_size:
+            raise NotImplementedError(
+                "Colocated SGLang EP weight sync currently requires rollout EP "
+                f"to match Megatron EP ({rollout_ep_size} != {train_ep_size})."
+            )
+        if any(count != rollout_ep_size for count in colocate_gpu_counts):
+            raise NotImplementedError(
+                "Colocated SGLang EP weight sync currently requires each rollout "
+                f"engine to contain exactly one EP group of size {rollout_ep_size}; "
+                f"got engine sizes {list(colocate_gpu_counts)}."
+            )
+
+        local_ep_group = tuple(dist.get_process_group_ranks(mpu.get_expert_model_parallel_group()))
+        all_ep_groups: list[tuple[int, ...] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(
+            all_ep_groups,
+            local_ep_group,
+            group=get_gloo_group(),
+        )
+        unique_ep_groups = sorted({group for group in all_ep_groups if group is not None})
+        if len(unique_ep_groups) < colocate_engine_nums:
+            raise RuntimeError(
+                "Not enough Megatron EP groups to map colocated SGLang EP engines: "
+                f"need {colocate_engine_nums}, got {len(unique_ep_groups)}."
+            )
+        return [list(group) for group in unique_ep_groups[:colocate_engine_nums]]
 
     @torch.no_grad()
     def update_weights(self) -> None:
@@ -188,11 +231,10 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
-
         # For LoRA+distributed: base weights are frozen, skip after first round.
         if not (self.is_lora and self.use_distribute and self._lora_base_synced):
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
-                megatron_local_weights, weight_type="base"
+            for chunk_index, hf_named_tensors in enumerate(
+                self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights, weight_type="base")
             ):
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
