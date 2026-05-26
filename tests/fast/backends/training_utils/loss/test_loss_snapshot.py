@@ -18,6 +18,10 @@ from pathlib import Path
 import pytest
 import torch
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
+
 from miles.backends.training_utils.loss import compute_advantages_and_returns, loss_function
 from miles.backends.training_utils.loss_hub.corrections import icepop_function, vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
