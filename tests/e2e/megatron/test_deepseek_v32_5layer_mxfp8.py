@@ -1,7 +1,7 @@
+import json
 import os
 from pathlib import Path
 
-from scripts.run_deepseek_v32 import _patch_deepseek_v32_checkpoint
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -22,6 +22,20 @@ RUN_ID = U.create_run_id()
 MODEL_DIR = "/root/models"
 DATA_DIR = "/root/datasets"
 MEGATRON_PATH = "/root/Megatron-LM"
+
+DEEPSEEK_V32_CONFIG_SHIM = """from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
+
+
+class DeepseekV32Config(DeepseekV3Config):
+    model_type = "deepseek_v32"
+"""
+
+DEEPSEEK_V32_MODELING_SHIM = """from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3ForCausalLM
+
+
+class DeepseekV32ForCausalLM(DeepseekV3ForCausalLM):
+    pass
+"""
 
 TE_PRECISION_CONFIG = """
 configs:
@@ -72,17 +86,52 @@ matchers:
 """.strip()
 
 
+def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
+    config_path = checkpoint_dir / "config.json"
+    if not config_path.exists():
+        print(f"Warning: {config_path} not found, skipping checkpoint processing")
+        return
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    if config.get("patched_by_miles"):
+        print("Checkpoint already patched by Miles, skipping")
+        return
+
+    if config.get("model_type") != "deepseek_v32":
+        return
+
+    config.setdefault("rope_interleave", True)
+    config.setdefault("indexer_rope_interleave", False)
+    config["architectures"] = ["DeepseekV32ForCausalLM"]
+    config["auto_map"] = {
+        "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
+        "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
+    }
+    config["patched_by_miles"] = True
+
+    (checkpoint_dir / "configuration_deepseek_v32.py").write_text(DEEPSEEK_V32_CONFIG_SHIM)
+    (checkpoint_dir / "modeling_deepseek_v32.py").write_text(DEEPSEEK_V32_MODELING_SHIM)
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    print(f"Patched DeepSeek v3.2 files in {checkpoint_dir}")
+
+
 def prepare():
     U.exec_command(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
     U.exec_command(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
+    bf16_checkpoint = Path(MODEL_DIR) / f"{MODEL_NAME}-bf16"
     U.fp8_cast_bf16(
         path_src=f"{MODEL_DIR}/{MODEL_NAME}",
         path_dst=f"{MODEL_DIR}/{MODEL_NAME}-bf16/",
     )
-    _patch_deepseek_v32_checkpoint(Path(MODEL_DIR) / f"{MODEL_NAME}-bf16")
+    _patch_deepseek_v32_checkpoint(bf16_checkpoint)
 
+    mxfp8_checkpoint = Path(MODEL_DIR) / f"{MODEL_NAME}-MXFP8"
     U.exec_command(
         f"python tools/convert_hf_to_mxfp8.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME}-bf16 "
@@ -96,7 +145,7 @@ def prepare():
         ".wk. "
         ".weights_proj. "
     )
-    _patch_deepseek_v32_checkpoint(Path(MODEL_DIR) / f"{MODEL_NAME}-MXFP8")
+    _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
 
     U.convert_checkpoint(
         model_name=MODEL_NAME,
@@ -129,7 +178,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 1 "
+        "--num-rollout 3 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
