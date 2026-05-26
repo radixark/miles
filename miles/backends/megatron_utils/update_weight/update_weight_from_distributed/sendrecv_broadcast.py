@@ -1,5 +1,6 @@
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 
 import ray
 import torch
@@ -20,6 +21,13 @@ from .broadcast_utils import (
 from .mixin import DistBucketedWeightUpdateMixin
 
 
+@dataclass(frozen=True)
+class _FanoutGroupInfo:
+    master_address: str
+    ports: str
+    group_name: str
+
+
 @ray.remote(num_cpus=0)
 def _update_relay_and_resume_engines(
     rollout_engines: Sequence[ActorHandle],
@@ -28,9 +36,11 @@ def _update_relay_and_resume_engines(
     peer_engines: Sequence[ActorHandle],
     relay_gpu_count: int,
     next_fanout_port: int,
+    fanout_group_info: _FanoutGroupInfo | None,
+    fanout_group_name: str,
     weight_version: int,
     relay_receive_refs: Sequence[ray.ObjectRef],
-) -> dict[str, int]:
+) -> dict[str, object]:
     _raise_sglang_rpc_failures(
         ray.get(list(relay_receive_refs)),
         "receive relay weights from NCCL",
@@ -41,13 +51,14 @@ def _update_relay_and_resume_engines(
         post_process_quantization=False,
         post_load_weights=False,
     )
-    next_fanout_port = _sync_relay_weights_to_peer_instances(
+    next_fanout_port, fanout_group_info = _sync_relay_weights_to_peer_instances(
         rollout_engine_lock=rollout_engine_lock,
         relay_engine=relay_engine,
         peer_engines=peer_engines,
         relay_gpu_count=relay_gpu_count,
         next_fanout_port=next_fanout_port,
-        weight_version=weight_version,
+        fanout_group_info=fanout_group_info,
+        fanout_group_name=fanout_group_name,
     )
     post_process_weights(
         rollout_engines=rollout_engines,
@@ -57,7 +68,10 @@ def _update_relay_and_resume_engines(
     )
     ray.get([engine.update_weight_version.remote(weight_version=str(weight_version)) for engine in rollout_engines])
     ray.get([engine.continue_generation.remote() for engine in rollout_engines])
-    return {"next_fanout_port": next_fanout_port}
+    return {
+        "next_fanout_port": next_fanout_port,
+        "fanout_group_info": fanout_group_info,
+    }
 
 
 @ray.remote(num_cpus=0)
@@ -67,6 +81,7 @@ class _SendRecvBroadcastCoordinator:
         self._completed_pp_sources_by_version: dict[int, set[int]] = {}
         self._pending_fanout_ref: ray.ObjectRef | None = None
         self._terminal_error: str | None = None
+        self._fanout_group_info: _FanoutGroupInfo | None = None
 
     def configure(
         self,
@@ -78,7 +93,16 @@ class _SendRecvBroadcastCoordinator:
         peer_engines: Sequence[ActorHandle],
         relay_gpu_count: int,
         next_fanout_port: int,
+        fanout_group_name: str,
     ) -> None:
+        if self._fanout_group_info is not None:
+            _destroy_relay_fanout_group(
+                relay_engine=self._relay_engine,
+                peer_engines=self._peer_engines,
+                fanout_group_info=self._fanout_group_info,
+            )
+            self._fanout_group_info = None
+
         self._expected_sources = expected_sources
         self._rollout_engines = rollout_engines
         self._rollout_engine_lock = rollout_engine_lock
@@ -86,6 +110,8 @@ class _SendRecvBroadcastCoordinator:
         self._peer_engines = peer_engines
         self._relay_gpu_count = relay_gpu_count
         self._next_fanout_port = next_fanout_port
+        self._fanout_group_name = fanout_group_name
+        self._fanout_group_info = None
 
     def finish_pp_stage_and_maybe_fanout(
         self,
@@ -109,16 +135,21 @@ class _SendRecvBroadcastCoordinator:
             peer_engines=self._peer_engines,
             relay_gpu_count=self._relay_gpu_count,
             next_fanout_port=self._next_fanout_port,
+            fanout_group_info=self._fanout_group_info,
+            fanout_group_name=self._fanout_group_name,
             weight_version=weight_version,
             relay_receive_refs=relay_receive_refs,
         )
         return {"scheduled": True, "transfers": len(relay_receive_refs)}
 
-    def wait_pending_fanout(self) -> dict[str, int]:
+    def wait_pending_fanout(self) -> dict[str, object]:
         if self._terminal_error is not None:
             raise RuntimeError("sendrecv_broadcast background update failed: " f"{self._terminal_error}")
         if self._pending_fanout_ref is None:
-            return {"next_fanout_port": self._next_fanout_port}
+            return {
+                "next_fanout_port": self._next_fanout_port,
+                "fanout_group_info": self._fanout_group_info,
+            }
         try:
             result = ray.get(self._pending_fanout_ref)
         except Exception as exc:
@@ -126,6 +157,7 @@ class _SendRecvBroadcastCoordinator:
             self._terminal_error = repr(exc)
             raise
         self._next_fanout_port = result["next_fanout_port"]
+        self._fanout_group_info = result["fanout_group_info"]
         self._pending_fanout_ref = None
         return result
 
@@ -137,73 +169,103 @@ def _sync_relay_weights_to_peer_instances(
     peer_engines: Sequence[ActorHandle],
     relay_gpu_count: int,
     next_fanout_port: int,
-    weight_version: int,
-) -> int:
+    fanout_group_info: _FanoutGroupInfo | None,
+    fanout_group_name: str,
+) -> tuple[int, _FanoutGroupInfo | None]:
     if not peer_engines:
-        return next_fanout_port
+        return next_fanout_port, None
 
     acquire_rollout_engine_lock(rollout_engine_lock)
     try:
-        master_address, first_port = ray.get(
-            relay_engine._get_current_node_ip_and_free_port.remote(
-                start_port=next_fanout_port,
-                consecutive=relay_gpu_count,
+        if fanout_group_info is None:
+            master_address, first_port = ray.get(
+                relay_engine._get_current_node_ip_and_free_port.remote(
+                    start_port=next_fanout_port,
+                    consecutive=relay_gpu_count,
+                )
             )
-        )
-        next_fanout_port = first_port + relay_gpu_count + 1
-        ports = ",".join(str(first_port + rank) for rank in range(relay_gpu_count))
-        group_name = f"miles-sendrecv-broadcast-fanout-v{weight_version}"
-        world_size = len(peer_engines) + 1
+            next_fanout_port = first_port + relay_gpu_count + 1
+            ports = ",".join(str(first_port + rank) for rank in range(relay_gpu_count))
+            group_name = fanout_group_name
+            fanout_group_info = _FanoutGroupInfo(
+                master_address=master_address,
+                ports=ports,
+                group_name=group_name,
+            )
+            world_size = len(peer_engines) + 1
 
-        init_refs = [
-            relay_engine.init_weights_send_group_for_remote_instance.remote(
-                master_address=master_address,
-                ports=ports,
-                group_rank=0,
-                world_size=world_size,
-                group_name=group_name,
-                backend="nccl",
+            init_refs = [
+                relay_engine.init_weights_send_group_for_remote_instance.remote(
+                    master_address=master_address,
+                    ports=ports,
+                    group_rank=0,
+                    world_size=world_size,
+                    group_name=group_name,
+                    backend="nccl",
+                )
+            ]
+            init_refs.extend(
+                peer_engine.init_weights_send_group_for_remote_instance.remote(
+                    master_address=master_address,
+                    ports=ports,
+                    group_rank=peer_rank,
+                    world_size=world_size,
+                    group_name=group_name,
+                    backend="nccl",
+                )
+                for peer_rank, peer_engine in enumerate(peer_engines, start=1)
             )
-        ]
-        init_refs.extend(
-            peer_engine.init_weights_send_group_for_remote_instance.remote(
-                master_address=master_address,
-                ports=ports,
-                group_rank=peer_rank,
-                world_size=world_size,
-                group_name=group_name,
-                backend="nccl",
+            _raise_sglang_rpc_failures(
+                ray.get(init_refs),
+                f"initialize relay fanout group {group_name}",
             )
-            for peer_rank, peer_engine in enumerate(peer_engines, start=1)
-        )
-        _raise_sglang_rpc_failures(
-            ray.get(init_refs),
-            f"initialize relay fanout group {group_name}",
-        )
 
         send_refs = [
             relay_engine.send_weights_to_remote_instance.remote(
-                master_address=master_address,
-                ports=ports,
-                group_name=group_name,
+                master_address=fanout_group_info.master_address,
+                ports=fanout_group_info.ports,
+                group_name=fanout_group_info.group_name,
             )
         ]
         send_refs.extend(
             peer_engine.send_weights_to_remote_instance.remote(
-                master_address=master_address,
-                ports=ports,
-                group_name=group_name,
+                master_address=fanout_group_info.master_address,
+                ports=fanout_group_info.ports,
+                group_name=fanout_group_info.group_name,
             )
             for peer_engine in peer_engines
         )
         _raise_sglang_rpc_failures(
             ray.get(send_refs),
-            f"broadcast relay weights through {group_name}",
+            f"broadcast relay weights through {fanout_group_info.group_name}",
         )
     finally:
         ray.get(rollout_engine_lock.release.remote())
 
-    return next_fanout_port
+    return next_fanout_port, fanout_group_info
+
+
+def _destroy_relay_fanout_group(
+    *,
+    relay_engine: ActorHandle,
+    peer_engines: Sequence[ActorHandle],
+    fanout_group_info: _FanoutGroupInfo,
+) -> None:
+    destroy_refs = [
+        relay_engine.destroy_weights_send_group_for_remote_instance.remote(
+            group_name=fanout_group_info.group_name,
+        )
+    ]
+    destroy_refs.extend(
+        peer_engine.destroy_weights_send_group_for_remote_instance.remote(
+            group_name=fanout_group_info.group_name,
+        )
+        for peer_engine in peer_engines
+    )
+    _raise_sglang_rpc_failures(
+        ray.get(destroy_refs),
+        f"destroy relay fanout group {fanout_group_info.group_name}",
+    )
 
 
 def _raise_sglang_rpc_failures(responses: Sequence[dict | None], action: str) -> None:
@@ -285,6 +347,7 @@ class UpdateWeightSendRecvBroadcast(DistBucketedWeightUpdateMixin):
 
     def _connect_coordinator(self) -> None:
         coordinator_name = f"miles-sendrecv-broadcast-coordinator-{ray.get_runtime_context().get_job_id()}"
+        fanout_group_name = f"miles-sendrecv-broadcast-fanout-{ray.get_runtime_context().get_job_id()}"
         if dist.get_rank() == 0:
             try:
                 self._coordinator = ray.get_actor(coordinator_name)
@@ -299,6 +362,7 @@ class UpdateWeightSendRecvBroadcast(DistBucketedWeightUpdateMixin):
                     peer_engines=self._peer_engines,
                     relay_gpu_count=self._relay_gpu_count,
                     next_fanout_port=self._next_fanout_port,
+                    fanout_group_name=fanout_group_name,
                 )
             )
         dist.barrier(group=get_gloo_group())

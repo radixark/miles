@@ -561,6 +561,17 @@ class SGLangEngine(RayActor):
             },
         )
 
+    def destroy_weights_send_group_for_remote_instance(self, group_name: str):
+        try:
+            return self._make_request(
+                "destroy_weights_send_group_for_remote_instance",
+                {
+                    "group_name": group_name,
+                },
+            )
+        except requests.exceptions.RequestException:
+            pass
+
     def update_weights_from_distributed(
         self,
         names,
