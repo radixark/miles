@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
@@ -145,3 +147,94 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+@pytest.mark.parametrize(
+    (
+        "rollout_num_gpus_per_engine",
+        "sglang_attention_context_parallel_size",
+    ),
+    [
+        (1, 1),
+        (8, 4),
+    ],
+)
+def test_true_on_policy_args_propagate_to_sglang_server_args(
+    rollout_num_gpus_per_engine: int,
+    sglang_attention_context_parallel_size: int,
+):
+    args = SimpleNamespace(
+        rollout_num_gpus_per_engine=rollout_num_gpus_per_engine,
+        sglang_data_parallel_size=1,
+        sglang_pipeline_parallel_size=1,
+        sglang_expert_parallel_size=1,
+        sglang_attention_context_parallel_size=sglang_attention_context_parallel_size,
+        sglang_enable_dp_attention=False,
+        sglang_enable_dp_lm_head=False,
+        sglang_router_policy=None,
+        sglang_router_ip=None,
+        true_on_policy_mode=True,
+        recompute_logprobs_via_prefill=False,
+        sglang_true_on_policy_contract="qwen3_dense_true_on_policy_v1",
+        sglang_enable_deterministic_inference=False,
+        sglang_enable_prefill_only_deterministic_inference=False,
+        hf_checkpoint="hf://dummy",
+        seed=7,
+        offload_rollout=False,
+        num_gpus_per_node=8,
+        use_rollout_routing_replay=False,
+        fp16=False,
+    )
+
+    sglang_validate_args(args)
+
+    server_args, _ = _compute_server_args(
+        args,
+        rank=0,
+        dist_init_addr="127.0.0.1:12345",
+        nccl_port=12346,
+        host="127.0.0.1",
+        port=30000,
+    )
+
+    assert args.sglang_enable_deterministic_inference is True
+    assert args.sglang_enable_prefill_only_deterministic_inference is False
+    assert args.sglang_enable_dp_lm_head is False
+    assert "rl_on_policy_target" not in server_args
+    assert server_args["true_on_policy_contract"] == "qwen3_dense_true_on_policy_v1"
+    assert server_args["enable_deterministic_inference"] is True
+    assert server_args["enable_prefill_only_deterministic_inference"] is False
+    assert server_args["enable_dp_lm_head"] is False
+
+
+def test_true_on_policy_sglang_cp_dp_lm_head_overrides_engine_defaults():
+    args = SimpleNamespace(
+        rollout_num_gpus_per_engine=8,
+        sglang_data_parallel_size=1,
+        sglang_pipeline_parallel_size=1,
+        sglang_expert_parallel_size=1,
+        sglang_dp_size=1,
+        sglang_pp_size=1,
+        sglang_ep_size=1,
+        sglang_attention_context_parallel_size=4,
+        sglang_enable_dp_lm_head=True,
+        true_on_policy_mode=True,
+        hf_checkpoint="hf://dummy",
+        seed=7,
+        offload_rollout=False,
+        num_gpus_per_node=8,
+        use_rollout_routing_replay=False,
+        fp16=False,
+    )
+
+    server_args, _ = _compute_server_args(
+        args,
+        rank=0,
+        dist_init_addr="127.0.0.1:12345",
+        nccl_port=12346,
+        host="127.0.0.1",
+        port=30000,
+        sglang_overrides={"enable_dp_lm_head": False},
+    )
+
+    assert server_args["enable_dp_lm_head"] is True
