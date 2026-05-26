@@ -183,7 +183,7 @@ def execute():
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        "--global-batch-size 32 "
         "--balance-data "
     )
 
@@ -273,6 +273,7 @@ def execute():
     misc_args = (
         "--use-rollout-routing-replay "
         "--use-miles-router "
+        "--freeze-indexer "
         "--sglang-disable-shared-experts-fusion "
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
