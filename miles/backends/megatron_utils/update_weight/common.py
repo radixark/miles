@@ -47,6 +47,74 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     return partition_stride, partition_dim
 
 
+def _set_tensor_parallel_attrs(
+    tensor: torch.Tensor,
+    *,
+    source: torch.Tensor,
+    partition_dim: int,
+    partition_stride: int,
+) -> torch.Tensor:
+    tensor.tensor_model_parallel = getattr(source, "tensor_model_parallel", False)
+    tensor.partition_dim = partition_dim
+    tensor.partition_stride = partition_stride
+    tensor.parallel_mode = getattr(source, "parallel_mode", None)
+    return tensor
+
+
+def _iter_grouped_moe_expert_params(
+    args: Namespace,
+    *,
+    layer_idx: int,
+    rest: str,
+    param: torch.Tensor,
+    expert_offset: int,
+    ep_size: int,
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """Expand Megatron GroupedMLP tensors into per-expert HF-oriented tensors.
+
+    Megatron's grouped MoE path stores all local experts in two tensors:
+    `mlp.experts.weight1` and `mlp.experts.weight2`. SGLang's update path expects
+    per-expert HF names, so EP ranks must expose globally indexed expert slices.
+    """
+    num_experts = getattr(args, "num_experts", None)
+    hidden_size = getattr(args, "hidden_size", None)
+    if not num_experts or not hidden_size:
+        raise ValueError(f"Cannot expand grouped MoE parameter {rest}: missing num_experts/hidden_size")
+
+    num_local_experts = num_experts // ep_size
+    if num_local_experts <= 0:
+        raise ValueError(f"Cannot expand grouped MoE parameter {rest}: invalid local expert count")
+
+    if rest == "mlp.experts.weight1":
+        experts = param.view(num_local_experts, hidden_size, -1)
+        target_rest = "linear_fc1"
+        partition_dim = 0
+        partition_stride = 2 if getattr(args, "swiglu", False) else 1
+    elif rest == "mlp.experts.weight2":
+        experts = param.view(num_local_experts, -1, hidden_size)
+        target_rest = "linear_fc2"
+        partition_dim = 1
+        partition_stride = 1
+    else:
+        raise ValueError(f"Unexpected grouped MoE parameter name: {rest}")
+
+    for local_expert_idx, expert in enumerate(experts):
+        expert_idx = expert_offset + local_expert_idx
+        # Grouped GEMM stores weights in forward matmul orientation. HF/SGLang
+        # loaders expect Linear weight orientation, so transpose the expert slice.
+        expert = expert.transpose(0, 1)
+        expert = _set_tensor_parallel_attrs(
+            expert,
+            source=param,
+            partition_dim=partition_dim,
+            partition_stride=partition_stride,
+        )
+        yield (
+            f"module.module.decoder.layers.{layer_idx}.mlp.experts.{target_rest}.weight{expert_idx}",
+            expert,
+        )
+
+
 def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
     """
     All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
@@ -65,6 +133,9 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
     else:
         tp_size = get_parallel_state().tp.size
         tp_group = get_parallel_state().tp.group
+
+    if tp_size == 1:
+        return param.data
 
     param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
     dist.all_gather(param_partitions, param.data, group=tp_group)
@@ -105,6 +176,11 @@ def all_gather_params_async(
             else:
                 tp_size = get_parallel_state().tp.size
                 tp_group = get_parallel_state().tp.group
+
+            if tp_size == 1:
+                gather_tasks.append((info, param.data, None, None, None, None))
+                handles.append(None)
+                continue
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
@@ -157,6 +233,10 @@ def _maybe_get_cpu_backup(x: torch.Tensor):
     if (cpu_tensor := torch_memory_saver.get_cpu_backup(x)) is not None:
         return cpu_tensor
 
+    base = getattr(x, "_base", None)
+    if base is not None and (cpu_base := torch_memory_saver.get_cpu_backup(base)) is not None:
+        return torch.as_strided(cpu_base, size=x.size(), stride=x.stride(), storage_offset=x.storage_offset())
+
     return x
 
 
@@ -185,8 +265,8 @@ def _named_params_and_buffers_global(
     """
     ep_size = get_parallel_state().ep.size
     ep_rank = get_parallel_state().ep.rank
-    if args.num_experts:
-        expert_offset = ep_rank * args.num_experts // ep_size
+    num_experts = getattr(args, "num_experts", None)
+    expert_offset = ep_rank * num_experts // ep_size if num_experts else 0
 
     sig = inspect.signature(get_transformer_layer_offset)
     need_vp_stage = "vp_stage" in sig.parameters
@@ -226,6 +306,17 @@ def _named_params_and_buffers_global(
 
             layer_idx, rest = match.groups()
             layer_idx = int(layer_idx) + layer_offset
+
+            if rest in ("mlp.experts.weight1", "mlp.experts.weight2"):
+                yield from _iter_grouped_moe_expert_params(
+                    args,
+                    layer_idx=layer_idx,
+                    rest=rest,
+                    param=param,
+                    expert_offset=expert_offset,
+                    ep_size=ep_size,
+                )
+                continue
 
             # this is hardcoded for te grouped matmul
             expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
