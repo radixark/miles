@@ -160,6 +160,30 @@ jobs:
           fi
           twine upload --repository testpypi --skip-existing "${{ steps.cfg.outputs.src_dir }}"/dist/*
 
+      - name: Wait for TestPyPI index to surface the uploaded version
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
+          DEV_VERSION: ${{ steps.cfg.outputs.dev_version }}
+        run: |
+          # twine upload reports success the moment the upload finishes, but
+          # TestPyPI's /simple/ index is eventually-consistent and often
+          # takes 30-120s to reflect a new release. Poll until it appears
+          # or a 5-minute timeout fires.
+          set -e
+          url="https://test.pypi.org/simple/${RENAME_TO}/"
+          for i in $(seq 1 30); do
+            if curl -fs "$url" | grep -q "${DEV_VERSION}"; then
+              echo "TestPyPI index now lists ${RENAME_TO}==${DEV_VERSION} (after ${i} polls)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::TestPyPI index still missing ${RENAME_TO}==${DEV_VERSION} after 5 min — index propagation stalled or upload silently failed"
+          curl -fs "$url" | head -40 || true
+          exit 1
+
       - name: Smoke install in a fresh venv
         if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
@@ -179,5 +203,3 @@ jobs:
             --no-deps \
             "${RENAME_TO}==${DEV_VERSION}"
           /tmp/smoke/bin/pip show "${RENAME_TO}"
-          # Confirm the install came from TestPyPI (not a stale local cache).
-          /tmp/smoke/bin/pip show -f "${RENAME_TO}" | head -20
