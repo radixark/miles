@@ -7,10 +7,14 @@ import torch.distributed as dist
 logger = logging.getLogger(__name__)
 
 
-def clear_memory(clear_host_memory: bool = False):
+def clear_memory(clear_host_memory: bool = False, ipc_collect: bool = False):
+    # ipc_collect closes cuda-IPC mappings released on the receiver — needed
+    # after MultiprocessingSerializer-based weight sync to avoid pinned pages.
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
+    if ipc_collect:
+        torch.cuda.ipc_collect()
     if clear_host_memory:
         torch._C._host_emptyCache()
 

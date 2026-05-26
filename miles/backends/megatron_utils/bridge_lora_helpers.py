@@ -93,9 +93,14 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.sequence_parallel = args.sequence_parallel
     provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
     provider.context_parallel_size = args.context_parallel_size
+    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
+    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
     provider.finalize()
 
     lora = create_lora_instance(args)
