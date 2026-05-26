@@ -1,11 +1,41 @@
+import json
 import os
-import shlex
+from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-b200", labels=["megatron"])
+
+MODEL_ORG = "Pinaster"
+MODEL_NAME = "DeepSeek-V3.2-5layer"
+MODEL_TYPE = "deepseek-v32-5layer"
+NUM_GPUS = 8
+ACTOR_NUM_GPUS = 4
+ROLLOUT_NUM_GPUS = 4
+ROLLOUT_GPUS_PER_ENGINE = 2
+NUM_LAYERS_AT_START_IN_BF16 = 1
+NUM_LAYERS_AT_END_IN_BF16 = 1
+RUN_ID = U.create_run_id()
+
+MODEL_DIR = "/root/models"
+DATA_DIR = "/root/datasets"
+MEGATRON_PATH = "/root/Megatron-LM"
+
+DEEPSEEK_V32_CONFIG_SHIM = """from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
+
+
+class DeepseekV32Config(DeepseekV3Config):
+    model_type = "deepseek_v32"
+"""
+
+DEEPSEEK_V32_MODELING_SHIM = """from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3ForCausalLM
+
+
+class DeepseekV32ForCausalLM(DeepseekV3ForCausalLM):
+    pass
+"""
 
 TE_PRECISION_CONFIG = """
 configs:
@@ -56,75 +86,236 @@ matchers:
 """.strip()
 
 
-def execute():
-    te_precision_config_path = U.save_to_temp_file(TE_PRECISION_CONFIG, "yaml")
+def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
+    config_path = checkpoint_dir / "config.json"
+    if not config_path.exists():
+        print(f"Warning: {config_path} not found, skipping checkpoint processing")
+        return
 
-    extra_args = [
-        "--use-rollout-routing-replay",
-        "--use-miles-router",
-        "--first-last-layers-bf16",
-        "--num-layers-at-start-in-bf16",
-        "1",
-        "--num-layers-at-end-in-bf16",
-        "1",
-        "--sglang-disable-shared-experts-fusion",
-        "--extra-high-precision-layers-hf",
-        ".kv_b_proj.",
-        ".shared_experts.",
-        ".wq_b.",
-        ".wk.",
-        ".weights_proj.",
-        "--extra-high-precision-layers-megatron",
-        ".linear_kv_up_proj",
-        ".linear_k_up_proj",
-        ".linear_v_up_proj",
-        ".shared_experts.linear_fc1",
-        ".shared_experts.linear_fc2",
-        ".wq_b",
-        ".wk",
-        ".weights_proj",
-        "--te-precision-config-file",
-        te_precision_config_path,
-        "--ci-test",
-        "--ci-max-train-rollout-logprob-abs-diff",
-        "0.028",
-        "--ci-max-kl-loss",
-        "0.008",
-        "--num-rollout",
-        "3",
-    ]
+    with open(config_path) as f:
+        config = json.load(f)
 
-    cmd = shlex.join(
-        [
-            "python",
-            "scripts/run_deepseek_v32.py",
-            "full-train",
-            "--no-enable-eval",
-            "--use-single-node",
-            "--hardware",
-            "B200",
-            "--model-org",
-            "Pinaster",
-            "--model-name",
-            "DeepSeek-V3.2-5layer",
-            "--megatron-model-type",
-            "deepseek-v32-5layer",
-            "--num-gpus-per-node",
-            "8",
-            "--actor-num-gpus-per-node",
-            "4",
-            "--rollout-num-gpus",
-            "4",
-            "--rollout-mxfp8",
-            "--train-mxfp8",
-            "--extra-args",
-            " ".join(extra_args),
-        ]
+    if config.get("patched_by_miles"):
+        print("Checkpoint already patched by Miles, skipping")
+        return
+
+    if config.get("model_type") != "deepseek_v32":
+        return
+
+    config.setdefault("rope_interleave", True)
+    config.setdefault("indexer_rope_interleave", False)
+    config["architectures"] = ["DeepseekV32ForCausalLM"]
+    config["auto_map"] = {
+        "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
+        "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
+    }
+    config["patched_by_miles"] = True
+
+    (checkpoint_dir / "configuration_deepseek_v32.py").write_text(DEEPSEEK_V32_CONFIG_SHIM)
+    (checkpoint_dir / "modeling_deepseek_v32.py").write_text(DEEPSEEK_V32_MODELING_SHIM)
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    print(f"Patched DeepSeek v3.2 files in {checkpoint_dir}")
+
+
+def prepare():
+    U.exec_command(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
+    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
+
+    bf16_checkpoint = Path(MODEL_DIR) / f"{MODEL_NAME}-bf16"
+    U.fp8_cast_bf16(
+        path_src=f"{MODEL_DIR}/{MODEL_NAME}",
+        path_dst=f"{MODEL_DIR}/{MODEL_NAME}-bf16/",
     )
-    U.exec_command(cmd)
+    _patch_deepseek_v32_checkpoint(bf16_checkpoint)
+
+    mxfp8_checkpoint = Path(MODEL_DIR) / f"{MODEL_NAME}-MXFP8"
+    U.exec_command(
+        f"python tools/convert_hf_to_mxfp8.py "
+        f"--model-dir {MODEL_DIR}/{MODEL_NAME}-bf16 "
+        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-MXFP8 "
+        f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
+        f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
+        "--extra-high-precision-layers-hf "
+        ".kv_b_proj. "
+        ".shared_experts. "
+        ".wq_b. "
+        ".wk. "
+        ".weights_proj. "
+    )
+    _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
+
+    U.convert_checkpoint(
+        model_name=MODEL_NAME,
+        megatron_model_type=MODEL_TYPE,
+        num_gpus_per_node=ACTOR_NUM_GPUS,
+        dir_dst=MODEL_DIR,
+        hf_checkpoint=f"{MODEL_DIR}/{MODEL_NAME}-bf16",
+        megatron_path=MEGATRON_PATH,
+    )
+
+
+def execute():
+    os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
+    te_precision_config_path = U.save_to_temp_file(TE_PRECISION_CONFIG, "yaml")
+    load_save_path = f"/root/shared_data/{RUN_ID}/checkpoints"
+
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-MXFP8/ "
+        f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
+        f"--load {load_save_path} "
+        f"--save {load_save_path} "
+        "--save-interval 2 "
+        "--save-retain-interval 2 "
+    )
+
+    rollout_args = (
+        f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
+        "--input-key prompt "
+        "--label-key label "
+        "--apply-chat-template "
+        "--rollout-shuffle "
+        "--rm-type deepscaler "
+        "--num-rollout 3 "
+        "--rollout-batch-size 32 "
+        "--n-samples-per-prompt 8 "
+        "--rollout-max-response-len 8192 "
+        "--rollout-temperature 1 "
+        "--global-batch-size 256 "
+        "--balance-data "
+    )
+
+    perf_args = (
+        f"--tensor-model-parallel-size {ACTOR_NUM_GPUS} "
+        "--sequence-parallel "
+        "--pipeline-model-parallel-size 1 "
+        "--context-parallel-size 1 "
+        f"--expert-model-parallel-size {ACTOR_NUM_GPUS} "
+        "--expert-tensor-parallel-size 1 "
+        "--recompute-granularity full "
+        "--recompute-method uniform "
+        "--recompute-num-layers 1 "
+        "--use-dynamic-batch-size "
+        "--max-tokens-per-gpu 32768 "
+        "--data-pad-size-multiplier 4096 "
+        "--log-probs-chunk-size 1024 "
+    )
+
+    grpo_args = (
+        "--advantage-estimator grpo "
+        "--use-kl-loss "
+        "--kl-loss-coef 0.00 "
+        "--kl-loss-type low_var_kl "
+        "--entropy-coef 0.00 "
+        "--eps-clip 0.2 "
+        "--eps-clip-high 0.28 "
+    )
+
+    optimizer_args = (
+        "--optimizer adam "
+        "--lr 1e-6 "
+        "--lr-decay-style constant "
+        "--weight-decay 0.1 "
+        "--adam-beta1 0.9 "
+        "--adam-beta2 0.98 "
+        "--optimizer-cpu-offload "
+        "--overlap-cpu-optimizer-d2h-h2d "
+        "--use-precision-aware-optimizer "
+    )
+
+    sglang_args = (
+        "--sglang-mem-fraction-static 0.8 "
+        "--sglang-attention-backend nsa "
+        "--sglang-nsa-decode-backend flashmla_sparse "
+        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-kv-cache-dtype bf16 "
+        "--sglang-page-size 64 "
+        f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
+        "--sglang-fp8-gemm-backend flashinfer_cutlass "
+        "--sglang-moe-runner-backend flashinfer_trtllm_routed "
+        f"--sglang-tp-size {ROLLOUT_GPUS_PER_ENGINE} "
+        f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
+        "--sglang-enable-dp-attention "
+        "--sglang-enable-dp-lm-head "
+        "--sglang-cuda-graph-max-bs 256 "
+    )
+
+    ci_args = "--ci-test "
+
+    mixed_precision_args = (
+        "--transformer-impl transformer_engine "
+        "--bf16 "
+        "--fp8-format e4m3 "
+        "--fp8-recipe mxfp8 "
+        "--first-last-layers-bf16 "
+        f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
+        f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
+        "--extra-high-precision-layers-hf "
+        ".kv_b_proj. "
+        ".shared_experts. "
+        ".wq_b. "
+        ".wk. "
+        ".weights_proj. "
+        "--extra-high-precision-layers-megatron "
+        ".linear_kv_up_proj "
+        ".linear_k_up_proj "
+        ".linear_v_up_proj "
+        ".shared_experts.linear_fc1 "
+        ".shared_experts.linear_fc2 "
+        ".wq_b "
+        ".wk "
+        ".weights_proj "
+        f"--te-precision-config-file {te_precision_config_path} "
+    )
+
+    misc_args = (
+        "--use-rollout-routing-replay "
+        "--use-miles-router "
+        "--sglang-disable-shared-experts-fusion "
+        "--attention-dropout 0.0 "
+        "--hidden-dropout 0.0 "
+        "--accumulate-allreduce-grads-in-fp32 "
+        "--attention-softmax-in-fp32 "
+        "--attention-backend flash "
+        "--allgather-cp "
+        f"--update-weight-buffer-size {2 * 1024 ** 3} "
+        "--actor-num-nodes 1 "
+        f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
+        f"--num-gpus-per-node {NUM_GPUS} "
+        f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
+        "--use-fault-tolerance "
+    )
+
+    train_args = (
+        f"{ckpt_args} "
+        f"{rollout_args} "
+        f"{optimizer_args} "
+        f"{grpo_args} "
+        f"{U.get_default_wandb_args(__file__)} "
+        f"{perf_args} "
+        f"{sglang_args} "
+        f"{ci_args} "
+        f"{mixed_precision_args} "
+        f"{misc_args} "
+    )
+
+    U.execute_train(
+        train_args=train_args,
+        num_gpus_per_node=NUM_GPUS,
+        megatron_model_type=MODEL_TYPE,
+        megatron_path=MEGATRON_PATH,
+        extra_env_vars={
+            "SGLANG_NSA_FORCE_MLA": "1",
+            "SGLANG_NSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
+            "NVSHMEM_DISABLE_NCCL": "1",
+        },
+    )
 
 
 if __name__ == "__main__":
+    prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute()

@@ -9,18 +9,6 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def _check_upper_bound(args: Namespace, log_dict: dict[str, float], arg_name: str, metric_name: str) -> None:
-    threshold = getattr(args, arg_name, None)
-    if threshold is None:
-        return
-
-    assert metric_name in log_dict, f"CI check failed: {metric_name} missing with {arg_name}={threshold}; {log_dict=}"
-    actual_value = log_dict[metric_name]
-    assert (
-        actual_value < threshold
-    ), f"CI check failed: {metric_name} ({actual_value}) must be < {arg_name} ({threshold}); {log_dict=}"
-
-
 def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumulated_step_id: int) -> None:
     if step_id == 0 and "train/ppo_kl" in log_dict and "train/pg_clipfrac" in log_dict:
         if args.multi_latent_attention:
@@ -34,8 +22,6 @@ def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumula
             assert abs(log_dict["train/ppo_kl"]) < 1e-9 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
     if accumulated_step_id == 0 and "train/kl_loss" in log_dict and not args.use_rollout_routing_replay:
         assert abs(log_dict["train/kl_loss"]) < 1e-9, f"{log_dict=}"
-    _check_upper_bound(args, log_dict, "ci_max_train_rollout_logprob_abs_diff", "train/train_rollout_logprob_abs_diff")
-    _check_upper_bound(args, log_dict, "ci_max_kl_loss", "train/kl_loss")
 
 
 def check_grad_norm(

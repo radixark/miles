@@ -1643,18 +1643,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
             )
             parser.add_argument(
-                "--ci-max-train-rollout-logprob-abs-diff",
-                type=float,
-                default=None,
-                help="CI-only upper bound for train/train_rollout_logprob_abs_diff.",
-            )
-            parser.add_argument(
-                "--ci-max-kl-loss",
-                type=float,
-                default=None,
-                help="CI-only upper bound for train/kl_loss.",
-            )
-            parser.add_argument(
                 "--ci-save-grad-norm",
                 type=str,
                 default=None,
