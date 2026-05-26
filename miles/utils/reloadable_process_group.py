@@ -120,6 +120,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         self.group_info = {
             "ranks": ranks,
         }
+        self._is_member = dist.get_rank(group) >= 0
         pid = os.getpid()
         if pid not in ReloadableProcessGroup.GROUPS:
             ReloadableProcessGroup.GROUPS[pid] = []
@@ -151,9 +152,11 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         reloadable_groups = ReloadableProcessGroup.GROUPS.get(pid, [])
         logger.info(f"Reloading {len(reloadable_groups)} process groups in pid {pid}")
         old_new_group = old_new_group_dict.get(pid)
-        for reloadable_group in reloadable_groups:
-            if reloadable_group.group is not None:
-                continue
+        pending_groups = sorted(
+            (group for group in reloadable_groups if group.group is None),
+            key=lambda group: tuple(group.group_info["ranks"]),
+        )
+        for reloadable_group in pending_groups:
             group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend="nccl")
             reloadable_group.group = group
 

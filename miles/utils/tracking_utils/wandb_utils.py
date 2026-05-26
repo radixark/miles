@@ -9,6 +9,21 @@ from miles.utils.env_report import decode_env_report
 logger = logging.getLogger(__name__)
 
 
+def _get_wandb_key(args) -> str | None:
+    if args.wandb_key is not None:
+        return args.wandb_key
+    if key := os.environ.get("WANDB_API_KEY"):
+        return key
+
+    key_file = os.environ.get("WANDB_API_KEY_FILE", "/tmp/.wandb_key_moe")
+    if not key_file or not os.path.exists(key_file):
+        return None
+
+    with open(key_file, encoding="utf-8") as f:
+        key = f.read().strip()
+    return key or None
+
+
 def _is_offline_mode(args) -> bool:
     """Detect whether W&B should run in offline mode.
 
@@ -42,9 +57,8 @@ def init_wandb_primary(args):
 
     offline = _is_offline_mode(args)
 
-    # Only perform explicit login when NOT offline
-    if (not offline) and args.wandb_key is not None:
-        wandb.login(key=args.wandb_key, host=args.wandb_host)
+    if (not offline) and (wandb_key := _get_wandb_key(args)) is not None:
+        wandb.login(key=wandb_key, host=args.wandb_host)
 
     # Prepare wandb init parameters
     # add random 6 length string with characters
@@ -113,8 +127,8 @@ def init_wandb_secondary(args, router_addr=None):
 
     offline = _is_offline_mode(args)
 
-    if (not offline) and args.wandb_key is not None:
-        wandb.login(key=args.wandb_key, host=args.wandb_host)
+    if (not offline) and (wandb_key := _get_wandb_key(args)) is not None:
+        wandb.login(key=wandb_key, host=args.wandb_host)
 
     # Configure settings based on offline/online mode
     if offline:

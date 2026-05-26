@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import random
+import shlex
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -17,6 +18,32 @@ from miles.utils.typer_utils import dataclass_cli
 _ = exec_command, exec_command_all_ray_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
+
+
+def _runtime_pythonpath(megatron_path: str) -> str:
+    paths = [
+        str(repo_base_dir),
+        megatron_path,
+    ]
+    sglang_python = repo_base_dir.parent / "sglang" / "python"
+    if sglang_python.exists():
+        paths.append(str(sglang_python))
+    if existing := os.environ.get("PYTHONPATH"):
+        paths.extend(existing.split(os.pathsep))
+
+    deduped = []
+    seen = set()
+    for path in paths:
+        if path and path not in seen:
+            deduped.append(path)
+            seen.add(path)
+    return os.pathsep.join(deduped)
+
+
+def _shell_export_env_vars(env_vars: dict[str, str]) -> str:
+    if not env_vars:
+        return ""
+    return "".join(f"export {key}={shlex.quote(str(value))} && " for key, value in env_vars.items())
 
 
 def convert_checkpoint(
@@ -143,10 +170,15 @@ def execute_train(
     if (f := before_ray_job_submit) is not None:
         f()
 
+    runtime_env_vars = {
+        **extra_env_vars,
+        **_parse_extra_env_vars(config.extra_env_vars),
+    }
+
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": megatron_path,
+                "PYTHONPATH": _runtime_pythonpath(megatron_path),
                 # If setting this in FSDP, the computation communication overlapping may have issues
                 **(
                     {}
@@ -170,13 +202,13 @@ def execute_train(
                     if config.cuda_core_dump
                     else {}
                 ),
-                **extra_env_vars,
-                **_parse_extra_env_vars(config.extra_env_vars),
+                **runtime_env_vars,
             }
         }
     )
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
+        source_env_exports = _shell_export_env_vars(runtime_env_vars)
         cmd_megatron_model_source = (
             f'source "{repo_base_dir}/scripts/models/{megatron_model_type}.sh" && '
             if megatron_model_type is not None
@@ -184,6 +216,7 @@ def execute_train(
         )
         exec_command(
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
+            f"{source_env_exports}"
             f"{cmd_megatron_model_source}"
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
             f"--runtime-env-json='{runtime_env_json}' "
@@ -221,13 +254,12 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
 
-    # Use the actual key value from environment to avoid shell expansion issues
-    wandb_key = os.environ.get("WANDB_API_KEY")
+    # W&B reads WANDB_API_KEY from the environment. Do not place the key on the
+    # command line, because Ray stores and prints entrypoint commands.
     return (
         "--use-wandb "
         f"--wandb-project miles-{test_name} "
         f"--wandb-group {wandb_run_name} "
-        f"--wandb-key '{wandb_key}' "
         "--disable-wandb-random-suffix "
     )
 
