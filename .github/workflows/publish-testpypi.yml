@@ -18,6 +18,16 @@ name: Publish wheel to TestPyPI (Phase 5a dry-run)
 #      at https://github.com/radixark/miles/settings/secrets/actions.
 
 on:
+  # Bootstrap trigger so the workflow can be exercised before it lands on
+  # the default branch (GitHub Actions requires workflow_dispatch targets
+  # to exist on `main`). Remove this `push:` block before merge — the
+  # `workflow_dispatch` below is the intended long-term trigger.
+  push:
+    branches:
+      - shi/phase5a-testpypi-dry-run
+    paths:
+      - '.github/workflows/publish-testpypi.yml'
+
   workflow_dispatch:
     inputs:
       package:
@@ -39,6 +49,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # On a `push` trigger (the bootstrap path), `inputs.*` are empty.
+      # Default to a safe dry-run build of sglang in that case.
+      PACKAGE: ${{ inputs.package || 'sglang' }}
+      DRY_RUN: ${{ inputs.dry_run || (github.event_name == 'push') }}
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -59,7 +74,7 @@ jobs:
         id: cfg
         shell: bash
         run: |
-          case "${{ inputs.package }}" in
+          case "${{ env.PACKAGE }}" in
             sglang)
               # sglang's pyproject.toml lives at python/ inside the repo.
               echo "src_dir=third_party/sglang/python" >> "$GITHUB_OUTPUT"
@@ -72,13 +87,14 @@ jobs:
               echo "sub_dir=third_party/Megatron-LM" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "Unknown package: ${{ inputs.package }}"; exit 1 ;;
+              echo "Unknown package: ${{ env.PACKAGE }}"; exit 1 ;;
           esac
           # PEP 440-compliant dev release version: 0.0.0.devYYYYMMDDHHMMSS
           ts=$(date -u +'%Y%m%d%H%M%S')
           echo "dev_version=0.0.0.dev${ts}" >> "$GITHUB_OUTPUT"
           # Submodule SHA: carried as build metadata only (in README of wheel).
-          sub_sha=$(git -C "third_party/${{ inputs.package == 'sglang' && 'sglang' || 'Megatron-LM' }}" rev-parse HEAD)
+          if [ "${{ env.PACKAGE }}" = "sglang" ]; then sub_path=third_party/sglang; else sub_path=third_party/Megatron-LM; fi
+          sub_sha=$(git -C "$sub_path" rev-parse HEAD)
           echo "sub_sha=${sub_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Rewrite project name + version in pyproject.toml
@@ -132,7 +148,7 @@ jobs:
           done
 
       - name: Upload to TestPyPI
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
         env:
           TWINE_USERNAME: __token__
@@ -145,7 +161,7 @@ jobs:
           twine upload --repository testpypi --skip-existing "${{ steps.cfg.outputs.src_dir }}"/dist/*
 
       - name: Smoke install in a fresh venv
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
         env:
           RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
