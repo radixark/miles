@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1, LogprobContract, ModelFamily, TrueOnPolicyContract
+from .contracts import (
+    QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    QWEN3_MOE_TRUE_ON_POLICY_V1,
+    LogprobContract,
+    ModelFamily,
+    TrueOnPolicyContract,
+)
 
 ParallelLayout = str
 
@@ -48,6 +54,10 @@ class TrueOnPolicyModelProfile:
     def supports_tp_invariant(self) -> bool:
         return "tp" in self.supported_train_layouts or "tp" in self.supported_rollout_layouts
 
+    @property
+    def supports_ep_invariant(self) -> bool:
+        return "ep" in self.supported_train_layouts or "ep" in self.supported_rollout_layouts
+
     def megatron_model_type_for(self, model_name: str) -> str:
         try:
             return self.megatron_model_types[model_name]
@@ -78,8 +88,17 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
     contract=QWEN3_DENSE_TRUE_ON_POLICY_V1,
 )
 
+QWEN3_MOE_PROFILE = TrueOnPolicyModelProfile(
+    family="qwen3_moe",
+    model_names=("Qwen3-30B-A3B",),
+    megatron_model_types={"Qwen3-30B-A3B": "qwen3-30B-A3B"},
+    supported_train_layouts=("dp", "tp", "expert_tp", "ep", "pp", "ulysses_cp"),
+    supported_rollout_layouts=("dp", "tp", "ep"),
+    contract=QWEN3_MOE_TRUE_ON_POLICY_V1,
+)
 
-_MODEL_PROFILES = (QWEN3_DENSE_PROFILE,)
+
+_MODEL_PROFILES = (QWEN3_DENSE_PROFILE, QWEN3_MOE_PROFILE)
 _PROFILE_BY_MODEL_NAME = {model_name: profile for profile in _MODEL_PROFILES for model_name in profile.model_names}
 
 
