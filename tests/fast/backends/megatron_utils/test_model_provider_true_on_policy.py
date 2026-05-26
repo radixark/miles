@@ -3,10 +3,6 @@ from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=10, suite="stage-a-cpu")
-
 
 def _make_args():
     return Namespace(
