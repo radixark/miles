@@ -26,8 +26,12 @@ from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
 from transformers import AutoConfig
 
+from miles.utils.hf_config_compat import get_indexer_rope_interleave, register_hf_config_compat
+
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
+
+register_hf_config_compat()
 
 
 @dataclass
@@ -633,7 +637,7 @@ def get_glm5_spec(args, config, vp_stage):
     hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
-    config.indexer_rope_interleave = hf_config.indexer_rope_interleave
+    config.indexer_rope_interleave = get_indexer_rope_interleave(hf_config)
     config.freeze_indexer = getattr(args, "freeze_indexer", False)
     # Define the decoder block spec
     kwargs = {

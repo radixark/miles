@@ -1,4 +1,3 @@
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -15,20 +14,6 @@ DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
     ".linear_k_up_proj",
     ".linear_v_up_proj",
 )
-
-_DEEPSEEK_V32_CONFIG_SHIM = """from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
-
-
-class DeepseekV32Config(DeepseekV3Config):
-    model_type = "deepseek_v32"
-"""
-
-_DEEPSEEK_V32_MODELING_SHIM = """from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3ForCausalLM
-
-
-class DeepseekV32ForCausalLM(DeepseekV3ForCausalLM):
-    pass
-"""
 
 
 @dataclass
@@ -64,48 +49,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_num_gpus = 4
 
 
-def _patch_deepseek_v32_checkpoint(checkpoint_dir: Path):
-    """Patch checkpoint so AutoConfig can resolve DeepSeek v3.2."""
-    config_path = checkpoint_dir / "config.json"
-    if not config_path.exists():
-        print(f"Warning: {config_path} not found, skipping checkpoint processing")
-        return
-
-    with open(config_path) as f:
-        config = json.load(f)
-
-    if config.get("patched_by_miles"):
-        print("Checkpoint already patched by Miles, skipping")
-        return
-
-    if config.get("model_type") == "deepseek_v32":
-        config.setdefault("rope_interleave", True)
-        config.setdefault("indexer_rope_interleave", False)
-        (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
-        (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
-    elif config.get("model_type") == "glm_moe_dsa":
-        config.setdefault("rope_interleave", True)
-        config.setdefault("indexer_rope_interleave", True)
-        (checkpoint_dir / "configuration_deepseek_v32.py").write_text(_DEEPSEEK_V32_CONFIG_SHIM)
-        (checkpoint_dir / "modeling_deepseek_v32.py").write_text(_DEEPSEEK_V32_MODELING_SHIM)
-    else:
-        return
-
-    config["architectures"] = ["DeepseekV32ForCausalLM"]
-    config["auto_map"] = {
-        "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
-        "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
-    }
-    config["model_type"] = "deepseek_v32"
-
-    config["patched_by_miles"] = True
-
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-
-    print(f"Patched DeepSeek v3.2 files in {checkpoint_dir}")
-
-
 def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     if args.from_bf16_ckpt:
@@ -121,17 +64,14 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _prepare_bf16_ckpt(args: ScriptArgs):
-    bf16_checkpoint = Path(args.model_dir) / f"{args.model_name}-bf16"
     if not args.from_bf16_ckpt:
         U.fp8_cast_bf16(
             path_src=f"{args.model_dir}/{args.model_name}",
             path_dst=f"{args.model_dir}/{args.model_name}-bf16/",
         )
-    _patch_deepseek_v32_checkpoint(bf16_checkpoint)
 
 
 def _prepare_mxfp8_ckpt(args: ScriptArgs):
-    mxfp8_checkpoint = Path(args.model_dir) / f"{args.model_name}-MXFP8"
     if args.rollout_mxfp8:
         extra_args = args.extra_args
         if "--extra-high-precision-layers-hf" not in extra_args:
@@ -143,7 +83,6 @@ def _prepare_mxfp8_ckpt(args: ScriptArgs):
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"{extra_args} "
         )
-        _patch_deepseek_v32_checkpoint(mxfp8_checkpoint)
 
 
 def _prepare_megatron_ckpt(args: ScriptArgs):

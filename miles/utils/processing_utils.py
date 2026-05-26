@@ -8,6 +8,10 @@ from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer as RawTokenizer
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
+from miles.utils.hf_config_compat import register_hf_config_compat
+
+register_hf_config_compat()
+
 logger = logging.getLogger(__name__)
 
 
