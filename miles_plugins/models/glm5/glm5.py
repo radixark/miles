@@ -24,14 +24,10 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
-from transformers import AutoConfig
-
-from miles.utils.hf_config_compat import register_hf_config_compat
+from miles.utils.hf_config import load_hf_config
 
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
-
-register_hf_config_compat()
 
 
 @dataclass
@@ -634,7 +630,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
 
 
 def get_glm5_spec(args, config, vp_stage):
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    hf_config = load_hf_config(args.hf_checkpoint)
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))

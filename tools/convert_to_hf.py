@@ -1,11 +1,12 @@
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import miles.backends.megatron_utils as megatron_utils
 from miles.backends.megatron_utils import update_weight_utils
 from miles.utils.arguments import parse_args
+from miles.utils.hf_config import load_hf_config
 
 
 def add_checkpoint_args(parser):
@@ -39,7 +40,7 @@ def main(args):
     args.no_load_rng = True
     model, _, _, _ = megatron_utils.initialize_model_and_optimizer(args)
 
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    hf_config = load_hf_config(args.hf_checkpoint)
     model_name = type(hf_config).__name__.lower()
 
     tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)

@@ -6,18 +6,15 @@ from typing import Any
 
 import yaml
 from sglang_router.launch_router import RouterArgs
-from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
-from miles.utils.hf_config_compat import register_hf_config_compat
+from miles.utils.hf_config import load_hf_config
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import load_function
-
-register_hf_config_compat()
 
 logger = logging.getLogger(__name__)
 
@@ -1787,7 +1784,7 @@ def parse_args(add_custom_arguments=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         if args.hf_checkpoint:
-            hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            hf_config = load_hf_config(args.hf_checkpoint)
             hf_validate_args(args, hf_config)
             # For DSA models
             if hasattr(hf_config, "indexer_rope_interleave"):
