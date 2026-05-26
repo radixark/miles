@@ -2,6 +2,7 @@ import copy
 import logging
 from argparse import Namespace
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import ray
 
@@ -50,19 +51,36 @@ class MultiLoRADataSource(DataSource):
 
         self.source_queue = new_source_queue
 
+    # def _reconcile(self, adapters: dict[str, RegisteredAdapter]) -> None:
+    #     # Clean up old sources
+    #     for name in list(self.sources):
+    #         if name not in adapters:
+    #             del self.sources[name]
+    #             del self.configs[name]
+    #             logger.info(f"Removed data source for adapter '{name}'")
+
+    #     # Create new sources
+    #     for name, adapter in adapters.items():
+    #         if name not in self.sources:
+    #             self.sources[name] = self._create_adapter_source(name, adapter.config)
+    #             logger.info(f"Created data source for adapter '{name}' from {adapter.config.data}")
+    #         self.configs[name] = adapter.config
+
     def _reconcile(self, adapters: dict[str, RegisteredAdapter]) -> None:
-        # Clean up old sources
         for name in list(self.sources):
             if name not in adapters:
-                del self.sources[name]
-                del self.configs[name]
-                logger.info(f"Removed data source for adapter '{name}'")
-
-        # Create new sources
+                del self.sources[name]; del self.configs[name]
+        to_create = [(n, a) for n, a in adapters.items() if n not in self.sources]
+        new_sources = []
+        if to_create:
+            with ThreadPoolExecutor(max_workers=min(16, len(to_create))) as ex:
+                new_sources = list(ex.map(
+                    lambda na: (na[0], self._create_adapter_source(na[0], na[1].config)),
+                    to_create,
+                    ))
+        for name, src in new_sources:
+            self.sources[name] = src
         for name, adapter in adapters.items():
-            if name not in self.sources:
-                self.sources[name] = self._create_adapter_source(name, adapter.config)
-                logger.info(f"Created data source for adapter '{name}' from {adapter.config.data}")
             self.configs[name] = adapter.config
 
     def _create_adapter_source(self, name: str, config: AdapterConfig) -> RolloutDataSource:
