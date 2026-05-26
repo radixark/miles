@@ -44,6 +44,9 @@ MODEL_ARGS=(
    --moe-grouped-gemm
    --moe-token-drop-policy probs
    --moe-router-dtype fp32
-   --moe-permute-fusion
    --moe-aux-loss-coeff 0
 )
+
+if [[ "${MODEL_ARGS_DISABLE_MOE_PERMUTE_FUSION:-0}" != "1" ]]; then
+  MODEL_ARGS+=(--moe-permute-fusion)
+fi
