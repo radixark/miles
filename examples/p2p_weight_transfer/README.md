@@ -54,8 +54,8 @@ bash examples/p2p_weight_transfer/Qwen3-30B-A3B.sh p2p 1 $HEAD_NODE_IP  # worker
 The `GLM-5.sh` wrapper accepts a `VARIANT` argument:
 
 ```bash
-# GLM-5_4layer (2 nodes)
-bash examples/p2p_weight_transfer/GLM-5.sh GLM-5_4layer p2p 0 $HEAD_NODE_IP
+# GLM-5_5layer (2 nodes)
+bash examples/p2p_weight_transfer/GLM-5.sh GLM-5_5layer p2p 0 $HEAD_NODE_IP
 
 # GLM-5 full (32 nodes)
 bash examples/p2p_weight_transfer/GLM-5.sh GLM-5 p2p 0 $HEAD_NODE_IP

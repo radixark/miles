@@ -20,7 +20,7 @@ register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h100", labels=["model-scrip
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
-        model_name="GLM-5_4layer",
+        model_name="GLM-5_5layer",
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=2,
