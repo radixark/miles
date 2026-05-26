@@ -7,9 +7,10 @@ def test_known_labels_is_dict():
     assert isinstance(KNOWN_LABELS, dict)
 
 
-def test_known_labels_initial_eight_present():
+def test_known_labels_initial_labels_present():
     expected = {
         "megatron",
+        "model-scripts",
         "sglang",
         "fsdp",
         "short",

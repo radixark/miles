@@ -82,6 +82,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_mtp: bool = False
     enable_pd: bool = True
     enable_optimizer_offload: bool = False
+    num_rollout: int = 3000
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -230,7 +231,7 @@ def _execute_train(args: ScriptArgs):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3000 "
+        f"--num-rollout {args.num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
