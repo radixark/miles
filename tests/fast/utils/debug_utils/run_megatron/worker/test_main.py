@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -40,19 +41,45 @@ def _ensure_parent_module(dotted: str) -> ModuleType | None:
 
 def _ensure_module(dotted: str) -> ModuleType:
     """Ensure *dotted* exists in sys.modules; prefer the real importable
-    module so we never replace a real leaf with a starved stub."""
+    module so we never replace a real leaf with a starved stub.
+
+    Uses ``importlib.util.find_spec`` as the existence probe: it inspects
+    whether the module is locatable on disk *without* executing its body.
+    That distinction matters — a plain ``try: import_module / except
+    ImportError`` cannot tell apart two very different failures:
+
+    1. The module is genuinely absent.  Fabricating a stub is OK.
+    2. The module exists on disk but its body raises ``ImportError`` (e.g.
+       a transitive ``from megatron.training import ...`` fails because the
+       lightweight container lacks ``megatron.training``).  Stubbing here
+       would silently replace the real module name in ``sys.modules`` with
+       a starved ``ModuleType`` and starve downstream tests of real
+       symbols.
+
+    With ``find_spec`` we only fabricate a stub when the module truly is
+    not on disk; the on-disk case defers fully to the real import and
+    lets any transitive ``ImportError`` propagate instead of being
+    swallowed.
+    """
     if dotted in sys.modules:
         return sys.modules[dotted]
     try:
+        spec = importlib.util.find_spec(dotted)
+    except (ImportError, ValueError):
+        spec = None
+    if spec is not None:
+        # Module is on disk; defer fully to real import.  If the body
+        # raises ImportError (e.g. missing transitive dep), propagate it
+        # instead of silently corrupting sys.modules with an empty stub.
         return importlib.import_module(dotted)
-    except ImportError:
-        parent_name, _, child_name = dotted.rpartition(".")
-        parent = _ensure_parent_module(parent_name)
-        mod = ModuleType(dotted)
-        sys.modules[dotted] = mod
-        if parent is not None:
-            setattr(parent, child_name, mod)
-        return mod
+    # Module not on disk; safe to fabricate a stub.
+    parent_name, _, child_name = dotted.rpartition(".")
+    parent = _ensure_parent_module(parent_name)
+    mod = ModuleType(dotted)
+    sys.modules[dotted] = mod
+    if parent is not None:
+        setattr(parent, child_name, mod)
+    return mod
 
 
 # Stub modules whose top-level imports in main.py would fail.
