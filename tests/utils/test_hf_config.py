@@ -126,3 +126,29 @@ class TestDeepseekV32Alias:
         cfg = load_hf_config(str(tmp_path))
         assert cfg.model_type == "deepseek_v32"
         assert isinstance(cfg, DeepseekV3Config)
+
+    def test_deepseek_v32_resolves_via_auto_model_for_causal_lm(self, tmp_path):
+        """The returned config must be resolvable by AutoModelForCausalLM.from_config.
+
+        AutoConfig.register only updates CONFIG_MAPPING. AutoModelForCausalLM looks
+        up the model class by exact config type in MODEL_FOR_CAUSAL_LM_MAPPING, so
+        a synthesized DeepseekV32Config subclass that isn't separately registered
+        there makes `AutoModelForCausalLM.from_config(cfg)` raise
+        `ValueError: Unrecognized configuration class`. tools/convert_fsdp_to_hf.py
+        depends on this path working.
+        """
+        pytest.importorskip("transformers.models.deepseek_v3.configuration_deepseek_v3")
+        from transformers import AutoModelForCausalLM
+        from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
+
+        from miles.utils.hf_config import load_hf_config
+
+        base_dict = DeepseekV3Config().to_dict()
+        base_dict["model_type"] = "deepseek_v32"
+        _write_config_json(str(tmp_path), base_dict)
+
+        cfg = load_hf_config(str(tmp_path))
+        assert type(cfg) in AutoModelForCausalLM._model_mapping.keys(), (
+            f"{type(cfg).__name__} not registered with AutoModelForCausalLM — "
+            f"AutoModelForCausalLM.from_config(cfg) will raise ValueError."
+        )
