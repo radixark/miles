@@ -84,16 +84,9 @@ def prepare():
 def execute():
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
     te_precision_config_path = U.save_to_temp_file(TE_PRECISION_CONFIG, "yaml")
-    load_save_path = f"/root/shared_data/{RUN_ID}/checkpoints"
 
-    ckpt_args = (
-        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-MXFP8/ "
-        f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
-        "--save-interval 2 "
-        "--save-retain-interval 2 "
-    )
+    # Omit --save and --save-interval so the smoke test does not write a final checkpoint.
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-MXFP8/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
