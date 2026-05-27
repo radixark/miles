@@ -26,8 +26,6 @@ def _args() -> ScriptArgs:
         megatron_model_type="deepseek-v32-5layer",
         hardware="H100",
         use_single_node=True,
-        # Pinaster/DeepSeek-V3.2-5layer is a raw FP8 slice; let the script
-        # cast it to BF16 first (via _prepare_bf16_ckpt).
         from_bf16_ckpt=False,
         rollout_fp8=True,
         num_rollout=2,
