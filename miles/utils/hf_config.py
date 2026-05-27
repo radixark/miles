@@ -1,25 +1,21 @@
 """HuggingFace config loader with model-type alias registration and overrides.
 
 `load_hf_config` is the single entry point miles uses to load an HF config from a
-local checkpoint. It:
+local checkpoint. It supports 2 customizations:
 
-- Registers miles-local model_type aliases (e.g. `deepseek_v32` -> `DeepseekV3Config`)
-  before calling AutoConfig, so checkpoints don't need to be mutated.
+- Registers model_type aliases before calling AutoConfig, in case the model is
+  not recognized in huggingface.
 - Accepts an `overrides` dict applied via setattr after loading, so callers can
-  adjust fields like `max_position_embeddings` without touching the checkpoint.
+  adjust fields without touching the checkpoint.
 
-Unknown model_types raise the standard transformers error -- new types should
-be added to `_CONFIG_ALIASES` rather than silently routed to a fallback.
+The default behavior is exactly the same as `AutoConfig.from_pretrained`.
 """
 
 import importlib
-import logging
 from dataclasses import dataclass
 
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["load_hf_config"]
 
@@ -47,11 +43,7 @@ _REGISTERED_ALIASES: set[str] = set()
 
 
 def _register_hf_config_aliases() -> None:
-    """Ensure miles' local model_type aliases are registered with AutoConfig.
-
-    Idempotent: rerunning is a cheap set check. Called automatically by
-    load_hf_config; not intended for external use.
-    """
+    """Ensure miles' local model_type aliases are registered with AutoConfig."""
     for alias in _CONFIG_ALIASES:
         if alias.model_type in _REGISTERED_ALIASES:
             continue
@@ -60,17 +52,7 @@ def _register_hf_config_aliases() -> None:
                 f"transformers now natively supports model_type={alias.model_type!r}; "
                 f"set override_hf_native=True to override."
             )
-        try:
-            module = importlib.import_module(alias.base_module)
-        except ImportError:
-            logger.info(
-                "Skip HF config alias %s: base module %s not importable",
-                alias.model_type,
-                alias.base_module,
-            )
-            continue
-        # base_class missing is a real problem (transformers rename or version skew);
-        # let AttributeError surface instead of silently dropping the alias.
+        module = importlib.import_module(alias.base_module)
         base_config = getattr(module, alias.base_class)
         compat_config = type(
             alias.compat_class_name,
