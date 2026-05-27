@@ -1,6 +1,5 @@
 """Chat template utilities for agentic-workflow token consistency."""
 
-from miles.utils.chat_template_utils.encoder import resolve_chat_template_encoder
 from miles.utils.chat_template_utils.template import (
     apply_chat_template,
     apply_chat_template_from_str,
@@ -8,6 +7,7 @@ from miles.utils.chat_template_utils.template import (
     extract_tool_dicts,
     load_hf_chat_template,
     message_matches,
+    normalize_tool_arguments,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import (
     TEMPLATE_DIR,
@@ -32,7 +32,7 @@ __all__ = [
     "assert_messages_append_only_with_allowed_role",
     "message_matches",
     "extract_tool_dicts",
-    "resolve_chat_template_encoder",
+    "normalize_tool_arguments",
     "Mismatch",
     "TokenSeqComparator",
     "MismatchType",
