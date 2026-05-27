@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
-__all__ = ["load_hf_config"]
+__all__ = ["load_hf_config", "register_hf_config_aliases"]
 
 
 @dataclass(frozen=True)
@@ -43,8 +43,13 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
 _REGISTERED_ALIASES: set[str] = set()
 
 
-def _register_hf_config_aliases() -> None:
-    """Register model alias with AutoConfig."""
+def register_hf_config_aliases() -> None:
+    """Register miles model_type aliases with transformers. Idempotent.
+
+    Call once before any third-party `transformers.AutoConfig` / `AutoTokenizer`
+    entry point that won't go through `load_hf_config` (e.g. megatron's
+    `_build_tokenizer`).
+    """
     for alias in _CONFIG_ALIASES:
         if alias.model_type in _REGISTERED_ALIASES:
             continue
@@ -84,7 +89,7 @@ def load_hf_config(
     overrides: optional dict of attributes to setattr on the returned config
         after loading. Lets callers patch fields without mutating the checkpoint.
     """
-    _register_hf_config_aliases()
+    register_hf_config_aliases()
     config = AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=trust_remote_code, **autoconfig_kwargs)
 
     if overrides:
