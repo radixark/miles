@@ -35,7 +35,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir}")
     U.exec_command(
-        f"test \"$(cat {args.model_dir}/{args.model_name}_torch_dist/latest_checkpointed_iteration.txt 2>/dev/null)\" = release || "
+        f'test "$(cat {args.model_dir}/{args.model_name}_torch_dist/latest_checkpointed_iteration.txt 2>/dev/null)" = release || '
         f"test -e {args.model_dir}/{args.model_name} || "
         f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
@@ -115,7 +115,7 @@ def execute(args: ScriptArgs):
         "--router-prefill-policy manual "
         "--router-decode-policy manual "
         "--router-assignment-mode min_load "
-        "--train-env-vars '{\"PYTORCH_CUDA_ALLOC_CONF\":\"expandable_segments:True\"}' "
+        '--train-env-vars \'{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}\' '
     )
 
     grpo_args = (

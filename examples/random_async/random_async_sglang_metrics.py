@@ -102,7 +102,9 @@ def _pop_agent_metrics() -> dict[str, float]:
 def _parse_labels(raw: str | None) -> dict[str, str]:
     if not raw:
         return {}
-    return {match.group(1): bytes(match.group(2), "utf-8").decode("unicode_escape") for match in _LABEL_RE.finditer(raw)}
+    return {
+        match.group(1): bytes(match.group(2), "utf-8").decode("unicode_escape") for match in _LABEL_RE.finditer(raw)
+    }
 
 
 def parse_openmetrics(text: str) -> list[MetricSample]:
@@ -154,9 +156,7 @@ def _has(samples: list[MetricSample], name: str, *, engine_type: str | None = No
 
 def _avg(samples: list[MetricSample], name: str, *, engine_type: str | None = None) -> float | None:
     values = [
-        sample.value
-        for sample in samples
-        if sample.name == name and _matches_engine_type(sample.labels, engine_type)
+        sample.value for sample in samples if sample.name == name and _matches_engine_type(sample.labels, engine_type)
     ]
     if not values:
         return None
@@ -265,9 +265,7 @@ class SGLangMetricsReporter:
                 if delta >= 0:
                     tps_by_mode[mode] = delta / dt
             if "decode" in tps_by_mode:
-                metrics["random_async_sglang/decode_tps_per_decode_gpu"] = (
-                    tps_by_mode["decode"] / self.decode_num_gpus
-                )
+                metrics["random_async_sglang/decode_tps_per_decode_gpu"] = tps_by_mode["decode"] / self.decode_num_gpus
             if "prefill_compute" in tps_by_mode:
                 metrics["random_async_sglang/prefill_without_cache_tps_per_prefill_gpu"] = (
                     tps_by_mode["prefill_compute"] / self.prefill_num_gpus

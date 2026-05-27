@@ -35,12 +35,12 @@ import time
 
 import numpy as np
 import pybase64
+from random_async_sglang_metrics import SGLangMetricsReporter, record_agent_request
 
 from miles.rollout.data_source import DataSource
 from miles.utils.async_utils import run
 from miles.utils.http_utils import post as http_post
 from miles.utils.types import Sample
-from random_async_sglang_metrics import SGLangMetricsReporter, record_agent_request
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,8 @@ def _decode_routed_experts(args, encoded: str, token_count: int, start_len: int 
 async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     """Multi-turn rollout against SGLang with random prompts, fillers, and reward.
 
-    Send a request, take the engine's response, append response + random filler 
-    to the running ``input_ids``, send the extended sequence as the next turn — 
+    Send a request, take the engine's response, append response + random filler
+    to the running ``input_ids``, send the extended sequence as the next turn —
     until the accumulated context exceeds ``MAX_CONTEXT_TOKENS``.
     """
     prompt_ids = _rand_ids(random.randint(*PROMPT_TOKEN_RANGE))
@@ -306,8 +306,7 @@ class AsyncRandomRolloutWorker:
         active: dict[asyncio.Task, int] = {}
         max_concurrent_groups = max(
             1,
-            (CONCURRENCY_PER_GPU * self.args.rollout_num_gpus_per_engine)
-            // self.args.n_samples_per_prompt,
+            (CONCURRENCY_PER_GPU * self.args.rollout_num_gpus_per_engine) // self.args.n_samples_per_prompt,
         )
         gid_counter = 0
 
