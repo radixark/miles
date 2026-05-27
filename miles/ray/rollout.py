@@ -139,7 +139,6 @@ class ServerGroup:
                     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
                 }.items()
             }
-            env_vars.update(_get_sglang_env_passthrough())
             env_vars.update(dumper_utils.get_sglang_env(self.args))
 
             rollout_engine = RolloutRayActor.options(
