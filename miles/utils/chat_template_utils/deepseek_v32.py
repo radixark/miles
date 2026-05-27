@@ -18,7 +18,6 @@ _KNOWN_KWARGS = frozenset(
         "drop_thinking",
         "add_default_bos_token",
         "context",
-        "reasoning_effort",
     }
 )
 
