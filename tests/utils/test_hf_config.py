@@ -73,10 +73,7 @@ class TestLoadHfConfig:
         with (
             patch.object(hf_config_module, "_CONFIG_ALIASES", (alias,)),
             patch.object(hf_config_module, "_REGISTERED_ALIASES", set()),
-            patch(
-                "transformers.models.auto.configuration_auto.CONFIG_MAPPING_NAMES",
-                {"fake_native_type": "FakeConfig"},
-            ),
+            patch.object(hf_config_module, "CONFIG_MAPPING_NAMES", {"fake_native_type": "FakeConfig"}),
             pytest.raises(RuntimeError, match="natively supports"),
         ):
             hf_config_module.load_hf_config(str(tmp_path))
@@ -95,10 +92,7 @@ class TestLoadHfConfig:
         with (
             patch.object(hf_config_module, "_CONFIG_ALIASES", (alias,)),
             patch.object(hf_config_module, "_REGISTERED_ALIASES", set()),
-            patch(
-                "transformers.models.auto.configuration_auto.CONFIG_MAPPING_NAMES",
-                {"fake_native_type": "FakeConfig"},
-            ),
+            patch.object(hf_config_module, "CONFIG_MAPPING_NAMES", {"fake_native_type": "FakeConfig"}),
             patch("transformers.AutoConfig.register") as mock_register,
             patch("transformers.AutoConfig.from_pretrained", return_value=SimpleNamespace()),
         ):
