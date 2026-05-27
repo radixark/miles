@@ -4,8 +4,6 @@ from .math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy
 def get_deepscaler_rule_based_reward(response, label):
     if "</think>" in response:
         model_solution = response.split("</think>")[-1]
-    elif "<|end_of_thought|>" in response:
-        model_solution = response.split("<|end_of_thought|>")[-1]
     elif "###Response" in response:
         model_solution = response.split("###Response")[1]
     else:
