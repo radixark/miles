@@ -226,7 +226,7 @@ def apply_chat_template(
     (tokenize=True), not a ``BatchEncoding`` or ``dict``.
     """
     if deepseek_v32.is_deepseek_v32(tokenizer):
-        rendered = deepseek_v32.render_messages(messages, tools=tools, **kwargs)
+        rendered = deepseek_v32.render_messages(normalize_tool_arguments(messages, "json"), tools=tools, **kwargs)
         return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered
 
     messages = normalize_tool_arguments(messages, "dict")

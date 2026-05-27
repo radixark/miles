@@ -61,16 +61,13 @@ def _build_deepseek_encode_config(kwargs: dict) -> dict:
 
 
 def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None = None, **kwargs: Any) -> str:
-    """Render *messages* into a DeepSeek V3.2 prompt via sglang ``encode_messages``,
-    first normalizing tool_call ``arguments`` to JSON strings (the encoder ``json.loads``
-    them)."""
-    # Local import: template imports this module for dsv32 dispatch, so importing
-    # normalize_tool_arguments at module top would be a circular import.
-    from miles.utils.chat_template_utils.template import normalize_tool_arguments
+    """Render *messages* into a DeepSeek V3.2 prompt via sglang ``encode_messages``.
 
+    Assume input messages tool_call ``arguments`` are already JSON strings.
+    """
     if tools:
         raise ValueError(
             "DeepSeek V3.2 chat template does not support tools def in apply chat template, plz inject it in system message."
         )
     encode_config = _build_deepseek_encode_config(kwargs)
-    return encoding_dsv32.encode_messages(normalize_tool_arguments(messages, "json"), **encode_config)
+    return encoding_dsv32.encode_messages(messages, **encode_config)
