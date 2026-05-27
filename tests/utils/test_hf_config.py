@@ -60,6 +60,52 @@ class TestLoadHfConfig:
             load_hf_config(str(tmp_path))
             load_hf_config(str(tmp_path))
 
+    def test_native_support_raises_without_override(self, tmp_path):
+        """If transformers ships native support for an alias, registration must fail loud."""
+        from miles.utils import hf_config as hf_config_module
+
+        alias = hf_config_module._HFConfigAlias(
+            model_type="fake_native_type",
+            base_module="transformers.models.deepseek_v3.configuration_deepseek_v3",
+            base_class="DeepseekV3Config",
+            compat_class_name="FakeNativeConfig",
+        )
+        with (
+            patch.object(hf_config_module, "_CONFIG_ALIASES", (alias,)),
+            patch.object(hf_config_module, "_REGISTERED_ALIASES", set()),
+            patch(
+                "transformers.models.auto.configuration_auto.CONFIG_MAPPING_NAMES",
+                {"fake_native_type": "FakeConfig"},
+            ),
+            pytest.raises(RuntimeError, match="natively supports"),
+        ):
+            hf_config_module.load_hf_config(str(tmp_path))
+
+    def test_native_support_overridden_when_flag_set(self, tmp_path):
+        """override_hf_native=True must allow registration to win over native support."""
+        from miles.utils import hf_config as hf_config_module
+
+        alias = hf_config_module._HFConfigAlias(
+            model_type="fake_native_type",
+            base_module="transformers.models.deepseek_v3.configuration_deepseek_v3",
+            base_class="DeepseekV3Config",
+            compat_class_name="FakeNativeConfig",
+            override_hf_native=True,
+        )
+        with (
+            patch.object(hf_config_module, "_CONFIG_ALIASES", (alias,)),
+            patch.object(hf_config_module, "_REGISTERED_ALIASES", set()),
+            patch(
+                "transformers.models.auto.configuration_auto.CONFIG_MAPPING_NAMES",
+                {"fake_native_type": "FakeConfig"},
+            ),
+            patch("transformers.AutoConfig.register") as mock_register,
+            patch("transformers.AutoConfig.from_pretrained", return_value=SimpleNamespace()),
+        ):
+            hf_config_module.load_hf_config(str(tmp_path))
+        _, kwargs = mock_register.call_args
+        assert kwargs["exist_ok"] is True
+
 
 class TestDeepseekV32Alias:
     """Integration: alias registration makes AutoConfig recognize deepseek_v32."""

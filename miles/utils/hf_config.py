@@ -27,6 +27,8 @@ class _HFConfigAlias:
     base_module: str
     base_class: str
     compat_class_name: str
+    # Set True to override transformers' native config.
+    override_hf_native: bool = False
 
 
 _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
@@ -48,10 +50,16 @@ def _register_hf_config_aliases() -> None:
     load_hf_config; not intended for external use.
     """
     from transformers import AutoConfig
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
     for alias in _CONFIG_ALIASES:
         if alias.model_type in _REGISTERED_ALIASES:
             continue
+        if alias.model_type in CONFIG_MAPPING_NAMES and not alias.override_hf_native:
+            raise RuntimeError(
+                f"transformers now natively supports model_type={alias.model_type!r}; "
+                f"set override_hf_native=True to override."
+            )
         try:
             module = importlib.import_module(alias.base_module)
         except ImportError:
@@ -69,13 +77,7 @@ def _register_hf_config_aliases() -> None:
             (base_config,),
             {"model_type": alias.model_type, "__module__": __name__},
         )
-        try:
-            AutoConfig.register(alias.model_type, compat_config)
-        except ValueError as exc:
-            msg = str(exc).lower()
-            if "already registered" not in msg and "already used" not in msg:
-                raise
-            # transformers added native support, or another path registered first
+        AutoConfig.register(alias.model_type, compat_config, exist_ok=alias.override_hf_native)
         _REGISTERED_ALIASES.add(alias.model_type)
 
 
