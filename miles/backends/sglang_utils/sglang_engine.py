@@ -602,6 +602,7 @@ class SGLangEngine(RayActor):
         shapes,
         group_name,
         flush_cache=False,
+        load_format: str | None = "flattened_bucket",
     ):
         return self._make_request(
             "update_relay_weights_from_distributed",
@@ -611,6 +612,7 @@ class SGLangEngine(RayActor):
                 "shapes": shapes,
                 "group_name": group_name,
                 "flush_cache": flush_cache,
+                "load_format": load_format,
             },
         )
 

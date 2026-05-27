@@ -1,4 +1,3 @@
-import os
 import socket
 import time
 from argparse import Namespace
@@ -10,34 +9,8 @@ import torch.distributed as dist
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
+from miles.backends.megatron_utils.sglang import FlattenedTensorBucket
 from miles.utils.distributed_utils import init_process_group
-
-
-_DEFAULT_WEIGHT_SYNC_P2P_OPS_PER_BATCH = 64
-
-
-def _run_batched_p2p_ops(ops):
-    ops_per_batch = int(
-        os.environ.get(
-            "WEIGHT_SYNC_P2P_OPS_PER_BATCH",
-            _DEFAULT_WEIGHT_SYNC_P2P_OPS_PER_BATCH,
-        )
-    )
-
-    batch = []
-
-    def flush_batch():
-        if not batch:
-            return
-        for work in dist.batch_isend_irecv(batch):
-            work.wait()
-        batch.clear()
-
-    for op in ops:
-        batch.append(op)
-        if len(batch) >= ops_per_batch:
-            flush_batch()
-    flush_batch()
 
 
 def connect_rollout_engines_from_distributed(
@@ -199,18 +172,19 @@ def update_weights_from_distributed_send_recv(
         dtypes=[param.dtype for _, param in converted_named_tensors],
         shapes=[param.shape for _, param in converted_named_tensors],
         group_name=group_name,
+        load_format="flattened_bucket",
     )
 
-    _run_batched_p2p_ops(
-        [
-            dist.P2POp(
-                dist.isend,
-                param,
-                group=group,
-                group_peer=1,
-            )
-            for _, param in converted_named_tensors
-        ]
-    )
+    flattened_tensor = FlattenedTensorBucket(named_tensors=list(converted_named_tensors)).get_flattened_tensor()
+    ops = [
+        dist.P2POp(
+            dist.isend,
+            flattened_tensor,
+            group=group,
+            group_peer=1,
+        )
+    ]
+    for work in dist.batch_isend_irecv(ops):
+        work.wait()
 
     return ref
