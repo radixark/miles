@@ -13,6 +13,7 @@ try:
 except ImportError:
     pq = None
 
+from miles.utils import chat_template_utils
 from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
@@ -201,8 +202,9 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                output_prompt = tokenizer.apply_chat_template(
+                output_prompt = chat_template_utils.apply_chat_template(
                     prompt,
+                    tokenizer=tokenizer,
                     tools=tools,
                     tokenize=False,
                     add_generation_prompt=True,
