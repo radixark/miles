@@ -59,11 +59,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _get_sglang_env_passthrough() -> dict[str, str]:
-    env_names = os.environ.get("MILES_SGLANG_ENV_PASSTHROUGH", "")
-    return {name: os.environ[name] for name in env_names.replace(",", " ").split() if name in os.environ}
-
-
 @dataclasses.dataclass
 class ServerGroup:
     """A group of homogeneous SGLang engines with the same configuration.
