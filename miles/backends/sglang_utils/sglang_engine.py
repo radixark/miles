@@ -637,7 +637,7 @@ def _compute_server_args(
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
-        kwargs["load_balance_method"] = "round_robin"
+        kwargs.setdefault("load_balance_method", "round_robin")
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
