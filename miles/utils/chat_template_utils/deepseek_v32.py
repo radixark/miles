@@ -42,7 +42,7 @@ def _read_model_type(name_or_path: str) -> str:
 
 def is_deepseek_v32(tokenizer: Any) -> bool:
     """Return True when *tokenizer* is a DeepSeek V3.2 checkpoint."""
-    return _read_model_type(tokenizer) == _MODEL_TYPE
+    return _read_model_type(tokenizer.name_or_path) == _MODEL_TYPE
 
 
 def _build_deepseek_encode_config(kwargs: dict) -> dict:
@@ -50,24 +50,27 @@ def _build_deepseek_encode_config(kwargs: dict) -> dict:
     unknown = set(kwargs) - _KNOWN_KWARGS
     if unknown:
         raise ValueError(
-            f"apply_chat_template_kwargs has keys {sorted(unknown)} unsupported "
-            f"by the DeepSeek encoder. Known keys: {sorted(_KNOWN_KWARGS)}"
+            f"apply_chat_template_kwargs has unsupported kwargs {sorted(unknown)} "
+            f"for the DeepSeek encoder. Known keys: {sorted(_KNOWN_KWARGS)}"
         )
     cfg = {"thinking_mode": "thinking", "drop_thinking": True, "add_default_bos_token": True}
-    if "thinking" in kwargs:
-        cfg["thinking_mode"] = "thinking" if kwargs["thinking"] else "chat"
     for key in _KNOWN_KWARGS:
         if key in kwargs:
             cfg[key] = kwargs[key]
     return cfg
 
 
-# To be refactored
 def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None = None, **kwargs: Any) -> str:
-    """Render *messages* into a DeepSeek V3.2 prompt via sglang ``encode_messages``."""
+    """Render *messages* into a DeepSeek V3.2 prompt via sglang ``encode_messages``,
+    first normalizing tool_call ``arguments`` to JSON strings (the encoder ``json.loads``
+    them)."""
+    # Local import: template imports this module for dsv32 dispatch, so importing
+    # normalize_tool_arguments at module top would be a circular import.
+    from miles.utils.chat_template_utils.template import normalize_tool_arguments
+
     if tools:
         raise ValueError(
             "DeepSeek V3.2 chat template does not support tools def in apply chat template, plz inject it in system message."
         )
     encode_config = _build_deepseek_encode_config(kwargs)
-    return encoding_dsv32.encode_messages(messages, **encode_config)
+    return encoding_dsv32.encode_messages(normalize_tool_arguments(messages, "json"), **encode_config)

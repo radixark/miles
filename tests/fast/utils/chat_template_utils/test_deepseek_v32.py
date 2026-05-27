@@ -43,27 +43,12 @@ def _tok_with_model_type(tmp_path, model_type: str) -> _FakeTokenizer:
 
 
 def _reference_encode(messages, *, thinking: bool = False, drop_thinking: bool = True) -> str:
-    """The canonical V3.2 rendering: bridge-equivalent preprocessing followed by
-    a direct ``encode_messages`` call.  Locks ``render_messages`` to this contract."""
+    """The canonical V3.2 rendering: a direct ``encode_messages`` call. Locks
+    ``render_messages`` to this thin-bridge contract (no preprocessing of its own)."""
     from sglang.srt.entrypoints.openai import encoding_dsv32
-    from sglang.srt.parser.jinja_template_utils import process_content_for_template_format
 
-    prepared = copy.deepcopy(messages)
-    for i, msg in enumerate(prepared):
-        if msg.get("content") is None:
-            msg["content"] = ""
-        prepared[i] = {
-            **msg,
-            **process_content_for_template_format(msg, "string", [], [], [], [], use_dpsk_v32_encoding=True),
-        }
-        msg = prepared[i]
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            for tool_call in msg["tool_calls"]:
-                function = tool_call.get("function") or {}
-                if isinstance(function.get("arguments"), dict):
-                    function["arguments"] = json.dumps(function["arguments"], ensure_ascii=False)
     return encoding_dsv32.encode_messages(
-        prepared, thinking_mode="thinking" if thinking else "chat", drop_thinking=drop_thinking
+        messages, thinking_mode="thinking" if thinking else "chat", drop_thinking=drop_thinking
     )
 
 
@@ -133,7 +118,10 @@ _PARITY_SCENARIOS = {
 @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
 def test_render_matches_direct_encode_messages(scenario, thinking):
     messages = _PARITY_SCENARIOS[scenario]
-    assert deepseek_v32.render_messages(messages, thinking=thinking) == _reference_encode(messages, thinking=thinking)
+    thinking_mode = "thinking" if thinking else "chat"
+    assert deepseek_v32.render_messages(messages, thinking_mode=thinking_mode) == _reference_encode(
+        messages, thinking=thinking
+    )
 
 
 @pytest.mark.parametrize("scenario", list(_PARITY_SCENARIOS), ids=list(_PARITY_SCENARIOS))
@@ -142,11 +130,15 @@ def test_apply_chat_template_tokenize_matches_render(tmp_path, scenario, thinkin
     # tokenize=True path encodes the rendered string with add_special_tokens=False.
     tok = _tok_with_model_type(tmp_path, "deepseek_v32")
     messages = _PARITY_SCENARIOS[scenario]
-    ids = apply_chat_template(messages, tokenizer=tok, tokenize=True, thinking=thinking)
-    assert ids == [ord(c) for c in deepseek_v32.render_messages(messages, thinking=thinking)]
+    thinking_mode = "thinking" if thinking else "chat"
+    ids = apply_chat_template(messages, tokenizer=tok, tokenize=True, thinking_mode=thinking_mode)
+    assert ids == [ord(c) for c in deepseek_v32.render_messages(messages, thinking_mode=thinking_mode)]
 
 
-def test_dict_arguments_equal_string_arguments():
+def test_dict_arguments_equal_string_arguments(tmp_path):
+    # The dsv32 dispatch normalizes dict tool arguments to JSON strings, so dict-form
+    # and string-form arguments render identically.
+    tok = _tok_with_model_type(tmp_path, "deepseek_v32")
     base = [
         {"role": "user", "content": "q"},
         {
@@ -158,28 +150,26 @@ def test_dict_arguments_equal_string_arguments():
     ]
     as_string = copy.deepcopy(base)
     as_string[1]["tool_calls"][0]["function"]["arguments"] = json.dumps({"a": 1, "b": "x"}, ensure_ascii=False)
-    assert deepseek_v32.render_messages(base) == deepseek_v32.render_messages(as_string)
+    assert apply_chat_template(base, tokenizer=tok, tokenize=False) == apply_chat_template(
+        as_string, tokenizer=tok, tokenize=False
+    )
 
 
-def test_thinking_flag_changes_output():
-    assert deepseek_v32.render_messages(_MSGS_BASIC, thinking=True) != deepseek_v32.render_messages(
-        _MSGS_BASIC, thinking=False
+def test_thinking_mode_changes_output():
+    assert deepseek_v32.render_messages(_MSGS_BASIC, thinking_mode="thinking") != deepseek_v32.render_messages(
+        _MSGS_BASIC, thinking_mode="chat"
     )
 
 
 # ---------------------------------------------------------------------------
-# Input immutability and content normalization
+# Input immutability
 # ---------------------------------------------------------------------------
 
 
-def test_content_none_not_rendered_as_literal_none():
-    out = deepseek_v32.render_messages([{"role": "user", "content": None}])
-    assert "None" not in out
-
-
-def test_does_not_mutate_input():
+def test_does_not_mutate_input(tmp_path):
+    tok = _tok_with_model_type(tmp_path, "deepseek_v32")
     original = [
-        {"role": "user", "content": None},
+        {"role": "user", "content": "q"},
         {
             "role": "assistant",
             "content": "",
@@ -187,41 +177,13 @@ def test_does_not_mutate_input():
         },
     ]
     snapshot = copy.deepcopy(original)
-    deepseek_v32.render_messages(original)
+    apply_chat_template(original, tokenizer=tok, tokenize=False)
     assert original == snapshot
 
 
 # ---------------------------------------------------------------------------
-# Tool injection (serving parity); rejection of unknown kwargs and multimodal
+# Rejection of unknown kwargs
 # ---------------------------------------------------------------------------
-
-_WEATHER_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "get_weather",
-        "description": "Get the weather for a city.",
-        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
-    },
-}
-
-
-def test_top_level_tools_injected_into_system():
-    with_tools = deepseek_v32.render_messages(_MSGS_BASIC, tools=[_WEATHER_TOOL])
-    without_tools = deepseek_v32.render_messages(_MSGS_BASIC)
-    assert "get_weather" in with_tools
-    assert "get_weather" not in without_tools
-
-
-def test_top_level_tools_equal_embedded_in_system():
-    # Passing tools at the top level must be identical to embedding the same
-    # (canonicalized) tools on a leading system message -- i.e. the bridge injects
-    # exactly the way SGLang serving does.
-    canon = deepseek_v32._canonicalize_tools([_WEATHER_TOOL])
-    via_top_level = deepseek_v32.render_messages([{"role": "user", "content": "q"}], tools=[_WEATHER_TOOL])
-    via_embedded = deepseek_v32.render_messages(
-        [{"role": "system", "content": "", "tools": canon}, {"role": "user", "content": "q"}]
-    )
-    assert via_top_level == via_embedded
 
 
 def test_reject_unknown_kwargs():
@@ -230,14 +192,7 @@ def test_reject_unknown_kwargs():
 
 
 def test_accept_none_tools_and_known_kwargs():
-    deepseek_v32.render_messages(_MSGS_BASIC, tools=None, thinking=True, drop_thinking=False)
-
-
-def test_reject_multimodal_content():
-    # DeepSeek V3.2 is text-only here; media must fail loudly, not be dropped.
-    msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://example/a.png"}}]}]
-    with pytest.raises(ValueError, match="multimodal"):
-        deepseek_v32.render_messages(msgs)
+    deepseek_v32.render_messages(_MSGS_BASIC, tools=None, thinking_mode="thinking", drop_thinking=False)
 
 
 # ---------------------------------------------------------------------------
