@@ -7,7 +7,7 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(
     est_time=3600,
     suite="stage-c-8-gpu-b200",
-    labels=["megatron"],
+    labels=["model-scripts"],
     disabled="Temporarily disabled; superseded by test_deepseek_v32_5layer_ci on H100.",
 )
 
