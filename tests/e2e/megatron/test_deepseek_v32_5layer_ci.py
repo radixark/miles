@@ -1,7 +1,7 @@
 """DeepSeek V3.2 5-layer CI smoke test on H-class GPUs.
 
-FP8 rollout (sglang loads the MXFP8-quantized checkpoint), BF16 training
-(no MXFP8 mixed-precision args). num_rollout=2 to keep CI short.
+FP8 rollout (sglang loads a block-quant FP8 checkpoint produced by
+tools/convert_hf_to_fp8.py), BF16 training. num_rollout=2 to keep CI short.
 """
 
 import os
@@ -35,18 +35,13 @@ def prepare():
         path_dst=f"{MODEL_DIR}/{MODEL_NAME}-bf16/",
     )
 
-    # MXFP8 checkpoint is used by sglang for FP8 rollout. Megatron training
-    # below still loads the bf16-converted torch_dist checkpoint.
+    # Block-quant FP8 checkpoint is used by sglang for FP8 rollout. Megatron
+    # training below still loads the bf16-converted torch_dist checkpoint.
     U.exec_command(
-        f"python tools/convert_hf_to_mxfp8.py "
+        f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME}-bf16 "
-        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-MXFP8 "
-        "--extra-high-precision-layers-hf "
-        ".kv_b_proj. "
-        ".shared_experts. "
-        ".wq_b. "
-        ".wk. "
-        ".weights_proj. "
+        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-FP8 "
+        "--strategy block --block-size 128 128"
     )
 
     U.convert_checkpoint(
@@ -62,7 +57,7 @@ def prepare():
 def execute():
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
 
-    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-MXFP8/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-FP8/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -126,7 +121,6 @@ def execute():
         "--sglang-kv-cache-dtype bf16 "
         "--sglang-page-size 64 "
         f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
-        "--sglang-fp8-gemm-backend flashinfer_cutlass "
         "--sglang-moe-runner-backend flashinfer_trtllm_routed "
         f"--sglang-tp-size {ROLLOUT_GPUS_PER_ENGINE} "
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
