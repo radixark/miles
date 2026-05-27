@@ -29,13 +29,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_nodes: int | None = None
     actor_num_gpus_per_node: int | None = 8
     rollout_num_gpus: int | None = None
-    hardware: Literal["B200", "B300", "GB200", "GB300"] = "B200"
+    hardware: Literal["B200", "B300", "GB200", "GB300", "H100", "H200"] = "B200"
     enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
+    num_rollout: int = 3000
     rollout_mxfp8: bool = False
     rollout_fp8: bool = False
     train_mxfp8: bool = False
@@ -49,6 +50,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.actor_num_gpus_per_node = 4
             self.rollout_num_gpus = 4
         assert not (self.rollout_fp8 and self.rollout_mxfp8), "rollout_fp8 and rollout_mxfp8 are mutually exclusive"
+        if self.hardware in ("H100", "H200"):
+            assert not self.rollout_mxfp8, "MXFP8 rollout is not supported on H100/H200 (no native MXFP8)"
+            assert not self.train_mxfp8, "MXFP8 training is not supported on H100/H200 (no native MXFP8)"
 
 
 def _prepare_download(args: ScriptArgs):
@@ -187,7 +191,7 @@ def _execute_train(args: ScriptArgs):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3000 "
+        f"--num-rollout {args.num_rollout} "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
@@ -294,7 +298,7 @@ def _execute_train(args: ScriptArgs):
         )
 
     match args.hardware:
-        case "B200" | "B300" | "GB200" | "GB300":
+        case "B200" | "B300" | "GB200" | "GB300" | "H100" | "H200":
             if args.use_single_node:
                 perf_args += (
                     f"--tensor-model-parallel-size {args.actor_num_gpus_per_node} "
