@@ -142,7 +142,11 @@ def load_task_names(registry_path: Path, dataset_name: str) -> list[str]:
     data: list[dict[str, Any]] = json.loads(registry_path.read_text())
     for dataset in data:
         if dataset.get("name") == dataset_name:
-            return [task["name"] for task in dataset.get("tasks", [])]
+            return [
+                task["name"]
+                for task in (dataset.get("tasks") or [])
+                if isinstance(task, dict) and "name" in task
+            ]
     available: list[str] = sorted(
         d["name"] for d in data if isinstance(d.get("name"), str)
     )
@@ -180,6 +184,8 @@ async def run_one_trial(
         elapsed = monotonic() - t0
         try:
             payload = response.json()
+            if not isinstance(payload, dict):
+                payload = {"_raw": str(payload)[:4000]}
         except Exception:
             payload = {"_raw": response.text[:4000]}
         return {
@@ -214,6 +220,12 @@ async def main(args: argparse.Namespace) -> None:
 
     task_names = load_task_names(args.registry_path, args.dataset_name)
     total = len(task_names) * args.n_trials_per_task
+    if total == 0:
+        raise SystemExit(
+            f"No trials to run. Dataset {args.dataset_name!r} has "
+            f"{len(task_names)} tasks and n_trials_per_task is "
+            f"{args.n_trials_per_task}."
+        )
     print(
         f"{args.dataset_name}: {len(task_names)} tasks "
         f"x {args.n_trials_per_task} trials = {total} runs; "
@@ -222,6 +234,7 @@ async def main(args: argparse.Namespace) -> None:
 
     args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     args.output_jsonl.unlink(missing_ok=True)
+    args.output_parquet.parent.mkdir(parents=True, exist_ok=True)
 
     sem = asyncio.Semaphore(args.max_concurrent)
 

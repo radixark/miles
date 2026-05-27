@@ -28,7 +28,7 @@ training-loop rollouts interact with the same backend.
    export OPENAI_API_BASE=dummy
    HARBOR_TASKS_DIR=$PWD/harbor_tasks \
    python miles_agent_server.py \
-       --port 11000 --dashboard-port 8081 \
+       --port 8080 --dashboard-port 8081 \
        --max-concurrent 32 \
        --trials-dir ./trials/$(date +%Y%m%d_%H%M%S)
    ```
