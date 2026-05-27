@@ -48,7 +48,6 @@ def prepare(args: ScriptArgs):
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.actor_num_gpus_per_node,
-        extra_args="--no-save-optim --no-save-rng ",
         # To support multi-node training, for simplicity, we put model into shared folder
         dir_dst=args.model_dir,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}",
@@ -79,7 +78,7 @@ def execute(args: ScriptArgs):
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type deepscaler "
+        "--rm-type math "
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "

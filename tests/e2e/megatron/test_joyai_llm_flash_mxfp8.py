@@ -75,7 +75,6 @@ def prepare():
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
         num_gpus_per_node=ACTOR_NUM_GPUS,
-        extra_args="--no-save-optim --no-save-rng ",
         dir_dst=MODEL_DIR,
         hf_checkpoint=f"{MODEL_DIR}/{MODEL_NAME}",
         megatron_path=MEGATRON_PATH,
@@ -102,7 +101,7 @@ def execute():
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type deepscaler "
+        "--rm-type math "
         "--num-rollout 2 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
