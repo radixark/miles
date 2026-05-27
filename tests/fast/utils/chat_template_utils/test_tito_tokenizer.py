@@ -47,10 +47,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
-
 import pytest
 from transformers import AutoTokenizer
 
@@ -108,7 +104,6 @@ _TITO_MODELS: dict[str, tuple[str, type[TITOTokenizer], TITOTokenizerType]] = {
     "qwen3": ("Qwen/Qwen3-4B", Qwen3TITOTokenizer, TITOTokenizerType.QWEN3),
     "glm47": ("zai-org/GLM-4.7-Flash", GLM47TITOTokenizer, TITOTokenizerType.GLM47),
 }
-
 
 _ALLOWED_APPEND_ROLES = ["tool", "user", "system"]
 
@@ -203,7 +198,6 @@ _TRAJ_CASES = [
     for traj_cls in _TOOL_TRAJECTORIES
     for pos in _find_tito_splits(traj_cls)
 ]
-
 
 # ---------------------------------------------------------------------------
 # TestConfig — subclass configuration smoke-checks

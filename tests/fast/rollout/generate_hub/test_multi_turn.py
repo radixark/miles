@@ -6,7 +6,7 @@ from itertools import groupby
 import numpy as np
 import pybase64
 import pytest
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
 
@@ -16,9 +16,7 @@ from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResu
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
 from miles.utils.types import Sample
 
-# generate_hub tests use generation_env → parse_args(fsdp) → fsdp_utils
-# import chain that requires flash_attn. Run in GPU fast suite.
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=[])
 
 _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 

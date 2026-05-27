@@ -1,6 +1,6 @@
 import torch
 
-from miles.utils.ppo_utils import (
+from miles.backends.training_utils.loss_hub.math_utils import (
     _calculate_log_probs_and_entropy_true_on_policy,
     _prepare_true_on_policy_full_logits,
     _split_replicated_loss_gather_grad,

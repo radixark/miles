@@ -3,11 +3,7 @@
 Validates that the right iterator subclass is selected based on megatron_to_hf_mode.
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
-
-
+import sys
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
@@ -36,6 +32,21 @@ class TestHfWeightIteratorFactory:
             iterator = HfWeightIteratorBase.create(
                 args=args, model=[MagicMock()], is_lora=True, model_name="qwen", quantization_config=None
             )
+            assert isinstance(iterator, HfWeightIteratorBridge)
+
+    @patch(f"{_BASE_MODULE}.HfWeightIteratorBase.__init__", return_value=None)
+    def test_bridge_mode_does_not_import_direct_iterator(self, mock_init):
+        from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
+
+        with patch.object(HfWeightIteratorBridge, "__init__", return_value=None):
+            with patch.dict(
+                sys.modules,
+                {"miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct": None},
+            ):
+                args = self._make_args("bridge")
+                iterator = HfWeightIteratorBase.create(
+                    args=args, model=[MagicMock()], is_lora=True, model_name="qwen", quantization_config=None
+                )
             assert isinstance(iterator, HfWeightIteratorBridge)
 
     @patch(f"{_BASE_MODULE}.HfWeightIteratorBase.__init__", return_value=None)

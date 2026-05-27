@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -12,7 +13,6 @@ from miles.utils.debug_utils.run_megatron.worker.output import (
     _compute_output_info,
     compute_and_save_output_info,
 )
-
 
 # ---------------------------------------------------------------------------
 # TestComputeLogprobEntries
@@ -120,9 +120,8 @@ class TestComputeLogprobEntries:
 # TestComputeOutputInfo
 # ---------------------------------------------------------------------------
 
-
-_MOCK_MPU = "miles.utils.debug_utils.run_megatron.worker.output.mpu"
 _MOCK_DIST = "miles.utils.debug_utils.run_megatron.worker.output.dist"
+_MOCK_GET_PARALLEL_STATE = "miles.utils.debug_utils.run_megatron.worker.output.get_parallel_state"
 
 
 def _patch_distributed(
@@ -130,13 +129,16 @@ def _patch_distributed(
     cp_size: int = 1,
     pp_size: int = 1,
 ) -> Any:
-    """Context manager that mocks dist.is_initialized and mpu parallel sizes."""
+    """Context manager that mocks dist.is_initialized and parallel-state sizes."""
+    parallel_state = SimpleNamespace(
+        tp=SimpleNamespace(size=tp_size),
+        cp=SimpleNamespace(size=cp_size),
+        pp=SimpleNamespace(size=pp_size),
+    )
 
     def _decorator(func: Any) -> Any:
         @patch(f"{_MOCK_DIST}.is_initialized", return_value=True)
-        @patch(f"{_MOCK_MPU}.get_tensor_model_parallel_world_size", return_value=tp_size)
-        @patch(f"{_MOCK_MPU}.get_context_parallel_world_size", return_value=cp_size)
-        @patch(f"{_MOCK_MPU}.get_pipeline_model_parallel_world_size", return_value=pp_size)
+        @patch(_MOCK_GET_PARALLEL_STATE, return_value=parallel_state)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             return func(*args, **kwargs)
 
