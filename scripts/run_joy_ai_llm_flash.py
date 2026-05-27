@@ -48,6 +48,7 @@ def prepare(args: ScriptArgs):
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.actor_num_gpus_per_node,
+        extra_args="--no-save-optim --no-save-rng ",
         # To support multi-node training, for simplicity, we put model into shared folder
         dir_dst=args.model_dir,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}",
@@ -173,7 +174,7 @@ def execute(args: ScriptArgs):
                 sglang_args += (
                     "--sglang-enable-dp-attention "
                     f"--rollout-num-gpus-per-engine {sglang_world_size} "
-                    "--sglang-fp8-gemm-backend flashinfer_trtllm "
+                    "--sglang-fp8-gemm-backend flashinfer_cutlass "
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "
