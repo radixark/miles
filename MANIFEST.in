@@ -1,0 +1,25 @@
+# MANIFEST.in — additional files to include in the miles-rl wheel.
+#
+# The bundled patched sglang and Megatron-LM source has non-Python data
+# files (CUDA headers, JSON GEMM configs, kernel templates, etc.) that
+# `find_packages` does not pick up by itself. include_package_data=True
+# in setup.py enables MANIFEST.in to be consulted when building the sdist
+# AND, with `setuptools.bdist_wheel`, propagates listed files into the
+# wheel's package data.
+
+# Patched sglang Python package data.
+recursive-include third_party/sglang/python/sglang *.json *.txt *.md *.cu *.cuh *.h *.cpp *.hpp *.yaml *.yml *.j2 *.template *.so
+
+# Patched Megatron-LM Python package data.
+recursive-include third_party/Megatron-LM/megatron *.json *.txt *.md *.cu *.cuh *.h *.cpp *.hpp *.yaml *.yml *.j2 *.template *.so
+
+# miles' own non-Python assets (configs, etc.) — kept for completeness;
+# the existing include_package_data scoops these up via setup.cfg/MANIFEST.in.
+recursive-include miles *.json *.yaml *.yml *.txt
+recursive-include miles_plugins *.json *.yaml *.yml *.txt
+recursive-include miles_megatron_plugins *.json *.yaml *.yml *.txt
+
+# Exclude test trees inside the bundled submodules — not runtime-needed
+# and would bloat the wheel. Production code never imports from these.
+prune third_party/sglang/python/sglang/test
+prune third_party/Megatron-LM/megatron/core/datasets/tests

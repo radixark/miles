@@ -1,7 +1,7 @@
 import sys
 import platform
 
-from setuptools import find_packages, setup
+from setuptools import find_namespace_packages, find_packages, setup
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
@@ -36,12 +36,58 @@ class bdist_wheel(_bdist_wheel):
         return python_version, abi_tag, platform_tag
 
 
+# ----------------------------------------------------------------
+# Bundle the patched sglang + Megatron-LM source from the git submodules
+# at third_party/* directly into the miles wheel. After `pip install miles`,
+# the user gets miles, sglang, megatron.*, and miles_megatron_plugins all
+# at the top level of site-packages — no separate `radixark-sglang` /
+# `radixark-megatron` packages, no private index for the patched forks.
+#
+# Trade-off: a user who runs `pip install upstream-sglang` after
+# `pip install miles` will overwrite the patched sglang. This is
+# documented in README; the assumption is that miles is the primary
+# install in its target environment.
+# ----------------------------------------------------------------
+_miles_packages = find_packages(include=["miles*", "miles_plugins*"])
+# `sglang` is a regular package (has __init__.py). find_packages would
+# work, but find_namespace_packages is a superset and safer if the layout
+# ever shifts.
+_sglang_packages = find_namespace_packages(
+    where="third_party/sglang/python", include=["sglang", "sglang.*"]
+)
+# `megatron`, `megatron.legacy`, and several sub-packages are namespace
+# packages (no __init__.py). find_namespace_packages is required to pick
+# them up.
+_megatron_packages = find_namespace_packages(
+    where="third_party/Megatron-LM", include=["megatron", "megatron.*"]
+)
+# miles_megatron_plugins lives inside the Megatron-LM repo (packaged with
+# megatron-core upstream). Bundle it from the submodule so the miles-rl wheel
+# still ships it at the top level of site-packages.
+_megatron_plugins_packages = find_namespace_packages(
+    where="third_party/Megatron-LM",
+    include=["miles_megatron_plugins", "miles_megatron_plugins.*"],
+)
+
 # Setup configuration
 setup(
     author="miles Team",
-    name="miles",
+    name="miles-rl",
     version="0.2.1",
-    packages=find_packages(include=["miles*", "miles_plugins*"]),
+    packages=(
+        _miles_packages
+        + _sglang_packages
+        + _megatron_packages
+        + _megatron_plugins_packages
+    ),
+    package_dir={
+        # Top-level miles/* and friends use the default (project root).
+        # The bundled submodule sources need explicit mapping so setuptools
+        # finds the files at their actual on-disk locations.
+        "sglang": "third_party/sglang/python/sglang",
+        "megatron": "third_party/Megatron-LM/megatron",
+        "miles_megatron_plugins": "third_party/Megatron-LM/miles_megatron_plugins",
+    },
     include_package_data=True,
     install_requires=_fetch_requirements("requirements.txt"),
     extras_require={

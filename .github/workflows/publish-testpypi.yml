@@ -1,21 +1,22 @@
-name: Publish wheel to TestPyPI (Phase 5a dry-run)
+name: Publish miles-rl wheel to TestPyPI (Phase 6 dry-run)
 
-# Phase 5a of the `pip install miles` roadmap: validates the wheel-build +
-# index-publish pipeline against TestPyPI, before committing to a real
-# production index (private or PyPI proper).
+# Phase 6 of the `pip install miles` roadmap: build a bundled miles-rl
+# wheel from the miles repo (which now ships the patched sglang and
+# Megatron-LM source from third_party/* submodules baked in), upload it
+# to TestPyPI, and smoke-install it in a fresh venv to prove the full
+# `pip install miles-rl` flow works.
 #
-# Manual-only trigger. Builds a wheel from one of the in-tree submodules
-# (sglang or Megatron-LM), rewrites the project name to a Radixark-namespaced
-# placeholder, overrides the version to a unique dev release, and uploads
-# to https://test.pypi.org/.
+# Phase 5a previously used this workflow to validate publishing a single
+# fork (e.g. radixark-sglang-test) per run. That path was scaffolding;
+# Phase 6's bundling approach folds sglang + Megatron-LM directly into
+# the miles-rl wheel, so we no longer publish them as separate packages.
 #
-# Setup required before running this workflow for the first time:
+# Setup required before the first non-dry-run invocation:
 #   1. Register an account at https://test.pypi.org/ (separate from PyPI).
 #   2. Create an API token at https://test.pypi.org/manage/account/token/
-#      with "Entire account" scope (you can narrow it after the first
-#      successful upload).
-#   3. Add the token as a GitHub Actions secret named `TEST_PYPI_API_TOKEN`
-#      at https://github.com/radixark/miles/settings/secrets/actions.
+#      with "Entire account" scope. (Already done for Phase 5a — reuse.)
+#   3. Confirm the GitHub Actions secret `TEST_PYPI_API_TOKEN` is set at
+#      https://github.com/radixark/miles/settings/secrets/actions.
 
 on:
   # Bootstrap trigger so the workflow can be exercised before it lands on
@@ -24,20 +25,14 @@ on:
   # `workflow_dispatch` below is the intended long-term trigger.
   push:
     branches:
-      - shi/phase5a-testpypi-dry-run
+      - shi/phase6-bundle-third-party-into-miles
     paths:
       - '.github/workflows/publish-testpypi.yml'
+      - 'setup.py'
+      - 'MANIFEST.in'
 
   workflow_dispatch:
     inputs:
-      package:
-        description: 'Which submodule to package'
-        required: true
-        type: choice
-        options:
-          - sglang
-          - megatron-lm
-        default: sglang
       dry_run:
         description: 'Build only — skip TestPyPI upload (useful for first-pass validation without credentials)'
         required: false
@@ -51,9 +46,11 @@ jobs:
       contents: read
     env:
       # On a `push` trigger (the bootstrap path), `inputs.*` are empty.
-      # Default to a safe dry-run build of sglang in that case.
-      PACKAGE: ${{ inputs.package || 'sglang' }}
+      # Default to a dry-run build that builds the wheel but skips upload.
       DRY_RUN: ${{ inputs.dry_run || (github.event_name == 'push') }}
+      # Placeholder name on TestPyPI. The eventual production name is
+      # `miles-rl` (PyPI). Drop the `-test` suffix in Phase 7's workflow.
+      RENAME_TO: miles-rl-test
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -70,82 +67,62 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
 
-      - name: Resolve package config
+      - name: Resolve version
         id: cfg
         shell: bash
         run: |
-          case "${{ env.PACKAGE }}" in
-            sglang)
-              # sglang's pyproject.toml lives at python/ inside the repo.
-              echo "src_dir=third_party/sglang/python" >> "$GITHUB_OUTPUT"
-              echo "rename_to=radixark-sglang-test" >> "$GITHUB_OUTPUT"
-              echo "sub_dir=third_party/sglang" >> "$GITHUB_OUTPUT"
-              ;;
-            megatron-lm)
-              echo "src_dir=third_party/Megatron-LM" >> "$GITHUB_OUTPUT"
-              echo "rename_to=radixark-megatron-test" >> "$GITHUB_OUTPUT"
-              echo "sub_dir=third_party/Megatron-LM" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "Unknown package: ${{ env.PACKAGE }}"; exit 1 ;;
-          esac
           # PEP 440-compliant dev release version: 0.0.0.devYYYYMMDDHHMMSS
           ts=$(date -u +'%Y%m%d%H%M%S')
           echo "dev_version=0.0.0.dev${ts}" >> "$GITHUB_OUTPUT"
-          # Submodule SHA: carried as build metadata only (in README of wheel).
-          if [ "${{ env.PACKAGE }}" = "sglang" ]; then sub_path=third_party/sglang; else sub_path=third_party/Megatron-LM; fi
-          sub_sha=$(git -C "$sub_path" rev-parse HEAD)
-          echo "sub_sha=${sub_sha}" >> "$GITHUB_OUTPUT"
 
-      - name: Rewrite project name + version in pyproject.toml
+      - name: Rewrite project name + version in setup.py
         shell: bash
         env:
-          SRC_DIR: ${{ steps.cfg.outputs.src_dir }}
-          RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
           DEV_VERSION: ${{ steps.cfg.outputs.dev_version }}
-          SUB_SHA: ${{ steps.cfg.outputs.sub_sha }}
         run: |
           python <<'PYEOF'
           import os, re, pathlib
-          src_dir   = os.environ['SRC_DIR']
-          new_name  = os.environ['RENAME_TO']
-          new_ver   = os.environ['DEV_VERSION']
-          sub_sha   = os.environ['SUB_SHA']
+          new_name = os.environ['RENAME_TO']
+          new_ver  = os.environ['DEV_VERSION']
 
-          py = pathlib.Path(src_dir, 'pyproject.toml')
-          text = py.read_text()
+          p = pathlib.Path('setup.py')
+          t = p.read_text()
 
-          # Replace name (under [project])
-          text = re.sub(r'(?m)^name\s*=\s*"[^"]+"', f'name = "{new_name}"', text, count=1)
+          # Replace `name="<anything>"` keyword arg (first occurrence only).
+          t = re.sub(r'(?m)^(\s*)name\s*=\s*"[^"]+"', f'\\1name="{new_name}"', t, count=1)
 
-          # Force a static version; drop dynamic if present
-          text = re.sub(r'(?m)^dynamic\s*=\s*\[[^\]]*"version"[^\]]*\]\s*\n', '', text)
-          if re.search(r'(?m)^version\s*=', text):
-              text = re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{new_ver}"', text, count=1)
-          else:
-              # Insert version line right after the [project] table header
-              text = re.sub(r'(?m)^\[project\]\s*\n', f'[project]\nversion = "{new_ver}"\n', text, count=1)
+          # Replace `version="<anything>"` keyword arg.
+          t = re.sub(r'(?m)^(\s*)version\s*=\s*"[^"]+"', f'\\1version="{new_ver}"', t, count=1)
 
-          py.write_text(text)
-          print(f"=== rewrote {py} ===")
-          print(text[:2000])
+          p.write_text(t)
+          print('=== rewrote setup.py (head) ===')
+          for line in t.splitlines()[:60]:
+              print(line)
           PYEOF
 
       - name: Build wheel + sdist
         shell: bash
         run: |
-          cd "${{ steps.cfg.outputs.src_dir }}"
           python -m build --wheel --sdist
           ls -lh dist/
 
       - name: List built artifacts
         shell: bash
         run: |
-          ls -lh "${{ steps.cfg.outputs.src_dir }}/dist/"
-          echo "--- wheel METADATA (Name + Version + size) ---"
-          for w in "${{ steps.cfg.outputs.src_dir }}"/dist/*.whl; do
+          ls -lh dist/
+          echo
+          echo "--- wheel METADATA head ---"
+          for w in dist/*.whl; do
             unzip -p "$w" "*/METADATA" 2>/dev/null | head -10 || true
           done
+          echo
+          echo "--- wheel RECORD count by top-level dir ---"
+          for w in dist/*.whl; do
+            unzip -l "$w" | awk '{print $4}' | grep -oE '^[^/]+' | sort | uniq -c | sort -rn | head -10
+          done
+          echo
+          echo "--- total wheel size on disk ---"
+          du -h dist/*.whl
 
       - name: Upload to TestPyPI
         if: ${{ env.DRY_RUN != 'true' }}
@@ -158,13 +135,12 @@ jobs:
             echo "::error::TEST_PYPI_API_TOKEN secret is not set. Set it at https://github.com/radixark/miles/settings/secrets/actions or re-run with dry_run=true."
             exit 1
           fi
-          twine upload --repository testpypi --skip-existing "${{ steps.cfg.outputs.src_dir }}"/dist/*
+          twine upload --repository testpypi --skip-existing dist/*
 
       - name: Wait for TestPyPI index to surface the uploaded version
         if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
         env:
-          RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
           DEV_VERSION: ${{ steps.cfg.outputs.dev_version }}
         run: |
           # twine upload reports success the moment the upload finishes, but
@@ -188,18 +164,37 @@ jobs:
         if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
         env:
-          RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
           DEV_VERSION: ${{ steps.cfg.outputs.dev_version }}
         run: |
           python -m venv /tmp/smoke
-          # Important: install ONLY our wheel, not its transitive deps.
-          # TestPyPI is a public sandbox riddled with name-squat / broken
-          # packages (e.g. FASTAPI-1.0 vs fastapi); pulling deps from it
-          # via --extra-index-url is unsafe regardless of our own wheel.
-          # The proof we want here is "the wheel we just uploaded is
-          # actually fetchable and installable" — `--no-deps` is enough.
+          # Install ONLY our wheel — TestPyPI is a public sandbox with
+          # name-squat packages, so resolving transitive deps from there is
+          # unsafe. The proof we want here is "the bundled wheel we just
+          # uploaded contains miles + sglang + megatron + miles_megatron_plugins
+          # and is importable cold".
           /tmp/smoke/bin/pip install \
             --index-url https://test.pypi.org/simple/ \
             --no-deps \
             "${RENAME_TO}==${DEV_VERSION}"
           /tmp/smoke/bin/pip show "${RENAME_TO}"
+          echo
+          echo "--- imports with PYTHONPATH unset ---"
+          /tmp/smoke/bin/python <<'PYEOF'
+          import sys
+          # Confirm imports work and the modules came from our installed wheel,
+          # not from any leftover system path.
+          import miles
+          import miles_plugins
+          import miles_megatron_plugins.true_on_policy.contracts
+          import sglang
+          import megatron.core
+          # megatron.training is needed because miles imports from it.
+          import megatron.training
+          for name in ('miles', 'miles_plugins', 'miles_megatron_plugins',
+                       'sglang', 'megatron.core', 'megatron.training'):
+              mod = sys.modules[name]
+              path = getattr(mod, '__file__', None) or list(mod.__path__)
+              print(f"  {name:35} -> {path}")
+          print()
+          print("OK: all bundled imports resolve cleanly.")
+          PYEOF
