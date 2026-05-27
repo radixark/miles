@@ -37,6 +37,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     rollout_mxfp8: bool = False
+    rollout_fp8: bool = False
     train_mxfp8: bool = False
     fp8_param_gather: bool = False
     enable_mis: bool = False
@@ -47,6 +48,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.actor_num_nodes = 1
             self.actor_num_gpus_per_node = 4
             self.rollout_num_gpus = 4
+        assert not (self.rollout_fp8 and self.rollout_mxfp8), "rollout_fp8 and rollout_mxfp8 are mutually exclusive"
 
 
 def _prepare_download(args: ScriptArgs):
@@ -82,6 +84,17 @@ def _prepare_mxfp8_ckpt(args: ScriptArgs):
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name}-bf16 "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"{extra_args} "
+        )
+
+
+def _prepare_fp8_ckpt(args: ScriptArgs):
+    """Convert BF16 checkpoint to block-quant FP8 (for sglang rollout, no MXFP8)."""
+    if args.rollout_fp8:
+        U.exec_command(
+            f"python tools/convert_hf_to_fp8.py "
+            f"--model-dir {args.model_dir}/{args.model_name}-bf16 "
+            f"--save-dir {args.model_dir}/{args.model_name}-FP8 "
+            f"--strategy block --block-size 128 128"
         )
 
 
@@ -133,7 +146,13 @@ def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
             path_dst=torch_dist_dst,
         )
 
-    hf_name = f"{args.model_name}-{'MXFP8' if args.rollout_mxfp8 else ''}"
+    if args.rollout_mxfp8:
+        hf_suffix = "-MXFP8"
+    elif args.rollout_fp8:
+        hf_suffix = "-FP8"
+    else:
+        hf_suffix = ""
+    hf_name = f"{args.model_name}{hf_suffix}"
     hf_dst = f"{args.model_local_dir}/{hf_name}"
     if not (skip_existing and Path(hf_dst).exists()):
         U.rsync_simple(
@@ -148,6 +167,8 @@ def _execute_train(args: ScriptArgs):
 
     if args.rollout_mxfp8 or args.train_mxfp8:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
+    elif args.rollout_fp8:
+        hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
     else:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
     ckpt_args = (
@@ -424,6 +445,7 @@ def full_train(args: ScriptArgs):
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
     _prepare_mxfp8_ckpt(args)
+    _prepare_fp8_ckpt(args)
     _prepare_megatron_ckpt(args)
     # _prepare_cp(args, skip_existing=True)
     _execute_train(args)
@@ -436,6 +458,7 @@ def prepare(args: ScriptArgs):
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
     _prepare_mxfp8_ckpt(args)
+    _prepare_fp8_ckpt(args)
     _prepare_megatron_ckpt(args)
 
 
