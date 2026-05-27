@@ -1,7 +1,3 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
-
 import pytest
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig

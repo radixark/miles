@@ -1,7 +1,3 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
-
 from contextlib import nullcontext
 
 import pytest
