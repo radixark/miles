@@ -13,7 +13,7 @@ try:
 except ImportError:
     pq = None
 
-from miles.utils.chat_template_utils import resolve_chat_template_encoder
+from miles.utils import chat_template_utils
 from miles.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
@@ -183,10 +183,6 @@ class Dataset:
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
     ):
-        encode_chat_template = (
-            resolve_chat_template_encoder(tokenizer, apply_chat_template_kwargs or {}) if apply_chat_template else None
-        )
-
         origin_samples = []
         for data in read_file(path):
             # Both chat templates and multimodal inputs require conversation format (list of message dicts)
@@ -205,7 +201,14 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                output_prompt = encode_chat_template(prompt, tools)
+                output_prompt = chat_template_utils.apply_chat_template(
+                    prompt,
+                    tokenizer=tokenizer,
+                    tools=tools,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    **(apply_chat_template_kwargs or {}),
+                )
             else:
                 output_prompt = prompt
 
