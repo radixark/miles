@@ -1,11 +1,9 @@
 import dataclasses
-import importlib.util
 import ipaddress
 import logging
 import multiprocessing
 import os
 import time
-from pathlib import Path
 from urllib.parse import quote
 
 import requests
@@ -21,81 +19,6 @@ from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 
 logger = logging.getLogger(__name__)
-
-
-def _env_flag_enabled(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _resolve_sgl_kernel_preload_path() -> str:
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("Cannot choose sgl_kernel preload library because CUDA is not available")
-    properties = torch.cuda.get_device_properties(torch.cuda.current_device())
-    arch_subdir = "sm90" if properties.major * 10 + properties.minor == 90 else "sm100"
-
-    spec = importlib.util.find_spec("sgl_kernel")
-    if spec is None:
-        raise RuntimeError("Cannot preload sgl_kernel because Python module 'sgl_kernel' is not installed")
-    package_dirs = [Path(path) for path in spec.submodule_search_locations or []]
-    if not package_dirs and spec.origin is not None:
-        package_dirs = [Path(spec.origin).parent]
-
-    candidates: list[Path] = []
-    for package_dir in package_dirs:
-        candidates.extend(sorted(package_dir.glob(f"{arch_subdir}/common_ops*.so")))
-    candidates = sorted({path.resolve() for path in candidates if path.is_file()})
-    if len(candidates) != 1:
-        raise RuntimeError(f"Expected exactly one sgl_kernel common_ops library, found {candidates}")
-    return str(candidates[0])
-
-
-def _resolve_torch_library_dir() -> str:
-    import torch
-
-    torch_lib_dir = Path(torch.__file__).resolve().parent / "lib"
-    if not (torch_lib_dir / "libtorch.so").is_file():
-        raise RuntimeError(f"Cannot find libtorch.so in {torch_lib_dir}")
-    return str(torch_lib_dir)
-
-
-def _apply_sgl_kernel_preload_env() -> tuple[str | None, str | None]:
-    old_preload = os.environ.get("LD_PRELOAD")
-    old_library_path = os.environ.get("LD_LIBRARY_PATH")
-    if not _env_flag_enabled("MILES_SGLANG_LD_PRELOAD_SGL_KERNEL"):
-        return old_preload, old_library_path
-
-    preload_path = _resolve_sgl_kernel_preload_path()
-    torch_library_dir = _resolve_torch_library_dir()
-
-    preload_entries = [entry for entry in os.environ.get("LD_PRELOAD", "").split(":") if entry]
-    if preload_path not in preload_entries:
-        preload_entries.insert(0, preload_path)
-    os.environ["LD_PRELOAD"] = ":".join(preload_entries)
-
-    library_path_entries = [entry for entry in os.environ.get("LD_LIBRARY_PATH", "").split(":") if entry]
-    if torch_library_dir not in library_path_entries:
-        library_path_entries.insert(0, torch_library_dir)
-    os.environ["LD_LIBRARY_PATH"] = ":".join(library_path_entries)
-
-    logger.info(
-        "Preloading sgl_kernel for SGLang server process: preload_path=%s torch_library_dir=%s",
-        preload_path,
-        torch_library_dir,
-    )
-    return old_preload, old_library_path
-
-
-def _restore_preload_env(old_preload: str | None, old_library_path: str | None) -> None:
-    if old_preload is None:
-        os.environ.pop("LD_PRELOAD", None)
-    else:
-        os.environ["LD_PRELOAD"] = old_preload
-    if old_library_path is None:
-        os.environ.pop("LD_LIBRARY_PATH", None)
-    else:
-        os.environ["LD_LIBRARY_PATH"] = old_library_path
 
 
 def get_base_gpu_id(args, rank):
@@ -135,11 +58,7 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
-    old_preload, old_library_path = _apply_sgl_kernel_preload_env()
-    try:
-        p.start()
-    finally:
-        _restore_preload_env(old_preload, old_library_path)
+    p.start()
 
     if server_args.node_rank != 0:
         return
