@@ -43,7 +43,7 @@ _REGISTERED_ALIASES: set[str] = set()
 
 
 def _register_hf_config_aliases() -> None:
-    """Ensure miles' local model_type aliases are registered with AutoConfig."""
+    """Register model alias with AutoConfig."""
     for alias in _CONFIG_ALIASES:
         if alias.model_type in _REGISTERED_ALIASES:
             continue
@@ -72,14 +72,10 @@ def load_hf_config(
 ):
     """Load an HF config from a local checkpoint.
 
-    Parameters
-    ----------
-    checkpoint_path: path to a local HF checkpoint directory.
+    Registers model aliases first for pre-set aliases.
+
     overrides: optional dict of attributes to setattr on the returned config
         after loading. Lets callers patch fields without mutating the checkpoint.
-    trust_remote_code: forwarded to AutoConfig.from_pretrained; defaults to True
-        to match miles' existing call sites.
-    autoconfig_kwargs: extra kwargs forwarded to AutoConfig.from_pretrained.
     """
     _register_hf_config_aliases()
     config = AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=trust_remote_code, **autoconfig_kwargs)
