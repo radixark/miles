@@ -14,7 +14,7 @@ The default behavior is exactly the same as `AutoConfig.from_pretrained`.
 import importlib
 from dataclasses import dataclass
 
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
 __all__ = ["load_hf_config"]
@@ -26,6 +26,7 @@ class _HFConfigAlias:
     base_module: str
     base_class: str
     compat_class_name: str
+    auto_model_classes: tuple = (AutoModelForCausalLM,)
     # Set True to override transformers' native config.
     override_hf_native: bool = False
 
@@ -60,6 +61,12 @@ def _register_hf_config_aliases() -> None:
             {"model_type": alias.model_type, "__module__": __name__},
         )
         AutoConfig.register(alias.model_type, compat_config, exist_ok=alias.override_hf_native)
+        for auto_cls in alias.auto_model_classes:
+            base_model_cls = auto_cls._model_mapping[base_config]
+            compat_model_cls = type(
+                base_model_cls.__name__, (base_model_cls,), {"config_class": compat_config, "__module__": __name__}
+            )
+            auto_cls.register(compat_config, compat_model_cls, exist_ok=alias.override_hf_native)
         _REGISTERED_ALIASES.add(alias.model_type)
 
 
