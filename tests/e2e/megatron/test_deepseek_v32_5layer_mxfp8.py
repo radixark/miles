@@ -4,7 +4,12 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-b200", labels=["megatron"])
+register_cuda_ci(
+    est_time=3600,
+    suite="stage-c-8-gpu-b200",
+    labels=["megatron"],
+    disabled="Temporarily disabled; superseded by test_deepseek_v32_5layer_ci on H100.",
+)
 
 MODEL_ORG = "Pinaster"
 MODEL_NAME = "DeepSeek-V3.2-5layer"
