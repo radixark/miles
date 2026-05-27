@@ -16,6 +16,9 @@ import importlib
 import logging
 from dataclasses import dataclass
 
+from transformers import AutoConfig
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["load_hf_config"]
@@ -49,9 +52,6 @@ def _register_hf_config_aliases() -> None:
     Idempotent: rerunning is a cheap set check. Called automatically by
     load_hf_config; not intended for external use.
     """
-    from transformers import AutoConfig
-    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-
     for alias in _CONFIG_ALIASES:
         if alias.model_type in _REGISTERED_ALIASES:
             continue
@@ -100,8 +100,6 @@ def load_hf_config(
     autoconfig_kwargs: extra kwargs forwarded to AutoConfig.from_pretrained.
     """
     _register_hf_config_aliases()
-    from transformers import AutoConfig
-
     config = AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=trust_remote_code, **autoconfig_kwargs)
 
     if overrides:
