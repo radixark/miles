@@ -35,6 +35,7 @@ NUM_LAYERS: int = 5
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
+# TODO: @Jiajun Li add back after fixing CI issue
 # register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
 
 
