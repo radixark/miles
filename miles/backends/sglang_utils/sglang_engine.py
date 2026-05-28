@@ -135,6 +135,9 @@ class SGLangEngine(RayActor):
         router_ip=None,
         router_port=None,
         engine_info_bootstrap_port=None,
+        node_hosts=None,
+        seed_instance_ip=None,
+        seed_instance_service_port=None,
     ):
         if env_report := self.args.env_report:
             collect_and_print_node_env_report(
@@ -175,6 +178,9 @@ class SGLangEngine(RayActor):
             engine_info_bootstrap_port=engine_info_bootstrap_port,
             sglang_overrides=self.sglang_overrides,
             num_gpus_per_engine=self.num_gpus_per_engine,
+            node_hosts=node_hosts,
+            seed_instance_ip=seed_instance_ip,
+            seed_instance_service_port=seed_instance_service_port,
         )
 
         self.node_rank = server_args_dict["node_rank"]
@@ -600,6 +606,9 @@ def _compute_server_args(
     engine_info_bootstrap_port: int | None = None,
     sglang_overrides: dict | None = None,
     num_gpus_per_engine: int | None = None,
+    node_hosts: str | None = None,
+    seed_instance_ip: str | None = None,
+    seed_instance_service_port: int | None = None,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
@@ -652,6 +661,8 @@ def _compute_server_args(
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
+    if node_hosts is not None and nnodes > 1:
+        kwargs["node_hosts"] = node_hosts
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     if is_lora_enabled(args):
@@ -665,9 +676,22 @@ def _compute_server_args(
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
+    # Override load_format for follower engines that load from a seed.
+    is_follower = seed_instance_ip is not None and seed_instance_service_port is not None
+    if is_follower:
+        kwargs["load_format"] = "remote_instance"
+        kwargs["remote_instance_weight_loader_seed_instance_ip"] = seed_instance_ip
+        kwargs["remote_instance_weight_loader_seed_instance_service_port"] = seed_instance_service_port
+        kwargs["remote_instance_weight_loader_backend"] = "transfer_engine"
+        kwargs["remote_instance_weight_loader_start_seed_via_transfer_engine"] = True
+
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
         if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
+            continue
+        # model_loader_extra_config is only for DefaultModelLoader (seed);
+        # RemoteInstanceModelLoader (follower) rejects it.
+        if is_follower and attr.name == "model_loader_extra_config":
             continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
