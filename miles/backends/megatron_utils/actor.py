@@ -566,7 +566,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             destroy_process_groups()
-            clear_memory(ipc_collect=True)
 
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
