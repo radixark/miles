@@ -89,8 +89,8 @@ overrides expanded):
 python examples/experimental/swe-agent-v2/run-glm47-flash-agentic-async.py \
     --num-nodes 2 --train-num-nodes 1 --skip-prepare \
     --max-seq-len 65536 \
-    --save-dir /workspace/GLM-4.7-Flash_2node_tb2_<run-tag>/ \
-    --save-traces-dir /workspace/flash-2node-traces-<run-tag>/traces \
+    --save-dir "${OUTPUT_ROOT}/GLM-4.7-Flash_2node_tb2_<run-tag>/" \
+    --save-traces-dir "${OUTPUT_ROOT}/flash-2node-traces-<run-tag>/traces" \
     --rollout-batch-size 4 --n-samples-per-prompt 8 --global-batch-size 32 \
     --save-interval 5 \
     --agent-server-url "$AGENT_SERVER_URL" \
@@ -103,6 +103,8 @@ python examples/experimental/swe-agent-v2/run-glm47-flash-agentic-async.py \
 
 `AGENT_SERVER_URL` defaults to `http://agent-server:8080`; set it to wherever
 your `miles_agent_server` is reachable from the trainer pod.
+`OUTPUT_ROOT` defaults to `/workspace` (writable storage on the trainer
+pod that the rollout / save / traces dirs are created under).
 
 If the agent server cannot reach the trainer at its default service
 name (e.g. you're running the agent server on a different host/network),

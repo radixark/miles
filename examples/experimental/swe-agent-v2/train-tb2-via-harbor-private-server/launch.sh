@@ -24,6 +24,10 @@
 #       Leave unset to omit --router-external-host.
 #   WANDB_TEAM=
 #       Wandb team to log to. Leave unset to omit --wandb-team.
+#   OUTPUT_ROOT=/workspace
+#       Filesystem root under which save-dir and save-traces-dir are
+#       created. Must point at writable storage shared between the
+#       training nodes; the cluster's persistent volume is usually right.
 
 set -euo pipefail
 
@@ -47,12 +51,13 @@ fi
 AGENT_SERVER_URL="${AGENT_SERVER_URL:-http://agent-server:8080}"
 ROUTER_EXTERNAL_HOST="${ROUTER_EXTERNAL_HOST:-}"
 WANDB_TEAM="${WANDB_TEAM:-}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/workspace}"
 
 ARGS=(
     --num-nodes 2 --train-num-nodes 1 --skip-prepare
     --max-seq-len 65536
-    --save-dir "/workspace/GLM-4.7-Flash_2node_tb2_${RUN_TAG}/"
-    --save-traces-dir "/workspace/flash-2node-traces-${RUN_TAG}/traces"
+    --save-dir "${OUTPUT_ROOT}/GLM-4.7-Flash_2node_tb2_${RUN_TAG}/"
+    --save-traces-dir "${OUTPUT_ROOT}/flash-2node-traces-${RUN_TAG}/traces"
     --rollout-batch-size 4 --n-samples-per-prompt 8 --global-batch-size 32
     --save-interval 5
     --agent-server-url "$AGENT_SERVER_URL"
