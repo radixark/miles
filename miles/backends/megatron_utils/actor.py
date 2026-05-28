@@ -36,7 +36,7 @@ from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import _register_replay_list_moe
+from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
@@ -59,7 +59,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         super().init(args, role, with_ref)
 
-        routing_replay_manager.register_replay_list_func = _register_replay_list_moe
+        routing_replay_manager.register_replay_list_func = register_replay_list_moe
 
         init(args)
 

@@ -1,7 +1,11 @@
+from collections.abc import Callable
+
 import torch
 
 from .cp_utils import slice_with_cp
 from .parallel import get_parallel_state
+
+RegisterReplayListFunc = Callable[..., None]
 
 
 def fill_replay_data(
@@ -13,9 +17,18 @@ def fill_replay_data(
     rollout_data,
     data_key: str,
     replay_list: list,
-    register_replay_list_func,
+    register_replay_list_func: RegisterReplayListFunc,
     if_sp_region=True,
 ):
+    """Load rollout replay tensors into module replay queues.
+
+    `rollout_data[data_key]` contains one tensor per sample with shape
+    `[num_tokens - 1, num_streams, topk]`. This function replays the training
+    data iterator to process those tensors in the same microbatch order as
+    log-prob and train forwards, pads/slices them to match the local CP/SP
+    token layout, and then delegates stream-to-module mapping to
+    `register_replay_list_func`.
+    """
     if data_key not in rollout_data:
         raise ValueError(f"{data_key} is required in rollout_data for replay.")
 
@@ -70,7 +83,7 @@ def fill_replay_data(
             start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
             replay_data = replay_data[start:end]
 
-        register_replay_list_func(replay_list, replay_data, models)
+        register_replay_list_func(replay_list, replay_data, models=models)
 
     del rollout_data[data_key]
 
