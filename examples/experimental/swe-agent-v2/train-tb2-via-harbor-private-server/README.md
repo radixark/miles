@@ -82,7 +82,8 @@ Pass any short tag (`pr-smoke`, `260527-2n-v1`, ...) — it threads through
 `--save-dir`, `--save-traces-dir`, and `--wandb-run-name` so multiple
 attempts don't collide.
 
-The full launcher invocation (from `launch.sh`):
+The full launcher invocation (from `launch.sh`, with optional env
+overrides expanded):
 
 ```bash
 python examples/experimental/swe-agent-v2/run-glm47-flash-agentic-async.py \
@@ -92,16 +93,21 @@ python examples/experimental/swe-agent-v2/run-glm47-flash-agentic-async.py \
     --save-traces-dir /workspace/flash-2node-traces-<run-tag>/traces \
     --rollout-batch-size 4 --n-samples-per-prompt 8 --global-batch-size 32 \
     --save-interval 5 \
-    --agent-server-url http://ts-egress-aws-agent-server:8080 \
-    --router-external-host <rcli-job-name>-ts-ingress.tail134ba0.ts.net \
+    --agent-server-url "$AGENT_SERVER_URL" \
     --wandb-project glm47-flash-agentic-async \
-    --wandb-team ch271828n-team \
     --wandb-run-name <run-tag>
+    # optional, only added when the corresponding env var is set:
+    # --router-external-host "$ROUTER_EXTERNAL_HOST"
+    # --wandb-team           "$WANDB_TEAM"
 ```
 
-The cluster's existing `ts-egress-aws-agent-server` ExternalName service
-(in the rcli job's namespace) Tailscale-routes any port through to the
-external agent server's host, so `--agent-server-url` works as written.
+`AGENT_SERVER_URL` defaults to `http://agent-server:8080`; set it to wherever
+your `miles_agent_server` is reachable from the trainer pod.
+
+If the agent server cannot reach the trainer at its default service
+name (e.g. you're running the agent server on a different host/network),
+set `ROUTER_EXTERNAL_HOST` to a hostname the agent server can dial back
+to the trainer's session-server through. Otherwise leave it unset.
 
 ## Sanity checks (in order)
 
