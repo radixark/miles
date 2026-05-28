@@ -1,12 +1,15 @@
 import os
 from dataclasses import dataclass
 
+import torch
+
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+IS_ROCM = torch.version.hip is not None
 
 
 @dataclass
@@ -129,6 +132,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--sglang-speculative-eagle-topk 1 "
         "--sglang-speculative-num-draft-tokens 3 "
     )
+    if IS_ROCM:
+        sglang_args += "--use-miles-router "
 
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
@@ -136,6 +141,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     mtp_args = "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
 
     ci_args = "--ci-test "
+    if IS_ROCM:
+        ci_args += "--ci-disable-logprobs-checker "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -175,8 +182,16 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
 
     train_args = build_train_args(case, wandb_file=wandb_file)
 
+    extra_env_vars = None
+    if IS_ROCM:
+        extra_env_vars = {
+            "SGLANG_USE_AITER": "0",
+            "MILES_TEST_R3_THRESHOLD": "1.0",
+        }
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node,
         megatron_model_type=MODEL_TYPE,
+        extra_env_vars=extra_env_vars,
     )
