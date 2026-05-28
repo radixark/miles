@@ -1,12 +1,13 @@
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
 import miles.backends.megatron_utils as megatron_utils
 from miles.backends.megatron_utils import update_weight_utils
 from miles.utils.arguments import parse_args
 from miles.utils.hf_config import load_hf_config
+from miles.utils.processing_utils import load_tokenizer
 
 
 def add_checkpoint_args(parser):
@@ -43,7 +44,7 @@ def main(args):
     hf_config = load_hf_config(args.hf_checkpoint)
     model_name = type(hf_config).__name__.lower()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
 
     vocab_size = tokenizer.vocab_size if args.vocab_size is None else args.vocab_size
 

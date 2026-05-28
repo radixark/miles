@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
+
 @dataclass(frozen=True)
 class _HFConfigAlias:
     model_type: str
@@ -43,9 +44,9 @@ _REGISTERED_ALIASES: set[str] = set()
 def register_hf_config_aliases() -> None:
     """Register miles model_type aliases with transformers. Idempotent.
 
-    Call once before any third-party `transformers.AutoConfig` / `AutoTokenizer`
-    entry point that won't go through `load_hf_config` (e.g. megatron's
-    `_build_tokenizer`).
+    Already called inside `load_hf_config` and `load_tokenizer`. Only call
+    directly before a third-party entry point that won't go through either
+    (e.g. megatron's `_build_tokenizer`).
     """
     for alias in _CONFIG_ALIASES:
         if alias.model_type in _REGISTERED_ALIASES:
