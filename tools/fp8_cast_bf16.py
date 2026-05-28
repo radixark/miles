@@ -46,6 +46,13 @@ def main(fp8_path, bf16_path):
     os.system("cp -rf " + fp8_path + "/*.py " + bf16_path)
     os.system("cp -rf " + fp8_path + "/tokenizer* " + bf16_path)
     os.system("cp -rf " + fp8_path + "/chat_template* " + bf16_path)
+
+    bf16_config_path = os.path.join(bf16_path, "config.json")
+    with open(bf16_config_path) as f:
+        bf16_config = json.load(f)
+    bf16_config.pop("quantization_config", None)
+    with open(bf16_config_path, "w") as f:
+        json.dump(bf16_config, f, indent=2)
     model_index_file = os.path.join(fp8_path, "model.safetensors.index.json")
     with open(model_index_file) as f:
         model_index = json.load(f)
