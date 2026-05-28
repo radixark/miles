@@ -334,17 +334,17 @@ class SGLangEngine(RayActor):
     def load_lora_adapter_from_tensors(
         self,
         lora_name: str,
-        serialized_tensors: str,
         config_dict: dict,
+        serialized_named_tensors: list,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
     ):
-        """Load a LoRA adapter from serialized tensor data."""
+        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
         payload = {
             "lora_name": lora_name,
-            "serialized_tensors": serialized_tensors,
             "config_dict": config_dict,
+            "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
         if load_format is not None:
