@@ -2,6 +2,7 @@
 # and https://github.com/OpenRLHF/OpenRLHF/blob/10c733694ed9fbb78a0a2ff6a05efc7401584d46/openrlhf/trainer/ppo_utils/experience_maker.py
 
 from argparse import Namespace
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -862,6 +863,7 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    need_entropy_grad: bool = True,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -877,6 +879,7 @@ def calculate_log_probs_and_entropy(
     # Without the clone, the backward will trigger inplace edit error.
     # It seems that the function with tp will modify the logits inplace.
     entropy = None
+    entropy_ctx = nullcontext() if need_entropy_grad else torch.no_grad()
     if logits.size(0) != 0:
         if chunk_size > 0:
             num_chunks = (logits.size(0) - 1) // chunk_size + 1
@@ -888,15 +891,19 @@ def calculate_log_probs_and_entropy(
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
-                entropys = []
-                for _, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                    entropy = compute_entropy_from_logits(logits_chunk.clone(), tp_group)
-                    entropys.append(entropy)
-                entropy = torch.cat(entropys, dim=0)
+                with entropy_ctx:
+                    entropys = []
+                    for logits_chunk in logits_chunks:
+                        entropy_input = logits_chunk.clone() if need_entropy_grad else logits_chunk
+                        entropy = compute_entropy_from_logits(entropy_input, tp_group)
+                        entropys.append(entropy)
+                    entropy = torch.cat(entropys, dim=0)
         else:
             log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
             if with_entropy:
-                entropy = compute_entropy_from_logits(logits.clone(), tp_group)
+                with entropy_ctx:
+                    entropy_input = logits.clone() if need_entropy_grad else logits
+                    entropy = compute_entropy_from_logits(entropy_input, tp_group)
     else:
         log_prob = logits.new_zeros((0,))
         if with_entropy:

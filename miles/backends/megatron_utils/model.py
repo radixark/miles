@@ -30,6 +30,7 @@ from ..training_utils.log_utils import aggregate_forward_results, aggregate_trai
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
+from .chunked_tp_logprob import setup_chunked_tp_logprob
 from .ci_utils import (
     check_model_hashes,
     check_peak_gpu_memory_after_load,
@@ -126,6 +127,8 @@ def setup_model_and_optimizer(
         model = _setup_lora_model_via_bridge(args)
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+
+    setup_chunked_tp_logprob(model, args, role)
 
     if args.debug_disable_optimizer:
         if is_megatron_main_rank():

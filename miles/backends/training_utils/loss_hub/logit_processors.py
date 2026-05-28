@@ -127,6 +127,93 @@ def get_responses(
         yield logits_chunk, tokens_chunk
 
 
+def build_shifted_tokens_bshd(
+    num_tokens: int,
+    device: torch.device,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    max_seq_lens: list[int],
+) -> torch.Tensor:
+    full_tokens = torch.zeros(num_tokens, dtype=torch.long, device=device)
+    for i, (tokens, total_length) in enumerate(zip(unconcat_tokens, total_lengths, strict=False)):
+        seq_start = max_seq_lens[i] * i
+        full_tokens[seq_start : seq_start + total_length - 1] = tokens[1:total_length]
+    return full_tokens
+
+
+def extract_per_sample_bshd(
+    log_prob_full: torch.Tensor,
+    entropy_full: torch.Tensor | None,
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int],
+) -> tuple[list[torch.Tensor], list[torch.Tensor | None]]:
+    log_probs_list = []
+    entropy_list = []
+    for i, (total_length, response_length) in enumerate(zip(total_lengths, response_lengths, strict=False)):
+        end = max_seq_lens[i] * i + total_length
+        start = end - response_length
+        log_probs_list.append(log_prob_full[start - 1 : end - 1])
+        entropy_list.append(entropy_full[start - 1 : end - 1] if entropy_full is not None else None)
+    return log_probs_list, entropy_list
+
+
+def get_log_probs_and_entropy_from_hidden_states(
+    hidden_states: torch.Tensor,
+    *,
+    projection,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    with_entropy: bool = False,
+    max_seq_lens: list[int] | None = None,
+) -> dict[str, list[torch.Tensor]]:
+    parallel_state = get_parallel_state()
+    hidden_states = projection.gather_sp(hidden_states)
+    hidden_states = hidden_states.contiguous().view(-1, hidden_states.size(-1)).contiguous()
+    num_tokens = hidden_states.size(0)
+    tp_group = parallel_state.tp.group
+    seq_chunk_size = args.chunked_tp_logprob_seq_chunk_size
+    rollout_temperature = getattr(args, "rollout_temperature", 1.0)
+
+    full_tokens = build_shifted_tokens_bshd(
+        num_tokens, hidden_states.device, unconcat_tokens, total_lengths, max_seq_lens
+    )
+
+    log_prob_chunks = []
+    entropy_chunks = []
+    for start in range(0, num_tokens, seq_chunk_size):
+        end = min(start + seq_chunk_size, num_tokens)
+        logits_chunk = projection.linear(hidden_states[start:end]).float().contiguous()
+        if rollout_temperature != 1.0:
+            logits_chunk = logits_chunk / rollout_temperature
+        log_prob_chunk, entropy_chunk = calculate_log_probs_and_entropy(
+            logits_chunk,
+            full_tokens[start:end],
+            tp_group,
+            with_entropy=with_entropy,
+            chunk_size=-1,
+            true_on_policy=False,
+            vocab_size=getattr(args, "vocab_size", None),
+            need_entropy_grad=with_entropy,
+        )
+        log_prob_chunks.append(log_prob_chunk.reshape(-1))
+        if with_entropy:
+            entropy_chunks.append(entropy_chunk.reshape(-1))
+
+    log_prob_full = torch.cat(log_prob_chunks, dim=0)
+    entropy_full = torch.cat(entropy_chunks, dim=0) if with_entropy else None
+
+    log_probs_list, entropy_list = extract_per_sample_bshd(
+        log_prob_full, entropy_full, total_lengths, response_lengths, max_seq_lens
+    )
+    res = {"log_probs": log_probs_list}
+    if with_entropy:
+        res["entropy"] = entropy_list
+    return res
+
+
 def get_log_probs_and_entropy(
     logits: torch.Tensor,
     *,
@@ -161,6 +248,19 @@ def get_log_probs_and_entropy(
         a list of `[R]` tensors.
     """
     assert non_loss_data
+    projection = getattr(args, "actor_projection", None)
+    if projection is not None and projection.bypass_enabled:
+        return get_log_probs_and_entropy_from_hidden_states(
+            logits,
+            projection=projection,
+            args=args,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=with_entropy,
+            max_seq_lens=max_seq_lens,
+        )
+
     parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
@@ -180,6 +280,7 @@ def get_log_probs_and_entropy(
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
             vocab_size=getattr(args, "vocab_size", None),
+            need_entropy_grad=with_entropy,
         )
 
         log_probs_list.append(log_prob.squeeze(-1))
