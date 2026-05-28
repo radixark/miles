@@ -174,6 +174,7 @@ def run_session_verify(
     assistant_text_threshold: float = ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD,
     tool_call_failure_mode: str = "rollback",
     rollout_max_response_len: int = 8192,
+    extra_env: dict[str, str] | None = None,
 ) -> None:
     """Boot ``miles`` rollout pipeline and run the multi-role driver.
 
@@ -218,18 +219,22 @@ def run_session_verify(
     metrics_fd, metrics_path = tempfile.mkstemp(prefix="session_verify_metrics_", suffix=".jsonl")
     os.close(metrics_fd)
 
+    extra_env_vars = {
+        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+        "SGLANG_E2E_MODEL_PATH": local_model_dir,
+        "MILES_TITO_MODEL": tito_model,
+        "MILES_SESSION_VERIFY_METRICS_PATH": metrics_path,
+    }
+    if extra_env:
+        extra_env_vars.update(extra_env)
+
     preserved_metrics_path = None
     try:
         U.execute_train(
             train_args=train_args,
             num_gpus_per_node=num_gpus,
             megatron_model_type=None,
-            extra_env_vars={
-                "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-                "SGLANG_E2E_MODEL_PATH": local_model_dir,
-                "MILES_TITO_MODEL": tito_model,
-                "MILES_SESSION_VERIFY_METRICS_PATH": metrics_path,
-            },
+            extra_env_vars=extra_env_vars,
         )
         try:
             _assert_session_verify_metrics(metrics_path, assistant_text_threshold=assistant_text_threshold)
