@@ -96,6 +96,11 @@ def is_lora_enabled(args: Namespace) -> bool:
     return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
 
 
+def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
+    """LoRA + --colocate + --lora-base-cpu-backup all set."""
+    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
+
+
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     """Check if model has LoRA layers applied."""
     for model_chunk in model:

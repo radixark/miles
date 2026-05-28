@@ -1124,6 +1124,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
             )
             parser.add_argument(
+                "--lora-base-cpu-backup",
+                action="store_true",
+                default=False,
+                help=(
+                    "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
+                    "and skip per-step base sync. Trades host RAM for faster "
+                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                ),
+            )
+            parser.add_argument(
                 "--experts-shared-outer-loras",
                 action="store_true",
                 default=False,

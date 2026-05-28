@@ -9,7 +9,12 @@ import torch.distributed as dist
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, build_lora_sync_config, is_lora_weight_name
+from miles.backends.megatron_utils.lora_utils import (
+    LORA_ADAPTER_NAME,
+    build_lora_sync_config,
+    is_lora_weight_name,
+    lora_base_cpu_backup_enabled,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -176,12 +181,12 @@ class UpdateWeightFromTensor:
 
         rank = dist.get_rank()
 
-        # LoRA never mutates the base. Under distributed weight update the base
-        # stays resident on the rollout GPU, so we can skip the base sync
-        # entirely along with the surrounding restore_weights_before_load /
-        # post_process_quantization calls that would otherwise prep / re-quantize
-        # fresh base bytes.
-        skip_base_sync = self.is_lora and self.use_distribute
+        # LoRA never mutates the base. With either path that retains it on the
+        # rollout side (distributed keeps it on GPU; colocate + cpu_backup keeps
+        # a host mirror across pause/resume), we can skip the base sync entirely
+        # and the surrounding restore_weights_before_load / post_process_quantization
+        # calls that would otherwise prep / re-quantize fresh base bytes.
+        skip_base_sync = self.is_lora and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
 
         if rank == 0:
             mode = self.args.pause_generation_mode

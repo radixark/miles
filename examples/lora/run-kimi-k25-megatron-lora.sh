@@ -43,6 +43,7 @@ LORA_ARGS=(
    --lora-dropout 0.0                   # LoRA dropout (0.0 for RL training)
    --target-modules "q_a_proj,kv_a_proj_with_mqa,o_proj,gate_proj,up_proj,down_proj"
    --experts-shared-outer-loras         # shared A on fc1 / shared B on fc2 across experts
+   --lora-base-cpu-backup               # keep frozen base on CPU to free GPU
    --no-gradient-accumulation-fusion
    --sglang-lora-backend triton         # !!! must for moe-lora !!!
    --sglang-lora-use-virtual-experts    # virtual-experts MoE LoRA path
