@@ -39,6 +39,34 @@ SOURCE_PATCHED_FIELDS: list[str] = [
 # Similarly ep is kept because ep=cp, and cp is a shard axis (not replicated),
 # so there is no overlap.
 
+_PRE_MLP_RESIDUAL_MATCH_PLACEHOLDER: str = "__PRE_MLP_RESIDUAL_MATCH__"
+_PRE_MLP_RESIDUAL_MATCH_NEW: str = 'residual = getattr(self, "_sglang_pre_mlp_residual", hidden_states)'
+_PRE_MLP_RESIDUAL_MATCH_OLD: str = "residual = hidden_states"
+
+
+def megatron_pre_mlp_residual_match() -> str:
+    """Pick the pre_mlp_residual anchor line matching the installed Megatron-LM."""
+    import inspect
+
+    from megatron.core.transformer.transformer_layer import TransformerLayer
+
+    source: str = inspect.getsource(TransformerLayer._forward_mlp)
+    if "_sglang_pre_mlp_residual" in source:
+        return _PRE_MLP_RESIDUAL_MATCH_NEW
+    if _PRE_MLP_RESIDUAL_MATCH_OLD in source:
+        return _PRE_MLP_RESIDUAL_MATCH_OLD
+    raise RuntimeError(
+        "Could not find pre_mlp_residual anchor line in TransformerLayer._forward_mlp; "
+        "update Megatron-LM (radixark/Megatron-LM miles-main) and retry."
+    )
+
+
+def get_megatron_patcher_yaml(format_key: str) -> str:
+    """Return Megatron source-patcher YAML with Megatron-version-specific anchors resolved."""
+    template: str = MEGATRON_PATCHER_YAMLS[format_key]
+    return template.replace(_PRE_MLP_RESIDUAL_MATCH_PLACEHOLDER, megatron_pre_mlp_residual_match())
+
+
 MEGATRON_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
@@ -50,7 +78,7 @@ patches:
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
-      - match: 'residual = getattr(self, "_sglang_pre_mlp_residual", hidden_states)'
+      - match: '__PRE_MLP_RESIDUAL_MATCH__'
         append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
       - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
@@ -89,7 +117,7 @@ patches:
         append: "dumper.dump('attn_output', attention_output_with_bias[0], dims='s[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
   - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
     edits:
-      - match: 'residual = getattr(self, "_sglang_pre_mlp_residual", hidden_states)'
+      - match: '__PRE_MLP_RESIDUAL_MATCH__'
         append: "dumper.dump('pre_mlp_residual', residual, dims='s[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
       - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"

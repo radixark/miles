@@ -21,8 +21,8 @@ if str(_MILES_ROOT) not in sys.path:
 import typer
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.conftest_dumper import (
-    MEGATRON_PATCHER_YAMLS,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
+    get_megatron_patcher_yaml,
     SOURCE_PATCHED_FIELDS,
     check_dump_dir,
     clear_proxy_env,
@@ -93,7 +93,7 @@ def prepare(dump_dir: str, mode: str) -> None:
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
     U.exec_command(f"rm -rf {dump_dir}")
 
-    megatron_yaml: str = MEGATRON_PATCHER_YAMLS["bshd" if mode.endswith("_bshd") else "thd"]
+    megatron_yaml: str = get_megatron_patcher_yaml("bshd" if mode.endswith("_bshd") else "thd")
     Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(megatron_yaml)
     Path(SGLANG_SOURCE_PATCHER_CONFIG_PATH).write_text(SGLANG_SOURCE_PATCHER_CONFIG_YAML)
 
