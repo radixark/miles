@@ -1,7 +1,7 @@
 """DeepSeek V3.2 5-layer CI smoke test on H100.
 
-FP8 rollout via tools/convert_hf_to_fp8.py (block-quant). BF16 training.
-Thin wrapper around scripts/run_deepseek_v32.py — the script owns the args.
+FP8 rollout using the raw DeepSeek FP8 checkpoint (no re-quantization).
+BF16 training via Megatron. Thin wrapper around scripts/run_deepseek_v32.py.
 """
 
 import os
@@ -11,7 +11,6 @@ from scripts.run_deepseek_v32 import (
     _execute_train,
     _prepare_bf16_ckpt,
     _prepare_download,
-    _prepare_fp8_ckpt,
     _prepare_megatron_ckpt,
 )
 from tests.ci.ci_register import register_cuda_ci
@@ -27,7 +26,6 @@ def _args() -> ScriptArgs:
         hardware="H100",
         use_single_node=True,
         from_bf16_ckpt=False,
-        rollout_fp8=True,
         num_rollout=2,
         extra_args=(
             "--ci-test --bf16 --freeze-indexer "
@@ -40,7 +38,6 @@ def _args() -> ScriptArgs:
 def prepare(args: ScriptArgs):
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
-    _prepare_fp8_ckpt(args)
     _prepare_megatron_ckpt(args)
 
 
