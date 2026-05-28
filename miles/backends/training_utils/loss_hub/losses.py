@@ -303,7 +303,7 @@ def policy_loss_function(
     if log_probs.numel() == 0:
         loss += 0 * logits.sum()
 
-    train_scored_log_probs = old_log_probs
+    train_scored_log_probs = log_probs
     train_rollout_logprob_abs_diff = None
     train_rollout_kl = None
     if "rollout_log_probs" in batch and batch["rollout_log_probs"]:

@@ -215,10 +215,7 @@ eval:
     true_on_policy_envs = {}
     if args.true_on_policy:
         true_on_policy_args = (
-            "--sglang-enable-deterministic-inference "
-            "--sglang-rl-on-policy-target fsdp "
-            "--deterministic-mode "
-            "--true-on-policy-mode "
+            "--sglang-enable-deterministic-inference " "--deterministic-mode " "--true-on-policy-mode "
         )
         true_on_policy_envs = {
             "NCCL_ALGO": "allreduce:tree",

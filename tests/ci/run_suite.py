@@ -6,6 +6,10 @@ import warnings
 from collections.abc import Iterable
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests
 from tests.ci.ci_utils import run_unittest_files
 

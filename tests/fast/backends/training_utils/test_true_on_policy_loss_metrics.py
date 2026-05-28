@@ -3,8 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.ci.ci_register import register_cpu_ci
 
-from miles.backends.training_utils import loss as loss_utils
+from miles.backends.training_utils.loss_hub import losses as loss_utils
+
+register_cpu_ci(est_time=10, suite="stage-a-cpu")
 
 
 def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
@@ -49,6 +52,11 @@ def _patch_single_rank_masks(monkeypatch):
         loss_utils,
         "get_local_response_loss_masks",
         lambda total_lengths, response_lengths, loss_masks, qkv_format="thd", max_seq_lens=None: loss_masks,
+    )
+    monkeypatch.setattr(
+        loss_utils,
+        "compute_ess_ratio_contribution",
+        lambda **kwargs: torch.zeros((), dtype=torch.float32),
     )
 
 

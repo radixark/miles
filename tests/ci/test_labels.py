@@ -18,6 +18,7 @@ def test_known_labels_initial_labels_present():
         "ckpt",
         "lora",
         "precision",
+        "true-on-policy",
     }
     assert expected <= set(KNOWN_LABELS), f"Missing canonical labels: {expected - set(KNOWN_LABELS)}"
 

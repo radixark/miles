@@ -1,10 +1,13 @@
 import torch
+from tests.ci.ci_register import register_cpu_ci
 
-from miles.utils.ppo_utils import (
+from miles.backends.training_utils.loss_hub.math_utils import (
     _calculate_log_probs_and_entropy_true_on_policy,
     _prepare_true_on_policy_full_logits,
     _split_replicated_loss_gather_grad,
 )
+
+register_cpu_ci(est_time=10, suite="stage-a-cpu")
 
 
 def test_true_on_policy_logprobs_tp1_truncate_after_real_vocab():

@@ -1,19 +1,22 @@
+from __future__ import annotations
+
 import logging
 from argparse import Namespace
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
-from ...utils.data import process_rollout_data
-from ...utils.ray_utils import Box
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
 from .parallel import get_parallel_state
+
+if TYPE_CHECKING:
+    from ...utils.ray_utils import Box
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,8 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
 
 
 def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
+    from ...utils.data import process_rollout_data
+
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
@@ -94,7 +99,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
 
 
 def get_batch(
-    data_iterator: "DataIterator",
+    data_iterator: DataIterator,
     keys: Sequence[str],
     pad_multiplier: int = 128,
     qkv_format: str = "thd",
@@ -327,7 +332,7 @@ class DataIterator:
             self.offset += self.micro_batch_size
         return batch
 
-    def reset(self) -> "DataIterator":
+    def reset(self) -> DataIterator:
         """Reset internal offset to the start and return self."""
         self.offset = 0
         return self
@@ -382,6 +387,8 @@ def get_data_iterator(
         num_microbatches = [num_local_gbs // args.micro_batch_size for _ in range(num_steps_per_rollout)]
         data_iterator = _generate_data_iterator(rollout_data, args.micro_batch_size)
     else:
+        from miles.utils.data import get_minimum_num_micro_batch_size
+
         assert args.max_tokens_per_gpu is not None
         # calculate the number of mirobatches for each step
         samples = rollout_data["total_lengths"]

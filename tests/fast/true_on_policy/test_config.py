@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.true_on_policy import (
     QWEN3_DENSE_TRUE_ON_POLICY_V1,
@@ -12,6 +13,8 @@ from miles.true_on_policy import (
     get_true_on_policy_contract,
     get_true_on_policy_model_profile,
 )
+
+register_cpu_ci(est_time=10, suite="stage-a-cpu")
 
 
 def _args(**overrides):
