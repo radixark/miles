@@ -17,9 +17,6 @@ from dataclasses import dataclass
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
-__all__ = ["load_hf_config", "register_hf_config_aliases"]
-
-
 @dataclass(frozen=True)
 class _HFConfigAlias:
     model_type: str
@@ -96,3 +93,7 @@ def load_hf_config(
         for key, value in overrides.items():
             setattr(config, key, value)
     return config
+
+
+def is_dsa(hf_config) -> bool:
+    return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa")
