@@ -354,7 +354,9 @@ def _send_to_colocated_engine(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
                     config_dict=lora_config,
-                    serialized_named_tensors=[per_rank[0] for per_rank in serialized_named_tensors],
+                    serialized_named_tensors=[
+                        per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
+                    ],
                     load_format="flattened_bucket",
                 )
             )
