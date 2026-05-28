@@ -136,6 +136,8 @@ def setup_session_routes(app, backend, args):
 
                 body = await request.body()
                 request_body = json.loads(body) if body else {}
+                session.latest_req += 1
+                cur_req = session.latest_req
 
                 # TITO token tracking requires Miles-owned input_ids plus SGLang
                 # output-token metadata:
@@ -158,13 +160,12 @@ def setup_session_routes(app, backend, args):
                     tito_tokenizer=registry.tito_tokenizer,
                 )
                 request_body["input_ids"] = prompt_token_ids
-                logger.debug(
-                    "Using TITO input_ids: %d tokens",
-                    len(prompt_token_ids),
-                )
+                
 
                 body = json.dumps(request_body).encode()
                 expected_num_assistant = session.num_assistant
+                
+                
             # --- lock released here ---
 
             # --- Phase 2: proxy to SGLang (NO lock held) ---
@@ -217,6 +218,13 @@ def setup_session_routes(app, backend, args):
                         f"Session {session_id} state changed during proxy "
                         f"(expected num_assistant={expected_num_assistant}, "
                         f"got {session.num_assistant}), skipping state update"
+                    )
+                    return backend.build_proxy_response(result)
+                if cur_req != session.latest_req:
+                    logger.warning(
+                        f"Session {session_id} request changed during proxy "
+                        f"(expected cur_req={cur_req}, "
+                        f"got {session.latest_req}), skipping state update"
                     )
                     return backend.build_proxy_response(result)
 

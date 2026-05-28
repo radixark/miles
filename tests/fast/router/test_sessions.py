@@ -9,6 +9,8 @@ import pytest
 import requests
 from tests.ci.ci_register import register_cpu_ci
 
+from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.session_errors import TokenizationError
 from miles.rollout.session.session_server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
@@ -60,7 +62,7 @@ def router_env():
             url = f"http://127.0.0.1:{port}"
 
             try:
-                yield SimpleNamespace(url=url, backend=backend)
+                yield SimpleNamespace(url=url, backend=backend, server=server_obj)
             finally:
                 server.stop()
 
@@ -141,3 +143,49 @@ class TestSessionProxy:
         record = records[0]
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
+
+    def test_get_session_includes_backend_error_metadata(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+
+        async def fake_do_proxy(request, path, body=None, headers=None):
+            return {
+                "status_code": 400,
+                "response_body": b'{"error":"context too long"}',
+                "headers": {"content-type": "application/json"},
+                "request_body": body,
+            }
+
+        with patch.object(router_env.server, "do_proxy", side_effect=fake_do_proxy):
+            payload = {"messages": [{"role": "user", "content": "hello"}]}
+            resp = requests.post(
+                f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+                json=payload,
+                timeout=10.0,
+            )
+            assert resp.status_code == 400
+
+        get_resp = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
+        assert get_resp.status_code == 200
+        body = get_resp.json()
+        assert body["records"] == []
+        assert body["metadata"]["session_errors"][0]["reason"] == "backend_status_400"
+
+    def test_get_mismatch_compute_error_is_ephemeral(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        payload = {"messages": [{"role": "user", "content": "hello"}]}
+        resp = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+            json=payload,
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+
+        with patch.object(SessionRegistry, "compute_session_mismatch", side_effect=TokenizationError("boom")):
+            first = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
+            second = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
+
+        for response in (first, second):
+            assert response.status_code == 200
+            errors = response.json()["metadata"].get("session_errors", [])
+            assert len(errors) == 1
+            assert errors[0]["reason"] == "tito_session_mismatch_compute_error"

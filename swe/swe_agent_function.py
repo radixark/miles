@@ -26,6 +26,7 @@ async def run(
     prompt: Any,
     request_kwargs: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
+    variant: str = "",
     **kwargs,
 ) -> dict[str, Any] | None:
     """Run a single task instance via the Harbor agent server."""
@@ -42,18 +43,20 @@ async def run(
     )
 
     session_url = f"{base_url}/v1"
+    
     external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
     if external_host:
         parsed = urlparse(session_url)
         port = parsed.port
         netloc = f"{external_host}:{port}" if port else external_host
         session_url = urlunparse(parsed._replace(netloc=netloc))
-
     request: dict[str, Any] = {
         **metadata,
         "base_url": session_url,
         "model": f"openai/{model_name}",
         "sampling_params": request_kwargs,
+        "trials_subdir":variant,
+        # "trials_dir":
     }
 
     max_seq_len = metadata.get("max_seq_len")
@@ -85,7 +88,7 @@ async def run(
     except Exception as e:
         logger.error(f"Agent server call failed: {e}")
         return None
-
+    logger.debug(f"Agent server call response: {response}, from harbor server!")
     return {
         "reward": response.get("reward", 0.0),
         "exit_status": response.get("exit_status", ""),

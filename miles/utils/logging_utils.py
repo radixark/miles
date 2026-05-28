@@ -11,6 +11,15 @@ logger = logging.getLogger(__name__)
 _FATAL_ASYNC_PATTERN = "coroutine .* was never awaited"
 
 
+def resolve_log_level() -> int:
+    level_name = os.environ.get("MILES_LOG_LEVEL", "DEBUG").upper()
+    level = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        logger.warning("Unknown MILES_LOG_LEVEL=%r, falling back to INFO", level_name)
+        return logging.INFO
+    return level
+
+
 # ref: SGLang
 def configure_logger(prefix: str = ""):
     global _LOGGER_CONFIGURED
@@ -19,9 +28,10 @@ def configure_logger(prefix: str = ""):
 
     _LOGGER_CONFIGURED = True
 
+    log_level = resolve_log_level()
     logging.basicConfig(
-        level=logging.INFO,
-        format=f"[%(asctime)s{prefix}] %(filename)s:%(lineno)d - %(message)s",
+        level=log_level,
+        format=f"[%(asctime)s{prefix}] %(levelname)s %(filename)s:%(lineno)d - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
     )

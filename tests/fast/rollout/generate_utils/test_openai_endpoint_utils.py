@@ -12,6 +12,7 @@ register_cpu_ci(est_time=60, suite="stage-a-fast")
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import asyncio
 import pytest
 
 from miles.rollout.generate_utils.openai_endpoint_utils import (
@@ -630,3 +631,64 @@ class TestPrefixCacheInfo:
 
         assert samples[0].prefix_cache_info.cached_tokens == 0
         assert samples[0].prefix_cache_info.total_prompt_tokens == 0
+
+
+class TestOpenAIEndpointTracerCollectRecords:
+    @pytest.mark.asyncio
+    async def test_collect_timeout_merges_server_metadata(self, monkeypatch):
+        tracer = OpenAIEndpointTracer("http://session", "abc123")
+        server_metadata = {
+            "session_errors": [{"reason": "backend_status_400"}],
+            "session_rollbacks": [{"checkpoint_index": 0, "discard_count": 1}],
+        }
+        call_count = {"get": 0}
+
+        async def fake_post(url, payload, action="post", max_retries=60, headers=None):
+            if action == "get":
+                call_count["get"] += 1
+                if call_count["get"] == 1:
+                    raise asyncio.TimeoutError()
+                return {
+                    "session_id": "abc123",
+                    "records": [],
+                    "metadata": server_metadata,
+                }
+            assert action == "delete"
+            return {}
+
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.asyncio.wait_for",
+            lambda coro, timeout: coro,
+        )
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+        records, metadata = await tracer.collect_records()
+
+        assert records == []
+        assert metadata["session_rollbacks"] == server_metadata["session_rollbacks"]
+        assert metadata["session_errors"][0]["reason"] == "backend_status_400"
+        assert metadata["session_errors"][-1]["reason"] == "collect_timeout"
+        assert call_count["get"] == 2
+
+    @pytest.mark.asyncio
+    async def test_collect_failure_returns_error_metadata(self, monkeypatch):
+        tracer = OpenAIEndpointTracer("http://session", "abc123")
+
+        async def fake_post(url, payload, action="post", max_retries=60, headers=None):
+            if action == "get":
+                raise RuntimeError("connection reset")
+            assert action == "delete"
+            return {}
+
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.asyncio.wait_for",
+            lambda coro, timeout: coro,
+        )
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+        records, metadata = await tracer.collect_records()
+
+        assert records == []
+        assert metadata["session_errors"][-1]["reason"] == "collect_failed"
+        assert metadata["session_errors"][-1]["error_type"] == "RuntimeError"
+

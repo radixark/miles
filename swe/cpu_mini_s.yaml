@@ -1,0 +1,133 @@
+# Harbor FastAPI server deployment (ycy, cpu-mini).
+# 集群内访问：http://agent-env.nlp-train.svc.cluster.local:11000/health
+#
+# Apply:
+#   kubectl apply -f cpu_mini_s.yaml
+#
+# port-forward:
+#   kubectl -n nlp-train port-forward deploy/ycy-harbor-server 11000:11000
+# NodePort:
+#   curl http://<节点IP>:31100/health
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ycy-harbor-server
+  namespace: nlp-train
+  labels:
+    app: ycy-harbor-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ycy-harbor-server
+  template:
+    metadata:
+      labels:
+        app: ycy-harbor-server
+    spec:
+      # 不要设置 dnsConfig.nameservers 为公网 DNS，否则会破坏集群内 Service DNS
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: ycy-harbor-server
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: harbor-server
+          image: harbor.unisound.ai/unisound/harbor_ycy:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          # K8s command 会替换镜像 ENTRYPOINT，显式调用 entrypoint.sh 以启动 DinD + sshd
+          command:
+            - /bin/bash
+          args:
+            - -lc
+            - sleep 28d
+          ports:
+            - name: http
+              containerPort: 11000
+          env:
+            - name: http_proxy
+              value: ""
+            - name: https_proxy
+              value: ""
+            - name: HTTP_PROXY
+              value: ""
+            - name: HTTPS_PROXY
+              value: ""
+            - name: no_proxy
+              value: localhost,127.0.0.1,::1
+            - name: NO_PROXY
+              value: localhost,127.0.0.1,::1
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "11000"
+            - name: MAX_CONCURRENT
+              value: "8"
+            - name: HARBOR_TASKS_DIR
+              value: /fs/nlp-intern/yangchengyi/harbor/datasets/swegym
+            - name: AGENT_MAX_INPUT_TOKENS
+              value: "32768"
+            - name: AGENT_MAX_OUTPUT_TOKENS
+              value: "8192"
+            - name: DATA_LINK_SRC
+              value: /fs/nlp-intern/yangchengyi
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 32
+              memory: 900Gi
+            limits:
+              cpu: 32
+              memory: 900Gi
+          volumeMounts:
+            - { name: jfs, mountPath: /fs }
+            - { name: home, mountPath: /home/yangchengyi }
+            - { name: dshm, mountPath: /dev/shm }
+            - { name: docker-storage, mountPath: /var/lib/docker }
+      volumes:
+        - name: jfs
+          hostPath: { path: /fs }
+        - name: home
+          hostPath: { path: /home/yangchengyi }
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 64Gi }
+        - name: docker-storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-env
+  namespace: nlp-intern
+spec:
+  type: NodePort
+  selector:
+    app: ycy-harbor-server
+  ports:
+    - name: http
+      port: 11000
+      targetPort: 11000
+      nodePort: 31100

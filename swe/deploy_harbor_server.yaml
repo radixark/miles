@@ -1,0 +1,129 @@
+# Harbor FastAPI server deployment.
+# Multiple replicas are integrated behind one ClusterIP Service. Each replica
+# runs its own privileged local Docker daemon/storage and can execute Harbor
+# trials independently.
+#
+# Apply:
+#   kubectl apply -f k8s/deploy_harbor_server.yaml
+#
+# Test inside cluster:
+#   curl http://houjue-harbor-server.houjue.svc.cluster.local:11000/health
+#
+# Scale:
+#   kubectl -n houjue scale deploy/houjue-harbor-server --replicas=4
+#
+# Test from your submit/debug machine:
+#   kubectl -n houjue port-forward svc/houjue-harbor-server 11000:11000
+#   curl http://127.0.0.1:11000/health
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: houjue-harbor-server
+  namespace: houjue
+  labels:
+    app: houjue-harbor-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: houjue-harbor-server
+  template:
+    metadata:
+      labels:
+        app: houjue-harbor-server
+    spec:
+      dnsConfig:
+        nameservers: [223.5.5.5, 114.114.114.114]
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: houjue-harbor-server
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: harbor-server
+          image: harbor.unisound.ai/unisound/houjue-dev:v20260517
+          securityContext:
+            privileged: true
+          ports:
+            - name: http
+              containerPort: 11000
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "11000"
+            - name: MAX_CONCURRENT
+              value: "8"
+            - name: HARBOR_TASKS_DIR
+              value: /fs/nlp-intern/houjue/harbor_project/datasets
+            - name: AGENT_MAX_INPUT_TOKENS
+              value: "32768"
+            - name: AGENT_MAX_OUTPUT_TOKENS
+              value: "8192"
+          args:
+            - /bin/bash
+            - -lc
+            - |
+              sudo -iu houjue bash <<'EOF'
+              set -euo pipefail
+              cd /fs/nlp-intern/houjue/harbor_project
+              export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+              unset PIP_TRUSTED_HOST
+              export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+              unset UV_INSECURE_HOST
+              python -m pip install --user --break-system-packages -e ./harbor
+              export PATH="$HOME/.local/bin:$PATH"
+              docker info
+              bash scripts/run_server.sh
+              EOF
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 64
+              memory: 900Gi
+            limits:
+              cpu: 64
+              memory: 900Gi
+          volumeMounts:
+            - { name: jfs, mountPath: /fs }
+            - { name: dshm, mountPath: /dev/shm }
+            - { name: docker-storage, mountPath: /var/lib/docker }
+      volumes:
+        - name: jfs
+          hostPath: { path: /fs }
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 64Gi }
+        - name: docker-storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-env
+  namespace: nlp-train
+spec:
+  type: NodePort
+  selector:
+    app: ycy-harbor-server
+  ports:
+  - name: http
+    port: 11000
+    targetPort: 11000
+    nodePort: 31100

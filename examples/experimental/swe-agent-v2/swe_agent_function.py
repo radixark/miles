@@ -20,7 +20,7 @@ from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
 
-
+# Harbor 服务器 POST 请求
 async def run(
     base_url: str,
     prompt: Any,

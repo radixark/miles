@@ -1,0 +1,124 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          dockerd
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Docker Daemon for DinD
+### END INIT INFO
+
+# --- 配置 ---
+APP_NAME="dockerd"
+APP_PATH=$(which dockerd)
+PID_FILE="/var/run/docker.pid"
+SOCK_FILE="/var/run/docker.sock"
+
+# 默认参数优化：强制使用 overlay2 和 cgroupfs
+DEFAULT_ARGS="--host=unix:///var/run/docker.sock \
+--storage-driver=overlay2 \
+--default-ulimit memlock=-1:-1 \
+--userland-proxy=false"
+
+log_message() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [Docker-Init] $1"
+}
+
+# 修复 Cgroup v2 权限逻辑
+fix_cgroups() {
+    log_message "Fixing Cgroups v2 controllers inheritance..."
+    local cgroup_path="/sys/fs/cgroup"
+
+    if [ -f "$cgroup_path/cgroup.subtree_control" ]; then
+        # 递归开启父级控制器
+        for c in $(cat $cgroup_path/cgroup.controllers); do
+            echo "+$c" > "$cgroup_path/cgroup.subtree_control" 2>/dev/null
+        done
+
+        # 创建并开启 docker 子级控制器
+        mkdir -p "$cgroup_path/docker"
+        for c in $(cat $cgroup_path/docker/cgroup.controllers); do
+            echo "+$c" > "$cgroup_path/docker/cgroup.subtree_control" 2>/dev/null
+        done
+    fi
+}
+
+is_running() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" > /dev/null 2>&1; then
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+    return 1
+}
+
+start() {
+    log_message "Starting Docker Daemon (Background mode)..."
+
+    if is_running; then
+        log_message "Docker daemon is already running."
+        return 0
+    fi
+
+    # 1. 修复环境
+    fix_cgroups
+    rm -f "$SOCK_FILE"
+    mkdir -p /var/lib/docker
+
+    # 2. 构造参数
+    ARGS=${*:-$DEFAULT_ARGS}
+
+    # 3. 核心修改：后台运行且重定向日志
+    # 将输出定向到 PID 1 的 stdout，这样交互式终端就不会被刷屏，但 kubectl logs 依然有效
+    nohup $APP_PATH $ARGS > /proc/1/fd/1 2> /proc/1/fd/2 &
+
+    # 4. 确认启动
+    for i in {1..10}; do
+        sleep 1
+        PID=$(pgrep -f "dockerd.*$SOCK_FILE")
+        if [ -n "$PID" ]; then
+            echo "$PID" > "$PID_FILE"
+            log_message "Docker daemon started successfully (PID: $PID)."
+            return 0
+        fi
+    done
+
+    log_message "Error: Failed to start Docker daemon."
+    return 1
+}
+
+stop() {
+    log_message "Stopping Docker Daemon..."
+    if ! is_running; then
+        log_message "Docker daemon is not running."
+        return 0
+    fi
+
+    PID=$(cat "$PID_FILE")
+    kill -TERM "$PID"
+
+    for i in {1..15}; do
+        kill -0 "$PID" 2>/dev/null || { log_message "Stopped."; rm -f "$PID_FILE" "$SOCK_FILE"; return 0; }
+        sleep 1
+    done
+
+    log_message "Timeout. Force killing..."
+    kill -9 "$PID"
+    rm -f "$PID_FILE" "$SOCK_FILE"
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 2; start ;;
+    status)
+        if is_running; then log_message "Running (PID: $(cat $PID_FILE))"; else log_message "Stopped"; exit 1; fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+

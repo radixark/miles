@@ -219,7 +219,7 @@ class Dataset:
                 multimodal_inputs = process_vision_info(prompt, processor)
             else:
                 multimodal_inputs = None
-
+            # print(f"from data.py, {multimodal_inputs=}")
             origin_samples.append(
                 Sample(
                     prompt=output_prompt,

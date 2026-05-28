@@ -16,7 +16,8 @@ RUN for i in `locale | awk -F'=' '{print $1}'` ; do export  $i="zh_CN.UTF-8"; do
 RUN groupadd -f -g 2216 nlp-intern && groupadd -f -g 2239 nlp-train && groupadd -f -g 3001 docker && groupadd -f -g 2243 yangchengyi && useradd -m -u 2243 -g yangchengyi -G nlp-intern,nlp-train,docker -s /bin/bash yangchengyi \
     && echo 'yangchengyi ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers && echo "yangchengyi:Yangcy173950." | chpasswd 
 
-COPY init-home-symlinks.sh /usr/local/bin/init-home-symlinks.sh
-RUN chmod +x /usr/local/bin/init-home-symlinks.sh
-
-USER root
+# COPY init-home-symlinks.sh /usr/local/bin/init-home-symlinks.sh
+# RUN chmod +x /usr/local/bin/init-home-symlinks.sh
+# RUN chown yangchengyi:nlp-train /home/yangchengyi -R
+USER yangchengyi
+WORKDIR /fs/nlp-intern/yangchengyi

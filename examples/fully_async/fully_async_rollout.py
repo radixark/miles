@@ -284,8 +284,9 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource)
                     continue
 
             if do_print:
+                prompt=group[0].prompt if isinstance(group[0].prompt, str) else group[0].prompt[0]['content']
                 print(
-                    f"First rollout sample: {[group[0].prompt + group[0].response]}, "
+                    f"First rollout sample: {[prompt + group[0].response]}, "
                     f"label: {group[0].label}, reward: {group[0].reward}",
                     flush=True,
                 )
@@ -303,6 +304,33 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource)
                 f"Queue size: {worker.get_queue_size()}, "
                 f"Collected: {len(data)}/{target_data_size}"
             )
+            # #region agent log
+            try:
+                import json as _json
+
+                with open("/fs/nlp-intern/yangchengyi/miles/.cursor/debug-31fe51.log", "a") as _f:
+                    _f.write(
+                        _json.dumps(
+                            {
+                                "sessionId": "31fe51",
+                                "hypothesisId": "H4",
+                                "location": "fully_async_rollout.py:no_progress",
+                                "message": "rollout stalled waiting for completions",
+                                "data": {
+                                    "queue_size": worker.get_queue_size(),
+                                    "collected": len(data),
+                                    "target": target_data_size,
+                                    "stale_recycled": stale_groups_recycled,
+                                    "rollout_batch_size": args.rollout_batch_size,
+                                },
+                                "timestamp": int(current_time * 1000),
+                            }
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            # #endregion
             last_progress_time = current_time
 
         # If no results were processed, brief sleep to avoid busy waiting
@@ -320,8 +348,9 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer: DataSource)
         )
 
     if data:
+        prompt=data[-1][0].prompt if isinstance(data[-1][0].prompt, str) else data[-1][0].prompt[0]['content']
         print(
-            f"Finish rollout: {[data[-1][0].prompt + data[-1][0].response]}, "
+            f"Finish rollout: {[prompt + data[-1][0].response]}, "
             f"label: {data[-1][0].label}, reward: {data[-1][0].reward}",
             flush=True,
         )

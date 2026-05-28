@@ -1,7 +1,7 @@
 apiVersion: kubeflow.org/v2beta1
 kind: MPIJob
 metadata:
-  name: ycy-miles-test-sn-job #必须填写，任务的名字，用户自定义
+  name: ycy-miles-agent-sn-job #必须填写，任务的名字，用户自定义
   namespace: nlp-train
   annotations:
     k8s.v1.cni.cncf.io/networks: hostdev-net
@@ -39,6 +39,8 @@ spec:
             env:
             - name: http_proxy
               value: ""
+            - name: WANDB_KEY
+              value: "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"
             - name: https_proxy
               value: ""
             - name: HTTP_PROXY
@@ -109,6 +111,8 @@ spec:
             env:
             - name: http_proxy
               value: ""
+            - name: WANDB_KEY
+              value: "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"
             - name: https_proxy
               value: ""
             - name: HTTP_PROXY

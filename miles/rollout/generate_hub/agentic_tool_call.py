@@ -73,6 +73,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     agent_metadata = None
     t_start = time.monotonic()
+    variant_name = getattr(input.args, "wandb_group", None)
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
         agent_metadata = await custom_agent_function(
@@ -80,6 +81,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),
             metadata=metadata,
+            variant=variant_name
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
     except Exception as e:

@@ -1675,6 +1675,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Port of the standalone session server. Auto-allocated if not set.",
             )
             parser.add_argument(
+                "--session-debug-dump-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Directory for dumping session-server debug JSON on TITO/session errors. "
+                    "Can also be set through MILES_SESSION_DEBUG_DUMP_DIR. "
+                    "Defaults to '<dump-details>/session_debug' when --dump-details is set; "
+                    "set to 'disabled' to disable that default."
+                ),
+            )
+            parser.add_argument(
                 "--tito-model",
                 type=str,
                 default="default",
@@ -1690,6 +1701,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["tool", "user", "system"],
                 help="Message roles allowed to be appended after the pretokenized "
                 "assistant prefix in TITO sessions (default: tool).",
+            )
+            parser.add_argument(
+                "--use-sglang-tool-choice-required",
+                action="store_true",
+                default=False,
+                help="When set, the session server injects tool_choice='required' "
+                "into chat completion requests that include tools before proxying "
+                "to SGLang. Useful for agentic workloads where every turn must "
+                "emit a tool call.",
             )
             return parser
 
