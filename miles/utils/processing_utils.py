@@ -112,7 +112,7 @@ def build_processor_kwargs(multimodal_inputs: dict | None = None) -> dict:
 
 def processor_requires_medias(processor) -> bool:
     try:
-        params = inspect.signature(processor.__call__).parameters
+        params = inspect.signature(processor).parameters
         return "medias" in params and "text" in params
     except (TypeError, ValueError):
         return hasattr(processor, "media_processor")
