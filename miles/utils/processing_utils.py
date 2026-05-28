@@ -8,6 +8,8 @@ from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer as RawTokenizer
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
+from miles.utils.hf_config import register_hf_config_aliases
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +77,7 @@ def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **k
     if cache_key is not None and cache_key in _TOKENIZER_CACHE:
         return _TOKENIZER_CACHE[cache_key]
 
+    register_hf_config_aliases()
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
     _fix_v5_tokenizer_components(tokenizer, name_or_path)
     if chat_template_path:
