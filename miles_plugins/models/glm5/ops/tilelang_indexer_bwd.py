@@ -143,6 +143,9 @@ def indexer_bwd_interface(
     topk_indices: torch.Tensor,
     grad_scores: torch.Tensor,
 ):
+    if hasattr(index_q, "is_npu") and index_q.is_npu:
+        from ._npu.indexer import npu_indexer_bwd_interface
+        return npu_indexer_bwd_interface(index_q, weights, index_k, topk_indices, grad_scores)
     _, head_num, head_dim = index_q.shape
     k_top = topk_indices.shape[1]
 

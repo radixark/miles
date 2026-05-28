@@ -1,7 +1,20 @@
 import torch
 
-from .tilelang_sparse_mla_bwd import sparse_mla_bwd
-from .tilelang_sparse_mla_fwd import sparse_mla_fwd_interface
+# Lazy-load tilelang GPU kernels (see comment in indexer.py).
+def sparse_mla_fwd_interface(q, kv, indices, sm_scale=None, **kwargs):
+    if hasattr(q, "is_npu") and q.is_npu:
+        from ._npu.sparse_mla import npu_sparse_mla_fwd_interface
+        return npu_sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale, **kwargs)
+    from .tilelang_sparse_mla_fwd import sparse_mla_fwd_interface as _gpu
+    return _gpu(q, kv, indices, sm_scale=sm_scale, **kwargs)
+
+
+def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None, **kwargs):
+    if hasattr(q, "is_npu") and q.is_npu:
+        from ._npu.sparse_mla import npu_sparse_mla_bwd
+        return npu_sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=sm_scale, **kwargs)
+    from .tilelang_sparse_mla_bwd import sparse_mla_bwd as _gpu
+    return _gpu(q, kv, o, do, indices, lse, sm_scale=sm_scale, **kwargs)
 
 
 class SparseMLA(torch.autograd.Function):
