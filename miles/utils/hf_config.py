@@ -17,9 +17,6 @@ from dataclasses import dataclass
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
-__all__ = ["load_hf_config", "register_hf_config_aliases"]
-
-
 @dataclass(frozen=True)
 class _HFConfigAlias:
     model_type: str
