@@ -202,6 +202,66 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="raw",
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
+            # Delta weight sync.
+            parser.add_argument(
+                "--update-weight-mode",
+                choices=["full", "delta"],
+                default="full",
+                help=(
+                    "Weight sync strategy. 'full' sends every parameter each sync. "
+                    "'delta' keeps a pinned-CPU snapshot and sends only changed positions plus values."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-transport",
+                choices=["nccl", "disk"],
+                default="nccl",
+                help=(
+                    "Carrier for --update-weight-mode=delta. 'nccl' broadcasts each delta bucket; "
+                    "'disk' writes per-flush safetensors files under --update-weight-delta-dir."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-encoding",
+                choices=["indices", "deltas", "deltas_zstd"],
+                default="indices",
+                help=(
+                    "Position encoding for delta sync. 'indices' stores int32 absolute positions; "
+                    "'deltas' stores uint16 gap deltas with uint32 fallback; 'deltas_zstd' applies "
+                    "zstd L1 compression to disk files."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-delta-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Shared filesystem directory for disk delta sync. The trainer writes one "
+                    "weight_v{N:06d} subdirectory per sync and rollout engines read files from it."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-delta-keep-files",
+                action="store_true",
+                default=False,
+                help="Keep per-sync delta directories after rollout engines acknowledge them.",
+            )
+            parser.add_argument(
+                "--update-weight-delta-profile",
+                action="store_true",
+                default=False,
+                help="Emit extra sender-side timing metrics for disk delta weight sync.",
+            )
+            parser.add_argument(
+                "--custom-delta-pre-push-path",
+                type=str,
+                default=None,
+                help=(
+                    "Optional hook for disk delta sync, called after trainer ranks finish writing "
+                    "files and before rank 0 notifies rollout engines. Signature: "
+                    "def hook(args, version_dir: str, rollout_engines) -> None | Future."
+                ),
+            )
             parser.add_argument(
                 "--extra-high-precision-layers-hf",
                 type=str,
@@ -265,9 +325,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The huggingface checkpoint of the trained model. "
                     "This is used to initialize sglang and also provide the tokenizer. "
-                    "Note that, we will always update the parameters in sglang with that of megatron before training, "
-                    "so you only need to provide a huggingface checkpoint that has the same architecture as the model you want to train. "
-                    "It doesn't necessary need to contain the most up-to-date parameters."
+                    "For full weight sync, Miles updates SGLang parameters from Megatron before training, "
+                    "so this checkpoint only needs the same architecture. For --update-weight-mode=delta, "
+                    "the first update seeds the delta snapshot without sending weights, so this checkpoint "
+                    "must already match the initial trainer weights."
                 ),
             )
             parser.add_argument(
@@ -2095,6 +2156,23 @@ def miles_validate_args(args):
     assert not (args.debug_rollout_only and args.debug_train_only), (
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
+
+    if args.update_weight_mode == "delta":
+        if args.colocate:
+            raise ValueError(
+                "--update-weight-mode=delta is not supported with --colocate. Colocated weight sync uses CUDA IPC, "
+                "so sparse delta encoding only adds snapshot/diff overhead."
+            )
+        if args.update_weight_transfer_mode == "p2p":
+            raise ValueError(
+                "--update-weight-mode=delta is not compatible with --update-weight-transfer-mode=p2p. "
+                "Use --update-weight-transport=nccl or --update-weight-transport=disk for delta sync."
+            )
+        if args.update_weight_transport == "disk" and not args.update_weight_delta_dir:
+            raise ValueError(
+                "--update-weight-transport=disk requires --update-weight-delta-dir to point at a filesystem "
+                "shared between the trainer and rollout engines."
+            )
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":

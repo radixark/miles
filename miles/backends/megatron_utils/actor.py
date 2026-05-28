@@ -161,6 +161,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.colocate:
             update_weight_cls = UpdateWeightFromTensor
+        elif self.args.update_weight_mode == "delta":
+            # Lazy import: the delta module pulls DeltaEncoding/DeltaParam/DeltaSpec
+            # from SGLang, which only exist on newer images. Importing eagerly would
+            # break old images even when delta mode is unused.
+            from .update_weight.update_weight_from_distributed.delta import UpdateWeightFromDistributedDelta
+
+            update_weight_cls = UpdateWeightFromDistributedDelta
         else:
             if self.args.update_weight_transfer_mode == "broadcast":
                 update_weight_cls = UpdateWeightFromDistributed
@@ -476,7 +483,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     logger.info(f"Updating ref model at rollout_id {rollout_id}")
                 self.weights_backuper.backup("ref")
 
-        log_perf_data(rollout_id, self.args)
+        log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:

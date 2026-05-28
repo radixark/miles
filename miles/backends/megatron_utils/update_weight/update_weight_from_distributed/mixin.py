@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import ray
 import torch
@@ -30,6 +30,15 @@ class DistBucketedWeightUpdateMixin:
             Transfer a bucket of HF-format ``(name, tensor)`` pairs to rollout
             engines (via NCCL broadcast, p2p write, etc.).
     """
+
+    def pop_metrics(self) -> dict[str, float]:
+        """
+        Return and clear update-weight metrics. Delta sync fills this; full/P2P
+        paths keep it empty but expose the same actor-facing interface.
+        """
+        out = getattr(self, "update_weight_metrics", {})
+        self.update_weight_metrics = {}
+        return out
 
     def _gather_and_update_non_expert_weights(
         self,
@@ -66,6 +75,7 @@ class DistBucketedWeightUpdateMixin:
         self,
         update_bucket_weight_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None],
         pbar: tqdm | None = None,
+        params: Iterator[tuple[str, torch.Tensor]] | None = None,
     ) -> None:
         """
         Bucketed TP + EP all-gather + HF conversion for expert parameters.
@@ -74,7 +84,10 @@ class DistBucketedWeightUpdateMixin:
         buffer_size = 0
         named_tensors: list[tuple[str, torch.Tensor]] = []
 
-        for name, param in collect_named_tensors_for_weight_transfer(self.args, self.model, is_expert=True):
+        if params is None:
+            params = collect_named_tensors_for_weight_transfer(self.args, self.model, is_expert=True)
+
+        for name, param in params:
             param = all_gather_param(self.args, name, param)
             param_size = param.numel() * param.element_size()
             if (

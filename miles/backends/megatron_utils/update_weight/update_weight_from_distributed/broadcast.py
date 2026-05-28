@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import socket
 import time
 from argparse import Namespace
@@ -13,6 +15,7 @@ from tqdm import tqdm
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
 
+from ...sglang import DeltaSpec
 from .mixin import DistBucketedWeightUpdateMixin
 
 
@@ -41,6 +44,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self.update_weight_metrics: dict[str, float] = {}
 
     def connect_rollout_engines(
         self,
@@ -69,7 +73,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                     self.args, self._group_name, self._model_update_groups, self.rollout_engines
                 )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self._group_name, rollout_engines
+                self.args, self._group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
             )
 
     @property
@@ -78,9 +82,16 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     def _update_weight_implementation(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
+        self,
+        converted_named_tensors: list[tuple[str, torch.Tensor]],
+        pbar: tqdm | None = None,
+        load_format: str | None = None,
+        delta: DeltaSpec | None = None,
     ) -> None:
         """Lock → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
+        if not converted_named_tensors:
+            return
+
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
@@ -90,6 +101,8 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             self.weight_version,
             self.rollout_engines,
             converted_named_tensors,
+            load_format=load_format,
+            delta=delta,
         )
         ray.get(refs)
         converted_named_tensors.clear()
@@ -159,9 +172,12 @@ def update_weights_from_distributed(
     weight_version: int,
     rollout_engines: Sequence[ActorHandle],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
+    load_format: str | None = None,
+    delta: DeltaSpec | None = None,
 ) -> list[ObjectRef]:
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
+    Delta sync passes ``load_format="delta"`` with a serialized DeltaSpec.
     """
     refs = [
         engine.update_weights_from_distributed.remote(
@@ -170,6 +186,8 @@ def update_weights_from_distributed(
             shapes=[param.shape for _, param in converted_named_tensors],
             group_name=group_name,
             weight_version=str(weight_version),
+            load_format=load_format,
+            delta=delta,
         )
         for engine in rollout_engines
     ]

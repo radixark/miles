@@ -32,6 +32,13 @@ Routing Replay for MoE, speculative decoding, and LoRA training and serving.
 
   </Card>
 
+  <Card title="Delta Weight Sync" icon="shuffle" href="delta-weight-sync">
+
+    Non-colocated sync that sends changed weight positions and values instead
+    of broadcasting every parameter each step.
+
+  </Card>
+
   <Card title="Speculative Decoding" icon="rocket" href="speculative-decoding">
 
     Draft + target speculative rollout, with online MTP-SFT for the draft.
