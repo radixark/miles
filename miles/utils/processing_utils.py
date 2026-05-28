@@ -1,4 +1,5 @@
 import base64
+import inspect
 import io
 import logging
 import os
@@ -7,6 +8,8 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer as RawTokenizer
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
+
+from miles.utils.hf_config import register_hf_config_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,7 @@ def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **k
     if cache_key is not None and cache_key in _TOKENIZER_CACHE:
         return _TOKENIZER_CACHE[cache_key]
 
+    register_hf_config_aliases()
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
     _fix_v5_tokenizer_components(tokenizer, name_or_path)
     if chat_template_path:
@@ -107,6 +111,30 @@ def build_processor_kwargs(multimodal_inputs: dict | None = None) -> dict:
             result[key] = modality_forced.copy()
 
     return result
+
+
+def processor_requires_medias(processor) -> bool:
+    try:
+        params = inspect.signature(processor).parameters
+        return "medias" in params and "text" in params
+    except (TypeError, ValueError):
+        return hasattr(processor, "media_processor")
+
+
+def call_processor(processor, text, multimodal_inputs: dict | None = None):
+    multimodal_inputs = multimodal_inputs or {}
+
+    # for kimi-vl & kimi-2.5
+    if processor_requires_medias(processor):
+        medias = []
+        if images := multimodal_inputs.get("images"):
+            medias.extend({"type": "image", "image": image} for image in images)
+        if videos := multimodal_inputs.get("videos"):
+            medias.extend({"type": "video", "video": video} for video in videos)
+        return processor(text=text, medias=medias)
+
+    kwargs = build_processor_kwargs(multimodal_inputs)
+    return processor(text=text, **kwargs)
 
 
 def load_processor(name_or_path: str, **kwargs):
