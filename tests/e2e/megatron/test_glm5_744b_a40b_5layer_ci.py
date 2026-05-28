@@ -24,6 +24,7 @@ def _args() -> ScriptArgs:
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=2,
+        save_checkpoint=False,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
     )
 

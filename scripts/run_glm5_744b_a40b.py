@@ -82,6 +82,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_mtp: bool = False
     enable_pd: bool = True
     enable_optimizer_offload: bool = False
+    save_checkpoint: bool = True
     num_rollout: int = 3000
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -214,15 +215,18 @@ def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
 
 
 def _execute_train(args: ScriptArgs):
-    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     hf_name = f"{args.model_name}_fp8" if args.fp8_rollout else args.model_name
     ckpt_args = (
         f"--hf-checkpoint {args.model_local_dir}/{hf_name} "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
-        "--save-interval 20 "
     )
+    if args.save_checkpoint:
+        load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
+        ckpt_args += (
+            f"--load {load_save_path} "
+            f"--save {load_save_path} "
+            "--save-interval 20 "
+        )
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
