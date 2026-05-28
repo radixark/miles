@@ -54,22 +54,7 @@ the file on the cluster's shared volume so it survives pod recreate:
 /cluster_personal/job_workspaces/<your-job>/tb2_train.jsonl
 ```
 
-### 3. Model checkpoint at `/models/zai-org/GLM-4.7-Flash`
-
-The launcher's `--hf-checkpoint` default is `/models/zai-org/GLM-4.7-Flash`. On
-some fresh `radixark/miles:dev` pods the actual local copy lives one level
-shallower at `/models/GLM-4.7-Flash` (no `zai-org/` subdir); if so, symlink it
-before launching:
-
-```bash
-mkdir -p /models/zai-org
-ln -sf /models/GLM-4.7-Flash /models/zai-org/GLM-4.7-Flash
-```
-
-If neither path exists, the model lives on shared GPFS at
-`/cluster_public/miles_data/models/GLM-4.7-Flash` — symlink from there.
-
-### 4. The training branch with the threadpool fix
+### 3. The training branch with the threadpool fix
 
 The 5-node baseline branch has a session-server tokenization fix
 (off-loading to a threadpool) without which sglang trips a 500-storm under
@@ -82,31 +67,6 @@ git checkout shi/260421-glm47-flash-2node            # head 83bcfa6 (or newer
 grep -n run_in_threadpool miles/rollout/session/sessions.py | head -3
 # expect lines 7 (import), 173, 245 (call sites)
 ```
-
-On a fresh pod `origin` may be set to a Mac local path
-(`file:///Volumes/x10/miles`); reset to GitHub HTTPS with the PAT from the
-pod's `$GITHUB_URL` first:
-
-```bash
-set -l pat (echo $GITHUB_URL | sed -E "s|https://([^@]+)@.*|\1|")
-git remote set-url origin "https://$pat@github.com/radixark/miles.git"
-```
-
-### 5. Compatible `transformers` version
-
-The launcher calls `transformers.AutoConfig.from_pretrained` on the
-`--hf-checkpoint` path. `transformers>=5.0` rejects absolute local paths
-that look like a Hub repo id (`HFValidationError: Repo id must be in the
-form 'repo_name' or 'namespace/repo_name'`). If you see that, downgrade:
-
-```bash
-pip install "transformers<5"
-```
-
-Note that this image's `sglang` / `megatron-bridge` may pin
-`transformers==5.6.0`; if your image hits a self-conflicting dep graph,
-either re-pin the image or patch `train_async.py` to bypass
-`AutoConfig.from_pretrained` for absolute local paths.
 
 ## Launch
 
