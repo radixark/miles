@@ -276,7 +276,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "The name of the model, this is used to convert the megatron weights into huggingface format. "
-                    "If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as model_name. "
+                    "If not set, we will use `type(load_hf_config(args.hf_checkpoint)).__name__.lower()` as model_name. "
                     "Also, sometimes this will help alleviate the bug that transformers cannot find certain model."
                 ),
             )
@@ -1930,7 +1930,7 @@ def miles_validate_args(args):
     #      wins and is never overridden)
     #   2. the caller chose a non-default --tito-model family (DEFAULT means
     #      "use the model's native HF chat template", which is loaded by
-    #      AutoTokenizer.from_pretrained — no override needed here)
+    #      load_tokenizer — no override needed here)
     should_auto_resolve = args.chat_template_path is None and args.tito_model != TITOTokenizerType.DEFAULT.value
 
     if should_auto_resolve:
