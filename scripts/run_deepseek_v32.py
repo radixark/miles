@@ -385,9 +385,13 @@ matchers:
                 else:
                     sglang_world_size = 8
                 sglang_decode_max_bs = 256
+                if args.hardware in ("H100", "H200"):
+                    sglang_moe_runner_backend = "triton"
+                else:
+                    sglang_moe_runner_backend = "flashinfer_trtllm_routed"
                 sglang_args += (
                     f"--rollout-num-gpus-per-engine {sglang_world_size} "
-                    "--sglang-moe-runner-backend flashinfer_trtllm_routed "
+                    f"--sglang-moe-runner-backend {sglang_moe_runner_backend} "
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "
                     "--sglang-enable-dp-attention "
