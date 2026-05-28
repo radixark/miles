@@ -21,6 +21,9 @@ def set_default_megatron_args(args):
     # Notice(Jiajun): new megatron has removed this argument and use dp_reshardable instead of fully_shard
     if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1":
         args.dist_ckpt_save_pre_mcore_014 = True
+    args_dict = vars(args)
+    if "layernorm_epsilon" not in args_dict and "norm_epsilon" in args_dict:
+        args.layernorm_epsilon = args_dict["norm_epsilon"]
     # compatible for megatron
     if hasattr(args, "rope_type") and args.rope_type is None:
         args.rope_type = "yarn" if args.multi_latent_attention else "rope"

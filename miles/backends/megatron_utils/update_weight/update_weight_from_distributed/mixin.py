@@ -10,7 +10,13 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.timer import timer
 
 from ...megatron_to_hf import convert_to_hf
-from ..common import all_gather_param, collect_named_tensors_for_weight_transfer, post_process_weights
+from ..common import (
+    all_gather_param,
+    collect_named_tensors_for_weight_transfer,
+    compute_tensor_checksums,
+    dispatch_weight_check,
+    post_process_weights,
+)
 
 
 class DistBucketedWeightUpdateMixin:
@@ -150,6 +156,15 @@ class DistBucketedWeightUpdateMixin:
                     post_process_quantization=False,
                 )
 
+    def _update_weight_with_optional_checksums(
+        self,
+        converted_named_tensors: list[tuple[str, torch.Tensor]],
+        pbar: tqdm | None = None,
+    ) -> None:
+        if self.args.enable_weight_checksum_checker and converted_named_tensors:
+            self._last_checksums.update(compute_tensor_checksums(converted_named_tensors))
+        self._update_weight_implementation(converted_named_tensors, pbar)
+
     def _finalize_and_resume_engines(self, post_load_weights: bool = False) -> None:
         """Run post-process if needed and resume rollout engines."""
         if dist.get_rank() == 0:
@@ -178,6 +193,7 @@ class DistBucketedWeightUpdateMixin:
             generation.
         """
         self.weight_version += 1
+        self._last_checksums = {}
 
         self._pause_and_prepare_engines()
         dist.barrier(group=get_gloo_group())
@@ -185,11 +201,21 @@ class DistBucketedWeightUpdateMixin:
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-            self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+            self._gather_and_update_non_expert_weights(self._update_weight_with_optional_checksums, pbar)
             dist.barrier(group=get_gloo_group())
-            self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+            self._gather_and_update_expert_weights(self._update_weight_with_optional_checksums, pbar)
             dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
             self._finalize_and_resume_engines()
             dist.barrier(group=get_gloo_group())
+
+    def check_weights(self, action: str) -> None:
+        if dist.get_rank() != 0:
+            return
+        dispatch_weight_check(
+            self.rollout_engines,
+            action,
+            self.args.enable_weight_checksum_checker,
+            self._last_checksums,
+        )

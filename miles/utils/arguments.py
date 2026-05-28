@@ -1420,6 +1420,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["torch", "memray"],
                 default="torch",
             )
+            parser.add_argument(
+                "--enable-weight-checksum-checker",
+                dest="enable_weight_checksum_checker",
+                action="store_true",
+                help="Verify synced rollout weights by comparing Miles payload checksums against the weights stored in SGLang after update.",
+            )
             parser.add_argument("--check-weight-update-equal", action="store_true")
             parser.add_argument(
                 "--env-report",
@@ -1778,13 +1784,13 @@ def parse_args(add_custom_arguments=None):
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
+        args = set_default_megatron_args(args)
         if args.hf_checkpoint:
             hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
             hf_validate_args(args, hf_config)
 
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-        args = set_default_megatron_args(args)
     else:
         from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
 
@@ -2268,27 +2274,23 @@ def hf_validate_args(args, hf_config):
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
 
-    for hf_config_name, megatron_config_name, compare_fn in [
+    for hf_config_name, megatron_config_names, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
         ("intermediate_size", "ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
-        (
-            "rms_norm_eps",
-            "norm_epsilon" if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1" else "layernorm_epsilon",
-            equal,
-        ),
+        ("rms_norm_eps", "layernorm_epsilon", equal),
         ("rope_theta", "rotary_base", equal),
     ]:
         # FIXME: Qwen3.5 transfomers has bug.
         if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
             continue
         if hasattr(hf_config, hf_config_name):
-            if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
+            if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_names)):
                 errors.append(
                     f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "
-                    f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."
+                    f"{megatron_config_names} {getattr(args, megatron_config_names)}, please check the config."
                 )
 
     if len(errors) > 0:

@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import logging
 import re
@@ -15,6 +16,29 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import ParamInfo
 
 logger = logging.getLogger(__name__)
+
+
+def compute_tensor_checksums(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> dict[str, str]:
+    """Return SHA256 digests for a converted HF tensor payload."""
+    return {
+        name: hashlib.sha256(tensor.detach().cpu().contiguous().view(torch.uint8).numpy()).hexdigest()
+        for name, tensor in named_tensors
+    }
+
+
+def dispatch_weight_check(
+    rollout_engines: Sequence[ActorHandle],
+    action: str,
+    use_checksum: bool,
+    checksums: dict[str, str] | None,
+) -> None:
+    if use_checksum:
+        assert checksums, "Checksum checker is enabled but no checksums were produced."
+        ray.get(
+            [engine.check_weights.remote(action="compare_checksum", checksums=checksums) for engine in rollout_engines]
+        )
+        return
+    ray.get([engine.check_weights.remote(action=action) for engine in rollout_engines])
 
 
 def _gather_with_stride(

@@ -14,7 +14,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import post_process_weights
+from .common import compute_tensor_checksums, dispatch_weight_check, post_process_weights
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -178,7 +178,8 @@ class UpdateWeightFromTensor:
         if rank == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            if mode not in ("in_place"):
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
             if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
                 post_process_weights(
                     rollout_engines=self.rollout_engines,
@@ -188,12 +189,15 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
+        self._last_checksums = {}
 
         # For LoRA+distributed: base weights are frozen, skip after first round.
         if not (self.is_lora and self.use_distribute and self._lora_base_synced):
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
+                if self.args.enable_weight_checksum_checker:
+                    self._last_checksums.update(compute_tensor_checksums(hf_named_tensors))
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
@@ -204,6 +208,8 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="lora"
             ):
+                if self.args.enable_weight_checksum_checker:
+                    self._last_checksums.update(compute_tensor_checksums(hf_named_tensors))
                 refs, long_lived_tensors = self._send_lora_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=True)
@@ -274,6 +280,22 @@ class UpdateWeightFromTensor:
             )
             self._lora_loaded = True
             return refs or [], long_lived_tensors
+
+    def check_weights(self, action: str) -> None:
+        if dist.get_rank() != 0:
+            return
+        dispatch_weight_check(
+            self._target_engines(),
+            action,
+            self.args.enable_weight_checksum_checker,
+            self._last_checksums,
+        )
+
+    def _target_engines(self) -> list[ActorHandle]:
+        target_engines = list(self.rollout_engines)
+        if self.use_distribute:
+            target_engines.extend(self.distributed_rollout_engines)
+        return target_engines
 
 
 def _send_to_colocated_engine(

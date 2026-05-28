@@ -123,6 +123,10 @@ class RayTrainGroup:
         """Broadcast weights from rank 0 to all other ranks."""
         await self._broadcast("update_weights")
 
+    async def check_weights(self, action: str = "compare"):
+        """Verify weights between training and rollout engines."""
+        await self._broadcast("check_weights", action=action)
+
     async def onload(self):
         await self._broadcast("wake_up")
 

@@ -29,8 +29,8 @@ async def train(args):
     # always update weight first so that sglang has the loaded weights from training.
     await actor_model.update_weights()
 
-    if args.check_weight_update_equal:
-        await rollout_manager.check_weights.remote(action="compare")
+    if args.check_weight_update_equal or args.enable_weight_checksum_checker:
+        await actor_model.check_weights()
 
     if args.offload_rollout:
         await rollout_manager.onload_kv.remote()
@@ -95,6 +95,8 @@ async def train(args):
         if args.offload_rollout:
             await rollout_manager.onload_weights.remote()
         await actor_model.update_weights()
+        if args.check_weight_update_equal or args.enable_weight_checksum_checker:
+            await actor_model.check_weights()
         if args.offload_rollout:
             await rollout_manager.onload_kv.remote()
 
