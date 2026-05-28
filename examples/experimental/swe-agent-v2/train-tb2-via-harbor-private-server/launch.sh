@@ -51,7 +51,6 @@ python "$LAUNCHER" \
     --save-traces-dir "/workspace/flash-2node-traces-${RUN_TAG}/traces" \
     --rollout-batch-size 4 --n-samples-per-prompt 8 --global-batch-size 32 \
     --save-interval 5 \
-    --sglang-mem-fraction-static 0.72 \
     --agent-server-url "$AGENT_SERVER_URL" \
     --router-external-host "${RCLI_JOB_NAME}-ts-ingress.tail134ba0.ts.net" \
     --wandb-project glm47-flash-agentic-async \

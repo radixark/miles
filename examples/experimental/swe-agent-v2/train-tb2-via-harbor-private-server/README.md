@@ -54,18 +54,15 @@ the file on the cluster's shared volume so it survives pod recreate:
 /cluster_personal/job_workspaces/<your-job>/tb2_train.jsonl
 ```
 
-### 3. The training branch with the threadpool fix
+### 3. A current miles checkout
 
-The 5-node baseline branch has a session-server tokenization fix
-(off-loading to a threadpool) without which sglang trips a 500-storm under
-load:
+Run from a current `miles` checkout — `origin/main` is fine. Older topic
+branches may carry stale launcher flags or out-of-date torch / sglang
+glue code; this example was validated against main.
 
 ```bash
 cd /workspace/miles
-git checkout shi/260421-glm47-flash-2node            # head 83bcfa6 (or newer
-                                                     # with the same fix)
-grep -n run_in_threadpool miles/rollout/session/sessions.py | head -3
-# expect lines 7 (import), 173, 245 (call sites)
+git checkout origin/main
 ```
 
 ## Launch
@@ -95,7 +92,6 @@ python examples/experimental/swe-agent-v2/run-glm47-flash-agentic-async.py \
     --save-traces-dir /workspace/flash-2node-traces-<run-tag>/traces \
     --rollout-batch-size 4 --n-samples-per-prompt 8 --global-batch-size 32 \
     --save-interval 5 \
-    --sglang-mem-fraction-static 0.72 \
     --agent-server-url http://ts-egress-aws-agent-server:8080 \
     --router-external-host <rcli-job-name>-ts-ingress.tail134ba0.ts.net \
     --wandb-project glm47-flash-agentic-async \
