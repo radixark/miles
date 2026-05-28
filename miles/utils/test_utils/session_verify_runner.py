@@ -232,6 +232,9 @@ def run_session_verify(args: argparse.Namespace) -> None:
                 "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
                 "MILES_TITO_MODEL": args.tito_model,
                 "MILES_SESSION_VERIFY_METRICS_PATH": metrics_path,
+                # Per-test SGLang/aiter env overrides (e.g. ROCm GLM-4.7 fused-MLA/
+                # aiter-MoE bypass); empty/absent for tests that don't set them.
+                **(getattr(args, "extra_env", None) or {}),
             },
         )
         try:
