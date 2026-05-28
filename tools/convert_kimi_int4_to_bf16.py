@@ -218,15 +218,11 @@ def main():
     for fname in os.listdir(model_dir):
         src_path = os.path.join(model_dir, fname)
         dst_path = os.path.join(output_dir, fname)
+        extensions_to_copy = (".json", ".py", ".jinja", ".model")
+
         if fname == "model.safetensors.index.json":
             continue
-        if (
-            fname.endswith(".json")
-            or fname.endswith(".py")
-            or fname.startswith("tokenizer")
-            or fname.endswith(".jinja")
-            or fname.endswith(".model")
-        ):
+        if fname.startswith("tokenizer") or any(fname.endswith(ext) for ext in extensions_to_copy):
             shutil.copy2(src_path, dst_path)
 
     # Generate new index
