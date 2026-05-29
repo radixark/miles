@@ -2,6 +2,7 @@ accelerate
 blobfile
 datasets
 httpx[http2]
+hypothesis  # test-only: property-based tests (tests/fast/ray/rollout/test_train_data_conversion.py)
 mcp[cli]
 memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
 omegaconf
