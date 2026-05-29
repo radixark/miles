@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+from functools import partial
 
 
 import safetensors
@@ -25,10 +26,14 @@ from tqdm import tqdm
 
 try:
     from flashinfer import mxfp8_quantize as flashinfer_mxfp8_quantize
+
+    mxfp8_quantize = partial(flashinfer_mxfp8_quantize, is_sf_swizzled_layout=False)
 except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("FlashInfer mxfp8_quantize not available; falling back to Triton.")
-    flashinfer_mxfp8_quantize = None
+    from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
+
+    mxfp8_quantize = mxfp8_group_quantize
 
 
 SKIP_WEIGHT_SUBSTRINGS = (
@@ -154,12 +159,7 @@ def quantize_mxfp8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         raise ValueError(f"Last dim {k} must be divisible by 32 for MXFP8.")
 
     weight_flat = weight.view(-1, k).contiguous()
-    if flashinfer_mxfp8_quantize is not None and torch.cuda.get_device_capability(weight_flat.device)[0] >= 10:
-        qweight, scale = flashinfer_mxfp8_quantize(weight_flat, is_sf_swizzled_layout=False)
-    else:
-        from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
-
-        qweight, scale = mxfp8_group_quantize(weight_flat)
+    qweight, scale = mxfp8_quantize(weight_flat)
     qweight = qweight.view_as(weight)
     scale = scale.view(*weight.shape[:-1], k // 32).contiguous()
     return qweight, scale

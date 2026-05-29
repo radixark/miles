@@ -1,23 +1,18 @@
 import logging
 import re
+from functools import partial
 
-import torch
 
 try:
     from flashinfer import mxfp8_quantize as flashinfer_mxfp8_quantize
+
+    mxfp8_quantize = partial(flashinfer_mxfp8_quantize, is_sf_swizzled_layout=False)
 except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("FlashInfer mxfp8_quantize not available; falling back to Triton.")
-    flashinfer_mxfp8_quantize = None
-
-
-def mxfp8_quantize(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    if flashinfer_mxfp8_quantize is not None and torch.cuda.get_device_capability(weight.device)[0] >= 10:
-        return flashinfer_mxfp8_quantize(weight, is_sf_swizzled_layout=False)
-
     from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
 
-    return mxfp8_group_quantize(weight)
+    mxfp8_quantize = mxfp8_group_quantize
 
 
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):

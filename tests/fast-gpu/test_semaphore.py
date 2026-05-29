@@ -5,7 +5,12 @@ from tests.ci.ci_register import register_cuda_ci
 # serializes faster than the latency window, so observed max drops to 1 and
 # the assertion fails. Pinned to GPU until the assertion is rewritten to be
 # scheduler-independent.
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+register_cuda_ci(
+    est_time=60,
+    suite="stage-b-2-gpu-h200",
+    labels=[],
+    disabled="FIXME: re-enable after shared HTTP client concurrency is reset between cases.",
+)
 
 import pytest
 

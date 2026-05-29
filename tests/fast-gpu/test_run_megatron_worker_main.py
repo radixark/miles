@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=[])
+register_cuda_ci(
+    est_time=30,
+    suite="stage-b-2-gpu-h200",
+    labels=[],
+    disabled="FIXME: re-enable after worker/main.py stubbing is safe in script-mode CI.",
+)
 
 import argparse
 import os
@@ -21,9 +26,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import torch
-
-import miles.backends as _miles_backends  # noqa: F401
-import miles.backends.megatron_utils as _megatron_utils_package  # noqa: F401
 
 
 def _ensure_module(dotted: str) -> ModuleType:

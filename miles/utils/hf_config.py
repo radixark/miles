@@ -39,19 +39,6 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
 )
 
 _REGISTERED_ALIASES: set[str] = set()
-_ALIAS_CONFIG_CLASSES: dict[str, type] = {}
-
-
-def _get_compat_config(alias: _HFConfigAlias, base_config: type) -> type:
-    compat_config = _ALIAS_CONFIG_CLASSES.get(alias.model_type)
-    if compat_config is None:
-        compat_config = type(
-            alias.compat_class_name,
-            (base_config,),
-            {"model_type": alias.model_type, "__module__": __name__},
-        )
-        _ALIAS_CONFIG_CLASSES[alias.model_type] = compat_config
-    return compat_config
 
 
 def register_hf_config_aliases() -> None:
@@ -62,6 +49,8 @@ def register_hf_config_aliases() -> None:
     (e.g. megatron's `_build_tokenizer`).
     """
     for alias in _CONFIG_ALIASES:
+        if alias.model_type in _REGISTERED_ALIASES:
+            continue
         if alias.model_type in CONFIG_MAPPING_NAMES and not alias.override_hf_native:
             raise RuntimeError(
                 f"transformers now natively supports model_type={alias.model_type!r}; "
@@ -69,16 +58,18 @@ def register_hf_config_aliases() -> None:
             )
         module = importlib.import_module(alias.base_module)
         base_config = getattr(module, alias.base_class)
-        compat_config = _get_compat_config(alias, base_config)
-        # SGLang can register the same model_type after our first call; re-apply
-        # the alias so load_hf_config returns a config AutoModel can resolve.
-        AutoConfig.register(alias.model_type, compat_config, exist_ok=True)
+        compat_config = type(
+            alias.compat_class_name,
+            (base_config,),
+            {"model_type": alias.model_type, "__module__": __name__},
+        )
+        AutoConfig.register(alias.model_type, compat_config, exist_ok=alias.override_hf_native)
         for auto_cls in alias.auto_model_classes:
             base_model_cls = auto_cls._model_mapping[base_config]
             compat_model_cls = type(
                 base_model_cls.__name__, (base_model_cls,), {"config_class": compat_config, "__module__": __name__}
             )
-            auto_cls.register(compat_config, compat_model_cls, exist_ok=True)
+            auto_cls.register(compat_config, compat_model_cls, exist_ok=alias.override_hf_native)
         _REGISTERED_ALIASES.add(alias.model_type)
 
 

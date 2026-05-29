@@ -176,17 +176,6 @@ _post_actors: list[object] = []
 _post_actor_idx: int = 0
 
 
-def _close_async_client(client: httpx.AsyncClient) -> None:
-    if client.is_closed:
-        return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(client.aclose())
-    else:
-        loop.create_task(client.aclose())
-
-
 def _next_actor():
     global _post_actor_idx
     if not _post_actors:
@@ -237,15 +226,12 @@ def init_http_client(args):
     if not args.rollout_num_gpus:
         return
 
-    client_concurrency = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
-    if _http_client is None or client_concurrency != _client_concurrency:
-        if _http_client is not None:
-            _close_async_client(_http_client)
+    _client_concurrency = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+    if _http_client is None:
         _http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=client_concurrency),
+            limits=httpx.Limits(max_connections=_client_concurrency),
             timeout=httpx.Timeout(None),
         )
-    _client_concurrency = client_concurrency
 
     # Optionally initialize distributed POST via Ray without changing interfaces
     if args.use_distributed_post:
