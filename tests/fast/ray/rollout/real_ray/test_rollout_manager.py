@@ -363,7 +363,7 @@ class TestGetUpdatableEnginesAndLock:
         pg = placement_group_factory(4)
 
         manager = _make_manager(args, pg)
-        with pytest.raises(AssertionError, match="Multiple servers"):
+        with pytest.raises(ValueError, match="Multiple servers"):
             await manager.get_updatable_engines_and_lock()
 
 
