@@ -1058,6 +1058,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
             )
             parser.add_argument(
+                "--use-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk decisions for layers with indexers.",
+            )
+            parser.add_argument(
+                "--use-rollout-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk from rollout during training.",
+            )
+            parser.add_argument(
                 "--use-opsm",
                 action="store_true",
                 default=False,
@@ -2189,6 +2201,9 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    if args.use_rollout_indexer_replay:
+        args.use_indexer_replay = True
 
     if args.eval_max_context_len is None:
         logger.info(

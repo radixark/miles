@@ -170,7 +170,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
 
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
-    # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
+    # Loosen replay mismatch threshold for GLM-4.7-Flash with MTP
     os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
 
     train_args = build_train_args(case, wandb_file=wandb_file)

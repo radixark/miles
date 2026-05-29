@@ -7,7 +7,10 @@ import logging
 from argparse import Namespace
 from copy import deepcopy
 
-from miles.rollout.generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    get_indexer_topk_from_response,
+    get_rollout_topk_from_response,
+)
 from miles.rollout.session.session_types import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
@@ -179,6 +182,7 @@ def _compute_sample_from_openai_record(
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
     sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice, sample, "routed_experts")
+    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
 
     if trim_count > 0:
         sample.strip_last_output_tokens(trim_count, tokenizer)
