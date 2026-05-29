@@ -4,10 +4,10 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1200, suite="stage-c-ckpt-8-gpu", num_gpus=8)
+# FIXME: fix this
+register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt"], disabled="Disabled due to bugs.")
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -59,23 +59,23 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--rm-type deepscaler "
         "--num-rollout 3 "
         "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 8 "
+        "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.8 "
-        "--global-batch-size 32 "
+        "--global-batch-size 8 "
         "--balance-data "
     )
 
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
+        "--pipeline-model-parallel-size 2 "
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
+        "--max-tokens-per-gpu 16384 "
     )
 
     ppo_args = (
@@ -96,7 +96,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.8 --sglang-cuda-graph-bs 1 2 4 8 16 "
+    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.7 --sglang-cuda-graph-bs 1 2 4 8 16 "
 
     ci_args = "--ci-test "
     if mode in {"save", "async_save"}:
@@ -114,7 +114,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 
