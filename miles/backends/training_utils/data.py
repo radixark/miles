@@ -147,7 +147,18 @@ def get_batch(
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
-        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        if allgather_cp:
+            # Contiguous CP: pad each sample to max_seqlen, then take chunk cp_rank.
+            # Requires max_seqlen divisible by cp_size; the caller pads max_seq_len to a
+            # cp_size multiple, and the assert enforces that contract.
+            assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            tokens = [
+                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len] for t in tokens
+            ]
+        else:
+            tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
@@ -239,6 +250,15 @@ def get_batch(
         loss_masks.append(loss_mask)
 
     if qkv_format == "bshd":
+        if allgather_cp:
+            # Same contiguous CP slicing as tokens above. loss_masks currently hold
+            # per-sample full-length masks (pad to total_length via the prompt/right pad
+            # above); pad up to max_seqlen, then take cp_rank's chunk.
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            loss_masks = [
+                F.pad(lm, (0, max_seqlen - lm.size(0)), value=0)[start : start + local_len] for lm in loss_masks
+            ]
         loss_masks = torch.stack(loss_masks)
     elif qkv_format == "thd" and allgather_cp:
         # DSA: concatenate first (same as tokens), pad globally (same pad as above), then slice once.
