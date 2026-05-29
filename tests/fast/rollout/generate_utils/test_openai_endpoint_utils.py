@@ -4,11 +4,6 @@ Validates the contract between session records, sample construction,
 and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
-
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -82,11 +77,10 @@ def _make_record(
         method="POST",
         path="/v1/chat/completions",
         status_code=200,
-        request={"messages": [{"role": "user", "content": "hello"}]},
+        request={"messages": [{"role": "user", "content": "hello"}], "input_ids": prompt_token_ids},
         response={
             "choices": [
                 {
-                    "prompt_token_ids": prompt_token_ids,
                     "message": {"role": "assistant", "content": "response"},
                     "finish_reason": finish_reason,
                     "logprobs": {"content": logprobs_content},
@@ -269,7 +263,6 @@ class TestMultiTurnPrefixChain:
 
 
 # ── test: TITO trailing token trimming ────────────────────────────────
-
 
 STOP = 99  # stands for <|observation|> stop token
 
