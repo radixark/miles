@@ -2,6 +2,29 @@ import re
 
 import torch
 
+_ATOMIC_UPDATE_GROUP_SUFFIXES = [
+    (".self_attention.wq_a.weight", ".self_attention.wkv.weight", "wqkv_a"),
+    (
+        ".self_attention.compressor.wkv.weight",
+        ".self_attention.compressor.wgate.weight",
+        "compressor_wkv_gate",
+    ),
+    (
+        ".self_attention.indexer.compressor.wkv.weight",
+        ".self_attention.indexer.compressor.wgate.weight",
+        "indexer_compressor_wkv_gate",
+    ),
+]
+
+
+def get_deepseekv4_atomic_update_group_key(name: str) -> str | None:
+    for first_suffix, second_suffix, marker in _ATOMIC_UPDATE_GROUP_SUFFIXES:
+        if name.endswith(first_suffix):
+            return name[: -len(first_suffix)] + ":" + marker
+        if name.endswith(second_suffix):
+            return name[: -len(second_suffix)] + ":" + marker
+    return None
+
 
 def _apply_ape_hotfix_mirror(param):
     # Mirror SGLang Compressor.apply_ape_hotfix so the Megatron -> SGLang weight update

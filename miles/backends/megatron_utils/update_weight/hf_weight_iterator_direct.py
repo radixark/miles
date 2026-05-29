@@ -10,7 +10,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
-from ..megatron_to_hf import convert_to_hf
+from ..megatron_to_hf import convert_to_hf, get_atomic_update_group_key
 from ..sglang import monkey_patch_torch_reductions
 from .common import all_gather_params_async, named_params_and_buffers
 from .hf_weight_iterator_base import HfWeightIteratorBase
@@ -19,7 +19,9 @@ from .hf_weight_iterator_base import HfWeightIteratorBase
 class HfWeightIteratorDirect(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model)
+        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(
+            self.args, self.model, self.model_name
+        )
 
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
         rank = dist.get_rank()
@@ -108,45 +110,14 @@ def _get_megatron_full_params(
     return gathered_params
 
 
-# SGLang's DeepSeek-V4 load_weights fuses pairs of bridge-emitted tensors into a
-# single in-model parameter (wq_a + wkv → wqkv_a, compressor.wkv + wgate → wkv_gate,
-# indexer.compressor.wkv + wgate → indexer.compressor.wkv_gate). The fusion cache
-# asserts empty at end of each load_weights() bucket, so both halves must land in
-# the same update bucket — otherwise SGLang raises
-# ``AssertionError: dict_keys(['model.layers.N.self_attn.wqkv_a.weight'])``. This
-# list uses the Megatron-side suffixes (not the HF/SGLang-side names) because the
-# bucketing runs on ParamInfo.name which is pre-bridge.
-_SGLANG_FUSION_PAIR_SUFFIXES = [
-    (".self_attention.wq_a.weight", ".self_attention.wkv.weight", "wqkv_a"),
-    (
-        ".self_attention.compressor.wkv.weight",
-        ".self_attention.compressor.wgate.weight",
-        "compressor_wkv_gate",
-    ),
-    (
-        ".self_attention.indexer.compressor.wkv.weight",
-        ".self_attention.indexer.compressor.wgate.weight",
-        "indexer_compressor_wkv_gate",
-    ),
-]
-
-
-def _sglang_fusion_pair_key(name: str) -> str | None:
-    for f_suffix, s_suffix, marker in _SGLANG_FUSION_PAIR_SUFFIXES:
-        if name.endswith(f_suffix):
-            return name[: -len(f_suffix)] + ":" + marker
-        if name.endswith(s_suffix):
-            return name[: -len(s_suffix)] + ":" + marker
-    return None
-
-
-def _get_megatron_local_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
+def _get_megatron_local_param_info_buckets(
+    args: Namespace, model: Sequence[torch.nn.Module], model_name: str
+) -> list[list[ParamInfo]]:
     """
     Partition params into buckets ≤ update_weight_buffer_size (with TP replication).
 
-    SGLang-fusion pairs (wq_a+wkv, compressor.wkv+wgate, indexer.compressor.wkv+wgate)
-    are held in a pending dict until both halves arrive, then committed atomically
-    so they cannot straddle a bucket boundary.
+    Model-specific atomic update groups are kept in the same bucket because
+    some rollout loaders must see related tensors in the same load_weights call.
     """
     param_infos = _get_megatron_local_param_infos(args, model)
     param_info_buckets: list[list[ParamInfo]] = [[]]
@@ -176,7 +147,7 @@ def _get_megatron_local_param_info_buckets(args: Namespace, model: Sequence[torc
 
     for info in param_infos:
         param_size = _full_size(info)
-        key = _sglang_fusion_pair_key(info.name)
+        key = get_atomic_update_group_key(model_name, info.name)
 
         if key is None:
             _commit_atomic([info], param_size)
@@ -191,9 +162,9 @@ def _get_megatron_local_param_info_buckets(args: Namespace, model: Sequence[torc
         else:
             pending_groups[key] = (items, items_size)
 
-    # Orphan groups (only one half present — should not happen for a well-formed model).
-    for items, items_size in pending_groups.values():
-        _commit_atomic(items, items_size)
+    if pending_groups:
+        group_names = {key: [item.name for item in items] for key, (items, _items_size) in pending_groups.items()}
+        raise RuntimeError(f"Incomplete atomic update groups: {group_names}")
 
     return param_info_buckets
 

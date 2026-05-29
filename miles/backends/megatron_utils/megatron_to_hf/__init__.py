@@ -1,5 +1,5 @@
 from .deepseekv3 import convert_deepseekv3_to_hf
-from .deepseekv4 import convert_deepseekv4_to_hf
+from .deepseekv4 import convert_deepseekv4_to_hf, get_deepseekv4_atomic_update_group_key
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
 from .kimi_vl import convert_kimi_k25_to_hf, convert_kimivl_to_hf
@@ -26,6 +26,13 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
     converted_named_tensors = _convert_to_hf_core(args, model_name, name, param)
 
     return quantize_params(args, name, converted_named_tensors, quantization_config)
+
+
+def get_atomic_update_group_key(model_name, name):
+    model_name = model_name.lower()
+    if "deepseekv4" in model_name:
+        return get_deepseekv4_atomic_update_group_key(name)
+    return None
 
 
 # TODO optimize
