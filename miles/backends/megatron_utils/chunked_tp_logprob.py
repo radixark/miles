@@ -11,7 +11,7 @@ from megatron.core.utils import get_attr_wrapped_model
 
 
 def should_enable_chunked_tp_logprob(args: Namespace, role: str) -> bool:
-    return role == "actor" and args.use_chunked_tp_logprob_loss
+    return role == "actor" and getattr(args, "use_chunked_tp_logprob_loss", False)
 
 
 def validate_chunked_tp_logprob_config(args: Namespace) -> None:
