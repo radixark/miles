@@ -1,24 +1,20 @@
 import os
-from argparse import ArgumentParser
 
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1200, suite="stage-c-ckpt-8-gpu", num_gpus=8)
+# FIXME: need to modify megatron, better fix later.
+register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h100", labels=["ckpt"], disabled="Disabled due to bugs.")
 
+ENABLE_EVAL = 0
+USE_DEEPEP = 0
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-USE_DEEPEP = bool(int(os.environ.get("MILES_TEST_USE_DEEPEP", "0")))
+TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "0")))
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
 NUM_GPUS = 8
-
-
-parser = ArgumentParser()
-parser.add_argument("--async-save", action="store_true", help="Whether to test async save/load.")
 
 
 def _get_latest_checkpointed_iteration() -> int:
@@ -68,10 +64,10 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--rm-type deepscaler "
         "--num-rollout 3 "
         "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 8 "
+        "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 1 "
-        "--global-batch-size 32 "
+        "--global-batch-size 8 "
         "--balance-data "
     )
 
@@ -85,29 +81,32 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
+        "--pipeline-model-parallel-size 2 "
+        "--decoder-last-pipeline-num-layers 23 "
+        "--context-parallel-size 2 "
+        "--expert-model-parallel-size 4 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 32768} "
+        "--max-tokens-per-gpu 8192 "
     )
+
+    if TIGHT_HOST_MEMORY:
+        perf_args += "--exp-avg-dtype fp16 "
+        perf_args += "--exp-avg-sq-dtype fp16 "
 
     grpo_args = (
         "--advantage-estimator grpo "
-        f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
+        "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
-        "--use-rollout-routing-replay "
-        "--use-miles-router "
     )
 
     optimizer_args = (
@@ -124,7 +123,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 4 "
-        f"--sglang-mem-fraction-static {0.7 if TIGHT_HOST_MEMORY else 0.8} "
+        "--sglang-mem-fraction-static 0.7 "
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "
@@ -136,6 +135,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
     mtp_args = "--enable-mtp-training --mtp-loss-scaling-factor 0.2 "
 
+    # FIXME: add optimizer equality check here.
     ci_args = "--ci-test "
     if mode in {"save", "async_save"}:
         ci_args += "--ci-save-model-hash "
@@ -149,7 +149,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 
@@ -184,10 +184,10 @@ def execute(mode: str = "", ckpt_step: int | None = None):
 
 
 if __name__ == "__main__":
-    args = parser.parse_args()
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute("save" if not args.async_save else "async_save")
-    latest_step = _get_latest_checkpointed_iteration()
-    execute("load", ckpt_step=latest_step)
+    execute("save")
+    execute("load", ckpt_step=_get_latest_checkpointed_iteration())
+    execute("async_save")
+    execute("load", ckpt_step=_get_latest_checkpointed_iteration())

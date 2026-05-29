@@ -13,7 +13,12 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import (
+    LORA_ADAPTER_NAME,
+    convert_target_modules_to_hf,
+    is_lora_enabled,
+    lora_base_cpu_backup_enabled,
+)
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
@@ -334,17 +339,17 @@ class SGLangEngine(RayActor):
     def load_lora_adapter_from_tensors(
         self,
         lora_name: str,
-        serialized_tensors: str,
         config_dict: dict,
+        serialized_named_tensors: list,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
     ):
-        """Load a LoRA adapter from serialized tensor data."""
+        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
         payload = {
             "lora_name": lora_name,
-            "serialized_tensors": serialized_tensors,
             "config_dict": config_dict,
+            "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
         if load_format is not None:
@@ -637,7 +642,7 @@ def _compute_server_args(
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
-        kwargs["load_balance_method"] = "round_robin"
+        kwargs.setdefault("load_balance_method", "round_robin")
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
@@ -664,6 +669,18 @@ def _compute_server_args(
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
+
+        if lora_base_cpu_backup_enabled(args):
+            # Host-RAM mirror of the base weights so they survive
+            # torch_memory_saver.pause() across rollout/training swaps without
+            # needing to be re-shipped from the trainer. The trainer mirrors
+            # this by skipping the base weight sync entirely (see
+            # UpdateWeightFromTensor.update_weights).
+            kwargs["enable_weights_cpu_backup"] = True
+            logger.info(
+                "LoRA + colocate: enabling SGLang enable_weights_cpu_backup=True; "
+                "the trainer will skip per-step base weight sync."
+            )
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
