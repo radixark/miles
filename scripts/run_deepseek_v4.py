@@ -94,7 +94,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # precision configs
     enable_r3: bool = True
-    enable_rir: bool = False
     train_deterministic: bool = True
     fp8_training: bool = True
     enable_mis: bool = False
@@ -160,10 +159,7 @@ def _prepare_download(args: ScriptArgs):
     # (prepare_single / train with --hf-checkpoint bypass this.)
     if args.hf_checkpoint is None:
         dest = f"{args.model_dir}/{args.model_name}"
-        U.exec_command(
-            f"huggingface-cli download {args.model_org}/{args.model_name} "
-            f"--local-dir {dest}"
-        )
+        U.exec_command(f"huggingface-cli download {args.model_org}/{args.model_name} " f"--local-dir {dest}")
     _ensure_4layer_model_type(args)
     _download_dataset(args)
 
@@ -197,9 +193,7 @@ def _prepare_spmd(args: ScriptArgs):
     extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 "
     if args.num_nodes == 1 and is_4layer:
         extra_args += (
-            "--tensor-model-parallel-size 1 "
-            "--pipeline-model-parallel-size 1 "
-            "--expert-model-parallel-size 1 "
+            "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         )
     elif args.num_nodes == 8 and args.model_name == "DeepSeek-V4-Flash-FP8":
         extra_args += (
@@ -419,9 +413,7 @@ def _train(args: ScriptArgs):
     )
     if args.optimizer_offload:
         optimizer_args += (
-            "--optimizer-cpu-offload "
-            "--use-precision-aware-optimizer "
-            "--overlap-cpu-optimizer-d2h-h2d "
+            "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
 
     if args.model_name == "DeepSeek-V4-Pro-FP8":
@@ -451,10 +443,7 @@ def _train(args: ScriptArgs):
         "--router-health-failure-threshold 40 "  # TODO improve
     )
     if sglang_a2a_backend:
-        sglang_args += (
-            f"--sglang-moe-a2a-backend {sglang_a2a_backend} "
-            "--sglang-cuda-graph-max-bs 8 "
-        )
+        sglang_args += f"--sglang-moe-a2a-backend {sglang_a2a_backend} " "--sglang-cuda-graph-max-bs 8 "
     if sglang_a2a_backend and args.enable_mtp:
         assert False, "MTP rollout is not supported yet"
         sglang_args += (
@@ -516,9 +505,6 @@ def _train(args: ScriptArgs):
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
-    if args.enable_rir:
-        misc_args += "--use-rollout-indexer-replay "
-    if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
     if args.train_deterministic:

@@ -28,9 +28,6 @@ class Sample:
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     )
-    rollout_indexer_topk: numpy.ndarray | None = (
-        None  # Indexer topk from rollout engine. shape: (num_tokens-1, num_indexer_layers, indexer_topk), dtype=int32
-    )
     remove_sample: bool = False
 
     class Status(Enum):
@@ -173,10 +170,6 @@ class Sample:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
-        if self.rollout_indexer_topk is not None:
-            actual = len(self.rollout_indexer_topk)
-            expect = len(self.tokens) - 1
-            assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
 
     def strip_last_output_tokens(self, n: int, tokenizer) -> None:
         """Remove the last *n* output tokens and all associated per-token info."""
@@ -194,8 +187,6 @@ class Sample:
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
         if self.rollout_routed_experts is not None:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
-        if self.rollout_indexer_topk is not None:
-            self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
 
     def reset_for_retry(self) -> None:
         """Reset generated outputs so the original prompt can be re-sampled.
@@ -213,7 +204,6 @@ class Sample:
         self.weight_versions = []
         self.rollout_log_probs = None
         self.rollout_routed_experts = None
-        self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()

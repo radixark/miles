@@ -181,8 +181,6 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
-    if args.use_rollout_indexer_replay:
-        payload["return_indexer_topk"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
@@ -236,15 +234,6 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             len(sample.tokens) - 1,
             args.num_layers,
             args.moe_router_topk,
-        )
-    if "indexer_topk" in output["meta_info"]:
-        sample.rollout_indexer_topk = np.frombuffer(
-            pybase64.b64decode(output["meta_info"]["indexer_topk"].encode("ascii")),
-            dtype=np.int32,
-        ).reshape(
-            len(sample.tokens) - 1,
-            sum(1 for r in args.dsv4_compress_ratios if r == 4),
-            args.dsa_indexer_topk,
         )
 
     sample.update_from_meta_info(args, output["meta_info"])

@@ -7,7 +7,6 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
@@ -72,8 +71,6 @@ class V4Indexer(MegatronModule):
         freqs_cis = wrapped_precompute_freqs_cis(config, rope_head_dim=self.rope_head_dim, base=rope_base)
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
-        indexer_replay_manager.register_to_module(self, "indexer_replay")
-
     def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
         """Forward pass.
 
@@ -131,11 +128,7 @@ class V4Indexer(MegatronModule):
             cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
-        def _original_topk(scores, k, **kwargs):
-            k = min(k, scores.size(-1))
-            return scores.topk(k, dim=-1)[1]
-
-        topk_fn = indexer_replay_manager.get_topk_fn(_original_topk, return_probs=False)
-        topk_indices = topk_fn(index_scores, self.index_topk)
+        k = min(self.index_topk, index_scores.size(-1))
+        topk_indices = index_scores.topk(k, dim=-1)[1]
 
         return topk_indices
