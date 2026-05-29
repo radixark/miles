@@ -5,6 +5,18 @@ from setuptools import find_packages, setup
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
+def _get_platform_tag():
+    if platform.system() != "Linux":
+        return platform.system().lower()
+
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "manylinux1_x86_64"
+    if machine in ("aarch64", "arm64"):
+        return "manylinux2014_aarch64"
+    return f"linux_{machine}"
+
+
 def _fetch_requirements(path):
     with open(path) as fd:
         return [r.strip() for r in fd.readlines() if r.strip() and not r.startswith("#")]
@@ -19,11 +31,7 @@ class bdist_wheel(_bdist_wheel):
     def get_tag(self):
         python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
         abi_tag = f"{python_version}"
-
-        if platform.system() == "Linux":
-            platform_tag = "manylinux1_x86_64"
-        else:
-            platform_tag = platform.system().lower()
+        platform_tag = _get_platform_tag()
 
         return python_version, abi_tag, platform_tag
 

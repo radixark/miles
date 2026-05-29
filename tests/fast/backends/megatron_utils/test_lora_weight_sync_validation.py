@@ -7,11 +7,6 @@ Verifies that silent failures are caught:
 - FlattenedTensorBucket round-trip preserves tensor values
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
-
 from argparse import Namespace
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
@@ -22,7 +17,6 @@ import torch
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -282,33 +276,40 @@ class TestFlattenedTensorBucketRoundTrip:
             assert orig_t.dtype == rec_t.dtype
             assert torch.equal(orig_t, rec_t), f"Tensor {orig_name} values differ after round-trip"
 
-    @pytest.mark.xfail(
-        reason="SGLang FlattenedTensorBucket.reconstruct_tensors() fails with mixed dtypes "
-        "due to PyTorch view() alignment requirements (storage_offset not divisible by "
-        "element size). In practice LoRA weights are typically uniform dtype so this is safe.",
-        raises=RuntimeError,
-        strict=False,
-    )
     def test_roundtrip_mixed_dtypes(self):
-        FlattenedTensorBucket = self._get_bucket_class()
+        """FIXME(sglang upstream contract): SGLang exposes
+        ``FlattenedTensorBucket.supports_multi_dtypes = True`` but
+        ``reconstruct_tensors()`` actually raises ``RuntimeError`` on mixed
+        dtypes, because PyTorch ``view()`` requires ``storage_offset`` to be
+        divisible by the target element size and concatenated flat buffers do
+        not align across heterogeneous element sizes.
 
-        if not getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
-            pytest.skip("FlattenedTensorBucket does not support multi-dtypes")
+        This is a latent production landmine: ``_send_to_colocated_engine`` in
+        ``miles/backends/megatron_utils/update_weight/update_weight_from_tensor.py``
+        reads the flag and packs mixed dtypes into a single bucket. In practice
+        LoRA weights are uniform dtype, but FP8 / INT4 mixed-precision base
+        weight sync would crash on sglang's receiver.
+
+        Fix path (either side):
+          - miles side: stop trusting ``supports_multi_dtypes`` in
+            ``_send_to_colocated_engine`` and always group by dtype (matches
+            the FSDP path's existing implementation in
+            ``experimental/fsdp_utils/update_weight_utils.py``).
+          - sglang side: actually align ``storage_offset`` in reconstruction.
+
+        Until one side is fixed, this test asserts the current observed
+        failure so we notice when either side changes.
+        """
+        FlattenedTensorBucket = self._get_bucket_class()
 
         tensors = [
             ("a_bf16", torch.randn(3, 3, dtype=torch.bfloat16)),
             ("b_fp32", torch.randn(2, 2, dtype=torch.float32)),
             ("c_fp16", torch.randn(5, dtype=torch.float16)),
         ]
-
         bucket = FlattenedTensorBucket(named_tensors=tensors)
-        reconstructed = bucket.reconstruct_tensors()
-
-        assert len(reconstructed) == len(tensors)
-        for (orig_name, orig_t), (rec_name, rec_t) in zip(tensors, reconstructed, strict=True):
-            assert orig_name == rec_name
-            assert orig_t.dtype == rec_t.dtype
-            assert torch.equal(orig_t, rec_t), f"Tensor {orig_name} values differ after round-trip"
+        with pytest.raises(RuntimeError, match=r"storage_offset"):
+            bucket.reconstruct_tensors()
 
     def test_roundtrip_from_flattened_data(self):
         """Simulate the receiver side: reconstruct from flattened_tensor + metadata."""

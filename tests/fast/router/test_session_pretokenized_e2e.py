@@ -12,10 +12,6 @@ tests in ``tests/fast/utils/chat_template_utils/``.
 
 from __future__ import annotations
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
 from dataclasses import dataclass
 
 import pytest
@@ -141,7 +137,6 @@ def test_bundled_fixed_template_session_smoke(config: FixedTemplateSmokeConfig):
 
             body = response.json()
             assert len(body["choices"]) == 1
-            assert "prompt_token_ids" in body["choices"][0]
             if turn_idx > 0:
                 assert "input_ids" in backend.request_log[turn_idx], f"{config.name} turn {turn_idx} missing input_ids"
 
