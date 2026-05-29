@@ -1,3 +1,4 @@
+import torch
 from megatron.core.transformer.enums import AttnBackend
 
 from mbridge.core import register_model
@@ -74,6 +75,21 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
             return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
         except NotImplementedError:
             return self._weight_name_mapping_other(mcore_weights_name)
+
+    def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]) -> torch.Tensor:
+        # V4 keeps several params in fp32 (attn_sink, compressor.ape, and the
+        # hyper-connection hc_* params, all marked _keep_fp32). The base bridge
+        # downcasts every loaded weight to self.dtype (bf16), which would silently
+        # round these to bf16 before they reach the fp32 mcore params. Run the base
+        # reshaping but skip the dtype downcast for fp32-source weights.
+        if len(hf_weights) == 1 and hf_weights[0].dtype == torch.float32:
+            saved_dtype = getattr(self, "dtype", None)
+            self.dtype = None
+            try:
+                return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+            finally:
+                self.dtype = saved_dtype
+        return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
     def _build_config(self):
         config = super()._build_config()
