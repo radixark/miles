@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 def create_megatron_parallel_state() -> ParallelState:
     vpp_size, microbatch_group_size_per_vp_stage = _compute_vpp_fields()
+    args = get_args()
 
     def _create_intra_dp(with_context_parallel: bool):
         return GroupInfo(
@@ -32,6 +33,7 @@ def create_megatron_parallel_state() -> ParallelState:
             size=mpu.get_context_parallel_world_size(),
             group=mpu.get_context_parallel_group(),
         ),
+        cp_comm_type=getattr(args, "cp_comm_type", None),
         tp=GroupInfo(
             rank=mpu.get_tensor_model_parallel_rank(),
             size=mpu.get_tensor_model_parallel_world_size(),

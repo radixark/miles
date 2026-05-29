@@ -6,14 +6,13 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=600,
-    suite="stage-c-fsdp-8-gpu",
-    num_gpus=8,
+    suite="stage-c-8-gpu-h100",
+    labels=["fsdp"],
     disabled="FSDP backend has known issues, not actively maintained",
 )
 
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-NUM_GPUS = 4 if FEW_GPU else 8
+NUM_GPUS = 8
 
 MODEL_NAME = "Qwen3-4B"
 

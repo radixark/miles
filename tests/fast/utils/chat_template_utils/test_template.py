@@ -9,16 +9,13 @@ attributes that ``_process_messages`` / ``_apply_jinja_template`` read:
 - ``tokenizer_manager.tokenizer`` — the HF tokenizer under test
 - ``template_manager.chat_template_name = None`` → selects the Jinja path
 - ``template_manager.jinja_template_content_format = "string"`` → text-only
-- ``use_dpsk_v32_encoding = False`` / ``is_gpt_oss = False``
+- ``use_dpsk_v32_encoding = False`` / ``chat_encoding_spec = None``
+- ``is_gpt_oss = False`` / ``is_gemma4 = False``
 
 Each test asserts that our ``apply_chat_template`` produces identical token IDs.
 """
 
 from __future__ import annotations
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
 
 import copy
 from unittest.mock import MagicMock
@@ -58,7 +55,9 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.template_manager.chat_template_name = None
     serving.template_manager.jinja_template_content_format = "string"
     serving.use_dpsk_v32_encoding = False
+    serving.chat_encoding_spec = None
     serving.is_gpt_oss = False
+    serving.is_gemma4 = False
     serving.tool_call_parser = None
     serving.reasoning_parser = None
     return serving
@@ -253,3 +252,62 @@ class TestAlignWithSGLang:
         apply_chat_template(messages, tokenizer=tokenizer, tools=tools, tokenize=True)
         assert messages == saved_msgs
         assert tools == saved_tools
+
+    @pytest.mark.parametrize("model_id, fixed_tito", _per_model_params())
+    def test_data_path_routing_matches_raw_tokenizer(self, model_id, fixed_tito):
+        """Dataset rendering routes non-DeepSeek models through
+        ``apply_chat_template`` instead of the old raw ``tokenizer.apply_chat_template``.
+        For the no-tools dataset case the rendered string must be byte-identical."""
+        tokenizer = _get_tokenizer(model_id)
+        messages = [{"role": "user", "content": "Hello, how are you?"}]
+        new_path = apply_chat_template(messages, tokenizer=tokenizer, tokenize=False, add_generation_prompt=True)
+        old_raw = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        assert new_path == old_raw
+
+
+def _build_dataset(tmp_path, tokenizer, row, **dataset_kwargs):
+    """Instantiate ``Dataset`` from a one-row temp jsonl (CPU-only, no ray/GPU)."""
+    import json as _json
+    import os
+
+    from miles.utils.data import Dataset
+
+    path = os.path.join(tmp_path, "rows.jsonl")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_json.dumps(row) + "\n")
+    return Dataset(path, tokenizer, None, None, apply_chat_template=True, **dataset_kwargs)
+
+
+class TestDatasetRouting:
+    """End-to-end check that ``miles.utils.data.Dataset`` renders prompts through
+    the unified ``apply_chat_template`` wiring (tool_key parsing, per-sample
+    rendering, ``Sample.prompt`` output)."""
+
+    @pytest.mark.parametrize("model_id, fixed_tito", _per_model_params())
+    def test_no_tool_prompt_byte_identical_to_raw(self, tmp_path, model_id, fixed_tito):
+        tokenizer = _get_tokenizer(model_id)
+        messages = [{"role": "user", "content": "Hello, how are you?"}]
+        dataset = _build_dataset(str(tmp_path), tokenizer, {"text": messages})
+        expected = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        assert dataset.samples[0].prompt == expected
+
+    def test_tool_prompt_matches_sglang_ids(self, tmp_path):
+        tokenizer = _get_tokenizer("Qwen/Qwen3-4B")
+        messages = [{"role": "user", "content": "What's the weather in Paris?"}]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the weather for a city.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ]
+        dataset = _build_dataset(str(tmp_path), tokenizer, {"text": messages, "tools": tools}, tool_key="tools")
+        expected_ids = sglang_prompt_ids(tokenizer, messages, tools)
+        assert tokenizer.encode(dataset.samples[0].prompt, add_special_tokens=False) == expected_ids
