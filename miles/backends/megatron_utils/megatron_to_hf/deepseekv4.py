@@ -4,12 +4,10 @@ import torch
 
 
 def _apply_ape_hotfix_mirror(param):
-    # Mirror SGLang Compressor.apply_ape_hotfix for the 0415 checkpoint so that the
-    # Megatron -> SGLang weight update lands in kernel layout. Logic: chunk ape on
-    # the last dim (== ``2 * head_dim``), concat the two halves on dim 0, then view
-    # back to ``(ratio=4, head_dim)``. Matches SGLang's default for ``ratio == 4``
-    # under ``SGLANG_DSV4_MODE=2604`` (default) + ``SGLANG_OPT_FIX_APE_2604=True``
-    # (default).
+    # Mirror SGLang Compressor.apply_ape_hotfix so the Megatron -> SGLang weight update
+    # lands the ape in kernel layout. SGLang applies the hotfix once at load (ape_converted
+    # guard) for ratio==4 compressors (self.overlap), so the RL weight update must supply
+    # the already-converted layout.
     assert param.shape[0] == 4
     ape = torch.chunk(param, 2, dim=-1)
     return torch.cat([ape[0], ape[1]], dim=0).view(4, -1).contiguous()
