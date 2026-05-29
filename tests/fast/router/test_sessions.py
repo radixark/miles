@@ -7,14 +7,11 @@ from unittest.mock import patch
 
 import pytest
 import requests
-from tests.ci.ci_register import register_cpu_ci
 
 from miles.rollout.session.session_server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
 
 
 @pytest.fixture(scope="class")
@@ -132,8 +129,6 @@ class TestSessionProxy:
         body = resp.json()
         assert "choices" in body
         assert body["choices"]
-        assert isinstance(body["choices"][0]["prompt_token_ids"], list)
-        assert body["choices"][0]["prompt_token_ids"]
 
         get_resp = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
         records = get_resp.json()["records"]

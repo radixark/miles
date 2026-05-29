@@ -10,7 +10,7 @@ import pytest
 from tests.ci.ci_register import register_cpu_ci
 from transformers import AutoTokenizer
 
-register_cpu_ci(est_time=120, suite="stage-a-fast")
+register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=[])
 
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
