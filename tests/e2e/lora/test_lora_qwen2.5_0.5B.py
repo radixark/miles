@@ -17,14 +17,14 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=600, suite="stage-c-lora-8-gpu", num_gpus=8)
+register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["lora"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 
 def prepare():
@@ -106,7 +106,7 @@ def execute():
         "--calculate-per-token-loss "
         "--use-miles-router "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 

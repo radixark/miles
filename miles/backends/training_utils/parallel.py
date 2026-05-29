@@ -56,6 +56,14 @@ class ParallelState:
     pp: GroupInfo
     ep: GroupInfo
     etp: GroupInfo
+    cp_comm_type: str | list[str] | tuple[str, ...] | None = None
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1
     microbatch_group_size_per_vp_stage: int | None = None
+
+    @property
+    def is_ulysses_cp(self) -> bool:
+        cp_comm_type = self.cp_comm_type
+        if isinstance(cp_comm_type, (list, tuple)):
+            cp_comm_type = cp_comm_type[0] if cp_comm_type else None
+        return self.cp.size > 1 and cp_comm_type == "a2a"

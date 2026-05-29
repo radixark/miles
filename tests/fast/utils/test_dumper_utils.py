@@ -1,7 +1,4 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,3 +29,29 @@ class TestWrapForwardStepWithStepping:
             result = wrapped("my_iter", "my_model", extra=True)
         inner.assert_called_once_with("my_iter", "my_model", extra=True)
         assert result == ("output", "loss_fn")
+
+
+def test_sglang_env_includes_startup_dumper_settings() -> None:
+    args = SimpleNamespace(
+        dumper_enable=False,
+        dumper_inference=["enable=true", "non_intrusive_mode=all"],
+        dumper_source_patcher_config_inference="/tmp/patcher.yaml",
+    )
+
+    env = dumper_utils.get_sglang_env(args)
+
+    assert env == {
+        "DUMPER_SERVER_PORT": "reuse",
+        "DUMPER_NON_INTRUSIVE_MODE": "all",
+        "DUMPER_SOURCE_PATCHER_CONFIG": "/tmp/patcher.yaml",
+    }
+
+
+def test_sglang_env_disabled_when_inference_phase_disabled() -> None:
+    args = SimpleNamespace(
+        dumper_enable=False,
+        dumper_inference=["non_intrusive_mode=all"],
+        dumper_source_patcher_config_inference=None,
+    )
+
+    assert dumper_utils.get_sglang_env(args) == {}

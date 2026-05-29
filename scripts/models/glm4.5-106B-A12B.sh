@@ -31,7 +31,7 @@ MODEL_ARGS=(
     --moe-router-load-balancing-type seq_aux_loss
     --moe-token-dispatcher-type alltoall
     --moe-router-topk 8
-    --moe-layer-freq [0]*$N_DENSE_LAYERS+[1]*$N_MOE_LAYERS
+    --moe-layer-freq "[0]*$N_DENSE_LAYERS+[1]*$N_MOE_LAYERS"
     --num-experts 128
     --moe-grouped-gemm
     --moe-router-dtype fp32
