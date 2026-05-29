@@ -10,7 +10,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
-from ..megatron_to_hf import convert_to_hf, get_atomic_update_group_key
+from ..megatron_to_hf import convert_to_hf, get_atomic_update_group
 from ..sglang import monkey_patch_torch_reductions
 from .common import all_gather_params_async, named_params_and_buffers
 from .hf_weight_iterator_base import HfWeightIteratorBase
@@ -143,27 +143,36 @@ def _get_megatron_local_param_info_buckets(
         param_info_buckets[-1].extend(items)
         buffer_size += items_size
 
-    pending_groups: dict[str, tuple[list[ParamInfo], int]] = {}
+    pending_groups: dict[str, tuple[list[ParamInfo], int, int]] = {}
 
     for info in param_infos:
         param_size = _full_size(info)
-        key = get_atomic_update_group_key(model_name, info.name)
+        group = get_atomic_update_group(model_name, info.name)
 
-        if key is None:
+        if group is None:
             _commit_atomic([info], param_size)
             continue
 
-        items, items_size = pending_groups.pop(key, ([], 0))
+        key, expected_count = group
+        items, items_size, existing_expected_count = pending_groups.pop(key, ([], 0, expected_count))
+        if existing_expected_count != expected_count:
+            raise RuntimeError(
+                f"Inconsistent atomic update group size for {key}: " f"{existing_expected_count} != {expected_count}"
+            )
         items.append(info)
         items_size += param_size
-        # Fusion pairs are exactly 2 members; commit atomically when both arrive.
-        if len(items) >= 2:
+        if len(items) == expected_count:
             _commit_atomic(items, items_size)
+        elif len(items) > expected_count:
+            raise RuntimeError(f"Atomic update group {key} has more than {expected_count} params")
         else:
-            pending_groups[key] = (items, items_size)
+            pending_groups[key] = (items, items_size, expected_count)
 
     if pending_groups:
-        group_names = {key: [item.name for item in items] for key, (items, _items_size) in pending_groups.items()}
+        group_names = {
+            key: {"expected_count": expected_count, "params": [item.name for item in items]}
+            for key, (items, _items_size, expected_count) in pending_groups.items()
+        }
         raise RuntimeError(f"Incomplete atomic update groups: {group_names}")
 
     return param_info_buckets
