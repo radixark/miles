@@ -7,11 +7,6 @@ identical token IDs as the standard apply_chat_template path.
 Ported from sglang test/unit/test_pretokenized_chat.py.
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
-
 from copy import deepcopy
 
 import pytest
@@ -37,6 +32,13 @@ from miles.utils.test_utils.mock_trajectories import (
 def _load_fixed(tito_model: TITOTokenizerType) -> str:
     path, _kwargs = resolve_fixed_chat_template(tito_model, ["tool"])
     assert path is not None, f"resolve_fixed_chat_template should resolve {tito_model.value}"
+    with open(path) as f:
+        return f.read()
+
+
+def _load_fixed_for_roles(tito_model: TITOTokenizerType, roles: list[str]) -> str:
+    path, _kwargs = resolve_fixed_chat_template(tito_model, roles)
+    assert path is not None, f"resolve_fixed_chat_template should resolve {tito_model.value} for roles={roles}"
     with open(path) as f:
         return f.read()
 
@@ -112,13 +114,76 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         frozenset({"tool", "user", "system"}),
         {"clear_thinking": False},
     ),
+    # Kimi K2: K2.5 needs patched jinja gating the "drop reasoning of prior
+    # assistants once a non-tool-call assistant arrives" loop on
+    # preserve_thinking=True; K2.6 already exposes that gate natively.
+    # Only {tool, user} surface registered per current onboarding.
+    (
+        "kimi_k25_fixed_preserve_thinking",
+        _load_fixed(TITOTokenizerType.KIMI25),
+        True,
+        frozenset({"tool", "user"}),
+        {"preserve_thinking": True},
+    ),
+    (
+        "kimi_k26_preserve_thinking",
+        load_hf_chat_template("moonshotai/Kimi-K2.6"),
+        True,
+        frozenset({"tool", "user"}),
+        {"preserve_thinking": True},
+    ),
+    # MiniMax-M2 family (M2.5, M2.7): thinking via reasoning_content; reasoning
+    # is rendered only for assistant turns after the last user (last_user_index
+    # gate), so appending a new user would strip prior <think> blocks.  {tool}
+    # uses HF-native template; {tool, user} requires the fixed jinja with
+    # clear_thinking=False to preserve history reasoning across user turns.
+    ("minimax_m25", load_hf_chat_template("MiniMaxAI/MiniMax-M2.5"), True, frozenset({"tool"}), {}),
+    (
+        "minimax_m25_fixed_clear_thinking_off",
+        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M25, ["tool", "user"]),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    ("minimax_m27", load_hf_chat_template("MiniMaxAI/MiniMax-M2.7"), True, frozenset({"tool"}), {}),
+    (
+        "minimax_m27_fixed_clear_thinking_off",
+        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M27, ["tool", "user"]),
+        True,
+        frozenset({"tool", "user"}),
+        {"clear_thinking": False},
+    ),
+    # Nemotron 3 Super: HF-native template is append-only.  No fixed jinja is
+    # shipped (SUPPORTED_TEMPLATES.template=None on all surfaces); multi-user
+    # surfaces require truncate_history_thinking=False to preserve reasoning
+    # across user turns, while {tool}-only does not.
+    (
+        "nemotron3",
+        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
+        True,
+        frozenset({"tool"}),
+        {},
+    ),
+    (
+        "nemotron3_truncate_history_thinking_off",
+        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
+        True,
+        frozenset({"tool", "user"}),
+        {"truncate_history_thinking": False},
+    ),
+    (
+        "nemotron3_truncate_history_thinking_off_with_system",
+        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
+        True,
+        frozenset({"tool", "user", "system"}),
+        {"truncate_history_thinking": False},
+    ),
     # other HF native non-thinking: tool only
     ("qwen3_instruct_2507", load_hf_chat_template("Qwen/Qwen3-4B-Instruct-2507"), False, frozenset({"tool"}), {}),
     ("qwen3_next_instruct", load_hf_chat_template("Qwen/Qwen3-Next-80B-A3B-Instruct"), False, frozenset({"tool"}), {}),
     ("qwen3_coder_next", load_hf_chat_template("Qwen/Qwen3-Coder-Next"), False, frozenset({"tool"}), {}),
     ("glm4", load_hf_chat_template("THUDM/glm-4-9b-chat"), False, frozenset({"tool"}), {}),
 ]
-
 
 # Original (unfixed) HF templates referenced by negative tests
 _ORIGINAL_TEMPLATES = {
@@ -166,7 +231,6 @@ def test_pretokenized(chat_template: str, case: CaseSpec, kwargs: dict):
 # Negative tests: original (unfixed) templates fail prefix invariant
 # ===========================================================================
 
-
 # (chat_template, trajectory_cls, pretokenize_n)
 _MISMATCH_CASES = [
     pytest.param(_ORIGINAL_TEMPLATES["qwen3_original"], SingleToolTrajectory, 3, id="qwen3_original-single_tool"),
@@ -210,6 +274,13 @@ def _unique_thinking_templates():
     out = []
     for name, content, supports_thinking, _, _ in _TEMPLATES:
         if not supports_thinking:
+            continue
+        # Kimi K2.5/K2.6 compress reasoning at the "first non-tool-call assistant"
+        # boundary (single_tool_thinking trajectories), not at the "last user
+        # message" boundary like qwen3/glm — so MultiUserTurnThinking's
+        # cross-user pretokenize does not trip their compression.  This negative
+        # test only applies to templates whose compression keys off user index.
+        if name.startswith("kimi_"):
             continue
         if content in seen:
             continue

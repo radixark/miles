@@ -13,12 +13,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3.5-35B-A3B"
     megatron_model_type: str = "qwen3.5-35B-A3B"
     num_gpus_per_node: int = 8
-    hardware: Literal["H200"] = "H200"
-    enable_eval: bool = True
+    hardware: Literal["H200", "B300"] = "H200"
+    enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
+    enable_spec: bool = True
+    enable_spec_v2: bool = True
+    enable_r3: bool = False
 
 
 def prepare(args: ScriptArgs):
@@ -59,7 +62,7 @@ def execute(args: ScriptArgs):
         f"--num-rollout {64 if args.mode == 'debug_minimal' else 3000} "
         f"--rollout-batch-size {8 if args.mode == 'debug_minimal' else 32} "
         f"--n-samples-per-prompt {2 if args.mode == 'debug_minimal' else 8} "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 16384} "
         "--rollout-temperature 1 "
         f"--global-batch-size {16 if args.mode == 'debug_minimal' else 256} "
         "--balance-data "
@@ -75,9 +78,8 @@ def execute(args: ScriptArgs):
             "--eval-top-p 1 "
         )
 
-    # CP=2 EP=8: validated on 8x H200
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
@@ -117,14 +119,25 @@ def execute(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-ep-size 8 "
         "--sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256 "
-        # mtp speculative decoding
-        "--sglang-speculative-algorithm EAGLE "
-        "--sglang-speculative-num-steps 2 "
-        "--sglang-speculative-eagle-topk 1 "
-        "--sglang-speculative-num-draft-tokens 3 "
-        "--sglang-max-running-requests 512 "
-        "--sglang-mamba-scheduler-strategy extra_buffer "
     )
+
+    if args.enable_r3:
+        sglang_args += "--use-rollout-routing-replay "
+
+    if args.hardware == "B300":
+        # B300 (sm103) needs triton backends — flashinfer MoE/attention not yet supported
+        # has weight update reshape issue.
+        sglang_args += "--sglang-moe-runner-backend flashinfer_cutlass " "--sglang-attention-backend trtllm_mha "
+    if args.enable_spec:
+        sglang_args += (
+            # mtp speculative decoding
+            "--sglang-speculative-algorithm EAGLE "
+            "--sglang-speculative-num-steps 2 "
+            "--sglang-speculative-eagle-topk 1 "
+            "--sglang-speculative-num-draft-tokens 3 "
+        )
+        if args.enable_spec_v2:
+            sglang_args += "--sglang-mamba-scheduler-strategy extra_buffer "
 
     mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
@@ -133,7 +146,8 @@ def execute(args: ScriptArgs):
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
-        "--attention-backend flash "
+        # B300: auto selects FA2 via TE (patched for sm103); other GPUs: flash (FA2 direct)
+        f"--attention-backend {'auto' if args.hardware == 'B300' else 'flash'} "
         "--moe-token-dispatcher-type flex "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
@@ -155,13 +169,14 @@ def execute(args: ScriptArgs):
         f"{args.extra_args} "
     )
 
+    # r3 not compatible with spec v2
     U.execute_train(
         train_args=train_args,
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
-            "SGLANG_ENABLE_SPEC_V2": "1",
+            "SGLANG_ENABLE_SPEC_V2": "1" if args.enable_spec_v2 else "0",
         },
         megatron_path=args.megatron_path,
     )

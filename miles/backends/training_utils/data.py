@@ -13,9 +13,19 @@ from miles.utils.types import RolloutBatch
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
+from .mm_data import expand_multimodal_rollout_data_in_place
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
+
+
+def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
+    if getattr(args, "true_on_policy_mode", False):
+        if getattr(args, "bf16", False):
+            return torch.bfloat16
+        if getattr(args, "fp16", False):
+            return torch.float16
+    return torch.float32
 
 
 def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
@@ -57,6 +67,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
     if "rollout_log_probs" in rollout_data:
+        rollout_logprob_dtype = _rollout_logprob_dtype(args)
         rollout_data["rollout_log_probs"] = [
             torch.tensor(
                 slice_log_prob_with_cp(
@@ -67,7 +78,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
                     rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                 ),
                 device=torch.cuda.current_device(),
-                dtype=torch.float32,
+                dtype=rollout_logprob_dtype,
             )
             for i, (log_prob, total_length, response_length) in enumerate(
                 zip(
@@ -119,6 +130,9 @@ def get_batch(
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
+
+    # No-op safety net if batches reach get_batch without rollout-level preprocessing.
+    expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
 
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
@@ -342,6 +356,8 @@ def get_data_iterator(
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
     """
+    expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
+
     parallel_state = get_parallel_state()
     dp_size = parallel_state.intra_dp.size
     dp_group = parallel_state.intra_dp.group
