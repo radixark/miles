@@ -84,10 +84,7 @@ class BaseReplayManager:
         for replay in self.replays:
             replay.clear_forward()
 
-    def get_topk_fn(self, old_topk_fn, return_probs, *, fill_padding_with_arange=True):
-        if return_probs and not fill_padding_with_arange:
-            raise ValueError("fill_padding_with_arange=False is only supported when return_probs=False")
-
+    def get_topk_fn(self, old_topk_fn, return_probs):
         manager = self
 
         def _get_replay_result(top_indices, scores, topk, *args, **kwargs):
@@ -102,24 +99,14 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            if fill_padding_with_arange:
-                padding_mask = top_indices == -1
-                if padding_mask.any():
-                    top_indices[padding_mask] = (
-                        torch.arange(padding_mask.sum(), device=top_indices.device, dtype=top_indices.dtype)
-                        % scores.shape[1]
-                    )
-            else:
-                # masked/pad tokens get an all-(-1) row -> all -inf index_score -> NaN.
-                # Fill just those rows with arange (distinct positions, no backward
-                # scatter contention) so they stay finite; valid tokens keep their -1.
-                all_invalid = (top_indices == -1).all(dim=-1)
-                if all_invalid.any():
-                    ar = (
-                        torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
-                        % scores.shape[1]
-                    )
-                    top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+            # fill padding tokens with arange to avoid invalid reading
+            all_invalid = (top_indices == -1).all(dim=-1)
+            if all_invalid.any():
+                ar = (
+                    torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
+                    % scores.shape[1]
+                )
+                top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
