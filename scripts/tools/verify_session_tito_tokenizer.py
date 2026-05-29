@@ -34,7 +34,11 @@ import logging
 import sys
 
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.test_utils.session_verify_agent import select_schedule
+from miles.utils.test_utils.session_verify_agent import (
+    DEFAULT_TOOL_CALL_FAILURE_MODE,
+    ToolCallFailureMode,
+    select_schedule,
+)
 from miles.utils.test_utils.session_verify_runner import run_session_verify
 
 
@@ -66,7 +70,7 @@ def main() -> int:
     parser.add_argument(
         "--hf-checkpoint",
         required=True,
-        help="HuggingFace model ID, e.g. zai-org/GLM-4.7-Flash.",
+        help="HuggingFace model ID or local checkpoint path, e.g. zai-org/GLM-4.7-Flash.",
     )
     parser.add_argument(
         "--tito-model",
@@ -130,6 +134,26 @@ def main() -> int:
         help="Driver schedule cycles per sample (default 3).  Drop to 2 for "
         "tighter-context models (e.g. Qwen3 32K with 4K response budget).",
     )
+    parser.add_argument(
+        "--assistant-text-threshold",
+        type=float,
+        default=0.1,
+        help="Soft threshold for assistant_text mismatch ratio.  Default 0.1.  "
+        "Raise to 1.0 for families whose upstream sglang reasoning parser "
+        "is known to roundtrip imperfectly (e.g. nemotron_3 keeps a trailing "
+        "newline in reasoning_content) — hard mismatches still gate.",
+    )
+    parser.add_argument(
+        "--tool-call-failure-mode",
+        type=str,
+        default=DEFAULT_TOOL_CALL_FAILURE_MODE.value,
+        choices=[m.value for m in ToolCallFailureMode],
+        help="Recovery mode when a TOOL_RESULT step sees no tool_calls on the "
+        "assistant.  'rollback' (default, universal) pops the assistant and "
+        "re-inferences.  'append_tool' splices a sentinel tool message (only "
+        "lenient templates accept this).  'append_user' splices a user message "
+        "with the same failure text — requires 'user' in --tito-allowed-append-roles.",
+    )
 
     args = parser.parse_args()
 
@@ -151,6 +175,7 @@ def main() -> int:
     print(f"Actor GPUs per node:   {args.num_gpus}")
     print(f"Samples per prompt:    {args.n_samples}")
     print(f"Cycles per sample:     {args.cycles}")
+    print(f"Tool-call failure mode:{args.tool_call_failure_mode}")
     print()
 
     try:
@@ -172,6 +197,8 @@ def main() -> int:
             num_gpus=args.num_gpus,
             n_samples_per_prompt=args.n_samples,
             cycles=args.cycles,
+            assistant_text_threshold=args.assistant_text_threshold,
+            tool_call_failure_mode=args.tool_call_failure_mode,
         )
     except Exception as e:
         print()

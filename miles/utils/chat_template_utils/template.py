@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any
+from typing import Any, Literal
 
 from huggingface_hub import hf_hub_download
 from jinja2 import TemplateError
 from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from transformers.utils.chat_template_utils import render_jinja_template
+
+from miles.utils.chat_template_utils import deepseek_v32
 
 
 def load_hf_chat_template(model_id: str) -> str:
@@ -50,26 +52,28 @@ def load_hf_chat_template(model_id: str) -> str:
         return f.read()
 
 
-def _normalize_tool_arguments(messages: list[dict]) -> list[dict]:
-    """Deep-copy messages and normalize for template rendering.
-
-    Normalizations:
-    - Parse JSON-string tool_call arguments to dicts.  Matches SGLang's
-      ``_apply_jinja_template`` normalization in ``serving_chat.py``.
-    - Convert ``content: None`` to ``content: ""`` for assistant messages with
-      tool_calls.  The OpenAI API returns ``content: null`` for tool-call-only
-      responses; Jinja2 renders Python ``None`` as the literal string "None".
+def normalize_tool_arguments(messages: list[dict], format: Literal["dict", "json"]) -> list[dict]:
+    """Deep-copy *messages*, normalize assistant ``content: None`` -> "", and coerce
+    tool_call ``arguments`` to the form the downstream renderer needs (``format`` picks
+    the direction; never mutates the input):
+    - ``"dict"``: JSON string -> dict, for HF-Jinja templates (they index args as objects).
+    - ``"json"``: dict -> JSON string, for the DeepSeek DSML encoders (they ``json.loads`` them).
     """
     normalized = copy.deepcopy(messages)
     for msg in normalized:
         if msg.get("role") == "assistant":
-            if msg.get("content") is None and msg.get("tool_calls"):
+            if msg.get("content") is None:
                 msg["content"] = ""
-            if "tool_calls" in msg and isinstance(msg["tool_calls"], list):
+            if isinstance(msg.get("tool_calls"), list):
                 for item in msg["tool_calls"]:
                     func = item.get("function")
-                    if func and "arguments" in func and isinstance(func["arguments"], str):
-                        func["arguments"] = json.loads(func["arguments"])
+                    if not func:
+                        continue
+                    args = func.get("arguments")
+                    if format == "dict" and isinstance(args, str):
+                        func["arguments"] = json.loads(args)
+                    elif format == "json" and isinstance(args, dict):
+                        func["arguments"] = json.dumps(args, ensure_ascii=False)
     return normalized
 
 
@@ -115,7 +119,7 @@ def apply_chat_template_from_str(
         )
         return rendered[0]
 
-    messages = _normalize_tool_arguments(messages)
+    messages = normalize_tool_arguments(messages, "dict")
     tool_defs = extract_tool_dicts(tools)
     try:
         return _render(tool_defs)
@@ -221,7 +225,11 @@ def apply_chat_template(
     ensuring the result is ``str`` (tokenize=False) or ``list[int]``
     (tokenize=True), not a ``BatchEncoding`` or ``dict``.
     """
-    messages = _normalize_tool_arguments(messages)
+    if deepseek_v32.is_deepseek_v32(tokenizer):
+        rendered = deepseek_v32.render_messages(normalize_tool_arguments(messages, "json"), tools=tools, **kwargs)
+        return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered
+
+    messages = normalize_tool_arguments(messages, "dict")
     tool_defs = extract_tool_dicts(tools)
     render_kwargs = dict(add_generation_prompt=add_generation_prompt, **kwargs)
 
