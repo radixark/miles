@@ -29,7 +29,11 @@ def ray_local_mode():
             log_to_driver=False,
         )
         if not os.environ.get("RAY_ADDRESS"):
-            kwargs["num_cpus"] = 4
+            kwargs["num_cpus"] = 32
+            # Logical GPU resource so real_ray placement-group tests (engines
+            # are mocked via MockSGLangEngine; no real GPU is used) can satisfy
+            # their {"GPU": 0.2} bundles on GPU-less CPU CI runners.
+            kwargs["num_gpus"] = 8
         ray.init(**kwargs)
     yield
     # Don't shut down — other session-scoped suites may share this cluster.
