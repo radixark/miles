@@ -1,12 +1,17 @@
-# 1. radixark/miles:dev
+# 1. radixark/miles:dev (x86 CUDA 12)
 #    use default settings
 #
-# 2. radixark/miles:dev-cu13-arm64
+# 2. radixark/miles:dev-cu13-arm64 (arm64 CUDA 13 / GB300)
 #    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-cu130 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu130 \
 #    build-arg:WHEELS_TAG=cu130-aarch64 \
+#
+# 3. radixark/miles:dev-cu13-x86 (x86 CUDA 13 / B300, sm_103a)
+#    build-arg:ENABLE_CUDA_13=1 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu130 \
+#    build-arg:WHEELS_TAG=cu130-x86_64 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.10
+ARG SGLANG_IMAGE_TAG=v0.5.12-cu129
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -20,7 +25,7 @@ ARG MEGATRON_BRANCH=miles-main
 ARG ENABLE_CUDA_13=0
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
-ARG WHEELS_TAG=cu129-x86_64
+ARG WHEELS_TAG=cu129-x86_64-v0.5.12
 
 # ======================================== Setup =============================================
 
@@ -40,13 +45,17 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
     cp /tmp/nccl-tests/build/*_perf /usr/local/bin/ && \
     rm -rf /tmp/nccl-tests
 
-# ====================================== Download pre-built wheels ============================================
+# ====================================== Collect pre-built wheels ============================================
+# Optional: drop pre-built wheels into <miles>/wheels/ to skip the release download below.
+# `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
+COPY wheel[s]/ /tmp/wheels/
 
 RUN mkdir -p /tmp/wheels && \
     curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
-    | python3 -c "import sys, json, subprocess; \
-[subprocess.run(['curl', '-fSL', '-o', '/tmp/wheels/' + a['name'], a['browser_download_url']], check=True) \
- for a in json.load(sys.stdin)['assets'] if a['name'].endswith(('.whl', '.tar.gz'))]" && \
+    | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
+[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
+ for a in json.load(sys.stdin).get('assets',[]) \
+ if a['name'].endswith(('.whl', '.tar.gz')) and not os.path.exists(os.path.join(w,a['name']))]" && \
     ls -lh /tmp/wheels/
 
 # ====================================== Python dependencies ============================================
@@ -54,7 +63,7 @@ RUN mkdir -p /tmp/wheels && \
 # flash-attn
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
-# flash-attn hopper
+# flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
 RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
     python_path=$(python -c "import site; print(site.getsitepackages()[0])") && \
     mkdir -p $python_path/flash_attn_3 && \
@@ -69,12 +78,29 @@ RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation
 
+# transformer_engine
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install nvidia-mathdx==25.6.0 && \
-      pip -v install --no-build-isolation "transformer_engine[core_cu13,pytorch]==2.10.0"; \
+      pip install --no-deps transformer_engine==2.12.0 && \
+      pip install transformer_engine_cu13==2.12.0 && \
+      if ls /tmp/wheels/transformer_engine_torch-*.whl 2>/dev/null | grep -q .; then \
+        pip install /tmp/wheels/transformer_engine_torch-*.whl; \
+      else \
+        pip install nvidia-mathdx==25.6.0 && \
+        pip -v install --no-build-isolation transformer_engine_torch==2.12.0; \
+      fi; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
     fi
+
+# TE patches (cu13): B300/GB300 sm103 FA2 whitelist fix
+COPY docker/patch/ /tmp/patches/
+RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
+      TE_DIR=$(python -c 'import transformer_engine; print(transformer_engine.__path__[0])') && \
+      for p in /tmp/patches/cu13/*.patch; do \
+        echo "Applying $(basename $p) to $TE_DIR" && \
+        patch -d "$TE_DIR" -p1 < "$p"; \
+      done; \
+    fi && rm -rf /tmp/patches
 
 # apex
 RUN pip install /tmp/wheels/apex-*.whl

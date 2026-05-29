@@ -72,6 +72,19 @@ _MEGATRON_TO_HF_MODULES = {
 
 _HF_MODULE_NAMES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
 
+# DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).
+_MLA_HF_TO_MEGATRON = {
+    "q_a_proj": "linear_q_down_proj",
+    "kv_a_proj_with_mqa": "linear_kv_down_proj",
+    "q_b_proj": "linear_q_up_proj",
+    "kv_b_proj": "linear_kv_up_proj",
+}
+_MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
+
+# SGLang default get_hidden_dim (lora/utils.py) handles fused_qkv_a_proj_with_mqa via q_a / kv_a mapping,
+# but not separate q_b_proj / kv_b_proj yet — omit from rollout adapter config to avoid init crashes.
+_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset({"q_b_proj", "kv_b_proj"})
+
 
 # ---------------------------------------------------------------------------
 # Core helpers
@@ -81,6 +94,11 @@ _HF_MODULE_NAMES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_pro
 def is_lora_enabled(args: Namespace) -> bool:
     """Check if LoRA is enabled based on arguments."""
     return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
+
+
+def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
+    """LoRA + --colocate + --lora-base-cpu-backup all set."""
+    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
@@ -181,14 +199,20 @@ def convert_target_modules_to_megatron(
         if hf_modules[0] in ("all", "all-linear", "all_linear"):
             return list(all_modules)
 
-    # Check if already in Megatron format
-    if all(m not in _HF_MODULE_NAMES for m in hf_modules if "*" not in m):
-        return hf_modules
+    if isinstance(hf_modules, tuple):
+        hf_modules = list(hf_modules)
+
+    # Check if already in Megatron format (standard / canonical / Kimi MLA linear_*).
+    if all(m not in _HF_MODULE_NAMES and m not in _MLA_HF_TO_MEGATRON for m in hf_modules if "*" not in m):
+        return list(hf_modules)
 
     # Convert HF names to Megatron names (dedup while preserving order)
     megatron_modules: list[str] = []
     for module in hf_modules:
-        megatron_name = hf_to_megatron.get(module, module)
+        if module in _MLA_HF_TO_MEGATRON:
+            megatron_name = _MLA_HF_TO_MEGATRON[module]
+        else:
+            megatron_name = hf_to_megatron.get(module, module)
         if megatron_name not in megatron_modules:
             megatron_modules.append(megatron_name)
 
@@ -204,14 +228,45 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
     Megatron canonical:  linear_q, linear_k, linear_v, linear_proj,
                          linear_fc1_up, linear_fc1_gate, linear_fc2
     HF:                  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+    Kimi MLA Megatron:   linear_q_down_proj -> q_a_proj, linear_kv_down_proj -> kv_a_proj_with_mqa, ...
+
+    Wildcards (``*.layers.2.mlp.experts.linear_fc1``) get the last dotted
+    segment mapped to an HF leaf name; SGLang uses the result to choose
+    adapter-buffer types, not to scope by layer.
     """
+    if isinstance(megatron_modules, tuple):
+        megatron_modules = list(megatron_modules)
     hf_modules: list[str] = []
     for module in megatron_modules:
-        if module in _MEGATRON_TO_HF_MODULES:
-            hf_modules.extend(_MEGATRON_TO_HF_MODULES[module])
+        lookup_key = module.rsplit(".", 1)[-1] if "*" in module else module
+        if lookup_key in _MEGATRON_MLA_TO_HF:
+            hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
+        elif lookup_key in _MEGATRON_TO_HF_MODULES:
+            hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
         else:
             hf_modules.append(module)
-    return hf_modules
+    seen: set[str] = set()
+    unique: list[str] = []
+    for m in hf_modules:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
+    return unique
+
+
+def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
+    """HF target_modules for SGLang LoRA init/sync, with MLA q_b/kv_b dropped (unsupported)."""
+    raw = list(args.target_modules) if args.target_modules else []
+    hf = convert_target_modules_to_hf(raw)
+    out = [m for m in hf if m not in _SGLANG_UNSUPPORTED_HF_TARGETS]
+    dropped = set(hf) - set(out)
+    if dropped:
+        logger.warning(
+            "target_modules_hf_for_sglang_rollout: omitting %s for SGLang (unsupported by default "
+            "get_hidden_dim); Megatron should not train LoRA on these if rollout sync is required.",
+            sorted(dropped),
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +306,7 @@ def create_lora_instance(args: Namespace):
     target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
     exclude_modules = parse_exclude_modules(args, lora_type=lora_cls)
 
-    lora = lora_cls(
+    lora_kwargs = dict(
         target_modules=target_modules,
         exclude_modules=exclude_modules,
         dim=args.lora_rank,
@@ -260,6 +315,12 @@ def create_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
+    # Opt-in to SGLang PR #21466's shared-outer grouped-expert LoRA. Only the
+    # standard ``LoRA`` class supports the flag today.
+    if lora_cls is LoRA and getattr(args, "experts_shared_outer_loras", False):
+        lora_kwargs["experts_shared_outer_loras"] = True
+
+    lora = lora_cls(**lora_kwargs)
 
     logger.info(
         f"Created {lora_cls.__name__}: rank={args.lora_rank}, alpha={args.lora_alpha}, "
@@ -490,7 +551,7 @@ def _load_training_state(
 def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
     """Build LoRA config dict for syncing weights to SGLang engines."""
     target_modules_hf = (
-        convert_target_modules_to_hf(list(args.target_modules))
+        target_modules_hf_for_sglang_rollout(args)
         if args.target_modules
         else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )

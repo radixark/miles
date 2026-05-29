@@ -1,5 +1,3 @@
-import json
-import os
 from abc import ABC, abstractmethod
 
 import torch
@@ -9,33 +7,7 @@ from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.module import MegatronModule
 
-
-# Common fallback path for HF config loading; may be migrated elsewhere later.
-def _load_hf_config(checkpoint_path):
-    """Load HF config with fallback for unsupported model types."""
-    try:
-        from transformers import AutoConfig
-
-        return AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=True)
-    except (ValueError, KeyError):
-        config_path = os.path.join(checkpoint_path, "config.json")
-        with open(config_path) as f:
-            config_dict = json.load(f)
-
-        _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
-
-        def _fix_dtype(d):
-            if "torch_dtype" in d:
-                d["torch_dtype"] = _DTYPE_MAP.get(d["torch_dtype"], d["torch_dtype"])
-            if "dtype" in d:
-                d["dtype"] = _DTYPE_MAP.get(d["dtype"], d["dtype"])
-
-        _fix_dtype(config_dict)
-        ns = type("HFConfig", (), config_dict)()
-        if "text_config" in config_dict:
-            _fix_dtype(config_dict["text_config"])
-            ns.text_config = type("TextConfig", (), config_dict["text_config"])()
-        return ns
+from miles.utils.hf_config import load_hf_config
 
 
 def _get_cp_sequence_lengths(cu_seqlens, cp_size, local_total_len=None):
@@ -196,7 +168,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
         # Note that megatron layer_number starts at 1
         self.layer_number = layer_number
         self.hf_layer_idx = layer_number - 1
-        self.hf_config = _load_hf_config(args.hf_checkpoint)
+        self.hf_config = load_hf_config(args.hf_checkpoint)
         # hardcode to fa2 at the moment.
         self.hf_config._attn_implementation = "flash_attention_2"
 
