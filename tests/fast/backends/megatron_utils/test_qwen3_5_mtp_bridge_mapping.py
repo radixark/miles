@@ -103,7 +103,7 @@ def install_bridge_stubs():
 
 def load_bridge_module():
     install_bridge_stubs()
-    module_path = Path(__file__).resolve().parents[1] / "miles_plugins" / "mbridge" / "qwen3_5.py"
+    module_path = Path(__file__).resolve().parents[4] / "miles_plugins" / "mbridge" / "qwen3_5.py"
     module_name = "test_qwen3_5_bridge_module"
     sys.modules.pop(module_name, None)
     spec = importlib.util.spec_from_file_location(module_name, module_path)
@@ -115,7 +115,7 @@ def load_bridge_module():
 
 def load_raw_export_module():
     module_path = (
-        Path(__file__).resolve().parents[1] / "miles" / "backends" / "megatron_utils" / "megatron_to_hf" / "qwen3_5.py"
+        Path(__file__).resolve().parents[4] / "miles" / "backends" / "megatron_utils" / "megatron_to_hf" / "qwen3_5.py"
     )
     module_name = "test_qwen3_5_raw_export_module"
     sys.modules.pop(module_name, None)

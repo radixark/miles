@@ -291,7 +291,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "The name of the model, this is used to convert the megatron weights into huggingface format. "
-                    "If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as model_name. "
+                    "If not set, we will use `type(load_hf_config(args.hf_checkpoint)).__name__.lower()` as model_name. "
                     "Also, sometimes this will help alleviate the bug that transformers cannot find certain model."
                 ),
             )
@@ -1138,6 +1138,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
             )
+            parser.add_argument(
+                "--lora-base-cpu-backup",
+                action="store_true",
+                default=False,
+                help=(
+                    "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
+                    "and skip per-step base sync. Trades host RAM for faster "
+                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                ),
+            )
+            parser.add_argument(
+                "--experts-shared-outer-loras",
+                action="store_true",
+                default=False,
+                help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
+                "down lora_B shared across experts, expert_dim=1). Matches SGLang "
+                "PR #21466's experts_shared_outer_loras=True serving contract.",
+            )
             return parser
 
         def add_router_arguments(parser):
@@ -1954,7 +1972,7 @@ def miles_validate_args(args):
     #      wins and is never overridden)
     #   2. the caller chose a non-default --tito-model family (DEFAULT means
     #      "use the model's native HF chat template", which is loaded by
-    #      AutoTokenizer.from_pretrained — no override needed here)
+    #      load_tokenizer — no override needed here)
     should_auto_resolve = args.chat_template_path is None and args.tito_model != TITOTokenizerType.DEFAULT.value
 
     if should_auto_resolve:
@@ -2045,6 +2063,14 @@ def miles_validate_args(args):
             modules = [m for m in modules if m not in exclude_set]
 
         args.target_modules = modules
+
+        # Training and serving must agree on shared-outer grouped-expert LoRA
+        # (expert_dim=1 buffers in SGLang).
+        if args.experts_shared_outer_loras:
+            args.sglang_experts_shared_outer_loras = True
+        assert args.experts_shared_outer_loras == bool(
+            args.sglang_experts_shared_outer_loras
+        ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

@@ -7,11 +7,6 @@ identical token IDs as the standard apply_chat_template path.
 Ported from sglang test/unit/test_pretokenized_chat.py.
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
-
-
 from copy import deepcopy
 
 import pytest
@@ -190,7 +185,6 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
     ("glm4", load_hf_chat_template("THUDM/glm-4-9b-chat"), False, frozenset({"tool"}), {}),
 ]
 
-
 # Original (unfixed) HF templates referenced by negative tests
 _ORIGINAL_TEMPLATES = {
     "qwen3_original": load_hf_chat_template("Qwen/Qwen3-0.6B"),
@@ -236,7 +230,6 @@ def test_pretokenized(chat_template: str, case: CaseSpec, kwargs: dict):
 # ===========================================================================
 # Negative tests: original (unfixed) templates fail prefix invariant
 # ===========================================================================
-
 
 # (chat_template, trajectory_cls, pretokenize_n)
 _MISMATCH_CASES = [

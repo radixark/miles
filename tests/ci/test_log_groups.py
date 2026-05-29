@@ -22,7 +22,10 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.ci.ci_utils import TestFile, _gha_emit_endgroup, _gha_emit_group, _gha_emit_summary, run_unittest_files
+
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 # ---------------------------------------------------------------------------
 # Helpers used by integration tests

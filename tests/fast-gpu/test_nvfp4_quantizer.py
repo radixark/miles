@@ -161,3 +161,11 @@ def test_nvfp4_quantize_matches_te_reference_bitwise(quantize_fn, shape, dtype, 
     torch.testing.assert_close(qweight, qweight_ref, rtol=0, atol=0)
     torch.testing.assert_close(block_scale.view(torch.uint8), block_scale_ref.view(torch.uint8), rtol=0, atol=0)
     torch.testing.assert_close(global_scale, global_scale_ref, rtol=0, atol=0)
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

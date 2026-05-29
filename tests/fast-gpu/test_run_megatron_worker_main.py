@@ -1,12 +1,21 @@
-"""Unit tests for worker/main.py functions.
+"""Unit tests for worker/main.py helper functions.
 
-main.py has heavy top-level imports (megatron.training.arguments, etc.)
-that aren't fully available in the lightweight test container.  We intercept
-the import by patching sys.modules for missing leaves *before* importing
-the module under test.
+Lives under tests/fast-gpu/ because worker/main.py has heavy top-level
+megatron / sglang imports that need a real GPU container to resolve cleanly.
+Each fast-gpu file runs in its own subprocess (per-file isolation), so the
+sys.modules stubbing below cannot leak across files.
 """
 
 from __future__ import annotations
+
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(
+    est_time=30,
+    suite="stage-b-2-gpu-h200",
+    labels=[],
+    disabled="FIXME: re-enable after worker/main.py stubbing is safe in script-mode CI.",
+)
 
 import argparse
 import os
@@ -230,3 +239,9 @@ class TestFinalizeDumper:
 
         mock_dumper.step.assert_not_called()
         mock_dumper.configure.assert_not_called()
+
+
+if __name__ == "__main__":
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

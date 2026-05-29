@@ -75,3 +75,11 @@ class TestIgnoreRulePrefixMatching:
         assert "model.layers.0.self_attn.k_proj.weight" in result_names
         # mlp param quantized
         assert "model.layers.0.mlp.gate_proj.weight_packed" in result_names
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

@@ -9,7 +9,12 @@ import torch.distributed as dist
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, build_lora_sync_config, is_lora_weight_name
+from miles.backends.megatron_utils.lora_utils import (
+    LORA_ADAPTER_NAME,
+    build_lora_sync_config,
+    is_lora_weight_name,
+    lora_base_cpu_backup_enabled,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -175,11 +180,23 @@ class UpdateWeightFromTensor:
         self.weight_version += 1
 
         rank = dist.get_rank()
+
+        # LoRA never mutates the base. With either path that retains it on the
+        # rollout side (distributed keeps it on GPU; colocate + cpu_backup keeps
+        # a host mirror across pause/resume), we can skip the base sync entirely
+        # and the surrounding restore_weights_before_load / post_process_quantization
+        # calls that would otherwise prep / re-quantize fresh base bytes.
+        skip_base_sync = self.is_lora and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+
         if rank == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
+            if (
+                not skip_base_sync
+                and self.quantization_config
+                and self.quantization_config["quant_method"] in ["compressed-tensors"]
+            ):
                 post_process_weights(
                     rollout_engines=self.rollout_engines,
                     restore_weights_before_load=True,
@@ -189,8 +206,7 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
-        # For LoRA+distributed: base weights are frozen, skip after first round.
-        if not (self.is_lora and self.use_distribute and self._lora_base_synced):
+        if not skip_base_sync:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
@@ -200,37 +216,41 @@ class UpdateWeightFromTensor:
                 del long_lived_tensors
 
         if self.is_lora:
-            lora_sync_chunk_count = 0
+            # SGLang's load_lora_adapter_from_tensors expects the full adapter in
+            # one call; drain the bridge's chunker so --update-weight-buffer-size
+            # only bounds the base path.
+            accumulated_named_tensors: list = []
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="lora"
             ):
-                refs, long_lived_tensors = self._send_lora_params(hf_named_tensors)
-                results = ray.get(refs)
-                _check_weight_sync_results(results, is_lora=True)
-                del long_lived_tensors
-                lora_sync_chunk_count += 1
+                accumulated_named_tensors.extend(hf_named_tensors)
 
-            if lora_sync_chunk_count == 0:
+            if not accumulated_named_tensors:
                 raise RuntimeError(
                     "LoRA weight sync failed: the weight iterator produced zero chunks. "
                     "No adapter weights were sent to the rollout engine. This usually means "
                     "the Megatron-Bridge or SGLang version is incompatible."
                 )
 
-            if self.use_distribute and not self._lora_base_synced:
+            refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
+            results = ray.get(refs)
+            _check_weight_sync_results(results, is_lora=True)
+            del long_lived_tensors
+
+            if not self._lora_base_synced:
                 self._lora_base_synced = True
 
         dist.barrier(group=get_gloo_group())
 
         if rank == 0:
-            # `post_process_quantization` is related to the `process_weights_after_loading`
-            # in the sglang rollout side, which should always be invoked after weight
-            # updating.
-            post_process_weights(
-                rollout_engines=self.rollout_engines,
-                restore_weights_before_load=False,
-                post_process_quantization=True,
-            )
+            # process_weights_after_loading is a one-shot bf16 → int4/Marlin
+            # transform; skip when no fresh base bytes landed (skip_base_sync).
+            if not skip_base_sync:
+                post_process_weights(
+                    rollout_engines=self.rollout_engines,
+                    restore_weights_before_load=False,
+                    post_process_quantization=True,
+                )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
@@ -293,6 +313,7 @@ def _send_to_colocated_engine(
         return [], None
 
     is_lora = lora_config is not None
+    is_gather_src = dist.get_rank() == ipc_gather_src
     long_live_tensors = []
 
     if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
@@ -305,7 +326,7 @@ def _send_to_colocated_engine(
                 converted_named_tensors_by_dtypes[dtype] = []
             converted_named_tensors_by_dtypes[dtype].append((name, tensor))
 
-    serialized_tensors = []
+    serialized_tensors: list = []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
         flattened_tensor_data = {
@@ -315,9 +336,7 @@ def _send_to_colocated_engine(
         long_live_tensors.append(flattened_tensor_data)
         serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
 
-    serialized_named_tensors = (
-        [None] * dist.get_world_size(ipc_gather_group) if ipc_gather_src == dist.get_rank() else None
-    )
+    serialized_named_tensors = [None] * dist.get_world_size(ipc_gather_group) if is_gather_src else None
     dist.gather_object(
         serialized_tensors,
         object_gather_list=serialized_named_tensors,
@@ -326,7 +345,7 @@ def _send_to_colocated_engine(
     )
 
     refs = []
-    if dist.get_rank() == ipc_gather_src:
+    if is_gather_src:
         if is_lora:
             if lora_loaded:
                 ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
@@ -340,7 +359,9 @@ def _send_to_colocated_engine(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
                     config_dict=lora_config,
-                    serialized_tensors=serialized_named_tensors[0][0],
+                    serialized_named_tensors=[
+                        per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
+                    ],
                     load_format="flattened_bucket",
                 )
             )
