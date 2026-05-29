@@ -2,7 +2,6 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
-import pytest
 import torch
 
 from miles.utils.replay_base import BaseReplayManager
@@ -32,27 +31,23 @@ def _make_replay_manager(top_indices):
     return manager
 
 
-def test_get_topk_fn_fills_invalid_indices_with_arange_by_default():
+def test_get_topk_fn_fills_all_invalid_rows_with_arange():
+    # an all-(-1) row is a masked/pad token; fill it with arange to avoid reading
+    # invalid (-1) positions downstream
     scores = torch.arange(5, dtype=torch.float32).unsqueeze(0)
-    manager = _make_replay_manager(torch.tensor([[2, -1, -1]], dtype=torch.int32))
+    manager = _make_replay_manager(torch.tensor([[-1, -1, -1]], dtype=torch.int32))
 
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
-    torch.testing.assert_close(topk_fn(scores, 3), torch.tensor([[2, 0, 1]], dtype=torch.int32))
+    torch.testing.assert_close(topk_fn(scores, 3), torch.tensor([[0, 1, 2]], dtype=torch.int32))
 
 
-def test_get_topk_fn_can_preserve_invalid_indices():
+def test_get_topk_fn_preserves_partial_padding():
+    # a row with some valid picks keeps its -1 padding (only all-(-1) rows are filled)
     scores = torch.arange(5, dtype=torch.float32).unsqueeze(0)
     replayed_top_indices = torch.tensor([[2, -1, -1]], dtype=torch.int32)
     manager = _make_replay_manager(replayed_top_indices)
 
-    topk_fn = manager.get_topk_fn(_topk, return_probs=False, fill_padding_with_arange=False)
+    topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
     torch.testing.assert_close(topk_fn(scores, 3), replayed_top_indices)
-
-
-def test_get_topk_fn_rejects_preserving_invalid_indices_with_return_probs():
-    manager = BaseReplayManager()
-
-    with pytest.raises(ValueError, match="fill_padding_with_arange=False"):
-        manager.get_topk_fn(_topk, return_probs=True, fill_padding_with_arange=False)
