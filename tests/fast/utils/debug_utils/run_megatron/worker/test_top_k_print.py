@@ -117,15 +117,15 @@ _TOP_K_MODULE = "miles.utils.debug_utils.run_megatron.worker.top_k_print"
 
 class TestPrintTopK:
     @patch(f"{_TOP_K_MODULE}._print_top_predictions_all_ranks")
-    @patch("transformers.AutoTokenizer")
+    @patch("miles.utils.processing_utils.load_tokenizer")
     def test_loads_tokenizer_and_calls_print_all_ranks(
         self,
-        mock_auto_tok: MagicMock,
+        mock_load_tok: MagicMock,
         mock_print_all: MagicMock,
     ) -> None:
         mock_tokenizer = MagicMock()
         mock_tokenizer.pad_token_id = 5
-        mock_auto_tok.from_pretrained.return_value = mock_tokenizer
+        mock_load_tok.return_value = mock_tokenizer
 
         logits = torch.randn(1, 2, 10)
         input_ids = torch.tensor([[1, 2]])
@@ -137,22 +137,22 @@ class TestPrintTopK:
             tokenizer_path=Path("/fake/model"),
         )
 
-        mock_auto_tok.from_pretrained.assert_called_once()
+        mock_load_tok.assert_called_once()
         mock_print_all.assert_called_once()
         call_kwargs = mock_print_all.call_args[1]
         assert call_kwargs["pad_token_id"] == 5
 
     @patch(f"{_TOP_K_MODULE}._print_top_predictions_all_ranks")
-    @patch("transformers.AutoTokenizer")
+    @patch("miles.utils.processing_utils.load_tokenizer")
     def test_pad_token_id_fallback_to_eos(
         self,
-        mock_auto_tok: MagicMock,
+        mock_load_tok: MagicMock,
         mock_print_all: MagicMock,
     ) -> None:
         mock_tokenizer = MagicMock()
         mock_tokenizer.pad_token_id = None
         mock_tokenizer.eos_token_id = 2
-        mock_auto_tok.from_pretrained.return_value = mock_tokenizer
+        mock_load_tok.return_value = mock_tokenizer
 
         print_top_k(
             logits=torch.randn(1, 2, 10),

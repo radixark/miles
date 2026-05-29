@@ -115,7 +115,7 @@ def compute_samples_from_openai_records(
 
     for i, record in enumerate(records):
         is_last = i == len(records) - 1
-        prompt_ids = record.response["choices"][0]["prompt_token_ids"]
+        prompt_ids = record.request["input_ids"]
         output_ids = [t[1] for t in record.response["choices"][0]["meta_info"]["output_token_logprobs"]]
 
         trim_count = 0
@@ -165,21 +165,14 @@ def _compute_sample_from_openai_record(
 ) -> Sample:
     choice = record.response["choices"][0]
 
-    if "prompt_token_ids" in choice:
-        prompt_token_ids = choice["prompt_token_ids"]
-    else:
-        raise ValueError("prompt_token_ids not found in response choice — the session server should populate it")
+    prompt_token_ids = record.request.get("input_ids")
+    if prompt_token_ids is None:
+        raise ValueError("input_ids not found in request — the session server should populate it")
 
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
     sample = deepcopy(input_sample)
-    request_input_ids = record.request.get("input_ids")
-    if request_input_ids is not None:
-        assert (
-            request_input_ids == prompt_token_ids
-        ), "for prompt part, input_ids return by sglang should match with the request input_ids"
-
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
@@ -227,23 +220,9 @@ def truncate_samples_by_total_tokens(
         if allowed_output <= 0:
             break
 
-        _truncate_sample_output(sample, allowed_output, tokenizer)
+        sample.strip_last_output_tokens(overshoot, tokenizer)
+        sample.status = Sample.Status.TRUNCATED
         result.append(sample)
         break
 
     return result
-
-
-def _truncate_sample_output(sample: Sample, keep_tokens: int, tokenizer) -> None:
-    """Truncate a sample's output in-place to exactly ``keep_tokens`` tokens."""
-    prompt_len = len(sample.tokens) - sample.response_length
-    kept_ids = sample.tokens[prompt_len : prompt_len + keep_tokens]
-
-    sample.tokens = sample.tokens[:prompt_len] + kept_ids
-    sample.response = tokenizer.decode(kept_ids)
-    sample.response_length = keep_tokens
-    if sample.rollout_log_probs is not None:
-        sample.rollout_log_probs = sample.rollout_log_probs[:keep_tokens]
-    if sample.loss_mask is not None:
-        sample.loss_mask = sample.loss_mask[:keep_tokens]
-    sample.status = Sample.Status.TRUNCATED
