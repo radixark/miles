@@ -91,10 +91,8 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
                 )
             )
         ]
-
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
-
     return rollout_data
 
 
