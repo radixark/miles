@@ -1,0 +1,1156 @@
+/* ==========================================================================
+   Miles — Frontier Lab
+   Restrained, confident, technical. Bricolage display, Geist body, Geist Mono.
+   Single accent gestures, generous whitespace, rigorous grid.
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&display=swap');
+
+/* --------------------------------------------------------------------------
+   Tokens — restrained palette, more neutral, single accent
+   -------------------------------------------------------------------------- */
+:root {
+  --miles-ink:        #0a0e1f;
+  --miles-ink-soft:   #11172e;
+
+  --miles-accent:     #1f7be0;     /* refined blue, the single accent */
+  --miles-accent-deep:#1565c0;
+  --miles-cyan:       #21d4fd;     /* used sparingly, only in dark gradients */
+  --miles-violet:     #8b5cf6;
+  --miles-green:      #10b981;
+  --miles-amber:      #f59e0b;
+  --miles-rose:       #f43f5e;
+
+  --miles-fg:         #0f172a;
+  --miles-fg-soft:    #334155;
+  --miles-fg-mute:    #64748b;
+  --miles-fg-faint:   #94a3b8;
+
+  --miles-bg:         #ffffff;
+  --miles-bg-soft:    #f8fafc;
+  --miles-bg-mute:    #f1f5f9;
+  --miles-line:       rgba(15, 23, 42, 0.08);
+  --miles-line-soft:  rgba(15, 23, 42, 0.04);
+
+  /* Material overrides */
+  --md-text-font: "Geist", system-ui, sans-serif;
+  --md-code-font: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+
+  --md-primary-fg-color:        #0a0e1f;
+  --md-primary-fg-color--light:  #11172e;
+  --md-primary-fg-color--dark:   #04050f;
+  --md-accent-fg-color:          #1f7be0;
+  --md-accent-fg-color--transparent: rgba(31, 123, 224, 0.08);
+  --md-typeset-a-color:          #1f7be0;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color:           #08090f;
+  --md-default-bg-color--light:    #0d0f1a;
+  --md-default-bg-color--lighter:  rgba(255, 255, 255, 0.04);
+  --md-default-bg-color--lightest: rgba(255, 255, 255, 0.06);
+
+  --md-default-fg-color:           #f1f5f9;
+  --md-default-fg-color--light:    rgba(241, 245, 249, 0.78);
+  --md-default-fg-color--lighter:  rgba(241, 245, 249, 0.50);
+  --md-default-fg-color--lightest: rgba(241, 245, 249, 0.14);
+
+  --md-primary-fg-color:        #08090f;
+  --md-primary-fg-color--light:  #11172e;
+  --md-primary-fg-color--dark:   #04050f;
+  --md-accent-fg-color:          #5cb6ff;
+  --md-accent-fg-color--transparent: rgba(92, 182, 255, 0.10);
+  --md-typeset-a-color:          #5cb6ff;
+
+  --md-code-bg-color:            #0d0f1a;
+  --md-code-fg-color:            #e2e8f0;
+  --md-typeset-mark-color:       rgba(245, 158, 11, 0.4);
+
+  --miles-line:       rgba(255, 255, 255, 0.07);
+  --miles-line-soft:  rgba(255, 255, 255, 0.04);
+}
+
+/* --------------------------------------------------------------------------
+   Global typography
+   -------------------------------------------------------------------------- */
+body, .md-typeset {
+  font-family: "Geist", system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv01", "cv02";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.md-typeset {
+  font-size: 0.84rem;
+  line-height: 1.7;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5 {
+  font-family: "Bricolage Grotesque", "Geist", sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset h1 {
+  font-size: 2.2rem;
+  line-height: 1.1;
+  font-weight: 700;
+  font-variation-settings: "opsz" 96;
+  letter-spacing: -0.035em;
+  margin: 0.4rem 0 1.5rem;
+}
+
+.md-typeset h2 {
+  font-size: 1.45rem;
+  line-height: 1.25;
+  font-weight: 600;
+  margin-top: 2.8rem;
+  margin-bottom: 0.9rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--miles-line);
+  font-variation-settings: "opsz" 32;
+}
+
+.md-typeset h3 {
+  font-size: 1.1rem;
+  line-height: 1.35;
+  font-weight: 600;
+  margin-top: 2rem;
+  font-variation-settings: "opsz" 20;
+}
+
+.md-typeset h4 {
+  font-size: 0.94rem;
+  font-weight: 600;
+  margin-top: 1.4rem;
+  letter-spacing: -0.01em;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset h5,
+.md-typeset h6 {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--lighter);
+  margin-top: 1.2rem;
+}
+
+.md-typeset p,
+.md-typeset li {
+  font-feature-settings: "ss01", "cv01", "cv02";
+}
+
+.md-typeset a {
+  text-decoration: none;
+  color: var(--md-accent-fg-color);
+  transition: opacity 0.15s ease;
+}
+
+.md-typeset a:hover {
+  opacity: 0.7;
+}
+
+.md-typeset h1 a,
+.md-typeset h2 a,
+.md-typeset h3 a,
+.md-typeset h4 a {
+  color: inherit;
+}
+
+/* Permalink anchors */
+.md-typeset .headerlink {
+  color: var(--md-default-fg-color--lightest);
+  margin-left: 0.4rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.md-typeset h1:hover .headerlink,
+.md-typeset h2:hover .headerlink,
+.md-typeset h3:hover .headerlink {
+  opacity: 1;
+}
+
+/* --------------------------------------------------------------------------
+   Header — blends with page, no border, logo lives in the sidebar
+   -------------------------------------------------------------------------- */
+.md-header {
+  background: var(--md-default-bg-color);
+  backdrop-filter: none;
+  border-bottom: none;
+  box-shadow: none;
+  color: var(--md-default-fg-color);
+  height: 3rem;
+  transition: background-color 0.15s ease;
+}
+
+[data-md-color-scheme="default"] .md-header {
+  background: #ffffff;
+  color: var(--miles-fg);
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}
+
+.md-header * { color: inherit; }
+
+/* Hide the logo + site title from the header — they move to the sidebar */
+.md-header__button.md-logo,
+.md-header__title {
+  display: none !important;
+}
+
+/* Expose the hamburger only on narrow screens (Material already handles this) */
+
+.md-search__form {
+  background: var(--miles-bg-mute);
+  border-radius: 8px;
+  border: 1px solid var(--miles-line);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+[data-md-color-scheme="slate"] .md-search__form {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.md-search__form:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+.md-search__input {
+  font-family: "Geist", sans-serif;
+  font-size: 0.82rem;
+  color: var(--md-default-fg-color);
+}
+
+.md-search__input::placeholder {
+  color: var(--md-default-fg-color--lighter);
+}
+
+/* Right-side header buttons (GitHub / theme toggle) stay subtle */
+.md-header__option .md-icon svg,
+.md-header__source .md-source__icon svg {
+  fill: var(--md-default-fg-color--light);
+}
+
+.md-header__source {
+  color: var(--md-default-fg-color--light);
+  font-family: "Geist Mono", monospace;
+  font-size: 0.78rem;
+}
+
+.md-header__source:hover {
+  color: var(--md-accent-fg-color);
+}
+
+/* --------------------------------------------------------------------------
+   Brand in sidebar (logo replaces the header logo)
+   -------------------------------------------------------------------------- */
+.md-sidebar.md-sidebar--primary {
+  padding-top: 0;
+}
+
+.md-sidebar--primary .md-sidebar__inner {
+  position: relative;
+}
+
+.md-sidebar--primary .md-sidebar__inner::before {
+  content: "Miles";
+  display: flex;
+  align-items: center;
+  padding: 0 1.1rem 0.55rem 2.55rem;
+  margin-bottom: 0.4rem;
+  height: 1.6rem;
+
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 700;
+  font-size: 1.2rem;
+  letter-spacing: -0.035em;
+  color: var(--md-default-fg-color);
+
+  border-bottom: 1px solid var(--miles-line);
+  background-image: url("../images/miles_square.png");
+  background-repeat: no-repeat;
+  background-position: 1.05rem top;
+  background-size: 22px 22px;
+}
+
+[data-md-color-scheme="slate"] .md-sidebar--primary .md-sidebar__inner::before {
+  filter: none;
+}
+
+/* --------------------------------------------------------------------------
+   Announcement bar — quiet
+   -------------------------------------------------------------------------- */
+.md-banner {
+  background: #04050f;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: #cbd5e1;
+  font-size: 0.76rem;
+}
+
+.md-banner a {
+  color: #5cb6ff;
+  font-weight: 500;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(92, 182, 255, 0.3);
+}
+
+.md-banner a:hover {
+  border-bottom-color: currentColor;
+}
+
+/* --------------------------------------------------------------------------
+   Vertical sidebar (SGLang/verl style)
+   -------------------------------------------------------------------------- */
+.md-sidebar {
+  padding-top: 1rem;
+}
+
+.md-sidebar--primary {
+  background: var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="default"] .md-sidebar--primary {
+  background: var(--md-default-bg-color);
+  border-right: 1px solid var(--miles-line);
+}
+
+[data-md-color-scheme="slate"] .md-sidebar--primary {
+  background: var(--md-default-bg-color);
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.md-sidebar__scrollwrap {
+  scrollbar-width: thin;
+}
+
+.md-nav { font-size: 0.78rem; }
+
+.md-nav__title {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 600;
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--lighter);
+  padding: 0.5rem 0.8rem 0.4rem;
+}
+
+/* The brand sits in the header; suppress the duplicate logo + "Miles"
+   that mkdocs-material renders inside the primary nav title. */
+.md-nav--primary > .md-nav__title {
+  display: none;
+}
+
+.md-nav__item { padding: 0; }
+
+.md-nav__link {
+  padding: 0.32rem 0.7rem;
+  border-radius: 6px;
+  margin: 1px 0.4rem;
+  position: relative;
+  color: var(--md-default-fg-color--light);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.md-nav__link:hover {
+  background: var(--md-accent-fg-color--transparent);
+  color: var(--md-default-fg-color);
+}
+
+.md-nav__link--active {
+  color: var(--md-accent-fg-color);
+  background: var(--md-accent-fg-color--transparent);
+  font-weight: 600;
+}
+
+.md-nav__link--active::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 60%;
+  border-radius: 2px;
+  background: var(--md-accent-fg-color);
+}
+
+/* Section labels in sidebar */
+.md-nav__item--section > .md-nav__link {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 600;
+  font-size: 0.7rem;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color);
+  padding: 1rem 0.7rem 0.4rem;
+  margin: 0.5rem 0 0;
+  border-top: 1px solid var(--miles-line);
+  border-radius: 0;
+  background: transparent !important;
+}
+
+.md-nav__item--section:first-child > .md-nav__link {
+  border-top: none;
+  margin-top: 0;
+}
+
+.md-nav__item--section > .md-nav__link:hover {
+  color: var(--md-default-fg-color);
+}
+
+.md-nav__item--section > .md-nav__link::before {
+  display: none;
+}
+
+/* Right rail (TOC) — quieter */
+.md-sidebar--secondary .md-nav__title {
+  font-family: "Bricolage Grotesque", sans-serif;
+  letter-spacing: 0.14em;
+  font-weight: 600;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--lighter);
+}
+
+.md-sidebar--secondary .md-nav__link {
+  font-size: 0.74rem;
+  color: var(--md-default-fg-color--light);
+  padding: 0.22rem 0.7rem;
+}
+
+/* --------------------------------------------------------------------------
+   Code — frontier-lab minimal (OpenAI / Anthropic / Thinking Machines)
+   Light mode: near-white off-surface on white page.
+   Dark mode:  one shade lighter than page on dark body.
+   No gradients, no borders screaming for attention.
+   -------------------------------------------------------------------------- */
+
+/* Inline code */
+.md-typeset code {
+  font-family: var(--md-code-font);
+  font-size: 0.84em;
+  font-weight: 500;
+  font-feature-settings: "liga" 0, "calt" 0;
+  border-radius: 4px;
+  padding: 0.12em 0.38em;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+}
+
+[data-md-color-scheme="default"] .md-typeset code {
+  background: #f5f6f8;
+  color: #24292f;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+[data-md-color-scheme="slate"] .md-typeset code {
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6eaf3;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* Code inside headings: no background, just mono */
+.md-typeset h1 code,
+.md-typeset h2 code,
+.md-typeset h3 code,
+.md-typeset h4 code,
+.md-typeset h5 code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.92em;
+  color: inherit;
+}
+
+/* Code inside links: inherit link color, no border */
+.md-typeset a > code {
+  color: inherit;
+  border: none;
+}
+
+/* Code block wrapper */
+.md-typeset .highlight,
+.md-typeset .highlighttable {
+  margin: 1.4rem 0;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* The <pre> */
+.md-typeset .highlight > pre,
+.md-typeset .highlighttable pre {
+  border-radius: 8px;
+  margin: 0;
+  padding: 1rem 1.1rem;
+  font-size: 0.78em;
+  line-height: 1.62;
+  overflow-x: auto;
+  box-shadow: none;
+}
+
+.md-typeset .highlight > pre > code,
+.md-typeset .highlighttable pre > code {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  font-size: inherit !important;
+  color: inherit !important;
+}
+
+/* Light-mode code surface: soft off-white, barely-there border */
+[data-md-color-scheme="default"] .md-typeset .highlight > pre,
+[data-md-color-scheme="default"] .md-typeset .highlighttable pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+/* Dark-mode: one shade above page bg */
+[data-md-color-scheme="slate"] .md-typeset .highlight > pre,
+[data-md-color-scheme="slate"] .md-typeset .highlighttable pre {
+  background: #0e1020;
+  color: #e6eaf3;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+/* Filename chip — restrained, same family as the pre, not a huge stripe */
+.md-typeset .highlight .filename,
+.md-typeset .highlighttable .filename {
+  font-family: var(--md-code-font);
+  font-weight: 500;
+  font-size: 0.72rem;
+  letter-spacing: -0.005em;
+  padding: 0.5rem 1rem 0.4rem;
+  border-radius: 8px 8px 0 0;
+  border: 1px solid;
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+[data-md-color-scheme="default"] .md-typeset .highlight .filename {
+  background: #f1f3f5;
+  color: #57606a;
+  border-color: rgba(15, 23, 42, 0.07);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .highlight .filename {
+  background: #0a0c18;
+  color: #9ca3af;
+  border-color: rgba(255, 255, 255, 0.05);
+}
+
+.md-typeset .highlight .filename + pre {
+  border-radius: 0 0 8px 8px !important;
+}
+
+/* Hide the "Code" default filename caption that Material sometimes renders */
+.md-typeset .highlight .filename[data-md-default] {
+  display: none;
+}
+
+/* Line numbers — quieter */
+.md-typeset .highlighttable .linenos {
+  background: transparent;
+  border-right: 1px solid;
+  padding-right: 0.55rem;
+  user-select: none;
+  color: var(--md-default-fg-color--lightest);
+}
+
+[data-md-color-scheme="default"] .md-typeset .highlighttable .linenos {
+  border-right-color: rgba(15, 23, 42, 0.06);
+  color: rgba(15, 23, 42, 0.32);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .highlighttable .linenos {
+  border-right-color: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.30);
+}
+
+.md-typeset .highlighttable {
+  border-radius: 8px;
+  overflow: hidden;
+  background: transparent;
+  border: 1px solid;
+}
+
+[data-md-color-scheme="default"] .md-typeset .highlighttable {
+  border-color: rgba(15, 23, 42, 0.07);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .highlighttable {
+  border-color: rgba(255, 255, 255, 0.055);
+}
+
+.md-typeset .highlighttable pre {
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+/* Copy button — only visible on hover, then subtle */
+.md-clipboard {
+  color: transparent;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 4px;
+  top: 0.5rem;
+  right: 0.5rem;
+}
+
+.md-typeset .highlight:hover .md-clipboard,
+.md-typeset .highlighttable:hover .md-clipboard {
+  color: var(--md-default-fg-color--lighter);
+}
+
+.md-clipboard:hover {
+  color: var(--md-accent-fg-color) !important;
+  background: transparent;
+}
+
+/* Pygments token tuning — light mode (GitHub-ish, but quieter) */
+[data-md-color-scheme="default"] .md-typeset .highlight .k,
+[data-md-color-scheme="default"] .md-typeset .highlight .kd,
+[data-md-color-scheme="default"] .md-typeset .highlight .kn,
+[data-md-color-scheme="default"] .md-typeset .highlight .kr { color: #cf222e; font-weight: 500; }
+[data-md-color-scheme="default"] .md-typeset .highlight .s,
+[data-md-color-scheme="default"] .md-typeset .highlight .sb,
+[data-md-color-scheme="default"] .md-typeset .highlight .sd,
+[data-md-color-scheme="default"] .md-typeset .highlight .s1,
+[data-md-color-scheme="default"] .md-typeset .highlight .s2 { color: #0a3069; }
+[data-md-color-scheme="default"] .md-typeset .highlight .c,
+[data-md-color-scheme="default"] .md-typeset .highlight .c1,
+[data-md-color-scheme="default"] .md-typeset .highlight .cm { color: #6e7781; font-style: italic; }
+[data-md-color-scheme="default"] .md-typeset .highlight .n,
+[data-md-color-scheme="default"] .md-typeset .highlight .nx { color: #1f2328; }
+[data-md-color-scheme="default"] .md-typeset .highlight .nf,
+[data-md-color-scheme="default"] .md-typeset .highlight .nc { color: #8250df; }
+[data-md-color-scheme="default"] .md-typeset .highlight .nb { color: #116329; }
+[data-md-color-scheme="default"] .md-typeset .highlight .mi,
+[data-md-color-scheme="default"] .md-typeset .highlight .mf { color: #0550ae; }
+[data-md-color-scheme="default"] .md-typeset .highlight .o { color: #cf222e; }
+[data-md-color-scheme="default"] .md-typeset .highlight .p { color: #1f2328; }
+
+/* Pygments token tuning — dark mode (Dracula-ish, but desaturated) */
+[data-md-color-scheme="slate"] .md-typeset .highlight .k,
+[data-md-color-scheme="slate"] .md-typeset .highlight .kd,
+[data-md-color-scheme="slate"] .md-typeset .highlight .kn,
+[data-md-color-scheme="slate"] .md-typeset .highlight .kr { color: #ff7b72; font-weight: 500; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .s,
+[data-md-color-scheme="slate"] .md-typeset .highlight .sb,
+[data-md-color-scheme="slate"] .md-typeset .highlight .sd,
+[data-md-color-scheme="slate"] .md-typeset .highlight .s1,
+[data-md-color-scheme="slate"] .md-typeset .highlight .s2 { color: #a5d6ff; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .c,
+[data-md-color-scheme="slate"] .md-typeset .highlight .c1,
+[data-md-color-scheme="slate"] .md-typeset .highlight .cm { color: #8b949e; font-style: italic; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .n,
+[data-md-color-scheme="slate"] .md-typeset .highlight .nx { color: #e6eaf3; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .nf,
+[data-md-color-scheme="slate"] .md-typeset .highlight .nc { color: #d2a8ff; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .nb { color: #7ee787; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .mi,
+[data-md-color-scheme="slate"] .md-typeset .highlight .mf { color: #79c0ff; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .o { color: #ff7b72; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .p { color: #c9d1d9; }
+
+/* Diff highlights */
+[data-md-color-scheme="default"] .md-typeset .highlight .gd { background: #ffebe9; color: #82071e; }
+[data-md-color-scheme="default"] .md-typeset .highlight .gi { background: #dafbe1; color: #116329; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .gd  { background: rgba(248, 81, 73, 0.15); color: #ffa198; }
+[data-md-color-scheme="slate"] .md-typeset .highlight .gi  { background: rgba(46, 160, 67, 0.15); color: #7ee787; }
+
+/* --------------------------------------------------------------------------
+   Admonitions — quiet, single colored stripe
+   -------------------------------------------------------------------------- */
+.md-typeset .admonition,
+.md-typeset details {
+  border: 1px solid var(--miles-line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  background: var(--md-default-bg-color);
+  box-shadow: none;
+}
+
+[data-md-color-scheme="default"] .md-typeset .admonition,
+[data-md-color-scheme="default"] .md-typeset details {
+  background: var(--miles-bg-soft);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .admonition,
+[data-md-color-scheme="slate"] .md-typeset details {
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 600;
+  font-size: 0.82rem;
+  letter-spacing: -0.005em;
+  padding-top: 0.6rem;
+  padding-bottom: 0.5rem;
+  background: transparent !important;
+}
+
+.md-typeset .admonition.tip,
+.md-typeset details.tip { border-left-color: var(--miles-green); }
+.md-typeset .admonition.tip > .admonition-title::before,
+.md-typeset details.tip > summary::before { background-color: var(--miles-green); }
+
+.md-typeset .admonition.note,
+.md-typeset details.note { border-left-color: var(--miles-accent); }
+.md-typeset .admonition.note > .admonition-title::before,
+.md-typeset details.note > summary::before { background-color: var(--miles-accent); }
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning { border-left-color: var(--miles-amber); }
+.md-typeset .admonition.warning > .admonition-title::before,
+.md-typeset details.warning > summary::before { background-color: var(--miles-amber); }
+
+.md-typeset .admonition.danger,
+.md-typeset details.danger { border-left-color: var(--miles-rose); }
+
+.md-typeset .admonition.question,
+.md-typeset details.question { border-left-color: var(--miles-violet); }
+.md-typeset .admonition.question > .admonition-title::before,
+.md-typeset details.question > summary::before { background-color: var(--miles-violet); }
+
+/* --------------------------------------------------------------------------
+   Tables — quiet, no gradient
+   -------------------------------------------------------------------------- */
+.md-typeset table:not([class]) {
+  font-size: 0.78rem;
+  border: 1px solid var(--miles-line);
+  border-radius: 8px;
+  overflow: hidden;
+  border-collapse: separate;
+  border-spacing: 0;
+  box-shadow: none;
+  margin: 1.2rem 0;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--miles-bg-mute);
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 600;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color);
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--miles-line);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset table:not([class]) td {
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--miles-line-soft);
+  vertical-align: top;
+}
+
+.md-typeset table:not([class]) tr:last-child td { border-bottom: none; }
+.md-typeset table:not([class]) tr:hover td {
+  background: var(--md-accent-fg-color--transparent);
+}
+
+/* --------------------------------------------------------------------------
+   Buttons
+   -------------------------------------------------------------------------- */
+.md-typeset .md-button {
+  font-family: "Bricolage Grotesque", sans-serif;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 0.84rem;
+  letter-spacing: -0.005em;
+  padding: 0.55em 1.25em;
+  border: 1px solid var(--miles-line);
+  color: var(--md-default-fg-color);
+  background: transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.md-typeset .md-button:hover {
+  border-color: var(--md-accent-fg-color);
+  background: var(--md-accent-fg-color--transparent);
+}
+
+.md-typeset .md-button--primary {
+  background: var(--miles-fg);
+  color: #ffffff !important;
+  border: 1px solid var(--miles-fg);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary {
+  background: #ffffff;
+  color: var(--miles-ink) !important;
+  border-color: #ffffff;
+}
+
+.md-typeset .md-button--primary:hover {
+  background: var(--miles-accent);
+  border-color: var(--miles-accent);
+  color: #ffffff !important;
+}
+
+/* --------------------------------------------------------------------------
+   Material grid cards
+   -------------------------------------------------------------------------- */
+.md-typeset .grid {
+  margin: 1.4rem 0;
+}
+
+.md-typeset .grid.cards {
+  grid-gap: 0.9rem;
+}
+
+.md-typeset .grid.cards > ol > li,
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border: 1px solid var(--miles-line);
+  border-radius: 12px;
+  padding: 1.2rem 1.3rem 1.3rem;
+  background: var(--md-default-bg-color);
+  transition: border-color 0.15s ease, transform 0.18s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+[data-md-color-scheme="default"] .md-typeset .grid.cards > ol > li,
+[data-md-color-scheme="default"] .md-typeset .grid.cards > ul > li {
+  background: #ffffff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ol > li,
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ul > li {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.md-typeset .grid.cards > ol > li:hover,
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: rgba(31, 123, 224, 0.4);
+  transform: translateY(-1px);
+}
+
+.md-typeset .grid.cards li > p:first-child {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-top: 0;
+  margin-bottom: 0.4rem;
+  color: var(--md-default-fg-color);
+  letter-spacing: -0.01em;
+}
+
+.md-typeset .grid.cards li > p:last-child {
+  font-size: 0.8rem;
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 0;
+}
+
+.md-typeset .grid.cards .twemoji,
+.md-typeset .grid.cards svg {
+  color: var(--md-accent-fg-color);
+  fill: currentColor;
+  height: 1.2rem;
+}
+
+.md-typeset .grid.cards li > hr {
+  margin: 0.4rem 0 0.6rem;
+  border: 0;
+  border-top: 1px solid var(--miles-line);
+}
+
+.md-typeset .grid.cards a {
+  border: none;
+  color: inherit;
+}
+
+/* --------------------------------------------------------------------------
+   Tabs
+   -------------------------------------------------------------------------- */
+.md-typeset .tabbed-set {
+  border: 1px solid var(--miles-line);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 1.2rem 0;
+}
+
+.md-typeset .tabbed-labels {
+  background: var(--miles-bg-soft);
+  border-bottom: 1px solid var(--miles-line);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .tabbed-labels {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.md-typeset .tabbed-labels > label {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 500;
+  font-size: 0.78rem;
+  padding: 0.7rem 1.05rem;
+  border-bottom: 2px solid transparent;
+  color: var(--md-default-fg-color--light);
+  transition: color 0.12s ease, border-bottom-color 0.12s ease;
+}
+
+.md-typeset .tabbed-labels > label:hover {
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .tabbed-set > input:checked + label {
+  color: var(--md-accent-fg-color);
+  border-bottom-color: var(--md-accent-fg-color);
+}
+
+.md-typeset .tabbed-content {
+  padding: 1.1rem 1.2rem;
+}
+
+/* --------------------------------------------------------------------------
+   Quote / blockquote
+   -------------------------------------------------------------------------- */
+.md-typeset blockquote {
+  border-left: 3px solid var(--md-accent-fg-color);
+  background: transparent;
+  padding: 0 0 0 1rem;
+  border-radius: 0;
+  font-style: normal;
+  color: var(--md-default-fg-color--light);
+  margin-left: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Inline tags
+   -------------------------------------------------------------------------- */
+.md-tag {
+  border-radius: 4px;
+  background: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+  font-family: var(--md-code-font);
+  font-weight: 500;
+  font-size: 0.7rem;
+  padding: 0.16em 0.5em;
+  letter-spacing: 0.02em;
+}
+
+/* --------------------------------------------------------------------------
+   Footer — blends with page
+   -------------------------------------------------------------------------- */
+.md-footer {
+  background: var(--md-default-bg-color);
+  border-top: 1px solid var(--miles-line);
+  color: var(--md-default-fg-color--light);
+}
+
+[data-md-color-scheme="default"] .md-footer {
+  background: #ffffff;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-footer a,
+.md-footer__link,
+.md-footer__title {
+  color: var(--md-default-fg-color);
+}
+
+.md-footer__direction {
+  color: var(--md-default-fg-color--lighter);
+  font-family: "Geist Mono", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.md-footer__title {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 500;
+  font-size: 0.86rem;
+  color: var(--md-default-fg-color);
+}
+
+.md-footer-meta {
+  background: var(--md-default-bg-color);
+  border-top: 1px solid var(--miles-line);
+  font-size: 0.74rem;
+  color: var(--md-default-fg-color--lighter);
+}
+
+[data-md-color-scheme="default"] .md-footer-meta {
+  background: #ffffff;
+}
+
+.md-footer-meta .md-footer-copyright,
+.md-footer-meta .md-footer-copyright a {
+  color: var(--md-default-fg-color--lighter);
+}
+
+.md-footer-meta .md-footer-copyright a:hover {
+  color: var(--md-accent-fg-color);
+}
+
+.md-footer-meta .md-social__link svg {
+  fill: var(--md-default-fg-color--light);
+  transition: fill 0.15s ease;
+}
+
+.md-footer-meta .md-social__link:hover svg {
+  fill: var(--md-accent-fg-color);
+}
+
+.md-footer__link {
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+}
+
+.md-footer__link:hover {
+  background: var(--md-accent-fg-color--transparent);
+}
+
+/* --------------------------------------------------------------------------
+   Selection / scrollbars / mermaid
+   -------------------------------------------------------------------------- */
+::selection {
+  background: rgba(31, 123, 224, 0.25);
+  color: inherit;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.3);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}
+
+.md-typeset .mermaid {
+  text-align: center;
+  margin: 1.5rem 0;
+}
+
+/* --------------------------------------------------------------------------
+   Edit / view buttons
+   -------------------------------------------------------------------------- */
+.md-content__button {
+  color: var(--md-default-fg-color--lighter);
+  transition: color 0.15s ease;
+}
+.md-content__button:hover {
+  color: var(--md-accent-fg-color);
+}
+
+/* Search results */
+.md-search-result__meta {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-weight: 500;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+/* Source / last updated */
+.md-source-file__fact {
+  font-family: var(--md-code-font);
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--lighter);
+}
+
+/* --------------------------------------------------------------------------
+   Content sizing — narrower column for readability
+   -------------------------------------------------------------------------- */
+.md-grid {
+  max-width: 80rem;
+}
+
+.md-content {
+  max-width: 56rem;
+}
+
+.md-content__inner {
+  margin: 0 1rem 1rem;
+  padding-top: 1.2rem;
+}
+
+/* --------------------------------------------------------------------------
+   Homepage model matrix
+   -------------------------------------------------------------------------- */
+.md-typeset .miles-model-matrix {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1.1rem 0 0.7rem;
+}
+
+.md-typeset .miles-model-panel {
+  border: 1px solid var(--miles-line);
+  border-radius: 8px;
+  padding: 0.85rem 0.95rem 0.9rem;
+  background:
+    linear-gradient(180deg, rgba(31, 123, 224, 0.055), transparent 46%),
+    var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .miles-model-panel {
+  background:
+    linear-gradient(180deg, rgba(92, 182, 255, 0.07), transparent 48%),
+    rgba(255, 255, 255, 0.018);
+}
+
+.md-typeset .miles-model-panel--moe {
+  background:
+    linear-gradient(180deg, rgba(16, 185, 129, 0.06), transparent 46%),
+    var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .miles-model-panel--moe {
+  background:
+    linear-gradient(180deg, rgba(16, 185, 129, 0.075), transparent 48%),
+    rgba(255, 255, 255, 0.018);
+}
+
+.md-typeset .miles-model-kicker {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .miles-model-panel p {
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-typeset .miles-model-panel a {
+  font-weight: 500;
+}
+
+@media screen and (max-width: 44rem) {
+  .md-typeset .miles-model-matrix {
+    grid-template-columns: 1fr;
+  }
+}

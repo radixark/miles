@@ -50,14 +50,24 @@ class LinearTrajectory:
         tools: list[dict[str, Any]] | None = None,
         *,
         tito_tokenizer: TITOTokenizer,
-    ) -> dict[str, Any] | None:
-        """Validate messages, rollback if needed, and compute merged input_ids.
+    ) -> list[int]:
+        """Build the full prompt input_ids for *request_messages*.
 
-        Returns ``None`` on the first turn (no stored token_ids yet).
+        On the first turn (no stored token_ids), renders *request_messages*
+        from scratch via the chat template.  On subsequent turns, validates
+        that *request_messages* extends the stored history (rolling back at
+        most one assistant step on agent retries) and reuses the stored
+        token_ids as the pretokenized prefix.
+
         Must be called under ``self.lock``.
         """
         if not self.token_ids:
-            return None
+            return tito_tokenizer.render_messages(
+                request_messages,
+                tools=tools,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
 
         # 1. Detect agent retries and roll back (at most one assistant step).
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
@@ -70,13 +80,12 @@ class LinearTrajectory:
         except ValueError as e:
             raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
 
-        merged = tito_tokenizer.merge_tokens(
+        return tito_tokenizer.merge_tokens(
             old_messages=self.messages,
             new_messages=request_messages,
             pretokenized_token_ids=self.token_ids,
             tools=tools,
         )
-        return {"input_ids": merged}
 
     def update_pretokenized_state(
         self,

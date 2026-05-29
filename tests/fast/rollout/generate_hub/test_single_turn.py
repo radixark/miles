@@ -1,8 +1,6 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cpu_ci
 
-# generate_hub tests use generation_env → parse_args(fsdp) → fsdp_utils
-# import chain that requires flash_attn. Run in GPU fast suite.
-register_cuda_ci(est_time=60, suite="stage-b-fast-1-gpu", num_gpus=1)
+register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=[])
 
 import numpy as np
 import pybase64
