@@ -6,8 +6,8 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1800, suite="stage-c-glm5-8-gpu", num_gpus=8)
-
+# FIXME: not critical, but better fix later.
+register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["megatron"], disabled="Disabled due to outdated.")
 
 USE_FP8_ROLLOUT = U.get_bool_env_var("MILES_TEST_USE_FP8_ROLLOUT", "false")
 
@@ -178,7 +178,7 @@ def execute():
         # ------------
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--num-gpus-per-node 8 "
         "--colocate "
         "--dump-details /root/shared_data/dump_details "

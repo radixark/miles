@@ -16,9 +16,9 @@ def print_top_k(
     tokenizer_path: Path,
 ) -> None:
     """Load tokenizer and print top-k predictions across all ranks."""
-    from transformers import AutoTokenizer
+    from miles.utils.processing_utils import load_tokenizer
 
-    tokenizer: Any = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
+    tokenizer: Any = load_tokenizer(str(tokenizer_path), trust_remote_code=True)
     pad_token_id: int | None = tokenizer.pad_token_id or tokenizer.eos_token_id
 
     _print_top_predictions_all_ranks(

@@ -6,14 +6,13 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=300,
-    suite="stage-b-short-8-gpu",
-    num_gpus=8,
+    suite="stage-c-8-gpu-h100",
+    labels=["short"],
     disabled="FSDP backend has known issues, not actively maintained",
 )
 
 MODEL_NAME = "Qwen3-0.6B"
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
+NUM_GPUS = 8
 
 
 def prepare():
@@ -86,12 +85,7 @@ def execute():
         "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step
     )
 
-    misc_args = (
-        "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {2 if FEW_GPU else 8} "
-        "--colocate "
-        "--train-backend fsdp "
-    )
+    misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " "--colocate " "--train-backend fsdp "
 
     train_args = (
         f"{ckpt_args} "
@@ -108,7 +102,7 @@ def execute():
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=2 if FEW_GPU else 8,
+        num_gpus_per_node=NUM_GPUS,
         megatron_model_type=None,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )

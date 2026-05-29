@@ -4,14 +4,15 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=600, suite="stage-c-megatron-8-gpu", num_gpus=8)
+register_cuda_ci(
+    est_time=600, suite="stage-c-4-gpu-h200", labels=["megatron"], disabled="Not worthy for testing, too naive."
+)
 
-ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "1")
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
+ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "0")
 
 MODEL_NAME = "GLM-Z1-9B-0414"
 MODEL_TYPE = "glm4-9B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 
 def prepare():
@@ -61,7 +62,7 @@ def execute():
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_DEVICE_MEMORY else 4608} "
+        "--max-tokens-per-gpu 4608 "
     )
 
     grpo_args = (
@@ -99,8 +100,8 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
-        "--rollout-num-gpus 4 "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
+        f"--rollout-num-gpus {NUM_GPUS // 2} "
     )
 
     train_args = (

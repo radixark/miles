@@ -1,0 +1,11 @@
+--- a/pytorch/attention/dot_product_attention/utils.py
++++ b/pytorch/attention/dot_product_attention/utils.py
+@@ -629,7 +629,7 @@
+         or head_dim_qk % 8 != 0
+         or (
+             head_dim_qk > 192
+-            and device_compute_capability not in ((8, 0), (9, 0), (10, 0), (12, 0))
++            and device_compute_capability not in ((8, 0), (9, 0), (10, 0), (10, 3), (12, 0))
+         )
+     ):
+         if FlashAttentionUtils.is_installed:

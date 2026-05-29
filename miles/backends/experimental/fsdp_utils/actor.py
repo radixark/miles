@@ -6,14 +6,13 @@ from argparse import Namespace
 import ray
 import torch
 import torch.distributed as dist
-from ring_flash_attn import update_ring_flash_attn_params
 from tqdm import tqdm
-from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
@@ -89,7 +88,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
-                self.hf_config = AutoConfig.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+                self.hf_config = load_hf_config(self.args.hf_checkpoint)
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
                 )
@@ -627,6 +626,9 @@ class FSDPTrainRayActor(TrainRayActor):
         position_ids = batch["position_ids"]
 
         if get_parallel_state().cp.size > 1:
+            # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
+            from ring_flash_attn import update_ring_flash_attn_params
+
             if "cu_seqlens" in batch:
                 cu_seqlens = batch["cu_seqlens"]
                 if not cu_seqlens.is_cuda:

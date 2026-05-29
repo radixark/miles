@@ -1,5 +1,5 @@
-.github/CODEOWNERS @fzyzcjy @Ying1123
-.github/workflows/ @yushengsu-thu
+/.github/CODEOWNERS @fzyzcjy @Ying1123
+/.github/workflows/ @yushengsu-thu @guapisolo @yueming-yuan
 /miles/ @fzyzcjy @yueming-yuan
 /miles/backends/ @fzyzcjy @yueming-yuan @maocheng23 @Zhichenzzz
 /miles/backends/megatron_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu @Zhichenzzz
