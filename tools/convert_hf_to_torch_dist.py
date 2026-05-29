@@ -18,7 +18,6 @@ from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import print_memory
-from miles.utils.transformers_patch import with_transformers_patch
 
 
 def patch_weight_to_mcore_format_preserve_fp32():
@@ -66,7 +65,8 @@ def get_args():
     args.global_batch_size = int(os.environ.get("WORLD_SIZE", "1"))
 
     assert args.pipeline_model_parallel_size <= args.num_layers, (
-        f"PP size {args.pipeline_model_parallel_size} must be less than or equal to number of layers {args.num_layers}."
+        f"Pipeline model parallel size {args.pipeline_model_parallel_size} must be less than or equal to "
+        f"number of layers {args.num_layers}."
     )
 
     def ceildiv(a, b):
@@ -127,13 +127,12 @@ def main():
         device_id=torch.device(f"cuda:{local_rank}"),
     )
     args = get_args()
-    with with_transformers_patch():
-        init(args)
-        model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
+    init(args)
+    model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
 
-        # Load model
-        hf_model_path = args.hf_checkpoint
-        bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
+    # Load model
+    hf_model_path = args.hf_checkpoint
+    bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
 
     # Patch to preserve FP32 precision for _keep_fp32 params
     patch_weight_to_mcore_format_preserve_fp32()

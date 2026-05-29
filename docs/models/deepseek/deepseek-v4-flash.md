@@ -117,7 +117,7 @@ Alternatively, you can set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` t
 
 ### 4.4 Notable quirks
 
-- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) to mirror SGLang's HF config aliases so HF's `AutoConfig.from_pretrained` recognizes `model_type=deepseek_v4`.
+- **HF config alias.** `model_type=deepseek_v4` is not recognized by stock `transformers` and the checkpoint ships no `auto_map`, so miles registers it as a `DeepseekV3Config` alias via the `deepseek_v4` entry in `_CONFIG_ALIASES` (`miles/utils/hf_config.py`). `load_hf_config`, `load_tokenizer`, and megatron `init` all call `register_hf_config_aliases()`, so `AutoConfig.from_pretrained` / `AutoBridge.from_pretrained` resolve the config on every path.
 
 ## 5. Example Recipe Configuration
 
