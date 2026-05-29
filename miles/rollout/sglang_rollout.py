@@ -24,13 +24,14 @@ from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.processing_utils import (
-    build_processor_kwargs,
+    call_processor,
     encode_image_for_rollout_engine,
     load_processor,
     load_tokenizer,
 )
 from miles.utils.types import Sample
 
+from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
@@ -141,9 +142,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     ), f"Sample status is {sample.status}"
 
     if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
-        processor_kwargs = build_processor_kwargs(sample.multimodal_inputs)
-        processor_output = state.processor(text=sample.prompt, **processor_kwargs)
+        processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
+        prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
         sample.multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
         } or None
@@ -467,6 +468,13 @@ async def generate_rollout_async(
         process_func = load_function(x)
         process_func(args, all_samples, data_source)
 
+    await recompute_samples_rollout_logprobs_via_prefill(
+        args,
+        [sample for group in data for sample in group],
+        url=get_model_url(args, "default"),
+        sampling_params=state.sampling_params,
+    )
+
     return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
 
 
@@ -565,10 +573,11 @@ async def eval_rollout_single_dataset(
     for coro in asyncio.as_completed(tasks):
         sample = await coro
         if do_print:
+            logged_sample = sample[0] if isinstance(sample, list) else sample
             logger.info(
                 "eval_rollout_single_dataset example data: "
-                f"{[str(sample.prompt) + sample.response]} "
-                f"reward={sample.reward}"
+                f"{[str(logged_sample.prompt) + logged_sample.response]} "
+                f"reward={logged_sample.reward}"
             )
             do_print = False
         if isinstance(sample, list):

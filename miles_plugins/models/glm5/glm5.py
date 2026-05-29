@@ -24,7 +24,7 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
-from transformers import AutoConfig
+from miles.utils.hf_config import load_hf_config
 
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
@@ -403,6 +403,11 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
         self.weights_proj.weight._skip_gather = True
 
+        if getattr(self.config, "freeze_indexer", False):
+            for module in (self.wq_b, self.wk, self.k_norm, self.weights_proj):
+                for param in module.parameters():
+                    param.requires_grad = False
+
     def get_absorb_query_key_value_tensors(
         self,
         hidden_states,
@@ -478,15 +483,18 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             kv_compressed, group=parallel_state.get_context_parallel_group()
         )
 
-        def fuse_rope(q, cu_seqlens, gathered=False):
+        def fuse_rope(q, cu_seqlens, gathered=False, interleaved=True):
             # worse precision than apex.
             # from megatron.core.extensions.transformer_engine import fused_apply_rotary_pos_emb_thd
             from apex.transformer.functional import fused_apply_rotary_pos_emb_thd
 
-            # mla use rope interleave
-            x1 = q[..., 0::2]
-            x2 = q[..., 1::2]
-            t = torch.cat((x1, x2), dim=-1)
+            if interleaved:
+                # mla use rope interleave
+                x1 = q[..., 0::2]
+                x2 = q[..., 1::2]
+                t = torch.cat((x1, x2), dim=-1)
+            else:
+                t = q
             # TODO remove copy here
             # fuse rope not support this way rope (diff with cp)
             if gathered:
@@ -499,8 +507,8 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
                 out = fused_apply_rotary_pos_emb_thd(t, cu_seqlens, rotary_pos_emb.squeeze(0))
                 return out[cp_rank * seq_len : (cp_rank + 1) * seq_len]
 
-        q_pos_emb = fuse_rope(q_pos_emb, cu_seqlens_q, gathered=False)
-        k_pos_emb = fuse_rope(k_pos_emb, cu_seqlens_kv, gathered=True)
+        q_pos_emb = fuse_rope(q_pos_emb, cu_seqlens_q, gathered=False, interleaved=True)
+        k_pos_emb = fuse_rope(k_pos_emb, cu_seqlens_kv, gathered=True, interleaved=True)
 
         query = torch.cat([q_no_pe, q_pos_emb], dim=-1)
         key = torch.cat([kv_compressed, k_pos_emb], dim=-1)
@@ -539,21 +547,39 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         if self.config.sequence_parallel:
             head_weights = gather_from_sequence_parallel_region(head_weights)
 
-        index_q_no_pe, index_q_pe = torch.split(
-            index_q,
-            [self.config.index_head_dim - self.config.qk_pos_emb_head_dim, self.config.qk_pos_emb_head_dim],
-            dim=-1,
-        )
-        index_q_pe = fuse_rope(index_q_pe, cu_seqlens_q, gathered=False)
-        index_query = torch.cat([index_q_no_pe, index_q_pe], dim=-1)
+        if self.config.indexer_rope_interleave:
+            index_q_no_pe, index_q_pe = torch.split(
+                index_q,
+                [self.config.index_head_dim - self.config.qk_pos_emb_head_dim, self.config.qk_pos_emb_head_dim],
+                dim=-1,
+            )
+            index_q_pe = fuse_rope(index_q_pe, cu_seqlens_q, gathered=False, interleaved=True)
+            index_query = torch.cat([index_q_no_pe, index_q_pe], dim=-1)
 
-        index_k_no_pe, index_k_pe = torch.split(
-            index_k,
-            [self.config.index_head_dim - self.config.qk_pos_emb_head_dim, self.config.qk_pos_emb_head_dim],
-            dim=-1,
-        )
-        index_k_pe = fuse_rope(index_k_pe, cu_seqlens_kv, gathered=True)
-        index_key = torch.cat([index_k_no_pe, index_k_pe], dim=-1)
+            index_k_no_pe, index_k_pe = torch.split(
+                index_k,
+                [self.config.index_head_dim - self.config.qk_pos_emb_head_dim, self.config.qk_pos_emb_head_dim],
+                dim=-1,
+            )
+            index_k_pe = fuse_rope(index_k_pe, cu_seqlens_kv, gathered=True, interleaved=True)
+            index_key = torch.cat([index_k_no_pe, index_k_pe], dim=-1)
+        else:
+            # DeepSeek v3.2 indexer uses non-interleaved RoPE with rope dims first.
+            index_q_pe, index_q_no_pe = torch.split(
+                index_q,
+                [self.config.qk_pos_emb_head_dim, self.config.index_head_dim - self.config.qk_pos_emb_head_dim],
+                dim=-1,
+            )
+            index_q_pe = fuse_rope(index_q_pe, cu_seqlens_q, gathered=False, interleaved=False)
+            index_query = torch.cat([index_q_pe, index_q_no_pe], dim=-1)
+
+            index_k_pe, index_k_no_pe = torch.split(
+                index_k,
+                [self.config.qk_pos_emb_head_dim, self.config.index_head_dim - self.config.qk_pos_emb_head_dim],
+                dim=-1,
+            )
+            index_k_pe = fuse_rope(index_k_pe, cu_seqlens_kv, gathered=True, interleaved=False)
+            index_key = torch.cat([index_k_pe, index_k_no_pe], dim=-1)
 
         return query, key, w_vc, index_query, index_key, head_weights
 
@@ -604,9 +630,11 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
 
 
 def get_glm5_spec(args, config, vp_stage):
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    hf_config = load_hf_config(args.hf_checkpoint)
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
+    config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+    config.freeze_indexer = getattr(args, "freeze_indexer", False)
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,

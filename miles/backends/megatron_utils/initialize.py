@@ -9,6 +9,7 @@ from megatron.core.num_microbatches_calculator import init_num_microbatches_calc
 from megatron.training.global_vars import _build_tokenizer, set_args
 
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.utils.hf_config import register_hf_config_aliases
 
 from .parallel import create_megatron_parallel_state
 
@@ -80,6 +81,7 @@ def init(args):
         args.te_rng_tracker,
         args.inference_rng_tracker,
     )
+    register_hf_config_aliases()
     _build_tokenizer(args)
     # We won't use this. initialize to pass some validation in megatron.
     init_num_microbatches_calculator(
