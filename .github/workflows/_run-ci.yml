@@ -146,12 +146,22 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          # polars is a runtime dep of sglang's dumper comparator
+          # (sglang/srt/debug_utils/comparator), invoked by tests/e2e/short/test_dumper.py.
+          # sglang is installed --no-deps and the prebuilt image lacks it; install it
+          # explicitly here. (Also in requirements.txt for the CPU path + future images.)
+          pip install polars --break-system-packages
 
       - name: Install (miles only)
         if: ${{ inputs.skip_dependency_install }}
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          # polars is a runtime dep of sglang's dumper comparator
+          # (sglang/srt/debug_utils/comparator), invoked by tests/e2e/short/test_dumper.py.
+          # sglang is installed --no-deps and the prebuilt image lacks it; install it
+          # explicitly here. (Also in requirements.txt for the CPU path + future images.)
+          pip install polars --break-system-packages
 
       - name: Resolve suite plan
         shell: bash
