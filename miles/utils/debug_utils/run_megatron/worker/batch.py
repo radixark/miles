@@ -36,7 +36,7 @@ def prepare_batch(
 
         cp_kwargs: dict[str, object] = dict(
             pad_value=0,
-            parallel_state=SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size),
+            parallel_state=SimpleNamespace(cp=SimpleNamespace(rank=cp_rank, size=cp_size)),
             qkv_format="bshd",
             max_seq_len=seq_length,
         )

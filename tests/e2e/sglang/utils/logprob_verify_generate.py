@@ -241,7 +241,7 @@ async def _verify_logprobs_via_reprefill(
     ``input_token_logprobs`` (single prefill pass) against per-turn
     ``output_token_logprobs`` (incremental decode) from session records.
     """
-    first_prompt_len = len(records[0].response["choices"][0]["prompt_token_ids"])
+    first_prompt_len = len(records[0].request["input_ids"])
 
     # ── A: send re-prefill request ──
     payload = {
@@ -272,7 +272,7 @@ async def _verify_logprobs_via_reprefill(
     for i, record in enumerate(records):
         is_last = i == len(records) - 1
         choice = record.response["choices"][0]
-        prompt_ids = choice["prompt_token_ids"]
+        prompt_ids = record.request["input_ids"]
         session_output_logprobs = choice["meta_info"]["output_token_logprobs"]
         output_ids = [t[1] for t in session_output_logprobs]
 
@@ -370,7 +370,7 @@ def _verify_routed_experts(
 
     for i, record in enumerate(records):
         choice = record.response["choices"][0]
-        prompt_ids = choice["prompt_token_ids"]
+        prompt_ids = record.request["input_ids"]
         output_logprobs = choice["meta_info"]["output_token_logprobs"]
         output_ids = [t[1] for t in output_logprobs]
 
