@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -104,12 +104,14 @@ class TITOTokenizer:
         tokenizer: Any,
         chat_template_kwargs: dict[str, Any] | None = None,
         assistant_start_str: str | None = None,
+        special_token_ids: set[int] | None = None,
         allowed_append_roles: list[str] | None = None,
     ):
         self.tokenizer = tokenizer
         self.chat_template_kwargs = chat_template_kwargs or {}
         self._assistant_start_str = assistant_start_str
         self.allowed_append_roles: list[str] = allowed_append_roles if allowed_append_roles is not None else ["tool"]
+        self.special_token_ids: set[int] = special_token_ids
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -117,6 +119,7 @@ class TITOTokenizer:
         return TokenSeqComparator(
             self.tokenizer,
             assistant_start_str=self._assistant_start_str,
+            special_token_ids=self.special_token_ids,
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
@@ -459,25 +462,296 @@ class GLM47TITOTokenizer(TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
-# Enum + Registry + Factory
+# Nemotron 3 implementation
 # ---------------------------------------------------------------------------
 
 
-class TITOTokenizerType(str, Enum):
+class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
+    """NVIDIA Nemotron 3 family: ``<|im_end|>\\n`` message boundaries.
+
+    Inherits Qwen3's boundary handling — Nemotron 3 emits the same
+    ``<|im_end|>\\n`` after every message and the model stops at
+    ``<|im_end|>`` without the trailing newline.
+
+    No fixed jinja is shipped — HF native template is append-only when
+    ``truncate_history_thinking=False``.  Multi-user-turn surfaces
+    auto-merge that kwarg via ``extra_kwargs`` below; ``{tool}``-only does
+    not need it (no user-turn boundary to truncate across).
+
+    The plain-text assistant turn does not roundtrip cleanly under
+    sglang's upstream ``nemotron_3`` reasoning parser (it keeps a trailing
+    ``\\n`` in ``reasoning_content``), so step-4 ``assistant_text`` soft
+    assertion is expected to fail until the parser is patched upstream —
+    out of scope for this family registration.
+    """
+
+    reasoning_parser = "nemotron_3"
+    tool_call_parser = "qwen3_coder"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"truncate_history_thinking": False},
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user", "system"}),
+            template=None,
+            extra_kwargs={"truncate_history_thinking": False},
+        ),
+    )
+
+    _default_assistant_start_str: str = "<|im_start|>assistant\n"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            allowed_append_roles=allowed_append_roles,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Kimi K2 implementation
+# ---------------------------------------------------------------------------
+
+
+def _kimi_segment_special_token_ids(tokenizer: Any) -> set[int]:
+    """Kimi specials minus ``<|im_middle|>`` (intra-turn role-name/body
+    separator, not a role boundary; must not be a segment boundary)."""
+    return TokenSeqComparator.collect_special_ids(tokenizer) - {tokenizer.convert_tokens_to_ids("<|im_middle|>")}
+
+
+class Kimi25TITOTokenizer(TITOTokenizer):
+    """Moonshot Kimi K2.5: ``<|im_end|>`` boundary (no trailing newline).
+
+    K2.5 has no kwarg escape hatch for the "drop reasoning of prior assistants
+    once a new non-tool-call assistant arrives" behavior.  Ships a
+    bundled fixed jinja that wraps the ``last_non_tool_call_assistant_msg``
+    loop in ``{%- if not preserve_thinking -%}`` so multi-user-turn rollout
+    can pass ``preserve_thinking=True`` to keep history append-only.  Only the
+    ``{tool, user}`` surface is registered (per current onboarding scope).
+    """
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="kimi_k25_fixed.jinja",
+            extra_kwargs={"preserve_thinking": True},
+        ),
+    )
+
+    _default_assistant_start_str: str = "<|im_assistant|>"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            special_token_ids=_kimi_segment_special_token_ids(tokenizer),
+            allowed_append_roles=allowed_append_roles,
+        )
+
+
+class Kimi26TITOTokenizer(TITOTokenizer):
+    """Moonshot Kimi K2.6: same boundary as K2.5 + native ``preserve_thinking`` kwarg.
+
+    K2.6's HF-native template already carries the ``preserve_thinking`` gate
+    that K2.5 needs patched in.  No bundled fixed
+    template required; ``{tool, user}`` row registers ``template=None`` and
+    auto-merges ``preserve_thinking=True`` for multi-user-turn rollout.
+
+    Tool-call parser is bound to ``kimi_k2_raw_id`` rather than ``kimi_k2``:
+    RL trajectories need the model-emitted ``tool_call_id`` to round-trip
+    verbatim across turns (no ``history_tool_calls_cnt`` renumbering), and
+    miles is the primary consumer of this TITO family.
+    """
+
+    reasoning_parser = "kimi_k2"
+    tool_call_parser = "kimi_k2_raw_id"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"preserve_thinking": True},
+        ),
+    )
+
+    _default_assistant_start_str: str = "<|im_assistant|>"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            special_token_ids=_kimi_segment_special_token_ids(tokenizer),
+            allowed_append_roles=allowed_append_roles,
+        )
+
+
+# ---------------------------------------------------------------------------
+# MiniMax M2 family implementation (M2.5 and M2.7 share tokenizer/arch and
+# stop-token semantics; only their default system identity strings differ).
+# ---------------------------------------------------------------------------
+
+
+class MinimaxM25TITOTokenizer(TITOTokenizer):
+    """MiniMax-M2.5 family: bespoke ``]~!b[`` / ``[e~[`` / ``]~b]`` tag set.
+
+    Shares tokenizer.json (sha256) and architecture (MiniMaxM2ForCausalLM)
+    with M2.7 — only the chat template's default system identity string
+    differs (``MiniMax-M2.5`` vs ``MiniMax-M2.7``).  Stop-token handling
+    (``[e~[`` / trailing newline) is identical to M2.7.
+
+    Reasoning is gated by a per-message ``last_user_index`` check:
+    ``reasoning_content`` is only rendered for assistant turns *after* the
+    last ``user`` — appending a new ``user`` therefore strips prior assistant
+    ``<think>`` blocks and breaks append-only.  Only ``{tool}`` surface is
+    registered on HF-native template for that reason; multi-user-turn
+    requires the fixed jinja with ``clear_thinking=False`` to always
+    preserve history reasoning.
+    """
+
+    reasoning_parser = "minimax-append-think"
+    tool_call_parser = "minimax-m2"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="minimax_m25_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
+        ),
+    )
+
+    _default_assistant_start_str: str = "]~b]ai"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+            allowed_append_roles=allowed_append_roles,
+        )
+        nl_ids = tokenizer.encode("\n", add_special_tokens=False)
+        assert len(nl_ids) == 1, f"Expected single newline token, got {nl_ids}"
+        self._newline_id: int = nl_ids[0]
+        self._eos_id: int = tokenizer.convert_tokens_to_ids("[e~[")
+        self.trailing_token_ids = frozenset({self._newline_id})
+
+    def merge_tokens(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        pretokenized_token_ids: list[int],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        prefix = list(pretokenized_token_ids)
+        if prefix and prefix[-1] == self._eos_id:
+            prefix.append(self._newline_id)
+        return prefix + incremental
+
+
+class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
+    """MiniMax-M2.7 family: tokenizer / arch / stop-token semantics identical
+    to M2.5; the chat template only differs by default system identity string.
+
+    Inherits parsers, ``__init__``, ``merge_tokens``, and
+    ``_default_assistant_start_str`` from M2.5; only ``SUPPORTED_TEMPLATES``
+    is rebound to ``minimax_m27_fixed.jinja`` so the fixed-template lookup
+    points at the M2.7-derived jinja.
+    """
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template="minimax_m27_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enum + Factory
+# ---------------------------------------------------------------------------
+
+
+class TITOTokenizerType(StrEnum):
     DEFAULT = "default"
     QWEN3 = "qwen3"
     QWEN35 = "qwen35"
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
+    NEMOTRON3 = "nemotron3"
+    KIMI25 = "kimi25"
+    KIMI26 = "kimi26"
+    MINIMAX_M25 = "minimax_m25"
+    MINIMAX_M27 = "minimax_m27"
 
-
-_TOKENIZER_REGISTRY: dict[TITOTokenizerType, type[TITOTokenizer]] = {
-    TITOTokenizerType.DEFAULT: TITOTokenizer,
-    TITOTokenizerType.QWEN3: Qwen3TITOTokenizer,
-    TITOTokenizerType.QWEN35: Qwen35TITOTokenizer,
-    TITOTokenizerType.QWENNEXT: QwenNextTITOTokenizer,
-    TITOTokenizerType.GLM47: GLM47TITOTokenizer,
-}
+    @classmethod
+    def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
+        """Resolve the concrete ``TITOTokenizer`` subclass for *t*."""
+        match t:
+            case cls.DEFAULT:
+                return TITOTokenizer
+            case cls.QWEN3:
+                return Qwen3TITOTokenizer
+            case cls.QWEN35:
+                return Qwen35TITOTokenizer
+            case cls.QWENNEXT:
+                return QwenNextTITOTokenizer
+            case cls.GLM47:
+                return GLM47TITOTokenizer
+            case cls.NEMOTRON3:
+                return Nemotron3TITOTokenizer
+            case cls.KIMI25:
+                return Kimi25TITOTokenizer
+            case cls.KIMI26:
+                return Kimi26TITOTokenizer
+            case cls.MINIMAX_M25:
+                return MinimaxM25TITOTokenizer
+            case cls.MINIMAX_M27:
+                return MinimaxM27TITOTokenizer
+            case _:
+                raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 
 
 def get_tito_tokenizer(
@@ -505,7 +779,7 @@ def get_tito_tokenizer(
         raise ValueError("tokenizer must not be None")
     if isinstance(tokenizer_type, str):
         tokenizer_type = TITOTokenizerType(tokenizer_type)
-    cls = _TOKENIZER_REGISTRY[tokenizer_type]
+    cls = TITOTokenizerType.get_tokenizer_class(tokenizer_type)
     kwargs: dict[str, Any] = {"chat_template_kwargs": chat_template_kwargs}
     if assistant_start_str is not None:
         kwargs["assistant_start_str"] = assistant_start_str
@@ -547,7 +821,7 @@ def resolve_fixed_chat_template(
             f"Unknown roles in allowed_append_roles: {sorted(invalid)}. " f"Supported: {sorted(_VALID_ROLES)}."
         )
 
-    cls = _TOKENIZER_REGISTRY[tito_model]
+    cls = TITOTokenizerType.get_tokenizer_class(tito_model)
     candidates = [row for row in cls.SUPPORTED_TEMPLATES if requested.issubset(row.allowed_roles)]
     if not candidates:
         raise ValueError(
@@ -609,7 +883,7 @@ def resolve_reasoning_and_tool_call_parser(
     """
     if isinstance(tito_model, str):
         tito_model = TITOTokenizerType(tito_model)
-    cls = _TOKENIZER_REGISTRY[tito_model]
+    cls = TITOTokenizerType.get_tokenizer_class(tito_model)
 
     def _resolve_one(field: str, bound: str | None, user: str | None) -> str | None:
         if user is None:

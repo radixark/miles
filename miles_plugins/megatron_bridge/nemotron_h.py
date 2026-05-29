@@ -7,11 +7,12 @@ This plugin is a non-invasive drop-in that:
    Super-120B-A12B) round-trip correctly through the HF↔Megatron
    ``mapping_registry`` and get the right ``moe_router_*`` fields on the
    provider.
-2. Patches :class:`~megatron.core.transformer.transformer_layer.TransformerLayer`
-   so hybrid layers whose ``self_attention`` / ``mlp`` is an ``IdentityOp``
-   don't blow up on the 2-tuple unpack in ``_forward_attention`` /
-   ``_forward_mlp``.
-3. Patches :class:`~megatron.core.models.mamba.MambaModel` ``forward`` to
+2. For Nemotron-H models, patches
+   :class:`~megatron.core.transformer.transformer_layer.TransformerLayer` so
+   hybrid layers whose ``self_attention`` / ``mlp`` is an ``IdentityOp`` don't
+   blow up on the 2-tuple unpack in ``_forward_attention`` / ``_forward_mlp``.
+3. For Nemotron-H models, patches
+   :class:`~megatron.core.models.mamba.MambaModel` ``forward`` to
    transparently swallow the ``loss_mask`` kwarg so miles' generic training
    loop (which was designed around ``GPTModel``) can keep passing it
    unconditionally.
@@ -36,6 +37,11 @@ _NEMOTRONH_MOE_MAPPINGS: dict[str, str] = {
     "decoder.layers.*.mlp.experts.local_experts.*.linear_fc2.weight": "backbone.layers.*.mixer.experts.*.down_proj.weight",
     "decoder.layers.*.mlp.shared_experts.linear_fc1.weight": "backbone.layers.*.mixer.shared_experts.up_proj.weight",
     "decoder.layers.*.mlp.shared_experts.linear_fc2.weight": "backbone.layers.*.mixer.shared_experts.down_proj.weight",
+    # MoE latent projections (Super-120B-A12B uses moe_latent_size=1024 to bottleneck
+    # expert input/output; Nano variants leave moe_latent_size=None and these tensors
+    # do not exist, so the mappings stay unreferenced).
+    "decoder.layers.*.mlp.fc1_latent_proj.weight": "backbone.layers.*.mixer.fc1_latent_proj.weight",
+    "decoder.layers.*.mlp.fc2_latent_proj.weight": "backbone.layers.*.mixer.fc2_latent_proj.weight",
 }
 
 # HF name → provider name → cast. Miles' generic ``model_provider.py`` does not
@@ -70,6 +76,8 @@ def _build_bridge_subclass():
         """
 
         def provider_bridge(self, hf_pretrained):
+            _install_nemotronh_hybrid_layer_shims()
+            _install_mamba_model_loss_mask_shim()
             provider = super().provider_bridge(hf_pretrained)
             hf = hf_pretrained.config
 
@@ -104,6 +112,26 @@ def _build_bridge_subclass():
                 val = getattr(hf, hf_name, None)
                 if val is not None:
                     setattr(provider, prov_name, cast(val))
+
+            # MoE latent bottleneck (Super-120B-A12B). Upstream NemotronHBridge does
+            # not surface this; without it, fc1/fc2 latent projections are not built
+            # and routed experts get the wrong input dim (hidden_size vs moe_latent_size).
+            # Megatron's moe_layer.preprocess() asserts the two are mutually exclusive,
+            # so disable shared-expert overlap whenever a latent bottleneck is in use.
+            latent_size = getattr(hf, "moe_latent_size", None)
+            if latent_size is not None:
+                provider.moe_latent_size = int(latent_size)
+                provider.moe_shared_expert_overlap = False
+
+            # MTP head: Super-120B's HF config has num_nextn_predict_layers=1, which
+            # the base CONFIG_MAPPING translates to provider.mtp_num_layers=1. Miles'
+            # generic training loop only feeds MTP labels when --enable-mtp-training is
+            # set, so building the head adds dead weights. Disable unless explicitly
+            # requested via the MILES_NEMOTRONH_KEEP_MTP env var.
+            import os
+
+            if not os.environ.get("MILES_NEMOTRONH_KEEP_MTP"):
+                provider.mtp_num_layers = None
             return provider
 
         def mapping_registry(self):
@@ -174,12 +202,8 @@ def _install_mamba_model_loss_mask_shim() -> None:
 
 
 def install() -> None:
-    """Apply all Nemotron-H shims and register the miles bridge subclass."""
-    for fn in (
-        _install_nemotronh_hybrid_layer_shims,
-        _install_mamba_model_loss_mask_shim,
-        _build_bridge_subclass,
-    ):
+    """Register the Nemotron-H bridge subclass."""
+    for fn in (_build_bridge_subclass,):
         try:
             fn()
         except Exception as e:  # best-effort; avoid breaking unrelated models
