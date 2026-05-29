@@ -17,12 +17,11 @@ TRAIN_DATA_PATH = os.path.join(DATA_ROOT, "train.parquet")
 
 def get_megatron_model_type(model_name: str) -> str:
     megatron_model_type = {
-                "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
-                "Qwen3-4B-Base": "qwen3-4B",
-                "Qwen3-4B": "qwen3-4B",
-            }[model_name]
+        "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
+        "Qwen3-4B-Base": "qwen3-4B",
+        "Qwen3-4B": "qwen3-4B",
+    }[model_name]
     return megatron_model_type
-
 
 
 def prepare():
@@ -36,7 +35,7 @@ def prepare():
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/model/Qwen3-4B-Instruct-2507/ "
+    ckpt_args = "--hf-checkpoint /root/model/Qwen3-4B-Instruct-2507/ "
 
     wandb_args = (
         (
@@ -50,7 +49,7 @@ def execute():
     )
 
     rollout_args = (
-        f"--prompt-data /root/dataset/dapo-math-17k/dapo-math-17k.jsonl "
+        "--prompt-data /root/dataset/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
@@ -61,7 +60,7 @@ def execute():
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len 4096 "
+        "--rollout-max-response-len 4096 "
         "--rollout-temperature 1 "
         "--global-batch-size 256 "
         "--balance-data "
@@ -108,7 +107,7 @@ def execute():
 
     megatron_args = (
         "--train-backend megatron "
-        f"--load /root/model/Qwen3-4B-Instruct-2507/ "
+        "--load /root/model/Qwen3-4B-Instruct-2507/ "
         "--tensor-model-parallel-size 4 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
@@ -129,7 +128,9 @@ def execute():
     )
 
     misc_args = (
-        "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " f"--rollout-num-gpus {NUM_GPUS} "
+        "--actor-num-nodes 1 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
+        f"--rollout-num-gpus {NUM_GPUS} "
         "--no-gradient-accumulation-fusion "
         "--use-flash-attn "
     )
