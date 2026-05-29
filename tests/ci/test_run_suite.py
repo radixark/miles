@@ -16,10 +16,13 @@ parsing fixture files -- the AST-side validation lives in
 """
 
 import warnings
+from pathlib import Path
 
 import pytest
-from tests.ci.ci_register import CIRegistry, HWBackend
-from tests.ci.run_suite import PER_COMMIT_SUITES, _is_e2e_discovery_file, filter_tests, strip_run_ci_prefix
+from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
+from tests.ci.run_suite import PER_COMMIT_SUITES, filter_tests, strip_run_ci_prefix
+
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
 def _make(
@@ -44,6 +47,7 @@ def _make(
         labels=list(labels) if labels is not None else [],
         nightly=nightly,
         disabled=disabled,
+        implicit=False,
     )
 
 
@@ -122,18 +126,28 @@ class TestStripRunCiPrefix:
         assert len(caught) == 0
 
 
-# --- e2e discovery file filtering -------------------------------------------
+# --- discover_ci_files: location-based discovery across the CI roots --------
 
 
-class TestE2EDiscoveryFiles:
-    def test_excludes_private_helper_modules_by_basename(self):
-        assert not _is_e2e_discovery_file("tests/e2e/megatron/test_qwen3_30B_A3B/_common.py")
+class TestDiscoverCiFiles:
+    def test_only_test_prefixed_files_under_known_roots(self, monkeypatch):
+        # discover_ci_files globs repo-relative; anchor cwd to the repo root
+        # so it scans the real tree regardless of where pytest is invoked.
+        repo_root = Path(__file__).resolve().parents[2]
+        monkeypatch.chdir(repo_root)
+        files = discover_ci_files()
 
-    def test_keeps_test_files_inside_underscore_named_directories(self):
-        assert _is_e2e_discovery_file("tests/e2e/megatron/test_qwen3_30B_A3B/test_baseline.py")
-
-    def test_keeps_regular_e2e_test_files(self):
-        assert _is_e2e_discovery_file("tests/e2e/sglang/test_chat_input_ids_equivalence.py")
+        roots = ("tests/fast/", "tests/fast-gpu/", "tests/e2e/", "tests/ci/")
+        for f in files:
+            assert f.startswith(roots), f
+            assert Path(f).name.startswith("test_"), f
+        # helpers / conftest / __init__ / _common excluded by the glob pattern
+        assert not any(Path(f).name in ("conftest.py", "__init__.py") for f in files)
+        assert not any(Path(f).name.startswith("_") for f in files)
+        # representative files across the roots are discovered
+        assert "tests/ci/test_ci_register.py" in files
+        assert "tests/fast-gpu/test_semaphore.py" in files
+        assert "tests/e2e/short/test_dumper.py" in files  # re-enabled, no carve-out
 
 
 # --- `filter_tests` six scenarios -------------------------------------------

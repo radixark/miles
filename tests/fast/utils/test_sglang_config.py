@@ -4,21 +4,18 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
-import tempfile
-
 import pytest
 import yaml
 
 
-def _write_yaml(data: dict) -> str:
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
-    yaml.dump(data, f)
-    f.flush()
-    return f.name
+def _write_yaml(data: dict, tmp_path) -> str:
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.dump(data))
+    return str(path)
 
 
 class TestSglangConfigUpdateWeights:
-    def test_update_weights_default_true(self):
+    def test_update_weights_default_true(self, tmp_path):
         """Models without explicit update_weights should resolve to True when model_path matches hf_checkpoint."""
         from argparse import Namespace
 
@@ -32,7 +29,8 @@ class TestSglangConfigUpdateWeights:
                         "engine_groups": [{"worker_type": "regular", "num_gpus": 4}],
                     }
                 ]
-            }
+            },
+            tmp_path,
         )
         config = SglangConfig.from_yaml(path)
         assert len(config.models) == 1
@@ -43,7 +41,7 @@ class TestSglangConfigUpdateWeights:
         config.models[0].resolve(args)
         assert config.models[0].update_weights is True
 
-    def test_update_weights_explicit_false(self):
+    def test_update_weights_explicit_false(self, tmp_path):
         """Models with update_weights: false should be parsed correctly."""
         from miles.backends.sglang_utils.sglang_config import SglangConfig
 
@@ -62,7 +60,8 @@ class TestSglangConfigUpdateWeights:
                         "engine_groups": [{"worker_type": "regular", "num_gpus": 2}],
                     },
                 ]
-            }
+            },
+            tmp_path,
         )
         config = SglangConfig.from_yaml(path)
         assert len(config.models) == 2
@@ -72,7 +71,7 @@ class TestSglangConfigUpdateWeights:
         assert config.models[1].update_weights is False
         assert config.models[1].model_path == "/path/to/ref"
 
-    def test_multi_model_total_gpus(self):
+    def test_multi_model_total_gpus(self, tmp_path):
         """total_num_gpus should sum across all models."""
         from miles.backends.sglang_utils.sglang_config import SglangConfig
 
@@ -89,7 +88,8 @@ class TestSglangConfigUpdateWeights:
                         "server_groups": [{"worker_type": "regular", "num_gpus": 4}],
                     },
                 ]
-            }
+            },
+            tmp_path,
         )
         config = SglangConfig.from_yaml(path)
         assert config.total_num_gpus == 12

@@ -6,7 +6,8 @@ from megatron.core import mpu, tensor_parallel
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.module import MegatronModule
-from transformers import AutoConfig
+
+from miles.utils.hf_config import load_hf_config
 
 
 def _get_cp_sequence_lengths(cu_seqlens, cp_size, local_total_len=None):
@@ -167,7 +168,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
         # Note that megatron layer_number starts at 1
         self.layer_number = layer_number
         self.hf_layer_idx = layer_number - 1
-        self.hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        self.hf_config = load_hf_config(args.hf_checkpoint)
         # hardcode to fa2 at the moment.
         self.hf_config._attn_implementation = "flash_attention_2"
 
