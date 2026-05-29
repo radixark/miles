@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
 
+from miles.utils.hf_config import load_hf_config
+
 from .lora_utils import create_lora_instance, patch_param_grad_buffer_for_colocate_mode_lora
 
 
@@ -80,9 +82,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     """
     from megatron.bridge import AutoBridge
     from megatron.bridge.training.config import DistributedDataParallelConfig
-    from transformers import AutoConfig
 
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    hf_config = load_hf_config(args.hf_checkpoint)
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
@@ -93,9 +94,14 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.sequence_parallel = args.sequence_parallel
     provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
     provider.context_parallel_size = args.context_parallel_size
+    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
+    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
     provider.finalize()
 
     lora = create_lora_instance(args)

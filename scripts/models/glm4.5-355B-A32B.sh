@@ -34,7 +34,7 @@ MODEL_ARGS=(
     --moe-token-dispatcher-type alltoall
     --moe-router-topk 8
     --moe-router-topk-scaling-factor 2.5
-    --moe-layer-freq [0]*$N_DENSE_LAYERS+[1]*$N_MOE_LAYERS
+    --moe-layer-freq "[0]*$N_DENSE_LAYERS+[1]*$N_MOE_LAYERS"
     --num-experts 160
     --moe-grouped-gemm
     --moe-router-dtype fp32
