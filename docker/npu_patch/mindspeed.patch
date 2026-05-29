@@ -1,0 +1,123 @@
+diff --git a/mindspeed/core/megatron_basic/arguments_basic.py b/mindspeed/core/megatron_basic/arguments_basic.py
+index 8ea25b9f..04ad9663 100644
+--- a/mindspeed/core/megatron_basic/arguments_basic.py
++++ b/mindspeed/core/megatron_basic/arguments_basic.py
+@@ -113,3 +113,26 @@ def transformer_config_init_wrapper(fn):
+         fn(self, *args, **known_config)
+ 
+     return wrapper
++
++def transformer_config_init_subclass(cls, **kwargs):
++    mutable_types = (list, dict, set, bytearray)
++    unknown_config = {}
++    full_args = vars(get_full_args()).copy()
++    full_args.update(kwargs)
++
++    config_key = inspect.signature(cls).parameters
++    for key, value in full_args.items():
++        if key not in config_key:
++            unknown_config[key] = value
++
++    for key, value in unknown_config.items():
++        if not hasattr(cls, key):
++            cls.__annotations__[key] = type(value)
++            value = field(default_factory=value) if callable(value) and not isinstance(value, type) else value
++            if callable(value) and not isinstance(value, type):
++                value = field(default_factory=value)
++            elif type(value) in mutable_types:
++                value = field(default_factory=lambda: value)
++            else:
++                value = value
++            setattr(cls, key, value)
+\ No newline at end of file
+diff --git a/mindspeed/features_manager/megatron_basic/megatron_basic.py b/mindspeed/features_manager/megatron_basic/megatron_basic.py
+index 355913e1..18714baf 100644
+--- a/mindspeed/features_manager/megatron_basic/megatron_basic.py
++++ b/mindspeed/features_manager/megatron_basic/megatron_basic.py
+@@ -43,8 +43,11 @@ class MegatronBasicFeature(MindSpeedFeature):
+ 
+     def register_mcore_basic_patches(self, pm, args):
+         # configuration patches
+-        from mindspeed.core.megatron_basic.arguments_basic import transformer_config_init_wrapper, transformer_config_post_init_wrapper
++        from mindspeed.core.megatron_basic.arguments_basic import (transformer_config_init_wrapper,
++                                                                    transformer_config_post_init_wrapper,
++                                                                    transformer_config_init_subclass)
+         pm.register_patch("megatron.core.transformer.transformer_config.TransformerConfig.__init__", transformer_config_init_wrapper)
++        pm.register_patch("megatron.core.transformer.transformer_config.TransformerConfig.__init_subclass__", classmethod(transformer_config_init_subclass))
+         pm.register_patch("megatron.core.transformer.transformer_config.MLATransformerConfig.__init__", transformer_config_init_wrapper)
+         pm.register_patch("megatron.core.transformer.transformer_config.TransformerConfig.__post_init__", transformer_config_post_init_wrapper)
+ 
+
+diff --git a/mindspeed/patch_utils.py b/mindspeed/patch_utils.py
+index a489d58c..d9328555 100644
+--- a/mindspeed/patch_utils.py
++++ b/mindspeed/patch_utils.py
+@@ -2,7 +2,7 @@ import importlib
+ import sys
+ import types
+ from typing import List, Dict, Union
+-
++import inspect
+ _MEGATRON_TRAINING_AVAILABLE = None
+ 
+ 
+@@ -93,8 +93,10 @@ class Patch:
+ 
+     def remove_patch(self):
+         for key, value in sys.modules.copy().items():
+-            if 'mindspeed' in key:
++            if 'mindspeed' in key or 'torch.classes' == key:
+                 continue
++            if inspect.isclass(self.orig_module) and hasattr(value, self.orig_module_name.split('.')[-1]):
++ 	            value = getattr(value, self.orig_module_name.split('.')[-1])
+             if self.orig_func_name is not None and hasattr(value, self.orig_func_name) \
+                     and id(getattr(value, self.orig_func_name)) == id(self.final_patch_func):
+                 setattr(value, self.orig_func_name, self.orig_func)
+diff --git a/mindspeed/core/fusions/fused_rope.py b/mindspeed/core/fusions/fused_rope.py
+index a6f02e07..70f7cb08 100644
+--- a/mindspeed/core/fusions/fused_rope.py
++++ b/mindspeed/core/fusions/fused_rope.py
+@@ -126,5 +126,6 @@ def apply_rotary_pos_emb(
+         freqs,
+         rotary_interleaved=config.rotary_interleaved,
+         multi_latent_attention=config.multi_latent_attention,
+-        mscale=mscale
++        mscale=mscale,
++        cp_group=cp_group
+     )
+diff --git a/mindspeed/megatron_adaptor.py b/mindspeed/megatron_adaptor.py
+index f14b231d..4615590e 100644
+--- a/mindspeed/megatron_adaptor.py
++++ b/mindspeed/megatron_adaptor.py
+@@ -57,6 +57,7 @@ def delete_lock_file():
+ def repatch(args):
+     MindSpeedFeaturesManager.remove_patches()
+     full_args = get_full_args()
++    args = vars(args)
+     for k, v in args.items():
+         setattr(full_args, k, v)
+     MindSpeedFeaturesManager.apply_features_pre_patches(full_args)
+diff --git a/mindspeed/te/pytorch/attention/dot_product_attention/dot_product_attention.py b/mindspeed/te/pytorch/attention/dot_product_attention/dot_product_attention.py
+index ac4eabe5..78c5866d 100644
+--- a/mindspeed/te/pytorch/attention/dot_product_attention/dot_product_attention.py
++++ b/mindspeed/te/pytorch/attention/dot_product_attention/dot_product_attention.py
+@@ -330,6 +330,8 @@ class DotProductAttention(torch.nn.Module):
+         inference_params: Any = None,
+         pad_between_seqs: Optional[bool] = None,
+         fp8_output: Optional[bool] = False,
++        local_cp_size=None,
++        cp_group=None,
+     ) -> torch.Tensor:
+         """
+         Dot Product Attention Layer.
+@@ -659,7 +661,9 @@ class MindSpeedTEDotProductAttention(DotProductAttention):
+         ) and not getattr(self.config, 'is_llava', False):
+             self.config.sparse_mode = 2
+             attention_mask = get_attention_mask(self.config)
+-
++        attention_mask = torch.triu(
++            torch.ones((2048, 2048),
++                       device=query.device, dtype=torch.bool), diagonal=1)
+         packed_seq_kwargs = (
+             {key: getattr(packed_seq_params, key) for key in self.kept_packed_seq_params}
+             if packed_seq_params is not None
