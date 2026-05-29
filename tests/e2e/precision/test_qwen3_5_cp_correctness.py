@@ -14,6 +14,10 @@ import sys
 import torch
 import torch.distributed as dist
 
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=120, suite="stage-c-4-gpu-h200", labels=["precision"])
+
 
 def setup_dist():
     rank = int(os.environ["RANK"])
@@ -144,4 +148,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Self-bootstrap under torchrun when invoked as `python3 file.py` (the
+    # CUDA CI runner's mode). Already inside torchrun => RANK is set.
+    if "RANK" not in os.environ:
+        os.execvp("torchrun", ["torchrun", "--nproc_per_node=4", __file__])
     main()

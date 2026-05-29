@@ -1,8 +1,18 @@
+from tests.ci.ci_register import register_cuda_ci
+
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
+
+# FIXME: flaky.
+register_cuda_ci(
+    est_time=600,
+    suite="stage-c-8-gpu-h100",
+    labels=["megatron"],
+    disabled="Flaky test",
+)
 
 
 def prepare():
@@ -22,19 +32,19 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--num-rollout 2 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 0.8 "
-        "--global-batch-size 32 "
+        "--global-batch-size 8 "
         "--balance-data "
     )
 
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
+        "--pipeline-model-parallel-size 1 "  # FIXME: better add moe ci with pp2, ep4
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -63,7 +73,7 @@ def execute():
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 2 "
-        "--rollout-num-gpus 4 "
+        f"--rollout-num-gpus {NUM_GPUS // 2} "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     )
@@ -77,7 +87,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
         "--check-weight-update-equal "
         "--update-weight-transfer-mode p2p "

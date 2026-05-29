@@ -47,10 +47,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
 import pytest
 from transformers import AutoTokenizer
 
@@ -108,7 +104,6 @@ _TITO_MODELS: dict[str, tuple[str, type[TITOTokenizer], TITOTokenizerType]] = {
     "qwen3": ("Qwen/Qwen3-4B", Qwen3TITOTokenizer, TITOTokenizerType.QWEN3),
     "glm47": ("zai-org/GLM-4.7-Flash", GLM47TITOTokenizer, TITOTokenizerType.GLM47),
 }
-
 
 _ALLOWED_APPEND_ROLES = ["tool", "user", "system"]
 
@@ -203,7 +198,6 @@ _TRAJ_CASES = [
     for traj_cls in _TOOL_TRAJECTORIES
     for pos in _find_tito_splits(traj_cls)
 ]
-
 
 # ---------------------------------------------------------------------------
 # TestConfig — subclass configuration smoke-checks
@@ -516,13 +510,16 @@ class TestParserBinding:
             (TITOTokenizerType.QWEN35, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
+            (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
+            (TITOTokenizerType.KIMI25, None, None),
+            (TITOTokenizerType.KIMI26, "kimi_k2", "kimi_k2_raw_id"),
+            (TITOTokenizerType.MINIMAX_M25, "minimax-append-think", "minimax-m2"),
+            (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )
     def test_subclass_binding(self, tito_model, expected_reasoning, expected_tool_call):
-        from miles.utils.chat_template_utils.tito_tokenizer import _TOKENIZER_REGISTRY
-
-        cls = _TOKENIZER_REGISTRY[tito_model]
+        cls = TITOTokenizerType.get_tokenizer_class(tito_model)
         assert cls.reasoning_parser == expected_reasoning
         assert cls.tool_call_parser == expected_tool_call
 

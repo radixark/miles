@@ -9,12 +9,12 @@ import torch
 import torch.distributed as dist
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
-from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
+from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -81,7 +81,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # read config and tokenizer serialized to prevent concurrent writing bug.
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
-                self.hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+                self.hf_config = load_hf_config(args.hf_checkpoint)
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
                 )
@@ -143,7 +143,8 @@ class MegatronTrainRayActor(TrainRayActor):
             single_tag=None if args.enable_weights_backuper else "actor",
         )
         self._active_model_tag: str | None = "actor"
-        self.weights_backuper.backup("actor")
+        if self._enable_weight_backup:
+            self.weights_backuper.backup("actor")
 
         if with_ref:
             self.load_other_checkpoint("ref", args.ref_load)
@@ -221,7 +222,14 @@ class MegatronTrainRayActor(TrainRayActor):
         reload_process_groups()
         print_memory("after wake_up model")
 
+    @property
+    def _enable_weight_backup(self) -> bool:
+        """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
+        return self.with_ref or self.args.keep_old_actor or self.args.colocate
+
     def _switch_model(self, target_tag: str) -> None:
+        if not self._enable_weight_backup:
+            return
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
         self.weights_backuper.restore(target_tag)
@@ -452,7 +460,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.clear_all()
 
         # update the cpu actor weight to the latest model
-        self.weights_backuper.backup("actor")
+        if self._enable_weight_backup:
+            self.weights_backuper.backup("actor")
+        else:
+            torch.cuda.synchronize()
 
         # Update ref model if needed
         if (
