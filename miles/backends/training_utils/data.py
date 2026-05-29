@@ -130,9 +130,7 @@ def get_batch(
     parallel_state = get_parallel_state()
 
     assert "tokens" in keys
-    microbatch_offset = data_iterator.offset
     batch = data_iterator.get_next(keys)
-    batch["debug_microbatch_offset"] = microbatch_offset
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]

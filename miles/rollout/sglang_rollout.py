@@ -58,15 +58,6 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate")
     return f"http://{args.sglang_router_ip}:{args.sglang_router_port}{endpoint}"
 
 
-async def _get_worker_urls(args):
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        return response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        return [worker["url"] for worker in response["workers"]]
-
-
 class GenerateState(metaclass=SingletonMeta):
     """
     The global state for the generation process.
