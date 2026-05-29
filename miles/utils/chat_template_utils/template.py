@@ -25,7 +25,7 @@ from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from transformers.utils.chat_template_utils import render_jinja_template
 
-from miles.utils.chat_template_utils import deepseek_v32
+from miles.utils.chat_template_utils import deepseek_v4, deepseek_v32
 
 
 def load_hf_chat_template(model_id: str) -> str:
@@ -225,6 +225,10 @@ def apply_chat_template(
     ensuring the result is ``str`` (tokenize=False) or ``list[int]``
     (tokenize=True), not a ``BatchEncoding`` or ``dict``.
     """
+    if deepseek_v4.is_deepseek_v4(tokenizer):
+        rendered = deepseek_v4.render_messages(normalize_tool_arguments(messages, "json"), tools=tools, **kwargs)
+        return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered
+
     if deepseek_v32.is_deepseek_v32(tokenizer):
         rendered = deepseek_v32.render_messages(normalize_tool_arguments(messages, "json"), tools=tools, **kwargs)
         return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from miles.utils.chat_template_utils import apply_chat_template, deepseek_v32
+from miles.utils.chat_template_utils import apply_chat_template, deepseek_v4, deepseek_v32
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
@@ -196,22 +196,18 @@ def test_accept_none_tools_and_known_kwargs():
 
 
 # ---------------------------------------------------------------------------
-# DeepSeek V4 is no longer special-cased
+# DeepSeek V4 is dispatched by deepseek_v4, separate from the v32 path
 # ---------------------------------------------------------------------------
 
 
-def test_dsv4_not_special_cased(tmp_path):
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "deepseek_v4")) is False
+def test_dsv4_detected_by_v4_not_v32(tmp_path):
+    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
+    assert deepseek_v32.is_deepseek_v32(tok) is False
+    assert deepseek_v4.is_deepseek_v4(tok) is True
 
 
-def test_no_dsv4_references_in_package():
-    import miles.utils.chat_template_utils as ctu
-
-    pkg_dir = Path(ctu.__file__).parent
-    for py in pkg_dir.glob("*.py"):
-        src = py.read_text(encoding="utf-8")
-        assert "deepseek_v4" not in src, f"stale dsv4 reference in {py.name}"
-        assert "encoding_dsv4" not in src, f"stale dsv4 reference in {py.name}"
+def test_dsv32_not_detected_by_v4(tmp_path):
+    assert deepseek_v4.is_deepseek_v4(_tok_with_model_type(tmp_path, "deepseek_v32")) is False
 
 
 # ---------------------------------------------------------------------------
