@@ -1,8 +1,9 @@
+from megatron.core.transformer.transformer_block import get_num_layers_to_build
+from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+
+
 def register_replay_list_moe(replay_list, replay_data, *, models, **_kwargs):
     """Map replay streams to Megatron MoE layers using the local model layout."""
-    from megatron.core.transformer.transformer_block import get_num_layers_to_build
-    from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-
     layer_indices = []
     for vp_stage, model in enumerate(models):
         config = model.module.config
