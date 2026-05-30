@@ -80,13 +80,30 @@ def get_expert_param(args, name, param):
 
 
 def get_layer_param(args, name, param):
-    if ".layers." not in name:
+    if ".layers." not in name and not name.startswith("module.module.vision_model.decoder."):
         yield name, param
         return
 
-    num_layers = args.num_layers
+    if name.startswith("module.module.vision_model.decoder.") and ".layers." not in name:
+        match = re.search(r"module\.module\.vision_model\.decoder\.[^.]+\.(\d+)\.", name)
+        if match:
+            yield name, param
+            return
+
+        match = re.match(r"(module\.module\.vision_model\.decoder\.[^.]+)\.(.+)", name)
+        assert match, f"unexpected packed visual decoder param name: {name}"
+        prefix, suffix = match.groups()
+        num_items = param.shape[0]
+        for item_id in range(num_items):
+            item_name = f"{prefix}.{item_id}.{suffix}"
+            yield item_name, param[item_id]
+        return
+
     match = re.search(r"\.layers\.(\d+)\.", name)
     if not match:
+        num_layers = param.shape[0]
+        if not name.startswith("module.module.vision_model.decoder.layers."):
+            assert num_layers == args.num_layers
         assert param.shape[0] == num_layers
         for layer_id in range(num_layers):
             layer_name = name.replace(".layers.", f".layers.{layer_id}.")
