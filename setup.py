@@ -41,7 +41,7 @@ setup(
     author="miles Team",
     name="miles",
     version="0.2.1",
-    packages=find_packages(include=["miles*", "miles_plugins*", "miles_megatron_plugins*"]),
+    packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
     install_requires=_fetch_requirements("requirements.txt"),
     extras_require={
