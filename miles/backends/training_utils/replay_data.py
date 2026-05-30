@@ -1,11 +1,13 @@
-from collections.abc import Callable
+from typing import Protocol
 
 import torch
 
 from .cp_utils import slice_with_cp
 from .parallel import get_parallel_state
 
-RegisterReplayListFunc = Callable[..., None]
+
+class RegisterReplayListFunc(Protocol):
+    def __call__(self, replay_list: list, replay_data: torch.Tensor, **kwargs) -> None: ...
 
 
 def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
