@@ -2239,6 +2239,7 @@ def miles_validate_args(args):
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
+        assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
 
     if args.eval_max_context_len is None:
         logger.info(
