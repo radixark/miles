@@ -89,6 +89,7 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type math
+   --custom-generate-function-path examples.geo3k_vlm.rollout.generate
    --num-rollout 3000
    --rollout-batch-size 64
    --n-samples-per-prompt 8
