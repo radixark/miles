@@ -124,10 +124,19 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 NUM_GPUS=2
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265 --temp-dir /root/shared/ray_temp 
 
+# Forward the user-simulator provider/model selection and API keys to the ray
+# workers (the user simulator runs inside the rollout actors). Set the matching
+# key in your shell before launching, e.g.:
+#   export TAU_USER_MODEL_PROVIDER=deepseek TAU_USER_MODEL=deepseek-chat
+#   export DEEPSEEK_API_KEY=sk-...
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"TAU_USER_MODEL_PROVIDER\": \"${TAU_USER_MODEL_PROVIDER:-gemini}\",
+    \"TAU_USER_MODEL\": \"${TAU_USER_MODEL:-gemini-2.5-flash-lite}\",
+    \"GEMINI_API_KEY\": \"${GEMINI_API_KEY:-}\",
+    \"DEEPSEEK_API_KEY\": \"${DEEPSEEK_API_KEY:-}\"
   }
 }"
 
