@@ -721,7 +721,7 @@ def cmd_run(
     node_rank: int = 0,
     head_ip: str = "",
 ):
-    """Launch training with P2P or broadcast weight transfer."""
+    """Launch training with a remote rollout weight-transfer mode."""
     if model_name not in RUN_CONFIGS:
         print(f"ERROR: Unknown model '{model_name}'.")
         list_models()
@@ -1134,7 +1134,10 @@ def main():
         parser = argparse.ArgumentParser(description="Run training with weight transfer")
         parser.add_argument("model", help="Model name (see `python run.py list`)")
         parser.add_argument(
-            "--mode", default="p2p", choices=["p2p", "broadcast"], help="Weight transfer mode (default: p2p)"
+            "--mode",
+            default="p2p",
+            choices=["p2p", "broadcast", "sendrecv_broadcast"],
+            help="Weight transfer mode (default: p2p)",
         )
         parser.add_argument("--node-rank", type=int, default=0, help="Node rank (0=head, default: 0)")
         parser.add_argument("--head-ip", default="", help="Head node IP (auto-detect for single-node)")

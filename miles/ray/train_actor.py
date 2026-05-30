@@ -128,6 +128,9 @@ class TrainRayActor(RayActor):
     def update_weights(self):
         raise NotImplementedError
 
+    def wait_pending_weight_updates(self):
+        return None
+
     @abc.abstractmethod
     def connect_actor_critic(self, critic_group):
         raise NotImplementedError

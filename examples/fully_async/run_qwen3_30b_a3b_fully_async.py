@@ -14,6 +14,9 @@ import miles.utils.external_utils.command_utils as U
 # retract + broadcast
 # python run_qwen3_30b_a3b_fully_async.py --pause-generation-mode retract --update-weight-transfer-mode broadcast
 
+# retract + sendrecv_broadcast
+# python run_qwen3_30b_a3b_fully_async.py --pause-generation-mode retract --update-weight-transfer-mode sendrecv_broadcast
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -26,7 +29,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     pause_generation_mode: Literal["in_place", "retract"] = "in_place"
-    update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
+    update_weight_transfer_mode: Literal["broadcast", "p2p", "sendrecv_broadcast"] = "broadcast"
     extra_args: str = ""
 
 

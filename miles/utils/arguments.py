@@ -552,7 +552,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p"],
+                choices=["broadcast", "p2p", "sendrecv_broadcast"],
                 default="broadcast",
                 help="The method to transfer weights to remote rollout engines during update weight.",
             )
@@ -2132,14 +2132,19 @@ def miles_validate_args(args):
     )
 
     # always true on offload for colocate at the moment.
-    if args.update_weight_transfer_mode == "p2p":
+    if args.update_weight_transfer_mode in ("p2p", "sendrecv_broadcast"):
         assert not args.colocate, (
-            "P2P weight transfer mode is not compatible with --colocate. "
+            f"{args.update_weight_transfer_mode} weight transfer mode is not compatible with --colocate. "
             "Please use broadcast mode or disable colocate."
         )
         assert (
             getattr(args, "prefill_num_servers", None) is None
-        ), "P2P weight transfer mode has not been tested when PD is enabled."
+        ), f"{args.update_weight_transfer_mode} weight transfer mode has not been tested when PD is enabled."
+
+    if args.update_weight_transfer_mode == "sendrecv_broadcast":
+        assert (
+            getattr(args, "sglang_dp_size", 1) == 1
+        ), "sendrecv_broadcast weight transfer mode currently requires --sglang-dp-size 1."
 
     if args.colocate:
         if args.offload_train is None:

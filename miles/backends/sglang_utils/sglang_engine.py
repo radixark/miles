@@ -464,9 +464,38 @@ class SGLangEngine(RayActor):
             payload["load_format"] = load_format
         return self._make_request("update_weights_from_disk", payload)
 
-    def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
+    def init_weights_update_group(
+        self,
+        master_address,
+        master_port,
+        rank_offset,
+        world_size,
+        group_name,
+        backend,
+    ):
         return self._make_request(
             "init_weights_update_group",
+            {
+                "master_address": master_address,
+                "master_port": master_port,
+                "rank_offset": rank_offset,
+                "world_size": world_size,
+                "group_name": group_name,
+                "backend": backend,
+            },
+        )
+
+    def init_relay_weights_update_group(
+        self,
+        master_address,
+        master_port,
+        rank_offset,
+        world_size,
+        group_name,
+        backend,
+    ):
+        return self._make_request(
+            "init_relay_weights_update_group",
             {
                 "master_address": master_address,
                 "master_port": master_port,
@@ -489,8 +518,73 @@ class SGLangEngine(RayActor):
             # catch the case there the engine is just created and does not have the group.
             pass
 
+    def destroy_relay_weights_update_group(self, group_name):
+        try:
+            return self._make_request(
+                "destroy_relay_weights_update_group",
+                {
+                    "group_name": group_name,
+                },
+            )
+        except requests.exceptions.RequestException:
+            # catch the case there the engine is just created and does not have the group.
+            pass
+
+    def init_weights_send_group_for_remote_instance(
+        self,
+        master_address: str,
+        ports: str,
+        group_rank: int,
+        world_size: int,
+        group_name: str,
+        backend: str = "nccl",
+    ):
+        return self._make_request(
+            "init_weights_send_group_for_remote_instance",
+            {
+                "master_address": master_address,
+                "ports": ports,
+                "group_rank": group_rank,
+                "world_size": world_size,
+                "group_name": group_name,
+                "backend": backend,
+            },
+        )
+
+    def send_weights_to_remote_instance(
+        self,
+        master_address: str,
+        ports: str,
+        group_name: str,
+    ):
+        return self._make_request(
+            "send_weights_to_remote_instance",
+            {
+                "master_address": master_address,
+                "ports": ports,
+                "group_name": group_name,
+            },
+        )
+
+    def destroy_weights_send_group_for_remote_instance(self, group_name: str):
+        try:
+            return self._make_request(
+                "destroy_weights_send_group_for_remote_instance",
+                {
+                    "group_name": group_name,
+                },
+            )
+        except requests.exceptions.RequestException:
+            pass
+
     def update_weights_from_distributed(
-        self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        flush_cache=False,
+        weight_version: str | None = None,
     ):
         payload = {
             "names": names,
@@ -504,6 +598,27 @@ class SGLangEngine(RayActor):
         return self._make_request(
             "update_weights_from_distributed",
             payload,
+        )
+
+    def update_relay_weights_from_distributed(
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        flush_cache=False,
+        load_format: str | None = "flattened_bucket",
+    ):
+        return self._make_request(
+            "update_relay_weights_from_distributed",
+            {
+                "names": names,
+                "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
+                "shapes": shapes,
+                "group_name": group_name,
+                "flush_cache": flush_cache,
+                "load_format": load_format,
+            },
         )
 
     def pause_generation(self, mode: str = "retract"):

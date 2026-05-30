@@ -22,7 +22,7 @@ class DistBucketedWeightUpdateMixin:
         self.model: Sequence[torch.nn.Module] (Megatron model chunks).
         self.model_name: str (for HF conversion).
         self.quantization_config: dict | None.
-        self._is_source: bool (whether it's the rank broadcasting weights after `all_gather`).
+        self._is_source: bool (Defaults to the broadcast-style source rank after `all_gather`). Consuming classes can override it when their transfer plan uses a different source mapping.
         self.weight_version: int.
         self.rollout_engines: Sequence[ActorHandle]. engines of rollout side.
         self._group_name: str. Identifier shown in the tqdm progress bar.
@@ -30,6 +30,10 @@ class DistBucketedWeightUpdateMixin:
             Transfer a bucket of HF-format ``(name, tensor)`` pairs to rollout
             engines (via NCCL broadcast, p2p write, etc.).
     """
+
+    @property
+    def _is_source(self):
+        return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     def _gather_and_update_non_expert_weights(
         self,
@@ -51,7 +55,7 @@ class DistBucketedWeightUpdateMixin:
                 continue
 
             param_size = param.numel() * param.element_size()
-            if buffer_size + param_size > self.args.update_weight_buffer_size:
+            if buffer_size + param_size > self.args.update_weight_buffer_size and converted_named_tensors:
                 update_bucket_weight_func(converted_named_tensors, pbar)
                 converted_named_tensors = []
                 buffer_size = 0
@@ -72,6 +76,7 @@ class DistBucketedWeightUpdateMixin:
         Expert: gather TP → rm pad → buffer. EP gather + HF deferred. Threshold × EP size.
         """
         buffer_size = 0
+        bucket_count = 0
         named_tensors: list[tuple[str, torch.Tensor]] = []
 
         for name, param in collect_named_tensors_for_weight_transfer(self.args, self.model, is_expert=True):
@@ -80,7 +85,13 @@ class DistBucketedWeightUpdateMixin:
             if (
                 buffer_size + param_size
             ) * get_parallel_state().ep.size > self.args.update_weight_buffer_size and named_tensors:
-                self._update_expert_bucket_weights(named_tensors, update_bucket_weight_func, pbar)
+                self._update_expert_bucket_weights(
+                    bucket_index=bucket_count,
+                    named_tensors=named_tensors,
+                    update_bucket_weight_func=update_bucket_weight_func,
+                    pbar=pbar,
+                )
+                bucket_count += 1
                 named_tensors = []
                 buffer_size = 0
 
@@ -88,10 +99,17 @@ class DistBucketedWeightUpdateMixin:
             buffer_size += param_size
 
         if named_tensors:
-            self._update_expert_bucket_weights(named_tensors, update_bucket_weight_func, pbar)
+            self._update_expert_bucket_weights(
+                bucket_index=bucket_count,
+                named_tensors=named_tensors,
+                update_bucket_weight_func=update_bucket_weight_func,
+                pbar=pbar,
+            )
 
     def _update_expert_bucket_weights(
         self,
+        *,
+        bucket_index: int,
         named_tensors: list[tuple[str, torch.Tensor]],
         update_bucket_weight_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None],
         pbar: tqdm | None,
@@ -100,13 +118,11 @@ class DistBucketedWeightUpdateMixin:
         Gather EP → HF → update weights. Clears buffer.
         """
         names = [name for name, _ in named_tensors]
-        all_names: list[list[str] | None] = [None] * get_parallel_state().ep.size
-        dist.all_gather_object(all_names, names, group=get_parallel_state().ep.group)
-
-        for ep_names in all_names:
-            assert len(named_tensors) == len(
-                ep_names
-            ), f"mismatch names length: {len(named_tensors)} != {len(ep_names)}"
+        all_names = self._get_expert_bucket_all_names(
+            bucket_index=bucket_index,
+            names=names,
+            bucket_bytes=sum(param.numel() * param.element_size() for _, param in named_tensors),
+        )
 
         all_gathered_params: list[list[tuple[str, torch.Tensor]]] = [[] for _ in range(get_parallel_state().ep.size)]
         handles = []
@@ -133,6 +149,47 @@ class DistBucketedWeightUpdateMixin:
             converted_hf_tensors += convert_to_hf(self.args, self.model_name, name, param, self.quantization_config)
 
         update_bucket_weight_func(converted_hf_tensors, pbar)
+
+    def _get_expert_bucket_all_names(
+        self,
+        *,
+        bucket_index: int,
+        names: list[str],
+        bucket_bytes: int,
+    ) -> list[list[str]]:
+        """Return ordered tensor names for every EP rank in one expert bucket.
+
+        The bucket split is expected to stay stable across weight updates, so
+        only the first update gathers Python objects. Cache layout:
+            bucket_index -> (bucket_bytes, all_ep_names)
+        where all_ep_names[ep_rank] is that EP rank's ordered name tuple.
+        Later updates validate local names and bytes before reusing the cache.
+        """
+        cache = self._expert_bucket_all_names_cache
+        cached = cache.get(bucket_index)
+        if cached is not None:
+            cached_bucket_bytes, cached_all_names = cached
+            local_cached_names = cached_all_names[get_parallel_state().ep.rank]
+            if cached_bucket_bytes != bucket_bytes or local_cached_names != tuple(names):
+                raise RuntimeError(
+                    "Expert bucket name cache changed across weight updates: "
+                    f"bucket={bucket_index}, rank={dist.get_rank()}, "
+                    f"cached_tensor_count={len(local_cached_names)}, current_tensor_count={len(names)}, "
+                    f"cached_bytes={cached_bucket_bytes}, current_bytes={bucket_bytes}."
+                )
+            return [list(ep_names) for ep_names in cached_all_names]
+
+        all_names: list[list[str] | None] = [None] * get_parallel_state().ep.size
+        dist.all_gather_object(all_names, names, group=get_parallel_state().ep.group)
+
+        cached_all_names: list[tuple[str, ...]] = []
+        for ep_names in all_names:
+            assert ep_names is not None
+            assert len(names) == len(ep_names), f"mismatch names length: {len(names)} != {len(ep_names)}"
+            cached_all_names.append(tuple(ep_names))
+
+        cache[bucket_index] = (bucket_bytes, tuple(cached_all_names))
+        return [list(ep_names) for ep_names in cached_all_names]
 
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and run pre-process if needed."""
@@ -177,6 +234,8 @@ class DistBucketedWeightUpdateMixin:
         - `_finalize_and_resume_engines`: run post-process, resume rollout
             generation.
         """
+        if self.weight_version == 0:
+            self._expert_bucket_all_names_cache: dict[int, tuple[int, tuple[tuple[str, ...], ...]]] = {}
         self.weight_version += 1
 
         self._pause_and_prepare_engines()

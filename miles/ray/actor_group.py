@@ -123,6 +123,9 @@ class RayTrainGroup:
         """Broadcast weights from rank 0 to all other ranks."""
         await self._broadcast("update_weights")
 
+    async def wait_pending_weight_updates(self):
+        await self._broadcast("wait_pending_weight_updates")
+
     async def onload(self):
         await self._broadcast("wake_up")
 

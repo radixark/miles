@@ -40,6 +40,7 @@ from .replay_utils import get_register_replay_list_func
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+from .update_weight.update_weight_from_distributed.sendrecv_broadcast import UpdateWeightSendRecvBroadcast
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
@@ -164,8 +165,10 @@ class MegatronTrainRayActor(TrainRayActor):
         else:
             if self.args.update_weight_transfer_mode == "broadcast":
                 update_weight_cls = UpdateWeightFromDistributed
-            else:
+            elif self.args.update_weight_transfer_mode == "p2p":
                 update_weight_cls = UpdateWeightP2P
+            else:
+                update_weight_cls = UpdateWeightSendRecvBroadcast
         self.weight_updater = update_weight_cls(
             self.args,
             self.model,
@@ -510,6 +513,8 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
+        self.wait_pending_weight_updates()
+
         if self.args.use_fault_tolerance:
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.recover_updatable_engines.remote())
@@ -543,7 +548,14 @@ class MegatronTrainRayActor(TrainRayActor):
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             self.weight_updater.update_weights()
+            if dist.get_rank() == 0 and hasattr(self.weight_updater, "get_coordinator"):
+                weight_sync_coordinator = self.weight_updater.get_coordinator()
+                if weight_sync_coordinator is not None:
+                    ray.get(self.rollout_manager.set_weight_sync_coordinator.remote(weight_sync_coordinator))
             print_memory("after update_weights")
+
+            if self.args.ci_test:
+                self.wait_pending_weight_updates()
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
@@ -566,6 +578,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             destroy_process_groups()
+
+    def wait_pending_weight_updates(self) -> None:
+        if hasattr(self, "weight_updater") and hasattr(self.weight_updater, "wait_pending_fanout"):
+            self.weight_updater.wait_pending_fanout()
 
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune

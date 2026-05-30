@@ -376,6 +376,7 @@ class RolloutManager:
             _start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self._weight_sync_coordinator = None
 
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitors = []
@@ -409,6 +410,7 @@ class RolloutManager:
                 logger.warning(f"CI Fault Injection failed: {e}")
 
     def dispose(self):
+        self._wait_pending_weight_update()
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
@@ -448,6 +450,7 @@ class RolloutManager:
     def generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
+        self._wait_pending_weight_update()
         self.health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
@@ -461,6 +464,7 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
+        self._wait_pending_weight_update()
         self.health_monitoring_resume()
 
         if self.use_experimental_refactor:
@@ -519,6 +523,7 @@ class RolloutManager:
         Recovers the updatable model (the one that receives weight
         updates from training).
         """
+        self._wait_pending_weight_update()
         self.health_monitoring_pause()
         srv = self._get_updatable_server()
         if self.rollout_id == -1 or srv is None:
@@ -543,7 +548,18 @@ class RolloutManager:
             srv.num_new_engines = 0
 
     def check_weights(self, action: str):
+        self._wait_pending_weight_update()
         return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+
+    def set_weight_sync_coordinator(self, coordinator):
+        self._weight_sync_coordinator = coordinator
+
+    def _wait_pending_weight_update(self):
+        if self._weight_sync_coordinator is None:
+            return None
+        result = ray.get(self._weight_sync_coordinator.wait_pending_fanout.remote())
+        self._weight_sync_coordinator = None
+        return result
 
     def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
