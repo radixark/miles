@@ -7,11 +7,10 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
-FP4_ENV_MARKERS = ["NVTE", "FLASHINFER", "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"]
-
 
 def fp4_env_vars() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if any(marker in key for marker in FP4_ENV_MARKERS)}
+    fp4_env_markers = ["NVTE", "FLASHINFER", "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"]
+    return {key: value for key, value in os.environ.items() if any(marker in key for marker in fp4_env_markers)}
 
 
 def env_prefix(env_vars: dict[str, str]) -> str:
@@ -429,7 +428,8 @@ tis_batch_normalize: true
         f"{args.extra_args} "
     )
 
-    misc_env_vars |= fp4_env_vars()
+    if args.rollout_nvfp4 or args.train_nvfp4:
+        misc_env_vars |= fp4_env_vars()
 
     U.execute_train(
         train_args=train_args,
