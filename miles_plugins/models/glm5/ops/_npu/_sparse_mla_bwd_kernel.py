@@ -268,12 +268,21 @@ def sparse_mla_bwd_main(
             T.vbrc(sm_scale_local, sm_scale_BH1)
 
             for k in T.Pipelined(NS, num_stages=num_stages):
-                # Gather KV via indices
+                # Gather KV via indices.
+                # Negative-sentinel guard (reviewer #1246 finding HIGH-3):
+                # idx_buf[bi_i] can be -1 for masked positions; reading
+                # KV[b_i, -1, ...] is OOB. KV_shared / KV_tail_shared are
+                # carried across iters but only meaningfully consumed for
+                # valid (>=0) rows; leaving the masked slot with stale data
+                # is correct because the corresponding acc_p row will be
+                # exp(-inf)≈0 via the lse subtraction (lse came from the
+                # same masked-aware fwd path).
                 T.copy(Indices[b_i, s_i, 0, k * BS], idx_buf)
                 for bi_i in T.serial(BS):
                     cur_idx = idx_buf[bi_i]
-                    T.copy(KV[b_i, cur_idx, 0, 0:D], KV_shared[bi_i, 0:D])
-                    T.copy(KV[b_i, cur_idx, 0, D : D + DT], KV_tail_shared[bi_i, 0:DT])
+                    if cur_idx >= 0:
+                        T.copy(KV[b_i, cur_idx, 0, 0:D], KV_shared[bi_i, 0:D])
+                        T.copy(KV[b_i, cur_idx, 0, D : D + DT], KV_tail_shared[bi_i, 0:DT])
 
                 # 1) compute attention scores acc_p = Q @ K^T (split D+DT)
                 T.gemm(Q_shared, KV_shared, acc_p, initC=True, b_transpose=True)
@@ -320,25 +329,33 @@ def sparse_mla_bwd_main(
                 T.gemm(dP_shared_cast, Q_tail_shared, acc_dkv_tail, initC=True, a_transpose=True)
 
                 # 7) atomic_addx4 dKV (single full-BS block, no split_store)
+                # Negative-sentinel guard (reviewer #1246 finding HIGH-4):
+                # cur_idx == -1 must NOT trigger a scatter-add to dKV[-1, ...],
+                # which would corrupt the last row or raise an AICore
+                # exception. The masked positions contribute zero gradient
+                # mathematically (their attention weight was zero), so
+                # skipping the atomic add is the correct behavior, not a
+                # workaround.
                 T.copy(acc_dkv, acc_dkv_shared)
                 T.copy(acc_dkv_tail, acc_dkv_tail_shared)
                 # write back to global dKV at the indices we gathered from
                 for bi_i in T.serial(BS):
                     cur_idx = idx_buf[bi_i]
-                    # size=[4]: without it, atomic_addx4 only fires for 1
-                    # element per call (single-index dst infers extent=[1]).
-                    for d_i in T.serial(D // 4):
-                        T.npuir_atomic_addx4(
-                            dKV[b_i, cur_idx, 0, d_i * 4],
-                            acc_dkv_shared[bi_i, d_i * 4],
-                            size=[4],
-                        )
-                    for d_i in T.serial(DT // 4):
-                        T.npuir_atomic_addx4(
-                            dKV[b_i, cur_idx, 0, D + d_i * 4],
-                            acc_dkv_tail_shared[bi_i, d_i * 4],
-                            size=[4],
-                        )
+                    if cur_idx >= 0:
+                        # size=[4]: without it, atomic_addx4 only fires for 1
+                        # element per call (single-index dst infers extent=[1]).
+                        for d_i in T.serial(D // 4):
+                            T.npuir_atomic_addx4(
+                                dKV[b_i, cur_idx, 0, d_i * 4],
+                                acc_dkv_shared[bi_i, d_i * 4],
+                                size=[4],
+                            )
+                        for d_i in T.serial(DT // 4):
+                            T.npuir_atomic_addx4(
+                                dKV[b_i, cur_idx, 0, D + d_i * 4],
+                                acc_dkv_tail_shared[bi_i, d_i * 4],
+                                size=[4],
+                            )
 
             # NOTE: topk=16 (NS=2) currently fails bisheng AICore-resource exit 70.
             # Live-state inventory analysis 2026-05-19:

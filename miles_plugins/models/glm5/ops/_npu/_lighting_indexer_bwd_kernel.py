@@ -187,12 +187,19 @@ def lighting_indexer_bwd(
                 # Use 2-D slice on src `IndexK[cur_idx : cur_idx+1, 0:D]` to keep
                 # rank-2 parity with `k_shared[i:i+1, 0:D]` (R-KA-8 lesson).
                 T.vbrc(value_zero, k_frag)
+                # Negative-sentinel guard (reviewer #1246 finding HIGH-1):
+                # idx_frag[i] can be -1 for masked / invalid top-k positions.
+                # On NPU AICore, negative pointer arithmetic is not wrapped
+                # like PyTorch's fancy-indexing; reading IndexK[-1, ...] is
+                # an OOB load (UB or AICore trap). k_shared is pre-zeroed by
+                # vbrc above so the masked row stays zero.
                 for i in T.serial(block_I):
                     cur_idx = idx_frag[i]
-                    T.copy(
-                        IndexK[cur_idx : cur_idx + 1, 0:index_dim],
-                        k_shared[i : i + 1, 0:index_dim],
-                    )
+                    if cur_idx >= 0:
+                        T.copy(
+                            IndexK[cur_idx : cur_idx + 1, 0:index_dim],
+                            k_shared[i : i + 1, 0:index_dim],
+                        )
                 T.copy(k_shared, k_frag)
 
                 # scores = K @ Q^T  → [block_I, pad_heads]
@@ -259,15 +266,23 @@ def lighting_indexer_bwd(
 
                 # Scatter dK rows back to dIndexK via idx (atomic_add)
                 # Use size=[4] to expand the per-call extent to a 4-wide write.
+                # Negative-sentinel guard + intrinsic name fix (reviewer #1246
+                # finding HIGH-2): cur_idx == -1 must NOT trigger an atomic
+                # write to dIndexK[-1, ...]; that would corrupt the last row
+                # (and on NPU may raise an AICore exception). Also, the NPU
+                # backend exposes the 4-wide atomic-add as `npuir_atomic_addx4`,
+                # not `atomic_addx4` — the sparse_mla_bwd kernel already uses
+                # the correct spelling.
                 T.copy(d_k, d_k_shared)
                 for i in T.serial(block_I):
                     cur_idx = idx_frag[i]
-                    for d_i in T.serial(index_dim // 4):
-                        T.atomic_addx4(
-                            dIndexK[cur_idx, d_i * 4],
-                            d_k_shared[i, d_i * 4],
-                            size=[4],
-                        )
+                    if cur_idx >= 0:
+                        for d_i in T.serial(index_dim // 4):
+                            T.npuir_atomic_addx4(
+                                dIndexK[cur_idx, d_i * 4],
+                                d_k_shared[i, d_i * 4],
+                                size=[4],
+                            )
 
             # Cast dQ and write back only THIS head-group's rows.
             T.vcast(d_q, d_q_out_shared, round_mode="rint")

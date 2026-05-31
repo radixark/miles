@@ -157,10 +157,18 @@ def sparse_mla_fwd(
 
             for k in T.Pipelined(T.ceildiv(topk, block_N), num_stages=num_stages):
                 T.copy(Indices[b_i, s_i, 0, k * block_N], idx_buf)
+                # Negative-sentinel guard (reviewer #1246 finding HIGH-5):
+                # cur_idx == -1 marks an invalid / masked top-k position. On
+                # NPU, KV[b_i, -1, ...] is an OOB read; the masked row will
+                # be filtered downstream by the score-softmax (scores at
+                # masked rows would have been forced to -inf via lse), so
+                # leaving KV_shared / K_tail_shared with their initial value
+                # for that slot is safe.
                 for bi_i in T.serial(block_N):
                     cur_idx = idx_buf[bi_i]
-                    T.copy(KV[b_i, cur_idx, 0, 0:D], KV_shared[bi_i, 0:D])
-                    T.copy(KV[b_i, cur_idx, 0, D : D + DT], K_tail_shared[bi_i, 0:DT])
+                    if cur_idx >= 0:
+                        T.copy(KV[b_i, cur_idx, 0, 0:D], KV_shared[bi_i, 0:D])
+                        T.copy(KV[b_i, cur_idx, 0, D : D + DT], K_tail_shared[bi_i, 0:DT])
 
                 T.gemm(Q_shared, KV_shared, scores, initC=True, b_transpose=True)
                 T.gemm(

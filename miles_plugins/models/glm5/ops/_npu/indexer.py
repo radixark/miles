@@ -128,18 +128,19 @@ def npu_indexer_bwd_interface(index_q, weights, index_k, topk_indices, grad_scor
 
         # Defensive guard: R-KA-15 writes ~6.04e37 (or its bf16-cast 1.6e29)
         # when the kernel-internal scores_relu collapses to zero on a per-
-        # query row, even when the outer grad_row is non-zero. The legitimate
-        # per-query gradient is bounded by |Q|·|K|·|grad|·topk which for
-        # bf16 inputs of magnitude < 10 stays under ~1e5; pick a conservative
-        # 1e10 sentinel that catches both the 6e37 magic and its arithmetic
-        # downscaled remnants. Also gate on non-finite.
-        # Threshold picked empirically: legitimate per-query bwd gradients for
-        # bf16 inputs of magnitude < 1 stay below ~10^2; the R-KA-15 magic
-        # value 6.04e37 and its arithmetic-downscaled remnants from bf16
-        # cast / mat-mul backward are all >= 1e3. Use 1e3 to suppress them
-        # without clipping real gradients. Real training should still apply
-        # an outer gradient-clip-norm to be doubly safe.
-        _MAGIC_THRESHOLD = 1e3
+        # query row, even when the outer grad_row is non-zero. Also gate on
+        # non-finite.
+        #
+        # Threshold (reviewer #1246 finding HIGH-6, AMP correctness): the
+        # earlier 1e3 threshold is unsafe under AMP. With a typical AMP loss
+        # scale of 2^16=65536, a legitimate post-loss-scale gradient of 0.1
+        # becomes 6553.6 — well above 1e3 — and would be silently zeroed,
+        # breaking training without any visible warning. Use 1e30 instead:
+        # it still catches the R-KA-15 magic value (6.04e37) and its bf16-
+        # cast 1.6e29-ish remnants, but stays above any realistic
+        # loss-scaled gradient (FP32 max ~3.4e38; even an aggressive 2^24
+        # loss scale on a 1.0 grad is 1.67e7).
+        _MAGIC_THRESHOLD = 1e30
         bad = (~torch.isfinite(dk_local)) | (dk_local.abs() > _MAGIC_THRESHOLD)
         if bad.any():
             dk_local = torch.where(bad, torch.zeros_like(dk_local), dk_local)
