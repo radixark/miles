@@ -104,7 +104,6 @@ def get_layer_param(args, name, param):
         num_layers = param.shape[0]
         if not name.startswith("module.module.vision_model.decoder.layers."):
             assert num_layers == args.num_layers
-        assert param.shape[0] == num_layers
         for layer_id in range(num_layers):
             layer_name = name.replace(".layers.", f".layers.{layer_id}.")
             layer_param = param[layer_id]
