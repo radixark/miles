@@ -32,23 +32,6 @@ NVFP4_SHAPES = [
     (2048, 7168),
     (128, 16384),
 ]
-NVFP4_ENV_KEYS = (
-    "NVTE_NVFP4_4OVER6",
-    "NVTE_NVFP4_4OVER6_E4M3_USE_256",
-    "NVTE_NVFP4_4OVER6_ERR_MODE",
-    "NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH",
-    "FLASHINFER_NVFP4_4OVER6",
-    "FLASHINFER_NVFP4_4OVER6_E4M3_USE_256",
-    "FLASHINFER_NVFP4_4OVER6_ERR_MODE",
-    "FLASHINFER_NVFP4_4OVER6_ERR_USE_FAST_MATH",
-    "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH",
-)
-
-
-@pytest.fixture(autouse=True)
-def clean_nvfp4_env(monkeypatch):
-    for key in NVFP4_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
 
 
 def _make_weight(init_data: str, dtype: torch.dtype, shape: tuple[int, int], device: str) -> torch.Tensor:
@@ -90,7 +73,7 @@ def _te_nvfp4_reference_with_global_amax(
         NVFP4_GROUP_SIZE,
         1,
         pow_2_scales=False,
-        nvfp4_use_4over6=False,
+        nvfp4_use_4over6=os.getenv("NVTE_NVFP4_4OVER6", "").strip().lower() in ("weights", "all"),
         nvfp4_e4m3_max=nvfp4_e4m3_max,
         nvfp4_4over6_err_mode=os.getenv("NVTE_NVFP4_4OVER6_ERR_MODE", "MAE").strip().upper(),
         eps=0.0,
@@ -180,9 +163,17 @@ def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
 @pytest.mark.parametrize("shape", NVFP4_SHAPES)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=str)
 @pytest.mark.parametrize("init_data", ["random", "boundary", "zeros", "maxes"])
-def test_nvfp4_quantize_matches_te_reference_bitwise(quantize_fn, shape, dtype, init_data):
+@pytest.mark.parametrize("use_4over6", [False, True], ids=["default", "4over6"])
+def test_nvfp4_quantize_matches_te_reference_bitwise(quantize_fn, shape, dtype, init_data, use_4over6, monkeypatch):
     device = "cuda"
     torch.manual_seed(42)
+    monkeypatch.delenv("NVTE_NVFP4_4OVER6_E4M3_USE_256", raising=False)
+    monkeypatch.delenv("NVTE_NVFP4_4OVER6_ERR_MODE", raising=False)
+    monkeypatch.delenv("NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH", raising=False)
+    if use_4over6:
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6", "all")
+    else:
+        monkeypatch.delenv("NVTE_NVFP4_4OVER6", raising=False)
 
     weight = _make_weight(init_data, dtype, shape, device)
     qweight, block_scale, global_scale = quantize_fn(weight)
