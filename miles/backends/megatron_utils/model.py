@@ -438,8 +438,8 @@ def train_one_step(
             if args.enable_mtp_training:
                 forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
 
-            if batch["multimodal_train_inputs"] is not None:
-                forward_kwargs.update(batch["multimodal_train_inputs"])
+            if (x := batch["multimodal_train_inputs"]) is not None:
+                forward_kwargs.update(x)
 
             output_tensor = model(**forward_kwargs)
 
@@ -635,10 +635,10 @@ def train(
             tracker = MTPLossLoggingHelper.tracker
             if "values" in tracker:
                 values = tracker["values"]
-                if tracker.get("reduce_group") is not None:
-                    torch.distributed.all_reduce(values, group=tracker.get("reduce_group"))
-                if tracker.get("avg_group") is not None:
-                    torch.distributed.all_reduce(values, group=tracker["avg_group"], op=torch.distributed.ReduceOp.AVG)
+                if (x := tracker.get("reduce_group")) is not None:
+                    torch.distributed.all_reduce(values, group=x)
+                if (x := tracker.get("avg_group")) is not None:
+                    torch.distributed.all_reduce(values, group=x, op=torch.distributed.ReduceOp.AVG)
                 # here we assume only one mtp layer
                 mtp_losses = (tracker["values"] * mtp_loss_scale).item()
                 MTPLossLoggingHelper.clean_loss_in_tracker()
