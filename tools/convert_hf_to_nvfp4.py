@@ -10,9 +10,8 @@ expert GEMMs only. Dense linear layers are left unmodified.
 Use --extra-high-precision-layers-hf to keep additional HF weight-name
 substrings unquantized.
 
-This follows the NVFP4 reference quantization in Transformer Engine, uses the
-FlashInfer CUDA quantizer when available, and keeps 4over6 controlled by the
-NVTE_NVFP4_* environment variables.
+This follows the NVFP4 reference quantization in Transformer Engine and uses
+1D block scaling (NVTE_NVFP4_1D_SCALING, group size = 16).
 """
 
 import argparse
