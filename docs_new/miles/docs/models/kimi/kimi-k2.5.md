@@ -1,24 +1,44 @@
 ---
 title: Kimi K2.5 / K2.6
-description: Launch recipe for Kimi-K2.5 — full-parameter GRPO on 32 × 8 H200, INT4 actor with a BF16 reference.
+description: Launch recipe for Kimi-K2.5, running full-parameter GRPO on 32 × 8 H200 with an INT4 actor and a BF16 reference.
 ---
 The reference launcher is [`scripts/run-kimi-k25.sh`](https://github.com/radixark/miles/blob/main/scripts/run-kimi-k25.sh), which sources the shared model definition in `scripts/models/kimi-k2-thinking.sh`.
 
 <Note title="K2.6 status">
-At the time of writing, `radixark/miles@main` ships a K2.5 launcher only — there is no separate K2.6 script or model config yet. K2.6 reuses the K2.5 recipe, so the flags on this page are validated against `scripts/run-kimi-k25.sh` and serve as the K2.6 starting point until a dedicated launcher lands.
+At the time of writing, `radixark/miles@main` ships a K2.5 launcher only; there is no separate K2.6 script or model config yet. K2.6 reuses the K2.5 recipe, so the flags on this page are validated against `scripts/run-kimi-k25.sh` and serve as the K2.6 starting point until a dedicated launcher lands.
 </Note>
 
 ## 1. Model Introduction
 
-[Kimi-K2](https://moonshotai.github.io/Kimi-K2/) is a Mixture-of-Experts (MoE) language model from Moonshot AI. Kimi-K2.5 reuses the same MoE + Multi-head Latent Attention (MLA) architecture as Kimi-K2-Thinking — the K2.5 launcher sources the Thinking model definition directly — so it carries the 1 T-total / 32 B-active shape of the K2 family.
+[Kimi-K2.5](https://huggingface.co/moonshotai/Kimi-K2.5) is an open-source, natively multimodal agentic model from Moonshot AI. It is built by continual pretraining on roughly 15 T mixed vision and text tokens on top of Kimi-K2-Base, and it pairs a Mixture-of-Experts (MoE) language backbone with a MoonViT vision encoder so a single model handles both image and text inputs. K2.5 keeps the 1 T-total / 32 B-active shape of the K2 family and extends the context window to 256K tokens.
 
-**Key highlights:**
+**Architecture at a glance** (from the model card):
 
-- **K2-Thinking architecture, reused as-is**: 61 layers (1 dense + 60 MoE, set by `FIRST_K_DENSE_REPLACE=1`), hidden-size 7168, `ffn_hidden_size=18432`, 64 attention heads, and a 163840-token vocabulary with untied input/output embeddings.
-- **Multi-head Latent Attention**: `q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`, with QK layernorm. RoPE uses `--rotary-base 50000` and `--rotary-scaling-factor 64.0` (`mscale=1.0`), the same setup as K2-Thinking.
-- **MoE topology**: 384 routed experts + 1 shared expert (`moe_ffn_hidden_size=2048`, `moe_shared_expert_intermediate_size=2048`), top-8 routing with a sigmoid score function, pre-softmax routing, expert bias, and `seq_aux_loss` load balancing at `moe_aux_loss_coeff=0`. The router runs in FP32 with `--moe-router-topk-scaling-factor 2.827`.
-- **INT4 actor with a BF16 reference**: the actor loads an INT4 checkpoint and trains under simulated INT4 QAT (`OPEN_TRAINING_INT4_FAKE_QAT_FLAG=1`, group size 32), while the reference model loads the BF16 checkpoint. Kimi-K2-Thinking is the canonical INT4 QAT target in miles, and K2.5 follows the same path — see [INT4 QAT](/miles/docs/advanced/int4-qat).
-- **Megatron ↔ HF bridge**: weights move through `--megatron-to-hf-mode bridge`, and the recipe selects the K2.5 wiring with `--model-name kimi_k25`.
+| Specification | Value |
+|---|---|
+| Architecture | Mixture-of-Experts (MoE) |
+| Total / activated parameters | 1 T / 32 B |
+| Layers (1 dense + 60 MoE) | 61 |
+| Attention hidden dimension | 7168 |
+| MoE hidden dimension (per expert) | 2048 |
+| Attention heads | 64 |
+| Routed experts (selected per token) | 384 (top-8) |
+| Shared experts | 1 |
+| Attention mechanism | Multi-head Latent Attention (MLA) |
+| Activation | SwiGLU |
+| Vocabulary size | 160K |
+| Context length | 256K |
+| Vision encoder | MoonViT (400 M) |
+
+**Key features:**
+
+- **Native multimodality.** K2.5 is pretrained on both vision and language tokens, so it covers visual knowledge, cross-modal reasoning, and tool use grounded in images alongside text.
+- **Coding with vision.** It generates code from visual specifications such as UI designs and video workflows, and drives tools for visual data processing.
+- **Agent swarm.** It decomposes a complex task into parallel sub-tasks run by dynamically instantiated, domain-specific agents, rather than scaling a single agent.
+
+<Note title="What this recipe trains">
+This page documents the miles RL recipe in [`scripts/run-kimi-k25.sh`](https://github.com/radixark/miles/blob/main/scripts/run-kimi-k25.sh), which exercises the language path of K2.5. The launcher sources the text K2-Thinking model definition (`scripts/models/kimi-k2-thinking.sh`), which builds the MoE backbone above (61 layers, 384 experts, MLA) with no vision-encoder arguments, and it runs full-parameter GRPO on the text math dataset DAPO-Math-17k. The actor trains from an INT4 checkpoint under simulated INT4 QAT while a BF16 checkpoint serves as the reference (see [INT4 QAT](/miles/docs/advanced/int4-qat)). The MoonViT vision stack ships with the released model but is not wired into this launcher.
+</Note>
 
 ## 2. Supported Variants
 
@@ -67,9 +87,9 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_
 
 ## 4. Script breakdown
 
-The launcher groups its flags into the arrays that are passed to `train.py`. The model shape comes from `MODEL_ARGS`, which is sourced from `scripts/models/kimi-k2-thinking.sh`; the K2.5 recipe then layers the following on top:
+The launcher groups its flags into the arrays that are passed to `train.py`. The model shape comes from `MODEL_ARGS`, which is sourced from `scripts/models/kimi-k2-thinking.sh`. That definition sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and RoPE (`--rotary-base 50000`, `--rotary-scaling-factor 64.0`). The K2.5 recipe then layers the following on top:
 
-- **`CKPT_ARGS`** wires up the dual checkpoint — INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load` — with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
+- **`CKPT_ARGS`** wires up the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
 - **`ROLLOUT_ARGS`** and **`EVAL_ARGS`** configure GRPO sampling and periodic AIME evaluation (covered in §5.2).
 - **`PERF_ARGS`** sets the parallelism layout and recomputation (§5.1).
 - **`GRPO_ARGS`** and **`OPTIMIZER_ARGS`** set the algorithm and CPU-offloaded Adam (§5.2, §5.4).
@@ -179,4 +199,4 @@ Adam states live on host RAM and are D2H/H2D-overlapped with the backward pass, 
 - [PD Disaggregation](/miles/docs/advanced/pd-disaggregation)
 - [P2P Weight Transfer](/miles/docs/advanced/p2p-weight-transfer)
 - [Fault Tolerance](/miles/docs/advanced/fault-tolerance)
-- [Kimi K2](/miles/docs/models/kimi/kimi-k2) — sibling recipe; K2.5 reuses the K2-Thinking architecture.
+- [Kimi K2](/miles/docs/models/kimi/kimi-k2): sibling recipe; K2.5 reuses the K2-Thinking architecture.
