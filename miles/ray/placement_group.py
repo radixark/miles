@@ -9,7 +9,7 @@ from miles.utils.async_utils import eager_create_task
 
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .actor_group import RayTrainGroup
-from .rollout import RolloutManager
+from .rollout.rollout_manager import RolloutManager
 
 logger = logging.getLogger(__name__)
 
