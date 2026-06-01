@@ -5,21 +5,40 @@ from argparse import ArgumentParser
 from glob import glob
 
 import torch
+import triton
+import triton.language as tl
 from safetensors.torch import load_file, save_file
-from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
-from tile_kernels.quant import cast_back
 from tqdm import tqdm
+
+from param_name_remap import get_param_name_remap
+
+
+@triton.jit
+def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
+    pid_m = tl.program_id(axis=0)
+    pid_n = tl.program_id(axis=1)
+    n = tl.cdiv(N, BLOCK_SIZE)
+    offs_m = pid_m * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    offs_n = pid_n * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    offs = offs_m[:, None] * N + offs_n[None, :]
+    mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+    x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
+    s = tl.load(s_ptr + pid_m * n + pid_n)
+    y = x * s
+    tl.store(y_ptr + offs, y, mask=mask)
 
 
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> torch.Tensor:
-    """Dequantize a 2D FP8 weight matrix back to bf16 using a 128x128 block scale.
-
-    Backed by ``tile_kernels.quant.cast_back`` so it shares the same dequant
-    implementation as the rest of the DeepSeek stack.
-    """
     assert x.is_contiguous() and s.is_contiguous()
     assert x.dim() == 2 and s.dim() == 2
-    return cast_back((x, s), fmt='bf16', x_block_size=(block_size, block_size))
+    M, N = x.size()
+    y = torch.empty_like(x, dtype=torch.get_default_dtype())
+
+    def grid(meta):
+        return (triton.cdiv(M, meta["BLOCK_SIZE"]), triton.cdiv(N, meta["BLOCK_SIZE"]))
+
+    weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
+    return y
 
 
 def main(fp8_path, bf16_path):
@@ -33,10 +52,9 @@ def main(fp8_path, bf16_path):
     with open(model_index_file) as f:
         model_index = json.load(f)
     weight_map_raw = model_index["weight_map"]
-    weight_map_renamed = {
-        DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(tensor_name): file_name
-        for tensor_name, file_name in weight_map_raw.items()
-    }
+
+    remap = get_param_name_remap(os.path.join(fp8_path, "config.json"), weight_map_raw)
+    weight_map_renamed = {remap(tensor_name): file_name for tensor_name, file_name in weight_map_raw.items()}
 
     # Cache for loaded safetensor files
     loaded_files = {}
@@ -50,10 +68,7 @@ def main(fp8_path, bf16_path):
             loaded_files[file_name] = load_file(file_path, device="cuda")
 
         loaded_file_dict_raw = loaded_files[file_name]
-        loaded_file_dict_renamed = {
-            DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(tensor_name): tensor
-            for tensor_name, tensor in loaded_file_dict_raw.items()
-        }
+        loaded_file_dict_renamed = {remap(tensor_name): tensor for tensor_name, tensor in loaded_file_dict_raw.items()}
 
         return loaded_file_dict_renamed[tensor_name]
 
@@ -67,7 +82,7 @@ def main(fp8_path, bf16_path):
 
         new_state_dict = {}
         for weight_name_raw, weight in current_state_dict.items():
-            weight_name = DeepseekV4ForCausalLM.remap_weight_name_to_dpsk_hf_format(weight_name_raw)
+            weight_name = remap(weight_name_raw)
 
             if weight_name.endswith("_scale_inv"):
                 continue
