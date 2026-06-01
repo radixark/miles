@@ -48,9 +48,6 @@ def run_one(cfg: ModelConfig) -> None:
         sglang_tool_call_parser=cfg.tool_call_parser,
         rollout_num_gpus_per_engine=cfg.tp_size,
         actor_num_nodes=1,
-        # The suite runs on 4-GPU H200; allocate ``cfg.num_gpus`` actor GPUs
-        # so the per-family ModelConfig stays the single source of truth for
-        # the node-allocation slice (separate from sglang TP).
         actor_num_gpus_per_node=cfg.num_gpus,
         n_samples_per_prompt=cfg.n_samples_per_prompt,
         session_verify_cycles=cfg.cycles,
