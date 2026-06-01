@@ -3,6 +3,7 @@ import random
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
+from typing import TYPE_CHECKING
 
 import ray
 import torch
@@ -41,6 +42,9 @@ from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_manager import EnginesAndLock
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -187,10 +191,10 @@ class MegatronTrainRayActor(TrainRayActor):
         self.rollout_engines = None
 
         self.rollout_data_postprocess = None
-        if self.args.rollout_data_postprocess_path is not None:
+        if (x := self.args.rollout_data_postprocess_path) is not None:
             from miles.utils.misc import load_function
 
-            self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
+            self.rollout_data_postprocess = load_function(x)
 
         self.prof.on_init_end()
 
@@ -439,23 +443,21 @@ class MegatronTrainRayActor(TrainRayActor):
             destroy_process_groups()
 
     @timer
-    def update_weights(self) -> None:
+    def update_weights(self, info: "EnginesAndLock") -> None:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if self.args.use_fault_tolerance:
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.recover_updatable_engines.remote())
-            dist.barrier(group=get_gloo_group())
-
-        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
-        )
+        rollout_engines = info.rollout_engines
+        rollout_engine_lock = info.rollout_engine_lock
+        has_new_engines = info.has_new_engines
+        engine_gpu_counts = info.engine_gpu_counts
+        engine_gpu_offsets = info.engine_gpu_offsets
+        del info
 
         if self.args.offload_train:
             reload_process_groups()
 
-        if num_new_engines > 0:
+        if has_new_engines:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
@@ -464,7 +466,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
