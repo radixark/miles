@@ -99,7 +99,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.7
-   # If gemini API reports concurrency limit error, set this parameter to reduce the concurrency
+   # If the user-simulator API (Gemini or DeepSeek) reports a concurrency limit error, set this parameter to reduce the concurrency
    # --sglang-server-concurrency 32
 )
 
@@ -129,6 +129,8 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disab
 # key in your shell before launching, e.g.:
 #   export TAU_USER_MODEL_PROVIDER=deepseek TAU_USER_MODEL=deepseek-chat
 #   export DEEPSEEK_API_KEY=sk-...
+# NOTE: only the Gemini and DeepSeek keys are forwarded below. To use another
+# litellm provider, add its *_API_KEY to the env_vars block as well.
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}\",
