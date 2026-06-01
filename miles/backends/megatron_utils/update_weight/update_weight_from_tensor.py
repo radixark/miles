@@ -125,9 +125,9 @@ class UpdateWeightFromTensor:
             )
             self._group_name = "miles"
             if self._is_distributed_src_rank:
-                if self._model_update_groups is not None:
+                if (g := self._model_update_groups) is not None:
                     disconnect_rollout_engines_from_distributed(
-                        self.args, self._group_name, self._model_update_groups, self.distributed_rollout_engines
+                        self.args, self._group_name, g, self.distributed_rollout_engines
                     )
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
