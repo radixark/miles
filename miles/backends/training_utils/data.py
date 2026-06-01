@@ -148,9 +148,6 @@ def get_batch(
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
         if allgather_cp:
-            # Contiguous CP: pad each sample to max_seqlen, then take chunk cp_rank.
-            # Requires max_seqlen divisible by cp_size; the caller pads max_seq_len to a
-            # cp_size multiple, and the assert enforces that contract.
             assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
             local_len = max_seqlen // cp_size
             start = parallel_state.cp.rank * local_len
@@ -251,9 +248,6 @@ def get_batch(
 
     if qkv_format == "bshd":
         if allgather_cp:
-            # Same contiguous CP slicing as tokens above. loss_masks currently hold
-            # per-sample full-length masks (pad to total_length via the prompt/right pad
-            # above); pad up to max_seqlen, then take cp_rank's chunk.
             local_len = max_seqlen // cp_size
             start = parallel_state.cp.rank * local_len
             loss_masks = [
