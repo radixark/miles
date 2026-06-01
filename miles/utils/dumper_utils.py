@@ -164,11 +164,14 @@ def _loss_parallel_size(parallel_state: ParallelState, args: Namespace) -> int:
 
 @contextlib.contextmanager
 def _topology_invariant_grad_for_dump(model: torch.nn.Module, args: Namespace) -> Iterator[None]:
-    """Temporarily expose the global, loss-scale-normalized gradient via ``param.grad``.
+    """Temporarily expose the global, loss-scale-normalized gradient to the dumper.
 
-    The dumper reads ``param.grad`` (falling back to ``main_grad``). We compute
-    ``sum_over_intra_dp(main_grad) / loss_parallel_size`` and stash it into
-    ``param.grad`` for the duration of the dump:
+    The dumper reads ``param.grad``, falling back to ``param.main_grad``. Under
+    Megatron's fp32 grad accumulation ``param.grad`` is ``None`` and the gradient
+    lives in the fp32 ``main_grad`` buffer, so we rebind ``main_grad`` to the
+    reduced tensor for the duration of the dump (rebinding ``param.grad`` would
+    hit PyTorch's grad-dtype check, since ``main_grad`` is fp32 while the param is
+    bf16). We compute ``sum_over_intra_dp(main_grad) / loss_parallel_size``:
 
     - Non-FT baseline: ``intra_dp`` spans all DP ranks, so the all-reduce
       reconstructs the full gradient from per-rank local accumulators.
@@ -180,33 +183,38 @@ def _topology_invariant_grad_for_dump(model: torch.nn.Module, args: Namespace) -
     factors are identical across runs and cancel in the comparison.
 
     All intra-DP ranks run the dumper (only effective-DP rank 0 writes files), so
-    the all-reduce is collective and symmetric across the group.
+    the all-reduce is collective and symmetric across the group. Rebinding the
+    ``main_grad`` attribute does not affect the optimizer, which holds its own
+    references into the gradient buffer.
     """
     parallel_state = get_parallel_state()
     intra_dp = parallel_state.intra_dp
     loss_parallel_size = _loss_parallel_size(parallel_state, args)
 
-    saved_grads: list[tuple[torch.nn.Parameter, torch.Tensor | None]] = []
+    saved_main_grads: list[tuple[torch.nn.Parameter, torch.Tensor | None]] = []
     try:
         for _name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            grad = param.grad if param.grad is not None else getattr(param, "main_grad", None)
-            if grad is None:
+            main_grad = getattr(param, "main_grad", None)
+            if main_grad is None or param.grad is not None:
+                # main_grad accumulation is the only path the dumper would read
+                # here; skip anything that does not match it rather than risk a
+                # wrong-source or dtype-mismatched override.
                 continue
 
-            reduced = grad.detach().float().clone()
+            reduced = main_grad.detach().float().clone()
             if intra_dp.size > 1 and intra_dp.group is not None:
                 GeneralPGUtil.create(intra_dp.group).all_reduce(reduced, intra_dp.group, op=dist.ReduceOp.SUM)
             reduced /= loss_parallel_size
 
-            saved_grads.append((param, param.grad))
-            param.grad = reduced
+            saved_main_grads.append((param, param.main_grad))
+            param.main_grad = reduced
 
         yield
     finally:
-        for param, original_grad in saved_grads:
-            param.grad = original_grad
+        for param, original_main_grad in saved_main_grads:
+            param.main_grad = original_main_grad
 
 
 def _log_model_grad_coverage(model: torch.nn.Module) -> None:
