@@ -152,4 +152,8 @@ def compare(
 
 
 if __name__ == "__main__":
+    # The CI harness invokes this file as bare `python3 <file>` with no args.
+    # Default to the canonical comparison in that case; keep the typer CLI for manual runs.
+    if len(sys.argv) == 1:
+        sys.argv += ["run", "--mode", "tp1_vs_tp2pp2cp2"]
     app()
