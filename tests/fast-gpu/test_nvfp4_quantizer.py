@@ -6,7 +6,10 @@ register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
 import os
 
 import pytest
+import safetensors
+import safetensors.torch
 import torch
+from tools.convert_hf_to_nvfp4 import convert_nvfp4
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
 from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
 from transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4 import NVFP4QuantizerRef
@@ -15,7 +18,12 @@ from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 imp
     quantize_nvfp4 as processor_quantize_nvfp4,
 )
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 import quantize_params_nvfp4
-from miles.utils.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_global_decode_scale_te, nvfp4_weight_e4m3_max
+from miles.utils.nvfp4 import (
+    NVFP4_GROUP_SIZE,
+    nvfp4_global_decode_scale_te,
+    nvfp4_quantize_1d_pair,
+    nvfp4_weight_e4m3_max,
+)
 
 NVFP4_SHAPES = [
     (1, 64),
@@ -75,14 +83,6 @@ def _te_nvfp4_reference(
     return qweight, block_scale, nvfp4_global_decode_scale_te(global_amax, nvfp4_e4m3_max)
 
 
-def _shared_scalar_amax(weight: torch.Tensor, shared_amax_mode: str) -> torch.Tensor | None:
-    if shared_amax_mode == "te_generated":
-        return None
-    if shared_amax_mode == "shared_scalar":
-        return torch.max(torch.abs(weight.to(torch.float32)))
-    raise ValueError(f"Unknown shared_amax_mode: {shared_amax_mode}")
-
-
 def test_nvfp4_quantize_uses_te_direct_rowwise_quantizer(monkeypatch):
     import miles.utils.nvfp4 as nvfp4_utils
 
@@ -110,7 +110,6 @@ def test_nvfp4_quantize_uses_te_direct_rowwise_quantizer(monkeypatch):
 
     qweight, block_scale, global_scale = nvfp4_utils.nvfp4_quantize_1d(
         torch.ones((3, NVFP4_GROUP_SIZE), dtype=torch.float32),
-        shared_global_amax=torch.tensor(2.0, dtype=torch.float32),
     )
 
     assert calls == [
@@ -133,6 +132,51 @@ def test_nvfp4_quantize_uses_te_direct_rowwise_quantizer(monkeypatch):
     assert block_scale.shape == (3, 1)
     assert block_scale.dtype == torch.float8_e4m3fn
     torch.testing.assert_close(global_scale, nvfp4_global_decode_scale_te(torch.tensor(2.0), 448), rtol=0, atol=0)
+
+
+def test_nvfp4_quantize_pair_concats_before_te_quantizer(monkeypatch):
+    import miles.utils.nvfp4 as nvfp4_utils
+
+    quantized_input = None
+
+    class FakeQuantizedTensor:
+        def __init__(self, tensor: torch.Tensor):
+            self._rowwise_data = torch.arange(tensor.shape[0] * (tensor.shape[1] // 2), dtype=torch.uint8).reshape(
+                tensor.shape[0], tensor.shape[1] // 2
+            )
+            self._rowwise_scale_inv = torch.arange(
+                tensor.shape[0] * (tensor.shape[1] // NVFP4_GROUP_SIZE), dtype=torch.uint8
+            ).reshape(tensor.shape[0], tensor.shape[1] // NVFP4_GROUP_SIZE)
+            self._amax_rowwise = torch.tensor([7.0], dtype=torch.float32)
+
+    class FakeQuantizer:
+        def __init__(self, **kwargs):
+            pass
+
+        def quantize(self, tensor: torch.Tensor) -> FakeQuantizedTensor:
+            nonlocal quantized_input
+            quantized_input = tensor.clone()
+            return FakeQuantizedTensor(tensor)
+
+    monkeypatch.setattr(nvfp4_utils, "NVFP4Quantizer", FakeQuantizer)
+
+    gate = torch.ones((3, NVFP4_GROUP_SIZE), dtype=torch.float32)
+    up = torch.full((5, NVFP4_GROUP_SIZE), 2.0, dtype=torch.float32)
+    (gate_qweight, gate_block_scale, gate_global_scale), (
+        up_qweight,
+        up_block_scale,
+        up_global_scale,
+    ) = nvfp4_utils.nvfp4_quantize_1d_pair(gate, up)
+
+    assert quantized_input.shape == (16, NVFP4_GROUP_SIZE)
+    torch.testing.assert_close(quantized_input[:3], gate)
+    torch.testing.assert_close(quantized_input[3:8], up)
+    torch.testing.assert_close(quantized_input[8:], torch.zeros_like(quantized_input[8:]))
+    assert gate_qweight.shape == (3, NVFP4_GROUP_SIZE // 2)
+    assert up_qweight.shape == (5, NVFP4_GROUP_SIZE // 2)
+    assert gate_block_scale.shape == (3, 1)
+    assert up_block_scale.shape == (5, 1)
+    torch.testing.assert_close(gate_global_scale, up_global_scale, rtol=0, atol=0)
 
 
 def test_nvfp4_quantize_params_requires_complete_gated_pair():
@@ -209,6 +253,59 @@ def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
     )
 
 
+def test_nvfp4_hf_converter_quantizes_cross_shard_gated_pair_together(tmp_path, monkeypatch):
+    monkeypatch.delenv("NVTE_NVFP4_4OVER6", raising=False)
+    model_dir = tmp_path / "model"
+    save_dir = tmp_path / "converted"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"num_hidden_layers": 1}')
+
+    gate_key = "model.layers.0.mlp.experts.0.gate_proj.weight"
+    up_key = "model.layers.0.mlp.experts.0.up_proj.weight"
+    gate = torch.randn((3, 128), dtype=torch.bfloat16)
+    up = torch.randn((5, 128), dtype=torch.bfloat16)
+    safetensors.torch.save_file({gate_key: gate}, model_dir / "gate.safetensors", metadata={"format": "pt"})
+    safetensors.torch.save_file({up_key: up}, model_dir / "up.safetensors", metadata={"format": "pt"})
+
+    convert_nvfp4(str(model_dir), str(save_dir), device="cuda")
+
+    (gate_qweight, gate_block_scale, gate_global_scale), (
+        up_qweight,
+        up_block_scale,
+        up_global_scale,
+    ) = nvfp4_quantize_1d_pair(gate.cuda(), up.cuda())
+
+    with safetensors.safe_open(save_dir / "gate.safetensors", framework="pt", device="cuda") as f:
+        torch.testing.assert_close(f.get_tensor(gate_key), gate_qweight, rtol=0, atol=0)
+        torch.testing.assert_close(
+            f.get_tensor(gate_key.replace(".weight", ".weight_scale")).view(torch.uint8),
+            gate_block_scale.view(torch.uint8),
+            rtol=0,
+            atol=0,
+        )
+        torch.testing.assert_close(
+            f.get_tensor(gate_key.replace(".weight", ".weight_scale_2")),
+            gate_global_scale,
+            rtol=0,
+            atol=0,
+        )
+
+    with safetensors.safe_open(save_dir / "up.safetensors", framework="pt", device="cuda") as f:
+        torch.testing.assert_close(f.get_tensor(up_key), up_qweight, rtol=0, atol=0)
+        torch.testing.assert_close(
+            f.get_tensor(up_key.replace(".weight", ".weight_scale")).view(torch.uint8),
+            up_block_scale.view(torch.uint8),
+            rtol=0,
+            atol=0,
+        )
+        torch.testing.assert_close(
+            f.get_tensor(up_key.replace(".weight", ".weight_scale_2")),
+            up_global_scale,
+            rtol=0,
+            atol=0,
+        )
+
+
 @pytest.mark.parametrize(
     "quantize_fn",
     [processor_quantize_nvfp4, tool_quantize_nvfp4],
@@ -218,10 +315,7 @@ def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=str)
 @pytest.mark.parametrize("init_data", ["random", "boundary", "zeros", "maxes"])
 @pytest.mark.parametrize("use_4over6", [False, True], ids=["default", "4over6"])
-@pytest.mark.parametrize("shared_amax_mode", ["te_generated", "shared_scalar"])
-def test_nvfp4_quantize_matches_te_reference_bitwise(
-    quantize_fn, shape, dtype, init_data, use_4over6, shared_amax_mode, monkeypatch
-):
+def test_nvfp4_quantize_matches_te_reference_bitwise(quantize_fn, shape, dtype, init_data, use_4over6, monkeypatch):
     device = "cuda"
     torch.manual_seed(42)
     if use_4over6:
@@ -231,11 +325,8 @@ def test_nvfp4_quantize_matches_te_reference_bitwise(
         monkeypatch.delenv("NVTE_NVFP4_4OVER6", raising=False)
 
     weight = _make_weight(init_data, dtype, shape, device)
-    shared_global_amax = _shared_scalar_amax(weight, shared_amax_mode)
-    reference_amax = (
-        shared_global_amax if shared_global_amax is not None else torch.max(torch.abs(weight.to(torch.float32)))
-    )
-    qweight, block_scale, global_scale = quantize_fn(weight, shared_global_amax=shared_global_amax)
+    reference_amax = torch.max(torch.abs(weight.to(torch.float32)))
+    qweight, block_scale, global_scale = quantize_fn(weight)
     qweight_ref, block_scale_ref, global_scale_ref = _te_nvfp4_reference(
         weight,
         reference_amax,
@@ -245,6 +336,44 @@ def test_nvfp4_quantize_matches_te_reference_bitwise(
     torch.testing.assert_close(qweight, qweight_ref, rtol=0, atol=0)
     torch.testing.assert_close(block_scale.view(torch.uint8), block_scale_ref.view(torch.uint8), rtol=0, atol=0)
     torch.testing.assert_close(global_scale, global_scale_ref, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=str)
+@pytest.mark.parametrize("use_4over6", [False, True], ids=["default", "4over6"])
+def test_nvfp4_quantize_pair_matches_te_reference_bitwise(dtype, use_4over6, monkeypatch):
+    device = "cuda"
+    torch.manual_seed(42)
+    if use_4over6:
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6", "all")
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", "MSE")
+    else:
+        monkeypatch.delenv("NVTE_NVFP4_4OVER6", raising=False)
+
+    gate = _make_weight("random", dtype, (3, 128), device)
+    up = _make_weight("boundary", dtype, (5, 128), device)
+    (gate_qweight, gate_block_scale, gate_global_scale), (
+        up_qweight,
+        up_block_scale,
+        up_global_scale,
+    ) = nvfp4_quantize_1d_pair(gate, up)
+
+    combined = torch.cat((gate, up), dim=0)
+    qweight_ref, block_scale_ref, global_scale_ref = _te_nvfp4_reference(
+        combined,
+        torch.max(torch.abs(combined.to(torch.float32))),
+        row_scaled_nvfp4=False,
+    )
+
+    torch.testing.assert_close(gate_qweight, qweight_ref[: gate.shape[0]], rtol=0, atol=0)
+    torch.testing.assert_close(up_qweight, qweight_ref[gate.shape[0] :], rtol=0, atol=0)
+    torch.testing.assert_close(
+        gate_block_scale.view(torch.uint8), block_scale_ref[: gate.shape[0]].view(torch.uint8), rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        up_block_scale.view(torch.uint8), block_scale_ref[gate.shape[0] :].view(torch.uint8), rtol=0, atol=0
+    )
+    torch.testing.assert_close(gate_global_scale, global_scale_ref, rtol=0, atol=0)
+    torch.testing.assert_close(up_global_scale, global_scale_ref, rtol=0, atol=0)
 
 
 if __name__ == "__main__":

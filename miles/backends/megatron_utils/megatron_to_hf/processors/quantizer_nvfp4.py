@@ -2,7 +2,7 @@ import re
 
 import torch
 
-from miles.utils.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d
+from miles.utils.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d, nvfp4_quantize_1d_pair
 
 GATED_PAIR_SUFFIXES = {
     ".gate_proj.weight": "gate",
@@ -97,7 +97,6 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
 
 
 def _quantize_moe_params(converted_named_params, ignore_rules):
-    shared_global_amax = {}
     gated_candidates = {}
     for converted_name, param in converted_named_params:
         base, role = _split_gated_pair_name(converted_name)
@@ -110,8 +109,9 @@ def _quantize_moe_params(converted_named_params, ignore_rules):
                     f"NVFP4 requires a single complete gate/up pair per conversion batch; "
                     f"found duplicate {role} tensor for {base}."
                 )
-            roles[role] = param
+            roles[role] = (converted_name, param)
 
+    paired_outputs = {}
     for base, roles in gated_candidates.items():
         if set(roles) != {"gate", "up"}:
             present = ", ".join(sorted(roles))
@@ -119,20 +119,21 @@ def _quantize_moe_params(converted_named_params, ignore_rules):
                 f"NVFP4 requires gate/up tensors to be quantized together so they can share "
                 f"one global amax; found only {{{present}}} for {base}."
             )
-        gate_amax = roles["gate"].abs().max().to(torch.float32)
-        up_amax = roles["up"].abs().max().to(torch.float32)
-        shared_global_amax[base] = torch.max(gate_amax, up_amax)
+        gate_name, gate_weight = roles["gate"]
+        up_name, up_weight = roles["up"]
+        gate_output, up_output = nvfp4_quantize_1d_pair(gate_weight, up_weight)
+        paired_outputs[gate_name] = gate_output
+        paired_outputs[up_name] = up_output
 
     quantize_named_params = []
     for converted_name, param in converted_named_params:
         if not _should_quantize_param(converted_name, param, ignore_rules):
             quantize_named_params.append((converted_name, param))
             continue
-        base, _role = _split_gated_pair_name(converted_name)
-        qweight, block_scale, weight_scale_2 = quantize_nvfp4(
-            param,
-            shared_global_amax=shared_global_amax.get(base) if base else None,
-        )
+        if converted_name in paired_outputs:
+            qweight, block_scale, weight_scale_2 = paired_outputs[converted_name]
+        else:
+            qweight, block_scale, weight_scale_2 = quantize_nvfp4(param)
         quantize_named_params.append((converted_name, qweight))
         quantize_named_params.append((converted_name.replace(".weight", ".weight_scale"), block_scale))
         quantize_named_params.append((converted_name.replace(".weight", ".weight_scale_2"), weight_scale_2))
@@ -166,7 +167,6 @@ def _split_gated_pair_name(name: str):
 
 def _quantize_nvfp4_1d(
     weight: torch.Tensor,
-    shared_global_amax: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     NVFP4 1D quantization (tile shape = 1x16).
@@ -181,21 +181,15 @@ def _quantize_nvfp4_1d(
     if n % NVFP4_GROUP_SIZE != 0:
         raise ValueError(f"NVFP4 requires K divisible by {NVFP4_GROUP_SIZE}, got {n}.")
 
-    if shared_global_amax is not None:
-        shared_global_amax = shared_global_amax.to(device=weight.device, dtype=torch.float32)
-
-    return nvfp4_quantize_1d(weight, shared_global_amax)
+    return nvfp4_quantize_1d(weight)
 
 
 def quantize_nvfp4(
     weight: torch.Tensor,
-    shared_global_amax: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if weight.dim() == 2:
-        return _quantize_nvfp4_1d(weight, shared_global_amax=shared_global_amax)
+        return _quantize_nvfp4_1d(weight)
     if weight.dim() == 3:
-        if shared_global_amax is not None:
-            raise ValueError("shared_global_amax override is only supported for 2D weights.")
         qweights = []
         block_scales = []
         global_scales = []

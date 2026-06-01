@@ -65,13 +65,10 @@ def _pad_rows_for_te_quantizer(weight: torch.Tensor) -> torch.Tensor:
 
 def nvfp4_quantize_1d(
     weight: torch.Tensor,
-    shared_global_amax: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     weight = weight.contiguous()
     num_rows, num_cols = weight.shape
     nvfp4_e4m3_max = nvfp4_weight_e4m3_max()
-    if shared_global_amax is not None and shared_global_amax.numel() != 1:
-        raise ValueError("shared_global_amax must be a scalar tensor.")
 
     quantizer = NVFP4Quantizer(
         rowwise=True,
@@ -88,14 +85,39 @@ def nvfp4_quantize_1d(
         with_random_sign_mask=False,
     )
 
-    quant_input = weight
-    if shared_global_amax is not None:
-        amax_row = torch.zeros((1, num_cols), device=weight.device, dtype=weight.dtype)
-        amax_row[0, 0] = shared_global_amax.to(device=weight.device, dtype=weight.dtype).reshape(())
-        quant_input = torch.cat((quant_input, amax_row), dim=0)
-
-    quantized = quantizer.quantize(_pad_rows_for_te_quantizer(quant_input))
+    quantized = quantizer.quantize(_pad_rows_for_te_quantizer(weight))
     qweight = quantized._rowwise_data[:num_rows, : num_cols // 2].contiguous()
     block_scale = quantized._rowwise_scale_inv[:num_rows, : num_cols // NVFP4_GROUP_SIZE].contiguous()
     amax = quantized._amax_rowwise.reshape(-1)[0]
     return qweight, block_scale.view(torch.float8_e4m3fn), nvfp4_global_decode_scale_te(amax, nvfp4_e4m3_max)
+
+
+def nvfp4_quantize_1d_pair(
+    first: torch.Tensor,
+    second: torch.Tensor,
+) -> tuple[
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+]:
+    if first.dim() != 2 or second.dim() != 2:
+        raise ValueError("nvfp4_quantize_1d_pair expects two 2D tensors.")
+    if first.shape[1] != second.shape[1]:
+        raise ValueError(
+            f"NVFP4 paired quantization requires matching K dimensions, got {first.shape[1]} and {second.shape[1]}."
+        )
+
+    first_rows = first.shape[0]
+    combined_qweight, combined_block_scale, global_scale = nvfp4_quantize_1d(
+        torch.cat((first.contiguous(), second.contiguous()), dim=0)
+    )
+    first_result = (
+        combined_qweight[:first_rows].contiguous(),
+        combined_block_scale[:first_rows].contiguous(),
+        global_scale,
+    )
+    second_result = (
+        combined_qweight[first_rows:].contiguous(),
+        combined_block_scale[first_rows:].contiguous(),
+        global_scale,
+    )
+    return first_result, second_result
