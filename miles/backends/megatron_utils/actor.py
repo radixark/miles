@@ -288,10 +288,15 @@ class MegatronTrainRayActor(TrainRayActor):
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
                 if self.args.allgather_cp and cp_size > 1:
-                    assert max_seqlen % cp_size == 0
+                    assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} must be divisible by cp_size {cp_size}"
                     local_len = max_seqlen // cp_size
                     start = cp_rank * local_len
-                    replay_data = [pad_func(r, max_seqlen - r.size(0))[start : start + local_len] for r in replay_data]
+                    replay_data = [
+                        pad_func(r, max_seqlen - r.size(0))[start : start + local_len]
+                        if max_seqlen > r.size(0)
+                        else r[start : start + local_len]
+                        for r in replay_data
+                    ]
                 else:
                     replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
                 replay_data = torch.stack(replay_data, dim=0)
