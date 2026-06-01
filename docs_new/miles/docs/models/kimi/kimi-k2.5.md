@@ -4,10 +4,6 @@ description: Launch recipe for Kimi-K2.5, running full-parameter GRPO on 32 × 8
 ---
 The reference launcher is [`scripts/run-kimi-k25.sh`](https://github.com/radixark/miles/blob/main/scripts/run-kimi-k25.sh), which sources the shared model definition in `scripts/models/kimi-k2-thinking.sh`.
 
-<Note title="K2.6 status">
-At the time of writing, `radixark/miles@main` ships a K2.5 launcher only; there is no separate K2.6 script or model config yet. K2.6 reuses the K2.5 recipe, so the flags on this page are validated against `scripts/run-kimi-k25.sh` and serve as the K2.6 starting point until a dedicated launcher lands.
-</Note>
-
 ## 1. Model Introduction
 
 [Kimi-K2.5](https://huggingface.co/moonshotai/Kimi-K2.5) is an open-source, natively multimodal agentic model from Moonshot AI. It is built by continual pretraining on roughly 15 T mixed vision and text tokens on top of Kimi-K2-Base, and it pairs a Mixture-of-Experts (MoE) language backbone with a MoonViT vision encoder so a single model handles both image and text inputs. K2.5 keeps the 1 T-total / 32 B-active shape of the K2 family and extends the context window to 256K tokens.
@@ -35,10 +31,6 @@ At the time of writing, `radixark/miles@main` ships a K2.5 launcher only; there 
 - **Native multimodality.** K2.5 is pretrained on both vision and language tokens, so it covers visual knowledge, cross-modal reasoning, and tool use grounded in images alongside text.
 - **Coding with vision.** It generates code from visual specifications such as UI designs and video workflows, and drives tools for visual data processing.
 - **Agent swarm.** It decomposes a complex task into parallel sub-tasks run by dynamically instantiated, domain-specific agents, rather than scaling a single agent.
-
-<Note title="What this recipe trains">
-This page documents the miles RL recipe in [`scripts/run-kimi-k25.sh`](https://github.com/radixark/miles/blob/main/scripts/run-kimi-k25.sh), which exercises the language path of K2.5. The launcher sources the text K2-Thinking model definition (`scripts/models/kimi-k2-thinking.sh`), which builds the MoE backbone above (61 layers, 384 experts, MLA) with no vision-encoder arguments, and it runs full-parameter GRPO on the text math dataset DAPO-Math-17k. The actor trains from an INT4 checkpoint under simulated INT4 QAT while a BF16 checkpoint serves as the reference (see [INT4 QAT](/miles/docs/advanced/int4-qat)). The MoonViT vision stack ships with the released model but is not wired into this launcher.
-</Note>
 
 ## 2. Supported Variants
 
