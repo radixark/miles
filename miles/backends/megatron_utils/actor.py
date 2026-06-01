@@ -111,11 +111,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        print_memory("before initialize_model_and_optimizer")
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
-        print_memory("after initialize_model_and_optimizer")
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -202,7 +200,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
-
         destroy_process_groups()
 
         tag = "default" if is_lora_enabled(self.args) else None
@@ -524,9 +521,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             reload_process_groups()
-
-        if isinstance(num_new_engines, tuple):
-            num_new_engines = num_new_engines[0]
 
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(
