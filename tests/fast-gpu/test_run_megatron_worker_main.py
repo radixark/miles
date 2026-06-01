@@ -14,7 +14,6 @@ register_cuda_ci(
     est_time=30,
     suite="stage-b-2-gpu-h200",
     labels=[],
-    disabled="FIXME: re-enable after worker/main.py stubbing is safe in script-mode CI.",
 )
 
 import argparse
