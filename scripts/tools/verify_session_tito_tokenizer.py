@@ -56,7 +56,7 @@ import sys
 
 from miles.utils.arguments import parse_args
 from miles.utils.test_utils.session_verify_agent import select_schedule
-from miles.utils.test_utils.session_verify_runner import _session_verify_extras, run_session_verify
+from miles.utils.test_utils.session_verify_runner import run_session_verify, session_verify_extras
 
 
 def _print_action_table(allowed_roles: list[str]) -> None:
@@ -83,7 +83,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    args = parse_args(add_custom_arguments=_session_verify_extras)
+    args = parse_args(add_custom_arguments=session_verify_extras)
 
     # Normalize role surface up-front for the printed summary.  ``run_session_verify``
     # also normalizes internally (lowercase + dedup + ensure 'tool'), but doing it

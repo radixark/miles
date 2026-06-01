@@ -69,7 +69,7 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
 }
 
 
-def _session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """``add_custom_arguments`` hook for ``miles.utils.arguments.parse_args``.
 
     Adds the wrapper-only ``--assistant-text-threshold`` knob (a post-process
@@ -181,7 +181,7 @@ def run_session_verify(args: argparse.Namespace) -> None:
     ``args`` MUST be a fully-shaped Namespace carrying miles-canonical field
     names plus the session-verify-specific fields (``session_verify_cycles``,
     ``tool_call_failure_mode``, ``assistant_text_threshold``).  Build it via
-    ``parse_args(add_custom_arguments=_session_verify_extras)`` for the CLI
+    ``parse_args(add_custom_arguments=session_verify_extras)`` for the CLI
     path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
     ``argparse.Namespace(...)`` for tests.
 
