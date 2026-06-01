@@ -155,10 +155,7 @@ def get_batch(
             local_len = max_seqlen // cp_size
             start = parallel_state.cp.rank * local_len
             tokens = [
-                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len]
-                if max_seqlen > t.size(0)
-                else t[start : start + local_len]
-                for t in tokens
+                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len] for t in tokens
             ]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
@@ -260,10 +257,7 @@ def get_batch(
             local_len = max_seqlen // cp_size
             start = parallel_state.cp.rank * local_len
             loss_masks = [
-                F.pad(lm, (0, max_seqlen - lm.size(0)), value=0)[start : start + local_len]
-                if max_seqlen > lm.size(0)
-                else lm[start : start + local_len]
-                for lm in loss_masks
+                F.pad(lm, (0, max_seqlen - lm.size(0)), value=0)[start : start + local_len] for lm in loss_masks
             ]
         loss_masks = torch.stack(loss_masks)
     elif qkv_format == "thd" and allgather_cp:
