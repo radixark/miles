@@ -13,12 +13,7 @@ import torch.nn as nn
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
-from megatron.core.extensions.transformer_engine import (
-    TEColumnParallelLinear,
-    TELinear,
-    TENorm,
-    TERowParallelLinear,
-)
+from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TELinear, TENorm, TERowParallelLinear
 from megatron.core.models.gpt import experimental_attention_variant_module_specs as _eav_specs
 from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
     get_transformer_block_with_experimental_attention_variant_spec,
@@ -102,6 +97,9 @@ class DeepSeekV4Attention(MegatronModule):
 
         self.attn_sink = nn.Parameter(torch.empty(self.n_local_heads, dtype=torch.float32))
         self.attn_sink._keep_fp32 = True
+        self.attn_sink.tensor_model_parallel = True
+        self.attn_sink.partition_dim = 0
+        self.attn_sink.partition_stride = 1
 
         self.wq_a = TELinear(
             self.dim,
@@ -252,9 +250,7 @@ class DeepSeekV4Attention(MegatronModule):
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
         if self.use_fp8_qat:
             kv_vanilla = kv_vanilla.clone()
-            kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(
-                kv_vanilla[..., : self.nope_head_dim], 64
-            )
+            kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(kv_vanilla[..., : self.nope_head_dim], 64)
 
         seqlen_global = seqlen_local * self.cp_size
         q_positions = get_q_positions_for_cp(
