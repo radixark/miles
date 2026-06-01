@@ -1,13 +1,15 @@
 ---
 title: Kimi
-description: Miles recipes for the Moonshot family — Kimi K2 / K2-Thinking (1 T / 32 B-A) and Moonlight 16B-A3B.
+description: Miles recipes for the Moonshot family — Kimi K2.6 / K2.5 (multimodal, 1 T / 32 B-A), Kimi K2 / K2-Thinking, and Moonlight 16B-A3B.
 ---
-Miles supports both ends of Moonshot's MoE line: the 1 T-parameter Kimi K2 (Instruct and Thinking variants) at 32 B active per token, and the compact Moonlight 16B-A3B that fits on a single 8× H100 node — handy as a single-node test target before scaling K2 across 16 nodes. K2-Thinking is also the canonical target for INT4 QAT.
+Miles supports Moonshot's MoE line from top to bottom. The latest Kimi K2.6 and K2.5 are natively multimodal agentic models at 1 T total / 32 B active per token; the text-only Kimi K2 (Instruct and Thinking variants) runs at the same 1 T / 32 B scale; and the compact Moonlight 16B-A3B fits on a single 8× H100 node, a handy single-node test target before scaling K2 across many nodes. K2-Thinking is the canonical INT4 QAT target, and the K2.5 / K2.6 recipe trains an INT4 actor under the same QAT path.
 
 ## Variants
 
 | Model | Active / Total | HF ID | Recipe |
 |---|---|---|---|
+| Kimi-K2.6 | 32 B / 1 T | `moonshotai/Kimi-K2.6` | [kimi-k2.5](/miles/docs/models/kimi/kimi-k2.5) |
+| Kimi-K2.5 | 32 B / 1 T | `moonshotai/Kimi-K2.5` | [kimi-k2.5](/miles/docs/models/kimi/kimi-k2.5) |
 | Kimi-K2-Instruct | 32 B / 1 T | `moonshotai/Kimi-K2-Instruct` | [kimi-k2](/miles/docs/models/kimi/kimi-k2) |
 | Kimi-K2-Thinking | 32 B / 1 T | `moonshotai/Kimi-K2-Thinking` | [kimi-k2](/miles/docs/models/kimi/kimi-k2) |
 | Moonlight-16B-A3B | 3 B / 16 B | `moonshotai/Moonlight-16B-A3B` | [moonlight](/miles/docs/models/kimi/moonlight) |
@@ -26,6 +28,7 @@ See the [Moonlight](/miles/docs/models/kimi/moonlight) page for the full walkthr
 
 ## Which variant do I pick?
 
+- **Latest multimodal agentic model** → Kimi-K2.6 or Kimi-K2.5 ([kimi-k2.5](/miles/docs/models/kimi/kimi-k2.5)).
 - **Single-node MoE smoke test** → Moonlight-16B-A3B ([moonlight](/miles/docs/models/kimi/moonlight)).
 - **Frontier-scale instruction-tuned MoE** → Kimi-K2-Instruct ([kimi-k2](/miles/docs/models/kimi/kimi-k2)).
 - **Reasoning-style training, INT4 QAT target** → Kimi-K2-Thinking ([kimi-k2](/miles/docs/models/kimi/kimi-k2)).
