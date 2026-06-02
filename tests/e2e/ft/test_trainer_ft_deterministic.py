@@ -32,6 +32,7 @@ _DETERMINISTIC_ACTIONS: list[dict] = [
     {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_index": -1},
 ]
 
+
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
