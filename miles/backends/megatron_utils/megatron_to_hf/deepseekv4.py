@@ -2,28 +2,20 @@ import re
 
 import torch
 
-_ATOMIC_UPDATE_GROUP_SUFFIXES = [
-    ((".self_attention.wq_a.weight", ".self_attention.wkv.weight"), "wqkv_a"),
+DEEPSEEKV4_ATOMIC_UPDATE_GROUPS = (
+    ("wqkv_a", (".self_attention.wq_a.weight", ".self_attention.wkv.weight")),
     (
-        (".self_attention.compressor.wkv.weight", ".self_attention.compressor.wgate.weight"),
         "compressor_wkv_gate",
+        (".self_attention.compressor.wkv.weight", ".self_attention.compressor.wgate.weight"),
     ),
     (
+        "indexer_compressor_wkv_gate",
         (
             ".self_attention.indexer.compressor.wkv.weight",
             ".self_attention.indexer.compressor.wgate.weight",
         ),
-        "indexer_compressor_wkv_gate",
     ),
-]
-
-
-def get_deepseekv4_atomic_update_group(name: str) -> tuple[str, int] | None:
-    for suffixes, marker in _ATOMIC_UPDATE_GROUP_SUFFIXES:
-        for suffix in suffixes:
-            if name.endswith(suffix):
-                return name[: -len(suffix)] + ":" + marker, len(suffixes)
-    return None
+)
 
 
 def _apply_ape_hotfix_mirror(param):

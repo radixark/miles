@@ -10,9 +10,9 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
-from ..megatron_to_hf import convert_to_hf, get_atomic_update_group
+from ..megatron_to_hf import convert_to_hf, get_atomic_update_groups
 from ..sglang import monkey_patch_torch_reductions
-from .common import all_gather_params_async, named_params_and_buffers
+from .common import NamedUpdateUnit, all_gather_params_async, get_named_update_units, named_params_and_buffers
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
@@ -120,60 +120,35 @@ def _get_megatron_local_param_info_buckets(
     some rollout loaders must see related tensors in the same load_weights call.
     """
     param_infos = _get_megatron_local_param_infos(args, model)
+    param_names = [info.name for info in param_infos]
+    atomic_update_groups = get_atomic_update_groups(args, model_name)
+    update_units = get_named_update_units(param_names, atomic_update_groups)
+    return _pack_update_units(args, param_infos, update_units)
+
+
+def _get_param_full_size(info: ParamInfo) -> int:
+    if ".experts." in info.name:
+        tp_size = get_parallel_state().etp.size
+    else:
+        tp_size = get_parallel_state().tp.size
+    return info.size * tp_size
+
+
+def _pack_update_units(
+    args: Namespace, param_infos: list[ParamInfo], update_units: list[NamedUpdateUnit]
+) -> list[list[ParamInfo]]:
+    by_name = {info.name: info for info in param_infos}
     param_info_buckets: list[list[ParamInfo]] = [[]]
-    buffer_size = 0  # Track current bucket size in bytes
+    buffer_size = 0
 
-    def _full_size(info: ParamInfo) -> int:
-        # Expert params use expert-TP size, others use regular-TP size
-        if ".experts." in info.name:
-            tp_size = get_parallel_state().etp.size
-        else:
-            tp_size = get_parallel_state().tp.size
-
-        # Full param size = shard size × TP replicas (all-gather will reconstruct full param)
-        return info.size * tp_size
-
-    def _commit_atomic(items: list[ParamInfo], items_size: int):
-        nonlocal buffer_size
-        # If adding this group would exceed the limit AND the current bucket is
-        # non-empty, start a new bucket so the group lands together.
-        if buffer_size + items_size > args.update_weight_buffer_size and len(param_info_buckets[-1]) > 0:
+    for unit in update_units:
+        params = [by_name[name] for name in unit.names]
+        unit_size = sum(_get_param_full_size(param) for param in params)
+        if buffer_size + unit_size > args.update_weight_buffer_size and param_info_buckets[-1]:
             param_info_buckets.append([])
             buffer_size = 0
-        param_info_buckets[-1].extend(items)
-        buffer_size += items_size
-
-    pending_groups: dict[str, tuple[list[ParamInfo], int, int]] = {}
-
-    for info in param_infos:
-        param_size = _full_size(info)
-        group = get_atomic_update_group(model_name, info.name)
-
-        if group is None:
-            _commit_atomic([info], param_size)
-            continue
-
-        key, expected_count = group
-        items, items_size, existing_expected_count = pending_groups.pop(key, ([], 0, expected_count))
-        if existing_expected_count != expected_count:
-            raise RuntimeError(
-                f"Inconsistent atomic update group size for {key}: " f"{existing_expected_count} != {expected_count}"
-            )
-        items.append(info)
-        items_size += param_size
-        if len(items) == expected_count:
-            _commit_atomic(items, items_size)
-        elif len(items) > expected_count:
-            raise RuntimeError(f"Atomic update group {key} has more than {expected_count} params")
-        else:
-            pending_groups[key] = (items, items_size, expected_count)
-
-    if pending_groups:
-        group_names = {
-            key: {"expected_count": expected_count, "params": [item.name for item in items]}
-            for key, (items, _items_size, expected_count) in pending_groups.items()
-        }
-        raise RuntimeError(f"Incomplete atomic update groups: {group_names}")
+        param_info_buckets[-1].extend(params)
+        buffer_size += unit_size
 
     return param_info_buckets
 
