@@ -126,9 +126,11 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
     deadline = time.monotonic() + deadline_s
     while True:
         try:
-            await actor_handle.health_generate.remote(timeout=1.0)
+            ray.get(actor_handle.health_generate.remote(timeout=1.0), timeout=5.0)
         except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
             return
+        except ray.exceptions.GetTimeoutError:
+            pass
         if time.monotonic() >= deadline:
             pytest.fail(f"engine actor still alive {deadline_s}s after stop_cell")
         await asyncio.sleep(poll_interval_s)
