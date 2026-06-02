@@ -1116,6 +1116,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="On-policy distillation KL penalty coefficient. Default is 1.0.",
             )
             parser.add_argument(
+                "--opd-log-prob-top-k",
+                type=int,
+                default=0,
+                help=(
+                    "Number of top-k tokens to use for the re-think OPD token-level reward. "
+                    "Set to 0 to use sampled-token OPD."
+                ),
+            )
+            parser.add_argument(
+                "--opd-top-k-strategy",
+                type=str,
+                choices=["only_stu", "only_tch", "intersection", "union", "union-intersection"],
+                default="only_stu",
+                help="Token set strategy for top-k OPD.",
+            )
+            parser.add_argument(
+                "--opd-reward-weight-mode",
+                type=str,
+                choices=["student_p", "teacher_p", "none"],
+                default="student_p",
+                help="Weighting scheme for top-k OPD token rewards.",
+            )
+            parser.add_argument(
                 "--opd-teacher-load",
                 type=str,
                 default=None,
@@ -2062,6 +2085,10 @@ def miles_validate_args(args):
     if args.use_opd:
         if args.opd_type is None:
             raise ValueError("--opd-type must be specified when --use-opd is enabled. Choose 'sglang' or 'megatron'.")
+        if args.opd_log_prob_top_k < 0:
+            raise ValueError("--opd-log-prob-top-k must be non-negative.")
+        if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
+            raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
 
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:
