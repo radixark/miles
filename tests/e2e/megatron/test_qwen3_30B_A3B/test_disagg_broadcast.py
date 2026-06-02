@@ -16,7 +16,7 @@ CASE = CaseConfig(
     pp_size=2,
     rollout_num_gpus=4,
     update_weight_transfer_mode="broadcast",
-    max_tokens_per_gpu=4096,
+    max_tokens_per_gpu=2048,
 )
 
 
