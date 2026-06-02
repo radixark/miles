@@ -2,7 +2,8 @@
 
 Used by both consumers:
 
-- pytest e2e: ``tests/e2e/sglang/test_session_server_multi_role.py``
+- pytest e2e: ``tests/e2e/sglang/test_session_server_multi_role/`` (one test
+  file per model family)
 - CLI: ``scripts/tools/verify_session_tito_tokenizer.py``
 
 Both forms run the same ``execute_train(--debug-rollout-only)`` path: full miles
@@ -98,13 +99,15 @@ def build_train_args(
     from ``args.tito_allowed_append_roles`` to pick a schedule.
 
     Rollout batching: ``--rollout-batch-size 16`` × ``--n-samples-per-prompt`` ×
-    ``--num-rollout 1`` = ``--global-batch-size 64``.  The single placeholder
+    ``--num-rollout 1`` = ``--global-batch-size``.  The single placeholder
     prompt is cycled inside the batch — that's the path miles' rollout layer
     actually parallelizes on, so leave it at 16 even though the prompt-data
     file is single-record.  Setting batch-size=1 with a multi-sample n triggers
     unexpected agent re-invocation in the rollout loop.
     """
     allowed_roles_arg = " ".join(allowed_append_roles)
+    rollout_batch_size = 16
+    global_batch_size = rollout_batch_size * n_samples_per_prompt
 
     ckpt_args = f"--hf-checkpoint {local_model_dir} "
 
@@ -112,11 +115,11 @@ def build_train_args(
         f"--prompt-data {PROMPT_DATA_PATH} "
         "--input-key messages "
         "--num-rollout 1 "
-        "--rollout-batch-size 16 "
+        f"--rollout-batch-size {rollout_batch_size} "
         f"--n-samples-per-prompt {n_samples_per_prompt} "
         f"--rollout-max-response-len {rollout_max_response_len} "
         "--rollout-temperature 0.7 "
-        "--global-batch-size 64 "
+        f"--global-batch-size {global_batch_size} "
     )
 
     generate_args = (
