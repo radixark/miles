@@ -16,6 +16,7 @@ class CaseConfig:
     pp_size: int
     tp_size: int = None
     ep_size: int = None
+    sglang_ep_size: int = None
     use_deepep: bool = False
     use_fp8_rollout: bool = False
     use_int4_rollout: bool = False
@@ -28,6 +29,8 @@ class CaseConfig:
             self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
         if self.ep_size is None:
             self.ep_size = self.num_gpus_per_node // self.pp_size
+        if self.sglang_ep_size is None and self.use_deepep:
+            self.sglang_ep_size = self.num_gpus_per_node
 
 
 def prepare(case: CaseConfig) -> None:
@@ -121,7 +124,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 4 "
+        f"--rollout-num-gpus-per-engine {case.num_gpus_per_node} "
         "--sglang-mem-fraction-static 0.7 "
         # EAGLE speculative decoding (MTP)
         "--sglang-speculative-algorithm EAGLE "
@@ -132,6 +135,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+    if case.sglang_ep_size is not None:
+        sglang_args += f"--sglang-expert-parallel-size {case.sglang_ep_size} "
 
     mtp_args = "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
 
