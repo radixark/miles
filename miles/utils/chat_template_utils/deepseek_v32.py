@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import logging
@@ -7,6 +8,7 @@ import os
 from typing import Any
 
 from sglang.srt.entrypoints.openai import encoding_dsv32
+from sglang.srt.entrypoints.openai.protocol import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +62,27 @@ def _build_deepseek_encode_config(kwargs: dict) -> dict:
     return cfg
 
 
+def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put *tools* in the system message, where ``encode_messages`` reads them.
+
+    The encoder serializes each tool dict verbatim into ``<functions>``, so they
+    must round-trip through ``Tool.model_dump()`` (fills defaults / orders fields)
+    or the token ids drift from what sglang serves.
+    """
+    out = copy.deepcopy(messages)
+    if not out or out[0].get("role") != "system":
+        out.insert(0, {"role": "system", "content": ""})
+    out[0]["tools"] = [Tool.model_validate(t).model_dump() for t in tools]
+    return out
+
+
 def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None = None, **kwargs: Any) -> str:
     """Render *messages* into a DeepSeek V3.2 prompt via sglang ``encode_messages``.
 
-    Assume input messages tool_call ``arguments`` are already JSON strings.
+    Tool_call ``arguments`` must already be JSON strings; *tools*, if given, are
+    injected into the system message (see ``_inject_tools_into_system``).
     """
-    if tools:
-        raise ValueError(
-            "DeepSeek V3.2 chat template does not support tools def in apply chat template, plz inject it in system message."
-        )
     encode_config = _build_deepseek_encode_config(kwargs)
+    if tools:
+        messages = _inject_tools_into_system(messages, tools)
     return encoding_dsv32.encode_messages(messages, **encode_config)
