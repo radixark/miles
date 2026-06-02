@@ -26,8 +26,12 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import tempfile
 from typing import Any
+
+import miles.utils.external_utils.command_utils as U
+from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +112,6 @@ def _ensure_model_downloaded(hf_checkpoint: str) -> str:
     ``/root/models/<short-name>``) or an existing local checkpoint path
     (returned as-is, no download).
     """
-    import miles.utils.external_utils.command_utils as U
-
     if os.path.exists(hf_checkpoint):
         return hf_checkpoint
 
@@ -197,9 +199,6 @@ def run_session_verify(args: argparse.Namespace) -> None:
       ensure ``'tool'`` is in) to match the schedule contract in
       ``session_verify_agent._SUPPORTED_ROLE_SURFACES``.
     """
-    import miles.utils.external_utils.command_utils as U
-    from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
-
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
@@ -232,8 +231,6 @@ def run_session_verify(args: argparse.Namespace) -> None:
         try:
             assert_session_verify_metrics(metrics_path, assistant_text_threshold=args.assistant_text_threshold)
         except AssertionError:
-            import shutil
-
             preserved_metrics_path = metrics_path + ".failed"
             shutil.copy(metrics_path, preserved_metrics_path)
             logger.error("Preserved per-sample mismatch payloads at %s for post-mortem", preserved_metrics_path)
