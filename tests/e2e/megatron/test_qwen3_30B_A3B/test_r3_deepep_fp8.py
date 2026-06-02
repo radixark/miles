@@ -7,7 +7,7 @@ from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, p
 register_cuda_ci(
     est_time=1800,
     suite="stage-c-4-gpu-h200",
-    labels=["megatron"],
+    labels=["megatron", "replay"],
     disabled="Failed due to mismatch between fp8 rollout and bf16 training.",
 )
 

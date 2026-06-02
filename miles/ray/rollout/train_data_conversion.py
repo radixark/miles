@@ -70,6 +70,9 @@ def convert_samples_to_train_data(
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
 
+    if samples[0].rollout_indexer_topk is not None:
+        train_data["rollout_indexer_topk"] = [sample.rollout_indexer_topk for sample in samples]
+
     if samples[0].train_metadata is not None:
         train_data["metadata"] = [sample.train_metadata for sample in samples]
 
@@ -147,6 +150,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "sample_indices",
             "rollout_log_probs",
             "rollout_routed_experts",
+            "rollout_indexer_topk",
             "prompt",
             "teacher_log_probs",
             "weight_versions",
