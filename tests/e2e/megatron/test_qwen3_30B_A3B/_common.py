@@ -16,20 +16,48 @@ class CaseConfig:
     pp_size: int
     tp_size: int = None
     ep_size: int = None
+    sglang_ep_size: int = None
+    sglang_dp_size: int = None
+    sglang_enable_dp_attention: bool = False
     use_deepep: bool = False
     use_fp8_rollout: bool = False
     use_int4_rollout: bool = False
     use_bridge: bool = False
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
+    colocate: bool = True
     rollout_num_gpus: int = None
+    rollout_num_gpus_per_engine: int = None
     update_weight_transfer_mode: str = None
 
     def __post_init__(self):
+        if self.num_gpus_per_node % (self.cp_size * self.pp_size) != 0:
+            raise ValueError(
+                "num_gpus_per_node must be divisible by cp_size * pp_size: "
+                f"{self.num_gpus_per_node=} {self.cp_size=} {self.pp_size=}"
+            )
         if self.tp_size is None:
             self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
         if self.ep_size is None:
             self.ep_size = self.num_gpus_per_node // self.pp_size
+        # Align with arguments.py: colocated rollout reuses the actor GPU pool, so
+        # rollout_num_gpus resolves to num_gpus_per_node; disaggregated rollout keeps
+        # its own standalone rollout_num_gpus.
+        if self.colocate:
+            self.rollout_num_gpus = self.num_gpus_per_node
+        elif self.rollout_num_gpus is None:
+            raise ValueError("rollout_num_gpus must be set when colocate is False")
+        # EP spans the whole rollout pool so MoE experts shard across it, while
+        # attention stays DP within each engine (rollout_num_gpus_per_engine).
+        if self.rollout_num_gpus_per_engine is None:
+            self.rollout_num_gpus_per_engine = 1 if self.use_int4_rollout else self.rollout_num_gpus
+        if self.sglang_ep_size is None and self.use_deepep:
+            self.sglang_ep_size = self.rollout_num_gpus
+        if self.rollout_num_gpus % self.rollout_num_gpus_per_engine != 0:
+            raise ValueError(
+                "rollout_num_gpus must be divisible by rollout_num_gpus_per_engine: "
+                f"{self.rollout_num_gpus=} {self.rollout_num_gpus_per_engine=}"
+            )
         if self.update_weight_transfer_mode is not None:
             assert self.update_weight_transfer_mode == "broadcast"
 
@@ -147,20 +175,21 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--use-precision-aware-optimizer "
     )
 
-    if case.use_int4_rollout:
-        sglang_args = (
-            "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.8 " "--sglang-cuda-graph-max-bs 512 "
-        )
-    else:
-        sglang_args = (
-            "--rollout-num-gpus-per-engine 4 "
-            "--sglang-mem-fraction-static 0.7 "
-            "--sglang-max-running-requests 512 "
-            "--sglang-enable-metrics "
-        )
+    sglang_args = (
+        f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
+        "--sglang-mem-fraction-static 0.7 "
+        "--sglang-max-running-requests 512 "
+        "--sglang-enable-metrics "
+    )
 
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+    if case.sglang_ep_size is not None:
+        sglang_args += f"--sglang-expert-parallel-size {case.sglang_ep_size} "
+    if case.sglang_dp_size is not None:
+        sglang_args += f"--sglang-data-parallel-size {case.sglang_dp_size} "
+    if case.sglang_enable_dp_attention:
+        sglang_args += "--sglang-enable-dp-attention "
 
     ci_args = "--ci-test "
 
@@ -173,7 +202,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
     )
-    if case.rollout_num_gpus is None:
+    if case.colocate:
         misc_args += "--colocate "
     else:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
@@ -217,7 +246,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=case.num_gpus_per_node + (case.rollout_num_gpus or 0),
+        num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
         extra_env_vars=extra_env_vars,
     )

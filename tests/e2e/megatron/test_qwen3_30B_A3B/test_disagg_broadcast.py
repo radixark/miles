@@ -11,10 +11,12 @@ CASE = CaseConfig(
     use_int4_rollout=False,
     use_bridge=False,
     use_r3=False,
-    num_gpus_per_node=4,
+    num_gpus_per_node=6,
     cp_size=2,
-    pp_size=2,
-    rollout_num_gpus=4,
+    pp_size=3,
+    colocate=False,
+    rollout_num_gpus=2,
+    rollout_num_gpus_per_engine=2,
     update_weight_transfer_mode="broadcast",
 )
 
