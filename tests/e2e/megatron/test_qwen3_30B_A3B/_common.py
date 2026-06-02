@@ -22,12 +22,16 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
+    rollout_num_gpus: int = None
+    update_weight_transfer_mode: str = None
 
     def __post_init__(self):
         if self.tp_size is None:
             self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
         if self.ep_size is None:
             self.ep_size = self.num_gpus_per_node // self.pp_size
+        if self.update_weight_transfer_mode is not None:
+            assert self.update_weight_transfer_mode == "broadcast"
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
@@ -168,8 +172,15 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
-        "--colocate "
     )
+    if case.rollout_num_gpus is None:
+        misc_args += "--colocate "
+    else:
+        misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
+
+    if case.update_weight_transfer_mode is not None:
+        misc_args += "--check-weight-update-equal "
+        misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
 
     if case.use_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
@@ -206,7 +217,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=case.num_gpus_per_node,
+        num_gpus_per_node=case.num_gpus_per_node + (case.rollout_num_gpus or 0),
         megatron_model_type=MODEL_TYPE,
         extra_env_vars=extra_env_vars,
     )
