@@ -3,6 +3,7 @@ import random
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
+from typing import TYPE_CHECKING
 
 import ray
 import torch
@@ -41,6 +42,9 @@ from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_manager import EnginesAndLock
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -185,10 +189,10 @@ class MegatronTrainRayActor(TrainRayActor):
         self.rollout_engines = None
 
         self.rollout_data_postprocess = None
-        if self.args.rollout_data_postprocess_path is not None:
+        if (x := self.args.rollout_data_postprocess_path) is not None:
             from miles.utils.misc import load_function
 
-            self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
+            self.rollout_data_postprocess = load_function(x)
 
         self.prof.on_init_end()
 
@@ -283,19 +287,35 @@ class MegatronTrainRayActor(TrainRayActor):
             replay_data = [pad_func(r, 1) for r in replay_data]
             # TODO: maybe extract a common process function for here and get_batch?
 
+            cp_size = parallel_state.cp.size
+            cp_rank = parallel_state.cp.rank
             if qkv_format == "bshd":
                 max_seqlen = batch["max_seq_lens"][0]
-                replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
+                if self.args.allgather_cp and cp_size > 1:
+                    assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} must be divisible by cp_size {cp_size}"
+                    local_len = max_seqlen // cp_size
+                    start = cp_rank * local_len
+                    replay_data = [pad_func(r, max_seqlen - r.size(0))[start : start + local_len] for r in replay_data]
+                else:
+                    replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
                 replay_data = torch.stack(replay_data, dim=0)
                 batch_size, seqlen, num_layers, topk = replay_data.shape
                 replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
             else:
-                replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
-                replay_data = torch.cat(replay_data, dim=0)
                 pad_size = parallel_state.tp.size * self.args.data_pad_size_multiplier
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
+                if self.args.allgather_cp and cp_size > 1:
+                    replay_data = torch.cat(replay_data, dim=0)
+                    global_pad_size = cp_size * pad_size
+                    pad = (global_pad_size - replay_data.size(0) % global_pad_size) % global_pad_size
+                    if pad != 0:
+                        replay_data = pad_func(replay_data, pad)
+                    replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
+                else:
+                    replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
+                    replay_data = torch.cat(replay_data, dim=0)
+                    pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
+                    if pad != 0:
+                        replay_data = pad_func(replay_data, pad)
 
             if self.args.sequence_parallel and if_sp_region:
                 seqlen = replay_data.size(0)
@@ -506,23 +526,21 @@ class MegatronTrainRayActor(TrainRayActor):
             destroy_process_groups()
 
     @timer
-    def update_weights(self) -> None:
+    def update_weights(self, info: "EnginesAndLock") -> None:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if self.args.use_fault_tolerance:
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.recover_updatable_engines.remote())
-            dist.barrier(group=get_gloo_group())
-
-        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
-        )
+        rollout_engines = info.rollout_engines
+        rollout_engine_lock = info.rollout_engine_lock
+        has_new_engines = info.has_new_engines
+        engine_gpu_counts = info.engine_gpu_counts
+        engine_gpu_offsets = info.engine_gpu_offsets
+        del info
 
         if self.args.offload_train:
             reload_process_groups()
 
-        if num_new_engines > 0:
+        if has_new_engines:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
@@ -531,7 +549,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:

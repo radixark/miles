@@ -15,8 +15,6 @@ import torch
 import torch.nn.functional as F
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
-from torch import Tensor
-
 from tile_kernels.modeling.mhc.ops import (
     mhc_head_compute_mix,
     mhc_post,
@@ -26,6 +24,7 @@ from tile_kernels.modeling.mhc.ops import (
     mhc_pre_split_mixes,
     sinkhorn_normalize,
 )
+from torch import Tensor
 
 # DeepSeek V4 originally used post = 2 * sigmoid(...) for the post-layer mix
 # (see the legacy ``hc_split_sinkhorn`` kernel). TileKernels lets us pass the

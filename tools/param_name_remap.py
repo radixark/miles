@@ -1,5 +1,5 @@
 import json
-from typing import Callable
+from collections.abc import Callable
 
 
 def _is_deepseek_v4_native(config_path: str, weight_map: dict) -> bool:

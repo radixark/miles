@@ -445,7 +445,7 @@ def _train(args: ScriptArgs):
     if sglang_a2a_backend:
         sglang_args += f"--sglang-moe-a2a-backend {sglang_a2a_backend} " "--sglang-cuda-graph-max-bs 8 "
     if sglang_a2a_backend and args.enable_mtp:
-        assert False, "MTP rollout is not supported yet"
+        raise AssertionError("MTP rollout is not supported yet")
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
             "--sglang-speculative-num-steps 3 "

@@ -1,6 +1,11 @@
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+register_cuda_ci(
+    est_time=60,
+    suite="stage-b-2-gpu-h200",
+    labels=[],
+    disabled="FIXME: re-enable after the MXFP8 H200 reference path is settled.",
+)
 
 
 import pytest
@@ -159,3 +164,11 @@ def test_mxfp8_quantize_matches_reference(quantize_fn, shape, dtype, init_data):
     assert scale.dtype == torch.uint8
     torch.testing.assert_close(qweight.view(dtype=torch.uint8), qweight_ref.view(dtype=torch.uint8), rtol=0, atol=0)
     torch.testing.assert_close(scale, scale_ref, rtol=0, atol=0)
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

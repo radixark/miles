@@ -19,7 +19,7 @@ def fp8_simulate(x: torch.Tensor, block_size: int):
     y_flat = y.view(-1, N)
     scale_flat = scale.reshape(y_flat.size(0), N // block_size).contiguous()
 
-    out_flat = per_token_cast_back((y_flat, scale_flat), 'bf16' if x.dtype == torch.bfloat16 else 'fp32', block_size)
+    out_flat = per_token_cast_back((y_flat, scale_flat), "bf16" if x.dtype == torch.bfloat16 else "fp32", block_size)
     return out_flat.view_as(x_c).to(x.dtype)
 
 

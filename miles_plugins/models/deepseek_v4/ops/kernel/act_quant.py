@@ -7,18 +7,15 @@ when DeepSeek updates the reference implementation.
 Source: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/kernel.py
 """
 
-import torch
 import tilelang
 import tilelang.language as T
-from typing import Tuple, Optional
+import torch
 
 # Hardware-aware UE8M0 selection: matches SGLang's DEEPGEMM_SCALE_UE8M0
 # (true only on Blackwell + JIT DeepGEMM enabled). Hopper (H100/H200) falls
 # back to fp32 scales, which is also DeepSeek's official default.
 try:
-    from miles.backends.megatron_utils.sglang import (
-        should_deepgemm_weight_requant_ue8m0,
-    )
+    from miles.backends.megatron_utils.sglang import should_deepgemm_weight_requant_ue8m0
 except ImportError:
     should_deepgemm_weight_requant_ue8m0 = None
 
@@ -58,8 +55,7 @@ def fast_round_scale(amax, fp8_max_inv):
 
 @tilelang.jit(pass_configs=pass_configs)
 def act_quant_kernel(
-    N, block_size=128, in_dtype=BF16, out_dtype=FP8, scale_dtype=FP32,
-    round_scale=False, inplace=False
+    N, block_size=128, in_dtype=BF16, out_dtype=FP8, scale_dtype=FP32, round_scale=False, inplace=False
 ):
     """Block-wise FP8 quantization. inplace=True does fused quant+dequant back to BF16."""
     M = T.symbolic("M")
@@ -104,15 +100,14 @@ def act_quant_kernel(
                     for i, j in T.Parallel(blk_m, group_size):
                         y_local[i, j] = T.Cast(
                             out_dtype,
-                            T.Cast(compute_dtype, T.Cast(out_dtype, T.clamp(
-                                x_local[i, j] / s_local[i], fp8_min, fp8_max
-                            ))) * s_local[i],
+                            T.Cast(
+                                compute_dtype, T.Cast(out_dtype, T.clamp(x_local[i, j] / s_local[i], fp8_min, fp8_max))
+                            )
+                            * s_local[i],
                         )
                 else:
                     for i, j in T.Parallel(blk_m, group_size):
-                        y_local[i, j] = T.clamp(
-                            x_local[i, j] / s_local[i], fp8_min, fp8_max
-                        )
+                        y_local[i, j] = T.clamp(x_local[i, j] / s_local[i], fp8_min, fp8_max)
                 for i in T.Parallel(blk_m):
                     S[pid_m * blk_m + i, pid_n] = T.Cast(scale_dtype, s_local[i])
                 T.copy(y_local, y_shared)
@@ -121,7 +116,7 @@ def act_quant_kernel(
     return act_quant_kernel_
 
 
-def _resolve_scale_dtype(scale_fmt: Optional[str], block_size: int) -> torch.dtype:
+def _resolve_scale_dtype(scale_fmt: str | None, block_size: int) -> torch.dtype:
     """Pick scale dtype consistent with the SGLang runtime:
     - UE8M0 (``torch.float8_e8m0fnu``) on Blackwell when DeepGEMM JIT is on.
     - FP32 elsewhere (Hopper, no DeepGEMM, sglang absent) — DeepSeek default.
@@ -131,15 +126,16 @@ def _resolve_scale_dtype(scale_fmt: Optional[str], block_size: int) -> torch.dty
     if scale_fmt is None or should_deepgemm_weight_requant_ue8m0 is None:
         return torch.float32
     return (
-        torch.float8_e8m0fnu
-        if should_deepgemm_weight_requant_ue8m0(weight_block_size=block_size)
-        else torch.float32
+        torch.float8_e8m0fnu if should_deepgemm_weight_requant_ue8m0(weight_block_size=block_size) else torch.float32
     )
 
 
 def act_quant(
-    x: torch.Tensor, block_size: int = 128, scale_fmt: Optional[str] = None,
-    scale_dtype: Optional[torch.dtype] = None, inplace: bool = False,
+    x: torch.Tensor,
+    block_size: int = 128,
+    scale_fmt: str | None = None,
+    scale_dtype: torch.dtype | None = None,
+    inplace: bool = False,
 ) -> torch.Tensor:
     """Block-wise FP8 quantization. inplace=True does fused quant+dequant back to BF16.
     When scale_fmt is set, scales are rounded to power-of-2 (MXFP).
@@ -157,8 +153,11 @@ def act_quant(
     y = torch.empty_like(z) if inplace else torch.empty_like(z, dtype=torch.float8_e4m3fn)
     s = z.new_empty(*z.size()[:-1], N // block_size, dtype=scale_dtype)
     kernel = act_quant_kernel(
-        N, block_size, scale_dtype=tl_dtype,
-        round_scale=scale_fmt is not None, inplace=inplace,
+        N,
+        block_size,
+        scale_dtype=tl_dtype,
+        round_scale=scale_fmt is not None,
+        inplace=inplace,
     )
     kernel(z.view(-1, N), y.view(-1, N), s.view(-1, N // block_size))
     if inplace:

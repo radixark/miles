@@ -110,6 +110,7 @@ def _quantize_param(args, name, weight, weight_block_size):
         if _get_scale_format(args, name, weight_block_size) == "ue8m0":
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
+        # TODO: this [128, 128] is hacky. need improve
         elif per_block_cast_to_fp8 is not None and list(weight_block_size) == [128, 128]:
             qweight, scale = per_block_cast_to_fp8(weight)
         else:
@@ -132,6 +133,7 @@ def _get_scale_format(args, name, weight_block_size):
         return None  # use default fp32 scale format
 
     if ".experts." not in name:
+        # Non-MoE linear weights: ue8m0 when deepgemm is enabled
         return "ue8m0"
 
     # MoE expert weights: only ue8m0 when runner is deep_gemm
