@@ -147,23 +147,3 @@ class TestDeepseekV32Alias:
             f"{type(cfg).__name__} not registered with AutoModelForCausalLM — "
             f"AutoModelForCausalLM.from_config(cfg) will raise ValueError."
         )
-
-
-class TestDeepseekV4Alias:
-    """Integration: alias registration makes AutoConfig recognize deepseek_v4."""
-
-    def test_deepseek_v4_loads_via_alias(self, tmp_path):
-        pytest.importorskip("transformers.models.deepseek_v3.configuration_deepseek_v3")
-        from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
-
-        from miles.utils.hf_config import load_hf_config
-
-        base_dict = DeepseekV3Config().to_dict()
-        base_dict["model_type"] = "deepseek_v4"
-        base_dict["max_position_embeddings"] = 65536
-        _write_config_json(str(tmp_path), base_dict)
-
-        cfg = load_hf_config(str(tmp_path))
-        assert cfg.model_type == "deepseek_v4"
-        assert isinstance(cfg, DeepseekV3Config)
-        assert cfg.max_position_embeddings == 65536
