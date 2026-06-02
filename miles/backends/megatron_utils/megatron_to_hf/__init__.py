@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
@@ -13,9 +9,6 @@ from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
-
-if TYPE_CHECKING:
-    from ..update_weight.common import AtomicUpdateGroup
 
 
 # TODO unify w/ `convert_to_hf`
@@ -32,27 +25,6 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
     converted_named_tensors = _convert_to_hf_core(args, model_name, name, param)
 
     return quantize_params(args, name, converted_named_tensors, quantization_config)
-
-
-def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
-    return _get_q_lora_atomic_update_groups(args)
-
-
-def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
-    if args.q_lora_rank is None:
-        return []
-
-    from ..update_weight.common import AtomicUpdateGroup
-
-    return [
-        AtomicUpdateGroup(
-            key="q_lora_a_proj",
-            suffixes=(
-                ".self_attention.linear_q_down_proj.weight",
-                ".self_attention.linear_kv_down_proj.weight",
-            ),
-        )
-    ]
 
 
 # TODO optimize code details

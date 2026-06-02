@@ -10,9 +10,15 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
-from ..megatron_to_hf import convert_to_hf, get_atomic_update_groups
+from ..megatron_to_hf import convert_to_hf
 from ..sglang import monkey_patch_torch_reductions
-from .common import NamedUpdateUnit, all_gather_params_async, get_named_update_units, named_params_and_buffers
+from .common import (
+    NamedUpdateUnit,
+    all_gather_params_async,
+    get_atomic_update_groups,
+    get_named_update_units,
+    named_params_and_buffers,
+)
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 

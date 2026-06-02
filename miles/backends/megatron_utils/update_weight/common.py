@@ -24,6 +24,25 @@ class AtomicUpdateGroup:
     suffixes: tuple[str, ...]
 
 
+def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
+    return _get_q_lora_atomic_update_groups(args)
+
+
+def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
+    if args.q_lora_rank is None:
+        return []
+
+    return [
+        AtomicUpdateGroup(
+            key="q_lora_a_proj",
+            suffixes=(
+                ".self_attention.linear_q_down_proj.weight",
+                ".self_attention.linear_kv_down_proj.weight",
+            ),
+        )
+    ]
+
+
 @dataclasses.dataclass(frozen=True)
 class NamedUpdateUnit:
     """A set of params that must be transferred and packed together."""
