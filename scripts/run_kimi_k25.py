@@ -58,7 +58,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "kimi-k2-thinking"
     num_gpus_per_node: int = 8
     enable_eval: bool = False
-    num_rollout: int = 20
+    num_rollout: int = 3000
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
