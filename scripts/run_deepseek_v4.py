@@ -153,13 +153,13 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
-    """Download HF checkpoint + task dataset. Idempotent: huggingface-cli skips existing blobs."""
+    """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
     if args.hf_checkpoint is None:
         dest = f"{args.model_dir}/{args.model_name}"
-        U.exec_command(f"huggingface-cli download {args.model_org}/{args.model_name} " f"--local-dir {dest}")
+        U.exec_command(f"hf download {args.model_org}/{args.model_name} " f"--local-dir {dest}")
     _ensure_4layer_model_type(args)
     _download_dataset(args)
 
