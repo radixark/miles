@@ -108,8 +108,11 @@ def _compute_hash_dict(tensors: dict[str, torch.Tensor]):
 
 def _compute_hash_tensor(x: torch.Tensor):
     # Not a real/good hash, but pretty fast
-    x = x.contiguous()
-    x = x.view(-1)
-    x = x.view(torch.uint32)
-    x = x.sum()
+    x = x.contiguous().view(-1).view(torch.uint8)
+
+    alignment = 4
+    if (remainder := (x.numel() % alignment)) != 0:
+        x = torch.nn.functional.pad(x, (0, alignment - remainder))
+
+    x = x.view(torch.uint32).sum()
     return x.item()
