@@ -1,7 +1,24 @@
 import torch
 
-from .tilelang_indexer_bwd import indexer_bwd_interface
-from .tilelang_indexer_fwd import indexer_fwd_interface
+# Lazy-load the tilelang GPU kernels so they don't blow up at import time on
+# NPU-only environments — the tilelang DSL on the Ascend mlir-ascend backend
+# lacks several Python-side attributes that the GPU kernel files reference at
+# module scope (e.g. T.bfloat16, tilelang.PassConfigKey). On NPU these
+# interfaces dispatch via `q.is_npu` to the NPU implementations in `_npu/`.
+def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
+    if hasattr(q, "is_npu") and q.is_npu:
+        from ._npu.indexer import npu_indexer_fwd_interface
+        return npu_indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=clean_logits)
+    from .tilelang_indexer_fwd import indexer_fwd_interface as _gpu
+    return _gpu(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=clean_logits)
+
+
+def indexer_bwd_interface(index_q, weights, index_k, topk_indices, grad_scores):
+    if hasattr(index_q, "is_npu") and index_q.is_npu:
+        from ._npu.indexer import npu_indexer_bwd_interface
+        return npu_indexer_bwd_interface(index_q, weights, index_k, topk_indices, grad_scores)
+    from .tilelang_indexer_bwd import indexer_bwd_interface as _gpu
+    return _gpu(index_q, weights, index_k, topk_indices, grad_scores)
 
 
 def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):

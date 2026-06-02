@@ -119,6 +119,9 @@ def clean_logits_(
 
 
 def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
+    if hasattr(q, "is_npu") and q.is_npu:
+        from ._npu.indexer import npu_indexer_fwd_interface
+        return npu_indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=clean_logits)
     seq_len, heads, index_dim = q.shape
     seq_len_kv = kv.shape[0]
 

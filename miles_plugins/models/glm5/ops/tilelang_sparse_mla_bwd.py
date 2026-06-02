@@ -269,6 +269,13 @@ def bwd(
 
 
 def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None, is_casual=True, return_kernel=False, delta=None):
+    if hasattr(q, "is_npu") and q.is_npu:
+        from ._npu.sparse_mla import npu_sparse_mla_bwd
+        return npu_sparse_mla_bwd(
+            q, kv, o, do, indices, lse,
+            sm_scale=sm_scale, is_casual=is_casual,
+            return_kernel=return_kernel, delta=delta,
+        )
     q = q.unsqueeze(0)
     kv = kv.unsqueeze(0)
     o = o.unsqueeze(0)

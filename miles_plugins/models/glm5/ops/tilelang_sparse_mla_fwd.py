@@ -172,6 +172,13 @@ def sparse_mla_fwd(
 def sparse_mla_fwd_interface(
     q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512, block_I=64, num_stages=2, threads=256
 ):
+    if hasattr(q, "is_npu") and q.is_npu:
+        from ._npu.sparse_mla import npu_sparse_mla_fwd_interface
+        return npu_sparse_mla_fwd_interface(
+            q, kv, indices,
+            sm_scale=sm_scale, return_p_sum=return_p_sum, d_v=d_v,
+            block_I=block_I, num_stages=num_stages, threads=threads,
+        )
     q = q.unsqueeze(0)
     kv = kv.unsqueeze(0)
     indices = indices.unsqueeze(0)
