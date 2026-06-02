@@ -2,10 +2,10 @@ import re
 
 import torch
 
+from ..update_weight.common import AtomicUpdateGroup
+
 
 def get_deepseek_v4_atomic_update_groups():
-    from . import AtomicUpdateGroup
-
     return [
         AtomicUpdateGroup(key, suffixes)
         for key, suffixes in [

@@ -1,5 +1,4 @@
-from dataclasses import dataclass
-
+from ..update_weight.common import AtomicUpdateGroup
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf, get_deepseek_v4_atomic_update_groups
 from .glm4 import convert_glm4_to_hf
@@ -12,12 +11,6 @@ from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
-
-
-@dataclass(frozen=True)
-class AtomicUpdateGroup:
-    key: str
-    suffixes: tuple[str, ...]
 
 
 # TODO unify w/ `convert_to_hf`
