@@ -31,13 +31,13 @@ from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_d
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from ..training_utils.parallel import get_parallel_state
-from ..training_utils.replay_data import fill_replay_data
+from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import _register_replay_list_moe
+from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
@@ -63,7 +63,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         super().init(args, role, with_ref)
 
-        routing_replay_manager.register_replay_list_func = _register_replay_list_moe
+        for m in all_replay_managers:
+            m.register_replay_list_func = register_replay_list_sequential
+        routing_replay_manager.register_replay_list_func = register_replay_list_moe
 
         init(args)
 
@@ -114,10 +116,10 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
         else:
             for m in all_replay_managers:
-                m.enabled = getattr(self.args, f"use_{m.name}_replay")
+                m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+        self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
             args, role
         )
 
@@ -307,7 +309,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     def _use_rollout_replay(self, m) -> bool:
-        return getattr(self.args, f"use_rollout_{m.name}_replay")
+        return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
         # Create data iterator for log_probs and train.
@@ -325,6 +327,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     replay_list=m.replays,
                     register_replay_list_func=m.register_replay_list_func,
                     if_sp_region=m.if_sp_region,
+                    indices_are_token_positions=m.replay_indices_are_token_positions,
                 )
 
         with inverse_timer("train_wait"), timer("train"):

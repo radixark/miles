@@ -162,6 +162,65 @@ def test_thinking_mode_changes_output():
 
 
 # ---------------------------------------------------------------------------
+# Tool injection (sglang-aligned: tools go into the system <functions> block)
+# ---------------------------------------------------------------------------
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+        },
+    }
+]
+
+
+def test_render_with_tools_injects_into_system_functions_block():
+    # tools= is accepted (not rejected) and rendered into the system <functions> block.
+    out = deepseek_v32.render_messages([{"role": "user", "content": "hi"}], tools=_TOOLS, thinking_mode="chat")
+    assert "<functions>" in out
+    assert "get_weather" in out
+
+
+def test_render_with_tools_matches_manual_system_injection():
+    # Passing tools= must equal pre-canonicalizing them into the system message and
+    # passing tools=None — i.e. the injection is exactly the Tool-pydantic model_dump
+    # that sglang's serving path applies.
+    from sglang.srt.entrypoints.openai.protocol import Tool
+
+    canonical = [Tool.model_validate(t).model_dump() for t in _TOOLS]
+    msgs = [{"role": "user", "content": "weather?"}]
+    expected = deepseek_v32.render_messages(
+        [{"role": "system", "content": "", "tools": canonical}, *msgs], thinking_mode="chat"
+    )
+    assert deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat") == expected
+
+
+def test_render_with_tools_reuses_existing_system_message():
+    # When a system message is already present, tools attach to it (no extra system inserted).
+    msgs = [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "hi"}]
+    out = deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
+    assert "You are helpful." in out
+    assert "<functions>" in out
+
+
+def test_render_with_tools_does_not_mutate_input():
+    msgs = [{"role": "user", "content": "hi"}]
+    snapshot = copy.deepcopy(msgs)
+    deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
+    assert msgs == snapshot
+
+
+def test_apply_chat_template_with_tools_dispatches_to_bridge(tmp_path):
+    tok = _tok_with_model_type(tmp_path, "deepseek_v32")
+    msgs = [{"role": "user", "content": "hi"}]
+    via_apply = apply_chat_template(msgs, tokenizer=tok, tools=_TOOLS, tokenize=False)
+    assert via_apply == deepseek_v32.render_messages(msgs, tools=_TOOLS)
+
+
+# ---------------------------------------------------------------------------
 # Input immutability
 # ---------------------------------------------------------------------------
 
@@ -196,22 +255,14 @@ def test_accept_none_tools_and_known_kwargs():
 
 
 # ---------------------------------------------------------------------------
-# DeepSeek V4 is no longer special-cased
+# Cross-version detection exactness (the V3.2 detector must not match V4)
 # ---------------------------------------------------------------------------
 
 
-def test_dsv4_not_special_cased(tmp_path):
+def test_dsv32_detector_does_not_match_dsv4(tmp_path):
+    # V3.2 detection keys off model_type exactly, so a deepseek_v4 checkpoint is
+    # not mistaken for V3.2 -- V4 is routed by its own deepseek_v4 bridge.
     assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "deepseek_v4")) is False
-
-
-def test_no_dsv4_references_in_package():
-    import miles.utils.chat_template_utils as ctu
-
-    pkg_dir = Path(ctu.__file__).parent
-    for py in pkg_dir.glob("*.py"):
-        src = py.read_text(encoding="utf-8")
-        assert "deepseek_v4" not in src, f"stale dsv4 reference in {py.name}"
-        assert "encoding_dsv4" not in src, f"stale dsv4 reference in {py.name}"
 
 
 # ---------------------------------------------------------------------------
