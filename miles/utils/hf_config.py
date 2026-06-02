@@ -36,12 +36,6 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         base_class="DeepseekV3Config",
         compat_class_name="DeepseekV32Config",
     ),
-    _HFConfigAlias(
-        model_type="deepseek_v4",
-        base_module="transformers.models.deepseek_v3.configuration_deepseek_v3",
-        base_class="DeepseekV3Config",
-        compat_class_name="DeepseekV4Config",
-    ),
 )
 
 _REGISTERED_ALIASES: set[str] = set()
