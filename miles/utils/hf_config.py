@@ -27,6 +27,7 @@ class _HFConfigAlias:
     auto_model_classes: tuple = (AutoModelForCausalLM,)
     # Set True to override transformers' native config.
     override_hf_native: bool = False
+    skip_if_hf_native: bool = False
 
 
 _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
@@ -42,6 +43,7 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         base_class="DeepseekV3Config",
         compat_class_name="DeepseekV4Config",
         auto_model_classes=(),
+        skip_if_hf_native=True,
     ),
 )
 
@@ -59,6 +61,9 @@ def register_hf_config_aliases() -> None:
         if alias.model_type in _REGISTERED_ALIASES:
             continue
         if alias.model_type in CONFIG_MAPPING_NAMES and not alias.override_hf_native:
+            if alias.skip_if_hf_native:
+                _REGISTERED_ALIASES.add(alias.model_type)
+                continue
             raise RuntimeError(
                 f"transformers now natively supports model_type={alias.model_type!r}; "
                 f"set override_hf_native=True to override."
