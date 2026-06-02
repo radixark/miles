@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .glm4 import convert_glm4_to_hf
@@ -12,11 +14,8 @@ from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
 
-
-@dataclass(frozen=True)
-class AtomicUpdateGroup:
-    key: str
-    suffixes: tuple[str, ...]
+if TYPE_CHECKING:
+    from ..update_weight.common import AtomicUpdateGroup
 
 
 # TODO unify w/ `convert_to_hf`
@@ -42,6 +41,8 @@ def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
 def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
     if args.q_lora_rank is None:
         return []
+
+    from ..update_weight.common import AtomicUpdateGroup
 
     return [
         AtomicUpdateGroup(

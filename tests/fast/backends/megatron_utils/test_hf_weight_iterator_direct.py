@@ -106,7 +106,7 @@ def _param(name: str, size: int) -> ParamInfo:
 
 
 def test_atomic_group_is_single_update_unit_and_packed_together(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.megatron_to_hf import AtomicUpdateGroup
+    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
 
     params = [_param("layer.a", 4), _param("layer.b", 4), _param("layer.c", 4)]
     monkeypatch.setattr(direct_module, "_get_param_full_size", lambda info: info.size)
@@ -121,7 +121,7 @@ def test_atomic_group_is_single_update_unit_and_packed_together(direct_module, m
 
 
 def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.megatron_to_hf import AtomicUpdateGroup
+    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
 
     params = [_param("layer.a", 4), _param("layer.b", 4)]
 
@@ -158,7 +158,7 @@ def _distributed_updater(mixin_module):
 
 
 def test_distributed_non_expert_update_units_are_packed_together(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.megatron_to_hf import AtomicUpdateGroup
+    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
     from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
 
     updater = _distributed_updater(mixin)
@@ -182,7 +182,7 @@ def test_distributed_non_expert_update_units_are_packed_together(direct_module, 
 
 
 def test_distributed_expert_update_units_are_packed_together(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.megatron_to_hf import AtomicUpdateGroup
+    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
     from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
 
     updater = _distributed_updater(mixin)
@@ -214,7 +214,7 @@ def test_distributed_expert_update_units_are_packed_together(direct_module, monk
 
 
 def test_distributed_atomic_group_cannot_span_expert_and_non_expert(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.megatron_to_hf import AtomicUpdateGroup
+    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
     from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
 
     updater = _distributed_updater(mixin)

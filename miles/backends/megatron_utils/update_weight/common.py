@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
+class AtomicUpdateGroup:
+    key: str
+    suffixes: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
 class NamedUpdateUnit:
     """A set of params that must be transferred and packed together."""
 
