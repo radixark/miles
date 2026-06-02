@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from .deepseekv3 import convert_deepseekv3_to_hf
-from .deepseekv4 import DEEPSEEKV4_ATOMIC_UPDATE_GROUPS, convert_deepseekv4_to_hf
+from .deepseekv4 import convert_deepseekv4_to_hf, get_deepseek_v4_atomic_update_groups
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
 from .kimi_vl import convert_kimi_k25_to_hf, convert_kimivl_to_hf
@@ -39,7 +39,7 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None):
 def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
     model_name = model_name.lower()
     if "deepseekv4" in model_name:
-        return [AtomicUpdateGroup(key, suffixes) for key, suffixes in DEEPSEEKV4_ATOMIC_UPDATE_GROUPS]
+        return get_deepseek_v4_atomic_update_groups()
     return []
 
 

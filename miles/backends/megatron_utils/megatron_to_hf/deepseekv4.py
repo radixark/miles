@@ -2,20 +2,27 @@ import re
 
 import torch
 
-DEEPSEEKV4_ATOMIC_UPDATE_GROUPS = (
-    ("wqkv_a", (".self_attention.wq_a.weight", ".self_attention.wkv.weight")),
-    (
-        "compressor_wkv_gate",
-        (".self_attention.compressor.wkv.weight", ".self_attention.compressor.wgate.weight"),
-    ),
-    (
-        "indexer_compressor_wkv_gate",
-        (
-            ".self_attention.indexer.compressor.wkv.weight",
-            ".self_attention.indexer.compressor.wgate.weight",
-        ),
-    ),
-)
+
+def get_deepseek_v4_atomic_update_groups():
+    from . import AtomicUpdateGroup
+
+    return [
+        AtomicUpdateGroup(key, suffixes)
+        for key, suffixes in [
+            ("wqkv_a", (".self_attention.wq_a.weight", ".self_attention.wkv.weight")),
+            (
+                "compressor_wkv_gate",
+                (".self_attention.compressor.wkv.weight", ".self_attention.compressor.wgate.weight"),
+            ),
+            (
+                "indexer_compressor_wkv_gate",
+                (
+                    ".self_attention.indexer.compressor.wkv.weight",
+                    ".self_attention.indexer.compressor.wgate.weight",
+                ),
+            ),
+        ]
+    ]
 
 
 def _apply_ape_hotfix_mirror(param):
