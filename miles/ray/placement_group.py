@@ -122,7 +122,9 @@ def create_placement_groups(args):
     }
 
 
-def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool):
+def allocate_train_group(
+    args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool, with_opd_teacher: bool = False
+):
     return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
@@ -131,6 +133,7 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, role: str, with
         num_gpus_per_actor=0.4,
         role=role,
         with_ref=with_ref,
+        with_opd_teacher=with_opd_teacher,
     )
 
 
@@ -142,6 +145,7 @@ async def create_training_models(args, pgs, rollout_manager):
         pg=pgs["actor"],
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
+        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
     )
     if args.use_critic:
         critic_model = allocate_train_group(

@@ -32,6 +32,7 @@ class Sample:
         None  # Indexer topk from rollout engine. shape: (num_tokens-1, num_indexer_layers, index_topk), dtype=int32
     )
     remove_sample: bool = False
+    teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
 
     class Status(Enum):
         PENDING = "pending"
