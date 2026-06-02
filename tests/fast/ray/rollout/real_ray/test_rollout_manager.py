@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import textwrap
+import time
 
 import pytest
 import ray
@@ -129,18 +130,20 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
     right after ``stop_cell`` races the kill and can still reach a live actor
     (returning ``True`` instead of raising). Retry until the actor is confirmed
     gone, failing only if it never dies within ``deadline_s``."""
-    elapsed_s = 0.0
+    deadline = time.monotonic() + deadline_s
     while True:
         try:
-            ray.get(actor_handle.health_generate.remote(timeout=1.0), timeout=5.0)
+            # ``ray.get`` blocks, so run it off the event loop; track the
+            # deadline with a real clock since each blocking call can take up
+            # to its own timeout, not just ``poll_interval_s``.
+            await asyncio.to_thread(ray.get, actor_handle.health_generate.remote(timeout=1.0), timeout=5.0)
         except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
             return
         except ray.exceptions.GetTimeoutError:
             pass  # actor mid-teardown — keep polling until it raises an actor error
-        if elapsed_s >= deadline_s:
+        if time.monotonic() >= deadline:
             pytest.fail(f"engine actor still alive {deadline_s}s after stop_cell")
         await asyncio.sleep(poll_interval_s)
-        elapsed_s += poll_interval_s
 
 
 @pytest.mark.asyncio
