@@ -14,6 +14,7 @@ class CaseConfig:
     num_gpus_per_node: int
     cp_size: int
     pp_size: int
+    rollout_num_gpus_per_engine: int
     tp_size: int = None
     ep_size: int = None
     sglang_ep_size: int = None
@@ -50,8 +51,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     """Build the train_args string for `case`.
 
     MTP (EAGLE speculative decoding) and R3 (`--use-rollout-routing-replay`)
-    are always on for this suite; the only knob exposed via CaseConfig is
-    whether DeepEP is used for MoE token dispatch.
+    are always on for this suite; case-specific rollout and DeepEP knobs are
+    exposed via CaseConfig.
     """
     enable_eval = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
@@ -123,11 +124,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--use-precision-aware-optimizer "
     )
 
-    # hard code to 4 due to GLM-4.7-Flash has 20 attention heads;
-    # non-EP SGLang TP must divide it.
-    sglang_tp_size = 4
     sglang_args = (
-        f"--rollout-num-gpus-per-engine {sglang_tp_size} "
+        f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
         "--sglang-mem-fraction-static 0.7 "
         # EAGLE speculative decoding (MTP)
         "--sglang-speculative-algorithm EAGLE "
