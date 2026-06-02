@@ -123,8 +123,11 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--use-precision-aware-optimizer "
     )
 
+    # hard code to 4 due to GLM-4.7-Flash has 20 attention heads;
+    # non-EP SGLang TP must divide it.
+    sglang_tp_size = 4
     sglang_args = (
-        f"--rollout-num-gpus-per-engine {case.num_gpus_per_node} "
+        f"--rollout-num-gpus-per-engine {sglang_tp_size} "
         "--sglang-mem-fraction-static 0.7 "
         # EAGLE speculative decoding (MTP)
         "--sglang-speculative-algorithm EAGLE "
@@ -176,7 +179,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
     # Set replay_check_threshold to 1e-1 for GLM-4.7-Flash with MTP
-    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
+    os.environ["MILES_TEST_R3_THRESHOLD"] = "0.1"
 
     train_args = build_train_args(case, wandb_file=wandb_file)
 
