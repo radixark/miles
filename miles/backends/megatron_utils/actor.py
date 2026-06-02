@@ -238,7 +238,7 @@ class MegatronTrainRayActor(TrainRayActor):
     @property
     def _enable_weight_backup(self) -> bool:
         """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
-        return self.with_ref or self.args.keep_old_actor or self.args.colocate
+        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor or self.args.colocate
 
     def _switch_model(self, target_tag: str) -> None:
         if not self._enable_weight_backup:
