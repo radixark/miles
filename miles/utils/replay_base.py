@@ -232,6 +232,16 @@ class IndexerReplayManager(BaseReplayManager):
     replay_indices_are_token_positions = True
 
 
+class IndexerReplayManager(BaseReplayManager):
+    name = "indexer"
+    filename = "indexer_replay.pt"
+    data_key = "rollout_indexer_topk"
+    if_sp_region = False
+    enable_check_replay_result = False
+    replay_check_threshold = 1e-2
+    replay_indices_are_token_positions = True
+
+
 routing_replay_manager = RoutingReplayManager()
 indexer_replay_manager = IndexerReplayManager()
 all_replay_managers = [routing_replay_manager, indexer_replay_manager]
