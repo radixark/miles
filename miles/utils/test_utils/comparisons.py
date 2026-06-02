@@ -17,10 +17,27 @@ def compare_dumps(
     target_dir: str,
     *,
     diff_threshold: float = 0.0085,
+    abs_diff_threshold: float = 0.0,
     allow_skipped_pattern: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format|.*witness.*",
     allow_failed_pattern: str = "input_ids|positions|cu_seqlens_q|cu_seqlens_kv|qkv_format",
     extra_args: list[str] | None = None,
 ) -> None:
+    """Run the sglang dump comparator and assert no meaningful tensor diverged.
+
+    The comparator's pass criterion is purely relative (cosine ``rel_diff <=
+    diff_threshold``). That metric is degenerate for near-zero tensors: a tiny
+    absolute difference on a near-zero value yields a huge relative diff. At test
+    scale (few tokens, 128 experts) many low-traffic MoE experts have near-zero
+    gradients, so a fault+recovery run whose rebuilt collective reduces in a
+    different order produces large *relative* diffs on those experts despite an
+    absolute difference that is negligible vs the model gradient scale.
+
+    ``abs_diff_threshold`` adds an absolute floor (``torch.allclose`` semantics):
+    a tensor is accepted if it passes the relative check OR its max absolute diff
+    is within the floor. Normal-magnitude tensors are unaffected (their abs diff
+    dwarfs the floor), so the strict relative check still governs them. The floor
+    defaults to 0.0 (no effect); only fault-tolerance comparisons opt in.
+    """
     baseline_path = Path(baseline_dir) / "dumps"
     target_path = Path(target_dir) / "dumps"
 
@@ -36,11 +53,107 @@ def compare_dumps(
         extra_args=extra_args,
     )
 
-    assert result.returncode == 0, (
-        f"Dump comparator failed (rc={result.returncode}). "
-        f"Report: {target_path / 'comparator_report.jsonl'}"
+    if result.returncode == 0:
+        print(f"Dump comparison passed: {baseline_path} vs {target_path}")
+        return
+
+    report = _find_comparator_report(target_path)
+    assert report is not None, (
+        f"Dump comparator failed (rc={result.returncode}) and no comparator_report.jsonl "
+        f"found under {target_path}"
     )
-    print(f"Dump comparison passed: {baseline_path} vs {target_path}")
+
+    intolerable = _intolerable_dump_failures(
+        report=report,
+        abs_diff_threshold=abs_diff_threshold,
+        allow_skipped_pattern=allow_skipped_pattern,
+        allow_failed_pattern=allow_failed_pattern,
+    )
+    assert not intolerable, (
+        f"Dump comparator failed (rc={result.returncode}): "
+        f"{len(intolerable)} tensor(s) exceed both rel_diff>{diff_threshold} and "
+        f"abs_diff>{abs_diff_threshold} (near-zero floor). First offenders: "
+        + ", ".join(
+            f"{t['name']}(rel={t['rel_diff']}, abs={t['max_abs_diff']})" for t in intolerable[:10]
+        )
+        + f". Full report: {report}"
+    )
+    print(
+        f"Dump comparison passed: {baseline_path} vs {target_path} "
+        f"(comparator rc={result.returncode}; all relative-diff failures within "
+        f"near-zero abs floor {abs_diff_threshold})"
+    )
+
+
+def _find_comparator_report(target_path: Path) -> Path | None:
+    candidates = sorted(target_path.rglob("comparator_report.jsonl"))
+    return candidates[0] if candidates else None
+
+
+def _intolerable_dump_failures(
+    *,
+    report: Path,
+    abs_diff_threshold: float,
+    allow_skipped_pattern: str,
+    allow_failed_pattern: str,
+) -> list[dict]:
+    """Re-derive the comparator's failure verdict, tolerating near-zero abs diffs.
+
+    Returns the list of failures that are NOT tolerable. A non-empty list means
+    the comparison must fail. Mirrors the comparator's allow patterns so the only
+    behavior change vs the raw rc is the absolute-floor tolerance for failures.
+    Anything the floor cannot explain (errored tensors, disallowed skips, or an
+    rc!=0 with no recognizable failure record) is reported as intolerable so the
+    floor never silently hides a non-near-zero problem.
+    """
+    import json
+    import math
+    import re
+
+    allow_failed_re = re.compile(allow_failed_pattern)
+    allow_skipped_re = re.compile(allow_skipped_pattern)
+
+    intolerable: list[dict] = []
+    saw_failure_record = False
+    errored = 0
+
+    for line in report.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        rtype = rec.get("type")
+        if rtype == "summary":
+            errored = rec.get("errored", 0) or 0
+            continue
+        if rtype == "comparison_skip":
+            name = rec.get("name", "")
+            if not allow_skipped_re.search(name):
+                intolerable.append({"name": f"<disallowed skip: {name}>", "rel_diff": None, "max_abs_diff": None})
+            continue
+        if rtype != "comparison_tensor":
+            continue
+
+        diff = rec.get("diff") or {}
+        if diff.get("passed") is not False:
+            continue
+        name = rec.get("name", "")
+        saw_failure_record = True
+        if allow_failed_re.search(name):
+            continue
+        max_abs = diff.get("max_abs_diff")
+        if max_abs is None or math.isnan(max_abs) or max_abs > abs_diff_threshold:
+            intolerable.append(
+                {"name": name, "rel_diff": diff.get("rel_diff"), "max_abs_diff": max_abs}
+            )
+
+    if errored:
+        intolerable.append({"name": f"<{errored} errored tensors>", "rel_diff": None, "max_abs_diff": None})
+    if not saw_failure_record and not intolerable:
+        # rc!=0 but nothing recognizable to tolerate — preserve strictness.
+        intolerable.append({"name": "<comparator rc!=0 with no tolerable failure record>", "rel_diff": None, "max_abs_diff": None})
+    return intolerable
 
 
 def compare_metrics(
