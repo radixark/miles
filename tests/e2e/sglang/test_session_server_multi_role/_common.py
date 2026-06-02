@@ -6,7 +6,7 @@ through ``run_one(cfg)``.  The runner is a thin wrapper around
 4-GPU H200 ``num_gpus`` override applied centrally.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from miles.utils.test_utils.session_verify_runner import ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD, run_session_verify
 
@@ -32,6 +32,10 @@ class ModelConfig:
     # tool_calls.  Default "rollback" is universal (pop assistant + retry);
     # see ToolCallFailureMode for "append_tool" / "append_user" variants.
     tool_call_failure_mode: str = "rollback"
+    # Per-test env overrides forwarded into the Ray runtime-env-json. Use for
+    # test-specific SGLang/aiter knobs that should NOT apply to other tests in
+    # this directory.
+    extra_env: dict[str, str] = field(default_factory=dict)
 
 
 def run_one(cfg: ModelConfig) -> None:
@@ -49,4 +53,5 @@ def run_one(cfg: ModelConfig) -> None:
         num_gpus=cfg.num_gpus,
         assistant_text_threshold=cfg.assistant_text_threshold,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
+        extra_env=cfg.extra_env,
     )
