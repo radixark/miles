@@ -92,6 +92,7 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
     def _build_config(self):
+        self.hf_config.rope_theta = self.hf_config.rope_scaling["rope_theta"]
         config = super()._build_config()
 
         config.attention_backend = AttnBackend.auto
