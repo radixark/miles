@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
+from sglang.srt.distributed.device_communicators.mooncake_transfer_engine import get_ib_devices_for_gpu
 from sglang.srt.server_args import ServerArgs
 from miles.backends.training_utils.parallel import get_parallel_state
 
@@ -205,10 +206,25 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
     return weight_dict
 
 
-def create_transfer_engine():
+def create_transfer_engine(gpu_id: int | None = None, ib_device: str | None = None):
+    """Create and initialize a Mooncake TransferEngine for P2P weight transfer.
+
+    Args:
+        gpu_id: CUDA device index. When provided with ``ib_device``, the
+            per-GPU RDMA device is resolved via ``get_ib_devices_for_gpu``.
+        ib_device: IB device specification — a JSON GPU-to-device mapping
+            (e.g. '{"0":"mlx5_1","1":"mlx5_5"}') or a single device name.
+            Passed from ``--update-weight-p2p-ib-device``.
+    """
     transfer_engine = TransferEngine()
     local_ip = ray._private.services.get_node_ip_address()
-    transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", "")
+    device_name = ""
+
+    if gpu_id is not None and ib_device:
+        device_name = get_ib_devices_for_gpu(ib_device, gpu_id) or ""
+
+    logger.info(f"[P2P] Initializing TransferEngine: ip={local_ip}, nic={device_name}")
+    transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", device_name)
     return transfer_engine
 
 
