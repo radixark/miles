@@ -233,6 +233,10 @@ def apply_chat_template(
         rendered = deepseek_v32.render_messages(normalize_tool_arguments(messages, "json"), tools=tools, **kwargs)
         return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered
 
+    if deepseek_v4.is_deepseek_v4(tokenizer):
+        rendered = deepseek_v4.render_messages(normalize_tool_arguments(messages, "json"), tools=tools, **kwargs)
+        return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered
+
     messages = normalize_tool_arguments(messages, "dict")
     tool_defs = extract_tool_dicts(tools)
     render_kwargs = dict(add_generation_prompt=add_generation_prompt, **kwargs)

@@ -26,6 +26,8 @@ from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.utils.hf_config import load_hf_config
 
+from miles.utils.replay_base import indexer_replay_manager
+
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
 
@@ -136,6 +138,7 @@ class DSAMultiLatentAttention(Attention):
         )
 
         self.index_topk = 2048
+        indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
     def forward(
         self,
@@ -180,6 +183,9 @@ class DSAMultiLatentAttention(Attention):
 
         def fused_select_topk(index_q, index_k, w, starts, ends, block_size=8192):
             seq_len = index_q.shape[0]
+            # replay records one topk tensor per layer-forward; don't split it
+            if indexer_replay_manager.enabled:
+                block_size = seq_len
             indexer_topk_scores = []
             topk_indices = []
 
@@ -189,14 +195,15 @@ class DSAMultiLatentAttention(Attention):
                 w_block = w[start:end]
                 starts_block = starts[start:end]
                 ends_block = ends[start:end]
+                starts_block = starts_block.to(torch.int32)
+                ends_block = ends_block.to(torch.int32)
                 indexer_topk_scores_block, topk_indices_block = lighting_indexer(
                     index_q_block,
                     index_k,
                     w_block,
-                    starts_block.to(torch.int32),
-                    ends_block.to(torch.int32),
+                    starts_block,
+                    ends_block,
                     self.index_topk,
-                    topk_indices=None,
                 )
 
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)

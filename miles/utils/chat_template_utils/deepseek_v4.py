@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import logging
 import os
 from typing import Any
+
+from sglang.srt.entrypoints.openai import encoding_dsv4
+from sglang.srt.entrypoints.openai.protocol import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +16,6 @@ _MODEL_TYPE = "deepseek_v4"
 
 _KNOWN_KWARGS = frozenset(
     {
-        "thinking",
         "thinking_mode",
         "drop_thinking",
         "add_default_bos_token",
@@ -53,28 +56,36 @@ def _build_deepseek_encode_config(kwargs: dict) -> dict:
             f"apply_chat_template_kwargs has unsupported kwargs {sorted(unknown)} "
             f"for the DeepSeek encoder. Known keys: {sorted(_KNOWN_KWARGS)}"
         )
+    # reasoning_effort has no default: like context, it is only forwarded when the
+    # caller supplies it, and its value is validated by encoding_dsv4 (not here).
     cfg = {"thinking_mode": "thinking", "drop_thinking": True, "add_default_bos_token": True}
-    # HF passes `thinking` (bool); the DeepSeek encoder takes `thinking_mode` ("thinking"/"chat").
-    if "thinking" in kwargs:
-        cfg["thinking_mode"] = "thinking" if kwargs["thinking"] else "chat"
-    for key in ("thinking_mode", "drop_thinking", "add_default_bos_token", "context", "reasoning_effort"):
+    for key in _KNOWN_KWARGS:
         if key in kwargs:
             cfg[key] = kwargs[key]
     return cfg
 
 
+def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put *tools* in the system message, where ``encode_messages`` reads them.
+
+    The encoder serializes each tool dict verbatim into ``<functions>``, so they
+    must round-trip through ``Tool.model_dump()`` (fills defaults / orders fields)
+    or the token ids drift from what sglang serves.
+    """
+    out = copy.deepcopy(messages)
+    if not out or out[0].get("role") != "system":
+        out.insert(0, {"role": "system", "content": ""})
+    out[0]["tools"] = [Tool.model_validate(t).model_dump() for t in tools]
+    return out
+
+
 def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None = None, **kwargs: Any) -> str:
     """Render *messages* into a DeepSeek V4 prompt via sglang ``encode_messages``.
 
-    Assume input messages tool_call ``arguments`` are already JSON strings.
+    Tool_call ``arguments`` must already be JSON strings; *tools*, if given, are
+    injected into the system message (see ``_inject_tools_into_system``).
     """
-    if tools:
-        raise ValueError(
-            "DeepSeek V4 chat template does not support tools def in apply chat template, plz inject it in system message."
-        )
-    # Imported lazily: the canonical sglang-miles build may not ship encoding_dsv4,
-    # and a module-level import would break every chat_template_utils import there.
-    from sglang.srt.entrypoints.openai import encoding_dsv4
-
     encode_config = _build_deepseek_encode_config(kwargs)
+    if tools:
+        messages = _inject_tools_into_system(messages, tools)
     return encoding_dsv4.encode_messages(messages, **encode_config)
