@@ -243,7 +243,17 @@ class DistBucketedWeightUpdateMixin:
     def update_weights(self) -> None:
         """Orchestrate the full weight-update lifecycle.
 
-        Non-LoRA: pause → base non-expert (TP) → base expert (EP) → resume.
+        Pause → flush → non-expert (TP) → expert (EP) → continue.
+        Progress is showed on the rank `_is_source`.
+
+        - `_pause_and_prepare_engines`: pause rollout engines, flush caches,
+             run pre-process.
+        - `_gather_and_update_non_expert_weights`
+        - `_gather_and_update_expert_weights`
+        - `_finalize_and_resume_engines`: run post-process, resume rollout
+            generation.
+
+        Full: pause → base non-expert (TP) → base expert (EP) → resume.
         LoRA: pause → base weights (first iteration only) → LoRA adapter
         (every iteration) → resume.
         """
