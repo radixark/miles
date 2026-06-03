@@ -262,6 +262,7 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$NODE_RANK" -eq 0 ]; then
    echo "Waiting for ${EXPECTED_GPUS} GPUs in Ray cluster..."
+   set +x
    while true; do
       AVAILABLE_GPUS=$(python3 -c "import ray; ray.init(address='auto', ignore_reinit_error=True); print(int(ray.cluster_resources().get('GPU', 0))); ray.shutdown()" 2>/dev/null || echo 0)
       echo "  ... detected ${AVAILABLE_GPUS}/${EXPECTED_GPUS} GPUs"
@@ -270,6 +271,7 @@ if [ "$NODE_RANK" -eq 0 ]; then
       fi
       sleep 5
    done
+   set -x
    echo "All ${EXPECTED_GPUS} GPUs available. Submitting job."
 
    ray job submit --address="http://127.0.0.1:8265" \
