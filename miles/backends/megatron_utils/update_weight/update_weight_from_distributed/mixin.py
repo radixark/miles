@@ -63,6 +63,11 @@ class DistBucketedWeightUpdateMixin:
         """Initialize LoRA-specific state. Call from subclass ``__init__``."""
         self.is_lora = is_lora
         if self.is_lora:
+            # Distributed LoRA sync requires the bridge iterator
+            assert args.megatron_to_hf_mode == "bridge", (
+                "LoRA weight sync over distributed engines requires "
+                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
+            )
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
             self._lora_base_synced = False
@@ -274,6 +279,8 @@ class DistBucketedWeightUpdateMixin:
         but only the source rank (DP=0, TP=0) serializes and sends.
         """
         # All ranks must iterate the bridge for TP collective participation.
+        # {} weights: bridge exports adapters directly from self.model and ignores
+        # this dict (bridge-only is enforced in _init_lora).
         accumulated_named_tensors: list[tuple[str, torch.Tensor]] = []
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks({}, weight_type="lora"):
             accumulated_named_tensors.extend(hf_named_tensors)
