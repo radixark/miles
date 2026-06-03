@@ -17,7 +17,7 @@ set -ex
 # export SGLANG_LORA_ENABLE_FUSION=1
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 # export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 # export PYTORCH_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
