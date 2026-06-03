@@ -2,7 +2,6 @@ import logging
 from argparse import Namespace
 
 import torch.distributed as dist
-from ring_flash_attn import substitute_hf_flash_attn
 from torch.distributed.device_mesh import init_device_mesh
 
 from miles.utils.distributed_utils import get_gloo_group
@@ -31,6 +30,9 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
 
     # Setup Ring Flash Attention with CP group from mesh (only when cp_size > 1)
     if cp_size > 1:
+        # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
+        from ring_flash_attn import substitute_hf_flash_attn
+
         substitute_hf_flash_attn(mesh.get_group("cp"), heads_k_stride=1)
         logger.info(f"[Rank {rank}] CP initialized via device mesh")
     else:

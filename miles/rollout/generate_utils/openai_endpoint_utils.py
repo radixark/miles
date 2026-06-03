@@ -220,23 +220,9 @@ def truncate_samples_by_total_tokens(
         if allowed_output <= 0:
             break
 
-        _truncate_sample_output(sample, allowed_output, tokenizer)
+        sample.strip_last_output_tokens(overshoot, tokenizer)
+        sample.status = Sample.Status.TRUNCATED
         result.append(sample)
         break
 
     return result
-
-
-def _truncate_sample_output(sample: Sample, keep_tokens: int, tokenizer) -> None:
-    """Truncate a sample's output in-place to exactly ``keep_tokens`` tokens."""
-    prompt_len = len(sample.tokens) - sample.response_length
-    kept_ids = sample.tokens[prompt_len : prompt_len + keep_tokens]
-
-    sample.tokens = sample.tokens[:prompt_len] + kept_ids
-    sample.response = tokenizer.decode(kept_ids)
-    sample.response_length = keep_tokens
-    if sample.rollout_log_probs is not None:
-        sample.rollout_log_probs = sample.rollout_log_probs[:keep_tokens]
-    if sample.loss_mask is not None:
-        sample.loss_mask = sample.loss_mask[:keep_tokens]
-    sample.status = Sample.Status.TRUNCATED

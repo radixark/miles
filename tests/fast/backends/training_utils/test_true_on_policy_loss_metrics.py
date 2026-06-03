@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import loss as loss_utils
+from miles.backends.training_utils.loss_hub import losses as loss_utils
 
 
 def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
@@ -44,11 +44,16 @@ def _make_batch(*, old_log_probs: torch.Tensor, rollout_log_probs: torch.Tensor)
     }
 
 
-def _patch_single_rank_masks(monkeypatch):
+def _patch_single_rank_loss_helpers(monkeypatch):
     monkeypatch.setattr(
         loss_utils,
         "get_local_response_loss_masks",
         lambda total_lengths, response_lengths, loss_masks, qkv_format="thd", max_seq_lens=None: loss_masks,
+    )
+    monkeypatch.setattr(
+        loss_utils,
+        "compute_ess_ratio_contribution",
+        lambda *, ppo_kl, **kwargs: ppo_kl.new_tensor(1.0),
     )
 
 
@@ -60,18 +65,18 @@ def _patch_single_rank_masks(monkeypatch):
             torch.tensor([0.40, 0.80], dtype=torch.float32),
             torch.tensor([0.10, 0.20], dtype=torch.float32),
             torch.tensor([0.40, 0.80], dtype=torch.float32),
-            0.0,
+            0.45,
         ),
         (
             True,
             torch.tensor([0.50, 1.00], dtype=torch.float32),
             torch.tensor([0.10, 0.20], dtype=torch.float32),
             torch.tensor([0.40, 0.80], dtype=torch.float32),
-            0.15,
+            0.0,
         ),
     ],
 )
-def test_train_rollout_logprob_abs_diff_uses_recomputed_train_logprobs(
+def test_train_rollout_logprob_abs_diff_uses_policy_loss_reference_logprobs(
     monkeypatch,
     use_rollout_logprobs: bool,
     train_log_probs: torch.Tensor,
@@ -87,7 +92,7 @@ def test_train_rollout_logprob_abs_diff_uses_recomputed_train_logprobs(
         "get_parallel_state",
         lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
     )
-    _patch_single_rank_masks(monkeypatch)
+    _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
         loss_utils,
         "get_log_probs_and_entropy",
@@ -128,7 +133,7 @@ def test_zero_weighted_entropy_nan_does_not_poison_policy_loss(monkeypatch):
         "get_parallel_state",
         lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
     )
-    _patch_single_rank_masks(monkeypatch)
+    _patch_single_rank_loss_helpers(monkeypatch)
 
     def fake_get_log_probs_and_entropy(*args, **kwargs):
         assert kwargs["with_entropy"] is False
@@ -170,7 +175,7 @@ def test_zero_weighted_kl_nan_does_not_poison_policy_loss(monkeypatch):
         "get_parallel_state",
         lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
     )
-    _patch_single_rank_masks(monkeypatch)
+    _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
         loss_utils,
         "get_log_probs_and_entropy",
@@ -211,7 +216,7 @@ def test_masked_nonfinite_ppo_terms_do_not_poison_policy_loss(monkeypatch):
         "get_parallel_state",
         lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
     )
-    _patch_single_rank_masks(monkeypatch)
+    _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
         loss_utils,
         "get_log_probs_and_entropy",
