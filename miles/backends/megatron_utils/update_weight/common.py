@@ -25,10 +25,10 @@ class AtomicUpdateGroup:
 
 
 def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
-    return [
-        *_get_q_lora_atomic_update_groups(args),
-        *_get_model_atomic_update_groups(model_name),
-    ]
+    model_groups = _get_model_atomic_update_groups(model_name)
+    if model_groups:
+        return model_groups
+    return _get_q_lora_atomic_update_groups(args)
 
 
 def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:

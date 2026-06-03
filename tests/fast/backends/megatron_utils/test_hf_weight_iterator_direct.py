@@ -134,7 +134,7 @@ def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
     ]
 
     update_units = direct_module.get_named_update_units(
-        param_names, get_atomic_update_groups(Namespace(q_lora_rank=None), "deepseekv4")
+        param_names, get_atomic_update_groups(Namespace(q_lora_rank=1024), "deepseekv4")
     )
 
     assert [unit.names for unit in update_units] == [
