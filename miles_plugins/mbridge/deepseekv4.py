@@ -96,6 +96,7 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         config = super()._build_config()
 
         config.attention_backend = AttnBackend.auto
+        config.moe_router_score_function = self.hf_config.scoring_func
 
         config.experimental_attention_variant = "dsv4"
         config.dsa_indexer_n_heads = getattr(self.hf_config, "index_n_heads", 64)
