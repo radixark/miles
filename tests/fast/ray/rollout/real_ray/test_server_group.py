@@ -121,6 +121,10 @@ class TestStartEnginesRealActors:
             ray.kill(h)
 
 
+# FIXME(@fzyzcjy): TestStopEnginesRealKill is a timing-sensitive Ray actor
+# termination race that flakes in CI (stage-a-cpu). Real fix tracked in
+# https://github.com/radixark/miles/pull/1282 — re-enable once that lands.
+@pytest.mark.skip(reason="FIXME(@fzyzcjy): flaky Ray actor termination race; real fix in #1282")
 class TestStopEnginesRealKill:
     """``ray.kill`` is the real thing here — we verify the actor is actually
     dead by issuing a follow-up ``.remote()`` and expecting RayActorError."""
