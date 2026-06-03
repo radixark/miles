@@ -13,6 +13,7 @@ from miles.utils.types import RolloutBatch
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
+from .mm_data import expand_multimodal_rollout_data_in_place
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,8 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         ]
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
+    if "rollout_indexer_topk" in rollout_data:
+        rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
     return rollout_data
 
 
@@ -130,6 +133,9 @@ def get_batch(
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
 
+    # No-op safety net if batches reach get_batch without rollout-level preprocessing.
+    expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
+
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
@@ -143,7 +149,15 @@ def get_batch(
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
-        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        if allgather_cp:
+            assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            tokens = [
+                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len] for t in tokens
+            ]
+        else:
+            tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
@@ -235,6 +249,12 @@ def get_batch(
         loss_masks.append(loss_mask)
 
     if qkv_format == "bshd":
+        if allgather_cp:
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            loss_masks = [
+                F.pad(lm, (0, max_seqlen - lm.size(0)), value=0)[start : start + local_len] for lm in loss_masks
+            ]
         loss_masks = torch.stack(loss_masks)
     elif qkv_format == "thd" and allgather_cp:
         # DSA: concatenate first (same as tokens), pad globally (same pad as above), then slice once.
@@ -352,6 +372,8 @@ def get_data_iterator(
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
     """
+    expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
+
     parallel_state = get_parallel_state()
     dp_size = parallel_state.intra_dp.size
     dp_group = parallel_state.intra_dp.group

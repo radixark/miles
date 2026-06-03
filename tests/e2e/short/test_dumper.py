@@ -19,6 +19,7 @@ if str(_MILES_ROOT) not in sys.path:
     sys.path.insert(0, str(_MILES_ROOT))
 
 import typer
+from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.conftest_dumper import (
     MEGATRON_PATCHER_YAMLS,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
@@ -29,6 +30,9 @@ from tests.e2e.conftest_dumper import (
 )
 
 import miles.utils.external_utils.command_utils as U
+
+register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
+
 
 app: typer.Typer = typer.Typer()
 
@@ -219,6 +223,14 @@ def compare(
 
     _verify_dumps(config_name=config_name, dump_subdir=config_name, dump_dir=dump_dir)
     _verify_comparator(dump_subdir=config_name, dump_dir=dump_dir)
+
+
+@app.callback(invoke_without_command=True)
+def _ci_default(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    for mode in CONFIGS:
+        run(mode=mode)
 
 
 if __name__ == "__main__":

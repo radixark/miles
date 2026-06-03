@@ -7,7 +7,10 @@ import logging
 from argparse import Namespace
 from copy import deepcopy
 
-from miles.rollout.generate_utils.generate_endpoint_utils import get_rollout_topk_from_response
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    get_indexer_topk_from_response,
+    get_routed_experts_from_response,
+)
 from miles.rollout.session.session_types import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
@@ -178,7 +181,8 @@ def _compute_sample_from_openai_record(
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
-    sample.rollout_routed_experts = get_rollout_topk_from_response(args, choice, sample, "routed_experts")
+    sample.rollout_routed_experts = get_routed_experts_from_response(args, choice, sample)
+    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
 
     if trim_count > 0:
         sample.strip_last_output_tokens(trim_count, tokenizer)
@@ -220,23 +224,9 @@ def truncate_samples_by_total_tokens(
         if allowed_output <= 0:
             break
 
-        _truncate_sample_output(sample, allowed_output, tokenizer)
+        sample.strip_last_output_tokens(overshoot, tokenizer)
+        sample.status = Sample.Status.TRUNCATED
         result.append(sample)
         break
 
     return result
-
-
-def _truncate_sample_output(sample: Sample, keep_tokens: int, tokenizer) -> None:
-    """Truncate a sample's output in-place to exactly ``keep_tokens`` tokens."""
-    prompt_len = len(sample.tokens) - sample.response_length
-    kept_ids = sample.tokens[prompt_len : prompt_len + keep_tokens]
-
-    sample.tokens = sample.tokens[:prompt_len] + kept_ids
-    sample.response = tokenizer.decode(kept_ids)
-    sample.response_length = keep_tokens
-    if sample.rollout_log_probs is not None:
-        sample.rollout_log_probs = sample.rollout_log_probs[:keep_tokens]
-    if sample.loss_mask is not None:
-        sample.loss_mask = sample.loss_mask[:keep_tokens]
-    sample.status = Sample.Status.TRUNCATED

@@ -121,7 +121,15 @@ class RayTrainGroup:
 
     async def update_weights(self):
         """Broadcast weights from rank 0 to all other ranks."""
-        await self._broadcast("update_weights")
+        if self.args.debug_train_only or self.args.debug_rollout_only:
+            return
+
+        if self.args.use_fault_tolerance:
+            await self.rollout_manager.recover_updatable_engines.remote()
+
+        info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
+
+        await self._broadcast("update_weights", info=info)
 
     async def onload(self):
         await self._broadcast("wake_up")
@@ -140,6 +148,7 @@ class RayTrainGroup:
         await asyncio.gather(*refs)
 
     async def set_rollout_manager(self, rollout_manager):
+        self.rollout_manager = rollout_manager
         await self._broadcast("set_rollout_manager", rollout_manager)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:

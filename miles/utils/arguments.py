@@ -6,13 +6,13 @@ from typing import Any
 
 import yaml
 from sglang_router.launch_router import RouterArgs
-from transformers import AutoConfig
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import load_function
 
@@ -276,7 +276,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "The name of the model, this is used to convert the megatron weights into huggingface format. "
-                    "If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as model_name. "
+                    "If not set, we will use `type(load_hf_config(args.hf_checkpoint)).__name__.lower()` as model_name. "
                     "Also, sometimes this will help alleviate the bug that transformers cannot find certain model."
                 ),
             )
@@ -1058,6 +1058,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
             )
             parser.add_argument(
+                "--use-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk decisions for layers with indexers.",
+            )
+            parser.add_argument(
+                "--use-rollout-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk from rollout during training.",
+            )
+            parser.add_argument(
                 "--use-opsm",
                 action="store_true",
                 default=False,
@@ -1122,6 +1134,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="Sync LoRA weights via tensor instead of file (more efficient)",
+            )
+            parser.add_argument(
+                "--lora-base-cpu-backup",
+                action="store_true",
+                default=False,
+                help=(
+                    "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
+                    "and skip per-step base sync. Trades host RAM for faster "
+                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                ),
+            )
+            parser.add_argument(
+                "--experts-shared-outer-loras",
+                action="store_true",
+                default=False,
+                help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
+                "down lora_B shared across experts, expert_dim=1). Matches SGLang "
+                "PR #21466's experts_shared_outer_loras=True serving contract.",
             )
             return parser
 
@@ -1576,6 +1606,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             """
             # Custom arguments can be added here
             parser.add_argument(
+                "--freeze-indexer",
+                action="store_true",
+                default=False,
+            )
+            parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,
                 default=None,
@@ -1779,8 +1814,12 @@ def parse_args(add_custom_arguments=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         if args.hf_checkpoint:
-            hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            hf_config = load_hf_config(args.hf_checkpoint)
             hf_validate_args(args, hf_config)
+
+            if is_dsa(hf_config):
+                args.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+                logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
 
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -1930,7 +1969,7 @@ def miles_validate_args(args):
     #      wins and is never overridden)
     #   2. the caller chose a non-default --tito-model family (DEFAULT means
     #      "use the model's native HF chat template", which is loaded by
-    #      AutoTokenizer.from_pretrained — no override needed here)
+    #      load_tokenizer — no override needed here)
     should_auto_resolve = args.chat_template_path is None and args.tito_model != TITOTokenizerType.DEFAULT.value
 
     if should_auto_resolve:
@@ -2021,6 +2060,14 @@ def miles_validate_args(args):
             modules = [m for m in modules if m not in exclude_set]
 
         args.target_modules = modules
+
+        # Training and serving must agree on shared-outer grouped-expert LoRA
+        # (expert_dim=1 buffers in SGLang).
+        if args.experts_shared_outer_loras:
+            args.sglang_experts_shared_outer_loras = True
+        assert args.experts_shared_outer_loras == bool(
+            args.sglang_experts_shared_outer_loras
+        ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -2189,6 +2236,10 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    if args.use_rollout_indexer_replay:
+        args.use_indexer_replay = True
+        assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
 
     if args.eval_max_context_len is None:
         logger.info(
