@@ -2081,12 +2081,6 @@ def miles_validate_args(args):
 
         args.target_modules = modules
 
-    # Multi-LoRA flag — adapter configs are loaded later by the controller
-    args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
-    if args.multi_lora:
-        assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
-        assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
-        args.megatron_to_hf_mode = "bridge"
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
         if args.experts_shared_outer_loras:
@@ -2094,6 +2088,13 @@ def miles_validate_args(args):
         assert args.experts_shared_outer_loras == bool(
             args.sglang_experts_shared_outer_loras
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
+
+    # Multi-LoRA flag — adapter configs are loaded later by the controller
+    args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
+    if args.multi_lora:
+        assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
+        assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
+        args.megatron_to_hf_mode = "bridge"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
