@@ -456,6 +456,7 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "MILES_TEST_R3_THRESHOLD": "0.05",
     }
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
