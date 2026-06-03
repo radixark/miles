@@ -214,7 +214,7 @@ class DistBucketedWeightUpdateMixin:
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            if mode != "in_place":
+            if mode not in ("in_place"):
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
             # int4/fp4 pre_process
