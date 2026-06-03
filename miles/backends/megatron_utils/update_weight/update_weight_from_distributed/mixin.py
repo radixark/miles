@@ -214,7 +214,8 @@ class DistBucketedWeightUpdateMixin:
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            if mode != "in_place":
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
             # int4/fp4 pre_process
             if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
@@ -252,7 +253,9 @@ class DistBucketedWeightUpdateMixin:
         dist.barrier(group=get_gloo_group())
 
         with timer("update_weights_implementation"):
-            # Base weights: skip after first round when LoRA is enabled (frozen base).
+            # Base weight sync model:
+            #   full-param RL: base weights change every step -> always sync.
+            #   LoRA RL: base is frozen -> only sync once, on the first iteration.
             if not (getattr(self, "is_lora", False) and self._lora_base_synced):
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
