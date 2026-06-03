@@ -170,6 +170,10 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.teacher_log_probs is not None:
+            assert (
+                len(self.teacher_log_probs) == self.response_length
+            ), f"teacher_log_probs length ({len(self.teacher_log_probs)}) != response_length ({self.response_length})"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -190,6 +194,8 @@ class Sample:
         self.response_length -= n
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
+        if self.teacher_log_probs is not None:
+            self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.loss_mask is not None:
             self.loss_mask = self.loss_mask[:-n]
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
