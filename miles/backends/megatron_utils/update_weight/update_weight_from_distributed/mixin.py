@@ -5,7 +5,6 @@ from collections.abc import Callable, Sequence
 import ray
 import torch
 import torch.distributed as dist
-from ray import ObjectRef
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -311,7 +310,7 @@ class DistBucketedWeightUpdateMixin:
             output_str=True,
         )
 
-        all_refs: list[ObjectRef] = []
+        all_refs = []
         for engine in self.rollout_engines:
             all_refs.append(
                 engine.load_lora_adapter_from_tensors.remote(
