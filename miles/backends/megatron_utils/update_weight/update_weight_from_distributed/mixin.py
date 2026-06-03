@@ -330,13 +330,14 @@ class DistBucketedWeightUpdateMixin:
             output_str=True,
         )
 
+        tp_size = self.args.rollout_num_gpus_per_engine
         all_refs = []
         for engine in self.rollout_engines:
             all_refs.append(
                 engine.load_lora_adapter_from_tensors.remote(
                     lora_name=LORA_ADAPTER_NAME,
                     config_dict=self._lora_config,
-                    serialized_named_tensors=[serialized],
+                    serialized_named_tensors=[serialized] * tp_size,
                     load_format="flattened_bucket",
                 )
             )
