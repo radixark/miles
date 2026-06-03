@@ -14,7 +14,9 @@ from miles.utils.timer import timer
 
 from ...lora_utils import LORA_ADAPTER_NAME, _is_adapter_param_name, build_lora_sync_config, is_lora_weight_name
 from ...megatron_to_hf import convert_to_hf
+from ...sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from ..common import (
+    _check_weight_sync_results,
     all_gather_param,
     collect_named_tensors_for_weight_transfer,
     get_atomic_update_groups,
@@ -148,6 +150,11 @@ class DistBucketedWeightUpdateMixin:
 
     def _get_weight_transfer_update_units(self, is_expert: bool) -> list[list[tuple[str, torch.Tensor]]]:
         named_tensors = list(collect_named_tensors_for_weight_transfer(self.args, self.model, is_expert=None))
+        named_tensors = [
+            (name.replace(".to_wrap.", "."), tensor)
+            for name, tensor in named_tensors
+            if not _is_adapter_param_name(name)
+        ]
         atomic_update_groups = get_atomic_update_groups(self.args, self.model_name)
         update_units = get_named_value_update_units(named_tensors, atomic_update_groups)
         for unit in update_units:
@@ -267,59 +274,53 @@ class DistBucketedWeightUpdateMixin:
         All TP ranks iterate the bridge (required for internal TP collectives),
         but only the source rank (DP=0, TP=0) serializes and sends.
         """
-        lora_sync_chunk_count = 0
-        all_refs: list[ObjectRef] = []
-
-        # Unload previous adapter before loading new weights (source rank only).
-        if self._is_source and self._lora_loaded:
-            ray.get(
-                [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
-            )
-
         # All ranks must iterate the bridge for TP collective participation.
-        # megatron_local_weights arg is unused for LoRA (bridge reads from model).
+        accumulated_named_tensors: list[tuple[str, torch.Tensor]] = []
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks({}, weight_type="lora"):
-            lora_sync_chunk_count += 1
+            accumulated_named_tensors.extend(hf_named_tensors)
 
-            if not self._is_source:
-                continue
-
-            if not any(is_lora_weight_name(n) for n, _ in hf_named_tensors):
-                raise RuntimeError(
-                    "LoRA weight sync failed: chunk contains no LoRA weights "
-                    "(no lora_A/lora_B names found). Check weight iterator."
-                )
-
-            # Serialize via FlattenedTensorBucket (same format as colocate path).
-            bucket = FlattenedTensorBucket(named_tensors=hf_named_tensors)
-            serialized = MultiprocessingSerializer.serialize(
-                {
-                    "flattened_tensor": bucket.get_flattened_tensor(),
-                    "metadata": bucket.get_metadata(),
-                },
-                output_str=True,
-            )
-
-            # Send to all rollout engines via Ray RPC.
-            for engine in self.rollout_engines:
-                all_refs.append(
-                    engine.load_lora_adapter_from_tensors.remote(
-                        lora_name=LORA_ADAPTER_NAME,
-                        config_dict=self._lora_config,
-                        serialized_tensors=serialized,
-                        load_format="flattened_bucket",
-                    )
-                )
-
-        if lora_sync_chunk_count == 0:
+        if not accumulated_named_tensors:
             raise RuntimeError(
                 "LoRA weight sync failed: the weight iterator produced zero chunks. "
                 "No adapter weights were sent to the rollout engine. This usually means "
                 "the Megatron-Bridge or SGLang version is incompatible."
             )
 
-        if all_refs:
-            _check_weight_sync_results(ray.get(all_refs), is_lora=True)
+        # Only the source rank (DP=0, TP=0) serializes and sends.
+        if not self._is_source:
+            return
 
-        if self._is_source:
-            self._lora_loaded = True
+        if not any(is_lora_weight_name(n) for n, _ in accumulated_named_tensors):
+            raise RuntimeError(
+                "LoRA weight sync failed: chunk contains no LoRA weights "
+                "(no lora_A/lora_B names found). Check weight iterator."
+            )
+
+        if self._lora_loaded:
+            ray.get(
+                [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
+            )
+
+        # Serialize via FlattenedTensorBucket (same format as colocate path).
+        bucket = FlattenedTensorBucket(named_tensors=accumulated_named_tensors)
+        serialized = MultiprocessingSerializer.serialize(
+            {
+                "flattened_tensor": bucket.get_flattened_tensor(),
+                "metadata": bucket.get_metadata(),
+            },
+            output_str=True,
+        )
+
+        all_refs: list[ObjectRef] = []
+        for engine in self.rollout_engines:
+            all_refs.append(
+                engine.load_lora_adapter_from_tensors.remote(
+                    lora_name=LORA_ADAPTER_NAME,
+                    config_dict=self._lora_config,
+                    serialized_named_tensors=[serialized],
+                    load_format="flattened_bucket",
+                )
+            )
+
+        _check_weight_sync_results(ray.get(all_refs), is_lora=True)
+        self._lora_loaded = True
