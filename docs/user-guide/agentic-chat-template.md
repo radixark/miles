@@ -22,6 +22,7 @@ No auto-detection — pick the family matching your model. Miles then auto-resol
 
 | Your model | `--tito-model` | Max `--tito-allowed-append-roles` |
 |---|---|---|
+| Qwen3 | `qwen3` | `tool user` |
 | Qwen3.5 | `qwen35` | `tool user` |
 | GLM-4.7 / GLM-5 | `glm47` | `tool user system` |
 | NVIDIA Nemotron 3 Super / Ultra | `nemotron3` | `tool user system` |
