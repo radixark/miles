@@ -36,7 +36,7 @@ Key modules:
 |---|---|
 | `miles/rollout/base_types.py` | `GenerateFnInput` / `GenerateFnOutput` |
 | `miles/rollout/inference_rollout/inference_rollout_common.py` | Builds a `GenerateState` and calls the generate function |
-| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/openai_format/*.sh`) |
+| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/experimental/swe-agent-v2`) |
 
 ### Generate function basics
 
@@ -185,18 +185,17 @@ Generator entry point:
 - `miles/rollout/generate_hub/agentic_tool_call.py`: OpenAI-format agent loop via
   router sessions.
 
-Examples:
+Example:
 
-- [`examples/openai_format/dapo_math.py`](https://github.com/radixark/miles/blob/main/examples/openai_format/dapo_math.py):
-  single-turn OpenAI-format agent (DAPO math).
-- [`examples/openai_format/run-qwen3-4B.sh`](https://github.com/radixark/miles/blob/main/examples/openai_format/run-qwen3-4B.sh): launcher.
+- [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2):
+  multi-turn agentic SWE agent on the session-server TITO path, with ready-to-run launchers.
 
-Wire-up:
+Wire-up (as used by swe-agent-v2):
 
 ```bash
 CUSTOM_ARGS=(
    --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
-   --custom-agent-function-path    examples.openai_format.dapo_math.run_agent
+   --custom-agent-function-path    swe_agent_function.run
 )
 ```
 

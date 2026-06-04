@@ -1,129 +1,62 @@
 ---
-title: Agentic Chat Templates
-description: How to verify and override the chat template applied during multi-turn rollout.
+title: Agentic Chat Templates (TITO)
+description: How to turn on and verify Token-In-Token-Out (TITO) for multi-turn agentic rollout.
 ---
 
-# Agentic Chat Templates
+# Agentic Chat Templates (TITO)
 
-In agentic / multi-turn workflows, Miles uses SGLang's pretokenized prefix mechanism
-so the conversation history is not re-tokenized every turn. That requires the chat
-template to satisfy an **append-only invariant**: rendering messages `[1..N]` must
-produce a string that is an exact prefix of rendering `[1..N+1]`.
+Multi-turn agentic rollout in Miles runs on **TITO** (Token-In-Token-Out): each turn's token sequence is a bit-perfect prefix of the next, so the trainer sees exactly the tokens the engine produced — no re-tokenization, no drift. The *why* is in the blog ([No Token Left Behind](https://lmsys.org/blog/2026-05-13-no-token-left-behind/)); this page is *how*.
 
-Some community templates violate this. They use `loop.last` or other
-context-dependent Jinja logic that flips bits across turns, and the result is silent
-tokenization drift, divergent log-probabilities, and gradient blow-up after a few
-iterations of multi-turn RL.
+Your harness only ever sends and receives **OpenAI chat messages**, never tokens. Miles keeps the per-trajectory append-only token buffer (ids + logprobs + routed experts) internally and ships it straight to training.
 
-Miles ships a verifier and an autofix.
+## Prerequisites
 
-## Quick start
+Your rollout loop must keep two invariants, or TITO is rejected at runtime:
 
-### Verify a HuggingFace template
+- **Append-only messages.** Each turn = previous messages + new ones on the tail; past turns are never edited. The only exception is retrying the latest turn — a single-step rollback to the last assistant checkpoint. Diverging earlier, or rolling back more than one turn, is rejected.
+- **Declared roles match the flag.** `--tito-allowed-append-roles` must list exactly the roles your harness appends after the first assistant turn (`tool` is always implied) — Miles resolves a prefix-stable template for that exact set, and appending any role outside it is rejected at runtime.
 
-```bash
-python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B
-```
+## Pick your `--tito-model`
 
-Failing output (illustrative):
+No auto-detection — pick the family matching your model. Miles then auto-resolves the fixed template from `(--tito-model, --tito-allowed-append-roles)`; pass `--chat-template-path` only to override. The table below lists common models; the full set and verified role surfaces live in [issue #712](https://github.com/radixark/miles/issues/712).
 
-```text
-Template source: HuggingFace: Qwen/Qwen3-0.6B
-Thinking cases:  disabled
+| Your model | `--tito-model` | Max `--tito-allowed-append-roles` |
+|---|---|---|
+| Qwen3.5 | `qwen35` | `tool user` |
+| GLM-4.7 / GLM-5 | `glm47` | `tool user system` |
+| NVIDIA Nemotron 3 Super / Ultra | `nemotron3` | `tool user system` |
+| Kimi K2.5 / K2.6 | `kimi25` / `kimi26` | `tool user` |
+| DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` | `tool` |
+| anything else | `default` | `tool` |
 
-  [FAIL] single_tool-N3                Prefix mismatch
-  [PASS] single_tool-N3-no_tools
-  [FAIL] multi_turn-N4                 Prefix mismatch
-  ...
-Verdict: FAIL - template is NOT append-only after last user message
-```
+More models: [issue #712](https://github.com/radixark/miles/issues/712).
 
-### Apply Miles's autofix
-
-If a fixed template ships for that model, `--autofix` swaps it in and re-runs the
-suite:
-
-```bash
-python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B --autofix
-```
-
-```text
-Template source: fixed template: .../templates/qwen3_fixed.jinja
-Verdict: PASS - template IS append-only after last user message
-```
-
-### Verify a local Jinja file
-
-```bash
-python scripts/tools/verify_chat_template.py --template path/to/my_template.jinja
-```
-
-### Include thinking-specific cases
-
-For Qwen3.5, GLM-5, and other models that toggle `enable_thinking`, add `--thinking`
-to also run thinking-specific trajectories.
-
-```bash
-python scripts/tools/verify_chat_template.py --model Qwen/Qwen3.5-0.8B --autofix --thinking
-```
-
-## CLI
-
-```text
-usage: verify_chat_template.py (--template PATH | --model MODEL_ID)
-                               [--autofix] [--thinking]
-```
-
-| Flag | What |
-|---|---|
-| `--template PATH` | Local `.jinja` template. |
-| `--model MODEL_ID` | HF model ID. |
-| `--autofix` | Apply Miles's fixed template if available. |
-| `--thinking` | Also run thinking-specific cases. |
-
-Exit code is `0` on pass, `1` on fail.
-
-## How it works
-
-For each test case (a list of messages), the verifier renders progressive prefixes
-and checks the invariant character by character:
-
-```python
-for n in range(1, len(messages)):
-    full   = render(messages[: n + 1])
-    prefix = render(messages[: n])
-    assert full.startswith(prefix), f"break between turn {n} and {n+1}"
-```
-
-The trajectory specs and cases live in
-`miles/utils/test_utils/chat_template_verify.py`. Standard cases cover
-single-tool, multi-turn, parallel-tool, and long-chain trajectories; the thinking
-suite adds variants that toggle `enable_thinking`.
-
-A break almost always comes from `loop.last`, conditional whitespace, or a closing
-token that's only emitted on the final turn.
-
-## Using the fixed template at training time
-
-Once you have the right template, point Miles at it:
+## Turn it on
 
 ```bash
 ROLLOUT_ARGS+=(
-   --chat-template-path /opt/miles/utils/chat_template_utils/templates/qwen3_fixed.jinja
+   --use-session-server          # entry point; required for the two flags below
+   --hf-checkpoint Qwen/Qwen3-4B
+   --tito-model qwen3
+   --tito-allowed-append-roles tool user
 )
 ```
 
-Built-in fixed templates that ship with Miles live under
-`miles/utils/chat_template_utils/templates/` (e.g. `qwen3_fixed.jinja`,
-`qwen3.5_fixed.jinja`, `qwen3_thinking_2507_and_next_fixed.jinja`).
+## Example
 
-## What "append-only" buys you
+A full multi-turn agentic setup on the session-server TITO path lives in [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2): its launchers wire `--use-session-server` + `--tito-model glm47` + `--tito-allowed-append-roles user tool` against a real SWE agent.
 
-| Without it | With it |
-|---|---|
-| Re-tokenize everything each turn | Tokenize only the new turn |
-| O(N²) tokenization cost | O(N) tokenization cost |
-| Subtle drift between turns | Bit-stable tokens |
-| Multi-turn RL collapses after ~50 steps | Stable across thousands of steps |
+## Add a new model
 
-Running the verifier as part of every model's pre-flight is recommended.
+Models in the table are verified by Miles maintainers — just pick the family. To support a new model (or a new append-role surface), register a `TITOTokenizer` subclass plus its fixed Jinja template (or HF-native + kwargs) and `SUPPORTED_TEMPLATES` rows in [`tito_tokenizer.py`](../../miles/utils/chat_template_utils/tito_tokenizer.py), then verify with both scripts — either failing blocks it. Each prints `Verdict: PASS/FAIL`.
+
+```bash
+# CPU / fast — rendered token sequence is append-only
+python scripts/tools/verify_chat_template.py \
+    --model <hf-id> --tito-model <family> --tito-allowed-append-roles tool user
+
+# GPU / e2e — still holds under real model inference
+python scripts/tools/verify_session_tito_tokenizer.py \
+    --hf-checkpoint <hf-id> --tito-model <family> --tito-allowed-append-roles tool user \
+    --sglang-reasoning-parser <rp> --sglang-tool-call-parser <tcp> --rollout-num-gpus-per-engine 1
+```
