@@ -45,7 +45,7 @@ def _ensure_module(dotted: str) -> ModuleType:
 # package". Importing the real parent package here registers the genuine
 # `miles`, `miles.backends`, and `miles.backends.megatron_utils` packages in
 # sys.modules so only the leaf modules get stubbed.
-import miles.backends.megatron_utils  # noqa: E402
+import miles.backends.megatron_utils  # noqa: E402,F401
 
 # Stub modules whose top-level imports in main.py would fail.
 _STUBS: dict[str, dict[str, Any]] = {
