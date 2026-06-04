@@ -31,6 +31,7 @@ from miles.utils.processing_utils import (
 )
 from miles.utils.types import Sample
 
+from .generate_utils.generate_endpoint_utils import get_indexer_topk_from_response
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
@@ -206,6 +207,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
+    if getattr(args, "use_rollout_indexer_replay", False):
+        payload["return_indexer_topk"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
@@ -260,6 +263,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             args.num_layers,
             args.moe_router_topk,
         )
+    if "indexer_topk" in output["meta_info"]:
+        sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     sample.update_from_meta_info(args, output["meta_info"])
 
@@ -502,13 +507,13 @@ async def generate_rollout_async(
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
-    if args.rollout_sample_filter_path is not None:
-        filter_func = load_function(args.rollout_sample_filter_path)
+    if (x := args.rollout_sample_filter_path) is not None:
+        filter_func = load_function(x)
         filter_func(args, data)
 
     # There can be circumstances where users want to process all samples including filtered ones.
-    if args.rollout_all_samples_process_path is not None:
-        process_func = load_function(args.rollout_all_samples_process_path)
+    if (x := args.rollout_all_samples_process_path) is not None:
+        process_func = load_function(x)
         process_func(args, all_samples, data_source)
 
     await recompute_samples_rollout_logprobs_via_prefill(

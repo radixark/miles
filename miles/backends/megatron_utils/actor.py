@@ -3,6 +3,7 @@ import random
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
+from typing import TYPE_CHECKING
 
 import ray
 import torch
@@ -19,29 +20,32 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
-from miles.utils.replay_base import all_replay_managers
+from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.cp_utils import slice_with_cp
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from ..training_utils.parallel import get_parallel_state
+from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .multi_lora_utils import is_multi_lora_enabled
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import get_register_replay_list_func
+from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_manager import EnginesAndLock
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -59,6 +63,10 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref)
+
+        for m in all_replay_managers:
+            m.register_replay_list_func = register_replay_list_sequential
+        routing_replay_manager.register_replay_list_func = register_replay_list_moe
 
         init(args)
 
@@ -109,7 +117,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
         else:
             for m in all_replay_managers:
-                m.enabled = getattr(self.args, f"use_{m.name}_replay")
+                m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
         if is_multi_lora_enabled(args):
@@ -194,10 +202,10 @@ class MegatronTrainRayActor(TrainRayActor):
         self.rollout_engines = None
 
         self.rollout_data_postprocess = None
-        if self.args.rollout_data_postprocess_path is not None:
+        if (x := self.args.rollout_data_postprocess_path) is not None:
             from miles.utils.misc import load_function
 
-            self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
+            self.rollout_data_postprocess = load_function(x)
 
         self.prof.on_init_end()
 
@@ -247,77 +255,6 @@ class MegatronTrainRayActor(TrainRayActor):
     def _set_replay_stage(self, stage: str) -> None:
         for m in all_replay_managers:
             m.stage = stage
-
-    def _fill_replay_data(
-        self,
-        data_iterator,
-        num_microbatches,
-        rollout_data,
-        data_key: str,
-        replay_list: list,
-        register_replay_list_func,
-        if_sp_region=True,
-    ):
-        if data_key not in rollout_data:
-            raise ValueError(f"{data_key} is required in rollout_data for replay.")
-
-        for iterator in data_iterator:
-            iterator.reset()
-
-        parallel_state = get_parallel_state()
-        tp_rank = parallel_state.tp.rank
-        tp_size = parallel_state.tp.size
-        qkv_format = self.args.qkv_format
-
-        def pad_func(data, pad):
-            _, num_layers, topk = data.shape
-            pad_tensor = torch.full(
-                (pad, num_layers, topk),
-                fill_value=-1,
-                device=data.device,
-                dtype=data.dtype,
-            )
-            return torch.cat([data, pad_tensor], dim=0)
-
-        for _ in range(sum(num_microbatches)):
-            batch = data_iterator[0].get_next([data_key, "tokens", "max_seq_lens"])
-            replay_data = batch[data_key]
-            tokens = batch["tokens"]
-            assert len(replay_data) == len(tokens)
-            for a, b in zip(replay_data, tokens, strict=False):
-                assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
-
-            # We need to pad the experts to the last token. We won't calculate loss on this token so this should be fine.
-            # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
-            replay_data = [pad_func(r, 1) for r in replay_data]
-            # TODO: maybe extract a common process function for here and get_batch?
-
-            if qkv_format == "bshd":
-                max_seqlen = batch["max_seq_lens"][0]
-                replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
-                replay_data = torch.stack(replay_data, dim=0)
-                batch_size, seqlen, num_layers, topk = replay_data.shape
-                replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
-            else:
-                replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
-                replay_data = torch.cat(replay_data, dim=0)
-                pad_size = parallel_state.tp.size * self.args.data_pad_size_multiplier
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
-
-            if self.args.sequence_parallel and if_sp_region:
-                seqlen = replay_data.size(0)
-                assert seqlen % tp_size == 0
-                start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
-                replay_data = replay_data[start:end]
-
-            register_replay_list_func(replay_list, replay_data, self.model)
-
-        del rollout_data[data_key]
-
-        for iterator in data_iterator:
-            iterator.reset()
 
     def compute_log_prob(
         self,
@@ -381,7 +318,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     def _use_rollout_replay(self, m) -> bool:
-        return getattr(self.args, f"use_rollout_{m.name}_replay")
+        return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
         # Create data iterator for log_probs and train.
@@ -389,14 +326,17 @@ class MegatronTrainRayActor(TrainRayActor):
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
-                self._fill_replay_data(
-                    data_iterator,
-                    num_microbatches,
-                    rollout_data,
+                fill_replay_data(
+                    args=self.args,
+                    models=self.model,
+                    data_iterator=data_iterator,
+                    num_microbatches=num_microbatches,
+                    rollout_data=rollout_data,
                     data_key=m.data_key,
                     replay_list=m.replays,
-                    register_replay_list_func=get_register_replay_list_func(m),
+                    register_replay_list_func=m.register_replay_list_func,
                     if_sp_region=m.if_sp_region,
+                    indices_are_token_positions=m.replay_indices_are_token_positions,
                 )
 
         with inverse_timer("train_wait"), timer("train"):
@@ -569,23 +509,21 @@ class MegatronTrainRayActor(TrainRayActor):
             destroy_process_groups()
 
     @timer
-    def update_weights(self) -> None:
+    def update_weights(self, info: "EnginesAndLock") -> None:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if self.args.use_fault_tolerance:
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.recover_updatable_engines.remote())
-            dist.barrier(group=get_gloo_group())
-
-        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
-        )
+        rollout_engines = info.rollout_engines
+        rollout_engine_lock = info.rollout_engine_lock
+        has_new_engines = info.has_new_engines
+        engine_gpu_counts = info.engine_gpu_counts
+        engine_gpu_offsets = info.engine_gpu_offsets
+        del info
 
         if self.args.offload_train:
             reload_process_groups()
 
-        if num_new_engines > 0:
+        if has_new_engines:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
@@ -594,7 +532,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:

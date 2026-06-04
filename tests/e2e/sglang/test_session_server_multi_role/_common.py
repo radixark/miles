@@ -6,9 +6,14 @@ through ``run_one(cfg)``.  The runner is a thin wrapper around
 4-GPU H200 ``num_gpus`` override applied centrally.
 """
 
+import argparse
 from dataclasses import dataclass
 
-from miles.utils.test_utils.session_verify_runner import ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD, run_session_verify
+from miles.utils.test_utils.session_verify_runner import (
+    ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD,
+    SESSION_VERIFY_INVARIANT_ARGS,
+    run_session_verify,
+)
 
 
 @dataclass(frozen=True)
@@ -35,18 +40,19 @@ class ModelConfig:
 
 
 def run_one(cfg: ModelConfig) -> None:
-    run_session_verify(
+    args = argparse.Namespace(
         hf_checkpoint=cfg.model_name,
         tito_model=cfg.tito_model,
-        allowed_append_roles=list(cfg.allowed_append_roles),
-        reasoning_parser=cfg.reasoning_parser,
-        tool_call_parser=cfg.tool_call_parser,
-        tp_size=cfg.tp_size,
-        cycles=cfg.cycles,
+        tito_allowed_append_roles=list(cfg.allowed_append_roles),
+        sglang_reasoning_parser=cfg.reasoning_parser,
+        sglang_tool_call_parser=cfg.tool_call_parser,
+        rollout_num_gpus_per_engine=cfg.tp_size,
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=cfg.num_gpus,
         n_samples_per_prompt=cfg.n_samples_per_prompt,
-        # run_session_verify defaults num_gpus=8 (H100 era); the suite runs on
-        # 4-GPU H200, so allocate 4 actor GPUs to match the runner.
-        num_gpus=cfg.num_gpus,
-        assistant_text_threshold=cfg.assistant_text_threshold,
+        session_verify_cycles=cfg.cycles,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
+        assistant_text_threshold=cfg.assistant_text_threshold,
+        **SESSION_VERIFY_INVARIANT_ARGS,
     )
+    run_session_verify(args=args)
