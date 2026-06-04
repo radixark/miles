@@ -2,6 +2,7 @@ import logging
 import os
 import random
 from argparse import Namespace
+from typing import TYPE_CHECKING
 
 import ray
 import torch
@@ -34,6 +35,9 @@ from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_manager import EnginesAndLock
 
 logger = logging.getLogger(__name__)
 
@@ -543,7 +547,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self) -> None:  # type: ignore[override]
+    def update_weights(self, info: "EnginesAndLock") -> None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines.
 
         Handles both colocated and distributed update modes. In offload mode,
@@ -552,10 +556,14 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
-        )
-        if num_new_engines > 0:
+        rollout_engines = info.rollout_engines
+        rollout_engine_lock = info.rollout_engine_lock
+        has_new_engines = info.has_new_engines
+        engine_gpu_counts = info.engine_gpu_counts
+        engine_gpu_offsets = info.engine_gpu_offsets
+        del info
+
+        if has_new_engines:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
@@ -564,7 +572,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         self.weight_updater.update_weights()
 

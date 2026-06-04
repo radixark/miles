@@ -142,18 +142,9 @@ def load_task_names(registry_path: Path, dataset_name: str) -> list[str]:
     data: list[dict[str, Any]] = json.loads(registry_path.read_text())
     for dataset in data:
         if dataset.get("name") == dataset_name:
-            return [
-                task["name"]
-                for task in (dataset.get("tasks") or [])
-                if isinstance(task, dict) and "name" in task
-            ]
-    available: list[str] = sorted(
-        d["name"] for d in data if isinstance(d.get("name"), str)
-    )
-    raise ValueError(
-        f"Dataset {dataset_name!r} not found in {registry_path}. "
-        f"Available datasets: {available}"
-    )
+            return [task["name"] for task in (dataset.get("tasks") or []) if isinstance(task, dict) and "name" in task]
+    available: list[str] = sorted(d["name"] for d in data if isinstance(d.get("name"), str))
+    raise ValueError(f"Dataset {dataset_name!r} not found in {registry_path}. " f"Available datasets: {available}")
 
 
 async def run_one_trial(
@@ -214,8 +205,7 @@ async def main(args: argparse.Namespace) -> None:
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
         raise SystemExit(
-            f"Environment variable {args.api_key_env!r} is not set. "
-            f"Export your DeepSeek API key first."
+            f"Environment variable {args.api_key_env!r} is not set. " f"Export your DeepSeek API key first."
         )
 
     task_names = load_task_names(args.registry_path, args.dataset_name)
@@ -238,9 +228,7 @@ async def main(args: argparse.Namespace) -> None:
 
     sem = asyncio.Semaphore(args.max_concurrent)
 
-    async def bounded(
-        client: httpx.AsyncClient, iid: str, idx: int
-    ) -> dict[str, Any]:
+    async def bounded(client: httpx.AsyncClient, iid: str, idx: int) -> dict[str, Any]:
         async with sem:
             return await run_one_trial(client, args, api_key, iid, idx)
 
@@ -266,10 +254,7 @@ async def main(args: argparse.Namespace) -> None:
                 flush=True,
             )
 
-    flat_rows = [
-        {k: v for k, v in row.items() if k not in {"agent_metrics", "eval_report"}}
-        for row in results
-    ]
+    flat_rows = [{k: v for k, v in row.items() if k not in {"agent_metrics", "eval_report"}} for row in results]
     pl.from_dicts(flat_rows).write_parquet(args.output_parquet)
 
     completed = [r for r in results if r.get("reward") is not None]

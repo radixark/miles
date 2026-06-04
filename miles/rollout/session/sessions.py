@@ -148,6 +148,8 @@ def setup_session_routes(app, backend, args):
                 request_body["return_meta_info"] = True
                 if getattr(args, "use_rollout_routing_replay", False):
                     request_body["return_routed_experts"] = True
+                if getattr(args, "use_rollout_indexer_replay", False):
+                    request_body["return_indexer_topk"] = True
                 # Must be False so stop-token text is trimmed from assistant
                 # message content; token IDs are still taken from logprobs below.
                 request_body["no_stop_trim"] = False

@@ -35,8 +35,7 @@ NUM_LAYERS: int = 5
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
-# FIXME: @guapisolo add back after fixing CI issue
-register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"], disabled="Jiajun fix later")
+register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,4 +152,8 @@ def compare(
 
 
 if __name__ == "__main__":
+    # The CI harness invokes this file as bare `python3 <file>` with no args.
+    # Default to the canonical comparison in that case; keep the typer CLI for manual runs.
+    if len(sys.argv) == 1:
+        sys.argv += ["run", "--mode", "tp1_vs_tp2pp2cp2"]
     app()

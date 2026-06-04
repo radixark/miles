@@ -7,6 +7,11 @@ except ImportError:
     transform_scale_ue8m0 = None
     should_deepgemm_weight_requant_ue8m0 = None
 
+try:
+    from sglang.srt.layers.quantization.fp8_utils import per_block_cast_to_fp8
+except ImportError:
+    per_block_cast_to_fp8 = None
+
 # mxfp8
 try:
     from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
@@ -27,6 +32,7 @@ except ImportError:
 
 __all__ = [
     "mxfp8_group_quantize",
+    "per_block_cast_to_fp8",
     "quant_weight_ue8m0",
     "transform_scale_ue8m0",
     "should_deepgemm_weight_requant_ue8m0",
