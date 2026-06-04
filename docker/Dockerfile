@@ -25,6 +25,12 @@ ARG ENABLE_CUDA_13=0
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
 ARG WHEELS_TAG=cu129-x86_64-v0.5.12
 
+# Pinned commit on the `bridge` branch of radixark/Megatron-Bridge. Bumping this
+# value (and only this value) is the prescribed way to upgrade Megatron-Bridge
+# in the image — every miles commit thereby records exactly which Megatron-Bridge
+# revision it ships against.
+ARG MEGATRON_BRIDGE_SHA=6fde1c8538ea4ad966c7fba5f759be54f943b598
+
 # ======================================== Setup =============================================
 
 WORKDIR /root/
@@ -109,7 +115,7 @@ RUN cd /root/Megatron-LM && pip install -e .
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 # RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
+RUN pip install "git+https://github.com/radixark/Megatron-Bridge.git@${MEGATRON_BRIDGE_SHA}" --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
