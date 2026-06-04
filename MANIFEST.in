@@ -1,3 +1,10 @@
+# Defensively include the top-level README + LICENSE so they ship in
+# both the sdist and the wheel (PyPI renders the README on the project
+# page; setuptools embeds it into the wheel's METADATA via setup.py's
+# `long_description=`, but a duplicate listing here is harmless and
+# protects the sdist).
+include README.md LICENSE
+
 # MANIFEST.in — additional files to include in the miles-rl wheel.
 #
 # The bundled patched sglang and Megatron-LM source has non-Python data

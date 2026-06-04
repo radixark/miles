@@ -7,6 +7,12 @@ def _fetch_requirements(path):
         return [r.strip() for r in fd.readlines() if r.strip() and not r.startswith("#")]
 
 
+def _read_long_description():
+    """Return the README contents so PyPI renders the project page."""
+    from pathlib import Path
+    return Path(__file__).parent.joinpath("README.md").read_text(encoding="utf-8")
+
+
 # Custom wheel class for the bundled miles-rl wheel.
 #
 # After Phase 6 bundles the patched sglang + Megatron-LM Python source
@@ -65,11 +71,23 @@ _megatron_plugins_packages = find_namespace_packages(
 
 # Setup configuration
 setup(
-    author="miles Team",
     name="miles-rl",
-    # First public PyPI release of the bundled miles-rl wheel. Bump for each
-    # subsequent release; PyPI rejects re-uploads of the same version.
-    version="0.0.1",
+    # Bump for each release. PyPI rejects re-uploads of the same version.
+    version="0.0.2",
+    author="Radixark Miles Team",
+    author_email="miles@radixark.ai",
+    description="Enterprise-grade reinforcement learning for large-scale model training.",
+    long_description=_read_long_description(),
+    long_description_content_type="text/markdown",
+    url="https://github.com/radixark/miles",
+    project_urls={
+        "Source": "https://github.com/radixark/miles",
+        "Documentation": "https://www.radixark.com/miles/docs",
+        "Issues": "https://github.com/radixark/miles/issues",
+    },
+    license="Apache-2.0",
+    license_files=("LICENSE",),
+    keywords="reinforcement-learning rlhf rl moe sglang megatron training",
     packages=(
         _miles_packages
         + _sglang_packages
