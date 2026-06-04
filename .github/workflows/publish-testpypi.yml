@@ -1,0 +1,205 @@
+name: Publish wheel to TestPyPI (Phase 5a dry-run)
+
+# Phase 5a of the `pip install miles` roadmap: validates the wheel-build +
+# index-publish pipeline against TestPyPI, before committing to a real
+# production index (private or PyPI proper).
+#
+# Manual-only trigger. Builds a wheel from one of the in-tree submodules
+# (sglang or Megatron-LM), rewrites the project name to a Radixark-namespaced
+# placeholder, overrides the version to a unique dev release, and uploads
+# to https://test.pypi.org/.
+#
+# Setup required before running this workflow for the first time:
+#   1. Register an account at https://test.pypi.org/ (separate from PyPI).
+#   2. Create an API token at https://test.pypi.org/manage/account/token/
+#      with "Entire account" scope (you can narrow it after the first
+#      successful upload).
+#   3. Add the token as a GitHub Actions secret named `TEST_PYPI_API_TOKEN`
+#      at https://github.com/radixark/miles/settings/secrets/actions.
+
+on:
+  # Bootstrap trigger so the workflow can be exercised before it lands on
+  # the default branch (GitHub Actions requires workflow_dispatch targets
+  # to exist on `main`). Remove this `push:` block before merge — the
+  # `workflow_dispatch` below is the intended long-term trigger.
+  push:
+    branches:
+      - shi/phase5a-testpypi-dry-run
+    paths:
+      - '.github/workflows/publish-testpypi.yml'
+
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Which submodule to package'
+        required: true
+        type: choice
+        options:
+          - sglang
+          - megatron-lm
+        default: sglang
+      dry_run:
+        description: 'Build only — skip TestPyPI upload (useful for first-pass validation without credentials)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # On a `push` trigger (the bootstrap path), `inputs.*` are empty.
+      # Default to a safe dry-run build of sglang in that case.
+      PACKAGE: ${{ inputs.package || 'sglang' }}
+      DRY_RUN: ${{ inputs.dry_run || (github.event_name == 'push') }}
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build + upload tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Resolve package config
+        id: cfg
+        shell: bash
+        run: |
+          case "${{ env.PACKAGE }}" in
+            sglang)
+              # sglang's pyproject.toml lives at python/ inside the repo.
+              echo "src_dir=third_party/sglang/python" >> "$GITHUB_OUTPUT"
+              echo "rename_to=radixark-sglang-test" >> "$GITHUB_OUTPUT"
+              echo "sub_dir=third_party/sglang" >> "$GITHUB_OUTPUT"
+              ;;
+            megatron-lm)
+              echo "src_dir=third_party/Megatron-LM" >> "$GITHUB_OUTPUT"
+              echo "rename_to=radixark-megatron-test" >> "$GITHUB_OUTPUT"
+              echo "sub_dir=third_party/Megatron-LM" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unknown package: ${{ env.PACKAGE }}"; exit 1 ;;
+          esac
+          # PEP 440-compliant dev release version: 0.0.0.devYYYYMMDDHHMMSS
+          ts=$(date -u +'%Y%m%d%H%M%S')
+          echo "dev_version=0.0.0.dev${ts}" >> "$GITHUB_OUTPUT"
+          # Submodule SHA: carried as build metadata only (in README of wheel).
+          if [ "${{ env.PACKAGE }}" = "sglang" ]; then sub_path=third_party/sglang; else sub_path=third_party/Megatron-LM; fi
+          sub_sha=$(git -C "$sub_path" rev-parse HEAD)
+          echo "sub_sha=${sub_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Rewrite project name + version in pyproject.toml
+        shell: bash
+        env:
+          SRC_DIR: ${{ steps.cfg.outputs.src_dir }}
+          RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
+          DEV_VERSION: ${{ steps.cfg.outputs.dev_version }}
+          SUB_SHA: ${{ steps.cfg.outputs.sub_sha }}
+        run: |
+          python <<'PYEOF'
+          import os, re, pathlib
+          src_dir   = os.environ['SRC_DIR']
+          new_name  = os.environ['RENAME_TO']
+          new_ver   = os.environ['DEV_VERSION']
+          sub_sha   = os.environ['SUB_SHA']
+
+          py = pathlib.Path(src_dir, 'pyproject.toml')
+          text = py.read_text()
+
+          # Replace name (under [project])
+          text = re.sub(r'(?m)^name\s*=\s*"[^"]+"', f'name = "{new_name}"', text, count=1)
+
+          # Force a static version; drop dynamic if present
+          text = re.sub(r'(?m)^dynamic\s*=\s*\[[^\]]*"version"[^\]]*\]\s*\n', '', text)
+          if re.search(r'(?m)^version\s*=', text):
+              text = re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{new_ver}"', text, count=1)
+          else:
+              # Insert version line right after the [project] table header
+              text = re.sub(r'(?m)^\[project\]\s*\n', f'[project]\nversion = "{new_ver}"\n', text, count=1)
+
+          py.write_text(text)
+          print(f"=== rewrote {py} ===")
+          print(text[:2000])
+          PYEOF
+
+      - name: Build wheel + sdist
+        shell: bash
+        run: |
+          cd "${{ steps.cfg.outputs.src_dir }}"
+          python -m build --wheel --sdist
+          ls -lh dist/
+
+      - name: List built artifacts
+        shell: bash
+        run: |
+          ls -lh "${{ steps.cfg.outputs.src_dir }}/dist/"
+          echo "--- wheel METADATA (Name + Version + size) ---"
+          for w in "${{ steps.cfg.outputs.src_dir }}"/dist/*.whl; do
+            unzip -p "$w" "*/METADATA" 2>/dev/null | head -10 || true
+          done
+
+      - name: Upload to TestPyPI
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo "::error::TEST_PYPI_API_TOKEN secret is not set. Set it at https://github.com/radixark/miles/settings/secrets/actions or re-run with dry_run=true."
+            exit 1
+          fi
+          twine upload --repository testpypi --skip-existing "${{ steps.cfg.outputs.src_dir }}"/dist/*
+
+      - name: Wait for TestPyPI index to surface the uploaded version
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
+          DEV_VERSION: ${{ steps.cfg.outputs.dev_version }}
+        run: |
+          # twine upload reports success the moment the upload finishes, but
+          # TestPyPI's /simple/ index is eventually-consistent and often
+          # takes 30-120s to reflect a new release. Poll until it appears
+          # or a 5-minute timeout fires.
+          set -e
+          url="https://test.pypi.org/simple/${RENAME_TO}/"
+          for i in $(seq 1 30); do
+            if curl -fs "$url" | grep -q "${DEV_VERSION}"; then
+              echo "TestPyPI index now lists ${RENAME_TO}==${DEV_VERSION} (after ${i} polls)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::TestPyPI index still missing ${RENAME_TO}==${DEV_VERSION} after 5 min — index propagation stalled or upload silently failed"
+          curl -fs "$url" | head -40 || true
+          exit 1
+
+      - name: Smoke install in a fresh venv
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          RENAME_TO: ${{ steps.cfg.outputs.rename_to }}
+          DEV_VERSION: ${{ steps.cfg.outputs.dev_version }}
+        run: |
+          python -m venv /tmp/smoke
+          # Important: install ONLY our wheel, not its transitive deps.
+          # TestPyPI is a public sandbox riddled with name-squat / broken
+          # packages (e.g. FASTAPI-1.0 vs fastapi); pulling deps from it
+          # via --extra-index-url is unsafe regardless of our own wheel.
+          # The proof we want here is "the wheel we just uploaded is
+          # actually fetchable and installable" — `--no-deps` is enough.
+          /tmp/smoke/bin/pip install \
+            --index-url https://test.pypi.org/simple/ \
+            --no-deps \
+            "${RENAME_TO}==${DEV_VERSION}"
+          /tmp/smoke/bin/pip show "${RENAME_TO}"
