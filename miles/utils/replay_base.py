@@ -12,7 +12,8 @@ def _get_rank():
 
 
 class Replay:
-    def __init__(self):
+    def __init__(self, stream_idx: int | None = None):
+        self.stream_idx = stream_idx
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
@@ -52,15 +53,20 @@ class Replay:
 class BaseReplayManager:
     name: str = ""
     filename: str = ""
+    replay_check_min_overlap_ratio = 0.0  # 0.0 = mismatch only on zero overlap
+    # True when replayed indices are token/KV positions (indexer): rebase the
+    # per-sample 0-based rollout indices onto the packed training sequence.
+    replay_indices_are_token_positions = False
 
     def __init__(self):
         self.replays: list[Replay] = []
         self.current: Replay | None = None
         self.enabled = False
         self.stage = "fallthrough"
+        self.register_replay_list_func = None
 
-    def create_replay(self) -> Replay:
-        replay = Replay()
+    def create_replay(self, stream_idx: int | None = None) -> Replay:
+        replay = Replay(stream_idx=stream_idx)
         self.replays.append(replay)
         return replay
 
@@ -93,12 +99,14 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            padding_mask = top_indices == -1
-            if padding_mask.any():
-                top_indices[padding_mask] = (
-                    torch.arange(padding_mask.sum(), device=top_indices.device, dtype=top_indices.dtype)
+            # fill padding tokens with arange to avoid invalid reading
+            all_invalid = (top_indices == -1).all(dim=-1)
+            if all_invalid.any():
+                ar = (
+                    torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
                     % scores.shape[1]
                 )
+                top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
@@ -135,10 +143,10 @@ class BaseReplayManager:
 
         return new_topk_fn
 
-    def register_to_module(self, module, attr_name: str):
+    def register_to_module(self, module, attr_name: str, stream_idx: int | None = None):
         if not self.enabled:
             return
-        replay = self.create_replay()
+        replay = self.create_replay(stream_idx=stream_idx)
         setattr(module, attr_name, replay)
         manager = self
 
@@ -150,9 +158,11 @@ class BaseReplayManager:
     def check_replay_result(self, old_topk_fn, scores, topk, top_indices, *args, **kwargs):
         """
         CI checker for R3. Only enable when enable_check_replay_result=True.
-        Calculate the overlapping between training engine's computed routing result
-        and replay routing result.
-        If mismatch token count > n_tokens * replay_check_threshold, raise error.
+        Per token, measure the overlap between the training engine's recomputed
+        topk and the replayed topk (ignoring -1 padding). A token is mismatched
+        when overlap < replay_check_min_overlap_ratio of its valid picks (ratio 0.0 =
+        only zero overlap). Raise when the mismatched fraction exceeds
+        replay_check_max_mismatch_fraction.
         """
         orig_top_indices = old_topk_fn(scores, topk, *args, **kwargs)
         if isinstance(orig_top_indices, tuple):
@@ -160,20 +170,31 @@ class BaseReplayManager:
 
         orig_flat = orig_top_indices.view(-1, orig_top_indices.shape[-1])  # [n_tokens, topk]
         replay_flat = top_indices.view(-1, top_indices.shape[-1])
+        valid_orig = orig_flat != -1
+        valid_replay = replay_flat != -1
 
-        # [n_tokens, topk_orig, 1] == [n_tokens, 1, topk_replay] -> [n_tokens, topk_orig, topk_replay]
-        matches = orig_flat.unsqueeze(2) == replay_flat.unsqueeze(1)
-        # Mask out -1 (padding) matches
-        matches &= (orig_flat != -1).unsqueeze(2) & (replay_flat != -1).unsqueeze(1)
-        has_overlap = matches.any(dim=(1, 2))  # [n_tokens]
-        is_padding = (replay_flat == -1).all(dim=1)
-        is_mismatch = ~has_overlap & ~is_padding
+        # token-wise set overlap via a membership mask, avoiding the O(n*topk^2)
+        # all-pairs tensor; -1 padding is routed to a sentinel column
+        n_kv = int(torch.maximum(orig_flat.max(), replay_flat.max()).clamp_min(0)) + 1
+        membership = orig_flat.new_zeros((orig_flat.shape[0], n_kv + 1), dtype=torch.bool)
+        membership.scatter_(1, torch.where(valid_orig, orig_flat, n_kv).long(), True)
+        replay_idx = torch.where(valid_replay, replay_flat, n_kv).long()
+        hit = membership.gather(1, replay_idx) & valid_replay  # [n_tokens, topk]
+
+        overlap = hit.sum(dim=1)
+        valid_count = valid_replay.sum(dim=1)
+        is_padding = valid_count == 0
+        if self.replay_check_min_overlap_ratio == 0.0:
+            required = torch.ones_like(overlap)  # legacy: mismatch only on zero overlap
+        else:
+            required = (valid_count * self.replay_check_min_overlap_ratio).ceil().to(overlap.dtype)
+        is_mismatch = (overlap < required) & ~is_padding
 
         mismatch_count = is_mismatch.sum().item()
         if mismatch_count == 0:
             return
 
-        threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_threshold))
+        threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_max_mismatch_fraction))
         mismatch_threshold = threshold * orig_flat.shape[0]
         mismatch_indices = is_mismatch.nonzero(as_tuple=False).squeeze(1)
         for idx in mismatch_indices:
@@ -184,7 +205,7 @@ class BaseReplayManager:
                 lines.append(f"  token {j}: orig={orig_flat[j].tolist()}, replay={replay_flat[j].tolist()}{marker}")
             logger.warning(
                 f"Replay check (rank {_get_rank()}, stage {self.stage}): "
-                f"token {i} zero overlap, topk={topk}\n" + "\n".join(lines)
+                f"token {i} overlap {overlap[i].item()}/{valid_count[i].item()}, topk={topk}\n" + "\n".join(lines)
             )
 
         if mismatch_count > mismatch_threshold:
@@ -197,8 +218,20 @@ class RoutingReplayManager(BaseReplayManager):
     data_key = "rollout_routed_experts"
     if_sp_region = True
     enable_check_replay_result = False
-    replay_check_threshold = 1e-2
+    replay_check_max_mismatch_fraction = 1e-2
+
+
+class IndexerReplayManager(BaseReplayManager):
+    name = "indexer"
+    filename = "indexer_replay.pt"
+    data_key = "rollout_indexer_topk"
+    if_sp_region = False
+    enable_check_replay_result = False
+    replay_check_max_mismatch_fraction = 1e-2
+    replay_check_min_overlap_ratio = 0.8
+    replay_indices_are_token_positions = True
 
 
 routing_replay_manager = RoutingReplayManager()
-all_replay_managers = [routing_replay_manager]
+indexer_replay_manager = IndexerReplayManager()
+all_replay_managers = [routing_replay_manager, indexer_replay_manager]

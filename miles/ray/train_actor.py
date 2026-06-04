@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_local_gpu_id():
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", None)
-    if cvd is None:
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+    if not cvd:
         return ray.get_gpu_ids()[0]
     else:
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))

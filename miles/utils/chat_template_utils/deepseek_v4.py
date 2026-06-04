@@ -7,12 +7,12 @@ import logging
 import os
 from typing import Any
 
-from sglang.srt.entrypoints.openai import encoding_dsv32
+from sglang.srt.entrypoints.openai import encoding_dsv4
 from sglang.srt.entrypoints.openai.protocol import Tool
 
 logger = logging.getLogger(__name__)
 
-_MODEL_TYPE = "deepseek_v32"
+_MODEL_TYPE = "deepseek_v4"
 
 _KNOWN_KWARGS = frozenset(
     {
@@ -20,6 +20,7 @@ _KNOWN_KWARGS = frozenset(
         "drop_thinking",
         "add_default_bos_token",
         "context",
+        "reasoning_effort",
     }
 )
 
@@ -42,8 +43,8 @@ def _read_model_type(name_or_path: str) -> str:
     return config.get("model_type", "") or ""
 
 
-def is_deepseek_v32(tokenizer: Any) -> bool:
-    """Return True when *tokenizer* is a DeepSeek V3.2 checkpoint."""
+def is_deepseek_v4(tokenizer: Any) -> bool:
+    """Return True when *tokenizer* is a DeepSeek V4 checkpoint."""
     return _read_model_type(tokenizer.name_or_path) == _MODEL_TYPE
 
 
@@ -58,6 +59,8 @@ def _build_deepseek_encode_config(kwargs: dict) -> dict:
             f"apply_chat_template_kwargs has unsupported kwargs {sorted(unknown)} "
             f"for the DeepSeek encoder. Known keys: {sorted(_KNOWN_KWARGS)}"
         )
+    # reasoning_effort has no default: like context, it is only forwarded when the
+    # caller supplies it, and its value is validated by encoding_dsv4 (not here).
     cfg = {"thinking_mode": "thinking", "drop_thinking": True, "add_default_bos_token": True}
     for key in _KNOWN_KWARGS:
         if key in kwargs:
@@ -80,7 +83,7 @@ def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[s
 
 
 def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None = None, **kwargs: Any) -> str:
-    """Render *messages* into a DeepSeek V3.2 prompt via sglang ``encode_messages``.
+    """Render *messages* into a DeepSeek V4 prompt via sglang ``encode_messages``.
 
     Tool_call ``arguments`` must already be JSON strings; *tools*, if given, are
     injected into the system message (see ``_inject_tools_into_system``).
@@ -88,4 +91,4 @@ def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None 
     encode_config = _build_deepseek_encode_config(kwargs)
     if tools:
         messages = _inject_tools_into_system(messages, tools)
-    return encoding_dsv32.encode_messages(messages, **encode_config)
+    return encoding_dsv4.encode_messages(messages, **encode_config)
