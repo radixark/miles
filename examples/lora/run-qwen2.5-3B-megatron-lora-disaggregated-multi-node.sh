@@ -74,6 +74,8 @@ LOCAL_IP=$(python3 -c "import socket;s=socket.socket(socket.AF_INET,socket.SOCK_
 SOCKET_IFNAME="${SOCKET_IFNAME:-$(ip -o -4 addr show | awk -v ip="$LOCAL_IP" '$4 ~ "^"ip"/" {print $2; exit}')}"
 SOCKET_IFNAME="${SOCKET_IFNAME:-eth0}"
 echo "Using SOCKET_IFNAME=${SOCKET_IFNAME} for NCCL/Gloo cross-node sockets"
+export NCCL_SOCKET_IFNAME="${SOCKET_IFNAME}"
+export GLOO_SOCKET_IFNAME="${SOCKET_IFNAME}"
 
 # ---------------------------------------------------------------------------
 # Positional arguments
@@ -288,9 +290,7 @@ if [ "$NODE_RANK" -eq 0 ]; then
            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
            "NCCL_ALGO": "Ring",
            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-           "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-           "NCCL_SOCKET_IFNAME": "'"${SOCKET_IFNAME}"'",
-           "GLOO_SOCKET_IFNAME": "'"${SOCKET_IFNAME}"'"
+           "CUBLAS_WORKSPACE_CONFIG": ":4096:8"
         }
       }' \
       -- python3 train.py \
