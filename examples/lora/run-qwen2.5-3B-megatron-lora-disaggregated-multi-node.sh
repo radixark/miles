@@ -70,7 +70,8 @@ ROLLOUT_GPUS_PER_ENGINE="${ROLLOUT_GPUS_PER_ENGINE:-1}"
 
 # Network interface NCCL/Gloo use for cross-node sockets
 apt-get install -y iproute2
-SOCKET_IFNAME="${SOCKET_IFNAME:-$(ip -o -4 route get "${HEAD_NODE_IP}" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')}"
+LOCAL_IP=$(python3 -c "import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.connect(('8.8.8.8',53));print(s.getsockname()[0])" 2>/dev/null)
+SOCKET_IFNAME="${SOCKET_IFNAME:-$(ip -o -4 addr show | awk -v ip="$LOCAL_IP" '$4 ~ "^"ip"/" {print $2; exit}')}"
 SOCKET_IFNAME="${SOCKET_IFNAME:-eth0}"
 echo "Using SOCKET_IFNAME=${SOCKET_IFNAME} for NCCL/Gloo cross-node sockets"
 
