@@ -238,6 +238,7 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
+   --no-gradient-accumulation-fusion
 
    # disaggregated layout: training spans NUM_TRAIN_NODES nodes, rollout the rest
    --actor-num-nodes ${NUM_TRAIN_NODES}
