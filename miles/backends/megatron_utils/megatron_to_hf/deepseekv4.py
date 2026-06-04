@@ -1,7 +1,5 @@
 import re
 
-import torch
-
 from ..update_weight.common import AtomicUpdateGroup
 
 
@@ -23,16 +21,6 @@ def get_deepseek_v4_atomic_update_groups():
             ),
         ]
     ]
-
-
-def _apply_ape_hotfix_mirror(param):
-    # Mirror SGLang Compressor.apply_ape_hotfix so the Megatron -> SGLang weight update
-    # lands the ape in kernel layout. SGLang applies the hotfix once at load (ape_converted
-    # guard) for ratio==4 compressors (self.overlap), so the RL weight update must supply
-    # the already-converted layout.
-    assert param.shape[0] == 4
-    ape = torch.chunk(param, 2, dim=-1)
-    return torch.cat([ape[0], ape[1]], dim=0).view(4, -1).contiguous()
 
 
 def convert_deepseekv4_to_hf(args, name, param):
@@ -116,8 +104,6 @@ def convert_deepseekv4_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.attn_sink", param)]
 
         elif rest == "self_attention.compressor.ape":
-            if param.shape[0] == 4:
-                param = _apply_ape_hotfix_mirror(param)
             return [(f"model.layers.{layer_idx}.self_attn.compressor.ape", param)]
         elif rest == "self_attention.compressor.wkv.weight":
             return [(f"model.layers.{layer_idx}.self_attn.compressor.wkv.weight", param)]
@@ -138,8 +124,6 @@ def convert_deepseekv4_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.indexer.weights_proj.weight", param)]
 
         elif rest == "self_attention.indexer.compressor.ape":
-            if param.shape[0] == 4:
-                param = _apply_ape_hotfix_mirror(param)
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.ape", param)]
         elif rest == "self_attention.indexer.compressor.wkv.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.wkv.weight", param)]
