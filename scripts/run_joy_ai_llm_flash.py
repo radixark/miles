@@ -6,6 +6,44 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 
+MXFP8_HIGH_PRECISION_LAYERS_HF = ".kv_b_proj. .shared_experts."
+MXFP8_HIGH_PRECISION_LAYERS_MEGATRON = (
+    ".linear_kv_up_proj .linear_k_up_proj .linear_v_up_proj " ".shared_experts.linear_fc1 .shared_experts.linear_fc2"
+)
+MXFP8_TE_PRECISION_CONFIG = """
+configs:
+  bf16:
+    transformer_engine_config_type: "TEQuantizationParams"
+    training_recipe: {}
+matchers:
+  mla_kv_up_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.linear_kv_up_proj"
+    config: "bf16"
+  absorbed_k_up_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.linear_k_up_proj"
+    config: "bf16"
+  absorbed_v_up_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.linear_v_up_proj"
+    config: "bf16"
+  shared_fc1:
+    type: "glob"
+    enabled: true
+    pattern: "*.mlp.shared_experts.linear_fc1"
+    config: "bf16"
+  shared_fc2:
+    type: "glob"
+    enabled: true
+    pattern: "*.mlp.shared_experts.linear_fc2"
+    config: "bf16"
+""".strip()
+
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
@@ -26,9 +64,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_mxfp8: bool = False
     enable_mis: bool = False
     tis_use_rs: bool = True
+    ci_test: bool = False
+    save_checkpoints: bool = True
+    num_rollout: int = 3000
+    global_batch_size: int = 256
+    data_pad_size_multiplier: int | None = None
+    log_probs_chunk_size: int | None = None
+    mxfp8_num_layers_at_start_in_bf16: int = 1
+    mxfp8_num_layers_at_end_in_bf16: int = 6
 
     def __post_init__(self):
-        pass
+        if self.train_mxfp8:
+            assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8"
 
 
 def prepare(args: ScriptArgs):
@@ -41,6 +88,9 @@ def prepare(args: ScriptArgs):
         U.exec_command(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
+            f"--num-layers-at-start-in-bf16 {args.mxfp8_num_layers_at_start_in_bf16} "
+            f"--num-layers-at-end-in-bf16 {args.mxfp8_num_layers_at_end_in_bf16} "
+            f"--extra-high-precision-layers-hf {MXFP8_HIGH_PRECISION_LAYERS_HF} "
             f"{args.extra_args} "
         )
 
@@ -55,7 +105,7 @@ def prepare(args: ScriptArgs):
     )
 
 
-def execute(args: ScriptArgs):
+def execute(args: ScriptArgs, *, wandb_file: str = __file__):
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
@@ -63,14 +113,14 @@ def execute(args: ScriptArgs):
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
     else:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
-    ckpt_args = (
-        f"--hf-checkpoint {hf_checkpoint}/ "
-        f"--ref-load {ref_load_path} "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
-        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
-        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
-    )
+    ckpt_args = f"--hf-checkpoint {hf_checkpoint}/ " f"--ref-load {ref_load_path} "
+    if args.save_checkpoints:
+        ckpt_args += (
+            f"--load {load_save_path} "
+            f"--save {load_save_path} "
+            f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
+            f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
+        )
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -79,12 +129,12 @@ def execute(args: ScriptArgs):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3000 "
+        f"--num-rollout {args.num_rollout} "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
     )
 
@@ -106,6 +156,10 @@ def execute(args: ScriptArgs):
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 32768 "
     )
+    if args.data_pad_size_multiplier is not None:
+        perf_args += f"--data-pad-size-multiplier {args.data_pad_size_multiplier} "
+    if args.log_probs_chunk_size is not None:
+        perf_args += f"--log-probs-chunk-size {args.log_probs_chunk_size} "
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -151,6 +205,9 @@ def execute(args: ScriptArgs):
                     "--bf16 "
                     "--fp8-format e4m3 "
                     "--fp8-recipe mxfp8 "
+                    "--first-last-layers-bf16 "
+                    f"--num-layers-at-start-in-bf16 {args.mxfp8_num_layers_at_start_in_bf16} "
+                    f"--num-layers-at-end-in-bf16 {args.mxfp8_num_layers_at_end_in_bf16} "
                     # "--fp8-param-gather "
                     # "--reuse-grad-buf-for-mxfp8-param-ag "
                     # --moe-router-padding-for-quantization
@@ -183,35 +240,16 @@ def execute(args: ScriptArgs):
                     # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                 )
                 misc_args += (
-                    "--extra-high-precision-layers-hf .kv_b_proj. "
-                    "--extra-high-precision-layers-megatron .linear_kv_up_proj .linear_k_up_proj .linear_v_up_proj "
+                    "--use-rollout-routing-replay "
+                    "--use-miles-router "
+                    "--sglang-disable-shared-experts-fusion "
+                    f"--extra-high-precision-layers-hf {MXFP8_HIGH_PRECISION_LAYERS_HF} "
+                    f"--extra-high-precision-layers-megatron {MXFP8_HIGH_PRECISION_LAYERS_MEGATRON} "
                 )
                 optimizer_args += (
                     "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
                 )
-                te_precision_config_text = """
-configs:
-  bf16:
-    transformer_engine_config_type: "TEQuantizationParams"
-    training_recipe: {}
-matchers:
-  mla_kv_up_proj_bf16:
-    type: "glob"
-    enabled: true
-    pattern: "*.self_attention.linear_kv_up_proj"
-    config: "bf16"
-  absorbed_k_up_proj_bf16:
-    type: "glob"
-    enabled: true
-    pattern: "*.self_attention.linear_k_up_proj"
-    config: "bf16"
-  absorbed_v_up_proj_bf16:
-    type: "glob"
-    enabled: true
-    pattern: "*.self_attention.linear_v_up_proj"
-    config: "bf16"
-""".strip()
-                misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
+                misc_args += f"--te-precision-config-file {U.save_to_temp_file(MXFP8_TE_PRECISION_CONFIG, 'yaml')} "
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 1 " "--sglang-cuda-graph-max-bs 256 "
         case _:
@@ -241,10 +279,11 @@ tis_batch_normalize: true
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{U.get_default_wandb_args(wandb_file, run_id=args.run_id)} "
         f"{perf_args} "
-        f"{eval_args} "
         f"{sglang_args} "
+        f"{'--ci-test ' if args.ci_test else ''}"
+        f"{eval_args} "
         f"{misc_args} "
         f"{args.extra_args} "
     )
