@@ -53,7 +53,16 @@ def main(fp8_path, bf16_path):
     weight_map_raw = model_index["weight_map"]
 
     remap = get_param_name_remap(os.path.join(fp8_path, "config.json"), weight_map_raw)
-    weight_map_renamed = {remap(tensor_name): file_name for tensor_name, file_name in weight_map_raw.items()}
+    weight_map_renamed = {}
+    raw_name_by_renamed = {}
+    for raw_name, file_name in weight_map_raw.items():
+        renamed_name = remap(raw_name)
+        assert renamed_name not in raw_name_by_renamed, (
+            f"Remapped tensor name collision: {renamed_name} from "
+            f"{raw_name} and {raw_name_by_renamed[renamed_name]}"
+        )
+        weight_map_renamed[renamed_name] = file_name
+        raw_name_by_renamed[renamed_name] = raw_name
 
     # Cache for loaded safetensor files
     loaded_files = {}
@@ -61,15 +70,13 @@ def main(fp8_path, bf16_path):
 
     # Helper function to get tensor from the correct file
     def get_tensor(tensor_name):
-        file_name = weight_map_renamed[tensor_name]
+        raw_tensor_name = raw_name_by_renamed[tensor_name]
+        file_name = weight_map_raw[raw_tensor_name]
         if file_name not in loaded_files:
             file_path = os.path.join(fp8_path, file_name)
             loaded_files[file_name] = load_file(file_path, device="cuda")
 
-        loaded_file_dict_raw = loaded_files[file_name]
-        loaded_file_dict_renamed = {remap(tensor_name): tensor for tensor_name, tensor in loaded_file_dict_raw.items()}
-
-        return loaded_file_dict_renamed[tensor_name]
+        return loaded_files[file_name][raw_tensor_name]
 
     safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
     safetensor_files.sort()
