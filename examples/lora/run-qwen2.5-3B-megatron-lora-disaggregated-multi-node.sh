@@ -290,7 +290,9 @@ if [ "$NODE_RANK" -eq 0 ]; then
            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
            "NCCL_ALGO": "Ring",
            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-           "CUBLAS_WORKSPACE_CONFIG": ":4096:8"
+           "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+           "NVTE_NORM_FWD_USE_CUDNN": "1",
+           "NVTE_NORM_BWD_USE_CUDNN": "1"
         }
       }' \
       -- python3 train.py \
