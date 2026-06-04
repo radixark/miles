@@ -195,30 +195,25 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     output = await post(url, payload, headers=headers)
 
-    if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
-        from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
-
-        sample = await postprocess_sample_with_radix_tree(args, sample, output)
+    if "output_token_logprobs" in output["meta_info"]:
+        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
     else:
-        if "output_token_logprobs" in output["meta_info"]:
-            new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-        else:
-            new_response_tokens, new_response_log_probs = [], []
+        new_response_tokens, new_response_log_probs = [], []
 
-        # Update sample with tokens directly - avoiding re-tokenization
-        sample.tokens = sample.tokens + new_response_tokens
-        sample.response_length += len(new_response_tokens)
-        sample.response += output["text"]
+    # Update sample with tokens directly - avoiding re-tokenization
+    sample.tokens = sample.tokens + new_response_tokens
+    sample.response_length += len(new_response_tokens)
+    sample.response += output["text"]
 
-        # When partial rollout and masking off policy is enabled, update the loss mask
-        if sample.loss_mask is not None:
-            assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
-            sample.loss_mask += [1] * len(new_response_tokens)
+    # When partial rollout and masking off policy is enabled, update the loss mask
+    if sample.loss_mask is not None:
+        assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
+        sample.loss_mask += [1] * len(new_response_tokens)
 
-        if sample.rollout_log_probs is None:
-            sample.rollout_log_probs = []
-        sample.rollout_log_probs += new_response_log_probs
+    if sample.rollout_log_probs is None:
+        sample.rollout_log_probs = []
+    sample.rollout_log_probs += new_response_log_probs
 
     if "routed_experts" in output["meta_info"]:
         sample.rollout_routed_experts = np.frombuffer(

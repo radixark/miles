@@ -99,28 +99,6 @@ Helpers:
   `--generate-execute-tool-function-path`, `--generate-multi-samples`.
 - **`benchmarkers.py`**: forces random output sequence length for benchmarking.
 
-### Radix-tree middleware (full TITO for `/generate`)
-
-For token-in / token-out caching on `/generate`, enable the radix-tree middleware.
-It is independent of the OpenAI session middleware and only affects the `/generate`
-and `/retrieve_from_text` routes.
-
-What it does:
-
-- Caches token ids and logprobs by prompt text in a radix tree.
-- Lets `/generate` requests include `input_tokens`, skipping re-tokenization.
-- Enables `update_sample_from_response` to fetch tokens via `/retrieve_from_text`
-  during training.
-
-Enable it:
-
-```bash
---miles-router-middleware-paths miles.router.middleware_hub.radix_tree_middleware.RadixTreeMiddleware
-```
-
-Make sure `--sglang-router-ip` and `--sglang-router-port` point at the router so
-`/retrieve_from_text` is reachable during rollout.
-
 ---
 
 ## The OpenAI chat endpoint

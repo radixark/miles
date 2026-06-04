@@ -76,7 +76,6 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
     ] + (extra_argv or [])
     with patch("sys.argv", argv):
         args = parse_args()
-    args.miles_router_middleware_paths = []
     init_http_client(args)
     return args
 

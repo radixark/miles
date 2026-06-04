@@ -68,33 +68,25 @@ async def update_sample_from_response(
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
 
-    if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
-        from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
-
-        # TODO may rename to match
-        await postprocess_sample_with_radix_tree(args, sample, output)
-
-        assert not update_loss_mask, "This code branch has not implemented update_loss_mask"
+    if x := output["meta_info"].get("output_token_logprobs"):
+        new_response_tokens = [item[1] for item in x]
+        new_response_log_probs = [item[0] for item in x]
     else:
-        if x := output["meta_info"].get("output_token_logprobs"):
-            new_response_tokens = [item[1] for item in x]
-            new_response_log_probs = [item[0] for item in x]
-        else:
-            new_response_tokens, new_response_log_probs = [], []
+        new_response_tokens, new_response_log_probs = [], []
 
-        # Update sample with tokens directly - avoiding re-tokenization
-        sample.tokens = sample.tokens + new_response_tokens
-        sample.response_length += len(new_response_tokens)
-        sample.response += output["text"]
+    # Update sample with tokens directly - avoiding re-tokenization
+    sample.tokens = sample.tokens + new_response_tokens
+    sample.response_length += len(new_response_tokens)
+    sample.response += output["text"]
 
-        if sample.rollout_log_probs is None:
-            sample.rollout_log_probs = []
-        sample.rollout_log_probs += new_response_log_probs
+    if sample.rollout_log_probs is None:
+        sample.rollout_log_probs = []
+    sample.rollout_log_probs += new_response_log_probs
 
-        if update_loss_mask:
-            if sample.loss_mask is None:
-                sample.loss_mask = []
-            sample.loss_mask += [1] * len(new_response_tokens)
+    if update_loss_mask:
+        if sample.loss_mask is None:
+            sample.loss_mask = []
+        sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
     sample.rollout_routed_experts = get_routed_experts_from_response(args, output, sample)

@@ -1163,12 +1163,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing",
             )
             parser.add_argument(
-                "--miles-router-middleware-paths",
-                type=str,
-                nargs="+",
-                default="",
-            )
-            parser.add_argument(
                 "--miles-router-timeout",
                 type=float,
                 default=None,
