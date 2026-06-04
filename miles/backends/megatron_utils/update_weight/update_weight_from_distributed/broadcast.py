@@ -13,6 +13,8 @@ from tqdm import tqdm
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
 
+from ...lora_utils import LORA_ADAPTER_NAME
+from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 
 
@@ -82,6 +84,13 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         """If it's the source gpu that broadcasting weights to rollout side"""
         return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
+    @property
+    def _is_lora_source(self) -> bool:
+        """The single rank holding the full adapter (DP=TP=PP=0). At PP=1 (enforced
+        for LoRA) this coincides with ``_is_source``."""
+        ps = get_parallel_state()
+        return ps.pp.rank == 0 and ps.tp.rank == 0 and ps.intra_dp_cp.rank == 0
+
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
     ) -> None:
@@ -101,6 +110,38 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         ray.get(self.rollout_engine_lock.release.remote())
         if pbar:
             pbar.update(1)
+
+    def _update_lora_weight_implementation(self, named_tensors: list[tuple[str, torch.Tensor]]) -> None:
+        """Send adapter metadata over Ray, then broadcast the tensors (src=0).
+
+        Reuses the base broadcast group (``self._model_update_groups`` /
+        ``self._group_name``); base and adapter syncs are strictly sequential, so
+        sharing the NCCL communicator is safe. No CUDA IPC, so it works across
+        nodes: the engine allocates buffers from the metadata and broadcast-receives
+        in order.
+        """
+        names = [name for name, _ in named_tensors]
+        dtypes = [param.dtype for _, param in named_tensors]
+        shapes = [list(param.shape) for _, param in named_tensors]
+
+        refs = [
+            engine.load_lora_adapter_from_distributed.remote(
+                lora_name=LORA_ADAPTER_NAME,
+                config_dict=self._lora_config,
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=self._group_name,
+            )
+            for engine in self.rollout_engines
+        ]
+        handles = [
+            dist.broadcast(param.data, 0, group=self._model_update_groups, async_op=True) for _, param in named_tensors
+        ]
+        for handle in handles:
+            handle.wait()
+
+        _check_weight_sync_results(ray.get(refs), is_lora=True)
 
 
 def connect_rollout_engines_from_distributed(
