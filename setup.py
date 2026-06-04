@@ -51,6 +51,29 @@ setup(
         "mlflow": [
             "mlflow>=2.0",
         ],
+        # ----------------------------------------------------------------
+        # Placeholders for the `pip install miles` roadmap (Phase 4).
+        # These slots are intentionally empty at this stage; Phase 6 will
+        # populate them with the dependencies that today are installed by
+        # docker/Dockerfile rather than declared in setup.py.
+        # ----------------------------------------------------------------
+        # `cpu` — extras that only the lightweight (rollout/eval/CPU)
+        # subset of miles needs, beyond install_requires. Likely empty
+        # or near-empty.
+        "cpu": [],
+        # `gpu` — the heavy GPU stack: flash-attn, flash-attn-3,
+        # flash-linear-attention, transformer-engine, apex, tilelang,
+        # causal-conv1d, mamba-ssm, nvidia-modelopt, nvidia-cudnn-cu*,
+        # torch_memory_saver, mbridge. Many require a CUDA toolchain at
+        # install time; some are only available as pre-built wheels (see
+        # yueming-yuan/miles-wheels) rather than from PyPI.
+        "gpu": [],
+        # `training` — the full training environment: everything in
+        # `gpu` plus the patched sglang / Megatron-LM / Megatron-Bridge
+        # that today are installed via git+url or COPY-from-submodule
+        # in docker/Dockerfile. Will pull from a private Python index
+        # once Phase 5 publishes the wheels.
+        "training": [],
     },
     python_requires=">=3.10",
     classifiers=[
