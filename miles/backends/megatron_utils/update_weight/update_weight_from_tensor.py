@@ -20,7 +20,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import post_process_weights
+from .common import _check_weight_sync_results, post_process_weights
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -550,27 +550,3 @@ def _send_to_colocated_engine(
                 refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
 
     return refs, long_live_tensors
-
-
-def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
-    """Validate return values from rollout engine weight-sync RPCs.
-
-    Raises RuntimeError if any engine reports failure, preventing silent
-    failures when SGLang versions are incompatible.
-    """
-    sync_type = "LoRA" if is_lora else "Base model"
-    for result in results:
-        if isinstance(result, Mapping):
-            success = result.get("success")
-            error_msg = result.get("error_message") or result.get("error") or "unknown error"
-        elif hasattr(result, "success"):
-            success = result.success
-            error_msg = getattr(result, "error_message", "unknown error")
-        else:
-            continue
-
-        if success is False:
-            raise RuntimeError(
-                f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
-                f"Check SGLang version compatibility."
-            )

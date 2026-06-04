@@ -1,4 +1,6 @@
-from collections.abc import Callable
+import logging
+from argparse import Namespace
+from collections.abc import Callable, Sequence
 
 import ray
 import torch
@@ -9,6 +11,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.timer import timer
 
+from ...lora_utils import LORA_ADAPTER_NAME, _is_adapter_param_name, build_lora_sync_config, is_lora_weight_name
 from ...megatron_to_hf import convert_to_hf
 from ..common import (
     all_gather_param,
@@ -17,6 +20,9 @@ from ..common import (
     get_named_value_update_units,
     post_process_weights,
 )
+from ..hf_weight_iterator_base import HfWeightIteratorBase
+
+logger = logging.getLogger(__name__)
 
 
 def _is_expert_update_unit(update_unit: list[tuple[str, torch.Tensor]]) -> bool:
@@ -35,13 +41,53 @@ class DistBucketedWeightUpdateMixin:
         self.model_name: str (for HF conversion).
         self.quantization_config: dict | None.
         self._is_source: bool (whether it's the rank broadcasting weights after `all_gather`).
+        self._is_lora_source: bool (the single rank holding the full adapter; for LoRA sync).
         self.weight_version: int.
         self.rollout_engines: Sequence[ActorHandle]. engines of rollout side.
         self._group_name: str. Identifier shown in the tqdm progress bar.
         self._update_weight_implementation(converted_named_tensors, pbar) -> None
             Transfer a bucket of HF-format ``(name, tensor)`` pairs to rollout
             engines (via NCCL broadcast, p2p write, etc.).
+        self._update_lora_weight_implementation(named_tensors) -> None
+            Transfer the full LoRA adapter (HF-format ``(name, tensor)`` pairs) to
+            rollout engines. Only required when ``is_lora``; the
+            unload-before-reload is handled by ``_update_lora_weights``.
     """
+
+    def _init_lora(
+        self,
+        *,
+        args: Namespace,
+        model: Sequence[torch.nn.Module],
+        model_name: str,
+        quantization_config: dict | None,
+        is_lora: bool,
+    ) -> None:
+        """Initialize LoRA-specific state. Call from subclass ``__init__``."""
+        self.is_lora = is_lora
+        if self.is_lora:
+            # Distributed LoRA sync requires the bridge iterator
+            assert args.megatron_to_hf_mode == "bridge", (
+                "LoRA weight sync over distributed engines requires "
+                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
+            )
+            # The bridge exports adapters per local (PP-stage) model, so a single
+            # source rank holds the complete adapter only at PP=1. With PP>1 each
+            # stage would broadcast a partial adapter, so reject it explicitly.
+            assert args.pipeline_model_parallel_size == 1, (
+                "LoRA weight sync over distributed engines requires "
+                f"--pipeline-model-parallel-size 1 (got {args.pipeline_model_parallel_size})."
+            )
+            self._lora_config = build_lora_sync_config(args)
+            self._lora_loaded = False
+            self._lora_base_synced = False
+            self._hf_weight_iterator = HfWeightIteratorBase.create(
+                args=args,
+                model=model,
+                model_name=model_name,
+                quantization_config=quantization_config,
+                is_lora=True,
+            )
 
     def _gather_and_update_non_expert_weights(
         self,
@@ -118,6 +164,11 @@ class DistBucketedWeightUpdateMixin:
 
     def _get_weight_transfer_update_units(self, is_expert: bool) -> list[list[tuple[str, torch.Tensor]]]:
         named_tensors = list(collect_named_tensors_for_weight_transfer(self.args, self.model, is_expert=None))
+        named_tensors = [
+            (name.replace(".to_wrap.", "."), tensor)
+            for name, tensor in named_tensors
+            if not _is_adapter_param_name(name)
+        ]
         atomic_update_groups = get_atomic_update_groups(self.args, self.model_name)
         update_units = get_named_value_update_units(named_tensors, atomic_update_groups)
         for unit in update_units:
@@ -168,6 +219,48 @@ class DistBucketedWeightUpdateMixin:
 
         update_bucket_weight_func(converted_hf_tensors, pbar)
 
+    def _update_lora_weights(self) -> None:
+        """Orchestrate the LoRA adapter update; delegate transmit to the subclass.
+
+        Mirrors the base path's split: this method owns the transport-agnostic
+        steps (bridge iteration, validation, source gating, and the
+        unload-before-reload), and hands the gathered adapter to
+        ``self._update_lora_weight_implementation`` — broadcast (NCCL) or p2p
+        provide their own.
+
+        All TP ranks iterate the bridge (required for internal TP collectives),
+        but only the source rank transmits.
+        """
+        # All ranks must iterate the bridge for TP collective participation.
+        # {} weights: bridge exports adapters directly from self.model and ignores
+        # this dict (bridge-only is enforced in _init_lora).
+        accumulated_named_tensors: list[tuple[str, torch.Tensor]] = []
+        for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks({}, weight_type="lora"):
+            accumulated_named_tensors.extend(hf_named_tensors)
+
+        if not accumulated_named_tensors:
+            raise RuntimeError(
+                "LoRA weight sync failed: the weight iterator produced zero chunks. "
+                "No adapter weights were sent to the rollout engine. This usually means "
+                "the Megatron-Bridge or SGLang version is incompatible."
+            )
+
+        if not self._is_lora_source:
+            return
+
+        if not any(is_lora_weight_name(n) for n, _ in accumulated_named_tensors):
+            raise RuntimeError(
+                "LoRA weight sync failed: chunk contains no LoRA weights "
+                "(no lora_A/lora_B names found). Check weight iterator."
+            )
+
+        if self._lora_loaded:
+            ray.get(
+                [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
+            )
+        self._update_lora_weight_implementation(accumulated_named_tensors)
+        self._lora_loaded = True
+
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and run pre-process if needed."""
         if dist.get_rank() == 0:
@@ -201,6 +294,7 @@ class DistBucketedWeightUpdateMixin:
     @torch.no_grad()
     def update_weights(self) -> None:
         """Orchestrate the full weight-update lifecycle.
+
         Pause → flush → non-expert (TP) → expert (EP) → continue.
         Progress is showed on the rank `_is_source`.
 
@@ -210,6 +304,10 @@ class DistBucketedWeightUpdateMixin:
         - `_gather_and_update_expert_weights`
         - `_finalize_and_resume_engines`: run post-process, resume rollout
             generation.
+
+        Full: pause → base non-expert (TP) → base expert (EP) → resume.
+        LoRA: pause → base weights (first iteration only) → LoRA adapter
+        (every iteration) → resume.
         """
         self.weight_version += 1
 
@@ -217,12 +315,23 @@ class DistBucketedWeightUpdateMixin:
         dist.barrier(group=get_gloo_group())
 
         with timer("update_weights_implementation"):
-            pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
+            # Base weight sync model:
+            #   full-param RL: base weights change every step -> always sync.
+            #   LoRA RL: base is frozen -> only sync once, on the first iteration.
+            if not (getattr(self, "is_lora", False) and self._lora_base_synced):
+                pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-            self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-            dist.barrier(group=get_gloo_group())
-            self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-            dist.barrier(group=get_gloo_group())
+                self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+                dist.barrier(group=get_gloo_group())
+                self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+                dist.barrier(group=get_gloo_group())
+
+            # LoRA adapter weights: every iteration.
+            if getattr(self, "is_lora", False):
+                self._update_lora_weights()
+                dist.barrier(group=get_gloo_group())
+                if not self._lora_base_synced:
+                    self._lora_base_synced = True
 
         with timer("finalize_and_resume_engines"):
             self._finalize_and_resume_engines()

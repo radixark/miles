@@ -61,6 +61,13 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self._init_lora(
+            args=args,
+            model=model,
+            model_name=model_name,
+            quantization_config=quantization_config,
+            is_lora=is_lora,
+        )
 
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())
@@ -94,6 +101,10 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
         """
         return self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+
+    @property
+    def _is_lora_source(self) -> bool:
+        raise NotImplementedError("LoRA weight sync is not yet supported for p2p (RDMA) weight transfer.")
 
     def _gather_and_update_expert_weights(self, update_bucket_weight_func, pbar=None):
         """Wait for all background P2P writes to complete here."""
@@ -246,6 +257,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 ]
 
                 self._transfer_engine_meta_list.append((model_replica, remote_infos))
+
+    def _update_lora_weight_implementation(self, named_tensors: list[tuple[str, torch.Tensor]]) -> None:
+        raise NotImplementedError("LoRA weight sync is not yet supported for p2p (RDMA) weight transfer.")
 
     def _create_cpu_replica(
         self,
