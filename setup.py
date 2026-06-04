@@ -67,7 +67,9 @@ _megatron_plugins_packages = find_namespace_packages(
 setup(
     author="miles Team",
     name="miles-rl",
-    version="0.2.1",
+    # First public PyPI release of the bundled miles-rl wheel. Bump for each
+    # subsequent release; PyPI rejects re-uploads of the same version.
+    version="0.0.1",
     packages=(
         _miles_packages
         + _sglang_packages

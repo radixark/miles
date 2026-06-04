@@ -1,0 +1,184 @@
+name: Publish miles-rl wheel to PyPI
+
+# Phase 7 of the `pip install miles-rl` roadmap: build the bundled
+# miles-rl wheel from the miles repo (which ships the patched sglang
+# and Megatron-LM source via third_party/* submodules) and upload to
+# https://pypi.org/ as the project `miles-rl`.
+#
+# Authentication is via PyPI Trusted Publishers (OIDC). PyPI has been
+# pre-registered to trust this specific workflow file in this specific
+# repo, so no API token is needed in the repo's secrets. See
+# https://docs.pypi.org/trusted-publishers/ for background.
+#
+# CRITICAL: PyPI does not accept re-uploads of the same version. To cut
+# a new release, bump `version=...` in setup.py to a fresh PEP 440
+# string, commit, then trigger this workflow with dry_run=false.
+
+on:
+  # Bootstrap trigger so the workflow can be exercised before it lands on
+  # the default branch (GitHub Actions requires workflow_dispatch targets
+  # to exist on `main`). Remove this `push:` block before merge — the
+  # `workflow_dispatch` below is the intended long-term trigger.
+  push:
+    branches:
+      - shi/phase7-publish-pypi
+    paths:
+      - '.github/workflows/publish-pypi.yml'
+      - 'setup.py'
+      - 'MANIFEST.in'
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only — skip PyPI upload + smoke install. Use this until you are certain about cutting a new release.'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required by pypa/gh-action-pypi-publish for OIDC Trusted Publishing.
+      id-token: write
+      contents: read
+    env:
+      # On a `push` trigger (the bootstrap path), `inputs.*` are empty.
+      # Default to a dry-run build that does not contact PyPI.
+      DRY_RUN: ${{ inputs.dry_run || (github.event_name == 'push') }}
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Extract project name + version from setup.py
+        id: cfg
+        shell: bash
+        run: |
+          name=$(python -c "import ast,re,pathlib; s=pathlib.Path('setup.py').read_text(); print(re.search(r'name\s*=\s*\"([^\"]+)\"', s).group(1))")
+          version=$(python -c "import re,pathlib; s=pathlib.Path('setup.py').read_text(); print(re.search(r'version\s*=\s*\"([^\"]+)\"', s).group(1))")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Project: $name==$version"
+
+      - name: Build wheel + sdist
+        shell: bash
+        run: |
+          python -m build --wheel --sdist
+          echo
+          echo "--- artifacts ---"
+          ls -lh dist/
+          echo
+          echo "--- wheel METADATA head ---"
+          for w in dist/*.whl; do
+            unzip -p "$w" "*/METADATA" 2>/dev/null | head -10 || true
+          done
+
+      - name: Refuse to upload if the version already exists on PyPI
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          NAME: ${{ steps.cfg.outputs.name }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+        run: |
+          # PyPI versions are immutable. Hard-fail early (before any upload
+          # attempt) if the version exists, so the user gets a clear error
+          # instead of a confusing twine 400.
+          set -e
+          code=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/${NAME}/${VERSION}/json")
+          if [ "$code" = "200" ]; then
+            echo "::error::miles-rl==${VERSION} already exists on PyPI. Bump setup.py's version and re-run."
+            exit 1
+          fi
+          echo "${NAME}==${VERSION} not yet on PyPI (HTTP ${code}) — safe to upload."
+
+      - name: Publish to PyPI via Trusted Publisher (OIDC)
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Default repository-url is PyPI proper. No password/api-token
+          # needed — Trusted Publishing exchanges the GitHub OIDC token
+          # for an ephemeral PyPI upload token at runtime.
+          packages-dir: dist/
+          skip-existing: false
+          verbose: true
+
+      - name: Wait for PyPI index to surface the uploaded version
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          NAME: ${{ steps.cfg.outputs.name }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+        run: |
+          # PyPI's CDN is eventually consistent but typically faster than
+          # TestPyPI (which took us 30-120s in Phase 5/6). Poll for up to
+          # 3 minutes.
+          set -e
+          url="https://pypi.org/simple/${NAME}/"
+          for i in $(seq 1 18); do
+            if curl -fs "$url" | grep -q "${VERSION}"; then
+              echo "PyPI index now lists ${NAME}==${VERSION} (after ${i} polls)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::PyPI index still missing ${NAME}==${VERSION} after 3 min"
+          curl -fs "$url" | head -40 || true
+          exit 1
+
+      - name: Smoke install in a fresh venv
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          NAME: ${{ steps.cfg.outputs.name }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+        run: |
+          python -m venv /tmp/smoke
+          # PyPI hosts every transitive dep too, so we could install with
+          # deps. But our smoke check just needs to prove the wheel is
+          # fetchable + the bundled packages are placed at the right
+          # site-packages paths. `--no-deps` is enough and avoids pulling
+          # heavy GPU deps onto the CPU runner.
+          /tmp/smoke/bin/pip install --no-deps "${NAME}==${VERSION}"
+          /tmp/smoke/bin/pip show "${NAME}"
+          echo
+          echo "--- bundled-package presence check (find_spec, no init exec) ---"
+          /tmp/smoke/bin/python <<'PYEOF'
+          import importlib.util, sys
+
+          candidates = [
+              'miles',
+              'miles_plugins',
+              'miles_megatron_plugins',
+              'miles_megatron_plugins.true_on_policy.contracts',
+              'sglang',
+              'megatron',
+              'megatron.core',
+              'megatron.training',
+          ]
+
+          missing = []
+          for name in candidates:
+              spec = importlib.util.find_spec(name)
+              if spec is None:
+                  missing.append(name)
+                  continue
+              loc = spec.origin or (list(spec.submodule_search_locations) if spec.submodule_search_locations else "<no location>")
+              print(f"  {name:45} -> {loc}")
+
+          if missing:
+              print(f"\nMISSING: {missing}")
+              sys.exit(1)
+          print("\nOK: miles-rl wheel installed from PyPI; all bundled packages present.")
+          PYEOF
