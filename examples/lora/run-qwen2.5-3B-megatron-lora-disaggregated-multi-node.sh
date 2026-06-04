@@ -68,8 +68,8 @@ NUM_TRAIN_GPUS="${NUM_TRAIN_GPUS:-1}"
 NUM_ROLLOUT_GPUS="${NUM_ROLLOUT_GPUS:-1}"
 ROLLOUT_GPUS_PER_ENGINE="${ROLLOUT_GPUS_PER_ENGINE:-1}"
 
-# Network interface NCCL/Gloo use for cross-node sockets.
-apt-get install -y iproute2.
+# Network interface NCCL/Gloo use for cross-node sockets
+apt-get install -y iproute2
 SOCKET_IFNAME="${SOCKET_IFNAME:-$(ip -o -4 route get "${HEAD_NODE_IP}" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')}"
 SOCKET_IFNAME="${SOCKET_IFNAME:-eth0}"
 echo "Using SOCKET_IFNAME=${SOCKET_IFNAME} for NCCL/Gloo cross-node sockets"
