@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 
 import ray
 import torch
@@ -48,10 +49,13 @@ class DistBucketedWeightUpdateMixin:
         self._update_weight_implementation(converted_named_tensors, pbar) -> None
             Transfer a bucket of HF-format ``(name, tensor)`` pairs to rollout
             engines (via NCCL broadcast, p2p write, etc.).
-        self._update_lora_weight_implementation(named_tensors) -> None
-            Transfer the full LoRA adapter (HF-format ``(name, tensor)`` pairs) to
+        self._update_lora_weight_implementation(named_tensors, *, lora_name, lora_config) -> None
+            Transfer one LoRA adapter (HF-format ``(name, tensor)`` pairs) to
             rollout engines. Only required when ``is_lora``; the
-            unload-before-reload is handled by ``_update_lora_weights``.
+            unload-before-reload is handled by ``_update_lora_weights`` /
+            ``_send_one_multi_lora_adapter``. ``lora_name`` / ``lora_config``
+            default to the single-adapter values and are overridden per adapter
+            in the multi-LoRA path.
     """
 
     def _init_lora(
@@ -81,6 +85,9 @@ class DistBucketedWeightUpdateMixin:
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
             self._lora_base_synced = False
+            # Names of adapters currently resident on the rollout engines; only
+            # used by the multi-LoRA path, harmlessly empty otherwise.
+            self._multi_lora_loaded: set[str] = set()
             self._hf_weight_iterator = HfWeightIteratorBase.create(
                 args=args,
                 model=model,
@@ -261,6 +268,77 @@ class DistBucketedWeightUpdateMixin:
         self._update_lora_weight_implementation(accumulated_named_tensors)
         self._lora_loaded = True
 
+    def _update_multi_lora_weights(self) -> None:
+        """Sync every controller-tracked adapter to the rollout engines.
+
+        NCCL analogue of the colocated ``_send_multi_lora_params``: query the
+        controller, push each RUNNING adapter (refreshing in place once it has
+        been loaded), and unload DRAINED ones. The controller returns the same
+        snapshot on every rank, so all ranks walk the adapters in the same order
+        and the per-adapter TP collectives in ``_send_one_multi_lora_adapter``
+        line up; only the source rank issues the engine RPCs / broadcasts.
+        """
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
+        from miles.utils.adapter_config import AdapterState
+
+        adapters = ray.get(get_multi_lora_controller().active_adapters.remote())
+        for name, adapter in adapters.items():
+            if adapter.state == AdapterState.RUNNING:
+                self._send_one_multi_lora_adapter(adapter, lora_loaded=name in self._multi_lora_loaded)
+                self._multi_lora_loaded.add(name)
+            elif adapter.state == AdapterState.DRAINED and name in self._multi_lora_loaded:
+                if self._is_lora_source:
+                    try:
+                        ray.get([engine.unload_lora_adapter.remote(lora_name=name) for engine in self.rollout_engines])
+                    except Exception:
+                        logger.warning("Failed to unload drained adapter %r from rollout engines", name, exc_info=True)
+                self._multi_lora_loaded.discard(name)
+
+    def _send_one_multi_lora_adapter(self, adapter, lora_loaded: bool) -> None:
+        """Export and transmit one adapter's weights.
+
+        Every rank exposes the adapter's slot and iterates the bridge (the export
+        runs TP all-gather internally, so all ranks must participate); only the
+        source rank validates, unloads the previous copy when ``lora_loaded`` is
+        set, and transmits via ``_update_lora_weight_implementation`` with this
+        adapter's name and config.
+        """
+        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
+
+        from ...multi_lora_utils import slice_lora_to_rank
+
+        config = adapter.config
+        adapter_rank = config.rank
+        lora_config = build_lora_sync_config(self.args)
+        lora_config["r"] = adapter_rank
+        lora_config["lora_alpha"] = config.alpha
+
+        accumulated_named_tensors: list[tuple[str, torch.Tensor]] = []
+        with expose_adapter_slot(self.model, adapter.slot):
+            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks({}, weight_type="lora"):
+                accumulated_named_tensors.extend(
+                    (n, slice_lora_to_rank(n, t, adapter_rank)) for n, t in hf_named_tensors if is_lora_weight_name(n)
+                )
+
+        if not self._is_lora_source:
+            return
+
+        if not accumulated_named_tensors:
+            raise RuntimeError(
+                f"Multi-LoRA weight sync failed for adapter {adapter.name!r}: the weight iterator "
+                "produced no LoRA weights (no lora_A/lora_B names found). This usually means the "
+                "Megatron-Bridge or SGLang version is incompatible."
+            )
+
+        if lora_loaded:
+            ray.get([engine.unload_lora_adapter.remote(lora_name=adapter.name) for engine in self.rollout_engines])
+
+        self._update_lora_weight_implementation(
+            accumulated_named_tensors,
+            lora_name=adapter.name,
+            lora_config=lora_config,
+        )
+
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and run pre-process if needed."""
         if dist.get_rank() == 0:
@@ -315,20 +393,37 @@ class DistBucketedWeightUpdateMixin:
         dist.barrier(group=get_gloo_group())
 
         with timer("update_weights_implementation"):
+            from ...multi_lora_utils import is_multi_lora_enabled
+
+            is_lora = getattr(self, "is_lora", False)
+            is_multi_lora = is_lora and is_multi_lora_enabled(self.args)
+
             # Base weight sync model:
             #   full-param RL: base weights change every step -> always sync.
             #   LoRA RL: base is frozen -> only sync once, on the first iteration.
-            if not (getattr(self, "is_lora", False) and self._lora_base_synced):
-                pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
+            if not (is_lora and self._lora_base_synced):
+                # Multi-LoRA stacks adapters into MultiLoRALinear layers whose
+                # params (``.adapters.{i}.``) the base-name filter doesn't catch;
+                # hide them so only true base weights are gathered and sent.
+                base_ctx = nullcontext()
+                if is_multi_lora:
+                    from megatron.bridge.peft.multi_lora_layers import hide_adapters
 
-                self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-                dist.barrier(group=get_gloo_group())
-                self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-                dist.barrier(group=get_gloo_group())
+                    base_ctx = hide_adapters(self.model)
+                with base_ctx:
+                    pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-            # LoRA adapter weights: every iteration.
-            if getattr(self, "is_lora", False):
-                self._update_lora_weights()
+                    self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+                    dist.barrier(group=get_gloo_group())
+                    self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+                    dist.barrier(group=get_gloo_group())
+
+            # Adapter weights: every iteration.
+            if is_lora:
+                if is_multi_lora:
+                    self._update_multi_lora_weights()
+                else:
+                    self._update_lora_weights()
                 dist.barrier(group=get_gloo_group())
                 if not self._lora_base_synced:
                     self._lora_base_synced = True

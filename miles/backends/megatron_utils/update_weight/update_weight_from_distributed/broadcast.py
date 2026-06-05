@@ -111,7 +111,13 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         if pbar:
             pbar.update(1)
 
-    def _update_lora_weight_implementation(self, named_tensors: list[tuple[str, torch.Tensor]]) -> None:
+    def _update_lora_weight_implementation(
+        self,
+        named_tensors: list[tuple[str, torch.Tensor]],
+        *,
+        lora_name: str = LORA_ADAPTER_NAME,
+        lora_config: dict | None = None,
+    ) -> None:
         """Send adapter metadata over Ray, then broadcast the tensors (src=0).
 
         Reuses the base broadcast group (``self._model_update_groups`` /
@@ -119,15 +125,21 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         sharing the NCCL communicator is safe. No CUDA IPC, so it works across
         nodes: the engine allocates buffers from the metadata and broadcast-receives
         in order.
+
+        ``lora_name`` / ``lora_config`` default to the single-adapter values; the
+        multi-LoRA path passes the per-adapter name and config (carrying that
+        adapter's own ``r`` / ``lora_alpha``).
         """
+        if lora_config is None:
+            lora_config = self._lora_config
         names = [name for name, _ in named_tensors]
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
 
         refs = [
             engine.load_lora_adapter_from_distributed.remote(
-                lora_name=LORA_ADAPTER_NAME,
-                config_dict=self._lora_config,
+                lora_name=lora_name,
+                config_dict=lora_config,
                 names=names,
                 dtypes=dtypes,
                 shapes=shapes,
