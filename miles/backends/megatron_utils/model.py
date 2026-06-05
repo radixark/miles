@@ -23,6 +23,7 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
+from miles.backends.megatron_utils.det_grad_norm import deterministic_grad_norm
 from miles.backends.megatron_utils.indep_dp import _allreduce_grads_across_replicas
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.types import TrainStepOutcome
@@ -520,8 +521,14 @@ def train_one_step(
         dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
+        if args.debug_deterministic_collective:
+            # Sharding-independent norm; computed pre-step (clipping may rescale grads).
+            det_grad_norm_value = deterministic_grad_norm(model)
+
         # Update parameters.
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        if args.debug_deterministic_collective:
+            grad_norm = det_grad_norm_value
 
         # Update learning rate.
         assert update_successful
