@@ -103,9 +103,9 @@ class TestDeserializeFromTransport:
         # Step 3: sender — pickle treespec + non-tensor leaves; "send" tensor leaves over the wire
         is_tensor_mask: list[bool] = [isinstance(v, torch.Tensor) for _, v in leaves]
         pickled_metadata = pickle.dumps(
-            (treespec, [v for v, m in zip([v for _, v in leaves], is_tensor_mask) if not m])
+            (treespec, [v for v, m in zip([v for _, v in leaves], is_tensor_mask, strict=True) if not m])
         )
-        wire_tensors = [v.clone() for v, m in zip([v for _, v in leaves], is_tensor_mask) if m]
+        wire_tensors = [v.clone() for v, m in zip([v for _, v in leaves], is_tensor_mask, strict=True) if m]
 
         # Step 4: receiver — unpickle metadata + interleave received tensors back into leaf order
         treespec_recv, non_tensor_values = pickle.loads(pickled_metadata)
