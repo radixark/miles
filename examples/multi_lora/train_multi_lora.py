@@ -79,6 +79,7 @@ async def main(args):
     has_seen_adapters = False
     is_idle = False
 
+    rollout_data_next_future = None
     while True:
         adapters = await controller.active_adapters.remote()
         run_train = should_run_train(adapters)
@@ -89,7 +90,13 @@ async def main(args):
 
         # Run training
         if run_train:
-            rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
+            if rollout_data_next_future is None:
+                rollout_data_next_future = rollout_manager.generate.remote(rollout_id)
+            rollout_data_ref = await rollout_data_next_future
+            # rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
+            rollout_data_next_future = None
+            if not args.colocate:
+                rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
             await offload_rollout()
 
             await actor_model.train(rollout_id, rollout_data_ref)
