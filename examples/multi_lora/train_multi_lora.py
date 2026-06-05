@@ -100,7 +100,9 @@ async def main(args):
             # Train already offloads the rollout
             if not run_train:
                 await offload_rollout()
-                await actor_model.onload()
+
+                if args.offload_train:
+                    await actor_model.onload()
 
             await actor_model.load_pending_adapters()
             await actor_model.unload_drained_adapters()
