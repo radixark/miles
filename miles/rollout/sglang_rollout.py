@@ -1,6 +1,8 @@
 import asyncio
 import copy
 import logging
+import os
+import time
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
@@ -130,8 +132,165 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
+async def _generate_via_dynamo(
+    args: Namespace, sample: Sample, sampling_params: dict[str, Any]
+) -> Sample:
+    """Variant of :func:`generate` that talks to a Dynamo frontend.
+
+    Dynamo's frontend only speaks OpenAI-compatible ``/v1/completions`` —
+    payload and response shapes differ from SGLang's ``/generate``, so we
+    translate at the boundary. KV-router observability fields (cache hit
+    rate, prefill timing, routed worker id) come back under
+    ``output['nvext']`` when the frontend is in ``--router-mode kv``.
+    """
+    state = GenerateState(args)
+    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/v1/completions"
+
+    assert sample.status in (Sample.Status.PENDING, Sample.Status.ABORTED), (
+        f"Sample status is {sample.status}"
+    )
+
+    prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
+
+    if len(sample.response) > 0:
+        sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
+    assert sampling_params["max_new_tokens"] >= 0
+    if sampling_params["max_new_tokens"] == 0:
+        sample.status = Sample.Status.TRUNCATED
+        return sample
+
+    if not sample.tokens:
+        sample.tokens = prompt_ids
+
+    token_ids = sample.tokens if sample.response else prompt_ids
+
+    # Resolve served-model-name. Dynamo's `dynamo.sglang` worker registers
+    # the model under its raw `--model-path` argument (verbatim, including
+    # any trailing slash) — the frontend's `/v1/models` exposes exactly
+    # that string as the id and rejects mismatching requests with 404.
+    # So send the full hf_checkpoint path, not a basename or normalized
+    # form, unless the user passed an explicit `--dynamo-model-name`.
+    model_name = getattr(args, "dynamo_model_name", None) or str(args.hf_checkpoint)
+
+    payload = {
+        "model": model_name,
+        "prompt": token_ids,
+        "max_tokens": sampling_params["max_new_tokens"],
+        "temperature": sampling_params.get("temperature", 1.0),
+        "top_p": sampling_params.get("top_p", 1.0),
+        # Dynamo's SGLang backend rejects `logprobs >= 1` (would force
+        # expensive per-position top-N detokenization on the worker, see
+        # _TOP_LOGPROBS_UNSUPPORTED_MSG). `logprobs=0` on the RL-mode
+        # frontend returns the chosen-token logprob without alternatives —
+        # which is exactly what GRPO needs for π_θ_old.
+        "logprobs": 0,
+        # Token-id format for `logprobs.tokens` (no detokenize→retokenize
+        # round-trip). Requires Dynamo wheel with PR #8119 / 5664bf55fe.
+        "return_tokens_as_token_ids": True,
+        "stream": False,
+    }
+    top_k = sampling_params.get("top_k", -1)
+    if top_k and top_k > 0:
+        payload["top_k"] = top_k
+    if sampling_params.get("stop"):
+        payload["stop"] = sampling_params["stop"]
+
+    t0 = time.time()
+    output = await post(url, payload)
+    elapsed = time.time() - t0
+
+    choice = output["choices"][0]
+    response_text = choice["text"]
+
+    # ------------------------------------------------------------------
+    # Translate OpenAI logprobs → Miles' (token_id, log_prob) parallel arrays.
+    # Dynamo's frontend emits tokens as the string ``"token_id:<int>"`` when
+    # logprobs are requested, which is what we want — fall back to
+    # tokenizing the text only when logprobs are absent or in some other
+    # shape.
+    # ------------------------------------------------------------------
+    new_tokens: list[int] = []
+    new_logprobs: list[float] = []
+    logprobs_field = choice.get("logprobs") or {}
+    if logprobs_field.get("token_logprobs"):
+        new_logprobs = list(logprobs_field["token_logprobs"])
+        for tok in logprobs_field.get("tokens", []):
+            if isinstance(tok, str) and tok.startswith("token_id:"):
+                new_tokens.append(int(tok[len("token_id:"):]))
+            else:
+                ids = state.tokenizer.encode(tok, add_special_tokens=False)
+                new_tokens.append(ids[0] if ids else 0)
+    if not new_tokens and response_text:
+        new_tokens = state.tokenizer.encode(response_text, add_special_tokens=False)
+    if len(new_logprobs) != len(new_tokens):
+        if len(new_logprobs) > len(new_tokens):
+            new_logprobs = new_logprobs[: len(new_tokens)]
+        else:
+            new_logprobs.extend([0.0] * (len(new_tokens) - len(new_logprobs)))
+
+    sample.tokens = sample.tokens + new_tokens
+    sample.response_length += len(new_tokens)
+    sample.response += response_text
+    if sample.loss_mask is not None:
+        assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
+        sample.loss_mask += [1] * len(new_tokens)
+    if sample.rollout_log_probs is None:
+        sample.rollout_log_probs = []
+    sample.rollout_log_probs += new_logprobs
+
+    finish = choice.get("finish_reason", "length")
+    if finish == "stop":
+        sample.status = Sample.Status.COMPLETED
+    elif finish == "length":
+        sample.status = Sample.Status.TRUNCATED
+
+    # Best-effort KV-router observability. Quiet when the frontend isn't
+    # in KV mode (these fields just won't be present).
+    nvext = output.get("nvext") or {}
+    timing = nvext.get("timing") or {}
+    kv_hit = float(timing.get("kv_hit_rate", 0.0))
+    prefill_ms = float(timing.get("prefill_time_ms", 0.0))
+    worker = (nvext.get("worker_id") or {}).get("prefill_worker_id")
+
+    # Mirror what SGLangEngine's `update_from_meta_info` does for the
+    # SGLang path: feed prefix-cache stats into `sample.prefix_cache_info`
+    # so Miles' aggregator (`miles/ray/rollout.py: _log_rollout_data`) can
+    # surface them as `rollout/prefix_cache_hit_rate` and
+    # `rollout/avg_cached_tokens_per_sample`. Dynamo's frontend reports
+    # kv_hit as a fraction in `nvext.timing.kv_hit_rate`; convert it back
+    # to a token count using the OpenAI usage block (and fall back to the
+    # locally-tokenized prompt length if usage is missing).
+    prompt_tokens = int((output.get("usage") or {}).get("prompt_tokens", 0)) or len(token_ids)
+    sample.prefix_cache_info.cached_tokens += int(round(kv_hit * prompt_tokens))
+    sample.prefix_cache_info.total_prompt_tokens += prompt_tokens
+    logger.info(
+        "[Dynamo] sample=%s prompt=%d output=%d kv_hit=%.0f%% prefill=%.0fms "
+        "worker=...%s latency=%.2fs finish=%s",
+        sample.label,
+        len(token_ids),
+        len(new_tokens),
+        kv_hit * 100,
+        prefill_ms,
+        str(worker)[-6:] if worker else "?",
+        elapsed,
+        finish,
+    )
+
+    return sample
+
+
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
-    """Generate using traditional SGLang router with token-based workflow"""
+    """Generate one rollout step.
+
+    For the default ``sglang`` backend we POST to the SGLang router's
+    ``/generate`` endpoint and read back native logprob arrays.  When
+    ``--rollout-backend dynamo`` is set, we hand off to
+    :func:`_generate_via_dynamo`, which speaks OpenAI ``/v1/completions``
+    against the Dynamo frontend and back-translates the response.
+    """
+    if getattr(args, "rollout_backend", "sglang") == "dynamo":
+        return await _generate_via_dynamo(args, sample, sampling_params)
+
     if args.ci_test:
         assert isinstance(sample.prompt, str)
 
@@ -347,19 +506,43 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        urls = response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
+    if getattr(args, "rollout_backend", "sglang") == "dynamo":
+        # Dynamo's frontend doesn't expose `/workers`. Reach each worker
+        # directly via its Ray actor handle — RolloutManager stashed the
+        # handle list on the GenerateState singleton when servers came up.
+        # DynamoEngine.abort_request POSTs to the worker's own SGLang
+        # /abort_request route (co-located on DYN_SYSTEM_PORT).
+        import ray
 
-    logger.info(f"Abort request for {urls}")
-    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
-    abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
-    for url, result in zip(urls, abort_results, strict=False):
-        if isinstance(result, Exception):
-            logger.warning(f"Failed to abort worker at {url}: {result}")
+        engines = [e for e in getattr(state, "rollout_engines", []) if e is not None]
+        logger.info(f"Abort request for {len(engines)} Dynamo engine(s)")
+        try:
+            ray.get([engine.abort_request.remote(abort_all=True) for engine in engines])
+        except Exception as e:
+            logger.warning(f"Dynamo abort_request failed: {e}")
+    else:
+        # Worker enumeration can fail when the router crashes or is restarting
+        # — that's an observability concern, not a reason to kill the whole
+        # rollout. Fall back to "no broadcast" if we can't get the list; the
+        # state.pendings drain below will still flush in-flight requests.
+        try:
+            if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
+                response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
+                urls = response["urls"]
+            else:
+                response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+                urls = [worker["url"] for worker in response["workers"]]
+        except Exception as e:
+            logger.warning(f"abort: failed to enumerate workers via router: {e}; skipping HTTP broadcast")
+            urls = []
+
+        if urls:
+            logger.info(f"Abort request for {urls}")
+            abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+            abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
+            for url, result in zip(urls, abort_results, strict=False):
+                if isinstance(result, Exception):
+                    logger.warning(f"Failed to abort worker at {url}: {result}")
 
     # make sure all the pending tasks are finished
     count = 0

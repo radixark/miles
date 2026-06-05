@@ -73,7 +73,14 @@ class ServerGroup:
 
         pg, reordered_bundle_indices, reordered_gpu_ids = self.pg
 
-        RolloutRayActor = ray.remote(SGLangEngine)
+        # Swap in the Dynamo-backed engine when the user opted into the
+        # Dynamo router; otherwise keep the vanilla SGLang engine actor.
+        if getattr(self.args, "rollout_backend", "sglang") == "dynamo":
+            from miles.backends.dynamo_utils.dynamo_engine import DynamoEngine
+
+            RolloutRayActor = ray.remote(DynamoEngine)
+        else:
+            RolloutRayActor = ray.remote(SGLangEngine)
 
         new_engines = []
         new_engine_indices = []
