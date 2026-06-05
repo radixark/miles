@@ -121,8 +121,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         self.group = group
         self.group_info = {
             "ranks": ranks,
-            # None = inherit the default group's backend (e.g. det_nccl when the
-            # deterministic-collective flag is set), mirroring the original call.
+            # None = inherit the default backend at reload time.
             "backend": backend,
         }
         pid = os.getpid()

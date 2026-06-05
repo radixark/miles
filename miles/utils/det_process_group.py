@@ -1,9 +1,9 @@
 """Process group with bitwise-deterministic SUM reductions.
 
 ``DetProcessGroup`` wraps an inner c10d NCCL group. Every collective delegates to
-the inner group except the SUM/AVG reductions — ``allreduce`` and ``reduce_scatter``
-— which are computed as
-all-gather (pure data movement, no arithmetic) plus a fixed local fold: a pairwise
+the inner group except the order-sensitive reductions — ``allreduce`` and
+``reduce_scatter`` — which are computed as all-gather (pure data movement, no
+arithmetic) plus a fixed local fold: a pairwise
 tree for power-of-two world sizes, an ascending-rank fold otherwise. The summation
 order is therefore independent of the NCCL version, topology, communicator
 instance, or buffer layout, and reduce-scatter takes its shard from the same full
@@ -121,8 +121,7 @@ class DetProcessGroup(BaseProcessGroup):
     def allgather_into_tensor_coalesced(
         self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object = None
     ) -> Work:
-        # Called by the coalescing manager's flush (without an opts argument). The
-        # inner NCCL backend object has no coalesced allgather; gather pair by pair.
+        # The coalescing manager's flush passes no opts; inner lacks the coalesced form.
         effective_opts = opts if opts is not None else AllgatherOptions()
         for output, input in zip(output_tensors, input_tensors, strict=True):
             self._inner._allgather_base(output, input, effective_opts).wait()
@@ -164,9 +163,7 @@ class DetProcessGroup(BaseProcessGroup):
         return self._inner.recv(tensors, src_rank, tag)
 
     def _start_coalescing(self, device: torch.device) -> None:
-        # The coalescing manager queues ops at the Python level and flushes them
-        # through the *_coalesced methods above; there is no backend-level
-        # coalescing to start for this wrapper.
+        # Ops queue at the Python level and flush via the *_coalesced methods.
         return None
 
     def _end_coalescing(self, device: torch.device) -> Work:
