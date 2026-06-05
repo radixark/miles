@@ -20,21 +20,21 @@ from miles.utils.test_utils.comparisons import compare_dumps, compare_metrics
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 
-# Absolute-diff floor for the grad dump comparison. The fault+recovery target
-# rebuilds the cross-cell collective (quorum 0 -> 1 -> 2), so its reduction order
-# differs from the no-fault baseline. At this test scale most of the 128 MoE
-# experts are starved (~0 tokens) -> near-zero gradients where the comparator's
-# relative (cosine) metric is degenerate: abs diffs ~1e-5 for experts (failing set
-# varies run to run, confirming FP noise not a bug), up to ~3.9e-4 for a near-zero
-# k_layernorm grad. Real trafficked grads (>=~1e-2) never fail the relative check;
-# 1e-3 sits in the clear gap below real grads and is <0.2% of grad_norm (~0.8).
-#
-# FIXME: this applies the floor to EVERY tensor (".*"), which is looser than ideal
-# (a near-zero real bug on any tensor would be tolerated). It should be narrowed to
-# the specific near-zero tensor-name regexes (MoE expert grads, k_layernorm) once
-# their dump names are confirmed, or this test made deterministic+bitwise like
-# test_trainer_ft_deterministic.py.
+# Absolute-diff floor scoped to near-zero MoE expert grad tensors ONLY. The
+# fault+recovery target rebuilds the cross-cell collective (quorum 0 -> 1 -> 2), so
+# its reduction order differs from the no-fault baseline. The only tensors that fail
+# under that are the starved (near-zero) per-expert grads: across runs every observed
+# failure was grad__...decoder.layers.{2,3,4}.mlp.experts.linear_fc{1,2}.weight*, with
+# max abs diff ~1e-5..3.9e-4 (failing set varies run to run -> FP noise, not a bug);
+# weights are bit-identical. So the floor is restricted to expert grad tensors by name,
+# and within them only a genuinely near-zero tensor (max_abs_diff <= floor) is excused
+# -- a trafficked expert with a real diff (max_abs > floor) still fails, and every
+# non-expert tensor stays strict. 1e-3 sits in the clear gap below real grads
+# (>=~1e-2) and is <0.2% of grad_norm (~0.8).
+# NOTE: the regex matches the dump grad-tensor name (grad__param__<megatron_name>);
+# confirm it against a real comparator report when nodes are available.
 _NEAR_ZERO_GRAD_ATOL: float = 1e-3
+_NEAR_ZERO_EXPERT_GRAD_PATTERN: str = r"grad__.*\.mlp\.experts\..*"
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 _WITH_FAILURE_ACTIONS: list[dict] = [
@@ -88,7 +88,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     compare_dumps(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
-        abs_diff_thresholds=[(".*", _NEAR_ZERO_GRAD_ATOL)],
+        abs_diff_thresholds=[(_NEAR_ZERO_EXPERT_GRAD_PATTERN, _NEAR_ZERO_GRAD_ATOL)],
     )
     print("With-failure comparison test PASSED")
 

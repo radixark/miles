@@ -285,12 +285,14 @@ def _run_comparator(
         "--allow-failed-pattern",
         allow_failed_pattern,
     ]
+    if extra_args:
+        cmd.extend(extra_args)
+    # Keep --abs-diff-threshold strictly last: its nargs="*" greedily consumes every
+    # following token, so no flag with a bare value may come after it.
     if abs_diff_thresholds:
         cmd.append("--abs-diff-threshold")
         for pattern, value in abs_diff_thresholds:
             cmd.extend([pattern, str(value)])
-    if extra_args:
-        cmd.extend(extra_args)
 
     result: subprocess.CompletedProcess[str] = subprocess.run(
         cmd,
