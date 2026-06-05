@@ -45,10 +45,9 @@ an existing one and change `run_ci(...)`'s mode). To add a brand-new label, edit
 
 ### Manually
 
-These files no longer insert the repo root into `sys.path`; set `PYTHONPATH` to the repo
-root (CI sets it automatically). Run a single mode via its entry file, or any mode (incl.
-the authorized-skip ones) via the scenario's typer app — which has `run` / `baseline` /
-`target` / `compare` subcommands.
+Set `PYTHONPATH` to the repo root (CI sets it automatically). Run a single mode via its
+entry file, or any mode (incl. the authorized-skip ones) via the scenario's typer app —
+which has `run` / `baseline` / `target` / `compare` subcommands.
 
 ```bash
 # One mode, exactly as CI runs it
