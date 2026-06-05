@@ -147,8 +147,13 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             )
             for engine in self.rollout_engines
         ]
+        # NCCL broadcast requires contiguous buffers, but slice_lora_to_rank yields
+        # a strided (non-contiguous) view for lora_B (column slice). Materialize
+        # contiguous copies (no-op when already contiguous) and hold the list so
+        # the buffers stay alive until the async broadcasts complete.
+        broadcast_tensors = [param.data.contiguous() for _, param in named_tensors]
         handles = [
-            dist.broadcast(param.data, 0, group=self._model_update_groups, async_op=True) for _, param in named_tensors
+            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in broadcast_tensors
         ]
         for handle in handles:
             handle.wait()
