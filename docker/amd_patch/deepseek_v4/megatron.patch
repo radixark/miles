@@ -1,0 +1,106 @@
+diff --git a/megatron/legacy/fused_kernels/__init__.py b/megatron/legacy/fused_kernels/__init__.py
+--- a/megatron/legacy/fused_kernels/__init__.py
++++ b/megatron/legacy/fused_kernels/__init__.py
+@@ -3,6 +3,7 @@
+ import os
+ import pathlib
+ import subprocess
++import torch
+
+ from torch.utils import cpp_extension
+
+@@ -15,6 +16,8 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = ""
+
+
+ def load(args):
++    if not torch.version.cuda:
++        return
+
+     # Check if cuda 11 is installed for compute capability 8.0
+     cc_flag = []
+diff --git a/megatron/core/extensions/transformer_engine.py b/megatron/core/extensions/transformer_engine.py
+--- a/megatron/core/extensions/transformer_engine.py
++++ b/megatron/core/extensions/transformer_engine.py
+@@ -2513,7 +2513,6 @@ except ImportError:
+
+ try:
+     from transformer_engine.pytorch.cpp_extensions import general_gemm
+-    from transformer_engine.pytorch.module.base import get_workspace
+
+     def te_general_gemm(
+         A: torch.Tensor,
+@@ -2533,7 +2532,6 @@ try:
+         return general_gemm(
+             A,
+             B,
+-            workspace=get_workspace(),
+             out_dtype=out_dtype,
+             quantization_params=None,
+             gelu=None,
+diff --git a/megatron/core/transformer/moe/moe_utils.py b/megatron/core/transformer/moe/moe_utils.py
+--- a/megatron/core/transformer/moe/moe_utils.py
++++ b/megatron/core/transformer/moe/moe_utils.py
+@@ -709,6 +709,9 @@ def topk_routing_with_score_function(
+     else:
+         compute_topk = _compute_topk
+
++    dsv4_hash_routing = tid2eid is not None
++    if dsv4_hash_routing:
++        score_function = "sqrtsoftplus"
+     if score_function == "softmax":
+         if use_pre_softmax:
+             scores = torch.softmax(logits, dim=-1, dtype=torch.float32).type_as(logits)
+@@ -743,7 +746,7 @@ def topk_routing_with_score_function(
+     else:
+         raise ValueError(f"Invalid score_function: {score_function}")
+
+-    if scaling_factor:
++    if scaling_factor and not dsv4_hash_routing:
+         probs = probs * scaling_factor
+
+     if torch.are_deterministic_algorithms_enabled():
+diff --git a/megatron/core/transformer/moe/router.py b/megatron/core/transformer/moe/router.py
+--- a/megatron/core/transformer/moe/router.py
++++ b/megatron/core/transformer/moe/router.py
+@@ -216,22 +216,25 @@ class TopKRouter(Router):
+         self.enable_expert_bias = (
+             self.config.moe_router_enable_expert_bias and not mode_hash
+         )
++        alloc_kwargs = {}
++        if torch.cuda.is_available():
++            alloc_kwargs["device"] = torch.device("cuda", torch.cuda.current_device())
+         if self.enable_expert_bias:
+             self.register_buffer(
+                 'local_tokens_per_expert',
+                 torch.zeros(
+-                    self.config.num_moe_experts,
++                    int(self.config.num_moe_experts),
+                     dtype=torch.float32,
+-                    device=torch.cuda.current_device(),
++                    **alloc_kwargs,
+                 ),
+                 persistent=False,
+             )
+             self.register_buffer(
+                 'expert_bias',
+                 torch.zeros(
+-                    self.config.num_moe_experts,
++                    int(self.config.num_moe_experts),
+                     dtype=torch.float32,
+-                    device=torch.cuda.current_device(),
++                    **alloc_kwargs,
+                 ),
+             )
+         else:
+@@ -245,8 +248,9 @@ class TopKRouter(Router):
+             self.tid2eid = torch.nn.Parameter(
+                 torch.full(
+-                    (self.config.vocab_size, self.topk),
+-                    fill_value=-1,
++                    (int(self.config.vocab_size), int(self.topk)),
++                    -1,
+                     dtype=torch.int32,
++                    **alloc_kwargs,
+                 ),
+                 requires_grad=False,
+             )

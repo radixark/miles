@@ -1,0 +1,39 @@
+diff --git a/miles/utils/chat_template_utils/tito_tokenizer.py b/miles/utils/chat_template_utils/tito_tokenizer.py
+index edfa6f8d8..eac52956e 100644
+--- a/miles/utils/chat_template_utils/tito_tokenizer.py
++++ b/miles/utils/chat_template_utils/tito_tokenizer.py
+@@ -22,10 +22,16 @@ from __future__ import annotations
+ import logging
+ from collections.abc import Iterable
+ from dataclasses import dataclass, field
+-from enum import StrEnum
++from enum import Enum
+ from pathlib import Path
+ from typing import Any
+
++try:
++    from enum import StrEnum
++except ImportError:
++    class StrEnum(str, Enum):
++        pass
++
+ from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
+ from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
+
+diff --git a/miles_plugins/models/deepseek_v4/ops/hyper_connection.py b/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
+index 51e9ae673..2838ff04f 100644
+--- a/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
++++ b/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
+@@ -124,6 +124,12 @@ class DeepSeekV4HyperConnectionUtil:
+         ``post``/``comb`` in fp32.
+         """
+         dtype = x.dtype
++        if getattr(torch.version, "hip", None):
++            post_expanded = post if post.dim() == x.dim() + 1 else post.unsqueeze(-1)
++            term1 = post_expanded * x.unsqueeze(-2)
++            term2 = torch.sum(comb.unsqueeze(-1) * residual.unsqueeze(-2), dim=2)
++            return (term1 + term2).to(dtype)
++
+         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
+         res_bf16 = (residual if residual.dtype == torch.bfloat16 else residual.bfloat16()).contiguous()
+         out = mhc_post(x_bf16, res_bf16, post, comb)

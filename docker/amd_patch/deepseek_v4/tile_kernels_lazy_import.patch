@@ -1,0 +1,27 @@
+diff --git a/tile_kernels/__init__.py b/tile_kernels/__init__.py
+--- a/tile_kernels/__init__.py
++++ b/tile_kernels/__init__.py
+@@ -1,15 +1,3 @@
+-import tilelang
+-
+-from . import (
+-    config,
+-    engram,
+-    mhc,
+-    modeling,
+-    moe,
+-    quant,
+-    transpose,
+-    torch,
+-    testing,
+-)
++"""TileKernels package."""
+ 
+ from .config import get_num_sms, get_device_num_sms, set_num_sms
+diff --git a/tile_kernels/modeling/__init__.py b/tile_kernels/modeling/__init__.py
+--- a/tile_kernels/modeling/__init__.py
++++ b/tile_kernels/modeling/__init__.py
+@@ -1,2 +1 @@
+-from . import engram
+-from . import mhc
++"""TileKernels modeling namespace."""
