@@ -166,6 +166,15 @@ _TRAINER_FT_ENV_VARS: dict[str, str] = {
     "MILES_EXPERIMENTAL_FT_TRAINER": "1",
 }
 
+# NVLS adds nothing here (NCCL_ALGO=Ring is forced for determinism) and its NVSwitch
+# state is fragile under the abrupt peer-process deaths the FT tests exercise: while a
+# crashed cell's ranks were dying, the surviving cell's freshly enqueued pipeline p2p
+# wedged in cuda.synchronize until the peer processes exited, then the NCCL heartbeat
+# monitor SIGABRTed the survivors ("Cannot recover when all cells are dead").
+_NCCL_ROBUSTNESS_ENV_VARS: dict[str, str] = {
+    "NCCL_NVLS_ENABLE": "0",
+}
+
 
 def run_training(
     train_args: str,
@@ -176,7 +185,12 @@ def run_training(
 ) -> None:
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
-    merged_env_vars = {**_DETERMINISTIC_ENV_VARS, **_TRAINER_FT_ENV_VARS, **(extra_env_vars or {})}
+    merged_env_vars = {
+        **_DETERMINISTIC_ENV_VARS,
+        **_TRAINER_FT_ENV_VARS,
+        **_NCCL_ROBUSTNESS_ENV_VARS,
+        **(extra_env_vars or {}),
+    }
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=mode.train_gpus_per_node,
