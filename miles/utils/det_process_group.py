@@ -205,9 +205,7 @@ class DetProcessGroup(BaseProcessGroup):
         return DET_NCCL_BACKEND_NAME
 
 
-def det_all_reduce(
-    tensor: torch.Tensor, *, group: dist.ProcessGroup, reduce_op: object = dist.ReduceOp.SUM
-) -> None:
+def det_all_reduce(tensor: torch.Tensor, *, group: dist.ProcessGroup, reduce_op: object = dist.ReduceOp.SUM) -> None:
     """SUM/AVG ``tensor`` across ranks in-place with the fixed fold.
 
     ``group`` may be any process group exposing ``_allgather_base`` or the list-form
