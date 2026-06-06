@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -254,6 +255,8 @@ class SessionRegistry:
     def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer):
         self.sessions: dict[str, LinearTrajectory] = {}
         self._session_last_access: dict[str, float] = {}
+        self._deleted_session_ids: set[str] = set()
+        self._deleted_order: deque[str] = deque()
         self.args = args
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
@@ -271,6 +274,10 @@ class SessionRegistry:
         return session
 
     def get_or_create_session(self, session_id: str) -> LinearTrajectory:
+        if session_id in self._deleted_session_ids:
+            # Explicitly deleted: do not silently resurrect it. Auto-create is only
+            # for ids the server has never seen (e.g. after a router restart).
+            raise SessionNotFoundError(f"session not found: session_id={session_id}")
         session = self.sessions.get(session_id)
         if session is None:
             self._evict_stale_sessions()
@@ -284,6 +291,7 @@ class SessionRegistry:
 
     _SESSION_TTL_SECS: int = 7200  # 2 hours
     _MAX_AUTO_CREATED: int = 10000
+    _MAX_DELETED_TOMBSTONES: int = 10000  # bound the deleted-id memory
 
     def _evict_stale_sessions(self) -> None:
         """Remove auto-created sessions older than _SESSION_TTL_SECS."""
@@ -303,6 +311,21 @@ class SessionRegistry:
     def remove_session(self, session_id: str) -> None:
         if self.sessions.pop(session_id, None) is None:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
+        self._tombstone(session_id)
+
+    def is_deleted(self, session_id: str) -> bool:
+        """True if this id was explicitly deleted (and must not be auto-recreated)."""
+        return session_id in self._deleted_session_ids
+
+    def _tombstone(self, session_id: str) -> None:
+        """Remember an explicitly deleted session id so it is not silently
+        auto-recreated. Bounded to the most recent _MAX_DELETED_TOMBSTONES ids."""
+        if session_id in self._deleted_session_ids:
+            return
+        if len(self._deleted_order) >= self._MAX_DELETED_TOMBSTONES:
+            self._deleted_session_ids.discard(self._deleted_order.popleft())
+        self._deleted_order.append(session_id)
+        self._deleted_session_ids.add(session_id)
 
     def compute_session_mismatch(self, session: LinearTrajectory) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template output.

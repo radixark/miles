@@ -69,6 +69,8 @@ def setup_session_routes(app, backend, args):
     async def get_session(session_id: str):
         session = registry.sessions.get(session_id)
         if session is None:
+            if registry.is_deleted(session_id):
+                raise SessionNotFoundError(f"session not found: session_id={session_id}")
             return GetSessionResponse(session_id=session_id, records=[], metadata={})
         metadata = {}
         try:

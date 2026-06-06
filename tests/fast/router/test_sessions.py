@@ -73,10 +73,22 @@ class TestSessionRoutes:
         assert data["session_id"] == session_id
         assert data["records"] == []
 
-    def test_get_session_not_found(self, router_env):
+    def test_get_unknown_session_returns_empty(self, router_env):
+        # An id the server has never seen (e.g. after a router restart) is returned
+        # as empty rather than 404, so the orchestrator can recover gracefully.
         response = requests.get(f"{router_env.url}/sessions/nonexistent", timeout=5.0)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["session_id"] == "nonexistent"
+        assert data["records"] == []
+
+    def test_get_deleted_session_returns_404(self, router_env):
+        # An explicitly deleted id is tombstoned: a later GET must not resurrect it
+        # as an empty session (that would undo the delete).
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        assert requests.delete(f"{router_env.url}/sessions/{session_id}", timeout=5.0).status_code == 204
+        response = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
         assert response.status_code == 404
-        assert response.json()["error"] == "session not found: session_id=nonexistent"
 
     def test_delete_session(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
