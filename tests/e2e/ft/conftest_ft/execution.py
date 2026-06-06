@@ -138,7 +138,20 @@ def get_common_train_args(
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    return "--use-fault-tolerance " "--ft-components train " "--control-server-port 0 "
+    # The heartbeat tolerance must exceed the indep_dp torchft collective timeout
+    # (120s): when a peer cell dies mid-collective, the surviving cell's main thread
+    # blocks (no heartbeat bumps) until torchft aborts the work and it recovers via
+    # the discard-and-retry path. With the default 90s tolerance the health checker
+    # declared that healthy-but-waiting cell dead first and the controller killed it,
+    # leaving no alive cell to heal from (observed twice in the random soak test:
+    # the second cell died exactly ~70-120s after the injection, with no second
+    # injection).
+    return (
+        "--use-fault-tolerance "
+        "--ft-components train "
+        "--control-server-port 0 "
+        "--trainer-heartbeat-checker-max-heartbeat-age 180 "
+    )
 
 
 # Makes both sides of a comparison bitwise-comparable: deterministic kernels plus the
