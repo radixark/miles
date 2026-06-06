@@ -1,7 +1,6 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
 
 import ray
 import torch
@@ -84,7 +83,6 @@ class DistBucketedWeightUpdateMixin:
             )
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
-            self._lora_base_synced = False
             # Names of adapters currently resident on the rollout engines; only
             # used by the multi-LoRA path, harmlessly empty otherwise.
             self._multi_lora_loaded: set[str] = set()
@@ -384,8 +382,9 @@ class DistBucketedWeightUpdateMixin:
             generation.
 
         Full: pause → base non-expert (TP) → base expert (EP) → resume.
-        LoRA: pause → base weights (first iteration only) → LoRA adapter
-        (every iteration) → resume.
+        LoRA: pause → LoRA adapter (every iteration) → resume. The frozen base is
+        never pushed; the remote rollout engines already load it from
+        ``hf_checkpoint`` at init.
         """
         self.weight_version += 1
 
@@ -398,25 +397,21 @@ class DistBucketedWeightUpdateMixin:
             is_lora = getattr(self, "is_lora", False)
             is_multi_lora = is_lora and is_multi_lora_enabled(self.args)
 
-            # Base weight sync model:
-            #   full-param RL: base weights change every step -> always sync.
-            #   LoRA RL: base is frozen -> only sync once, on the first iteration.
-            if not (is_lora and self._lora_base_synced):
-                # Multi-LoRA stacks adapters into MultiLoRALinear layers whose
-                # params (``.adapters.{i}.``) the base-name filter doesn't catch;
-                # hide them so only true base weights are gathered and sent.
-                base_ctx = nullcontext()
-                if is_multi_lora:
-                    from megatron.bridge.peft.multi_lora_layers import hide_adapters
+            # Base weight sync:
+            #   Full-param RL: base weights change every step -> always sync.
+            #   LoRA RL: the base is frozen and the (remote) rollout engines already
+            #     hold it (they load ``hf_checkpoint`` at init), so there is nothing
+            #     new to push. Skip it -- this mirrors UpdateWeightFromTensor's
+            #     ``skip_base_sync`` for the distributed case, and avoids routing frozen
+            #     base weights (e.g. a VLM vision tower, unsupported by the direct
+            #     convert_to_hf) through the base path.
+            if not is_lora:
+                pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-                    base_ctx = hide_adapters(self.model)
-                with base_ctx:
-                    pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
-
-                    self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-                    dist.barrier(group=get_gloo_group())
-                    self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-                    dist.barrier(group=get_gloo_group())
+                self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+                dist.barrier(group=get_gloo_group())
+                self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+                dist.barrier(group=get_gloo_group())
 
             # Adapter weights: every iteration.
             if is_lora:
@@ -425,8 +420,6 @@ class DistBucketedWeightUpdateMixin:
                 else:
                     self._update_lora_weights()
                 dist.barrier(group=get_gloo_group())
-                if not self._lora_base_synced:
-                    self._lora_base_synced = True
 
         with timer("finalize_and_resume_engines"):
             self._finalize_and_resume_engines()
