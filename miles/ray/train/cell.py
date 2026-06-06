@@ -149,23 +149,13 @@ class RayTrainCell:
         )
 
     def _mark_as_errored(self) -> None:
+        # NOTE: do NOT kill actors here — external ft controller may need the actors
+        # to be still there for stacktrace diagnostics before calling stop() to kill them
         # Validate state BEFORE building the new state, otherwise StateAllocatedUninitialized
         # has no `indep_dp_info` and we'd raise AttributeError instead of the expected AssertionError.
         assert isinstance(
             self._state, (StateAllocatedAlive, StateAllocatedErrored)
         ), f"{self.cell_index=} {self._state=}"
-
-        # Kill the actors right away (an errored cell is always torn down and respawned, so
-        # they are dead weight): a wedged rank's spinning NCCL kernels are only reliably
-        # released by process exit — ncclCommAbort does not stop them while the peer is
-        # alive-but-stuck — and while they spin they stall sibling cells' freshly enqueued
-        # collectives on the shared fabric (observed: the surviving cell's pipeline p2p
-        # blocked in cuda.synchronize until the errored cell's ranks died, after which the
-        # NCCL heartbeat monitor SIGABRTed the survivors too). This trades post-mortem
-        # stacktrace diagnostics on the dead actors for survivor liveness.
-        for actor in self._get_actor_handles():
-            ray.kill(actor)
-
         self._change_state(
             "_mark_as_errored",
             (StateAllocatedAlive, StateAllocatedErrored),
