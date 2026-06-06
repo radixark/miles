@@ -59,16 +59,22 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     # scenario_deterministic already verify; this scenario isolates the fault + heal.
     base += get_ft_args(mode)
 
-    # Real rollout needs deterministic collectives on top: the degraded-quorum commit
-    # after the crash brackets the grad reduction differently, the resulting ulp-level
-    # weight drift eventually flips sampled tokens, and from there the runs diverge
-    # for real (observed: a deterministic 5.1% step-7 train/grad_norm gap). With the
-    # fixed-order collectives the faulted run reproduces the fault-free run exactly,
-    # so generation never diverges. The replay modes keep native collectives: their
-    # data cannot diverge, and the post-crash det-collective abort is known to wedge
-    # the survivors' device under pipeline parallelism (pp2).
-    if mode.has_real_rollout:
-        base += DETERMINISTIC_TRAIN_ARGS
+    # Real rollout: the faulted side replays the rollout data the fault-free side
+    # generated and saved (real_rollout runs always --save-debug-rollout-data into
+    # their own dump dir). The degraded-quorum commit after the crash accumulates
+    # microbatches in a different floating-point bracketing - a local effect no
+    # collective ordering can remove (deterministic collectives were tried: every
+    # reduction here is 2-way, so they are a mathematical no-op and the run was
+    # bit-identical with and without them) - and with live generation that ulp-level
+    # weight drift eventually flips sampled tokens, after which the runs diverge for
+    # real (a deterministic 5.1% step-7 train/grad_norm gap). Replaying pins the data,
+    # so the drift stays at the ulp level exactly like the replay modes, which pass.
+    # Engine + update_weights coverage stays real on both phase_a sides and the
+    # baseline phase_b; fault x engine coexistence is covered by
+    # scenario_deterministic's real_rollout mode.
+    if mode.has_real_rollout and is_target and not is_phase_a:
+        baseline_phase_b = dump_dir.replace("/target/", "/baseline/")
+        base += f"--load-debug-rollout-data {baseline_phase_b}/rollout_data/{{rollout_id}}.pt "
 
     if is_phase_a:
         base += f"--save {dump_dir}/ckpt --save-interval 1 "
