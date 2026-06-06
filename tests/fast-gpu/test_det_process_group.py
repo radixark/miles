@@ -4,7 +4,6 @@ register_cuda_ci(est_time=240, suite="stage-c-4-gpu-h200", labels=[])
 
 import os
 import socket
-from collections.abc import Callable
 
 import pytest
 import torch
@@ -31,25 +30,43 @@ _SEED = 1234
 # --------------------------------------------------------------------------- #
 
 
-def _flat_gather_fn(per_rank: list[torch.Tensor]) -> Callable[[torch.Tensor, torch.Tensor], None]:
-    """Fake _allgather_base: fill the flat output buffer from fixed per-rank CPU tensors."""
+class _FakeFlatGroup:
+    """CPU stand-in with the c10d backend gather (_allgather_base); serves ascending chunk requests."""
 
-    def gather_fn(output: torch.Tensor, input: torch.Tensor) -> None:
-        flat = torch.cat([t.reshape(-1) for t in per_rank])
-        output.copy_(flat)
+    def __init__(self, per_rank: list[torch.Tensor]) -> None:
+        self._per_rank = per_rank
+        self._offset = 0
 
-    return gather_fn
+    def size(self) -> int:
+        return len(self._per_rank)
+
+    def _allgather_base(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> _CompletedWork:
+        count = input.numel()
+        rows = output.view(self.size(), count)
+        for row, src in zip(rows, self._per_rank, strict=True):
+            row.copy_(src.reshape(-1)[self._offset : self._offset + count])
+        self._offset += count
+        return _CompletedWork()
 
 
-def _row_view_gather_fn(per_rank: list[torch.Tensor]) -> Callable[[torch.Tensor, torch.Tensor], None]:
-    """indep_dp-style gather: fill via output.view(world_size, -1).unbind(dim=0) row views."""
+class _FakeTorchftGroup:
+    """CPU stand-in with only the torchft list-form allgather; serves ascending chunk requests."""
 
-    def gather_fn(output: torch.Tensor, input: torch.Tensor) -> None:
-        rows = list(output.view(len(per_rank), -1).unbind(dim=0))
-        for row, src in zip(rows, per_rank, strict=True):
-            row.copy_(src.reshape(-1))
+    def __init__(self, per_rank: list[torch.Tensor]) -> None:
+        self._per_rank = per_rank
+        self._offset = 0
 
-    return gather_fn
+    def size(self) -> int:
+        return len(self._per_rank)
+
+    def allgather(
+        self, output_lists: list[list[torch.Tensor]], input_list: list[torch.Tensor], opts: object
+    ) -> _CompletedWork:
+        count = input_list[0].numel()
+        for row, src in zip(output_lists[0], self._per_rank, strict=True):
+            row.copy_(src.reshape(-1)[self._offset : self._offset + count])
+        self._offset += count
+        return _CompletedWork()
 
 
 def _pairwise_tree_fold(partials: list[torch.Tensor]) -> torch.Tensor:
@@ -126,13 +143,13 @@ def test_reduce_op_of_extracts_reduceop_from_options_object():
 
 
 def test_det_all_reduce_equals_manual_pairwise_tree_fold():
-    """det_all_reduce with injected gather_fn equals the manual pairwise-tree fold bitwise."""
+    """det_all_reduce over a fake group equals the manual pairwise-tree fold bitwise."""
     gen = torch.Generator().manual_seed(_SEED)
     per_rank = [torch.randn(16, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
     expected = _pairwise_tree_fold(per_rank)
 
     tensor = per_rank[0].clone()
-    det_all_reduce(tensor, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank))
+    det_all_reduce(tensor, group=_FakeFlatGroup(per_rank))
     assert torch.equal(tensor, expected)
 
 
@@ -143,7 +160,7 @@ def test_det_all_reduce_avg_equals_tree_fold_divided_by_world():
     expected = _pairwise_tree_fold(per_rank) / _WORLD_SIZE
 
     tensor = per_rank[0].clone()
-    det_all_reduce(tensor, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank), reduce_op=dist.ReduceOp.AVG)
+    det_all_reduce(tensor, group=_FakeFlatGroup(per_rank), reduce_op=dist.ReduceOp.AVG)
     assert torch.equal(tensor, expected)
 
 
@@ -157,25 +174,8 @@ def test_det_all_reduce_avg_non_contiguous_recursion_passes_reduce_op_through():
     non_contiguous = base.t()
     assert not non_contiguous.is_contiguous()
 
-    det_all_reduce(
-        non_contiguous, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank), reduce_op=dist.ReduceOp.AVG
-    )
+    det_all_reduce(non_contiguous, group=_FakeFlatGroup(per_rank), reduce_op=dist.ReduceOp.AVG)
     assert torch.equal(non_contiguous.contiguous().reshape(-1), expected_flat)
-
-
-def _sequential_chunk_gather_fn(per_rank: list[torch.Tensor]) -> Callable[[torch.Tensor, torch.Tensor], None]:
-    """Chunk-aware fake gather: serves ascending chunk requests from fixed per-rank tensors."""
-    position = {"offset": 0}
-
-    def gather_fn(output: torch.Tensor, input: torch.Tensor) -> None:
-        count = input.numel()
-        start = position["offset"]
-        rows = output.view(len(per_rank), count)
-        for row, src in zip(rows, per_rank, strict=True):
-            row.copy_(src.reshape(-1)[start : start + count])
-        position["offset"] = start + count
-
-    return gather_fn
 
 
 def test_det_all_reduce_multi_chunk_matches_single_chunk(monkeypatch: pytest.MonkeyPatch):
@@ -188,7 +188,7 @@ def test_det_all_reduce_multi_chunk_matches_single_chunk(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(dpg, "_GATHER_BUFFER_CAP_BYTES", _WORLD_SIZE * 7 * 4)
     tensor = per_rank[0].clone()
-    det_all_reduce(tensor, world_size=_WORLD_SIZE, gather_fn=_sequential_chunk_gather_fn(per_rank))
+    det_all_reduce(tensor, group=_FakeFlatGroup(per_rank))
 
     assert torch.equal(tensor, expected)
 
@@ -203,29 +203,24 @@ def test_det_chunked_fold_shard_window_spans_chunks(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(dpg, "_GATHER_BUFFER_CAP_BYTES", _WORLD_SIZE * 7 * 4)
     out = torch.empty(12, dtype=torch.float32)
-    dpg._det_chunked_fold(
-        per_rank[0].clone(),
-        out,
-        out_offset=12,
-        world_size=_WORLD_SIZE,
-        gather_fn=_sequential_chunk_gather_fn(per_rank),
-    )
+    dpg._det_chunked_fold(per_rank[0].clone(), out, out_offset=12, group=_FakeFlatGroup(per_rank))
 
     assert torch.equal(out, expected_full[12:24])
 
 
-def test_det_all_reduce_row_view_gather_matches_flat_gather_bitwise():
-    """indep_dp row-view gather (view(world,-1).unbind) is bitwise-identical to flat-buffer fill."""
+def test_det_all_reduce_torchft_list_gather_matches_flat_gather_bitwise():
+    """The torchft list-form gather path is bitwise-identical to the _allgather_base path."""
     gen = torch.Generator().manual_seed(_SEED + 7)
     per_rank = [torch.randn(32, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
 
     via_flat = per_rank[0].clone()
-    det_all_reduce(via_flat, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank))
+    det_all_reduce(via_flat, group=_FakeFlatGroup(per_rank))
 
-    via_rows = per_rank[0].clone()
-    det_all_reduce(via_rows, world_size=_WORLD_SIZE, gather_fn=_row_view_gather_fn(per_rank))
+    via_list = per_rank[0].clone()
+    det_all_reduce(via_list, group=_FakeTorchftGroup(per_rank))
 
-    assert torch.equal(via_flat, via_rows)
+    assert torch.equal(via_flat, via_list)
+    assert torch.equal(via_flat, _pairwise_tree_fold(per_rank))
 
 
 def test_det_all_reduce_non_contiguous_input_writes_summed_values_back():
@@ -238,15 +233,15 @@ def test_det_all_reduce_non_contiguous_input_writes_summed_values_back():
     non_contiguous = base.t()
     assert not non_contiguous.is_contiguous()
 
-    det_all_reduce(non_contiguous, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank))
+    det_all_reduce(non_contiguous, group=_FakeFlatGroup(per_rank))
     assert torch.equal(non_contiguous.contiguous().reshape(-1), expected_flat)
 
 
 def test_det_all_reduce_world_size_one_leaves_tensor_unchanged():
-    """world_size=1: gather_fn returns the input copy, so the tensor is unchanged."""
+    """A 1-rank group gathers only the local copy, so the tensor is unchanged."""
     original = torch.tensor([1.0, -2.5, 3.25, 0.0], dtype=torch.float32)
     tensor = original.clone()
-    det_all_reduce(tensor, world_size=1, gather_fn=_flat_gather_fn([original]))
+    det_all_reduce(tensor, group=_FakeFlatGroup([original]))
     assert torch.equal(tensor, original)
 
 
@@ -261,7 +256,7 @@ def test_det_all_reduce_fold_order_checksum_pin():
     reference = _pairwise_tree_fold(per_rank)
 
     tensor = per_rank[0].clone()
-    det_all_reduce(tensor, world_size=_WORLD_SIZE, gather_fn=_flat_gather_fn(per_rank))
+    det_all_reduce(tensor, group=_FakeFlatGroup(per_rank))
     assert torch.equal(tensor, reference)
 
     # Hardcoded pin: element 0 is the plain sum; element 3 sums four 0.25 -> 1.0.
