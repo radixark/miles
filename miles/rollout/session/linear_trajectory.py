@@ -298,10 +298,7 @@ class SessionRegistry:
         if not self._session_last_access:
             return
         now = time.monotonic()
-        stale = [
-            sid for sid, ts in self._session_last_access.items()
-            if now - ts > self._SESSION_TTL_SECS
-        ]
+        stale = [sid for sid, ts in self._session_last_access.items() if now - ts > self._SESSION_TTL_SECS]
         for sid in stale:
             self.sessions.pop(sid, None)
             self._session_last_access.pop(sid, None)
