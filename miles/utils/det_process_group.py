@@ -250,8 +250,6 @@ def _det_chunked_fold(
 ) -> None:
     """Fold ``flat_input`` across ranks chunk by chunk into ``out_flat`` (same numel;
     may alias ``flat_input``). ``None`` joins the gathers without folding.
-
-    Chunking bounds gather memory and cannot change bits.
     """
     world_size = group.size()
     total = flat_input.numel()
