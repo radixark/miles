@@ -62,13 +62,6 @@ def compare_metrics(
     baseline_events = _read_metric_events(Path(baseline_dir))
     target_events = _read_metric_events(Path(target_dir))
 
-    # Only events carrying at least one compared key participate in counting and
-    # pairing: the sides may legitimately differ in unrelated event streams (e.g. a
-    # side replaying recorded rollouts emits no generation metrics), and those must
-    # not break the alignment of the compared steps.
-    baseline_events = _filter_by_key_prefixes(baseline_events, key_prefixes)
-    target_events = _filter_by_key_prefixes(target_events, key_prefixes)
-
     # FT retries (healing path) leave events from earlier failed attempts. Only
     # the highest-attempt events per rollout_id reflect the successful run.
     baseline_events = _keep_only_final_attempt(baseline_events)
@@ -90,10 +83,6 @@ def compare_metrics(
         f"  - {i}" for i in issues
     )
     print(f"MetricEvent comparison passed: {len(baseline_events)} steps compared")
-
-
-def _filter_by_key_prefixes(events: list[MetricEvent], key_prefixes: list[str]) -> list[MetricEvent]:
-    return [e for e in events if any(k.startswith(p) for p in key_prefixes for k in e.metrics)]
 
 
 def _keep_only_final_attempt(events: list[MetricEvent]) -> list[MetricEvent]:

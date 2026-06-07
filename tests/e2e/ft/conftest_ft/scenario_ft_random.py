@@ -103,11 +103,7 @@ def _run_fault_injection_loop(
 def run_ci(
     mode: Annotated[str, typer.Option(help="Test mode variant")],
     seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = 42,
-    # Bounded by the pre-recorded debug rollout data, which has 12 rollouts (see
-    # README "How to regenerate": generate-data --num-steps 12). The previous
-    # default of 30 was unreachable: a healthy run dies at rollout 12 with
-    # FileNotFoundError on 12.pt.
-    num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = 12,
+    num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = 30,
     crash_probability: Annotated[float, typer.Option(help="Per-step crash probability per cell")] = 0.1,
 ) -> None:
     """Random failure soak test.
@@ -145,9 +141,7 @@ def run_ci(
     injector_thread.start()
 
     try:
-        # dump_dir wipes the previous run's outputs; the event analyzer otherwise
-        # reads a mix of event streams accumulated across runs and misfires.
-        run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir)
+        run_training(train_args=train_args, mode=ft_mode)
     finally:
         stop_event.set()
         injector_thread.join(timeout=5)

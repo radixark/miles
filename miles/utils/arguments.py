@@ -1465,15 +1465,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Megatron forward-backward phase dumper config as key=value pairs.",
             )
             parser.add_argument(
-                "--dumper-fwd-bwd-only-first-step",
-                action="store_true",
-                help=(
-                    "Dump the fwd-bwd phase only for the first train step. By default the "
-                    "dumper re-arms every step, each time wiping and rewriting the dump dir, "
-                    "so the surviving dump is the last step's."
-                ),
-            )
-            parser.add_argument(
                 "--dumper-source-patcher-config-inference",
                 type=str,
                 default=None,

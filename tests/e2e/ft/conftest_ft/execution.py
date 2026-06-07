@@ -48,12 +48,7 @@ def prepare(mode: FTTestMode) -> None:
 
 
 def get_common_train_args(
-    mode: FTTestMode,
-    *,
-    dump_dir: str,
-    num_steps: int | None = None,
-    enable_dumper: bool = True,
-    dumper_only_first_step: bool = False,
+    mode: FTTestMode, *, dump_dir: str, num_steps: int | None = None, enable_dumper: bool = True
 ) -> str:
     ckpt_args = (
         f"--hf-checkpoint {_MODEL_DIR}/{mode.model_name} " f"--ref-load {_MODEL_DIR}/{mode.model_name}_torch_dist "
@@ -122,12 +117,9 @@ def get_common_train_args(
 
     dumper_args = ""
     if enable_dumper:
-        only_first_step = "--dumper-fwd-bwd-only-first-step " if dumper_only_first_step else ""
         dumper_args = (
             f"--dumper-dir {dump_dir}/dumps "
-            f"--dumper-fwd-bwd enable=1 enable_model_value=1 enable_model_grad=1 "
-            f"include_parallel_rank_in_filename=1 "
-            f"{only_first_step}"
+            f"--dumper-fwd-bwd enable=1 enable_model_value=1 enable_model_grad=1 include_parallel_rank_in_filename=1 "
             f"--dumper-source-patcher-config-train {_MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
         )
 
@@ -146,35 +138,7 @@ def get_common_train_args(
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    # The heartbeat tolerance must exceed the indep_dp torchft collective timeout
-    # (120s): when a peer cell dies mid-collective, the surviving cell's main thread
-    # blocks (no heartbeat bumps) until torchft aborts the work and it recovers via
-    # the discard-and-retry path. With the default 90s tolerance the health checker
-    # declared that healthy-but-waiting cell dead first and the controller killed it,
-    # leaving no alive cell to heal from (observed twice in the random soak test:
-    # the second cell died exactly ~70-120s after the injection, with no second
-    # injection).
-    return (
-        "--use-fault-tolerance "
-        "--ft-components train "
-        "--control-server-port 0 "
-        "--trainer-heartbeat-checker-max-heartbeat-age 180 "
-    )
-
-
-# Deterministic kernels only: removes run-to-run kernel noise between the two compared
-# runs. Safe with faults (unlike the det_nccl collectives below, whose post-crash abort
-# can wedge survivors), so the fault-injecting scenarios can use it.
-DETERMINISTIC_KERNEL_ARGS: str = (
-    "--deterministic-mode "
-    '--train-env-vars \'{"NCCL_ALGO": "Ring", '
-    '"NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", '
-    '"CUBLAS_WORKSPACE_CONFIG": ":4096:8"}\' '
-)
-
-# Makes both sides of a comparison bitwise-comparable even across different reduction
-# topologies: deterministic kernels plus the fixed-order (det_nccl) collectives.
-DETERMINISTIC_TRAIN_ARGS: str = DETERMINISTIC_KERNEL_ARGS + "--debug-deterministic-collective "
+    return "--use-fault-tolerance " "--ft-components train " "--control-server-port 0 "
 
 
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)

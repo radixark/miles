@@ -55,11 +55,6 @@ def create_indep_dp_group(
     return GroupInfo(rank=indep_dp_info.alive_rank, size=indep_dp_info.alive_size, group=nccl_pg, gloo_group=gloo_pg)
 
 
-# Retired PGs are kept alive forever: dropping the last reference runs the backend
-# destructor (an implicit abort) on this thread, reintroducing the hang below.
-_retired_pgs: list[dist.ProcessGroup] = []
-
-
 def reconfigure_indep_dp_group(
     parallel_state: ParallelState,
     store_addr: str | None,
@@ -67,20 +62,11 @@ def reconfigure_indep_dp_group(
     megatron_rank: int,
     megatron_world_size: int,
 ) -> None:
-    """Retire old indep_dp PGs and create new ones with a fresh quorum_id."""
+    """Abort old indep_dp PGs and create new ones with a fresh quorum_id."""
     old = parallel_state.indep_dp
     for g in [old.group, old.gloo_group]:
-        if g is None:
-            continue
-        if g.errored() is not None:
-            # torchft already aborted the underlying comm; abort() is cheap cleanup.
+        if g is not None:
             g.abort(errored=False)
-        else:
-            # Aborting a healthy comm whose remote peer is wedged (e.g. stuck in its
-            # cell-internal collective next to a crashed rank) blocks until the peer
-            # process dies, stalling the NCCL watchdog long enough for the heartbeat
-            # monitor to SIGABRT this process. Leak the group instead.
-            _retired_pgs.append(g)
 
     parallel_state.indep_dp = create_indep_dp_group(
         store_addr=store_addr,

@@ -382,21 +382,11 @@ def _check_uneven_reduce_scatter(rank: int, det1: dist.ProcessGroup) -> None:
     _assert_bitwise("uneven reduce_scatter (list)", out, expected)
 
 
-def _expected_slot_fold(rank: int, inputs: list[torch.Tensor]) -> torch.Tensor:
-    """Reference for list reduce_scatter: gather every rank's copy of MY slot and tree-fold.
-
-    Gathers slot by slot: within one all_gather every rank contributes the SAME slot,
-    so shapes match across ranks (slots have per-rank-distinct shapes, and an uneven
-    all_gather is undefined over NCCL - it deadlocks). Returned flat, matching how
-    callers compare (their outputs are flattened views)."""
-    my_slot_copies: list[torch.Tensor] = []
-    for slot in range(_WORLD_SIZE):
-        slot_input = inputs[slot].contiguous()
-        slot_copies = [torch.empty_like(slot_input) for _ in range(_WORLD_SIZE)]
-        dist.all_gather(slot_copies, slot_input)
-        if slot == rank:
-            my_slot_copies = slot_copies
-    return _manual_tree_sum(my_slot_copies).reshape(-1)
+def _expected_slot_fold(rank: int, my_slot_input: torch.Tensor) -> torch.Tensor:
+    """Reference for list reduce_scatter: gather every rank's copy of MY slot and tree-fold."""
+    slot_copies = [torch.empty_like(my_slot_input.contiguous()) for _ in range(_WORLD_SIZE)]
+    dist.all_gather(slot_copies, my_slot_input.contiguous())
+    return _manual_tree_sum(slot_copies)
 
 
 def _check_uneven_reduce_scatter_shapes(rank: int, det1: dist.ProcessGroup) -> None:
@@ -413,14 +403,14 @@ def _check_uneven_reduce_scatter_shapes(rank: int, det1: dist.ProcessGroup) -> N
 
     # Distinct multi-dim shapes per slot, via the dist API.
     inputs = make_inputs(_SEED + 400, torch.float32)
-    expected = _expected_slot_fold(rank, inputs)
+    expected = _expected_slot_fold(rank, inputs[rank])
     out = torch.empty(slot_shapes[rank], device=device)
     dist.reduce_scatter(out, inputs, op=dist.ReduceOp.SUM, group=det1)
     _assert_bitwise("uneven multi-dim reduce_scatter", out.view(-1), expected)
 
     # bf16 variant.
     inputs_bf16 = make_inputs(_SEED + 401, torch.bfloat16)
-    expected_bf16 = _expected_slot_fold(rank, inputs_bf16)
+    expected_bf16 = _expected_slot_fold(rank, inputs_bf16[rank])
     out_bf16 = torch.empty(slot_shapes[rank], dtype=torch.bfloat16, device=device)
     dist.reduce_scatter(out_bf16, inputs_bf16, op=dist.ReduceOp.SUM, group=det1)
     _assert_bitwise("uneven bf16 reduce_scatter", out_bf16.view(-1), expected_bf16)
@@ -431,7 +421,7 @@ def _check_uneven_reduce_scatter_shapes(rank: int, det1: dist.ProcessGroup) -> N
     bases = make_inputs(_SEED + 402, torch.float32)
     nc_inputs = [base.reshape(shape).t() for base, shape in zip(bases, nc_shapes, strict=True)]
     assert all(not t.is_contiguous() for t in nc_inputs if t.dim() > 1 and min(t.shape) > 1)
-    expected_nc = _expected_slot_fold(rank, nc_inputs)
+    expected_nc = _expected_slot_fold(rank, nc_inputs[rank])
     out_base = torch.empty(nc_shapes[rank], device=device)
     out_nc = out_base.t()
     opts = dist.ReduceScatterOptions()
@@ -444,7 +434,7 @@ def _check_uneven_reduce_scatter_shapes(rank: int, det1: dist.ProcessGroup) -> N
     dpg._GATHER_BUFFER_CAP_BYTES = _WORLD_SIZE * 2 * 4
     try:
         inputs_chunked = make_inputs(_SEED + 403, torch.float32)
-        expected_chunked = _expected_slot_fold(rank, inputs_chunked)
+        expected_chunked = _expected_slot_fold(rank, inputs_chunked[rank])
         out_chunked = torch.empty(slot_shapes[rank], device=device)
         dist.reduce_scatter(out_chunked, inputs_chunked, op=dist.ReduceOp.SUM, group=det1)
     finally:
@@ -624,7 +614,9 @@ def _check_reduce_scatter_uneven_avg(rank: int, det1: dist.ProcessGroup) -> None
     gen = torch.Generator().manual_seed(_SEED + 400 + rank)
     inputs = [torch.randn(size, generator=gen, dtype=torch.float32).to(device) for size in slot_sizes]
 
-    expected = _expected_slot_fold(rank, inputs) / _WORLD_SIZE
+    slot_copies = [torch.empty(slot_sizes[rank], device=device) for _ in range(_WORLD_SIZE)]
+    dist.all_gather(slot_copies, inputs[rank])
+    expected = _manual_tree_sum(slot_copies) / _WORLD_SIZE
 
     out = torch.empty(slot_sizes[rank], device=device)
     dist.reduce_scatter(out, inputs, op=dist.ReduceOp.AVG, group=det1)

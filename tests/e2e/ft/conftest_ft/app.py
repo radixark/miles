@@ -11,9 +11,7 @@ from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, r
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
 
-# Returns the train args for one (side, phase) run, or None to skip that run
-# entirely (e.g. a data-generation phase that only one side performs).
-BuildArgsFn = Callable[[FTTestMode, str, bool], str | None]
+BuildArgsFn = Callable[[FTTestMode, str, bool], str]
 
 
 def resolve_dump_dir(test_name: str) -> str:
@@ -47,13 +45,19 @@ def run_pipeline(
     prepare(ft_mode)
 
     for phase in effective_phases:
-        for side, build_fn in (("baseline", build_baseline_args), ("target", build_target_args)):
-            side_dump = f"{dump_dir}/{_dump_subdir(side, phase)}"
-            side_args = build_fn(ft_mode, side_dump, enable_dumper)
-            if side_args is None:
-                print(f"Skipping {side} {phase or '(single phase)'}: not part of this mode's pipeline")
-                continue
-            run_training(train_args=side_args, mode=ft_mode, dump_dir=side_dump)
+        baseline_dump = f"{dump_dir}/{_dump_subdir('baseline', phase)}"
+        run_training(
+            train_args=build_baseline_args(ft_mode, baseline_dump, enable_dumper),
+            mode=ft_mode,
+            dump_dir=baseline_dump,
+        )
+
+        target_dump = f"{dump_dir}/{_dump_subdir('target', phase)}"
+        run_training(
+            train_args=build_target_args(ft_mode, target_dump, enable_dumper),
+            mode=ft_mode,
+            dump_dir=target_dump,
+        )
 
     if enable_dumper:
         compare_fn(dump_dir, ft_mode)
@@ -93,9 +97,6 @@ def create_comparison_app_and_run_ci(
         sub = _dump_subdir(side, phase)
         full_dump_dir = f"{dump_dir}/{sub}"
         args = build_fn(ft_mode, full_dump_dir, enable_dumper)
-        if args is None:
-            print(f"Skipping {side} {phase or '(single phase)'}: not part of this mode's pipeline")
-            return
         prepare(ft_mode)
         run_training(train_args=args, mode=ft_mode, dump_dir=full_dump_dir)
 

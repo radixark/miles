@@ -4,7 +4,7 @@
 import json
 
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
-from tests.e2e.ft.conftest_ft.execution import DETERMINISTIC_KERNEL_ARGS, get_common_train_args, get_ft_args
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.test_utils.comparisons import (
@@ -17,17 +17,13 @@ from miles.utils.test_utils.comparisons import (
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 
-# Per-tensor pass predicates. Witness tensors are FT bookkeeping whose contents
-# legitimately differ between the faulted and fault-free runs (different witness-id
-# timelines), so they are not numerically compared — both sides run FT now, so they
-# appear in both dumps instead of being skipped as baseline-missing. Only starved
-# near-zero MoE expert grads diverge under the recovery-rebuilt collective's reduction
-# order (observed grad__...mlp.experts.*, max_abs ~1e-5..4e-4, set varies run-to-run
-# -> FP noise; weights bit-identical). So expert grads also tolerate max_abs <= 1e-3
-# (well below real grads ~1e-2); a real expert diff still fails, and everything else
-# stays strict via the catch-all (required: an unmatched tensor is a fail-closed error).
+# Per-tensor pass predicates. Only starved near-zero MoE expert grads diverge under
+# the recovery-rebuilt collective's reduction order (observed grad__...mlp.experts.*,
+# max_abs ~1e-5..4e-4, set varies run-to-run -> FP noise; weights bit-identical). So
+# expert grads also tolerate max_abs <= 1e-3 (well below real grads ~1e-2); a real
+# expert diff still fails, and everything else stays strict via the catch-all
+# (required: an unmatched tensor is a fail-closed error).
 _DIFF_THRESHOLDS: list[tuple[str, str]] = [
-    (r".*witness.*", "max_abs >= 0"),
     (r"grad__.*\.mlp\.experts\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
     (".*", "rel <= 0.0085"),
 ]
@@ -46,72 +42,19 @@ _WITH_FAILURE_ACTIONS: list[dict] = [
 ]
 
 
-def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str | None:
+def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     is_phase_a: bool = dump_dir.endswith("phase_a")
-    # By default the dumper re-arms every train step, each time wiping and rewriting
-    # the dump dir, so the surviving dump is the LAST step's. Here that step lies
-    # after the injected crash: the degraded-quorum retry commit accumulates
-    # microbatches in a different floating-point bracketing (a fault-inherent,
-    # bit-reproducible effect no pipeline redesign removes - observed as a stable
-    # rel=2.5e-2 on a small q_layernorm grad while the per-step train/ metrics all
-    # pass), so the strict dump thresholds are physically unreachable there. Pin the
-    # dump to the FIRST post-resume step (before the crash), where strict equality
-    # is achievable and meaningful; post-crash steps stay covered by the per-step
-    # metric comparison.
-    base = get_common_train_args(
-        mode,
-        dump_dir=dump_dir,
-        num_steps=NUM_PHASE_B_STEPS,
-        enable_dumper=enable_dumper,
-        dumper_only_first_step=True,
-    )
+    base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
 
-    # BOTH sides run FT cells; only the target gets the fault injected. Comparing
-    # against flat DP instead leaked topology drift into the comparison: the reduction
-    # orders differ, so weights drift apart from the very first step (observed: a
-    # reproducible rel=0.0113 on a small k_layernorm grad at step 0 on pp2, and
-    # real-rollout generation diverging token-wise so step-7 train/grad_norm differed
-    # by ~10%). indep_dp-vs-flat equivalence is what scenario_no_failure and
-    # scenario_deterministic already verify; this scenario isolates the fault + heal.
-    base += get_ft_args(mode)
-
-    # Deterministic kernels remove run-to-run kernel noise between the two compared
-    # runs. This deliberately does NOT include the det_nccl fixed-order collectives,
-    # whose post-crash abort is known to wedge survivors.
-    base += DETERMINISTIC_KERNEL_ARGS
-
-    # Real rollout: BOTH phase_b sides replay the same rollout data, which the
-    # baseline generates in the dedicated phase_b_datagen run (real_rollout runs
-    # always --save-debug-rollout-data into their own dump dir). Comparing a
-    # generating run against a replaying run is not clean: the two pipelines leave a
-    # deterministic, bit-reproducible residue (the same q_layernorm grad differed by
-    # rel=2.5e-2 across independent reruns, unchanged by deterministic kernels), and
-    # with live generation on the faulted side the post-crash degraded-quorum
-    # commit's microbatch bracketing drift even flips sampled tokens, after which the
-    # runs diverge for real (a deterministic 5.1% step-7 train/grad_norm gap).
-    # Replaying on both sides keeps the trainer pipeline identical and isolates the
-    # fault, which is what this scenario is about. Engine + update_weights coverage
-    # stays real on both phase_a sides and the datagen run; fault x engine
-    # coexistence is covered by scenario_deterministic's real_rollout mode.
-    is_datagen: bool = dump_dir.endswith("phase_b_datagen")
-    baseline_phase_a = f"{dump_dir.rsplit('/', 2)[0]}/baseline/phase_a"
+    if is_target:
+        base += get_ft_args(mode)
 
     if is_phase_a:
         base += f"--save {dump_dir}/ckpt --save-interval 1 "
         base += f"--debug-exit-after-rollout {NUM_PHASE_A_STEPS} "
-    elif is_datagen:
-        # Only the baseline generates data; every other (side, mode) combination
-        # skips this phase entirely.
-        if not (mode.has_real_rollout and not is_target):
-            return None
-        base += f"--load {baseline_phase_a}/ckpt "
     else:
-        # Both sides resume from the BASELINE's phase_a checkpoint so phase_b starts
-        # from identical weights and optimizer state.
-        if mode.has_real_rollout:
-            datagen_dir = f"{dump_dir.rsplit('/', 2)[0]}/baseline/phase_b_datagen"
-            base += f"--load-debug-rollout-data {datagen_dir}/rollout_data/{{rollout_id}}.pt "
-        base += f"--load {baseline_phase_a}/ckpt "
+        phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
+        base += f"--load {phase_a_dir}/ckpt "
         if is_target:
             base += f"--ci-ft-test-actions '{json.dumps(_WITH_FAILURE_ACTIONS)}' "
 
@@ -146,7 +89,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
 
 
 TEST_NAME: str = "trainer_ft_with_failure"
-PHASES: list[str] = ["phase_a", "phase_b_datagen", "phase_b"]
+PHASES: list[str] = ["phase_a", "phase_b"]
 
 
 app, run_ci = create_comparison_app_and_run_ci(
