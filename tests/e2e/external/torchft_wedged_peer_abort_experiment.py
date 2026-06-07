@@ -185,17 +185,17 @@ def _confirm_gpu_wedged(worker: object, *, who: str) -> str:
         return f"{who} GPU WEDGED (synchronize blocked >10s) -- faithful to cell1_rank1"
 
 
-def _kill_then_await(ref: object, *, victim: object, what: str) -> str:
-    """The dead-peer law check: kill the wedged peer, see if the blocked call returns."""
+def _kill_then_await(ref: object, *, victim: object, victim_name: str, what: str) -> str:
+    """The dead-peer law check: kill the named victim, see if the blocked call returns."""
     ray.kill(victim, no_restart=True)
     start = time.monotonic()
     try:
         out = ray.get(ref, timeout=120)
-        return f"UNBLOCKED {round(time.monotonic() - start, 1)}s after killing W: {out}"
+        return f"UNBLOCKED {round(time.monotonic() - start, 1)}s after killing {victim_name}: {out}"
     except ray.exceptions.GetTimeoutError:
-        return f"STILL STUCK 120s after killing W ({what})"
+        return f"STILL STUCK 120s after killing {victim_name} ({what})"
     except Exception as e:  # noqa: BLE001 - blocked call may surface the abort as an error
-        return f"UNBLOCKED-with-exception {round(time.monotonic() - start, 1)}s after killing W: {type(e).__name__}: {str(e)[:200]}"
+        return f"UNBLOCKED-with-exception {round(time.monotonic() - start, 1)}s after killing {victim_name}: {type(e).__name__}: {str(e)[:200]}"
 
 
 def _run(exp: str, *, store_base: str, cell_store_addr: str, timeout_s: float, numel: int) -> str:
@@ -253,7 +253,7 @@ def _run(exp: str, *, store_base: str, cell_store_addr: str, timeout_s: float, n
                 return f"{what} returned in <{_VERDICT_S}s: {out} (NOT reproduced)"
             except ray.exceptions.GetTimeoutError:
                 print(f"  *** {what} BLOCKED >{_VERDICT_S}s (REPRODUCED bug B shape) *** killing S2 (cell sibling)")
-                return f"*** {what} BLOCKED >{_VERDICT_S}s (REPRODUCED) *** then: {_kill_then_await(ref, victim=s2, what=what)}"
+                return f"*** {what} BLOCKED >{_VERDICT_S}s (REPRODUCED) *** then: {_kill_then_await(ref, victim=s2, victim_name='S2 (occluder peer)', what=what)}"
 
         # The real failure shape: D dies, then W wedges in a real cell collective.
         sibling.die.remote()
@@ -290,7 +290,7 @@ def _run(exp: str, *, store_base: str, cell_store_addr: str, timeout_s: float, n
             return f"{what} returned in <{_VERDICT_S}s: {out} (NOT reproduced)"
         except ray.exceptions.GetTimeoutError:
             print(f"  *** {what} BLOCKED >{_VERDICT_S}s (REPRODUCED the hang) *** now testing the dead-peer law")
-            return f"*** {what} BLOCKED >{_VERDICT_S}s (REPRODUCED) *** then: {_kill_then_await(ref, victim=wedged, what=what)}"
+            return f"*** {what} BLOCKED >{_VERDICT_S}s (REPRODUCED) *** then: {_kill_then_await(ref, victim=wedged, victim_name='W', what=what)}"
     finally:
         for w in [surv, wedged, sibling]:
             try:
