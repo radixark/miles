@@ -69,6 +69,23 @@ def _make_step_end(
     )
 
 
+def _make_advantage(
+    rollout_id: int,
+    advantages: list[list[float]],
+    witness_ids: list[list[int]],
+    cell_index: int = 0,
+    attempt: int = 0,
+) -> TrainAdvantageComputationEvent:
+    return TrainAdvantageComputationEvent(
+        timestamp=_FIXED_TS,
+        source=_make_source(cell_index=cell_index),
+        rollout_id=rollout_id,
+        attempt=attempt,
+        advantages=advantages,
+        witness_ids=witness_ids,
+    )
+
+
 class TestWitnessCheck:
     def test_empty_events(self) -> None:
         assert check([]) == []
@@ -244,30 +261,51 @@ class TestWitnessEventSerialization:
         assert parsed.stale_ids == [0, 1, 2]
 
 
-def _make_loss_computation(
-    rollout_id: int,
-    advantages: list[list[float]],
-    witness_ids: list[list[int]],
-    cell_index: int = 0,
-    attempt: int = 0,
-) -> TrainAdvantageComputationEvent:
-    return TrainAdvantageComputationEvent(
-        timestamp=_FIXED_TS,
-        source=_make_source(cell_index=cell_index),
-        rollout_id=rollout_id,
-        attempt=attempt,
-        advantages=advantages,
-        witness_ids=witness_ids,
-    )
-
-
 class TestZeroAdvantageExclusion:
     def test_zero_advantage_sample_excluded_from_expected(self) -> None:
         """Witness ID with zero advantage should not cause a mismatch when missing from actual."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
-            _make_loss_computation(rollout_id=0, advantages=[[0.0, 0.0], [2.0, 3.0]], witness_ids=[[10], [11]]),
+            _make_advantage(rollout_id=0, advantages=[[0.0, 0.0], [2.0, 3.0]], witness_ids=[[10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[11]),  # 10 missing but zero-adv
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        assert check(events) == []
+
+    def test_zero_advantage_sample_stays_excluded_at_later_rollouts(self) -> None:
+        """Regression: a zero-advantage id stays absent from every later snapshot and must stay excused."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
+            _make_advantage(rollout_id=0, advantages=[[0.5, 0.5], [0.0, 0.0]], witness_ids=[[10], [11]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_allocate(rollout_id=1, witness_id_to_sample_index={12: 0}),
+            _make_snapshot(rollout_id=1, nonzero_witness_ids=[10, 12]),
+            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        assert check(events) == []
+
+    def test_zero_advantage_sample_with_nonzero_signal_is_flagged_extra(self) -> None:
+        """A zero-advantage id that nevertheless shows a nonzero witness signal is still reported."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
+            _make_advantage(rollout_id=0, advantages=[[0.5, 0.5], [0.0, 0.0]], witness_ids=[[10], [11]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11]),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        issues = check(events)
+        assert len(issues) == 1
+        assert isinstance(issues[0], WitnessDataMismatchIssue)
+        assert 11 in issues[0].actual_witness_ids
+        assert 11 not in issues[0].expected_witness_ids
+
+    def test_zero_advantage_exclusion_uses_final_attempt_only(self) -> None:
+        """A crashed attempt's all-zero advantage events must not excuse ids the successful retry trains."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}, attempt=1),
+            _make_advantage(rollout_id=0, advantages=[[0.0], [0.0]], witness_ids=[[10], [11]], attempt=0),
+            _make_advantage(rollout_id=0, advantages=[[5.0], [0.0]], witness_ids=[[10], [11]], attempt=1),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
@@ -276,7 +314,7 @@ class TestZeroAdvantageExclusion:
         """Witness ID with nonzero advantage must still appear — missing produces an issue."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
-            _make_loss_computation(rollout_id=0, advantages=[[5.0], [3.0]], witness_ids=[[10], [11]]),
+            _make_advantage(rollout_id=0, advantages=[[5.0], [3.0]], witness_ids=[[10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),  # 11 missing, nonzero adv
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
         ]
@@ -285,33 +323,20 @@ class TestZeroAdvantageExclusion:
         assert 11 in issues[0].expected_witness_ids
         assert 11 not in issues[0].actual_witness_ids
 
-    def test_no_loss_computation_event_means_no_exclusion(self) -> None:
-        """Without TrainAdvantageComputationEvent, no zero-adv exclusion — missing ID is caught."""
+    def test_zero_advantage_exclusion_is_global_across_cells(self) -> None:
+        """Zero-adv exclusion is unioned across cells: the per-cell snapshot reflects the global
+        (allreduced) gradient, so an id observed all-zero on its owning shard is excused for every cell."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
-        ]
-        issues = check(events)
-        assert len(issues) == 1
-
-    def test_zero_advantage_exclusion_per_cell(self) -> None:
-        """Zero-adv exclusion is keyed by (rollout_id, cell_index) — different cells are independent."""
-        events: list[Event] = [
-            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
-            # Cell 0: sample 10 has zero advantage
-            _make_loss_computation(
-                rollout_id=0, advantages=[[0.0, 0.0], [5.0]], witness_ids=[[10], [11]], cell_index=0
-            ),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_index=0),  # OK: 10 excluded
-            # Cell 1: sample 10 has nonzero advantage
-            _make_loss_computation(rollout_id=0, advantages=[[3.0], [5.0]], witness_ids=[[10], [11]], cell_index=1),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_index=1),  # FAIL: 10 required
+            # Cell 0 owns sample 10 and observes zero advantage for it.
+            _make_advantage(rollout_id=0, advantages=[[0.0, 0.0], [5.0]], witness_ids=[[10], [11]], cell_index=0),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_index=0),
+            # Cell 1 never owned sample 10; its snapshot also lacks it and must not be flagged.
+            _make_advantage(rollout_id=0, advantages=[[5.0]], witness_ids=[[11]], cell_index=1),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_index=1),
             _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: [TrainStepOutcome.NORMAL]}),
         ]
-        issues = check(events)
-        assert len(issues) == 1
-        assert issues[0].cell_index == 1
+        assert check(events) == []
 
     def test_no_advantage_event_means_no_exclusion(self) -> None:
         """Without TrainAdvantageComputationEvent at all, no zero-adv exclusion — missing ID is caught."""
