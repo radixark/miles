@@ -101,6 +101,47 @@ class _Worker:
             self._inflight.append(t)
         return {"name": self._name, "posted": len(self._inflight)}
 
+    def abort_concurrent_raw(self, *, n: int = 2) -> dict:
+        """Call the UNDERLYING c10d ProcessGroup.abort() from N threads at a barrier.
+
+        torchft's wrapper.abort() does `pg=self._pg; pg.abort(); self._pg=None`, so
+        when abort is fast the 2nd caller sees _pg=None and no-ops (why the earlier
+        double_abort didn't deadlock). Here we grab `self._cross._pg` (the c10d PG)
+        ONCE and call its abort() directly from N threads -> N genuinely concurrent
+        c10d ProcessGroupNCCL::abort() (std::async abortComms) on the same comm,
+        exactly the gdb-observed real shape."""
+        raw = self._cross._pg  # the c10d BaseProcessGroup behind the torchft wrapper
+        assert raw is not None and hasattr(raw, "abort"), f"no raw c10d abort: {type(raw)}"
+        barrier = threading.Barrier(n)
+        results: list[float] = [0.0] * n
+        errs: list[str] = [""] * n
+
+        def _do(i: int) -> None:
+            barrier.wait()
+            t0 = time.monotonic()
+            try:
+                raw.abort()
+            except Exception as e:  # noqa: BLE001
+                errs[i] = f"{type(e).__name__}: {str(e)[:120]}"
+            results[i] = round(time.monotonic() - t0, 2)
+
+        threads = [threading.Thread(target=_do, args=(i,)) for i in range(n)]
+        start = time.monotonic()
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=_VERDICT_S)
+        alive = [i for i, th in enumerate(threads) if th.is_alive()]
+        return {
+            "name": self._name,
+            "raw_type": type(raw).__name__,
+            "n": n,
+            "total_s": round(time.monotonic() - start, 2),
+            "per_thread_s": results,
+            "threads_still_alive": alive,
+            "errs": [e for e in errs if e],
+        }
+
     def abort_many_concurrent(self) -> dict:
         """Fire one abort() per PG, all started together at a barrier: many
         concurrent abortComms contending NCCL/global teardown locks."""
@@ -253,6 +294,10 @@ def _run(exp: str, *, store_base: str, timeout_s: float, numel: int, k: int) -> 
 
         if exp == "single_abort":
             ref = surv.abort_once.remote()
+        elif exp == "raw_double_abort":
+            ref = surv.abort_concurrent_raw.remote(n=2)
+        elif exp == "raw_quad_abort":
+            ref = surv.abort_concurrent_raw.remote(n=4)
         else:
             ref = surv.abort_concurrent.remote(n=2)
 
@@ -289,7 +334,7 @@ def main(
     store = TCPStore(host_name="localhost", port=0, is_master=True, wait_for_workers=False)
     store_base = f"localhost:{store.port}/concurrent_abort"
 
-    experiments = ["single_abort", "double_abort", "double_abort_clean", "many_comm"]
+    experiments = ["single_abort", "raw_double_abort", "raw_quad_abort", "double_abort", "many_comm"]
     if only is not None:
         experiments = [only]
 
