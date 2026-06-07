@@ -40,6 +40,10 @@ concurrency:
 # `--labels` list collapses to empty; `--match-all-labels` is then added
 # unconditionally to bypass the labels predicate inside run_suite.py and run
 # every enabled test in the suite.
+#
+# The `bypass-fastfail` PR label opts a PR out of cross-stage fast-fail: the GPU
+# stages then run even when stage-a-cpu fails, so one CI run surfaces every
+# stage's result instead of stopping at the first failed stage.
 
 jobs:
   resolve-ci-image:
@@ -105,7 +109,8 @@ jobs:
   stage-b-2-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
@@ -120,7 +125,8 @@ jobs:
   stage-c-8-gpu-h100:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
@@ -140,7 +146,8 @@ jobs:
   stage-c-4-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
@@ -160,7 +167,8 @@ jobs:
   stage-c-2-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
