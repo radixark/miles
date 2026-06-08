@@ -84,21 +84,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 via PGTransport instead of loading from disk.
             indep_dp_info: Independent DP configuration (cell identity, alive rank/size, quorum ID).
         """
-        if args.use_fault_tolerance:
-            # TorchInductor's static CUDA launcher (torch>=2.11, on by default) loads each
-            # compiled triton kernel's cubin lazily on first launch -- i.e. inside the forward,
-            # where cross-cell/TP NCCL collectives are interleaved. On a rejoined cell (fresh
-            # process, cold in-memory kernel cache) that lazy cuModuleLoad serializes against an
-            # already-spinning collective kernel and deadlocks: py-spy shows the rank stuck in
-            # static_triton_launcher.load_kernel while cuda-gdb shows a ncclDevKernel_AllReduce
-            # spinning on the same device, with the peer waiting on this rank. The mature dynamic
-            # launcher does not hit this path, so the rejoin forward no longer wedges. Disable the
-            # static launcher on FT actors only.
-            import torch._inductor.config as inductor_config
-
-            inductor_config.use_static_cuda_launcher = False
-            logger.info("FT: disabled torch._inductor static CUDA launcher (avoid rejoin cuModuleLoad deadlock)")
-
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref)
