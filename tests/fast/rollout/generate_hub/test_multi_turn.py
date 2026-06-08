@@ -143,12 +143,14 @@ def expected_request(
     sampling_params: dict | None = None,
     *,
     return_routed_experts: bool = False,
+    return_indexer_topk: bool = False,
 ) -> dict:
     return {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
         "return_routed_experts": return_routed_experts,
+        "return_indexer_topk": return_indexer_topk,
     }
 
 

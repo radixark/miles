@@ -710,6 +710,109 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
+# DeepSeek V3.2 implementation
+# ---------------------------------------------------------------------------
+
+
+class DeepSeekV32TITOTokenizer(TITOTokenizer):
+    """DeepSeek V3.2 — official encoder via sglang's ``encoding_dsv32``.
+
+    V3.2 ships no jinja chat_template; sglang renders prompts through
+    ``encoding_dsv32.encode_messages``, and miles' ``apply_chat_template`` routes
+    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek_v32`` bridge.
+    TITO incremental tokenization rides that same bridge so it stays
+    byte-aligned with what the runtime serves.
+
+    Only the ``{tool}`` surface is registered.  DeepSeek's official
+    ``encoding_dsv32`` gates an assistant's thinking block on
+    ``index > last_user_idx``: appending a *user* turn re-classifies every prior
+    assistant as "before last user" and strips its thinking block, which is not
+    append-only.  Tool-only append is safe because ``find_last_user_index``
+    ignores tool roles, so the last-user position never moves.
+    """
+
+    reasoning_parser = "deepseek-v3"
+    tool_call_parser = "deepseekv32"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+    )
+
+    _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        # V3.2 has no jinja template, so assistant_start_str can't be sniffed
+        # from one; pin it explicitly.  The comparator keys off the User /
+        # Assistant sentinels to find assistant-content boundaries.
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs=chat_template_kwargs,
+            assistant_start_str=assistant_start_str or self._DEFAULT_ASSISTANT_START,
+            special_token_ids={
+                tokenizer.convert_tokens_to_ids("<｜User｜>"),
+                tokenizer.convert_tokens_to_ids("<｜Assistant｜>"),
+            },
+            allowed_append_roles=allowed_append_roles,
+        )
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek V4 implementation
+# ---------------------------------------------------------------------------
+
+
+class DeepSeekV4TITOTokenizer(TITOTokenizer):
+    """DeepSeek V4 — official encoder via sglang's ``encoding_dsv4``.
+
+    Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
+    routes any V4 tokenizer to the ``chat_template_utils.deepseek_v4`` bridge, and
+    TITO incremental tokenization rides that same bridge to stay byte-aligned
+    with what the runtime serves.  Only the ``{tool}`` surface is registered, so
+    the base ``_split_appended_segments`` (contiguous tool runs) covers it
+    without a custom override.
+    """
+
+    reasoning_parser = "deepseek-v4"
+    tool_call_parser = "deepseekv4"
+
+    SUPPORTED_TEMPLATES = (
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool"}),
+            template=None,
+        ),
+    )
+
+    _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        allowed_append_roles: list[str] | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs=chat_template_kwargs,
+            assistant_start_str=assistant_start_str or self._DEFAULT_ASSISTANT_START,
+            special_token_ids={
+                tokenizer.convert_tokens_to_ids("<｜User｜>"),
+                tokenizer.convert_tokens_to_ids("<｜Assistant｜>"),
+            },
+            allowed_append_roles=allowed_append_roles,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Enum + Factory
 # ---------------------------------------------------------------------------
 
@@ -725,6 +828,8 @@ class TITOTokenizerType(StrEnum):
     KIMI26 = "kimi26"
     MINIMAX_M25 = "minimax_m25"
     MINIMAX_M27 = "minimax_m27"
+    DEEPSEEKV32 = "deepseekv32"
+    DEEPSEEKV4 = "deepseekv4"
 
     @classmethod
     def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
@@ -750,6 +855,10 @@ class TITOTokenizerType(StrEnum):
                 return MinimaxM25TITOTokenizer
             case cls.MINIMAX_M27:
                 return MinimaxM27TITOTokenizer
+            case cls.DEEPSEEKV32:
+                return DeepSeekV32TITOTokenizer
+            case cls.DEEPSEEKV4:
+                return DeepSeekV4TITOTokenizer
             case _:
                 raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 

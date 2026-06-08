@@ -33,7 +33,6 @@ and the default it replaces.
 | | `--custom-megatron-before-train-step-hook-path` | Before each train step |
 | **Logging** | `--custom-rollout-log-function-path` | Train-rollout logging |
 | | `--custom-eval-rollout-log-function-path` | Eval-rollout logging |
-| **Routing** | `--miles-router-middleware-paths` | Router middleware |
 | **Model** | `--custom-model-provider-path` | Megatron model factory |
 
 ---
@@ -247,15 +246,6 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics) -> bool:
 ```
 
 Return `True` to suppress Miles's default logging, `False` to layer on top.
-
----
-
-## Router
-
-### `--miles-router-middleware-paths`
-
-Inject middleware into the router for request and response transformation,
-caching, or custom routing.
 
 ---
 

@@ -11,7 +11,9 @@ Pure routing/flag-flip helpers without Ray content live in
 
 from __future__ import annotations
 
+import asyncio
 import textwrap
+import time
 
 import pytest
 import ray
@@ -120,6 +122,20 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
     )
 
 
+async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_interval_s: float = 0.2) -> None:
+    deadline = time.monotonic() + deadline_s
+    while True:
+        try:
+            ray.get(actor_handle.health_generate.remote(timeout=1.0), timeout=5.0)
+        except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
+            return
+        except ray.exceptions.GetTimeoutError:
+            pass
+        if time.monotonic() >= deadline:
+            pytest.fail(f"engine actor still alive {deadline_s}s after stop_cell")
+        await asyncio.sleep(poll_interval_s)
+
+
 @pytest.mark.asyncio
 class TestRolloutManagerInit:
     async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
@@ -162,8 +178,7 @@ class TestStartStopCell:
 
         await manager.stop_cell(0)
 
-        with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
-            ray.get(actor0.health_generate.remote(timeout=1.0), timeout=10.0)
+        await _assert_engine_dies(actor0)
         assert ray.get(actor1.health_generate.remote(timeout=1.0)) is True
 
     async def test_start_cell_recovers_after_stop_cell(
@@ -210,8 +225,7 @@ class TestStartStopCell:
         await manager.stop_cell(1)
 
         assert ray.get(actor0.health_generate.remote(timeout=1.0)) is True
-        with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
-            ray.get(actor1.health_generate.remote(timeout=1.0), timeout=10.0)
+        await _assert_engine_dies(actor1)
 
     async def test_stop_cell_is_idempotent_on_already_stopped(
         self,
@@ -257,8 +271,7 @@ class TestCellDispatchAcrossModels:
         for h in actor_handles:
             assert ray.get(h.health_generate.remote(timeout=1.0)) is True
         # ref engine 0 dead, ref engine 1 alive
-        with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
-            ray.get(ref_handles[0].health_generate.remote(timeout=1.0), timeout=10.0)
+        await _assert_engine_dies(ref_handles[0])
         assert ray.get(ref_handles[1].health_generate.remote(timeout=1.0)) is True
 
 

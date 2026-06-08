@@ -62,6 +62,10 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
 
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
+        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+        if max_compress_ratio:
+            local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
+            pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
         max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
@@ -91,6 +95,8 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         ]
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
+    if "rollout_indexer_topk" in rollout_data:
+        rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
     return rollout_data
 
 
@@ -147,7 +153,15 @@ def get_batch(
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
-        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        if allgather_cp:
+            assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            tokens = [
+                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len] for t in tokens
+            ]
+        else:
+            tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
@@ -239,6 +253,12 @@ def get_batch(
         loss_masks.append(loss_mask)
 
     if qkv_format == "bshd":
+        if allgather_cp:
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            loss_masks = [
+                F.pad(lm, (0, max_seqlen - lm.size(0)), value=0)[start : start + local_len] for lm in loss_masks
+            ]
         loss_masks = torch.stack(loss_masks)
     elif qkv_format == "thd" and allgather_cp:
         # DSA: concatenate first (same as tokens), pad globally (same pad as above), then slice once.

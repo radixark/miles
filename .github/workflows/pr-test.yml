@@ -2,7 +2,7 @@ name: PR Test
 
 on:
   pull_request:
-    types: [synchronize, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
   workflow_dispatch:
     inputs:
       infinite_run:
@@ -74,11 +74,16 @@ jobs:
   stage-a-cpu:
     needs: [resolve-ci-image]
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit

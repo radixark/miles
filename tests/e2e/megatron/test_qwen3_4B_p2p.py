@@ -6,12 +6,11 @@ MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
 
-# FIXME: flaky.
 register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h100",
-    labels=["megatron"],
-    disabled="Flaky test",
+    labels=["megatron", "weight-update"],
+    disabled="RDMA weight update is not supported by current CI machine.",
 )
 
 

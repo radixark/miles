@@ -9,9 +9,8 @@ just submits `POST /run` requests concurrently and reads back rewards. The
 heavy lifting (Docker container per task, mini-swe-agent inside it,
 verifier scoring) all happens on the agent-server host.
 
-This differs from the sibling `examples/eval/terminal_bench/` (which drives
-Terminal-Bench's own `tb` CLI as a local subprocess): we instead reuse a
-shared, long-running agent server, which is much closer to how RL
+Rather than driving Terminal-Bench's own `tb` CLI as a local subprocess, we
+reuse a shared, long-running agent server, which is much closer to how RL
 training-loop rollouts interact with the same backend.
 
 ## Prerequisites

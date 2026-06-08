@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_local_gpu_id():
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", None)
-    if cvd is None:
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+    if not cvd:
         return ray.get_gpu_ids()[0]
     else:
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
@@ -53,10 +53,11 @@ class TrainRayActor(RayActor):
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
 
-    def init(self, args, role, with_ref=False):
+    def init(self, args, role, with_ref=False, with_opd_teacher=False):
         self.args = args
         self.role = role
         self.with_ref = with_ref
+        self.with_opd_teacher = with_opd_teacher
 
         if env_report := args.env_report:
             collect_and_print_node_env_report(

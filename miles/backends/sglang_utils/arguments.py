@@ -61,6 +61,7 @@ def add_sglang_arguments(parser):
         "nccl_port",
         "skip_server_warmup",
         "enable_return_routed_experts",
+        "enable_return_indexer_topk",
     ]
 
     def new_add_argument_wrapper(*name_or_flags, **kwargs):

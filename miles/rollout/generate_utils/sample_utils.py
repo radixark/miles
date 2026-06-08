@@ -27,6 +27,15 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = [0.0] * sample.response_length
 
+    def _merge_teacher_log_probs():
+        # Optional OPD teacher log-probs: merge like rollout_log_probs when present
+        # (zeros over the injected observation span), else keep None.
+        if a.teacher_log_probs is None and b.teacher_log_probs is None:
+            return None
+        a_tlp = a.teacher_log_probs if a.teacher_log_probs is not None else [0.0] * a.response_length
+        b_tlp = b.teacher_log_probs if b.teacher_log_probs is not None else [0.0] * b.response_length
+        return a_tlp + [0.0] * obs_len + b_tlp
+
     _fill_defaults(a)
     _fill_defaults(b)
 
@@ -43,6 +52,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert obs_len > 0, f"obs_len must be > 0, got {obs_len}"
         if a.rollout_routed_experts is not None:
             assert a.rollout_routed_experts.shape[0] <= b.rollout_routed_experts.shape[0]
+        if a.rollout_indexer_topk is not None:
+            assert a.rollout_indexer_topk.shape[0] <= b.rollout_indexer_topk.shape[0]
         assert a.status == Sample.Status.COMPLETED, f"a.status must be COMPLETED, got {a.status}"
 
         return _create_with_all_fields(
@@ -60,7 +71,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
+            teacher_log_probs=_merge_teacher_log_probs(),
             rollout_routed_experts=b.rollout_routed_experts,
+            rollout_indexer_topk=b.rollout_indexer_topk,
             remove_sample=_merge_equal_value("remove_sample"),
             status=b.status,
             metadata=_merge_equal_value("metadata"),

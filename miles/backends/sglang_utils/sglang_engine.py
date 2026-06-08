@@ -40,7 +40,7 @@ def get_base_gpu_id(args, rank):
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
         return physical_gpu_id  # no remapping
     # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
@@ -635,6 +635,8 @@ def _compute_server_args(
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
         "enable_draft_weights_cpu_backup": True,
+        # always serve /metrics so Prometheus scrapers can read engine stats.
+        "enable_metrics": True,
     }
 
     if sglang_overrides:
@@ -653,6 +655,8 @@ def _compute_server_args(
 
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
+    if args.use_rollout_indexer_replay:
+        kwargs["enable_return_indexer_topk"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
@@ -707,5 +711,6 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "dist_init_addr",
     "skip_server_warmup",
     "enable_draft_weights_cpu_backup",
+    "enable_metrics",
     "mem_fraction_static",
 ]

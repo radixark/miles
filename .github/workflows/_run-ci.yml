@@ -9,8 +9,7 @@ on:
       runs_on:
         type: string
         required: false
-        default: '["8gpu"]'
-        description: 'JSON-encoded list of runner labels (all required). e.g. ''["h100", "8gpu"]'' picks runners that carry BOTH labels. Default ''["8gpu"]'' preserves the previous bare ''8gpu'' single-label routing.'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["h100", "8gpu"]'' picks runners that carry BOTH labels. No default: GPU jobs (cpu_runner: false) must pass this explicitly.'
       container_image:
         type: string
         required: false
