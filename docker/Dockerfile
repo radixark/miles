@@ -2,7 +2,6 @@
 #    use default settings
 #
 # 2. radixark/miles:dev-cu13-arm64  (aarch64, CUDA 13 / GB200 & GB300)
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12 \
 #    build-arg:WHEELS_TAG=cu130-aarch64-v0.5.12 \
 #
 # 3. radixark/miles:dev-cu129-x86  (x86_64, CUDA 12.9) — legacy fallback
