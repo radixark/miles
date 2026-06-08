@@ -1,0 +1,84 @@
+name: Reusable — Docker Build & Publish
+
+# Reusable workflow: builds and pushes ONE variant via docker/build.py.
+# Called by docker-build.yml. Not meant to be triggered directly.
+
+on:
+  workflow_call:
+    inputs:
+      variant:
+        description: 'Build variant (primary / cu129-arm64 / cu13-arm64 / dev-glm / debug)'
+        required: true
+        type: string
+      image_tag:
+        description: 'Tag mode: dev / latest / custom'
+        required: false
+        type: string
+        default: 'dev'
+      custom_tag:
+        description: 'Custom tag name (used when image_tag is custom)'
+        required: false
+        type: string
+        default: ''
+      dockerfile:
+        description: 'Path to Dockerfile (a variant may override this, e.g. dev-glm)'
+        required: false
+        type: string
+        default: 'docker/Dockerfile'
+      image_repo:
+        description: 'Docker Hub repo to push to (use radixark/miles-staging for testing)'
+        required: false
+        type: string
+        default: 'radixark/miles'
+      push:
+        description: 'Push images after build'
+        required: false
+        type: boolean
+        default: true
+      retag_latest:
+        description: 'Point <image_repo>:latest at <image_repo>:dev after build (primary only)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build-and-publish:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Install Python + dependencies
+        run: |
+          apt-get update && apt-get install -y python3 python3-pip
+          pip3 install --break-system-packages typer
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          python3 docker/build.py \
+            --variant ${{ inputs.variant }} \
+            --image-tag ${{ inputs.image_tag }} \
+            --dockerfile ${{ inputs.dockerfile }} \
+            --image-repo ${{ inputs.image_repo }} \
+            ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            ${{ inputs.push && '--push' || '' }}
+
+      - name: Point latest to current dev
+        if: ${{ inputs.retag_latest && inputs.variant == 'primary' }}
+        run: |
+          docker buildx imagetools create \
+            -t ${{ inputs.image_repo }}:latest \
+            ${{ inputs.image_repo }}:dev

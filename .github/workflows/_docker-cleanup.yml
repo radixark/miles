@@ -1,0 +1,75 @@
+name: Reusable — Docker Tag Cleanup
+
+# Reusable workflow: prunes old timestamped dev tags from a Docker Hub repo,
+# keeping the most recent `keep`. Called by docker-build.yml on schedule.
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: 'Docker Hub repo to prune (e.g. radixark/miles)'
+        required: false
+        type: string
+        default: 'radixark/miles'
+      tag_pattern:
+        description: 'grep -E pattern matching prunable tags'
+        required: false
+        type: string
+        default: '^dev-[0-9]{12}$'
+      keep:
+        description: 'Number of most-recent matching tags to keep'
+        required: false
+        type: number
+        default: 20
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune old dev tags
+        run: |
+          KEEP=${{ inputs.keep }}
+          IMAGE=${{ inputs.image }}
+          PATTERN='${{ inputs.tag_pattern }}'
+
+          # Authenticate with Docker Hub API
+          TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
+            | jq -r .token)
+
+          # Collect all matching tags (paginated)
+          DEV_TAGS=""
+          URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
+          while [ "$URL" != "null" ] && [ -n "$URL" ]; do
+            RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
+            PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E "$PATTERN" || true)
+            DEV_TAGS="${DEV_TAGS}${PAGE_TAGS}"$'\n'
+            URL=$(echo "$RESP" | jq -r '.next')
+          done
+
+          # Sort and find tags to delete
+          SORTED=$(echo "$DEV_TAGS" | grep -v '^$' | sort)
+          COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
+          echo "Found ${COUNT} matching tags"
+
+          if [ "$COUNT" -le "$KEEP" ]; then
+            echo "Nothing to prune (keep=${KEEP})"
+            exit 0
+          fi
+
+          DELETE_COUNT=$((COUNT - KEEP))
+          TO_DELETE=$(echo "$SORTED" | head -n "$DELETE_COUNT")
+          echo "Pruning ${DELETE_COUNT} old tags..."
+
+          echo "$TO_DELETE" | while read -r TAG; do
+            [ -z "$TAG" ] && continue
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: JWT ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  Deleted ${TAG}"
+            else
+              echo "  Failed to delete ${TAG} (HTTP ${HTTP_CODE})"
+            fi
+          done

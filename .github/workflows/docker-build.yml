@@ -1,5 +1,13 @@
 name: Docker Build & Push
 
+# Thin orchestrator. The actual build/push and tag-cleanup live in reusable
+# sub-workflows (_docker-build-and-publish.yml, _docker-cleanup.yml).
+#
+#   prepare  -> compute config + gate scheduled builds on upstream changes
+#   build    -> build/push the selected variant(s)
+#   build-glm-> rebuild dev-glm on top of the freshly built dev (schedule only)
+#   cleanup  -> prune old timestamped dev tags (schedule only)
+
 on:
   push:
     branches:
@@ -21,6 +29,7 @@ on:
           - primary
           - cu129-arm64
           - cu13-arm64
+          - dev-glm
           - debug
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
@@ -40,191 +49,166 @@ on:
         required: false
         default: 'docker/Dockerfile'
         type: string
+      image_repo:
+        description: 'Docker Hub repo to push to (use radixark/miles-staging to test the workflow)'
+        required: false
+        default: 'radixark/miles'
+        type: string
       simulate_schedule:
-        description: '[DEBUG] Simulate a scheduled build (runs upstream check)'
+        description: '[DEBUG] Simulate a scheduled build (runs upstream check, retag, glm, but not prune)'
         required: false
         type: boolean
         default: false
 
+concurrency:
+  group: docker-build-${{ github.workflow }}-${{ github.ref }}-${{ inputs.image_repo || 'radixark/miles' }}
+  cancel-in-progress: true
+
 jobs:
-  check-upstream:
-    # Only run on schedule (or simulated schedule) — check if upstream repos have new commits
-    if: github.event_name == 'schedule' || inputs.simulate_schedule == true
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
+      should_build: ${{ steps.config.outputs.should_build }}
+      variants: ${{ steps.config.outputs.variants }}
+      image_tag: ${{ steps.config.outputs.image_tag }}
+      custom_tag: ${{ steps.config.outputs.custom_tag }}
+      dockerfile: ${{ steps.config.outputs.dockerfile }}
+      image_repo: ${{ steps.config.outputs.image_repo }}
+      retag_latest: ${{ steps.config.outputs.retag_latest }}
+      build_glm: ${{ steps.config.outputs.build_glm }}
+      prune: ${{ steps.config.outputs.prune }}
     steps:
       - name: Restore last known upstream SHAs
+        if: github.event_name == 'schedule' || inputs.simulate_schedule == true
         uses: actions/cache/restore@v4
         with:
           path: last_upstream_shas.txt
           key: upstream-shas-
           restore-keys: upstream-shas-
 
-      - name: Check for new upstream commits
-        id: check
+      - name: Compute build configuration
+        id: config
         run: |
-          SHOULD_BUILD=false
+          EVENT="${{ github.event_name }}"
+          SIMULATE="${{ inputs.simulate_schedule }}"
 
-          # Check sglang (sglang-miles branch)
-          SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
-
-          # Check Megatron-LM (main branch)
-          MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
-
-          echo "sglang HEAD:   ${SGLANG_SHA}"
-          echo "megatron HEAD: ${MEGATRON_SHA}"
-
-          # Compare against last known SHAs stored in cache
-          CACHE_FILE="last_upstream_shas.txt"
-          if [ -f "$CACHE_FILE" ]; then
-            LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
-            LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
-          else
-            LAST_SGLANG=""
-            LAST_MEGATRON=""
+          # schedule-like = real schedule OR a simulated-schedule dispatch
+          SCHEDULE_LIKE=false
+          if [ "$EVENT" = "schedule" ] || [ "$SIMULATE" = "true" ]; then
+            SCHEDULE_LIKE=true
           fi
 
-          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ]; then
-            SHOULD_BUILD=true
-            echo "Upstream change detected"
-          else
-            echo "No upstream changes"
+          # ---- Upstream-change gate (schedule-like only) ----
+          SHOULD_BUILD=true
+          if [ "$SCHEDULE_LIKE" = "true" ]; then
+            SHOULD_BUILD=false
+
+            SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
+              "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
+            MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
+              "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
+
+            echo "sglang HEAD:   ${SGLANG_SHA}"
+            echo "megatron HEAD: ${MEGATRON_SHA}"
+
+            CACHE_FILE="last_upstream_shas.txt"
+            if [ -f "$CACHE_FILE" ]; then
+              LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
+              LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
+            else
+              LAST_SGLANG=""
+              LAST_MEGATRON=""
+            fi
+
+            if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ]; then
+              SHOULD_BUILD=true
+              echo "Upstream change detected"
+            else
+              echo "No upstream changes"
+            fi
+
+            echo "${SGLANG_SHA}" > "$CACHE_FILE"
+            echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
           fi
 
-          # Save current SHAs for next run
-          echo "${SGLANG_SHA}" > "$CACHE_FILE"
-          echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
+          # ---- Variant(s) / tag config ----
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            VARIANTS="[\"${{ inputs.variant }}\"]"
+            IMAGE_TAG="${{ inputs.image_tag }}"
+            CUSTOM_TAG="${{ inputs.custom_tag }}"
+            DOCKERFILE="${{ inputs.dockerfile }}"
+            IMAGE_REPO="${{ inputs.image_repo }}"
+          else
+            # schedule / push-to-main: rolling dev build of primary
+            VARIANTS='["primary"]'
+            IMAGE_TAG="dev"
+            CUSTOM_TAG=""
+            DOCKERFILE="docker/Dockerfile"
+            IMAGE_REPO="radixark/miles"
+          fi
 
-          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+          # ---- Post-build actions ----
+          RETAG_LATEST=$SCHEDULE_LIKE
+          BUILD_GLM=$SCHEDULE_LIKE
+          PRUNE=false
+          if [ "$EVENT" = "schedule" ]; then
+            PRUNE=true
+          fi
+
+          {
+            echo "should_build=${SHOULD_BUILD}"
+            echo "variants=${VARIANTS}"
+            echo "image_tag=${IMAGE_TAG}"
+            echo "custom_tag=${CUSTOM_TAG}"
+            echo "dockerfile=${DOCKERFILE}"
+            echo "image_repo=${IMAGE_REPO}"
+            echo "retag_latest=${RETAG_LATEST}"
+            echo "build_glm=${BUILD_GLM}"
+            echo "prune=${PRUNE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Save upstream SHAs to cache
-        if: steps.check.outputs.should_build == 'true'
+        if: (github.event_name == 'schedule' || inputs.simulate_schedule == true) && steps.config.outputs.should_build == 'true'
         uses: actions/cache/save@v4
         with:
           path: last_upstream_shas.txt
           key: upstream-shas-${{ github.run_id }}
 
-  build-and-push:
-    needs: [check-upstream]
-    # schedule: only build if upstream changed
-    # push/dispatch: check-upstream skipped → build
-    if: |
-      always() &&
-      (needs.check-upstream.result == 'skipped' || needs.check-upstream.outputs.should_build == 'true')
-    runs-on: self-hosted
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    strategy:
+      matrix:
+        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+    uses: ./.github/workflows/_docker-build-and-publish.yml
+    with:
+      variant: ${{ matrix.variant }}
+      image_tag: ${{ needs.prepare.outputs.image_tag }}
+      custom_tag: ${{ needs.prepare.outputs.custom_tag }}
+      dockerfile: ${{ needs.prepare.outputs.dockerfile }}
+      image_repo: ${{ needs.prepare.outputs.image_repo }}
+      push: true
+      retag_latest: ${{ needs.prepare.outputs.retag_latest == 'true' }}
+    secrets: inherit
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
+  build-glm:
+    needs: [prepare, build]
+    if: needs.build.result == 'success' && needs.prepare.outputs.build_glm == 'true'
+    uses: ./.github/workflows/_docker-build-and-publish.yml
+    with:
+      variant: dev-glm
+      image_tag: dev
+      image_repo: ${{ needs.prepare.outputs.image_repo }}
+      push: true
+      retag_latest: false
+    secrets: inherit
 
-      - name: Install Python + dependencies
-        run: |
-          apt-get update && apt-get install -y python3 python3-pip
-          pip3 install --break-system-packages typer
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push
-        run: |
-          python3 docker/build.py \
-            --variant ${{ inputs.variant || 'primary' }} \
-            --image-tag ${{ inputs.image_tag || 'dev' }} \
-            --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
-            ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
-            --push
-
-      - name: Point latest to current dev
-        if: github.event_name == 'schedule' || inputs.simulate_schedule == true
-        run: |
-          docker buildx imagetools create -t radixark/miles:latest radixark/miles:dev
-
-      - name: Prune old dev tags
-        if: github.event_name == 'schedule'
-        run: |
-          KEEP=20
-          IMAGE=radixark/miles
-
-          # Authenticate with Docker Hub API
-          TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
-            -H "Content-Type: application/json" \
-            -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
-            | jq -r .token)
-
-          # Collect all dev-YYYYMMDDHHMM tags (paginated)
-          DEV_TAGS=""
-          URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
-          while [ "$URL" != "null" ] && [ -n "$URL" ]; do
-            RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
-            PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E '^dev-[0-9]{12}$' || true)
-            DEV_TAGS="${DEV_TAGS}${PAGE_TAGS}"$'\n'
-            URL=$(echo "$RESP" | jq -r '.next')
-          done
-
-          # Sort and find tags to delete
-          SORTED=$(echo "$DEV_TAGS" | grep -v '^$' | sort)
-          COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
-          echo "Found ${COUNT} dev tags"
-
-          if [ "$COUNT" -le "$KEEP" ]; then
-            echo "Nothing to prune (keep=${KEEP})"
-            exit 0
-          fi
-
-          DELETE_COUNT=$((COUNT - KEEP))
-          TO_DELETE=$(echo "$SORTED" | head -n "$DELETE_COUNT")
-          echo "Pruning ${DELETE_COUNT} old dev tags..."
-
-          echo "$TO_DELETE" | while read -r TAG; do
-            [ -z "$TAG" ] && continue
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: JWT ${TOKEN}" \
-              "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  Deleted ${TAG}"
-            else
-              echo "  Failed to delete ${TAG} (HTTP ${HTTP_CODE})"
-            fi
-          done
-
-  build-and-push-dev-glm:
-    needs: [build-and-push]
-    # Only rebuild dev-glm when the dev image was built (schedule, push to main, or dispatch with image_tag=dev)
-    if: needs.build-and-push.result == 'success' && (github.event_name == 'schedule' || inputs.simulate_schedule == true)
-    runs-on: self-hosted
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push dev-glm
-        run: |
-          docker buildx build \
-            -f docker/glm5/Dockerfile.dev-glm \
-            -t radixark/miles:dev-glm \
-            --push \
-            .
+  cleanup:
+    needs: [prepare, build]
+    if: needs.build.result == 'success' && needs.prepare.outputs.prune == 'true'
+    uses: ./.github/workflows/_docker-cleanup.yml
+    with:
+      image: ${{ needs.prepare.outputs.image_repo }}
+      tag_pattern: '^dev-[0-9]{12}$'
+      keep: 20
+    secrets: inherit
