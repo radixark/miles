@@ -28,7 +28,6 @@ _RUN_CI_PREFIX = "run-ci-"
 PER_COMMIT_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
-        "stage-b-cpu",
     ],
     HWBackend.CUDA: [
         "stage-b-2-gpu-h200",

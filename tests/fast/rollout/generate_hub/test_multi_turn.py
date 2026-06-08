@@ -16,7 +16,7 @@ from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResu
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
 from miles.utils.types import Sample
 
-register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=[])
+register_cpu_ci(est_time=130, suite="stage-a-cpu", labels=[])
 
 _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 

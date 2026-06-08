@@ -73,7 +73,7 @@ class TestBuildCpuPytestCmd:
 
 class TestPerCommitSuites:
     def test_cpu_suites_exact(self):
-        assert PER_COMMIT_SUITES[HWBackend.CPU] == ["stage-a-cpu", "stage-b-cpu"]
+        assert PER_COMMIT_SUITES[HWBackend.CPU] == ["stage-a-cpu"]
 
     def test_cuda_suites_exact(self):
         assert PER_COMMIT_SUITES[HWBackend.CUDA] == [

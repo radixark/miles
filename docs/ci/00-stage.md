@@ -22,7 +22,6 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (e.g. `stage-c-4-gpu-h200`): `tier
 | Stage / suite | Hardware | Runner labels (`runs_on`) | Shards | Depends on |
 |---|---|---|---|---|
 | `stage-a-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 4 | `resolve-ci-image` |
-| `stage-b-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 1 | — (reserved, currently empty) |
 | `stage-b-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 1 | `resolve-ci-image`, `stage-a-cpu` |
 | `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | `resolve-ci-image`, `stage-a-cpu` |
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | `resolve-ci-image`, `stage-a-cpu` |
@@ -34,7 +33,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (e.g. `stage-c-4-gpu-h200`): `tier
 
 **Image resolution (`resolve-ci-image`).** Before the GPU stages, a small `ubuntu-latest` job resolves the container image: it reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. Every GPU stage uses this as its `container_image`. Distinct from this, the **`run-ci-image` label** (alongside `run-ci-all`, and any `workflow_dispatch`) makes each stage add `--match-all-labels`, running the full suite regardless of per-test labels — this is how you validate a PR that bumps the image.
 
-**Dependencies / gating.** The job graph is `resolve-ci-image` → `stage-a-cpu` → all GPU stages (in parallel). GPU stages gate on `stage-a-cpu` with `always() && !failure() && !cancelled()`, so a CPU-test failure short-circuits the expensive GPU fleet, while a *skipped* CPU stage still lets the GPU stages proceed. `stage-b-cpu` has no dependency and runs alongside `stage-a-cpu`.
+**Dependencies / gating.** The job graph is `resolve-ci-image` → `stage-a-cpu` → all GPU stages (in parallel). GPU stages gate on `stage-a-cpu` with `always() && !failure() && !cancelled()`, so a CPU-test failure short-circuits the expensive GPU fleet, while a *skipped* CPU stage still lets the GPU stages proceed.
 
 **Runner selection.** GPU stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages set `cpu_runner: true` and run on GitHub-hosted `ubuntu-latest` instead, so they don't occupy GPU-fleet slots.
 
