@@ -944,9 +944,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "reinforce_plus_plus",
                     "reinforce_plus_plus_baseline",
                     "ppo",
-                    "on_policy_distillation",
                 ],
                 default="grpo",
+                help=(
+                    "Advantage estimator to use. Note: on-policy distillation (OPD) is now orthogonal "
+                    "to the advantage estimator. Use --opd-kl-coef > 0 to enable OPD on top of any estimator."
+                ),
             )
             parser.add_argument(
                 "--disable-compute-advantages-and-returns",
@@ -1098,6 +1101,49 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_on_policy_distillation_arguments(parser):
+            """Add on-policy distillation (OPD) related arguments.
+
+            OPD is orthogonal to advantage estimators and can be applied on top of
+            any estimator (GRPO, PPO, etc.) by adding a KL penalty to advantages.
+            """
+            parser.add_argument(
+                "--use-opd",
+                action="store_true",
+                default=False,
+                help="Enable on-policy distillation (OPD). Must specify --opd-type when enabled.",
+            )
+            parser.add_argument(
+                "--opd-type",
+                type=str,
+                choices=["sglang", "megatron"],
+                default=None,
+                help=(
+                    "Type of on-policy distillation. "
+                    "'sglang': Teacher log-probs are obtained from external SGLang server during rollout. "
+                    "'megatron': Teacher model is loaded via --opd-teacher-load and forwarded during training."
+                ),
+            )
+            parser.add_argument(
+                "--opd-kl-coef",
+                type=float,
+                default=1.0,
+                help="On-policy distillation KL penalty coefficient. Default is 1.0.",
+            )
+            parser.add_argument(
+                "--opd-teacher-load",
+                type=str,
+                default=None,
+                help=(
+                    "The checkpoint for OPD teacher model. Required when --opd-type=megatron. "
+                    "The teacher model should have the same architecture as policy/ref model."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
+            )
+            return parser
+
         def add_lora_arguments(parser):
             """Add LoRA-related arguments for Megatron backend."""
             parser.add_argument(
@@ -1176,12 +1222,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing",
-            )
-            parser.add_argument(
-                "--miles-router-middleware-paths",
-                type=str,
-                nargs="+",
-                default="",
             )
             parser.add_argument(
                 "--miles-router-timeout",
@@ -1781,6 +1821,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
+        parser = add_on_policy_distillation_arguments(parser)
         parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
@@ -1828,8 +1869,10 @@ def parse_args(add_custom_arguments=None):
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
+        args.compress_ratios = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
+            args.compress_ratios = getattr(hf_config, "compress_ratios", None)
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
@@ -2029,6 +2072,37 @@ def miles_validate_args(args):
                 f"ref_load {args.ref_load} does not have latest_checkpointed_iteration.txt, "
                 "please make sure it is a valid megatron checkpoint directory."
             )
+
+    # Validate on-policy distillation (OPD) arguments
+    if args.use_opd:
+        if args.opd_type is None:
+            raise ValueError("--opd-type must be specified when --use-opd is enabled. Choose 'sglang' or 'megatron'.")
+
+        if args.opd_type == "megatron":
+            if args.opd_teacher_load is None:
+                raise ValueError(
+                    "--opd-teacher-load is required when --opd-type=megatron. "
+                    "Please provide the path to the teacher model checkpoint."
+                )
+            if not os.path.exists(args.opd_teacher_load):
+                raise FileNotFoundError(
+                    f"opd_teacher_load {args.opd_teacher_load} does not exist, please check the path."
+                )
+            if not os.path.exists(os.path.join(args.opd_teacher_load, "latest_checkpointed_iteration.txt")):
+                logger.info(
+                    f"opd_teacher_load {args.opd_teacher_load} does not have latest_checkpointed_iteration.txt, "
+                    "please make sure it is a valid megatron checkpoint directory."
+                )
+
+        elif args.opd_type == "sglang":
+            if args.opd_teacher_load is not None:
+                raise ValueError(
+                    "--opd-teacher-load should not be set when --opd-type=sglang. "
+                    "In sglang mode, teacher log-probs are obtained from external server during rollout."
+                )
+    else:
+        if args.opd_teacher_load is not None:
+            raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
@@ -2334,11 +2408,16 @@ def hf_validate_args(args, hf_config):
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
 
+    model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
+    if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
+        assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
+
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
         ("intermediate_size", "ffn_hidden_size", equal),
+        ("moe_intermediate_size", "moe_ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",
@@ -2349,6 +2428,8 @@ def hf_validate_args(args, hf_config):
     ]:
         # FIXME: Qwen3.5 transfomers has bug.
         if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
+            continue
+        if getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size":
             continue
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):

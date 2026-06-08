@@ -58,7 +58,7 @@ miles/
 │   ├── data_source.py    # buffer + JSONL loader
 │   ├── filter_hub/       # built-in filters
 │   └── inference_rollout/# experimental refactor
-├── router/               # FastAPI proxy + middleware engine (router.py)
+├── router/               # FastAPI proxy + worker load-balancer (router.py)
 └── utils/                # async, types, IO, distributed helpers, arguments.py
 ```
 

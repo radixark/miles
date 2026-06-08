@@ -73,7 +73,10 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
 RUN pip install flash-linear-attention==0.4.2
-RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
+# required for DeepSeek V4
+RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
+RUN pip install --no-deps tile_kernels==1.0.0
+RUN pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation

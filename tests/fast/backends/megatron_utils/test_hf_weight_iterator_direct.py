@@ -120,6 +120,40 @@ def test_atomic_group_is_single_update_unit_and_packed_together(direct_module, m
     assert [[param.name for param in bucket] for bucket in buckets] == [["layer.a"], ["layer.b", "layer.c"]]
 
 
+def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
+    from miles.backends.megatron_utils.update_weight.common import get_atomic_update_groups
+
+    param_names = [
+        "module.module.decoder.layers.0.input_layernorm.weight",
+        "module.module.decoder.layers.0.self_attention.wq_a.weight",
+        "module.module.decoder.layers.0.self_attention.wkv.weight",
+        "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
+        "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
+        "module.module.decoder.layers.0.self_attention.indexer.compressor.wkv.weight",
+        "module.module.decoder.layers.0.self_attention.indexer.compressor.wgate.weight",
+    ]
+
+    update_units = direct_module.get_named_update_units(
+        param_names, get_atomic_update_groups(Namespace(q_lora_rank=1024), "deepseekv4")
+    )
+
+    assert [unit.names for unit in update_units] == [
+        ("module.module.decoder.layers.0.input_layernorm.weight",),
+        (
+            "module.module.decoder.layers.0.self_attention.wq_a.weight",
+            "module.module.decoder.layers.0.self_attention.wkv.weight",
+        ),
+        (
+            "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
+            "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
+        ),
+        (
+            "module.module.decoder.layers.0.self_attention.indexer.compressor.wkv.weight",
+            "module.module.decoder.layers.0.self_attention.indexer.compressor.wgate.weight",
+        ),
+    ]
+
+
 def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
     from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
 

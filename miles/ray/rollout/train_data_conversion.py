@@ -82,7 +82,7 @@ def convert_samples_to_train_data(
     if any(sample.weight_versions for sample in samples):
         train_data["weight_versions"] = [sample.weight_versions for sample in samples]
 
-    if "teacher_log_probs" in samples[0].__dict__:
+    if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
     x = metadata.get("dynamic_global_batch_size")
