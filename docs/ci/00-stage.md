@@ -1,9 +1,9 @@
 ---
-title: Stage classification
+title: Stage
 description: How CI stages are defined, how a test's suite maps to a stage, and what each stage does.
 ---
 
-# Stage classification
+# Stage
 
 A *stage* is one CI job in `.github/workflows/pr-test.yml`. A *suite* is the `suite=` value a test declares in `register_*_ci(...)`. Stage names and suite names are the same set, mapped **1:1**: a test runs in exactly the stage whose name equals its `suite`.
 
