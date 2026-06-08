@@ -189,7 +189,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 RUN rm -rf /tmp/wheels
 
-# The cu130 sglang base ships rust under /root/.cargo/bin but does not put it on
-# PATH (the cu129 base did); CI's dependency-install step calls `rustc` directly.
-# Placed last so the cached heavy compile layers above are not invalidated.
+# cu130 sglang base ships rust at /root/.cargo/bin but not on PATH; a later CI
+# step calls `rustc` directly. Last so cached layers above stay valid.
 ENV PATH="/root/.cargo/bin:${PATH}"
