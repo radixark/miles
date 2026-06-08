@@ -3,6 +3,7 @@ import random
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import ray
@@ -61,6 +62,13 @@ if TYPE_CHECKING:
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+# Bounded wait for the post-reconfigure intra-cell PG warm-up. A barrier on an
+# (already-rendezvoused) NCCL communicator returns in well under a second; first use
+# triggers comm init which is still seconds. 120s leaves a wide margin against false
+# positives while detecting a desynced communicator far sooner than the 600s default
+# NCCL watchdog. Matches the indep_dp torchft timeout (indep_dp.py:_TIMEOUT).
+_REJOIN_WARMUP_PG_TIMEOUT = timedelta(seconds=120)
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -711,3 +719,37 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
+
+    def warmup_intra_cell_pgs(self) -> None:
+        """Exercise this cell's intra-cell NCCL process groups with a bounded timeout,
+        right after a quorum reconfigure/rejoin and before the next train step.
+
+        A cell that just rejoined rebuilds its intra-cell communicators (pipeline, cp,
+        ...) from scratch; if one fails to match on first use, the first real collective
+        (e.g. the pipeline P2P shape exchange in recv_forward) would hang until the 600s
+        NCCL watchdog tears the process down. Running a barrier per group here surfaces
+        such a desync within _REJOIN_WARMUP_PG_TIMEOUT and lets it become a normal
+        errored-cell retry (the controller kills+confirms the cell and re-heals).
+
+        Only INTRA-cell groups are exercised, never the cross-cell indep_dp group: a
+        barrier failure then stays cell-local (errors just this cell), whereas a
+        cross-cell barrier would propagate one cell's desync into its peer and could
+        error both cells at once.
+        """
+        parallel_state = get_parallel_state()
+        groups: list[tuple[str, dist.ProcessGroup]] = []
+        for name, info in [
+            ("pp", parallel_state.pp),
+            ("cp", parallel_state.cp),
+            ("ep", parallel_state.ep),
+            ("tp", parallel_state.tp),
+        ]:
+            if info.group is not None and info.size > 1:
+                groups.append((name, info.group))
+        groups.append(("world", dist.group.WORLD))
+
+        for name, group in groups:
+            work = dist.barrier(group=group, async_op=True)
+            work.wait(timeout=_REJOIN_WARMUP_PG_TIMEOUT)
+        torch.cuda.synchronize()
+        logger.info(f"Post-reconfigure intra-cell PG warm-up passed ({[n for n, _ in groups]})")

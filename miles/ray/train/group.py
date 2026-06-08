@@ -352,6 +352,17 @@ class RayTrainGroup:
         if not AsyncioGatherUtils.has_error(coop_prepare_outputs):
             assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
 
+            # Step 5: Warm up each alive cell's intra-cell PGs with a bounded timeout
+            # before the first train step. A rejoined cell rebuilds its pipeline/cp/...
+            # communicators from scratch; if one fails to match on first use, the first
+            # real collective would hang until the 600s NCCL watchdog. The warm-up
+            # surfaces such a desync within ~120s as a normal errored-cell retry. Each
+            # cell exercises only its INTRA-cell groups, so a failure stays cell-local
+            # (errors just that cell) instead of wedging both cells -- the rejoin-path
+            # analogue of Step 1's kill+confirm-dead for the errored-cell path.
+            with _paused_health_checkers(self._cells):
+                await self._execute_all_alive_and_catch("warmup_intra_cell_pgs")
+
     async def _kill_errored_cells_and_confirm_dead(self) -> None:
         errored_cells = [c for c in self._cells if c.is_errored]
         if not errored_cells:
