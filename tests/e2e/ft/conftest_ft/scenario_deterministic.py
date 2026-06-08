@@ -4,7 +4,7 @@
 import json
 
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
-from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_deterministic_train_args, get_ft_args
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.test_utils.comparisons import (
@@ -17,6 +17,12 @@ from miles.utils.test_utils.comparisons import (
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 3
 
+_DETERMINISTIC_ENV_VARS: str = (
+    '--train-env-vars \'{"NCCL_ALGO": "Ring", '
+    '"NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", '
+    '"CUBLAS_WORKSPACE_CONFIG": ":4096:8"}\' '
+)
+
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 _DETERMINISTIC_ACTIONS: list[dict] = [
     {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_index": -1},
@@ -27,7 +33,8 @@ _DETERMINISTIC_ACTIONS: list[dict] = [
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
-    base += get_deterministic_train_args()
+    base += "--deterministic-mode " + _DETERMINISTIC_ENV_VARS
+    base += "--debug-deterministic-collective "
 
     if is_target:
         base += get_ft_args(mode)

@@ -137,18 +137,6 @@ def get_common_train_args(
     return train_args
 
 
-def get_deterministic_train_args() -> str:
-    """Deterministic-mode + fixed-tree collective flags enabling bitwise (zero-tolerance)
-    comparison between the normal-DP baseline and the indep_dp target."""
-    return (
-        "--deterministic-mode "
-        '--train-env-vars \'{"NCCL_ALGO": "Ring", '
-        '"NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", '
-        '"CUBLAS_WORKSPACE_CONFIG": ":4096:8"}\' '
-        "--debug-deterministic-collective "
-    )
-
-
 def get_ft_args(mode: FTTestMode) -> str:
     return "--use-fault-tolerance " "--ft-components train " "--control-server-port 0 "
 
