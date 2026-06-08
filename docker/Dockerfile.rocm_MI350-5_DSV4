@@ -74,6 +74,10 @@ RUN python -c "import importlib.util; assert all(importlib.util.find_spec(name) 
 COPY docker/amd_patch/deepseek_v4/sglang_dsv4_compressor_fp32.patch /tmp/amd_patch/sglang_dsv4_compressor_fp32.patch
 RUN git -C /sgl-workspace/sglang apply /tmp/amd_patch/sglang_dsv4_compressor_fp32.patch
 
+# Expose the rollout-side weight post-process endpoint used by Miles.
+COPY docker/amd_patch/deepseek_v4/sglang_post_process_weights.patch /tmp/amd_patch/sglang_post_process_weights.patch
+RUN git -C /sgl-workspace/sglang apply /tmp/amd_patch/sglang_post_process_weights.patch
+
 # Install TileKernels and avoid eager TileLang imports on ROCm.
 RUN pip install --no-deps tile_kernels==1.0.0
 COPY docker/amd_patch/deepseek_v4/tile_kernels_lazy_import.patch /tmp/amd_patch/tile_kernels_lazy_import.patch
@@ -92,8 +96,9 @@ RUN rm -rf /root/TransformerEngine && \
 # Install external mbridge used by Miles and the standalone verifier.
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@${MBRIDGE_COMMIT} --no-deps
 
-# Install Megatron with the DSV4/ROCm compatibility patch.
-COPY docker/amd_patch/deepseek_v4/megatron.patch /tmp/amd_patch/megatron.patch
+# Install Megatron with the DSV4/ROCm compatibility patches.
+COPY docker/amd_patch/deepseek_v4/megatron_dsv4_compat.patch /tmp/amd_patch/megatron_dsv4_compat.patch
+COPY docker/amd_patch/deepseek_v4/megatron_grad_clip.patch /tmp/amd_patch/megatron_grad_clip.patch
 RUN rm -rf /root/Megatron-LM && \
     git clone -b ${MEGATRON_BASE_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
     cd /root/Megatron-LM && \
@@ -101,7 +106,8 @@ RUN rm -rf /root/Megatron-LM && \
     git checkout ${MEGATRON_COMMIT} && \
     git submodule sync --recursive && \
     git submodule update --init --recursive && \
-    git apply /tmp/amd_patch/megatron.patch && \
+    git apply /tmp/amd_patch/megatron_dsv4_compat.patch && \
+    git apply /tmp/amd_patch/megatron_grad_clip.patch && \
     pip install -e . --no-deps
 
 RUN pip install git+${TORCH_MEMORY_SAVER_REPO}@${TORCH_MEMORY_SAVER_COMMIT} --no-cache-dir --force-reinstall --no-deps

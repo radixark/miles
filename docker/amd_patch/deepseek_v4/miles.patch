@@ -1,3 +1,24 @@
+diff --git a/miles/backends/megatron_utils/actor.py b/miles/backends/megatron_utils/actor.py
+index 6777e1fa3..a27d3b0e3 100644
+--- a/miles/backends/megatron_utils/actor.py
++++ b/miles/backends/megatron_utils/actor.py
+@@ -40,7 +40,6 @@ from .parallel import verify_megatron_parallel_state
+ from .replay_utils import register_replay_list_moe
+ from .update_weight.common import named_params_and_buffers
+ from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
+-from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+ from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+ 
+ if TYPE_CHECKING:
+@@ -178,6 +177,8 @@ class MegatronTrainRayActor(TrainRayActor):
+             if self.args.update_weight_transfer_mode == "broadcast":
+                 update_weight_cls = UpdateWeightFromDistributed
+             else:
++                from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
++
+                 update_weight_cls = UpdateWeightP2P
+         self.weight_updater = update_weight_cls(
+             self.args,
 diff --git a/miles/utils/chat_template_utils/tito_tokenizer.py b/miles/utils/chat_template_utils/tito_tokenizer.py
 index edfa6f8d8..eac52956e 100644
 --- a/miles/utils/chat_template_utils/tito_tokenizer.py
@@ -31,7 +52,7 @@ index 51e9ae673..2838ff04f 100644
 +        if getattr(torch.version, "hip", None):
 +            post_expanded = post if post.dim() == x.dim() + 1 else post.unsqueeze(-1)
 +            term1 = post_expanded * x.unsqueeze(-2)
-+            term2 = torch.sum(comb.unsqueeze(-1) * residual.unsqueeze(-2), dim=2)
++            term2 = torch.matmul(comb, residual.to(comb.dtype))
 +            return (term1 + term2).to(dtype)
 +
          x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
