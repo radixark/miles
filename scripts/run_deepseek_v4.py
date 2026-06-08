@@ -456,8 +456,6 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
-        # TODO: this is hacky
-        "SGLANG_DG_CACHE_DIR": "/tmp/sglang_deep_gemm",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
     }
     if args.model_name == "DeepSeek-V4-Pro-FP8":
