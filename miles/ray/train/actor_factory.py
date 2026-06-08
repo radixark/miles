@@ -31,6 +31,15 @@ def allocate_gpus_for_actor(
         **args.train_env_vars,
     }
 
+    if args.use_fault_tolerance:
+        # TorchInductor compiles forward graphs with an async worker subprocess pool.
+        # On the FT rejoin path a cell is re-created as a fresh actor and recompiles on
+        # its first forward; that pool can deadlock (the main thread hangs in
+        # async_compile._wait_futures), so the pipeline stage never reaches send_forward
+        # and the peer stage hangs in recv_forward until the NCCL watchdog. Compile
+        # synchronously (no worker pool) so post-rejoin recompiles always complete.
+        env_vars.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
+
     if source_patcher_config := args.dumper_source_patcher_config_train:
         env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
 
