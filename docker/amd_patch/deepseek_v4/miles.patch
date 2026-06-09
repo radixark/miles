@@ -41,6 +41,21 @@ index edfa6f8d8..eac52956e 100644
  from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
  from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
+diff --git a/miles/utils/reloadable_process_group.py b/miles/utils/reloadable_process_group.py
+index 7a3b27452..e5e15c1b1 100644
+--- a/miles/utils/reloadable_process_group.py
++++ b/miles/utils/reloadable_process_group.py
+@@ -279,5 +279,9 @@ def _wrap_low_level_call():
+         yield
+     except Exception as e:
+         mem_info = print_memory("after torch distributed error")
+-        e.add_note(f"{mem_info=}")
++        note = f"{mem_info=}"
++        if hasattr(e, "add_note"):
++            e.add_note(note)
++        else:
++            logger.warning("Torch distributed error context: %s", note)
+         raise
 diff --git a/miles_plugins/models/deepseek_v4/ops/hyper_connection.py b/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
 index 51e9ae673..2838ff04f 100644
 --- a/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
