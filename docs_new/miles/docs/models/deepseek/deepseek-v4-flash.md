@@ -62,11 +62,7 @@ You can override these via the CLI flags above or equivalently via env vars — 
 
 ### 3.3 Colocated vs. disaggregated rollout
 
-By default the launcher runs **colocated**: training and SGLang rollout share all `--num-nodes × --num-gpus-per-node` GPUs (miles receives `--colocate`). Passing `--rollout-num-nodes N` with `0 < N < --num-nodes` ([`radixark/miles#1310`](https://github.com/radixark/miles/pull/1310)) switches to **disaggregated** mode:
-
-- `N` nodes are dedicated to rollout — the launcher passes `--rollout-num-gpus N×<gpus-per-node>` to miles instead of `--colocate`;
-- the remaining `--num-nodes − N` nodes become actor (training) nodes;
-- the launcher's verified parallelism / SPMD-conversion recipes are keyed on **actor** nodes, so the 8-node Flash recipe in disaggregated form is `--num-nodes 16 --rollout-num-nodes 8` (8 actor + 8 rollout — the validated layout).
+By default the launcher runs **colocated**: training and SGLang rollout share all `--num-nodes × --num-gpus-per-node` GPUs. Pass `--rollout-num-nodes N` (`0 < N < --num-nodes`) to run **disaggregated**: `N` nodes serve rollout, the rest train. The verified parallelism recipes are keyed on the **training** nodes, so the 8-node Flash recipe in disaggregated form is `--num-nodes 16 --rollout-num-nodes 8` (8 train + 8 rollout — the validated layout).
 
 ## 4. Script breakdown
 
