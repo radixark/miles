@@ -4,6 +4,7 @@ import logging
 import math
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 
@@ -122,7 +123,11 @@ def setup_model_and_optimizer(
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
 
-    if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
+    # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
+    # which picks the adapter type internally.
+    if getattr(args, "multi_lora", False) or (
+        is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge"
+    ):
         model = _setup_lora_model_via_bridge(args)
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
@@ -830,13 +835,25 @@ def initialize_model_and_optimizer(
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
-    iteration, _ = load_checkpoint(
-        model,
-        optimizer,
-        opt_param_scheduler,
-        checkpointing_context={},
-        skip_load_to_model_and_opt=False,
-    )
+
+    multi_lora = getattr(args, "multi_lora", False)
+    if multi_lora:
+        # Hide adapter params so the bridge's conversion-task walk doesn't see them
+        # while loading the base checkpoint.
+        from megatron.bridge.peft.multi_lora_layers import hide_adapters
+
+        load_ctx = hide_adapters(model)
+    else:
+        load_ctx = nullcontext()
+
+    with load_ctx:
+        iteration, _ = load_checkpoint(
+            model,
+            optimizer,
+            opt_param_scheduler,
+            checkpointing_context={},
+            skip_load_to_model_and_opt=False,
+        )
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 
@@ -844,5 +861,10 @@ def initialize_model_and_optimizer(
 
     if opt_param_scheduler is not None:
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
+
+    if multi_lora:
+        from .multi_lora_utils import load_pending_adapters
+
+        load_pending_adapters(args, model, optimizer)
 
     return model, optimizer, opt_param_scheduler, iteration

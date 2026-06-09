@@ -120,16 +120,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        if is_multi_lora_enabled(args):
-            from .multi_lora_utils import initialize_multi_lora_model_and_optimizer
-
-            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = (
-                initialize_multi_lora_model_and_optimizer(args, role)
-            )
-        else:
-            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
-                args, role
-            )
+        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+            args, role
+        )
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
