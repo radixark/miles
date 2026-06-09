@@ -54,8 +54,8 @@ patches:
         append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
       - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
-      - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+      - match: "mlp_output_with_bias = (mlp_output, mlp_output_bias)"
+        append: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward
@@ -93,8 +93,8 @@ patches:
         append: "dumper.dump('pre_mlp_residual', residual, dims='s[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
       - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
         append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='s[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
-      - match: "return self._forward_post_mlp(mlp_output_with_bias, residual)"
-        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+      - match: "mlp_output_with_bias = (mlp_output, mlp_output_bias)"
+        append: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='s[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
 
   # --- attention internals ---
   - target: megatron.core.transformer.attention.Attention.forward

@@ -20,7 +20,7 @@ A validated DeepSeek-V4-Pro recipe is not yet available — see [`radixark/miles
 
 ## Fastest path to train
 
-DeepSeek-V4-Flash needs 8 nodes of 8× H200 and the `radixark/miles:deepseek-v4` image:
+DeepSeek-V4-Flash needs 8 nodes of 8× H200 and the `radixark/miles:dev` image:
 
 ```bash
 cd /root/miles
