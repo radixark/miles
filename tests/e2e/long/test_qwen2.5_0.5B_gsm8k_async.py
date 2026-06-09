@@ -4,15 +4,11 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-# est_time calibrated against historical CI runtime: ~4124–4182s on 8×H100.
-register_cuda_ci(est_time=5000, suite="stage-c-long-8-gpu", num_gpus=8)
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "1")
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
+register_cuda_ci(est_time=5000, suite="stage-c-2-gpu-h200", labels=["long"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 2 if FEW_GPU else 8
+NUM_GPUS = 2
 
 
 def prepare():
@@ -80,11 +76,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        f"--sglang-mem-fraction-static {0.6 if TIGHT_DEVICE_MEMORY else 0.7} "
-        "--sglang-enable-metrics "
-    )
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.7 " "--sglang-enable-metrics "
 
     ci_args = (
         "--ci-test "
@@ -103,8 +95,8 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {1 if FEW_GPU else 6} "
+        f"--actor-num-gpus-per-node {max(1, NUM_GPUS // 4)} "
+        f"--rollout-num-gpus {max(1, NUM_GPUS * 3 // 4)} "
         "--megatron-to-hf-mode bridge "
     )
 

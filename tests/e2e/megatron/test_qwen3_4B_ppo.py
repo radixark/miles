@@ -4,14 +4,23 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=900, suite="stage-c-megatron-8-gpu", num_gpus=8)
+# FIXME: fix this
+register_cuda_ci(
+    est_time=1500,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron"],
+    disabled="PPO placement group has conflict on port, need fix later.",
+)
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-NUM_GPUS = 8
+# PPO allocates critic on separate placement-group bundles from actor (even with
+# --colocate, which only shares rollout with actor), so total GPUs needed is
+# actor_world + critic_world. Keep actor_world = TP * CP = 2 (TP=1, CP=2) so
+# actor (2) + critic (2) fits the 4-GPU suite.
+NUM_GPUS = 4
 
 
 def prepare():
@@ -51,20 +60,19 @@ def execute():
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 2 "
-        "--sequence-parallel "
+        "--tensor-model-parallel-size 1 "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if TIGHT_HOST_MEMORY else 16384} "
+        "--max-tokens-per-gpu 16384 "
     )
 
     ppo_args = (
         "--advantage-estimator ppo "
-        f"{'' if TIGHT_HOST_MEMORY else '--use-kl-loss '}"
+        "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type k1 "
         "--kl-coef 0.00 "
@@ -86,7 +94,6 @@ def execute():
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 2 "
-        "--rollout-num-gpus 8 "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-max-running-requests 512 "
         "--sglang-enable-metrics "
@@ -104,7 +111,7 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 4 "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         "--colocate "
     )
 

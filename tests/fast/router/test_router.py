@@ -1,7 +1,3 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
 import asyncio
 from argparse import Namespace
 
@@ -22,7 +18,6 @@ def make_router_args(router_port: int, **overrides) -> Namespace:
         miles_router_health_check_failure_threshold=3,
         miles_router_max_connections=100,
         miles_router_timeout=None,
-        miles_router_middleware_paths=[],
     )
     defaults.update(overrides)
     return Namespace(**defaults)

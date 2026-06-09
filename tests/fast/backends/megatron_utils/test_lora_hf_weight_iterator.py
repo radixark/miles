@@ -5,7 +5,7 @@ Validates that the right iterator subclass is selected based on megatron_to_hf_m
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-fast")
+register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 
 from argparse import Namespace

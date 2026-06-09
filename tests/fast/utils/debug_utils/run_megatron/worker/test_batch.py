@@ -13,7 +13,7 @@ def _zigzag_slice(tokens: torch.Tensor, *, cp_rank: int, cp_size: int) -> torch.
     return slice_with_cp(
         tokens,
         pad_value=0,
-        parallel_state=SimpleNamespace(cp_rank=cp_rank, cp_size=cp_size),
+        parallel_state=SimpleNamespace(cp=SimpleNamespace(rank=cp_rank, size=cp_size)),
         qkv_format="bshd",
         max_seq_len=len(tokens),
     )

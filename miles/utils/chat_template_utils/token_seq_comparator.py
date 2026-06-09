@@ -61,7 +61,12 @@ class TokenSeqComparator:
     ----------
     tokenizer : PreTrainedTokenizerBase
     special_token_ids : set[int] | None
-        Extra IDs treated as segment boundaries (merged with auto-detected ones).
+        Token IDs that mark segment boundaries.  Default None auto-detects
+        them (see :meth:`collect_special_ids`).  Pass an explicit set to
+        override — needed when the tokenizer flags a token ``special=True``
+        even though it lives inside a role's turn (e.g. Kimi's
+        ``<|im_middle|>`` between role name and body) and so must not
+        split the segment.
     assistant_start_str : str
         Decoded text prefix identifying assistant content segments, e.g.
         ``"<|im_start|>assistant"`` (Qwen3) or ``"<|assistant|>"`` (GLM).
@@ -81,14 +86,15 @@ class TokenSeqComparator:
         trim_trailing_ids: set[int] | None = None,
     ):
         self.tokenizer = tokenizer
-        self._special_ids = self._collect_special_ids(tokenizer)
         if special_token_ids is not None:
-            self._special_ids |= set(special_token_ids)
+            self._special_ids = set(special_token_ids)
+        else:
+            self._special_ids = self.collect_special_ids(tokenizer)
         self._assistant_start_str = assistant_start_str
         self._trim_trailing_ids: set[int] | None = set(trim_trailing_ids) if trim_trailing_ids else None
 
     @staticmethod
-    def _collect_special_ids(tokenizer) -> set[int]:
+    def collect_special_ids(tokenizer) -> set[int]:
         """Collect token IDs with ``special=True`` from the tokenizer.
 
         Special tokens are structural markers added by the chat template to

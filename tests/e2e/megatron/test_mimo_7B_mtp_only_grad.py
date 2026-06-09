@@ -14,11 +14,11 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=600, suite="stage-c-megatron-8-gpu", num_gpus=8)
+register_cuda_ci(est_time=420, suite="stage-c-4-gpu-h200", labels=["megatron"])
 
 MODEL_NAME = "MiMo-7B-RL"
 MODEL_TYPE = "mimo-7B-rl"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 
 def prepare():
@@ -91,9 +91,8 @@ def execute():
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 2 "
-        "--rollout-num-gpus 8 "
-        "--sglang-mem-fraction-static 0.8 "
+        "--rollout-num-gpus-per-engine 1 "
+        "--sglang-mem-fraction-static 0.7 "
         "--sglang-enable-metrics "
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
@@ -117,7 +116,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 

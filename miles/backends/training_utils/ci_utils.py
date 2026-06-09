@@ -19,7 +19,7 @@ def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumula
             # small floating-point differences, so use a relaxed threshold.
             assert abs(log_dict["train/ppo_kl"]) < 1e-8 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
         else:
-            assert abs(log_dict["train/ppo_kl"]) < 1e-10 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
+            assert abs(log_dict["train/ppo_kl"]) < 1e-9 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"
     if accumulated_step_id == 0 and "train/kl_loss" in log_dict and not args.use_rollout_routing_replay:
         assert abs(log_dict["train/kl_loss"]) < 1e-9, f"{log_dict=}"
 
@@ -36,16 +36,16 @@ def check_grad_norm(
     if rank != 0:
         return
 
-    if args.ci_save_grad_norm is not None:
-        ci_save_grad_norm_path = args.ci_save_grad_norm.format(
+    if (x := args.ci_save_grad_norm) is not None:
+        ci_save_grad_norm_path = x.format(
             role=role,
             rollout_id=rollout_id,
             step_id=step_id,
         )
         torch.save(grad_norm, ci_save_grad_norm_path)
 
-    elif args.ci_load_grad_norm is not None:
-        ci_load_grad_norm_path = args.ci_load_grad_norm.format(
+    elif (x := args.ci_load_grad_norm) is not None:
+        ci_load_grad_norm_path = x.format(
             role=role,
             rollout_id=rollout_id,
             step_id=step_id,

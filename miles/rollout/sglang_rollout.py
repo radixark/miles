@@ -24,13 +24,15 @@ from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.processing_utils import (
-    build_processor_kwargs,
+    call_processor,
     encode_image_for_rollout_engine,
     load_processor,
     load_tokenizer,
 )
 from miles.utils.types import Sample
 
+from .generate_utils.generate_endpoint_utils import get_indexer_topk_from_response
+from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
@@ -141,9 +143,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     ), f"Sample status is {sample.status}"
 
     if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
-        processor_kwargs = build_processor_kwargs(sample.multimodal_inputs)
-        processor_output = state.processor(text=sample.prompt, **processor_kwargs)
+        processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
+        prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
         sample.multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
         } or None
@@ -171,6 +173,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
+    if getattr(args, "use_rollout_indexer_replay", False):
+        payload["return_indexer_topk"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
@@ -191,30 +195,25 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     output = await post(url, payload, headers=headers)
 
-    if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
-        from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
-
-        sample = await postprocess_sample_with_radix_tree(args, sample, output)
+    if "output_token_logprobs" in output["meta_info"]:
+        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
     else:
-        if "output_token_logprobs" in output["meta_info"]:
-            new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-        else:
-            new_response_tokens, new_response_log_probs = [], []
+        new_response_tokens, new_response_log_probs = [], []
 
-        # Update sample with tokens directly - avoiding re-tokenization
-        sample.tokens = sample.tokens + new_response_tokens
-        sample.response_length += len(new_response_tokens)
-        sample.response += output["text"]
+    # Update sample with tokens directly - avoiding re-tokenization
+    sample.tokens = sample.tokens + new_response_tokens
+    sample.response_length += len(new_response_tokens)
+    sample.response += output["text"]
 
-        # When partial rollout and masking off policy is enabled, update the loss mask
-        if sample.loss_mask is not None:
-            assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
-            sample.loss_mask += [1] * len(new_response_tokens)
+    # When partial rollout and masking off policy is enabled, update the loss mask
+    if sample.loss_mask is not None:
+        assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
+        sample.loss_mask += [1] * len(new_response_tokens)
 
-        if sample.rollout_log_probs is None:
-            sample.rollout_log_probs = []
-        sample.rollout_log_probs += new_response_log_probs
+    if sample.rollout_log_probs is None:
+        sample.rollout_log_probs = []
+    sample.rollout_log_probs += new_response_log_probs
 
     if "routed_experts" in output["meta_info"]:
         sample.rollout_routed_experts = np.frombuffer(
@@ -225,6 +224,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             args.num_layers,
             args.moe_router_topk,
         )
+    if "indexer_topk" in output["meta_info"]:
+        sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     sample.update_from_meta_info(args, output["meta_info"])
 
@@ -458,14 +459,21 @@ async def generate_rollout_async(
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
-    if args.rollout_sample_filter_path is not None:
-        filter_func = load_function(args.rollout_sample_filter_path)
+    if (x := args.rollout_sample_filter_path) is not None:
+        filter_func = load_function(x)
         filter_func(args, data)
 
     # There can be circumstances where users want to process all samples including filtered ones.
-    if args.rollout_all_samples_process_path is not None:
-        process_func = load_function(args.rollout_all_samples_process_path)
+    if (x := args.rollout_all_samples_process_path) is not None:
+        process_func = load_function(x)
         process_func(args, all_samples, data_source)
+
+    await recompute_samples_rollout_logprobs_via_prefill(
+        args,
+        [sample for group in data for sample in group],
+        url=get_model_url(args, "default"),
+        sampling_params=state.sampling_params,
+    )
 
     return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
 

@@ -6,14 +6,13 @@ import re
 import shutil
 import time
 
-
 import safetensors.torch
 import torch
 import torch.distributed.checkpoint as dist_cp
-from transformers import AutoConfig
 from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
+from miles.utils.hf_config import load_hf_config
 
 
 class UnpicklerWrapper(pickle.Unpickler):
@@ -195,7 +194,7 @@ if __name__ == "__main__":
         )
 
     if args.model_name is None:
-        hf_config = AutoConfig.from_pretrained(args.origin_hf_dir, trust_remote_code=True)
+        hf_config = load_hf_config(args.origin_hf_dir)
         args.model_name = type(hf_config).__name__.lower()
 
     state_dict = {}

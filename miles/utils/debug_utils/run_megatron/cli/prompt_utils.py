@@ -28,11 +28,13 @@ def generate_token_ids(
     - file: read long text from file, tokenize and truncate to seq_length
     - text: use user-provided text directly, tokenize and truncate to seq_length
     """
-    from transformers import AutoTokenizer, PreTrainedTokenizerBase
+    from transformers import PreTrainedTokenizerBase
+
+    from miles.utils.processing_utils import load_tokenizer
 
     raw_text: str = _resolve_raw_text(prompt)
 
-    tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
+    tokenizer: PreTrainedTokenizerBase = load_tokenizer(str(tokenizer_path), trust_remote_code=True)
 
     if prompt.apply_chat_template:
         messages: list[dict[str, str]] = [{"role": "user", "content": raw_text}]

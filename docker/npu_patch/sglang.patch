@@ -1,0 +1,58 @@
+diff --git a/python/sglang/srt/configs/model_config.py b/python/sglang/srt/configs/model_config.py
+index 691f06411..0f5964410 100644
+--- a/python/sglang/srt/configs/model_config.py
++++ b/python/sglang/srt/configs/model_config.py
+@@ -297,6 +297,11 @@ class ModelConfig:
+             "GlmMoeDsaForCausalLM",
+         ]:
+             self.hf_config.architectures[0] = "DeepseekV3ForCausalLMNextN"
++        if (
++            is_draft_model
++            and self.hf_config.architectures[0] == "DeepseekV32ForCausalLM"
++        ):
++            self.hf_config.architectures[0] = "DeepseekV3ForCausalLMNextN"
+ 
+         if is_draft_model and self.hf_config.architectures[0] in [
+             "Glm4MoeForCausalLM",
+diff --git a/python/sglang/srt/entrypoints/engine.py b/python/sglang/srt/entrypoints/engine.py
+index fcc4af301..be9de5460 100644
+--- a/python/sglang/srt/entrypoints/engine.py
++++ b/python/sglang/srt/entrypoints/engine.py
+@@ -68,6 +68,7 @@ from sglang.srt.managers.io_struct import (
+     LoadLoRAAdapterFromTensorsReqInput,
+     LoadLoRAAdapterReqInput,
+     MultimodalDataInputFormat,
++    PostProcessWeightsReqInput,
+     OpenSessionReqInput,
+     PostProcessWeightsReqInput,
+     ReleaseMemoryOccupationReqInput,
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 288f2a24c..89959ff30 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -124,6 +124,7 @@ from sglang.srt.managers.io_struct import (
+     InitWeightsUpdateGroupReqInput,
+     LoadLoRAAdapterFromTensorsReqInput,
+     LoadLoRAAdapterReqInput,
++    PostProcessWeightsReqInput,
+     OpenSessionReqInput,
+     ParseFunctionCallReq,
+     PauseGenerationReqInput,
+diff --git a/python/sglang/srt/models/transformers.py b/python/sglang/srt/models/transformers.py
+index d928870b9..06436aa4a 100644
+--- a/python/sglang/srt/models/transformers.py
++++ b/python/sglang/srt/models/transformers.py
+@@ -266,10 +266,10 @@ def replace_rms_norm_class(rms_norm: nn.Module, hidden_size: int) -> nn.Module:
+         )
+     else:
+         kwargs["has_weight"] = getattr(rms_norm, "with_scale", True)
+-        if weight_meta is not None:
+-            kwargs["weight_dtype"] = weight_meta.dtype
+-        else:
+-            kwargs["has_weight"] = False
++        # if weight_meta is not None:
++        #     kwargs["weight_dtype"] = weight_meta.dtype
++        # else:
++        #     kwargs["has_weight"] = False
+         base_cls = RMSNorm
+         norm = base_cls(**kwargs)

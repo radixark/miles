@@ -1,7 +1,3 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
 """Tests for the A_log fp32 preservation chain.
 
 Feature: Qwen3.5's ``A_log`` must end up as fp32 in the Megatron parameter
@@ -38,7 +34,6 @@ from miles.backends.megatron_utils.fp32_param_utils import (
     enforce_marked_param_dtypes,
     mark_param_dtype,
 )
-
 
 # ---------------------------------------------------------------------------
 # Downstream: mark_param_dtype + enforce_marked_param_dtypes

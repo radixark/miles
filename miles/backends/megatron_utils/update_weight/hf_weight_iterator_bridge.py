@@ -5,6 +5,7 @@ from miles.utils import megatron_bridge_utils
 from miles.utils.iter_utils import chunk_named_params_by_size
 
 from ..megatron_to_hf import postprocess_hf_param
+from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -18,7 +19,6 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type: str = "base"):
-        # TODO: support quantization (e.g. modify megatron-bridge to provide megatron param name)
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             if weight_type == "lora":
@@ -37,19 +37,11 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     merge_adapter_weights=False,
                 )
 
-            # TODO: verify if postprocess_hf_param is needed for LoRA weights
-            named_weights = (
-                (
-                    hf_param_name.replace(".base_layer.", "."),
-                    postprocess_hf_param(
-                        args=self.args,
-                        megatron_param_name=megatron_param_name,
-                        hf_param_name=hf_param_name.replace(".base_layer.", "."),
-                        param=weight,
-                    ),
-                )
-                for hf_param_name, weight, megatron_param_name in named_weights
-            )
+            # Apply postprocess + quantization (when targeting a quantized rollout,
+            # e.g. FP8 sglang). Base weights are quantized to match the rollout's
+            # storage format so update_weights_from_tensor lands real weight + scale
+            # pairs; LoRA adapters are passed through unchanged.
+            named_weights = self._postprocess_and_quantize(named_weights, weight_type)
 
             if weight_type == "base":
                 named_weights = ((n, t) for n, t in named_weights if not is_lora_weight_name(n))
@@ -57,6 +49,23 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                 named_weights = ((n, t) for n, t in named_weights if is_lora_weight_name(n))
 
             yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
+
+    def _postprocess_and_quantize(self, named_weights, weight_type: str):
+        for hf_param_name, weight, megatron_param_name in named_weights:
+            hf_name = hf_param_name.replace(".base_layer.", ".")
+            weight = postprocess_hf_param(
+                args=self.args,
+                megatron_param_name=megatron_param_name,
+                hf_param_name=hf_name,
+                param=weight,
+            )
+            if weight_type == "base" and self.quantization_config is not None:
+                # quantize_params expects the megatron name with the `module.module.`
+                # prefix that the direct iterator uses; the bridge yields it without.
+                qmegatron_name = f"module.module.{megatron_param_name}"
+                yield from quantize_params(self.args, qmegatron_name, [(hf_name, weight)], self.quantization_config)
+            else:
+                yield hf_name, weight
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):

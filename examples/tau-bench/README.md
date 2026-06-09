@@ -42,27 +42,31 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 
 ## Running the Script
 
-You need to configure your litellm API in `generate_with_tau.py` for user simulation:
+The user simulator runs through litellm, so any litellm-supported provider works.
+Select the provider/model and supply the matching key via environment variables —
+no need to edit `generate_with_tau.py`. The launch script forwards these to the
+ray workers.
 
-```python
-TAU_CONFIGS = {
-    "env": "retail",  # Select between ["retail", "airline"]
-    "agent": "tool-calling",  # Select between ["tool-calling", "act", "react", "few-shot"], only tool-calling implemented for now
-    "user_model": "gemini-2.0-flash-lite",  # Cheap Model for user simulator
-    "user_model_provider": "gemini",
-    "task_split": "train",  # Select between ["train", "test", "dev"] for retail, ["test"] for airline
-    "user_strategy": "llm",  # Select between ["llm", "react", "verify", "reflection"]
-    "model_provider": "auto_router", # Unused, required
-    "model": "qwen3-4b", # Unused, reqired
-}
-# Replace with your actual API key for user sim    
-GEMINI_API_KEY = "YOUR KEY" 
-```
-
-And run:
-
+**DeepSeek:**
 
 ```bash
+export TAU_USER_MODEL_PROVIDER=deepseek
+export TAU_USER_MODEL=deepseek-chat
+export DEEPSEEK_API_KEY=sk-...
+
 cd /root/miles
 bash examples/tau-bench/run_qwen3_4B.sh
 ```
+
+**Gemini (default):**
+
+```bash
+export TAU_USER_MODEL_PROVIDER=gemini          # optional, this is the default
+export TAU_USER_MODEL=gemini-2.5-flash-lite    # optional, this is the default
+export GEMINI_API_KEY=...
+
+cd /root/miles
+bash examples/tau-bench/run_qwen3_4B.sh
+```
+
+If the matching `*_API_KEY` is not set, the run fails fast at startup with a clear error.

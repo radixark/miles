@@ -4,15 +4,15 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
+# FIXME: fix this
 register_cuda_ci(
-    est_time=1200,
-    suite="stage-c-precision-8-gpu",
-    num_gpus=8,
-    disabled="Timeout after 1800s on CI (pre-existing, not caused by CI refactor)",
+    est_time=2400,
+    suite="stage-c-8-gpu-h100",
+    labels=["megatron", "precision"],
+    disabled="Disabled due to bugs.",
 )
 
-ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
+ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"
@@ -65,7 +65,7 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 " "--rollout-num-gpus 8 " "--sglang-mem-fraction-static 0.8 "
+    sglang_args = "--rollout-num-gpus-per-engine 2 " "--sglang-mem-fraction-static 0.8 "
 
     ci_args = "--ci-test "
 

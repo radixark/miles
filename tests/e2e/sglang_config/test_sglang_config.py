@@ -5,9 +5,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=600, suite="stage-b-short-8-gpu", num_gpus=8)
-
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
+register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -102,7 +100,7 @@ def execute():
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
-        f"--sglang-mem-fraction-static {0.5 if TIGHT_DEVICE_MEMORY else 0.6} "
+        f"--sglang-mem-fraction-static 0.6 "
         "--sglang-enable-metrics "
         "--sglang-cuda-graph-max-bs 32 "
         f"--sglang-config {config_path} "
@@ -117,7 +115,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
         "--megatron-to-hf-mode bridge "
     )

@@ -126,6 +126,42 @@ def write_github_step_summary(content: str):
             f.write(content)
 
 
+def _gha_emit_group(title: str) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    safe = title.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::group::{safe}", flush=True)
+
+
+def _gha_emit_endgroup() -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    print("::endgroup::", flush=True)
+
+
+def _gha_emit_summary(
+    i: int,
+    n: int,
+    filename: str,
+    status: str,
+    elapsed: float,
+    exit_code: int | None = None,
+    timeout_after: float | None = None,
+    retry_of: int | None = None,
+) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    safe_name = filename.replace("\r", "\\r").replace("\n", "\\n")
+    line = f"[{i}/{n}] {safe_name}  {status}  elapsed={int(elapsed)}s"
+    if exit_code is not None:
+        line += f" exit={int(exit_code)}"
+    if timeout_after is not None:
+        line += f" timeout_after={int(timeout_after)}s"
+    if retry_of is not None:
+        line += f" retry_of=attempt={int(retry_of)}"
+    print(line, flush=True)
+
+
 def run_unittest_files(
     files: list[TestFile] | list[CIRegistry],
     timeout_per_file: float,
@@ -210,51 +246,85 @@ def run_unittest_files(
                 logger.info(f"\n[CI Retry] Attempt {attempt}/{max_attempts} for {filename}\n")
                 was_retried = True
 
+            attempt_tic = time.perf_counter()
+            current_attempt = attempt
+            group_title = f"{filename}  ({i + 1}/{len(files)} est={int(estimated_time)}s attempt={current_attempt})"
+            _gha_emit_group(group_title)
+            attempt_status: str | None = None
+            attempt_exit_code: int | None = None
+            attempt_timeout_after: float | None = None
+            attempt_elapsed: float = 0.0
+
             try:
-                ret_code = run_with_timeout(
-                    run_one_file,
-                    args=(filename,),
-                    kwargs={"capture_output": enable_retry},
-                    timeout=effective_timeout,
-                )
+                try:
+                    ret_code = run_with_timeout(
+                        run_one_file,
+                        args=(filename,),
+                        kwargs={"capture_output": enable_retry},
+                        timeout=effective_timeout,
+                    )
+                    attempt_elapsed = time.perf_counter() - attempt_tic
 
-                if ret_code == 0:
-                    file_passed = True
+                    if ret_code == 0:
+                        attempt_status = "PASS"
+                        file_passed = True
+                        if was_retried:
+                            logger.info(f"\nPASSED on retry (attempt {attempt}): {filename}\n")
+                            retried_tests.append((filename, attempt, "passed"))
+                        passed_tests.append(filename)
+                        break
+                    else:
+                        attempt_status = "FAIL"
+                        attempt_exit_code = ret_code
+                        # Check if we should retry
+                        if enable_retry and attempt < max_attempts:
+                            output = "".join(output_lines)
+                            is_retriable, reason = is_retriable_failure(output)
+
+                            if is_retriable:
+                                logger.info(f"\n[CI Retry] {filename} failed with {reason}")
+                                logger.info(f"[CI Retry] Waiting {retry_wait_seconds}s before retry...\n")
+                                time.sleep(retry_wait_seconds)
+                                attempt += 1
+                                continue
+                            else:
+                                logger.info(f"\n[CI Retry] {filename} failed with {reason} - not retrying\n")
+
+                        # No retry or not retriable
+                        logger.info(f"\nFAILED: {filename} returned exit code {ret_code}\n")
+                        if was_retried:
+                            retried_tests.append((filename, attempt, "failed"))
+                        failed_tests.append((filename, f"exit code {ret_code}"))
+                        break
+
+                except TimeoutError:
+                    attempt_elapsed = time.perf_counter() - attempt_tic
+                    attempt_status = "TIMEOUT"
+                    attempt_timeout_after = effective_timeout
+                    _kill_process_tree(process.pid)
+                    time.sleep(5)
+                    logger.info(f"\nTIMEOUT: {filename} after {effective_timeout} seconds\n")
                     if was_retried:
-                        logger.info(f"\nPASSED on retry (attempt {attempt}): {filename}\n")
-                        retried_tests.append((filename, attempt, "passed"))
-                    passed_tests.append(filename)
+                        retried_tests.append((filename, attempt, "timeout"))
+                    failed_tests.append((filename, f"timeout after {effective_timeout}s"))
                     break
-                else:
-                    # Check if we should retry
-                    if enable_retry and attempt < max_attempts:
-                        output = "".join(output_lines)
-                        is_retriable, reason = is_retriable_failure(output)
-
-                        if is_retriable:
-                            logger.info(f"\n[CI Retry] {filename} failed with {reason}")
-                            logger.info(f"[CI Retry] Waiting {retry_wait_seconds}s before retry...\n")
-                            time.sleep(retry_wait_seconds)
-                            attempt += 1
-                            continue
-                        else:
-                            logger.info(f"\n[CI Retry] {filename} failed with {reason} - not retrying\n")
-
-                    # No retry or not retriable
-                    logger.info(f"\nFAILED: {filename} returned exit code {ret_code}\n")
-                    if was_retried:
-                        retried_tests.append((filename, attempt, "failed"))
-                    failed_tests.append((filename, f"exit code {ret_code}"))
-                    break
-
-            except TimeoutError:
-                _kill_process_tree(process.pid)
-                time.sleep(5)
-                logger.info(f"\nTIMEOUT: {filename} after {effective_timeout} seconds\n")
-                if was_retried:
-                    retried_tests.append((filename, attempt, "timeout"))
-                failed_tests.append((filename, f"timeout after {effective_timeout}s"))
-                break
+                except Exception:
+                    attempt_elapsed = time.perf_counter() - attempt_tic
+                    attempt_status = "FAIL"
+                    raise
+            finally:
+                _gha_emit_endgroup()
+                if attempt_status is not None:
+                    _gha_emit_summary(
+                        i + 1,
+                        len(files),
+                        filename,
+                        attempt_status,
+                        elapsed=attempt_elapsed,
+                        exit_code=attempt_exit_code,
+                        timeout_after=attempt_timeout_after,
+                        retry_of=(current_attempt - 1) if current_attempt >= 2 else None,
+                    )
 
         if not file_passed:
             success = False

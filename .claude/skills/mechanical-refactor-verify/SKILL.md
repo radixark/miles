@@ -24,7 +24,16 @@ The scaffold (worktree creation, diff check, ruff format, result reporting) live
 
 **MANDATORY**: The transform script MUST use `verify_mechanical_refactor()` from the utils module. Do NOT reimplement the verification scaffold — no hand-written worktree management, no hand-written diff checking. The script only defines `transform()` and calls `verify_mechanical_refactor`.
 
-Script template (follow this structure exactly):
+#### Key principle: move lines, don't paste content
+
+The transform script must **read lines from the source file and write them to the target**, not hardcode large blocks of code as string literals. This is what makes the script auditable — a reviewer can verify line ranges against the original file.
+
+**Rules:**
+1. **Move code by line ranges**: read the source, extract line slices, write to target. Never paste >3 lines of code as string literals in the script.
+2. **Minimal replacements**: when adapting moved code (e.g. `self.foo` → `foo`), use small targeted `str.replace()` or `re.sub()` calls. Each replacement should be a short pattern, not a full block of code.
+3. **New content is OK only for glue**: import statements, function signatures (the `def` line + parameters), and other 1-2 line connective tissue can be written as literals. The *body* of moved functions must come from line extraction.
+
+#### Script template (follow this structure exactly)
 
 ```python
 #!/usr/bin/env python3
@@ -48,28 +57,37 @@ def transform(dir_root: Path) -> None:
     Args:
         dir_root: Path to the worktree (checked out at BASE_COMMIT).
     """
-    # --- Step 1: Split source file ---
+    # --- Step 1: Extract functions by line range ---
     source = dir_root / "path/to/source.py"
     content = source.read_text()
     lines = content.splitlines(keepends=True)
 
-    splits = [
-        ("path/to/pkg/target_a.py", 1, 50),
-        ("path/to/pkg/target_b.py", 51, 120),
-    ]
-    for target_path, start, end in splits:
-        target = dir_root / target_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("".join(lines[start - 1 : end]))
+    # Move lines 100-150 to new file, dedenting from method to top-level
+    extracted = "".join(lines[99:150])
+    extracted = dedent(extracted, 4)  # remove class indentation
+    # Minimal adaptations: self.x -> x (parameter)
+    extracted = extracted.replace("self.args", "args")
 
-    source.unlink()
-    (dir_root / "path/to/pkg/__init__.py").touch()
+    target = dir_root / "path/to/pkg/target.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("import logging\n\n\n" + extracted)
 
-    git_add_and_commit("mechanical: split source.py", cwd=str(dir_root))
+    # --- Step 2: Remove extracted lines from source, add import ---
+    # Delete lines 100-150 from source
+    new_lines = lines[:99] + lines[150:]
+    source.write_text("".join(new_lines))
 
-    # --- Step 2: Fix imports ---
-    # <edit files>
-    # git_add_and_commit("fix imports", cwd=str(dir_root))
+    # Small targeted replacement: add import, replace call site
+    content = source.read_text()
+    content = content.replace(
+        "from path.to.old import foo",
+        "from path.to.old import foo\nfrom path.to.pkg.target import extracted_func",
+    )
+    # Replace inline code with function call (use a short unique anchor)
+    content = content.replace("old_call_pattern", "new_call_pattern")
+    source.write_text(content)
+
+    git_add_and_commit("mechanical: extract functions", cwd=str(dir_root))
 
     # Note: pre-commit run --all-files is run automatically after transform() returns
 

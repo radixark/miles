@@ -403,6 +403,7 @@ def train_one_step(
                 "returns",
                 "rollout_log_probs",
                 "max_seq_lens",
+                "opd_reverse_kl",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -438,8 +439,8 @@ def train_one_step(
             if args.enable_mtp_training:
                 forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
 
-            if batch["multimodal_train_inputs"] is not None:
-                forward_kwargs.update(batch["multimodal_train_inputs"])
+            if (x := batch["multimodal_train_inputs"]) is not None:
+                forward_kwargs.update(x)
 
             output_tensor = model(**forward_kwargs)
 
@@ -482,6 +483,10 @@ def train_one_step(
 
         check_mtp_only_grad(model, step_id)
 
+    # Dump backward tensors while gradients are still attached. The optimizer
+    # step and subsequent zero_grad release them.
+    dumper_phase_util.finalize(model)
+
     if not disable_optimizer and valid_step:
         # Update parameters.
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
@@ -495,8 +500,6 @@ def train_one_step(
         model_chunk.zero_grad_buffer()
     if not disable_optimizer:
         optimizer.zero_grad()
-
-    dumper_phase_util.finalize(model)
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced)
@@ -633,10 +636,10 @@ def train(
             tracker = MTPLossLoggingHelper.tracker
             if "values" in tracker:
                 values = tracker["values"]
-                if tracker.get("reduce_group") is not None:
-                    torch.distributed.all_reduce(values, group=tracker.get("reduce_group"))
-                if tracker.get("avg_group") is not None:
-                    torch.distributed.all_reduce(values, group=tracker["avg_group"], op=torch.distributed.ReduceOp.AVG)
+                if (x := tracker.get("reduce_group")) is not None:
+                    torch.distributed.all_reduce(values, group=x)
+                if (x := tracker.get("avg_group")) is not None:
+                    torch.distributed.all_reduce(values, group=x, op=torch.distributed.ReduceOp.AVG)
                 # here we assume only one mtp layer
                 mtp_losses = (tracker["values"] * mtp_loss_scale).item()
                 MTPLossLoggingHelper.clean_loss_in_tracker()
