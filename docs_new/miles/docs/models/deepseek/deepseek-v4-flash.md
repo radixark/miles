@@ -175,9 +175,7 @@ SGLANG_ARGS=(
 )
 ```
 
-Since [`radixark/miles#1310`](https://github.com/radixark/miles/pull/1310), R3 only adds `--use-rollout-routing-replay` — the miles router (`--use-miles-router`) is no longer enabled by the launcher; rollout goes through the SGLang router.
-
-The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `SGLANG_HEALTH_CHECK_TIMEOUT=120` (avoids false rollout health-check failures during long detokenizer gaps), `MILES_HACK_TRAIN_TORCH_DETERMINISTIC=1`, and `NCCL_ALGO=Ring`.
+The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `MILES_HACK_TRAIN_TORCH_DETERMINISTIC=1`, and `NCCL_ALGO=Ring`.
 
 On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 
