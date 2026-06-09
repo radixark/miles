@@ -16,6 +16,7 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
 )
+from miles.backends.megatron_utils.multi_lora_utils import is_multi_lora_enabled
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -52,7 +53,6 @@ class UpdateWeightFromTensor:
         """
         Compute param buckets, create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
         """
-        from .multi_lora_utils import is_multi_lora_enabled
 
         self.args = args
         self.model = model
