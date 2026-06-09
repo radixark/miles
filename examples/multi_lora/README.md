@@ -20,8 +20,8 @@ submit_schedule.sh              # companion: drives register/deregister
 run_schedule.py                 # schedule script invoked by submit_schedule.sh
 train_multi_lora.py             # trainer (used by both entrypoints)
 adapters/
-  gsm8k/adapter.yaml
-  dapo_math/adapter.yaml
+  gsm8k.yaml
+  dapo_math.yaml
 ```
 
 ## Provision (once)
