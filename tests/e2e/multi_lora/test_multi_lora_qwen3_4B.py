@@ -19,7 +19,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1200, suite="stage-c-multi-lora-8-gpu", num_gpus=8)
+register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["lora"])
 
 
 MODEL_NAME = "Qwen3-4B"
@@ -51,10 +51,10 @@ ADAPTER_CONFIGS = {
 
 
 def write_adapter_yamls():
+    ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
     for name, cfg in ADAPTER_CONFIGS.items():
-        d = ADAPTER_DIR / name
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "adapter.yaml").write_text(yaml.safe_dump({**cfg, "save": str(d)}))
+        save_dir = ADAPTER_DIR / name
+        (ADAPTER_DIR / f"{name}.yaml").write_text(yaml.safe_dump({**cfg, "save": str(save_dir)}))
 
 
 def prepare():
@@ -76,8 +76,8 @@ def execute():
         "--multi-lora-n-adapters 4 "
         "--multi-lora-idle-poll-s 5 "
         "--multi-lora-disable-service-mode "
-        f'--multi-lora-adapter "dapo_math" "{ADAPTER_DIR}/dapo_math/adapter.yaml" '
-        f'--multi-lora-adapter "gsm8k" "{ADAPTER_DIR}/gsm8k/adapter.yaml" '
+        f'--multi-lora-adapter "dapo_math" "{ADAPTER_DIR}/dapo_math.yaml" '
+        f'--multi-lora-adapter "gsm8k" "{ADAPTER_DIR}/gsm8k.yaml" '
         "--sglang-lora-backend triton "
     )
 
