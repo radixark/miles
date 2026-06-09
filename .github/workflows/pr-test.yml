@@ -113,7 +113,9 @@ jobs:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
-      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
@@ -130,7 +132,9 @@ jobs:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
-      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
@@ -152,7 +156,9 @@ jobs:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
-      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
@@ -174,7 +180,9 @@ jobs:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
-      (!failure() || contains(github.event.pull_request.labels.*.name, 'bypass-fastfail')) &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
