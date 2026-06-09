@@ -90,7 +90,6 @@ SGLANG_ARGS=(
    --sglang-moe-a2a-backend deepep             # DeepEP normal-mode dispatch
    --sglang-cuda-graph-max-bs 8                # see hang caveat below
    --sglang-mem-fraction-static 0.7            # Pro needs a larger dynamic buffer
-   --use-miles-router
 )
 ```
 
