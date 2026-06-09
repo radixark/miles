@@ -206,9 +206,7 @@ class MultiLoRAControllerImpl:
         if not os.path.exists(data_path):
             raise FileNotFoundError(f"Adapter '{name}': dataset path '{data_path}' does not exist")
         if not data_path.endswith((".jsonl", ".parquet")):
-            raise ValueError(
-                f"Adapter '{name}': dataset path '{data_path}' must be .jsonl or .parquet"
-            )
+            raise ValueError(f"Adapter '{name}': dataset path '{data_path}' must be .jsonl or .parquet")
         # Ensure no checkpoint path collisions
         new_save = Path(config.save).absolute()
         for other_name, other_config in self.configs.items():

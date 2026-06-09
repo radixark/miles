@@ -236,7 +236,9 @@ class UpdateWeightFromTensor:
         if self.is_multi_lora:
             self._send_multi_lora_params()
         elif self.is_lora:
-            lora_sync_chunk_count = 0
+            # SGLang's load_lora_adapter_from_tensors expects the full adapter in
+            # one call; drain the bridge's chunker so --update-weight-buffer-size
+            # only bounds the base path.
             accumulated_named_tensors: list = []
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="lora"
