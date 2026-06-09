@@ -44,7 +44,7 @@ Other flags: `--test` (append `-test` to the tag, e.g. `dev-test` — a single, 
 
 The only automated builder of `radixark/miles`. Two jobs:
 
-- **`check-upstream`** (schedule / `simulate_schedule` only) — fetches the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the same branches the Dockerfile builds (`SGLANG_BRANCH`, `MEGATRON_REPO`/`MEGATRON_BRANCH`) — compares to the SHAs cached from the last build, and sets `should_build=true` only if one moved. This is what stops the 12-hour cron from rebuilding an unchanged image.
+- **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the `yueming-yuan/miles-wheels` release it installs, so a rebuilt sgl-router or other wheel also triggers a build (the wheels are pinned by `WHEELS_TAG`, so re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled. This is what stops the 12-hour cron from rebuilding an unchanged image.
 - **`build-and-push`** (self-hosted runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
 
 `build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`.

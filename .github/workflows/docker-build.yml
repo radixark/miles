@@ -74,29 +74,42 @@ jobs:
           MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
             "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
 
+          # Check the miles-wheels release the image installs from (sgl-router +
+          # the other prebuilt wheels). Tracks the scheduled build's default tag
+          # cu130-x86_64-v0.5.12; bumping WHEELS_TAG is a Dockerfile change that
+          # already triggers a build via the push trigger. Asset re-uploads keep
+          # the tag's commit fixed, so fingerprint the asset list, not a SHA.
+          WHEELS_FP=$(curl -s \
+            "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/cu130-x86_64-v0.5.12" \
+            | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')")
+
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
+          echo "wheels FP:     ${WHEELS_FP}"
 
-          # Compare against last known SHAs stored in cache
+          # Compare against last known values stored in cache
           CACHE_FILE="last_upstream_shas.txt"
           if [ -f "$CACHE_FILE" ]; then
             LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
             LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
+            LAST_WHEELS=$(sed -n '3p' "$CACHE_FILE")
           else
             LAST_SGLANG=""
             LAST_MEGATRON=""
+            LAST_WHEELS=""
           fi
 
-          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ]; then
+          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_FP" != "$LAST_WHEELS" ]; then
             SHOULD_BUILD=true
             echo "Upstream change detected"
           else
             echo "No upstream changes"
           fi
 
-          # Save current SHAs for next run
+          # Save current values for next run
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
+          echo "${WHEELS_FP}" >> "$CACHE_FILE"
 
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
 
