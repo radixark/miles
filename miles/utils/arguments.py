@@ -1127,8 +1127,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--opd-top-k-strategy",
                 type=str,
-                choices=["only_stu", "only_tch", "intersection", "union", "union-intersection"],
-                default="only_stu",
+                choices=["only-student", "only-teacher", "intersection", "union", "xor"],
+                default="only-student",
                 help="Token set strategy for top-k OPD.",
             )
             parser.add_argument(

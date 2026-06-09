@@ -143,7 +143,7 @@ def execute():
             "--opd-type sglang "
             "--opd-kl-coef 1.0 "
             "--opd-log-prob-top-k 2 "
-            "--opd-top-k-strategy only_stu "
+            "--opd-top-k-strategy only-student "
             "--opd-reward-weight-mode student_p "
             "--use-kl-loss "
             "--kl-loss-coef 0.00 "

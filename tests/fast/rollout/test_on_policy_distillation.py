@@ -63,7 +63,7 @@ def _teacher_payload():
 
 
 def test_topk_only_student_uses_student_probability_weights():
-    reverse_kl = _compute_topk_reverse_kl(_args("only_stu"), _sample(), _teacher_payload())
+    reverse_kl = _compute_topk_reverse_kl(_args("only-student"), _sample(), _teacher_payload())
 
     expected_0 = 0.6 * math.log(0.6 / 0.3) + 0.4 * math.log(0.4 / 0.7)
     expected_1 = 0.7 * math.log(0.7 / 0.4) + 0.3 * math.log(0.3 / 0.6)
@@ -82,8 +82,8 @@ def test_topk_intersection_uses_overlap_only():
     )
 
 
-def test_topk_union_intersection_uses_symmetric_difference_without_normalization():
-    reverse_kl = _compute_topk_reverse_kl(_args("union-intersection", "none"), _sample(), _teacher_payload())
+def test_topk_xor_uses_symmetric_difference_without_normalization():
+    reverse_kl = _compute_topk_reverse_kl(_args("xor", "none"), _sample(), _teacher_payload())
 
     expected_0 = math.log(0.6 / 0.3) + math.log(0.2 / 0.5)
     expected_1 = math.log(0.3 / 0.6) + math.log(0.1 / 0.2)

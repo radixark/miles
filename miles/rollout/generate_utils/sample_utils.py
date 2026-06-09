@@ -3,6 +3,8 @@ from dataclasses import fields
 
 from miles.utils.types import Sample
 
+_OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
+
 
 def merge_samples(samples: list[Sample], tokenizer) -> Sample:
     acc = samples[0]
@@ -36,6 +38,45 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         av = av if av is not None else [0.0] * a.response_length
         bv = bv if bv is not None else [0.0] * b.response_length
         return av + [0.0] * obs_len + bv
+
+    def _pop_opd_student_top_logprobs(metadata):
+        if metadata is None:
+            return None, None
+        metadata = deepcopy(metadata)
+        top_logprobs = metadata.pop(_OPD_STUDENT_TOP_LOGPROBS_KEY, None)
+        return metadata, top_logprobs
+
+    def _merge_opd_student_top_logprobs(av, bv):
+        if av is None and bv is None:
+            return None
+        assert av is not None and bv is not None, (
+            f"{_OPD_STUDENT_TOP_LOGPROBS_KEY} must be present on both samples when merging top-k OPD metadata: "
+            f"a has {av is not None}, b has {bv is not None}"
+        )
+        assert len(av) == a.response_length, (
+            f"{_OPD_STUDENT_TOP_LOGPROBS_KEY} length mismatch: "
+            f"a.{_OPD_STUDENT_TOP_LOGPROBS_KEY} has length {len(av)}, "
+            f"a.response_length={a.response_length}"
+        )
+        assert len(bv) == b.response_length, (
+            f"{_OPD_STUDENT_TOP_LOGPROBS_KEY} length mismatch: "
+            f"b.{_OPD_STUDENT_TOP_LOGPROBS_KEY} has length {len(bv)}, "
+            f"b.response_length={b.response_length}"
+        )
+        return av + [[] for _ in range(obs_len)] + bv
+
+    def _merge_metadata():
+        a_metadata, a_top_logprobs = _pop_opd_student_top_logprobs(a.metadata)
+        b_metadata, b_top_logprobs = _pop_opd_student_top_logprobs(b.metadata)
+        assert a_metadata == b_metadata, f"metadata mismatch: a.metadata={a.metadata}, b.metadata={b.metadata}"
+
+        merged_metadata = deepcopy(a_metadata)
+        merged_top_logprobs = _merge_opd_student_top_logprobs(a_top_logprobs, b_top_logprobs)
+        if merged_top_logprobs is not None:
+            if merged_metadata is None:
+                merged_metadata = {}
+            merged_metadata[_OPD_STUDENT_TOP_LOGPROBS_KEY] = merged_top_logprobs
+        return merged_metadata
 
     _fill_defaults(a)
     _fill_defaults(b)
@@ -78,7 +119,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             rollout_indexer_topk=b.rollout_indexer_topk,
             remove_sample=_merge_equal_value("remove_sample"),
             status=b.status,
-            metadata=_merge_equal_value("metadata"),
+            metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
             train_metadata=_merge_equal_value("train_metadata"),
             session_id=_merge_equal_value("session_id"),

@@ -10,7 +10,7 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 | `--opd-type` | Type of OPD: `sglang` or `megatron`. Required when `--use-opd` is set. |
 | `--opd-kl-coef` | OPD KL penalty coefficient (default: 1.0). Controls the weight of the distillation signal relative to the RL advantage. |
 | `--opd-log-prob-top-k` | Number of top-k tokens retained for the Rethinking OPD token reward. `0` uses sampled-token OPD; `16` matches the paper recipe default. |
-| `--opd-top-k-strategy` | Top-k token set strategy: `only_stu`, `only_tch`, `intersection`, `union`, or `union-intersection`. |
+| `--opd-top-k-strategy` | Top-k token set strategy: `only-student`, `only-teacher`, `intersection`, `union`, or `xor`. |
 | `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
@@ -35,11 +35,11 @@ The token set is controlled by `--opd-top-k-strategy`:
 
 | Strategy | Token set |
 |----------|-----------|
-| `only_stu` | Student top-k tokens, with teacher logprobs queried for those IDs. |
-| `only_tch` | Teacher top-k tokens, with student logprobs queried for those IDs. |
+| `only-student` | Student top-k tokens, with teacher logprobs queried for those IDs. |
+| `only-teacher` | Teacher top-k tokens, with student logprobs queried for those IDs. |
 | `intersection` | Tokens appearing in both top-k sets. |
 | `union` | Tokens appearing in either top-k set, with duplicates removed. |
-| `union-intersection` | Tokens appearing in exactly one top-k set. |
+| `xor` | Tokens appearing in exactly one top-k set. |
 
 `--opd-reward-weight-mode` controls whether each selected token is weighted by student probability, teacher probability, or uniformly. For compatibility, `--opd-log-prob-top-k=0` keeps the original sampled-token OPD path.
 
@@ -64,7 +64,7 @@ The teacher runs on an external SGLang server. Teacher log-probs are obtained du
 --opd-type sglang
 --opd-kl-coef 1.0
 --opd-log-prob-top-k 16
---opd-top-k-strategy only_stu
+--opd-top-k-strategy only-student
 --opd-reward-weight-mode student_p
 --custom-rm-path miles.rollout.on_policy_distillation.reward_func
 --custom-reward-post-process-path miles.rollout.on_policy_distillation.post_process_rewards

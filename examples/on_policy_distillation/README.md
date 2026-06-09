@@ -8,7 +8,7 @@ Rethinking OPD top-k recipe there so we do not maintain two copies.
 This directory contains runnable examples:
 
 - `run-qwen3-8B-opd.sh`: SGLang teacher server OPD. This script enables
-  Rethinking OPD with `--opd-log-prob-top-k 16`, `--opd-top-k-strategy only_stu`,
+  Rethinking OPD with `--opd-log-prob-top-k 16`, `--opd-top-k-strategy only-student`,
   and `--opd-reward-weight-mode student_p`.
 - `run-qwen3-8B-opd-megatron.sh`: Megatron-loaded teacher OPD.
 
