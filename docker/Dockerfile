@@ -1,10 +1,18 @@
+# Two ways to build this image:
+#
+# (a) Recommended -- docker/build.py (single source of truth for build-args):
+#       python docker/build.py --cuda 130 --arch x86   ->  radixark/miles:dev            (default)
+#       python docker/build.py --cuda 129 --arch x86   ->  radixark/miles:dev-cu12       (CUDA 12.9 legacy)
+#     build.py does not cover aarch64 yet -- use (b) for the arm64 variant.
+#
+# (b) Or docker build directly, passing build-args per variant:
 # 1. radixark/miles:dev  (x86_64, CUDA 13) — default
 #    use default settings
 #
 # 2. radixark/miles:dev-cu13-arm64  (aarch64, CUDA 13 / GB200 & GB300)
 #    build-arg:WHEELS_TAG=cu130-aarch64-v0.5.12 \
 #
-# 3. radixark/miles:dev-cu129-x86  (x86_64, CUDA 12.9) — legacy fallback
+# 3. radixark/miles:dev-cu12  (x86_64, CUDA 12.9) — legacy fallback
 #    build-arg:ENABLE_CUDA_13=0 \
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu129 \
 #    build-arg:WHEELS_TAG=cu129-x86_64-v0.5.12 \
