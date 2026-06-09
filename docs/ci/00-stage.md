@@ -27,13 +27,13 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (e.g. `stage-c-4-gpu-h200`): `tier
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | `resolve-ci-image`, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 2 | `resolve-ci-image`, `stage-a-cpu` |
 
-`tier a` (CPU fast) gates the GPU fleet; the GPU stages (`b` / `c`) all depend only on `stage-a-cpu` and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline.
+`tier a` (CPU fast) gates the GPU fleet after `resolve-ci-image`; the GPU stages (`b` / `c`) all depend on `resolve-ci-image` and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline.
 
 ## What each stage does
 
 **Image resolution (`resolve-ci-image`).** Before the GPU stages, a small `ubuntu-latest` job resolves the container image: it reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. Every GPU stage uses this as its `container_image`. Distinct from this, the **`run-ci-image` label** (alongside `run-ci-all`, and any `workflow_dispatch`) makes each stage add `--match-all-labels`, running the full suite regardless of per-test labels — this is how you validate a PR that bumps the image.
 
-**Dependencies / gating.** The job graph is `resolve-ci-image` → `stage-a-cpu` → all GPU stages (in parallel). GPU stages gate on `stage-a-cpu` with `always() && !failure() && !cancelled()`, so a CPU-test failure short-circuits the expensive GPU fleet, while a *skipped* CPU stage still lets the GPU stages proceed.
+**Dependencies / gating.** The job graph is `resolve-ci-image` → `stage-a-cpu` → all GPU stages (in parallel). GPU stages require `resolve-ci-image` to succeed; by default they also require `stage-a-cpu` to succeed, so a CPU-test failure short-circuits the expensive GPU fleet. The `bypass-fastfail` PR label relaxes only the `stage-a-cpu` failure gate and passes `--continue-on-error` to each stage; it does not bypass `resolve-ci-image`.
 
 **Runner selection.** GPU stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages set `cpu_runner: true` and run on GitHub-hosted `ubuntu-latest` instead, so they don't occupy GPU-fleet slots.
 
