@@ -29,9 +29,9 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 ### 3.1 One-line launch
 
 ```bash
-#   H200 / B200 (cu129 x86) -> radixark/miles:deepseek-v4
+#   H200 / B200 (cu129 x86) -> radixark/miles:latest
 #   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
-docker pull radixark/miles:deepseek-v4
+docker pull radixark/miles:latest
 
 # Production Pro run, inside the container
 cd /root/miles
@@ -48,10 +48,10 @@ The `full-train` subcommand chains `prepare-download → prepare-single → prep
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts |
-| `--model-local-dir` | `/root/local_data` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk |
+| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk (set it when `--model-dir` is on shared/remote storage) |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
-TBD — Pro-specific overrides or env-var notes.
+Pro uses the same launcher as V4-Flash, so every option above can also be preconfigured via `MILES_SCRIPT_<FIELD_NAME_UPPER>` env vars (precedence: CLI flag > env var > built-in default) — see [V4-Flash §3.2](/miles/docs/models/deepseek/deepseek-v4-flash#32-launcher-path-defaults) for details.
 
 ## 4. Script breakdown
 
