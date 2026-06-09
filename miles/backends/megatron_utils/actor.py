@@ -182,15 +182,14 @@ class MegatronTrainRayActor(TrainRayActor):
                 update_weight_cls = UpdateWeightFromDistributed
             else:
                 update_weight_cls = UpdateWeightP2P
-        weight_updater_kwargs = dict(
+        self.weight_updater = update_weight_cls(
+            self.args,
+            self.model,
             weights_getter=lambda: self.weights_backuper.get("actor"),
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=is_lora_enabled(args),
         )
-        if update_weight_cls is UpdateWeightFromTensor:
-            weight_updater_kwargs["is_multi_lora"] = is_multi_lora_enabled(args)
-        self.weight_updater = update_weight_cls(self.args, self.model, **weight_updater_kwargs)
 
         # empty cache after initialization
         clear_memory()

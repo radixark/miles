@@ -48,11 +48,12 @@ class UpdateWeightFromTensor:
         model_name: str,
         quantization_config: dict[str, int | str | list[str]] | None,
         is_lora: bool = False,
-        is_multi_lora: bool = False,
     ) -> None:
         """
         Compute param buckets, create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
         """
+        from .multi_lora_utils import is_multi_lora_enabled
+
         self.args = args
         self.model = model
         self.weights_getter = weights_getter
@@ -60,7 +61,7 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.is_lora = is_lora
-        self.is_multi_lora = is_multi_lora
+        self.is_multi_lora = is_multi_lora_enabled(args)
         self._lora_loaded = False
         self._lora_name = LORA_ADAPTER_NAME
 
