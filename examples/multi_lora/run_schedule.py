@@ -51,7 +51,7 @@ async def run_schedule(controller, multi_lora_dir: Path) -> None:
     for step in SCHEDULE:
         print(f"[schedule] >>> {step.name}")
         for name in step.register:
-            await controller.register_adapter.remote(name, str(multi_lora_dir / name / "adapter.yaml"))
+            await controller.register_adapter.remote(name, str(multi_lora_dir / f"{name}.yaml"))
             print(f"[schedule] registered {name}")
         for name in step.deregister:
             await controller.deregister_adapter.remote(name)
@@ -94,7 +94,7 @@ if __name__ == "__main__":
         "--multi-lora-dir",
         type=str,
         required=True,
-        help="Path to directory containing adapter subdirectories with adapter.yaml files",
+        help="Path to directory containing per-adapter <name>.yaml files",
     )
     parser.add_argument("--ray-address", type=str, default="auto", help="Ray cluster address (default: auto)")
     args = parser.parse_args()

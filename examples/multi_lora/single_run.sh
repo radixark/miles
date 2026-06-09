@@ -36,8 +36,8 @@ ray job submit --address="http://127.0.0.1:8265" \
    --target-modules "all-linear" \
    --multi-lora-n-adapters 4 \
    --multi-lora-idle-poll-s 5 \
-   --multi-lora-adapter "dapo_math" "examples/multi_lora/adapters/dapo_math/adapter.yaml" \
-   --multi-lora-adapter "gsm8k" "examples/multi_lora/adapters/gsm8k/adapter.yaml" \
+   --multi-lora-adapter "dapo_math" "examples/multi_lora/adapters/dapo_math.yaml" \
+   --multi-lora-adapter "gsm8k" "examples/multi_lora/adapters/gsm8k.yaml" \
    --multi-lora-disable-service-mode \
    --sglang-lora-backend triton \
    \
