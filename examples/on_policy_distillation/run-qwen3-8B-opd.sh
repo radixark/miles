@@ -102,7 +102,10 @@ PERF_ARGS=(
 )
 
 GRPO_ARGS=(
-   --advantage-estimator on_policy_distillation
+   --advantage-estimator grpo
+   --use-opd
+   --opd-type sglang
+   --opd-kl-coef 1.0
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
@@ -181,10 +184,6 @@ pkill -9 python
 sleep 3
 pkill -9 ray
 pkill -9 python
-
-
-
-
 
 
 

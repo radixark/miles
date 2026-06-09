@@ -415,6 +415,7 @@ def train_one_step(
                 "returns",
                 "rollout_log_probs",
                 "max_seq_lens",
+                "opd_reverse_kl",
                 "adapter_slots",
             ],
             args.data_pad_size_multiplier,

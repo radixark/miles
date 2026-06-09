@@ -32,10 +32,8 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 ### 3.1 One-line launch
 
 ```bash
-# Pull the image matching your cluster:
-#   H200 / B200 (cu129 x86) -> radixark/miles:deepseek-v4
-#   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
-docker pull radixark/miles:deepseek-v4
+# Pull the dev image:
+docker pull radixark/miles:dev
 
 # Production Pro run, inside the container
 cd /root/miles

@@ -261,6 +261,64 @@ class TestMultiTurnPrefixChain:
         with pytest.raises(AssertionError, match="b.tokens must start with a.tokens"):
             merge_samples(samples, tok)
 
+    def test_two_turn_merge_propagates_teacher_log_probs(self):
+        """OPD teacher_log_probs merge like rollout_log_probs: per-turn values
+        concatenated with zeros over the injected observation span."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11], output_log_probs=[-0.1, -0.2]),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+                output_token_ids=[30, 31],
+                output_log_probs=[-0.3, -0.4],
+            ),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        # OPD attaches per-response-token teacher log-probs to each turn's sample.
+        samples[0].teacher_log_probs = [-1.0, -1.1]
+        samples[1].teacher_log_probs = [-1.2, -1.3]
+
+        merged = merge_samples(samples, tok)
+
+        # resp1 (2) + obs (2 zeros) + resp2 (2)
+        assert merged.teacher_log_probs == [-1.0, -1.1, 0.0, 0.0, -1.2, -1.3]
+        assert len(merged.teacher_log_probs) == merged.response_length
+        merged.validate()  # the new teacher_log_probs length assertion must hold
+
+    def test_two_turn_merge_teacher_log_probs_none_stays_none(self):
+        """Non-OPD runs leave teacher_log_probs unset; merge must keep it None."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11]),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 11, 20, 21], output_token_ids=[30, 31]),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        merged = merge_samples(samples, tok)
+
+        assert merged.teacher_log_probs is None
+
+    def test_merge_raises_on_teacher_log_probs_length_mismatch(self):
+        """validate() guards teacher_log_probs length (surfaced via merge_samples)."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11]),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 11, 20, 21], output_token_ids=[30, 31]),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        samples[0].teacher_log_probs = [-1.0]  # length 1 != response_length 2
+
+        with pytest.raises(AssertionError, match="teacher_log_probs length"):
+            merge_samples(samples, tok)
+
 
 # ── test: TITO trailing token trimming ────────────────────────────────
 

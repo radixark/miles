@@ -1,17 +1,15 @@
-# 1. radixark/miles:dev (x86 CUDA 12)
+# 1. radixark/miles:dev  (x86_64, CUDA 13) — default
 #    use default settings
 #
-# 2. radixark/miles:dev-cu13-arm64 (arm64 CUDA 13 / GB300)
-#    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu130 \
-#    build-arg:WHEELS_TAG=cu130-aarch64 \
+# 2. radixark/miles:dev-cu13-arm64  (aarch64, CUDA 13 / GB200 & GB300)
+#    build-arg:WHEELS_TAG=cu130-aarch64-v0.5.12 \
 #
-# 3. radixark/miles:dev-cu13-x86 (x86 CUDA 13 / B300, sm_103a)
-#    build-arg:ENABLE_CUDA_13=1 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu130 \
-#    build-arg:WHEELS_TAG=cu130-x86_64 \
+# 3. radixark/miles:dev-cu129-x86  (x86_64, CUDA 12.9) — legacy fallback
+#    build-arg:ENABLE_CUDA_13=0 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu129 \
+#    build-arg:WHEELS_TAG=cu129-x86_64-v0.5.12 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.12-cu129
+ARG SGLANG_IMAGE_TAG=v0.5.12
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -22,10 +20,10 @@ ARG SGLANG_COMMIT=""
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
 
-ARG ENABLE_CUDA_13=0
+ARG ENABLE_CUDA_13=1
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
-ARG WHEELS_TAG=cu129-x86_64-v0.5.12
+ARG WHEELS_TAG=cu130-x86_64-v0.5.12
 
 # ======================================== Setup =============================================
 
@@ -73,7 +71,10 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
 RUN pip install flash-linear-attention==0.4.2
-RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
+# required for DeepSeek V4
+RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
+RUN pip install --no-deps tile_kernels==1.0.0
+RUN pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation
@@ -187,3 +188,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     fi
 
 RUN rm -rf /tmp/wheels
+
+# cu130 sglang base ships rust at /root/.cargo/bin but not on PATH; a later CI
+# step calls `rustc` directly. Last so cached layers above stay valid.
+ENV PATH="/root/.cargo/bin:${PATH}"

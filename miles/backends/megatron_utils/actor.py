@@ -59,10 +59,11 @@ class MegatronTrainRayActor(TrainRayActor):
         args: Namespace,
         role: str,
         with_ref: bool = False,
+        with_opd_teacher: bool = False,
     ) -> int | None:
         monkey_patch_torch_dist()
 
-        super().init(args, role, with_ref)
+        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -158,6 +159,10 @@ class MegatronTrainRayActor(TrainRayActor):
         if with_ref:
             self.load_other_checkpoint("ref", args.ref_load)
 
+        # Load teacher model for Megatron-based on-policy distillation
+        if with_opd_teacher:
+            self.load_other_checkpoint("teacher", args.opd_teacher_load)
+
         if self.args.keep_old_actor:
             # Load old_actor checkpoint
             self.load_other_checkpoint("old_actor", args.load)
@@ -234,7 +239,7 @@ class MegatronTrainRayActor(TrainRayActor):
     @property
     def _enable_weight_backup(self) -> bool:
         """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
-        return self.with_ref or self.args.keep_old_actor or self.args.colocate
+        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor or self.args.colocate
 
     def _switch_model(self, target_tag: str) -> None:
         if not self._enable_weight_backup:
@@ -341,6 +346,17 @@ class MegatronTrainRayActor(TrainRayActor):
                             data_iterator,
                             num_microbatches,
                             store_prefix="ref_",
+                        )
+                    )
+                # Forward teacher model to get teacher_log_probs for Megatron-based OPD
+                if "teacher" in self.weights_backuper.backup_tags:
+                    self._set_replay_stage("fallthrough")
+                    self._switch_model("teacher")
+                    rollout_data.update(
+                        self.compute_log_prob(
+                            data_iterator,
+                            num_microbatches,
+                            store_prefix="teacher_",
                         )
                     )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
@@ -567,9 +583,15 @@ class MegatronTrainRayActor(TrainRayActor):
         self.args.no_load_rng = True
         self.args.finetune = True
 
+        # load_checkpoint reads self.args.ckpt_step to pick which iteration to load.
+        # Temporarily override it for ref/teacher loads, then restore after the load below.
         if model_tag == "ref" and self.args.ref_ckpt_step is not None:
             old_ckpt_step = self.args.ckpt_step
             self.args.ckpt_step = self.args.ref_ckpt_step
+
+        if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
+            old_ckpt_step = self.args.ckpt_step
+            self.args.ckpt_step = self.args.opd_teacher_ckpt_step
 
         _, _ = load_checkpoint(
             self.model,
@@ -581,6 +603,9 @@ class MegatronTrainRayActor(TrainRayActor):
         self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune = old_args
 
         if model_tag == "ref" and self.args.ref_ckpt_step is not None:
+            self.args.ckpt_step = old_ckpt_step
+
+        if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
             self.args.ckpt_step = old_ckpt_step
 
         self.weights_backuper.backup(model_tag)

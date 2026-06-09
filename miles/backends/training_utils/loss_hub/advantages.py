@@ -22,7 +22,6 @@ def compute_advantages(
     total_lengths: list[int],
     response_lengths: list[int],
     values: list[torch.Tensor] | None = None,
-    teacher_log_probs: list[torch.Tensor] | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Dispatch to the configured advantage estimator.
 
@@ -70,20 +69,6 @@ def compute_advantages(
             loss_masks=loss_masks,
             kl_coef=args.kl_coef,
         )
-        returns = advantages
-
-    elif args.advantage_estimator == "on_policy_distillation":
-        assert teacher_log_probs is not None, "teacher_log_probs required for on_policy_distillation"
-        device = log_probs[0].device
-        teacher_log_probs = [t_log_prob.to(device=device) for t_log_prob in teacher_log_probs]
-        teacher_log_probs = [
-            t_log_prob[-response_length:]
-            for t_log_prob, response_length in zip(teacher_log_probs, response_lengths, strict=False)
-        ]
-        advantages = [
-            teacher_log_prob - student_log_prob
-            for teacher_log_prob, student_log_prob in zip(teacher_log_probs, log_probs, strict=False)
-        ]
         returns = advantages
 
     else:

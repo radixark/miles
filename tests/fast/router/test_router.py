@@ -18,7 +18,6 @@ def make_router_args(router_port: int, **overrides) -> Namespace:
         miles_router_health_check_failure_threshold=3,
         miles_router_max_connections=100,
         miles_router_timeout=None,
-        miles_router_middleware_paths=[],
     )
     defaults.update(overrides)
     return Namespace(**defaults)

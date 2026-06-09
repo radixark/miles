@@ -7,6 +7,7 @@ from glob import glob
 import torch
 import triton
 import triton.language as tl
+from param_name_remap import get_param_name_remap
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
@@ -49,7 +50,19 @@ def main(fp8_path, bf16_path):
     model_index_file = os.path.join(fp8_path, "model.safetensors.index.json")
     with open(model_index_file) as f:
         model_index = json.load(f)
-    weight_map = model_index["weight_map"]
+    weight_map_raw = model_index["weight_map"]
+
+    remap = get_param_name_remap(os.path.join(fp8_path, "config.json"), weight_map_raw)
+    weight_map_renamed = {}
+    raw_name_by_renamed = {}
+    for raw_name, file_name in weight_map_raw.items():
+        renamed_name = remap(raw_name)
+        assert renamed_name not in raw_name_by_renamed, (
+            f"Remapped tensor name collision: {renamed_name} from "
+            f"{raw_name} and {raw_name_by_renamed[renamed_name]}"
+        )
+        weight_map_renamed[renamed_name] = file_name
+        raw_name_by_renamed[renamed_name] = raw_name
 
     # Cache for loaded safetensor files
     loaded_files = {}
@@ -57,11 +70,13 @@ def main(fp8_path, bf16_path):
 
     # Helper function to get tensor from the correct file
     def get_tensor(tensor_name):
-        file_name = weight_map[tensor_name]
+        raw_tensor_name = raw_name_by_renamed[tensor_name]
+        file_name = weight_map_raw[raw_tensor_name]
         if file_name not in loaded_files:
             file_path = os.path.join(fp8_path, file_name)
             loaded_files[file_name] = load_file(file_path, device="cuda")
-        return loaded_files[file_name][tensor_name]
+
+        return loaded_files[file_name][raw_tensor_name]
 
     safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
     safetensor_files.sort()
@@ -72,7 +87,9 @@ def main(fp8_path, bf16_path):
         loaded_files[file_name] = current_state_dict
 
         new_state_dict = {}
-        for weight_name, weight in current_state_dict.items():
+        for weight_name_raw, weight in current_state_dict.items():
+            weight_name = remap(weight_name_raw)
+
             if weight_name.endswith("_scale_inv"):
                 continue
             elif weight.element_size() == 1:  # FP8 weight
@@ -101,10 +118,10 @@ def main(fp8_path, bf16_path):
     new_model_index_file = os.path.join(bf16_path, "model.safetensors.index.json")
     for weight_name in fp8_weight_names:
         scale_inv_name = f"{weight_name}_scale_inv"
-        if scale_inv_name in weight_map:
-            weight_map.pop(scale_inv_name)
+        if scale_inv_name in weight_map_renamed:
+            weight_map_renamed.pop(scale_inv_name)
     with open(new_model_index_file, "w") as f:
-        json.dump({"metadata": {}, "weight_map": weight_map}, f, indent=2)
+        json.dump({"metadata": {}, "weight_map": weight_map_renamed}, f, indent=2)
 
 
 if __name__ == "__main__":
