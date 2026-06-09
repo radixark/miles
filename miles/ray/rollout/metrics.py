@@ -51,6 +51,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
 
     return log_dict
 
+
 def _compute_per_adapter_metrics(args, samples: list[Sample]) -> dict:
     """Compute reward and response length metrics grouped by adapter name."""
     by_adapter = group_by(samples, lambda s: s.adapter.name if s.adapter else None)
