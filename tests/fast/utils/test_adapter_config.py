@@ -71,17 +71,18 @@ class TestParseAdapterYaml:
         assert cfg.num_epoch == 3
         assert cfg.num_row == 100
 
-    def test_dir_explicit(self, tmp_path):
-        path = write_yaml(tmp_path / "adapter.yaml", {**MINIMAL_YAML, "dir": "/some/place"})
+    def test_save_explicit(self, tmp_path):
+        path = write_yaml(tmp_path / "adapter.yaml", {**MINIMAL_YAML, "save": "/some/place"})
         cfg = parse_adapter_yaml(path)
-        assert Path(cfg.dir) == Path("/some/place")
+        assert Path(cfg.save) == Path("/some/place")
 
-    @pytest.mark.parametrize("dir_value", [None, ""])
-    def test_dir_falls_back_to_parent(self, tmp_path, dir_value):
-        raw = MINIMAL_YAML if dir_value is None else {**MINIMAL_YAML, "dir": dir_value}
+    @pytest.mark.parametrize("save_value", [None, ""])
+    def test_save_omitted_yields_none(self, tmp_path, save_value):
+        """Parser leaves save unset; the controller resolves the default."""
+        raw = MINIMAL_YAML if save_value is None else {**MINIMAL_YAML, "save": save_value}
         path = write_yaml(tmp_path / "adapter.yaml", raw)
         cfg = parse_adapter_yaml(path)
-        assert Path(cfg.dir) == tmp_path
+        assert cfg.save is None
 
     def test_missing_data_raises(self, tmp_path):
         bad = {k: v for k, v in MINIMAL_YAML.items() if k != "data"}
@@ -109,7 +110,7 @@ class TestAdapterConfigValidation:
             rank=8,
             alpha=16,
             data="/d",
-            dir="/x",
+            save="/x",
             input_key="text",
             label_key="label",
             rm_type="math",

@@ -54,7 +54,7 @@ def write_adapter_yamls():
     for name, cfg in ADAPTER_CONFIGS.items():
         d = ADAPTER_DIR / name
         d.mkdir(parents=True, exist_ok=True)
-        (d / "adapter.yaml").write_text(yaml.safe_dump({**cfg, "dir": str(d)}))
+        (d / "adapter.yaml").write_text(yaml.safe_dump({**cfg, "save": str(d)}))
 
 
 def prepare():

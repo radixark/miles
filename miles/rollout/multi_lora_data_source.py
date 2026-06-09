@@ -76,8 +76,8 @@ class MultiLoRADataSource(DataSource):
         adapter_args.metadata_key = config.metadata_key or self.args.metadata_key
 
         # Checkpointing
-        adapter_args.save = config.dir or self.args.save
-        adapter_args.load = config.dir or self.args.load
+        adapter_args.save = config.save or self.args.save
+        adapter_args.load = config.save or self.args.load
         adapter_args.start_rollout_id = steps.get(name, 0)
 
         return RolloutDataSource(adapter_args)

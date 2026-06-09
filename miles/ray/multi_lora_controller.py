@@ -165,6 +165,14 @@ class MultiLoRAControllerImpl:
             config = dataclasses.replace(config, rank=self.max_rank)
         if config.alpha is None:
             config = dataclasses.replace(config, alpha=self.default_alpha)
+        if config.save is None:
+            save_root = getattr(self.args, "save", None)
+            if not save_root:
+                raise ValueError(
+                    f"Adapter '{name}': config has no 'save' dir and no run save dir "
+                    f"(args.save) is set to derive a default from"
+                )
+            config = dataclasses.replace(config, save=Path(save_root) / name)
 
         # Validate before committing so a rejected register leaves no trace.
         self._validate_register(name, config)
@@ -172,7 +180,7 @@ class MultiLoRAControllerImpl:
         # ----- Commit -----
         # NOTE: for now, this is a unified directory that contains both rollout + model checkpoint
         # save data
-        Path(config.dir).mkdir(parents=True, exist_ok=True)
+        Path(config.save).mkdir(parents=True, exist_ok=True)
 
         slot = min(self.free_slots)
         self.free_slots.remove(slot)
@@ -202,11 +210,11 @@ class MultiLoRAControllerImpl:
                 f"Adapter '{name}': dataset path '{data_path}' must be .jsonl or .parquet"
             )
         # Ensure no checkpoint path collisions
-        new_dir = Path(config.dir).absolute()
+        new_save = Path(config.save).absolute()
         for other_name, other_config in self.configs.items():
-            if Path(other_config.dir).absolute() == new_dir:
+            if Path(other_config.save).absolute() == new_save:
                 raise ValueError(
-                    f"Adapter '{name}': dir '{config.dir}' is already used by registered "
+                    f"Adapter '{name}': save dir '{config.save}' is already used by registered "
                     f"adapter '{other_name}'; each adapter needs its own directory"
                 )
 

@@ -131,7 +131,7 @@ def save_multi_lora_checkpoints(
 
     Layout (per adapter)::
 
-        {adapter.dir}/checkpoints/step_{iteration}/
+        {adapter.save}/checkpoints/step_{iteration}/
         ├── adapter_megatron_tp{tp}_pp{pp}.pt   ← per-rank shard, fast resume
         ├── adapter_model.safetensors           ← gathered HF, inference / external
         └── adapter_config.json                 ← HF PEFT metadata (r, alpha, ...)
@@ -162,8 +162,8 @@ def save_multi_lora_checkpoints(
         log_prefix = f"[multilora] ({adapter_name})"
         iteration = adapter_steps[adapter_name]
 
-        final_dir = config.dir / "checkpoints" / f"step_{iteration}"
-        tmp_dir = config.dir / "checkpoints" / f"_tmp_step_{iteration}"
+        final_dir = config.save / "checkpoints" / f"step_{iteration}"
+        tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
         if is_dp_rank_0:
             tmp_dir.mkdir(parents=True, exist_ok=True)
         if dist.is_initialized():
@@ -246,7 +246,7 @@ def _register_adapter(adapter: RegisteredAdapter, model) -> None:
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
 
-    ckpt_root = config.dir / "checkpoints"
+    ckpt_root = config.save / "checkpoints"
     ckpt, step = find_latest_checkpoint(ckpt_root)
 
     if is_megatron_main_rank():
