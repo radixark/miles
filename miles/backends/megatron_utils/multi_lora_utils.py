@@ -1,4 +1,3 @@
-import dataclasses
 import json
 import logging
 import os
@@ -46,120 +45,6 @@ def create_multi_lora(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
-
-
-def build_multi_lora_model(args: Namespace):
-    """Build Megatron model with MultiLoRA layers via megatron-bridge.
-
-    Returns DDP-wrapped model chunks. Does NOT register adapters or load checkpoints —
-    that happens after the optimizer is created.
-    """
-    from megatron.bridge import AutoBridge
-    from megatron.bridge.training.config import DistributedDataParallelConfig
-    from transformers import AutoConfig
-
-    from miles.backends.megatron_utils.bridge_lora_helpers import _make_value_model_hook
-
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-    provider = bridge.to_megatron_provider(load_weights=False)
-
-    provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-    provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-    provider.expert_model_parallel_size = args.expert_model_parallel_size
-    provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-    provider.sequence_parallel = args.sequence_parallel
-    provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
-    provider.context_parallel_size = args.context_parallel_size
-    provider.variable_seq_lengths = True
-    provider.moe_token_dispatcher_type = "alltoall"
-    provider.moe_router_load_balancing_type = "none"
-    provider.finalize()
-
-    multi_lora = create_multi_lora(args)
-
-    def apply_hook(model_chunks):
-        transformed = multi_lora(model_chunks, training=True)
-        multi_lora.set_params_to_save(transformed)
-        return transformed
-
-    provider.register_pre_wrap_hook(apply_hook)
-
-    is_value_model = (
-        "ForTokenClassification" in hf_config.architectures[0]
-        or "ForSequenceClassification" in hf_config.architectures[0]
-    )
-    if is_value_model:
-        hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
-        provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
-
-    ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=True)
-    ddp_config.finalize()
-
-    if args.offload_train:
-        from miles.backends.megatron_utils.lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
-
-        patch_param_grad_buffer_for_colocate_mode_lora()
-
-    model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
-    return model, multi_lora
-
-
-def initialize_multi_lora_model_and_optimizer(
-    args: Namespace,
-    role: str = "actor",
-):
-    from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
-
-    from miles.backends.megatron_utils.checkpoint import load_checkpoint
-    from miles.backends.megatron_utils.ci_utils import check_model_hashes, check_peak_gpu_memory_after_load
-    from miles.backends.megatron_utils.model import get_optimizer_param_scheduler
-    from miles.utils.memory_utils import clear_memory
-
-    if torch.version.hip:
-        import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
-
-        from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
-
-        filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
-
-    model, multi_lora = build_multi_lora_model(args)
-    model[0].role = role
-
-    kwargs = {}
-    for f in dataclasses.fields(OptimizerConfig):
-        if hasattr(args, f.name):
-            kwargs[f.name] = getattr(args, f.name)
-    config = OptimizerConfig(**kwargs)
-    config.timers = None
-    optimizer = get_megatron_optimizer(
-        config=config,
-        model_chunks=model,
-        use_gloo_process_groups=args.enable_gloo_process_groups,
-    )
-    opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
-
-    # Hide adapter params so the bridge's conversion-task walk doesn't see them
-    # while loading the base checkpoint.
-    from megatron.bridge.peft.multi_lora_layers import hide_adapters
-
-    clear_memory()
-    with hide_adapters(model):
-        iteration, _ = load_checkpoint(
-            model,
-            optimizer,
-            opt_param_scheduler,
-            checkpointing_context={},
-            skip_load_to_model_and_opt=False,
-        )
-    check_peak_gpu_memory_after_load(args)
-    clear_memory()
-    check_model_hashes(args, model, iteration)
-    opt_param_scheduler.step(increment=iteration * args.global_batch_size)
-
-    load_pending_adapters(args, model, optimizer)
-
-    return model, optimizer, opt_param_scheduler, iteration
 
 
 def all_megatron_checkpoints_exist(step_dir: Path, tp_size, pp_size) -> bool:
@@ -246,7 +131,7 @@ def save_multi_lora_checkpoints(
 
     Layout (per adapter)::
 
-        {adapter.dir}/checkpoints/step_{iteration}/
+        {adapter.save}/checkpoints/step_{iteration}/
         ├── adapter_megatron_tp{tp}_pp{pp}.pt   ← per-rank shard, fast resume
         ├── adapter_model.safetensors           ← gathered HF, inference / external
         └── adapter_config.json                 ← HF PEFT metadata (r, alpha, ...)
@@ -277,8 +162,8 @@ def save_multi_lora_checkpoints(
         log_prefix = f"[multilora] ({adapter_name})"
         iteration = adapter_steps[adapter_name]
 
-        final_dir = config.dir / "checkpoints" / f"step_{iteration}"
-        tmp_dir = config.dir / "checkpoints" / f"_tmp_step_{iteration}"
+        final_dir = config.save / "checkpoints" / f"step_{iteration}"
+        tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
         if is_dp_rank_0:
             tmp_dir.mkdir(parents=True, exist_ok=True)
         if dist.is_initialized():
@@ -361,7 +246,7 @@ def _register_adapter(adapter: RegisteredAdapter, model) -> None:
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
 
-    ckpt_root = config.dir / "checkpoints"
+    ckpt_root = config.save / "checkpoints"
     ckpt, step = find_latest_checkpoint(ckpt_root)
 
     if is_megatron_main_rank():

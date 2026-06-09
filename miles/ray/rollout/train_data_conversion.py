@@ -82,11 +82,11 @@ def convert_samples_to_train_data(
     if any(sample.weight_versions for sample in samples):
         train_data["weight_versions"] = [sample.weight_versions for sample in samples]
 
+    if samples[0].teacher_log_probs is not None:
+        train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
+
     if any(sample.adapter is not None for sample in samples):
         train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
-
-    if "teacher_log_probs" in samples[0].__dict__:
-        train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
     x = metadata.get("dynamic_global_batch_size")
     assert args.use_dynamic_global_batch_size == (x is not None)
@@ -178,9 +178,7 @@ def split_train_data_by_dp(args, data, dp_size):
             if key not in data:
                 continue
             rollout_data[key] = data[key]
-
         if "adapter_slots" in rollout_data:
             rollout_data["n_adapters"] = args.multi_lora_n_adapters
-
         rollout_data_refs.append(Box(ray.put(rollout_data)))
     return rollout_data_refs

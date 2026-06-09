@@ -25,6 +25,9 @@ class AtomicUpdateGroup:
 
 
 def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
+    model_groups = _get_model_atomic_update_groups(model_name)
+    if model_groups:
+        return model_groups
     return _get_q_lora_atomic_update_groups(args)
 
 
@@ -41,6 +44,15 @@ def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
             ),
         )
     ]
+
+
+def _get_model_atomic_update_groups(model_name) -> list[AtomicUpdateGroup]:
+    model_name = model_name.lower()
+    if "deepseekv4" in model_name:
+        from ..megatron_to_hf.deepseekv4 import get_deepseek_v4_atomic_update_groups
+
+        return get_deepseek_v4_atomic_update_groups()
+    return []
 
 
 @dataclasses.dataclass(frozen=True)

@@ -37,15 +37,12 @@ ADAPTER_INACTIVE_STATES = {AdapterState.PENDING, AdapterState.DRAINED}
 @dataclass(frozen=True)
 class AdapterConfig:
 
-    # rank/alpha may be None straight out of YAML; the multi-LoRA controller
-    # resolves them to CLI defaults (--lora-rank / --lora-alpha) on register.
+    # resolves them to CLI defaults if None (--lora-rank / --lora-alpha) on register.
     rank: int | None
     alpha: int | None
 
-    # Path to data file
     data: str
-    # Path to working directory for LoRA (checkpoints, artifacts, etc)
-    dir: str | Path
+    save: str | Path | None
 
     input_key: str
     label_key: str
@@ -60,7 +57,7 @@ class AdapterConfig:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.rm_type and self.custom_rm_path:
+        if bool(self.rm_type) == bool(self.custom_rm_path):
             raise ValueError("Only one of rm_type or custom_rm_path should be set in AdapterConfig")
 
 
@@ -81,8 +78,8 @@ class RegisteredAdapter:
 def parse_adapter_yaml(path: Path) -> AdapterConfig:
     """Parse a single adapter.yaml file.
 
-    ``rank`` and ``alpha`` are optional in the YAML; when absent the caller
-    (e.g. the multi-LoRA controller) is responsible for resolving them.
+    ``rank``, ``alpha`` and ``save`` are optional in the YAML; when absent the
+    caller (e.g. the multi-LoRA controller) is responsible for resolving them.
     """
     with open(path) as f:
         raw = yaml.safe_load(f)
@@ -91,7 +88,7 @@ def parse_adapter_yaml(path: Path) -> AdapterConfig:
         rank=raw.get("rank"),
         alpha=raw.get("alpha"),
         data=raw["data"],
-        dir=Path(raw["dir"]) if raw.get("dir", None) else path.parent,
+        save=Path(raw["save"]) if raw.get("save", None) else None,
         input_key=raw.get("input_key", "text"),
         label_key=raw.get("label_key"),
         metadata_key=raw.get("metadata_key"),

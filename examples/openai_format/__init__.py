@@ -1,1 +1,0 @@
-"""OpenAI format examples."""

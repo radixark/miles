@@ -76,6 +76,10 @@ _ARGS_DEFAULTS = dict(
     gamma=1.0,
     lambd=0.95,
     normalize_advantages=False,
+    # on-policy distillation (OPD); orthogonal to the advantage estimator
+    use_opd=False,
+    opd_type=None,
+    opd_kl_coef=1.0,
     # policy_loss_function
     loss_type="policy_loss",
     eps_clip=0.2,

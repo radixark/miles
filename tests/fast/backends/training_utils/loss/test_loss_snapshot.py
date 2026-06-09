@@ -62,7 +62,6 @@ CONFIGS = [
         [50, 80],
         [30, 60],
     ),
-    ("opd_b2", dict(advantage_estimator="on_policy_distillation", loss_type="policy_loss"), 2, [40, 60], [20, 40]),
     ("value_loss_b2", dict(advantage_estimator="grpo", loss_type="value_loss"), 2, [30, 50], [15, 35]),
     ("sft_loss_b2", dict(advantage_estimator="grpo", loss_type="sft_loss"), 2, [64, 128], [32, 64]),
     (

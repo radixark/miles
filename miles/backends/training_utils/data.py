@@ -62,6 +62,10 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
 
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
+        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+        if max_compress_ratio:
+            local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
+            pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
         max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
@@ -152,6 +156,7 @@ def get_batch(
         tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
 
         if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
             local_len = max_seqlen // cp_size
             start = parallel_state.cp.rank * local_len

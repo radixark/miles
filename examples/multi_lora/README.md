@@ -92,8 +92,9 @@ input_key: messages                            # prompt column
 label_key: label                               # ground-truth column
 rm_type: math                                  # reward function
 num_row: 400                                   # stop adapter after N rows
-# optional: dir, num_epoch, custom_rm_path, ...
+# optional: save, num_epoch, custom_rm_path, ...
 ```
 
-`dir` defaults to the directory containing `adapter.yaml`; the trainer writes
-checkpoints there.
+`save` is the per-adapter working directory (checkpoints, artifacts). When
+omitted it defaults to a per-adapter subdirectory of the run's `--save`
+directory (`<--save>/<adapter-name>`); the trainer writes checkpoints there.

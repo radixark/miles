@@ -5,6 +5,7 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=60, suite="stage-a-fast")
 
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,11 +15,14 @@ from miles.ray.multi_lora_controller import MultiLoRAControllerImpl
 from miles.utils.adapter_config import ADAPTER_INACTIVE_STATES, ADAPTER_ROLLOUT_STATES, AdapterConfig, AdapterState
 
 
-def make_args(*, max_adapters: int = 2, max_rank: int = 32, default_alpha: int = 32) -> SimpleNamespace:
+def make_args(
+    *, max_adapters: int = 2, max_rank: int = 32, default_alpha: int = 32, save: str | None = None
+) -> SimpleNamespace:
     return SimpleNamespace(
         multi_lora_n_adapters=max_adapters,
         lora_rank=max_rank,
         lora_alpha=default_alpha,
+        save=save,
         model_name=None,
         hf_checkpoint=None,
         rollout_max_context_len=None,
@@ -29,11 +33,13 @@ def make_args(*, max_adapters: int = 2, max_rank: int = 32, default_alpha: int =
 
 
 def make_config(tmp_path, **overrides) -> AdapterConfig:
+    data_path = tmp_path / "data.parquet"
+    data_path.touch()
     defaults = dict(
         rank=8,
         alpha=16,
-        data="/data.parquet",
-        dir=str(tmp_path / "adapter_dir"),
+        data=str(data_path),
+        save=None,
         input_key="text",
         label_key="label",
         rm_type="math",
@@ -53,8 +59,10 @@ def drain_to_trainable(controller: MultiLoRAControllerImpl, name: str) -> None:
 
 
 @pytest.fixture
-def controller():
-    return MultiLoRAControllerImpl(make_args(max_adapters=2, max_rank=32, default_alpha=32))
+def controller(tmp_path):
+    return MultiLoRAControllerImpl(
+        make_args(max_adapters=2, max_rank=32, default_alpha=32, save=str(tmp_path / "run_save"))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -80,13 +88,13 @@ class TestRegisterAdapter:
         c = MultiLoRAControllerImpl(make_args(max_adapters=1, max_rank=32, default_alpha=32))
         target = tmp_path / "deep" / "nested" / "adapter"
         assert not target.exists()
-        c.register_adapter("a", make_config(tmp_path, dir=str(target)))
+        c.register_adapter("a", make_config(tmp_path, save=str(target)))
         assert target.is_dir()
 
     def test_existing_dir_no_error(self, controller, tmp_path):
         existing = tmp_path / "exists"
         existing.mkdir()
-        controller.register_adapter("a", make_config(tmp_path, dir=str(existing)))
+        controller.register_adapter("a", make_config(tmp_path, save=str(existing)))
         assert existing.is_dir()
 
     def test_rank_exceeds_max_raises(self, controller, tmp_path):
@@ -109,16 +117,18 @@ class TestRegisterAdapter:
             controller.register_adapter("a", 123)
 
     def test_register_from_yaml_path(self, controller, tmp_path):
+        data_path = tmp_path / "d.parquet"
+        data_path.touch()
         yaml_path = tmp_path / "adapter.yaml"
         yaml_path.write_text(
             yaml.safe_dump(
                 {
                     "rank": 16,
                     "alpha": 32,
-                    "data": "/d.parquet",
+                    "data": str(data_path),
                     "label_key": "label",
                     "rm_type": "math",
-                    "dir": str(tmp_path / "out"),
+                    "save": str(tmp_path / "out"),
                 }
             )
         )
@@ -128,14 +138,16 @@ class TestRegisterAdapter:
 
     def test_yaml_falls_back_to_controller_defaults(self, tmp_path):
         c = MultiLoRAControllerImpl(make_args(max_adapters=1, max_rank=32, default_alpha=64))
+        data_path = tmp_path / "d.parquet"
+        data_path.touch()
         yaml_path = tmp_path / "adapter.yaml"
         yaml_path.write_text(
             yaml.safe_dump(
                 {
-                    "data": "/d.parquet",
+                    "data": str(data_path),
                     "label_key": "label",
                     "rm_type": "math",
-                    "dir": str(tmp_path / "out"),
+                    "save": str(tmp_path / "out"),
                 }
             )
         )
@@ -147,6 +159,26 @@ class TestRegisterAdapter:
         controller.register_adapter("a", make_config(tmp_path, rank=None, alpha=None))
         assert controller.configs["a"].rank == controller.max_rank
         assert controller.configs["a"].alpha == controller.default_alpha
+
+    def test_omitted_save_defaults_under_run_save_dir(self, tmp_path):
+        save_dir = tmp_path / "run_save"
+        c = MultiLoRAControllerImpl(make_args(max_adapters=2, save=str(save_dir)))
+        c.register_adapter("a", make_config(tmp_path))
+        assert Path(c.configs["a"].save) == save_dir / "a"
+        assert (save_dir / "a").is_dir()
+
+    def test_omitted_save_is_unique_per_adapter(self, tmp_path):
+        """Two adapters with no explicit save dir get distinct, name-derived dirs."""
+        save_dir = tmp_path / "run_save"
+        c = MultiLoRAControllerImpl(make_args(max_adapters=2, save=str(save_dir)))
+        c.register_adapter("a", make_config(tmp_path))
+        c.register_adapter("b", make_config(tmp_path))
+        assert Path(c.configs["a"].save) != Path(c.configs["b"].save)
+
+    def test_omitted_save_without_run_save_raises(self, tmp_path):
+        c = MultiLoRAControllerImpl(make_args(max_adapters=1, save=None))
+        with pytest.raises(ValueError, match="no 'save'"):
+            c.register_adapter("a", make_config(tmp_path))
 
 
 # ---------------------------------------------------------------------------

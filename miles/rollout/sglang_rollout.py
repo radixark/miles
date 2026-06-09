@@ -59,21 +59,44 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate")
     return f"http://{args.sglang_router_ip}:{args.sglang_router_port}{endpoint}"
 
 
+class GenerateStateHooks:
+    """Lifecycle hooks for the generation process.
+
+    Inject a custom subclass with ``--custom-generate-state-hooks-path``. The
+    instance holds a back-reference to the owning :class:`GenerateState`, so a
+    hook may read or mutate core state (e.g. ``state.pendings``,
+    ``state.remaining_batch_size``, ``state.args``).
+    """
+
+    def __init__(self, state: "GenerateState") -> None:
+        self.state = state
+
+    # Runs (sync) inside submit_generate_tasks; e.g. attach done-callbacks.
+    def on_group_submit(self, group: list[Sample], task) -> None: ...
+
+    # Runs when a group is added to the batch selected for this rollout id.
+    async def on_group_selected(self, group: list[Sample] | list[list[Sample]]) -> None: ...
+
+    # Runs at the start of generate_rollout_async.
+    async def on_generate_rollout_start(self, rollout_id: int) -> None: ...
+
+    # Runs at the end of generate_rollout_async, before sample filtering.
+    async def on_generate_rollout_complete(
+        self,
+        rollout_id: int,
+        completed_samples: list[list[Sample]] | list[list[list[Sample]]],
+        aborted_samples: list[list[Sample]],
+    ) -> None: ...
+
+    # Reset hook state. Deliberately NOT invoked by GenerateState.reset()
+    # (per-rollout) so cross-rollout hook state survives.
+    def reset(self) -> None: ...
+
+
 class GenerateState(metaclass=SingletonMeta):
     """
     The global state for the generation process.
     """
-
-    # Allow factory using custom GenerateState
-    def __new__(cls, args: Namespace):
-        custom_path = getattr(args, "custom_generate_state_path", None)
-        if not custom_path:
-            return super().__new__(cls)
-
-        custom_cls = load_class(custom_path)
-        if not issubclass(custom_cls, cls):
-            raise TypeError(f"{custom_cls} is not a subclass of {cls}")
-        return super().__new__(custom_cls)  # uninitialized instance of the real class
 
     def __init__(self, args: Namespace) -> None:
         # persistent state for the generation process
@@ -108,6 +131,12 @@ class GenerateState(metaclass=SingletonMeta):
 
         self.reset()
 
+        hooks_path = getattr(args, "custom_generate_state_hooks_path", None)
+        hooks_cls = load_class(hooks_path) if hooks_path else GenerateStateHooks
+        if not issubclass(hooks_cls, GenerateStateHooks):
+            raise TypeError(f"{hooks_cls} is not a subclass of {GenerateStateHooks}")
+        self.hooks = hooks_cls(self)
+
     @contextmanager
     def dp_rank_context(self):
         candidates = [i for i, count in enumerate(self.dp_counts) if count == min(self.dp_counts)]
@@ -136,30 +165,10 @@ class GenerateState(metaclass=SingletonMeta):
                     evaluation=False,
                 )
             )
-            self.on_group_submit(group, task)
+            self.hooks.on_group_submit(group, task)
             self.pendings.add(task)
 
         self.remaining_batch_size += len(samples)
-
-    # Lifecycle hooks that can be implemented in custom GenerateState
-    # Run on group submit - can be used to add callbacks on completion + update
-    # state based on submitted groups
-    # TODO: make this async
-    def on_group_submit(self, group: list[Sample], task) -> None: ...
-
-    # Run when adding the group to the batch selected for that rollout id
-    async def on_group_selected(self, group: list[Sample] | list[list[Sample]]) -> None: ...
-
-    # Run at the beginning of generate_rollout_async
-    async def on_generate_rollout_start(self, rollout_id: int) -> None: ...
-
-    # Run at the end of generate_rollout_async
-    async def on_generate_rollout_complete(
-        self,
-        rollout_id: int,
-        completed_samples: list[list[Sample]] | list[list[list[Sample]]],
-        aborted_samples: list[list[Sample]],
-    ) -> None: ...
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
@@ -229,30 +238,25 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     output = await post(url, payload, headers=headers)
 
-    if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
-        from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
-
-        sample = await postprocess_sample_with_radix_tree(args, sample, output)
+    if "output_token_logprobs" in output["meta_info"]:
+        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
     else:
-        if "output_token_logprobs" in output["meta_info"]:
-            new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-        else:
-            new_response_tokens, new_response_log_probs = [], []
+        new_response_tokens, new_response_log_probs = [], []
 
-        # Update sample with tokens directly - avoiding re-tokenization
-        sample.tokens = sample.tokens + new_response_tokens
-        sample.response_length += len(new_response_tokens)
-        sample.response += output["text"]
+    # Update sample with tokens directly - avoiding re-tokenization
+    sample.tokens = sample.tokens + new_response_tokens
+    sample.response_length += len(new_response_tokens)
+    sample.response += output["text"]
 
-        # When partial rollout and masking off policy is enabled, update the loss mask
-        if sample.loss_mask is not None:
-            assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
-            sample.loss_mask += [1] * len(new_response_tokens)
+    # When partial rollout and masking off policy is enabled, update the loss mask
+    if sample.loss_mask is not None:
+        assert args.partial_rollout and args.mask_offpolicy_in_partial_rollout
+        sample.loss_mask += [1] * len(new_response_tokens)
 
-        if sample.rollout_log_probs is None:
-            sample.rollout_log_probs = []
-        sample.rollout_log_probs += new_response_log_probs
+    if sample.rollout_log_probs is None:
+        sample.rollout_log_probs = []
+    sample.rollout_log_probs += new_response_log_probs
 
     if "routed_experts" in output["meta_info"]:
         sample.rollout_routed_experts = np.frombuffer(
@@ -436,7 +440,7 @@ async def generate_rollout_async(
     state = GenerateState(args)
 
     # Run generate rollout start lifecycle hook
-    await state.on_generate_rollout_start(rollout_id)
+    await state.hooks.on_generate_rollout_start(rollout_id)
 
     # instantiate data filters
     dynamic_filter = (
@@ -483,7 +487,7 @@ async def generate_rollout_async(
             # NOTE: here we have not stored all the unused samples back to the data buffer.
             if len(data) < target_data_size:
                 data.append(group)
-                await state.on_group_selected(group)
+                await state.hooks.on_group_selected(group)
                 pbar.update(args.n_samples_per_prompt)
 
     pbar.close()
@@ -503,7 +507,7 @@ async def generate_rollout_async(
 
     # run generate rollout completion lifecycle hook
     # Note: this is called before sample filtering to allow the hook to see all samples
-    await state.on_generate_rollout_complete(rollout_id, data, aborted_samples)
+    await state.hooks.on_generate_rollout_complete(rollout_id, data, aborted_samples)
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
