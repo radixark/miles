@@ -7,7 +7,7 @@ from pathlib import Path
 
 import ray
 
-from miles.rollout.sglang_rollout import GenerateState
+from miles.rollout.sglang_rollout import GenerateStateHooks
 from miles.utils.adapter_config import AdapterConfig, AdapterState, RegisteredAdapter, parse_adapter_yaml
 from miles.utils.types import Sample
 
@@ -27,12 +27,16 @@ def get_multi_lora_controller():
     return ray.get_actor(CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE)
 
 
-class MultiLoRAGenerateState(GenerateState):
-    def __init__(self, args):
-        super().__init__(args)
+class MultiLoRAHooks(GenerateStateHooks):
+    def __init__(self, state):
+        super().__init__(state)
 
         self.in_flight_group_count: dict[str, int] = {}
         self.trainable_group_count: dict[str, int] = {}
+
+    def reset(self) -> None:
+        self.in_flight_group_count.clear()
+        self.trainable_group_count.clear()
 
     def on_group_submit(self, group: list[Sample], task):
         assert group[0].adapter is not None

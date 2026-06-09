@@ -1162,10 +1162,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
             )
             parser.add_argument(
-                "--custom-generate-state-path",
+                "--custom-generate-state-hooks-path",
                 type=str,
                 default=None,
-                help="Path to custom miles.rollout.sglang_rollout.GenerateState",
+                help="Path to a custom miles.rollout.sglang_rollout.GenerateStateHooks subclass",
             )
             parser.add_argument(
                 "--lora-base-cpu-backup",

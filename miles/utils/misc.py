@@ -71,16 +71,10 @@ class SingletonMeta(type):
     _instances = {}
 
     def __call__(cls, *args, **kwargs):
-        # Note: this creates uninitialized instance copy of the
-        # class even if it has been cached, for getting the type,
-        # but the real instance will always be returned
-        obj = cls.__new__(cls, *args, **kwargs)
-        real_cls = type(obj)
-        if real_cls not in cls._instances:
-            obj.__init__(*args, **kwargs)
-            cls._instances[real_cls] = obj
-
-        return cls._instances[real_cls]
+        if cls not in cls._instances:
+            instance = super().__call__(*args, **kwargs)
+            cls._instances[cls] = instance
+        return cls._instances[cls]
 
     @staticmethod
     def clear_all_instances():
