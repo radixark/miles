@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 
 import numpy as np
@@ -12,6 +13,51 @@ from miles.backends.training_utils.parallel import get_parallel_state, set_paral
 from miles.utils.hf_config import register_hf_config_aliases
 
 from .parallel import create_megatron_parallel_state
+
+
+def _patch_transformers_local_path():
+    """Fix transformers/huggingface_hub bug: absolute local paths get rejected by
+    validate_repo_id when passed as repo_id. Two code paths both trigger this:
+    (a) _get_cache_file_to_return -> try_to_load_from_cache -> validate_repo_id
+    (b) cached_files -> hf_hub_download -> @validate_hf_hub_args -> validate_repo_id
+    We patch both."""
+    # Patch 1: fix _get_cache_file_to_return to short-circuit for local paths
+    try:
+        import transformers.utils.hub as _hub
+
+        if hasattr(_hub, "_get_cache_file_to_return"):
+            _orig = _hub._get_cache_file_to_return
+
+            def _patched(path_or_repo_id, filename, cache_dir, revision, repo_type, **kwargs):
+                if os.path.isabs(path_or_repo_id) or os.path.isdir(path_or_repo_id):
+                    full_path = os.path.join(path_or_repo_id, filename)
+                    return full_path if os.path.isfile(full_path) else None
+                return _orig(path_or_repo_id, filename, cache_dir, revision, repo_type, **kwargs)
+
+            _hub._get_cache_file_to_return = _patched
+    except Exception:
+        pass
+
+    # Patch 2: fix validate_repo_id to accept absolute local paths, fixing path (b)
+    try:
+        import huggingface_hub.utils._validators as _v
+
+        _orig_validate = _v.validate_repo_id
+
+        def _patched_validate(repo_id, *args, **kwargs):
+            if os.path.isabs(repo_id) or os.path.isdir(repo_id):
+                return  # Accept absolute/local paths without validation
+            return _orig_validate(repo_id, *args, **kwargs)
+
+        _v.validate_repo_id = _patched_validate
+        # Also update the VALIDATORS dict used by @validate_hf_hub_args decorator
+        if hasattr(_v, "VALIDATORS") and "repo_id" in _v.VALIDATORS:
+            _v.VALIDATORS["repo_id"] = _patched_validate
+    except Exception:
+        pass
+
+
+_patch_transformers_local_path()
 
 logger = logging.getLogger(__name__)
 
