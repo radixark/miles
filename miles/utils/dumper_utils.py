@@ -12,7 +12,15 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
+
+try:
+    from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
+except ImportError:  # older sglang builds lack DumperConfig; dumper is debug-only
+    DumperConfig = None
+    dumper = None
+
+    def _get_rank() -> int:
+        return 0
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +189,8 @@ def _cleanup_dump_dir(dump_dir: Path) -> None:
 
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
+    if DumperConfig is None:
+        return {"enable": False}
     raw = getattr(args, f"dumper_{phase.value}")
     return {"enable": args.dumper_enable, **DumperConfig._kv_pairs_to_dict(raw)}
 
