@@ -30,6 +30,7 @@ Usage patterns:
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -68,8 +69,16 @@ class ScriptArgs(U.ExecuteTrainConfig):
         "DeepSeek-V4-Pro-FP8",
     ] = "DeepSeek-V4-Flash-FP8"
 
-    task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+    task: Literal["dapo_aime", "gsm8k", "agentic"] = "dapo_aime"
     enable_eval: bool = True
+
+    # agentic task settings (task == "agentic"); see examples/experimental/swe-agent-v2
+    prompt_data: str = "/root/swe_train.jsonl"
+    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "")
+    agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
+    harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -116,6 +125,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_local_dir = self.model_dir
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
+        if self.task == "agentic":
+            self.enable_eval = False
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         self.colocate = self.rollout_num_nodes == 0
@@ -381,23 +392,28 @@ def _train(args: ScriptArgs):
         )
 
     rollout_args = (
-        "--label-key label "
-        "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         "--num-steps-per-rollout 1 "
         "--balance-data "
     )
 
-    if args.mode != "debug_minimal":
+    if args.task == "agentic":
+        rollout_args += "--rollout-batch-size 8 " "--n-samples-per-prompt 8 "
+    else:
         rollout_args += (
-            "--over-sampling-batch-size 512 "
-            "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+            "--label-key label "
+            "--apply-chat-template "
+            "--rm-type math "
+            "--rollout-batch-size 32 "
+            "--n-samples-per-prompt 8 "
         )
+        if args.mode != "debug_minimal":
+            rollout_args += (
+                "--over-sampling-batch-size 512 "
+                "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+            )
 
     eval_args = ""
     if args.enable_eval:
@@ -426,6 +442,26 @@ def _train(args: ScriptArgs):
                 f"--eval-prompt-data gsm8k {args.data_dir}/gsm8k/test.parquet "
                 "--n-samples-per-eval-prompt 1 "
                 "--eval-max-response-len 256 "
+            )
+        case "agentic":
+            assert args.agent_server_url, "--agent-server-url is required for the agentic task"
+            rollout_args += (
+                f"--prompt-data {args.prompt_data} "
+                "--input-key prompt "
+                "--metadata-key metadata "
+                "--max-seq-len 65536 "
+                "--rollout-max-response-len 16384 "
+                "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
+                "--custom-agent-function-path swe_agent_function.run "
+                "--custom-rm-path generate.reward_func "
+                "--rollout-function-path generate.RolloutFn "
+                "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
+                "--tito-model deepseekv4 "
+                "--use-session-server "
+                "--session-server-port 30000 "
+                "--tito-allowed-append-roles user tool "
+                "--use-miles-router "
+                "--sglang-router-port 31000 "
             )
 
     perf_args = _get_parallel_config(args)
@@ -568,6 +604,22 @@ def _train(args: ScriptArgs):
         extra_env_vars |= {
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
         }
+
+    if args.task == "agentic":
+        # command_utils only puts megatron_path on PYTHONPATH; the agentic rollout
+        # imports swe_agent_function/generate from the swe-agent-v2 example dir.
+        swe_agent_dir = Path(U.repo_base_dir) / "examples" / "experimental" / "swe-agent-v2"
+        extra_env_vars |= {
+            "PYTHONPATH": f"{args.megatron_path}:{swe_agent_dir}:{U.repo_base_dir}",
+            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+            "AGENT_SERVER_URL": args.agent_server_url,
+            "AGENT_MODEL_NAME": args.agent_model_name,
+            "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
+        }
+        if args.router_external_host:
+            extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+        if args.miles_host_ip:
+            extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
     train_args = (
         f"{ckpt_args} "
