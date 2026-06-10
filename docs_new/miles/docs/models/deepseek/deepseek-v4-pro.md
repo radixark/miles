@@ -29,8 +29,7 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 ### 3.1 One-line launch
 
 ```bash
-#   H200 / B200 (cu129 x86) -> radixark/miles:latest
-#   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
+# Pull the image:
 docker pull radixark/miles:latest
 
 # Production Pro run, inside the container
