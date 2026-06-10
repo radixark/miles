@@ -6,7 +6,7 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. The miles + Megatron-Core (`mcore`) integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published images `radixark/miles:latest` (H200 / B200, cu129 x86) and `radixark/miles:gb300-dev-dskv4` (GB300, cu130 arm64).
+[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. It ships in the `radixark/miles:latest` image. The larger [DeepSeek-V4-Pro](/miles/docs/models/deepseek/deepseek-v4-pro) shares the same V4 architecture family at Pro scale.
 
 **Key highlights:**
 
@@ -29,8 +29,7 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 One command runs the full pipeline — dataset download, FP8 → BF16 cast, distributed `torch_dist` conversion, and the training loop:
 
 ```bash
-#   H200 / B200 (cu129 x86) -> radixark/miles:latest
-#   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
+# Pull the image:
 docker pull radixark/miles:latest
 
 # 8-node Flash run (colocated), inside the container
@@ -71,8 +70,7 @@ In this section, we explain what `full-train` does under the hood, and how to dr
 ### 4.1 Download model + datasets
 
 ```bash
-# inside the radixark/miles:latest (H200 / B200) or
-# radixark/miles:gb300-dev-dskv4 (GB300) container
+# inside the radixark/miles:latest container
 hf download sgl-project/DeepSeek-V4-Flash-FP8 --local-dir /root/models/DeepSeek-V4-Flash-FP8
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024
@@ -110,7 +108,7 @@ The Python launcher's `prepare-spmd` subcommand drives the same conversion.
 
 ### 4.3 Multi-node fan-out
 
-The Python launcher manages Ray internally — start each pod with the appropriate image for the cluster (`radixark/miles:latest` on H200 / B200, `radixark/miles:gb300-dev-dskv4` on GB300) and a working shared filesystem mounted at the same path on every node, then on the head node:
+The Python launcher manages Ray internally — start each pod with the `radixark/miles:latest` image and a working shared filesystem mounted at the same path on every node, then on the head node:
 
 ```bash
 ray start --head --num-gpus 8 --disable-usage-stats

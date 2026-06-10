@@ -12,7 +12,7 @@ description: Concepts, launch script walkthrough, customization hooks, and a com
 | [Customization](/miles/docs/user-guide/customization) | The 22 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
 | [Rollout Endpoints](/miles/docs/user-guide/rollout-endpoints) | The `/generate` endpoint and the OpenAI chat endpoint for agentic sessions. |
 | [Fully Async Rollout](/miles/docs/user-guide/fully-async) | Queue-backed rollout production, tuning knobs, and when to use `train_async.py`. |
-| [Agentic Chat Templates](/miles/docs/user-guide/agentic-chat-template) | Verifying and fixing the chat template so multi-turn rollout stays append-only. |
+| [Agentic Chat Templates](/miles/docs/user-guide/agentic-chat-template) | Turning on and verifying TITO so multi-turn agentic rollout stays append-only. |
 | [CLI Reference](/miles/docs/user-guide/cli-reference) | Every flag Miles accepts, grouped by subsystem. |
 
 ## Which pages do I actually need?
