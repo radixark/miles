@@ -131,12 +131,10 @@ def _is_blackwell(args: ScriptArgs) -> bool:
         return args.hardware in _BLACKWELL_HARDWARE
 
     import torch
-
     if not torch.cuda.is_available():
         raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
     major, _minor = torch.cuda.get_device_capability()
     return major >= 10
-
 
 def _resolve_precision_defaults(args: ScriptArgs):
     if args.fp8_training is None:
@@ -386,7 +384,7 @@ def _train(args: ScriptArgs):
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len 4096 "
-                """--apply-chat-template-kwargs '{"enable_thinking":true}' """
+                """--apply-chat-template-kwargs '{"thinking":true}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
