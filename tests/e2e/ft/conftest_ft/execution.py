@@ -138,19 +138,7 @@ def get_common_train_args(
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    # A cell that respawns after a crash runs a cold torch.compile of its first forward; with the
-    # survivor waiting on the cross-cell collective, a post-rejoin step can take several hundred
-    # seconds (observed up to ~350s). The ordering step_time < indep_dp_comm_timeout(600s) <
-    # heartbeat(700s) keeps the comm from timing out mid-step (which would degrade it to
-    # single-member and apply a wrong gradient) while ensuring that on a genuine crash the survivor
-    # times out and recovers before its own heartbeat is declared stale (default 90s is far too low
-    # -- it makes the waiting survivor look dead and aborts recovery with all-cells-dead).
-    return (
-        "--use-fault-tolerance "
-        "--ft-components train "
-        "--control-server-port 0 "
-        "--trainer-heartbeat-checker-max-heartbeat-age 700 "
-    )
+    return "--use-fault-tolerance " "--ft-components train " "--control-server-port 0 "
 
 
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
@@ -193,6 +181,13 @@ def run_training(
         **_DETERMINISTIC_ENV_VARS,
         **_TRAINER_FT_ENV_VARS,
         **_FT_NCCL_REJOIN_WORKAROUND_ENV_VARS,
+        # Share the torch.compile / Inductor cache across all actor processes on the node so a cell
+        # respawned after a crash reuses the survivor's compiled artifacts instead of doing a cold
+        # compile of its first forward (~350s). Without this the survivor blocks on the cross-cell
+        # collective waiting for the recompiling peer long enough to either time out (un-reduced
+        # gradient) or be declared dead (all-cells-dead).
+        "TORCHINDUCTOR_CACHE_DIR": "/tmp/miles_inductor_cache",
+        "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
         "MILES_SANITY_INDEPDP": "1",  # DIAG (uncommitted): sanity all_reduce(ones) over indep_dp each grad-reduce
         "RAY_DEDUP_LOGS": "0",  # DIAG (uncommitted): disable Ray log dedup for reliable per-rank diagnostics
         **(extra_env_vars or {}),

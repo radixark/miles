@@ -22,7 +22,7 @@ def create_indep_dp_group(
     indep_dp_info: IndepDPInfo,
     megatron_rank: int,
     megatron_world_size: int,
-    timeout_s: float = 600,
+    timeout_s: float = 120,
 ) -> GroupInfo:
     if indep_dp_info.alive_size <= 1:
         return GroupInfo(rank=0, size=1, group=None)
