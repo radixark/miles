@@ -28,6 +28,7 @@ def convert_qwen3moe_to_hf(args, name, param):
         if match:
             rest, expert_idx = match.groups()
             if rest == "linear_fc1":
+                param = param.contiguous()
                 gate_weight, up_weight = param.chunk(2, dim=0)
                 outputs = [
                     (f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.gate_proj.weight", gate_weight),
@@ -35,6 +36,7 @@ def convert_qwen3moe_to_hf(args, name, param):
                 ]
                 return outputs
             elif rest == "linear_fc2":
+                param = param.contiguous()
                 outputs = [
                     (f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.down_proj.weight", param),
                 ]
@@ -98,6 +100,8 @@ def convert_qwen3moe_to_hf(args, name, param):
         elif rest == "mlp.linear_fc2.weight":
             return [(f"model.layers.{layer_idx}.mlp.down_proj.weight", param)]
         elif rest == "self_attention.linear_qkv.layer_norm_weight":
+            return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
+        elif rest == "input_layernorm.weight":
             return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
         elif rest == "mlp.linear_fc1.layer_norm_weight":
             return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]

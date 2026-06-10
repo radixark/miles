@@ -220,6 +220,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory()
         reload_process_groups()
+        dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 
     @property

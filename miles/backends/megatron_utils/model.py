@@ -262,6 +262,11 @@ def forward_only(
         packed_seq_params = get_packed_seq_params(batch, args)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
+        model_kwargs = {}
+        if args.true_on_policy_mode:
+            model_kwargs["fp32_output"] = False
+            if batch.get("padding_mask") is not None:
+                model_kwargs["padding_mask"] = batch["padding_mask"]
         output_tensor = model(
             input_ids=tokens,
             position_ids=None,
@@ -269,6 +274,7 @@ def forward_only(
             labels=None,
             packed_seq_params=packed_seq_params,
             loss_mask=batch["full_loss_masks"],
+            **model_kwargs,
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
         )
 
@@ -417,6 +423,9 @@ def train_one_step(
 
         if return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
+            model_kwargs = {}
+            if args.true_on_policy_mode and batch.get("padding_mask") is not None:
+                model_kwargs["padding_mask"] = batch["padding_mask"]
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
                 position_ids=None,
@@ -424,6 +433,7 @@ def train_one_step(
                 labels=None,
                 packed_seq_params=get_packed_seq_params(batch, args),
                 loss_mask=batch["full_loss_masks"],
+                **model_kwargs,
             )
         else:
             forward_kwargs = {
@@ -434,6 +444,8 @@ def train_one_step(
                 "packed_seq_params": get_packed_seq_params(batch, args),
                 "loss_mask": batch["full_loss_masks"],
             }
+            if args.true_on_policy_mode and batch.get("padding_mask") is not None:
+                forward_kwargs["padding_mask"] = batch["padding_mask"]
 
             if args.enable_mtp_training:
                 forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}

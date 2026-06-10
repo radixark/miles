@@ -44,7 +44,8 @@ class UpdateWeightFromTensor:
         is_lora: bool = False,
     ) -> None:
         """
-        Compute param buckets, create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
+        Compute param buckets. IPC Gloo groups are created from the connected
+        rollout engine layout.
         """
         self.args = args
         self.model = model
@@ -65,14 +66,9 @@ class UpdateWeightFromTensor:
             self._lora_loaded = False
             self._lora_base_synced = False
 
-        # Create IPC gather groups within megatron.
-        for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
-            end_rank = start_rank + self.args.rollout_num_gpus_per_engine
-            group_ranks = list(range(start_rank, end_rank))
-            new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-            if dist.get_rank() in group_ranks:
-                self._ipc_gather_group = new_group
-                self._ipc_gather_src = start_rank
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        self._ipc_engine = None
 
         self._model_update_groups = None
 
@@ -134,37 +130,30 @@ class UpdateWeightFromTensor:
 
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
         colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]
-
-        # Determine whether this rank is covered by any colocated engine.
-        all_colocated_ranks = set()
-        for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True):
-            all_colocated_ranks.update(range(offset, offset + count))
-        rank_has_engine = dist.get_rank() in all_colocated_ranks
+        colocate_ipc_group_ranks = [
+            list(range(offset, offset + count))
+            for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True)
+        ]
 
         # Create IPC Gloo gather groups matching actual engine layout.
-        # Re-create on first call or when engine layout changes (placeholder ranks
-        # that had a group from __init__ but no actual engine need to be reset).
-        if rank_has_engine:
-            if self._ipc_gather_group is None:
-                for i in range(colocate_engine_nums):
-                    group_ranks = list(
-                        range(colocate_gpu_offsets[i], colocate_gpu_offsets[i] + colocate_gpu_counts[i])
-                    )
-                    new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-                    if dist.get_rank() in group_ranks:
-                        self._ipc_gather_group = new_group
-                        self._ipc_gather_src = colocate_gpu_offsets[i]
-        else:
-            # Ranks not covered by any engine (e.g. placeholder GPU slots)
-            self._ipc_gather_group = None
-            self._ipc_gather_src = None
+        # This path only transfers serialized CUDA IPC handles; Megatron TP/EP
+        # partitioning is handled before tensors reach the rollout engine RPC.
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        for group_ranks in colocate_ipc_group_ranks:
+            new_group = dist.new_group(ranks=group_ranks, backend="gloo")
+            if dist.get_rank() in group_ranks:
+                self._ipc_gather_group = new_group
+                self._ipc_gather_src = group_ranks[0]
 
         # Map training ranks to colocated engine actors.
         self._ipc_engine = None
-        for i, engine in enumerate(self.rollout_engines):
-            start = colocate_gpu_offsets[i]
-            end = start + colocate_gpu_counts[i]
-            if start <= dist.get_rank() < end:
+        for engine, group_ranks in zip(
+            self.rollout_engines[:colocate_engine_nums],
+            colocate_ipc_group_ranks,
+            strict=True,
+        ):
+            if dist.get_rank() in group_ranks:
                 self._ipc_engine = engine
 
     @torch.no_grad()
@@ -188,7 +177,6 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
-
         # For LoRA+distributed: base weights are frozen, skip after first round.
         if not (self.is_lora and self.use_distribute and self._lora_base_synced):
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
