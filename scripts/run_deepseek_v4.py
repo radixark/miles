@@ -54,6 +54,7 @@ _MEGATRON_MODEL_TYPE = {
 }
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
+_BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
 
 @dataclass
@@ -80,6 +81,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # performance configs
     num_gpus_per_node: int = 8
+    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
     enable_mtp: bool = False
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
@@ -95,7 +97,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    fp8_training: bool = True
+    fp8_training: bool | None = None
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -122,6 +124,24 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.model_name == "DeepSeek-V4-Pro-FP8":
             return "DeepSeek-V4-Pro-BF16"
         return f"{self.model_name}-bf16"
+
+
+def _is_blackwell(args: ScriptArgs) -> bool:
+    if args.hardware != "auto":
+        return args.hardware in _BLACKWELL_HARDWARE
+
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
+    major, _minor = torch.cuda.get_device_capability()
+    return major >= 10
+
+
+def _resolve_precision_defaults(args: ScriptArgs):
+    if args.fp8_training is None:
+        args.fp8_training = not _is_blackwell(args)
+        print(f"[precision] fp8_training auto -> {args.fp8_training}")
 
 
 def _download_dataset(args: ScriptArgs):
@@ -326,6 +346,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    _resolve_precision_defaults(args)
     print(f"running on {args.num_nodes} nodes")
     _ensure_4layer_model_type(args)
 
@@ -365,7 +386,7 @@ def _train(args: ScriptArgs):
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len 4096 "
-                """--apply-chat-template-kwargs '{"thinking":true}' """
+                """--apply-chat-template-kwargs '{"enable_thinking":true}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
@@ -457,6 +478,7 @@ def _train(args: ScriptArgs):
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
+        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
     }
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
