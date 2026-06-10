@@ -6,7 +6,7 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. The miles + Megatron-Core (`mcore`) integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, and ship in the `radixark/miles:latest` image.
+[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. It ships in the `radixark/miles:latest` image.
 
 **Key highlights:**
 
