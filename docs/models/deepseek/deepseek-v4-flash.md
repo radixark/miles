@@ -35,11 +35,16 @@ One command runs the full pipeline — dataset download, FP8 → BF16 cast, dist
 # Pull the dev image:
 docker pull radixark/miles:dev
 
-# 8-node Flash run, inside the container
+# 8-node Flash run (colocated), inside the container
 cd /root/miles
 python scripts/run_deepseek_v4.py full-train \
    --model-name DeepSeek-V4-Flash-FP8 \
    --num-nodes 8 --num-gpus-per-node 8
+
+# 16-node disaggregated run: 8 actor (training) nodes + 8 dedicated rollout nodes
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash-FP8 \
+   --num-nodes 16 --num-gpus-per-node 8 --rollout-num-nodes 8
 ```
 
 The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
@@ -52,10 +57,14 @@ The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts as separate sibling sub-directories |
-| `--model-local-dir` | `/root/local_data` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk instead of shared storage |
+| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk instead of shared storage (only worth setting when `--model-dir` is on shared/remote storage) |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
-You can override these on the launcher when your cluster mounts a different layout. There are no `MILES_SCRIPT_*` env vars that preconfigure these paths; the only env vars the launcher reads are `MILES_SCRIPT_EXTERNAL_RAY` and `MILES_SCRIPT_ENABLE_RAY_SUBMIT` (both governing Ray bootstrapping, see [§4.3](#43-multi-node-fan-out)).
+You can override these via the CLI flags above or equivalently via env vars — every launcher option binds to `MILES_SCRIPT_<FIELD_NAME_UPPER>` (e.g. `MILES_SCRIPT_MODEL_DIR`), with precedence CLI flag > env var > built-in default; run `train --help` to see each option's `[env var: …]` name.
+
+### 3.3 Colocated vs. disaggregated rollout
+
+By default the launcher runs **colocated**: training and SGLang rollout share all `--num-nodes × --num-gpus-per-node` GPUs. Pass `--rollout-num-nodes N` (`0 < N < --num-nodes`) to run **disaggregated**: `N` nodes serve rollout, the rest train. The verified parallelism recipes are keyed on the **training** nodes, so the 8-node Flash recipe in disaggregated form is `--num-nodes 16 --rollout-num-nodes 8` (8 train + 8 rollout — the validated layout).
 
 ## 4. Script breakdown
 
@@ -128,6 +137,8 @@ These are the validated layouts shipped with the launcher; All parallelisms are 
 | GB300 | 8 × 4 = 32 | 8 | 4 | 1 | 8 | 1 | first 11 / last 10 layers |
 | GB300 | 8 × 4 = 32 | 2 | 8 | 2 | 4 | 1 | first 4 / last 3 layers |
 
+The Nodes × GPUs column counts **training nodes** — in disaggregated mode (see [§3.3](#33-colocated-vs-disaggregated-rollout)) rollout nodes come on top of these.
+
 ### 5.2 Algorithm
 
 Using GRPO as an example, you can configure the algorithm with the following flags:
@@ -158,7 +169,6 @@ SGLANG_ARGS=(
    --sglang-chunked-prefill-size 8192
    --sglang-mem-fraction-static 0.5  # leave headroom for Megatron during wake_up
    --use-rollout-routing-replay  # MoE routing replay (R3)
-   --use-miles-router  # miles router fronts /generate
 )
 ```
 
