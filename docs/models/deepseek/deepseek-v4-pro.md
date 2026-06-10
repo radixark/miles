@@ -50,10 +50,10 @@ The `full-train` subcommand chains `prepare-download → prepare-single → prep
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts |
-| `--model-local-dir` | `/root/local_data` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk |
+| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk (set it when `--model-dir` is on shared/remote storage) |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
-TBD — Pro-specific overrides or env-var notes.
+Pro uses the same launcher as V4-Flash, so every option above can also be preconfigured via `MILES_SCRIPT_<FIELD_NAME_UPPER>` env vars (precedence: CLI flag > env var > built-in default) — see [V4-Flash §3.2](deepseek-v4-flash.md#32-launcher-path-defaults) for details.
 
 ## 4. Script breakdown
 
@@ -90,7 +90,6 @@ SGLANG_ARGS=(
    --sglang-moe-a2a-backend deepep             # DeepEP normal-mode dispatch
    --sglang-cuda-graph-max-bs 8                # see hang caveat below
    --sglang-mem-fraction-static 0.7            # Pro needs a larger dynamic buffer
-   --use-miles-router
 )
 ```
 
