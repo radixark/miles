@@ -54,6 +54,7 @@ _MEGATRON_MODEL_TYPE = {
 }
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
+_BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
 
 @dataclass
@@ -80,6 +81,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # performance configs
     num_gpus_per_node: int = 8
+    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
     # use colocate by default. will switch to disaggregated mode when 0 < rollout_num_nodes < num_nodes
     rollout_num_nodes: int = 0
     colocate: bool = field(init=False)
@@ -101,7 +103,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    fp8_training: bool = True
+    fp8_training: bool | None = None
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -137,6 +139,24 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.model_name == "DeepSeek-V4-Pro-FP8":
             return "DeepSeek-V4-Pro-BF16"
         return f"{self.model_name}-bf16"
+
+
+def _is_blackwell(args: ScriptArgs) -> bool:
+    if args.hardware != "auto":
+        return args.hardware in _BLACKWELL_HARDWARE
+
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
+    major, _minor = torch.cuda.get_device_capability()
+    return major >= 10
+
+
+def _resolve_precision_defaults(args: ScriptArgs):
+    if args.fp8_training is None:
+        args.fp8_training = not _is_blackwell(args)
+        print(f"[precision] fp8_training auto -> {args.fp8_training}")
 
 
 def _download_dataset(args: ScriptArgs):
@@ -345,6 +365,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    _resolve_precision_defaults(args)
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -480,6 +501,7 @@ def _train(args: ScriptArgs):
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
+        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
     }
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
