@@ -30,7 +30,7 @@ Usage patterns:
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -54,6 +54,7 @@ _MEGATRON_MODEL_TYPE = {
 }
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
+_BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
 
 @dataclass
@@ -80,6 +81,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # performance configs
     num_gpus_per_node: int = 8
+    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
+    # use colocate by default. will switch to disaggregated mode when 0 < rollout_num_nodes < num_nodes
+    rollout_num_nodes: int = 0
+    colocate: bool = field(init=False)
+    actor_num_nodes: int = field(init=False)
+    actor_num_gpus_per_node: int = field(init=False)
+    rollout_num_gpus: int = field(init=False)
     enable_mtp: bool = False
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
@@ -95,7 +103,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    fp8_training: bool = True
+    fp8_training: bool | None = None
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -108,6 +116,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_local_dir = self.model_dir
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
+        assert self.rollout_num_nodes >= 0
+        assert self.rollout_num_nodes < self.num_nodes
+        self.colocate = self.rollout_num_nodes == 0
+        self.actor_num_nodes = self.num_nodes - self.rollout_num_nodes
+        self.actor_num_gpus_per_node = self.num_gpus_per_node
+        if self.colocate:
+            self.rollout_num_gpus = self.num_nodes * self.num_gpus_per_node
+        else:
+            self.rollout_num_gpus = self.rollout_num_nodes * self.num_gpus_per_node
 
     @property
     def megatron_model_type(self):
@@ -122,6 +139,24 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.model_name == "DeepSeek-V4-Pro-FP8":
             return "DeepSeek-V4-Pro-BF16"
         return f"{self.model_name}-bf16"
+
+
+def _is_blackwell(args: ScriptArgs) -> bool:
+    if args.hardware != "auto":
+        return args.hardware in _BLACKWELL_HARDWARE
+
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
+    major, _minor = torch.cuda.get_device_capability()
+    return major >= 10
+
+
+def _resolve_precision_defaults(args: ScriptArgs):
+    if args.fp8_training is None:
+        args.fp8_training = not _is_blackwell(args)
+        print(f"[precision] fp8_training auto -> {args.fp8_training}")
 
 
 def _download_dataset(args: ScriptArgs):
@@ -190,12 +225,14 @@ def prepare_single(args: ScriptArgs):
 
 def _prepare_spmd(args: ScriptArgs):
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
+    actor_num_nodes = args.actor_num_nodes
+    actor_num_gpus_per_node = args.actor_num_gpus_per_node
     extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 "
-    if args.num_nodes == 1 and is_4layer:
+    if actor_num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         )
-    elif args.num_nodes == 8 and args.model_name == "DeepSeek-V4-Flash-FP8":
+    elif actor_num_nodes == 8 and args.model_name == "DeepSeek-V4-Flash-FP8":
         extra_args += (
             "--tensor-model-parallel-size 1 "
             "--pipeline-model-parallel-size 8 "
@@ -203,7 +240,7 @@ def _prepare_spmd(args: ScriptArgs):
             "--decoder-first-pipeline-num-layers 7 "
             "--decoder-last-pipeline-num-layers 6 "
         )
-    elif args.num_nodes == 32 and args.num_gpus_per_node == 8 and args.model_name == "DeepSeek-V4-Pro-FP8":
+    elif actor_num_nodes == 32 and actor_num_gpus_per_node == 8 and args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_args += (
             "--tensor-model-parallel-size 8 "
             "--pipeline-model-parallel-size 8 "
@@ -215,11 +252,11 @@ def _prepare_spmd(args: ScriptArgs):
     else:
         raise NotImplementedError(
             f"No verified SPMD conversion config for {args.model_name} "
-            f"({args.num_nodes} nodes x {args.num_gpus_per_node} GPUs/node). "
+            f"({actor_num_nodes} actor nodes x {actor_num_gpus_per_node} GPUs/node). "
             f"Please specify your conversion parallel config in `run_deepseek_v4.py`."
         )
 
-    num_gpus_for_convert = args.num_gpus_per_node
+    num_gpus_for_convert = actor_num_gpus_per_node
     if is_4layer:
         num_gpus_for_convert = min(num_gpus_for_convert, 4)
 
@@ -228,8 +265,8 @@ def _prepare_spmd(args: ScriptArgs):
         hf_checkpoint=f"{args.model_dir}/{args.bf16_name}",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=num_gpus_for_convert,
-        multinode=True if args.num_nodes > 1 else False,
-        num_nodes=args.num_nodes,
+        multinode=True if actor_num_nodes > 1 else False,
+        num_nodes=actor_num_nodes,
         extra_args=extra_args,
         dir_dst=f"{args.model_dir}",
         megatron_path=args.megatron_path,
@@ -267,21 +304,23 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     Only includes configurations that have been verified to work.
     Raises NotImplementedError for untested configurations.
     """
-    total_gpus = args.num_nodes * args.num_gpus_per_node
+    actor_num_nodes = args.actor_num_nodes
+    actor_num_gpus_per_node = args.actor_num_gpus_per_node
+    total_gpus = actor_num_nodes * actor_num_gpus_per_node
 
     # Single-node smoke-test configs
-    if args.num_nodes == 1:
+    if actor_num_nodes == 1:
         return (
-            f"--tensor-model-parallel-size {args.num_gpus_per_node} "
+            f"--tensor-model-parallel-size {actor_num_gpus_per_node} "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
             "--context-parallel-size 1 "
-            f"--expert-model-parallel-size {args.num_gpus_per_node} "
+            f"--expert-model-parallel-size {actor_num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
 
     # GB300: 4 GPUs/node
-    if args.num_gpus_per_node == 4:
+    if actor_num_gpus_per_node == 4:
         if total_gpus == 32:  # 8 nodes x 4 GPUs
             return (
                 "--tensor-model-parallel-size 2 "
@@ -295,15 +334,15 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             )
 
     # H200: 8 GPUs/node
-    if args.num_gpus_per_node == 8:
+    if actor_num_gpus_per_node == 8:
         if total_gpus == 64:  # 8 nodes x 8 GPUs
             return (
-                "--tensor-model-parallel-size 4 "
+                "--tensor-model-parallel-size 8 "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 8 "
                 "--decoder-first-pipeline-num-layers 4 "
                 "--decoder-last-pipeline-num-layers 3 "
-                "--context-parallel-size 2 "
+                "--context-parallel-size 1 "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
@@ -326,7 +365,12 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
-    print(f"running on {args.num_nodes} nodes")
+    _resolve_precision_defaults(args)
+    print(
+        f"running on {args.num_nodes} nodes "
+        f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
+        f"{args.rollout_num_gpus} rollout GPUs, colocate={args.colocate})"
+    )
     _ensure_4layer_model_type(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
@@ -365,7 +409,7 @@ def _train(args: ScriptArgs):
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len 4096 "
-                """--apply-chat-template-kwargs '{"thinking":true}' """
+                """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
@@ -444,8 +488,7 @@ def _train(args: ScriptArgs):
     )
     if sglang_a2a_backend:
         sglang_args += f"--sglang-moe-a2a-backend {sglang_a2a_backend} " "--sglang-cuda-graph-max-bs 8 "
-    if sglang_a2a_backend and args.enable_mtp:
-        raise AssertionError("MTP rollout is not supported yet")
+    if args.enable_mtp:
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
             "--sglang-speculative-num-steps 3 "
@@ -456,7 +499,9 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
+        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
     }
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
@@ -467,8 +512,8 @@ def _train(args: ScriptArgs):
         "--hidden-dropout 0.0 "
         "--attention-softmax-in-fp32 "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
-        f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--actor-num-nodes {args.actor_num_nodes} "
+        f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
         "--sglang-mem-fraction-static 0.7 "
@@ -479,8 +524,11 @@ def _train(args: ScriptArgs):
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
-        "--colocate "
     )
+    if args.colocate:
+        misc_args += "--colocate "
+    else:
+        misc_args += f"--rollout-num-gpus {args.rollout_num_gpus} "
 
     if args.dump_details:
         misc_args += f"--dump-details {args.debug_data_root}/{args.run_id}/dump_details "
@@ -506,7 +554,6 @@ def _train(args: ScriptArgs):
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
-        misc_args += "--use-miles-router "
 
     if args.train_deterministic:
         misc_args += "--deterministic-mode "
