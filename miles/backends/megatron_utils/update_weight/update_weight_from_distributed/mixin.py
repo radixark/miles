@@ -298,8 +298,9 @@ class DistBucketedWeightUpdateMixin:
         """
         self.weight_version += 1
 
-        self._pause_and_prepare_engines()
-        dist.barrier(group=get_gloo_group())
+        with timer("broadcast_pause"):
+            self._pause_and_prepare_engines()
+            dist.barrier(group=get_gloo_group())
 
         with timer("update_weights_implementation"):
             # Base weight sync model:

@@ -206,6 +206,10 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
 
 
 def create_transfer_engine():
+    # Lazy import: mooncake is only required for the P2P transfer mode, and this
+    # module is also imported by the RDT (NIXL) path which does not need it.
+    from mooncake.engine import TransferEngine
+
     transfer_engine = TransferEngine()
     local_ip = ray._private.services.get_node_ip_address()
     transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", "")
