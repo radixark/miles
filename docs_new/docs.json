@@ -277,7 +277,7 @@
         "title": "Raise a docs issue",
         "description": "Flag a wording, formatting, or accuracy issue on this page.",
         "icon": "github",
-        "href": "https://github.com/radixark/miles/issues/new?template=doc-polish.yml"
+        "href": "https://github.com/radixark/miles/issues/new"
       }
     ]
   },
@@ -291,7 +291,7 @@
         "items": [
           {
             "label": "Raise a docs issue",
-            "href": "https://github.com/radixark/miles/issues/new?template=doc-polish.yml"
+            "href": "https://github.com/radixark/miles/issues/new"
           },
           {
             "label": "Source on GitHub",
