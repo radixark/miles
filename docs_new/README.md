@@ -1,10 +1,5 @@
 # Miles Documentation
 
-This directory contains the Miles documentation site, built with [Mintlify](https://mintlify.com).
-
-It was migrated from the standalone [radixark/miles-doc](https://github.com/radixark/miles-doc)
-repo, with full commit history preserved.
-
 ## Layout
 
 ```
