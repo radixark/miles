@@ -1,0 +1,316 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Miles",
+  "theme": "mint",
+  "logo": {
+    "light": "/miles/docs/assets/images/miles_logo_light.png",
+    "dark": "/miles/docs/assets/images/miles_logo_dark.png",
+    "href": "/miles/docs",
+    "width": 130
+  },
+  "favicon": "/miles/docs/assets/images/miles_square.png",
+  "colors": {
+    "primary": "#d55816",
+    "light": "#e8722a",
+    "dark": "#b84a12"
+  },
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/radixark/miles"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Contact",
+      "href": "mailto:miles@radixark.ai"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Welcome",
+        "groups": [
+          {
+            "group": "Welcome",
+            "root": "miles/docs/index",
+            "pages": [
+              "miles/docs/getting-started/index",
+              "miles/docs/getting-started/installation",
+              "miles/docs/getting-started/quick-start"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Models",
+        "groups": [
+          {
+            "group": "Models",
+            "root": "miles/docs/models/index",
+            "pages": [
+              {
+                "group": "DeepSeek",
+                "root": "miles/docs/models/deepseek/index",
+                "pages": [
+                  {
+                    "group": "DeepSeek-V4",
+                    "pages": [
+                      "miles/docs/models/deepseek/deepseek-v4-flash",
+                      "miles/docs/models/deepseek/deepseek-v4-pro"
+                    ],
+                    "expanded": false
+                  },
+                  "miles/docs/models/deepseek/deepseek"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Qwen",
+                "root": "miles/docs/models/qwen/index",
+                "pages": [
+                  {
+                    "group": "Qwen3.6",
+                    "pages": [
+                      "miles/docs/models/qwen/qwen3-6",
+                      "miles/docs/models/qwen/qwen3-6-moe"
+                    ],
+                    "expanded": false
+                  },
+                  {
+                    "group": "Qwen3.5",
+                    "pages": [
+                      "miles/docs/models/qwen/qwen3-5",
+                      "miles/docs/models/qwen/qwen3-5-moe"
+                    ],
+                    "expanded": false
+                  },
+                  "miles/docs/models/qwen/qwen3-next",
+                  {
+                    "group": "Qwen3",
+                    "pages": [
+                      "miles/docs/models/qwen/qwen3",
+                      "miles/docs/models/qwen/qwen3-moe"
+                    ],
+                    "expanded": false
+                  }
+                ],
+                "expanded": false
+              },
+              {
+                "group": "GLM",
+                "root": "miles/docs/models/glm/index",
+                "pages": [
+                  "miles/docs/models/glm/glm5",
+                  "miles/docs/models/glm/glm4-7-flash",
+                  "miles/docs/models/glm/glm4-5",
+                  "miles/docs/models/glm/glm4"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Kimi",
+                "root": "miles/docs/models/kimi/index",
+                "pages": [
+                  "miles/docs/models/kimi/kimi-k2.5",
+                  "miles/docs/models/kimi/kimi-k2",
+                  "miles/docs/models/kimi/moonlight"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Nemotron",
+                "root": "miles/docs/models/nemotron/index",
+                "pages": [
+                  {
+                    "group": "Nemotron-3-Nano",
+                    "pages": [
+                      "miles/docs/models/nemotron/nemotron-3-nano",
+                      "miles/docs/models/nemotron/nemotron-3-nano-moe"
+                    ],
+                    "expanded": false
+                  },
+                  "miles/docs/models/nemotron/nemotron-3-super"
+                ],
+                "expanded": false
+              },
+              "miles/docs/models/mimo/mimo",
+              "miles/docs/models/gpt-oss/gpt-oss"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "User Guide",
+        "groups": [
+          {
+            "group": "User Guide",
+            "root": "miles/docs/user-guide/index",
+            "pages": [
+              "miles/docs/user-guide/concepts",
+              "miles/docs/user-guide/argument-groups",
+              "miles/docs/user-guide/usage",
+              "miles/docs/user-guide/training-script-walkthrough",
+              "miles/docs/user-guide/monitoring",
+              "miles/docs/user-guide/customization",
+              "miles/docs/user-guide/rollout-endpoints",
+              "miles/docs/user-guide/fully-async",
+              "miles/docs/user-guide/agentic-chat-template",
+              "miles/docs/user-guide/cli-reference"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Advanced Features",
+        "groups": [
+          {
+            "group": "Advanced Features",
+            "root": "miles/docs/advanced/index",
+            "pages": [
+              {
+                "group": "Performance",
+                "pages": [
+                  "miles/docs/advanced/fp8-low-precision",
+                  "miles/docs/advanced/int4-qat",
+                  "miles/docs/advanced/speculative-decoding",
+                  "miles/docs/advanced/lora"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Scale & Reliability",
+                "pages": [
+                  "miles/docs/advanced/fault-tolerance",
+                  "miles/docs/advanced/pd-disaggregation",
+                  "miles/docs/advanced/p2p-weight-transfer"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "MoE & Routing",
+                "pages": [
+                  "miles/docs/advanced/miles-router"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Backends",
+                "pages": [
+                  "miles/docs/advanced/architecture-support"
+                ],
+                "expanded": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Examples",
+            "root": "miles/docs/examples/index",
+            "pages": [
+              "miles/docs/examples/fully-async",
+              "miles/docs/examples/search-r1",
+              "miles/docs/examples/retool",
+              "miles/docs/examples/multi-agent",
+              "miles/docs/examples/reproducibility",
+              "miles/docs/examples/openhermes-sft"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Developer Guide",
+            "root": "miles/docs/developer/index",
+            "pages": [
+              "miles/docs/developer/contributor-guide",
+              "miles/docs/developer/debug",
+              "miles/docs/developer/migration",
+              "miles/docs/developer/architecture",
+              "miles/docs/developer/experimental-features"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Platforms",
+        "groups": [
+          {
+            "group": "Platforms",
+            "root": "miles/docs/platforms/index",
+            "pages": [
+              "miles/docs/platforms/nvidia",
+              "miles/docs/platforms/amd"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Resources",
+            "pages": [
+              "miles/docs/faq",
+              "miles/docs/blog/index"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "background": {
+    "dark": "#0c0b0a",
+    "light": "#faf7f4"
+  },
+  "url": "https://www.radixark.com",
+  "contextual": {
+    "options": [
+      {
+        "title": "Raise a docs issue",
+        "description": "Flag a wording, formatting, or accuracy issue on this page.",
+        "icon": "github",
+        "href": "https://github.com/radixark/miles-doc/issues/new?template=doc-polish.yml"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/radixark/miles"
+    },
+    "links": [
+      {
+        "header": "Contribute",
+        "items": [
+          {
+            "label": "Raise a docs issue",
+            "href": "https://github.com/radixark/miles-doc/issues/new?template=doc-polish.yml"
+          },
+          {
+            "label": "Source on GitHub",
+            "href": "https://github.com/radixark/miles-doc"
+          }
+        ]
+      }
+    ]
+  },
+  "font": {
+    "headings": {
+      "family": "Hanken Grotesk",
+      "weight": 600,
+      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+    },
+    "body": {
+      "family": "Inter",
+      "weight": 400,
+      "url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap"
+    }
+  }
+}
