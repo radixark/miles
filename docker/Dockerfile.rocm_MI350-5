@@ -1,7 +1,7 @@
 # 1. rlsys/miles:MI350-355-latest
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
 
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
+ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
@@ -46,8 +46,6 @@ ENV NVTE_FRAMEWORK=pytorch
 ENV NVTE_ROCM_ARCH=${GPU_ARCH}
 ENV NVTE_USE_HIPBLASLT=1
 ENV NVTE_USE_ROCM=1
-# Keep the core package enabled and skip the extra fused-attn kernel matrix rebuild.
-ENV NVTE_FUSED_ATTN=0
 ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 
 # Patch Megatron's fused-kernel init for this toolchain.
@@ -94,7 +92,7 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
 RUN rm -rf /root/TransformerEngine && \
     git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
     cd /root/TransformerEngine && \
-    pip install . --no-build-isolation -v
+    NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
@@ -139,6 +137,9 @@ RUN pip install multi-storage-client --no-deps
 
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
     pip install -r /tmp/requirements.txt
+
+# huggingface_hub 1.9.x needs Typer's suggest_commands; Ray 2.44.x needs Click <8.3.
+RUN pip install "typer==0.25.1" "click==8.2.1"
 
 # Pin numpy 1.x for Megatron compatibility.
 RUN pip install "numpy<2"
