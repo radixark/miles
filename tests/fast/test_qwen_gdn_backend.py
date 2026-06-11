@@ -1,5 +1,3 @@
-"""CPU unit tests for the Qwen GDN backend selector (miles_plugins.models.qwen_gdn_backend)."""
-
 import importlib.util
 import sys
 from pathlib import Path

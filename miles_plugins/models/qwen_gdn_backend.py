@@ -26,7 +26,6 @@ def _validate_flashqla_runtime():
 
 
 def get_chunk_gated_delta_rule(backend: str):
-    """Resolve the chunk_gated_delta_rule kernel for the requested GDN backend."""
     if backend == "fla":
         try:
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
