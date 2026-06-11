@@ -133,9 +133,7 @@ def run_ci(
     # into a temp dir so each rollout_id has a file, keeping the production load path unchanged.
     cyclic_data_dir = materialize_cyclic_debug_rollout_data(num_steps)
     train_args = (
-        get_common_train_args(
-            ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=cyclic_data_dir
-        )
+        get_common_train_args(ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=cyclic_data_dir)
         + get_ft_args(ft_mode)
         + f"--control-server-port {_CONTROL_SERVER_PORT} "
         + "--mini-ft-controller-enable "

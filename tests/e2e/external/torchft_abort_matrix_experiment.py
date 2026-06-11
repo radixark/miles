@@ -407,10 +407,7 @@ def _run_experiment(exp: str, *, store_base: str, store_hostport: str, timeout_s
         if exp.startswith("native_wedge"):
             # Cell A gets a RAW c10d NCCL PG; a1 wedges inside a real collective.
             ray.get(
-                [
-                    workers[n].build_native_cell_pg.remote(store_addr=store_hostport, prefix=exp)
-                    for n in ("a0", "a1")
-                ],
+                [workers[n].build_native_cell_pg.remote(store_addr=store_hostport, prefix=exp) for n in ("a0", "a1")],
                 timeout=60,
             )
             _fire_and_forget(workers["a1"].wedge_native_collective.remote())
