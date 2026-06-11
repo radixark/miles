@@ -35,24 +35,6 @@ _NETWORK_ENV_NAMES = (
     "TP_SOCKET_IFNAME",
     "NCCL_IB_HCA",
     "NCCL_IB_GID_INDEX",
-    "NCCL_IB_TC",
-    "NCCL_IB_TIMEOUT",
-    "NCCL_IB_RETRY_CNT",
-    "NCCL_IB_QPS_PER_CONNECTION",
-    "NCCL_IB_SPLIT_DATA_ON_QPS",
-    "NCCL_NVLS_ENABLE",
-    "NCCL_MIN_NCHANNELS",
-    "NCCL_MAX_NCHANNELS",
-    "NCCL_ALGO",
-    "NCCL_PXN_DISABLE",
-    "NCCL_NET_GDR_LEVEL",
-    "NCCL_DEBUG",
-    "NCCL_DEBUG_SUBSYS",
-    "TORCH_NCCL_ASYNC_ERROR_HANDLING",
-    "TORCH_NCCL_DUMP_ON_TIMEOUT",
-    "TORCH_NCCL_TRACE_BUFFER_SIZE",
-    "TORCH_FR_BUFFER_SIZE",
-    "TORCH_NCCL_DESYNC_DEBUG",
 )
 
 _ROCM_ENV_DEFAULTS = {
@@ -63,6 +45,29 @@ _ROCM_ENV_DEFAULTS = {
     "USE_CUDA": "0",
     "ROCM_HOME": "/opt/rocm",
     "ROCM_PATH": "/opt/rocm",
+}
+
+_RCCL_TUNING_DEFAULTS = {
+    "NCCL_IB_TC": "160",
+    "NCCL_IB_TIMEOUT": "22",
+    "NCCL_IB_RETRY_CNT": "7",
+    "NCCL_IB_QPS_PER_CONNECTION": "2",
+    "NCCL_IB_SPLIT_DATA_ON_QPS": "0",
+    "NCCL_MIN_NCHANNELS": "32",
+    "NCCL_MAX_NCHANNELS": "32",
+    "NCCL_ALGO": "Ring",
+    "NCCL_PXN_DISABLE": "0",
+    "NCCL_NET_GDR_LEVEL": "2",
+}
+
+_NCCL_DEBUG_ENV_DEFAULTS = {
+    "NCCL_DEBUG": "INFO",
+    "NCCL_DEBUG_SUBSYS": "INIT,NET,COLL",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "TORCH_NCCL_DUMP_ON_TIMEOUT": "1",
+    "TORCH_NCCL_TRACE_BUFFER_SIZE": "200000",
+    "TORCH_FR_BUFFER_SIZE": "200000",
+    "TORCH_NCCL_DESYNC_DEBUG": "1",
 }
 
 _MEGATRON_DSV4_ENV_DEFAULTS = {
@@ -171,6 +176,7 @@ class ScriptArgs(upstream.ScriptArgs):
     replicate_torch_dist_release: bool = True
 
     external_ray_required: bool = True
+    nccl_debug: bool = False
 
     def __post_init__(self):
         super().__post_init__()
@@ -203,6 +209,12 @@ def _network_env() -> dict[str, str]:
 
 def _env_defaults(defaults: dict[str, str]) -> dict[str, str]:
     return {name: os.environ.get(name, value) for name, value in defaults.items()}
+
+
+def _nccl_debug_env(args: ScriptArgs) -> dict[str, str]:
+    if not args.nccl_debug:
+        return {}
+    return _env_defaults(_NCCL_DEBUG_ENV_DEFAULTS)
 
 
 def _validate_layout(args: ScriptArgs) -> None:
@@ -609,6 +621,8 @@ def _base_env(args: ScriptArgs, *, include_async_path: bool = False) -> dict[str
         "CUDA_VISIBLE_DEVICES": visible_devices,
         "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES": "1",
         **_env_defaults(_ROCM_ENV_DEFAULTS),
+        **_env_defaults(_RCCL_TUNING_DEFAULTS),
+        **_nccl_debug_env(args),
         **_env_defaults(_MEGATRON_DSV4_ENV_DEFAULTS),
         **_network_env(),
     }
@@ -672,8 +686,8 @@ def _train(args: ScriptArgs):
             "--save-retain-interval 20 "
         )
 
-    context_length = args.context_length or (512 if args.mode == "debug_minimal" else 8192)
-    response_len = _pick(args, "rollout_max_response_len", 64, 4096)
+    context_length = _pick(args, "context_length", 512, 16384)
+    response_len = _pick(args, "rollout_max_response_len", 64, 8192)
     rollout_max_prompt_len = max(1, context_length - response_len)
     num_rollout = _pick(args, "num_rollout", 1, 3000)
     n_samples = _pick(args, "n_samples_per_prompt", 1, 8)
@@ -690,7 +704,7 @@ def _train(args: ScriptArgs):
         )
     )
     batch_unit = args.micro_batch_size * actor_dp_size
-    rollout_batch_size = args.rollout_batch_size or batch_unit
+    rollout_batch_size = _pick(args, "rollout_batch_size", batch_unit, 12)
     if rollout_batch_size % batch_unit != 0:
         raise ValueError(
             "rollout_batch_size must be divisible by micro_batch_size * actor data_parallel_size: "
@@ -802,8 +816,8 @@ def _train(args: ScriptArgs):
         )
 
     sglang_mem_fraction = _pick(args, "sglang_mem_fraction_static", 0.50, 0.70)
-    sglang_max_running = _pick(args, "sglang_max_running_requests", 2, 8)
-    sglang_max_total_tokens = _pick(args, "sglang_max_total_tokens", 2048, 65536)
+    sglang_max_running = _pick(args, "sglang_max_running_requests", 2, 32)
+    sglang_max_total_tokens = _pick(args, "sglang_max_total_tokens", 2048, 262144)
     sglang_cuda_graph_args = (
         "--sglang-disable-cuda-graph --sglang-disable-piecewise-cuda-graph "
         if args.sglang_disable_cuda_graph
@@ -853,7 +867,6 @@ def _train(args: ScriptArgs):
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
-        "--use-miles-router "
     )
     if args.use_fault_tolerance:
         misc_args += "--use-fault-tolerance "
@@ -863,6 +876,7 @@ def _train(args: ScriptArgs):
         misc_args += f"--dump-details {args.debug_data_root}/{args.run_id}/dump_details "
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
+        misc_args += "--use-miles-router "
 
     extra_env_vars = _extra_env(args)
     if args.train_deterministic:
