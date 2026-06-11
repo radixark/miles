@@ -74,8 +74,6 @@ RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/ro
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
-RUN pip install flydsl==0.0.1.dev95158637 psutil pybind11
-
 # Install Transformer Engine from the requested branch. NVTE_FUSED_ATTN=0 is scoped to
 # this build step only (skip the extra fused-attn kernel matrix rebuild), not the runtime env.
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
