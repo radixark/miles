@@ -8,10 +8,6 @@ docs_new/
 └── miles/docs/      # All page content (markdown) and assets
 ```
 
-The `miles/docs/` nesting looks odd, but don't flatten it: `docs.json` and the 280+ internal
-links across the pages are all root-relative paths like `/miles/docs/models/index`, resolved
-against this directory as the Mintlify content root. Flattening would break every one of them.
-
 ## Previewing locally
 
 ```bash
