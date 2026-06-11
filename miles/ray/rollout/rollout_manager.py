@@ -198,6 +198,13 @@ class RolloutManager:
 
     async def get_updatable_engines_and_lock(self):
         """Return engines eligible for weight updates."""
+        # The weight update pauses generation on every engine, and sglang's internal
+        # watchdog starts failing /health_generate once generation has been paused for
+        # ~20s (no detokenizer heartbeat). A post-crash training step can easily stretch
+        # the paused window past that, at which point the health monitor would ray.kill a
+        # perfectly healthy engine in the middle of the weight broadcast. Health checking
+        # resumes at the next generate()/eval() call, after generation continues.
+        self._health_monitoring_pause()
         srv = self._get_updatable_server()
         if not srv:
             return EnginesAndLock(
