@@ -95,8 +95,8 @@ scenario requires bitwise equality (`rel <= 0`), which relies on both
 `train/grad_norm` (`rtol<=1e-6`): its bracketing depends on the distributed-optimizer
 shard count (8 flat vs 2 per cell), so a few fp32 ulps are inherent, while the grads
 themselves stay bitwise-checked via the dumps. Every other scenario allows a small
-relative diff (`rel <= 0.0085`, with_failure also flooring near-zero MoE-expert grads at
-`max_abs <= 1e-3`). Unmatched tensors are a fail-closed error, so end each list with a `.*`
+relative diff (`rel <= 0.0085`, with_failure also flooring near-zero MoE-expert and
+QK-norm (`q_layernorm`/`k_layernorm`) grads at `max_abs <= 1e-3`). Unmatched tensors are a fail-closed error, so end each list with a `.*`
 catch-all. Exact per-scenario thresholds are in Test Definitions below.
 
 ## Debug Rollout Data
@@ -171,8 +171,8 @@ Phase B — target:
   6. Rollout 3: _refresh_cells() healing → N cells
   7. Rollout 4: N cells stable
 
-Compare: phase_b dumps (rel <= 0.0085, MoE expert grads also tolerate max_abs <= 1e-3)
-and metrics (rtol=5e-2).
+Compare: phase_b dumps (rel <= 0.0085; MoE expert grads and QK-norm grads also
+tolerate max_abs <= 1e-3) and metrics (rtol=5e-2).
 
 Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.

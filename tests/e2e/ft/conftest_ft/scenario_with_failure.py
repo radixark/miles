@@ -21,14 +21,15 @@ NUM_PHASE_B_STEPS: int = 4
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
 # weights stay bit-identical:
 #   - starved MoE expert grads (grad__...mlp.experts.*), max_abs ~1e-5..4e-4;
-#   - attention k_layernorm grads (grad__...k_layernorm.*), measured rel ~1.2-1.5%,
-#     max_abs_diff ~2.3e-4, failing layer varies per rollout -> FP noise.
+#   - attention q/k_layernorm grads (grad__...q_layernorm.* / ...k_layernorm.*, the two
+#     QK-norm weights), measured rel ~1.1-1.5%, max_abs_diff ~6e-5..2.3e-4, failing
+#     layer varies per rollout -> FP noise.
 # Both are cancellation-dominated near-zero grads, so they also tolerate
 # max_abs <= 1e-3 (well below real grads ~1e-2): a real diff there still fails, and
 # everything else stays strict via the catch-all (an unmatched tensor is fail-closed).
 _DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (r"grad__.*\.mlp\.experts\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
-    (r"grad__.*\.k_layernorm\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
+    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
     (".*", "rel <= 0.0085"),
 ]
 
