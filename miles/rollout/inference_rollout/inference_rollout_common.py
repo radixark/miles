@@ -41,6 +41,7 @@ class GenerateState:
             top_p=args.rollout_top_p,
             top_k=args.rollout_top_k,
             max_new_tokens=args.rollout_max_response_len,
+            presence_penalty=args.rollout_presence_penalty,
         )
 
         self.generate_function = load_generate_function(args.custom_generate_function_path) or generate
@@ -155,12 +156,14 @@ def compute_sampling_params(
     top_p,
     top_k,
     max_new_tokens,
+    presence_penalty=None,
 ):
     return dict(
         temperature=temperature,
         top_p=top_p,
         top_k=top_k,
         max_new_tokens=max_new_tokens,
+        presence_penalty=presence_penalty,
         stop=args.rollout_stop,
         stop_token_ids=args.rollout_stop_token_ids,
         skip_special_tokens=args.rollout_skip_special_tokens,

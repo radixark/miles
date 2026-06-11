@@ -313,6 +313,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
             )
             parser.add_argument(
+                "--rollout-presence-penalty",
+                type=float,
+                default=0.0,
+                help="the presence penalty for the inference engine during rollout.",
+            )
+            parser.add_argument(
                 "--rollout-max-context-len",
                 type=int,
                 default=None,
@@ -820,6 +826,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eval-temperature", type=float, default=None)
             parser.add_argument("--eval-top-p", type=float, default=None)
             parser.add_argument("--eval-top-k", type=int, default=None)
+            parser.add_argument("--eval-presence-penalty", type=float, default=None)
             parser.add_argument("--eval-max-response-len", type=int, default=None)
             parser.add_argument("--eval-max-prompt-len", type=int, default=None)
             parser.add_argument("--eval-min-new-tokens", type=int, default=None)
