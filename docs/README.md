@@ -5,7 +5,7 @@ Live site: https://www.radixark.com/miles/docs
 ## Layout
 
 ```
-docs_new/
+docs/
 ├── docs.json        # Mintlify config: navigation, theme, redirects
 └── miles/docs/      # All page content (markdown) and assets
 ```
@@ -14,7 +14,7 @@ docs_new/
 
 ```bash
 npm i -g mint
-cd docs_new
+cd docs
 mint dev
 ```
 
