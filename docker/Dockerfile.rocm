@@ -74,26 +74,7 @@ RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/ro
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
-
-# Rebuild AITER at the version paired with SGLang (the base ships an AITER checkout
-# under /sgl-workspace/aiter that we re-pin and rebuild for the target arch).
-RUN pip uninstall -y aiter || true
 RUN pip install flydsl==0.0.1.dev95158637 psutil pybind11
-RUN cd /sgl-workspace/aiter && \
-    git remote set-url origin ${AITER_REPO} && \
-    git checkout ${AITER_COMMIT} && \
-    git reset --hard ${AITER_COMMIT} && \
-    git clean -fdx && \
-    git submodule sync --recursive && \
-    git submodule update --init --recursive && \
-    # AITER source patches scoped to gfx950 / ROCm 7.2 (MI350/MI355) only:
-    if [ "${GPU_ARCH}" = "gfx950" ]; then \
-      sed -i '/if enable_gluon_pa_mqa_logits:/ s/.*/    if False:/' \
-        aiter/ops/triton/attention/pa_mqa_logits.py && \
-      sed -i '/c1 = torch.empty((M, D, S1 + S3), dtype=dtype, device=x.device)/i\    config = dict(config)' \
-        aiter/ops/triton/gemm/fused/fused_gemm_afp4wfp4_split_cat.py; \
-    fi && \
-    GPU_ARCHS=${GPU_ARCH} pip install -e .
 
 # Install Transformer Engine from the requested branch. NVTE_FUSED_ATTN=0 is scoped to
 # this build step only (skip the extra fused-attn kernel matrix rebuild), not the runtime env.
