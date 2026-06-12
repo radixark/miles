@@ -9,7 +9,6 @@ import ray
 from ray.util.placement_group import PlacementGroup
 
 from miles.backends.megatron_utils.types import TrainStepOutcome
-from miles.ray.rollout.rollout_manager import with_paused_health_monitoring
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
@@ -229,10 +228,9 @@ class RayTrainGroup:
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
-        async with with_paused_health_monitoring(self._rollout_manager):
-            info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
-            # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-            await retry(lambda _: self._execute_first_alive("update_weights", info=info))
+        info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
+        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+        await retry(lambda _: self._execute_first_alive("update_weights", info=info))
 
     async def onload(self):
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used

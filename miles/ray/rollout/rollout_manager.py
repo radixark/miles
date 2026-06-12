@@ -1,8 +1,6 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import ray
@@ -114,7 +112,7 @@ class RolloutManager:
     async def generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
-        self.health_monitoring_resume()
+        self._health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
@@ -138,7 +136,7 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
-        self.health_monitoring_resume()
+        self._health_monitoring_resume()
 
         if self.use_experimental_refactor:
             result = await asyncio.to_thread(
@@ -190,7 +188,7 @@ class RolloutManager:
 
     # TODO may parallelly execute offload/onload across services
     async def offload(self, tags: list[str] | None = None):
-        self.health_monitoring_pause()
+        self._health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -208,6 +206,7 @@ class RolloutManager:
 
     async def get_updatable_engines_and_lock(self):
         """Return engines eligible for weight updates."""
+        self._health_monitoring_pause()
         srv = self._get_updatable_server()
         if not srv:
             return EnginesAndLock(
@@ -239,7 +238,7 @@ class RolloutManager:
         Recovers the updatable model (the one that receives weight
         updates from training).
         """
-        self.health_monitoring_pause()
+        self._health_monitoring_pause()
         srv = self._get_updatable_server()
         if self.rollout_id == -1 or srv is None:
             return
@@ -286,11 +285,11 @@ class RolloutManager:
 
     # -------------------------- utils -----------------------------
 
-    def health_monitoring_pause(self) -> None:
+    def _health_monitoring_pause(self) -> None:
         for monitor in self._health_monitors:
             monitor.pause()
 
-    def health_monitoring_resume(self) -> None:
+    def _health_monitoring_resume(self) -> None:
         for monitor in self._health_monitors:
             monitor.resume()
 
@@ -336,11 +335,3 @@ class EnginesAndLock:
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
 
-
-@asynccontextmanager
-async def with_paused_health_monitoring(rollout_manager) -> AsyncIterator[None]:
-    await rollout_manager.health_monitoring_pause.remote()
-    try:
-        yield
-    finally:
-        await rollout_manager.health_monitoring_resume.remote()
