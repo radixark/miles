@@ -231,6 +231,27 @@ class ServerGroup:
         for engine_index in engine_indices:
             self.all_engines[engine_index].mark_alive()
 
+    def pause_generation(self):
+        if not self.needs_offload:
+            return []
+        # mode="abort": requests still in flight at the offload boundary are
+        # unowned (the rollout step already returned). "retract" would park them
+        # to be resumed while memory is still released, and is unsupported in PD
+        # disaggregation.
+        return [
+            engine.actor_handle.pause_generation.remote(mode="abort") for engine in self.engines if engine.is_allocated
+        ]
+
+    def flush_cache(self):
+        if not self.needs_offload:
+            return []
+        return [engine.actor_handle.flush_cache.remote() for engine in self.engines if engine.is_allocated]
+
+    def continue_generation(self):
+        if not self.needs_offload:
+            return []
+        return [engine.actor_handle.continue_generation.remote() for engine in self.engines if engine.is_allocated]
+
     def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
