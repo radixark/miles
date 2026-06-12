@@ -64,12 +64,17 @@ def _dict_arguments(args: Any) -> dict:
     - ``str`` -> guarded ``json.loads`` (empty -> ``{}``); a ``JSONDecodeError`` or a
       value that decodes to a non-dict (list/number) is preserved under
       ``_raw_arguments`` so it still renders.
-    - anything else (``None``, or a native non-dict such as a list/number) -> ``{}``
-      (``|items`` on a non-mapping would raise).
+    - ``None`` / falsy -> ``{}`` (nothing to preserve).
+    - any other native non-dict (a list/number that is *not* a wire string) ->
+      preserved under ``_raw_arguments``, mirroring the stringified non-dict branch
+      (``|items`` on the raw value would otherwise raise).
 
     ``_raw_arguments`` is a render-only sentinel with no programmatic consumer: it
     gives ``arguments|items`` a key to iterate so a malformed call surfaces its raw
     payload in the rendered text instead of being silently rewritten to an empty one.
+    Preserving native non-dict args the same way as stringified non-dict args keeps the
+    two adversarial branches consistent and matches the slime reference
+    (``slime/agent/auto_sample_builder/messages.py:tool_call_arguments``).
 
     This only touches the inbound dict/render normalization. The outbound wire path
     must stay a JSON string per the OpenAI spec and is handled by the ``"json"`` format.
@@ -82,9 +87,13 @@ def _dict_arguments(args: Any) -> dict:
         except json.JSONDecodeError:
             return {"_raw_arguments": args}
         return decoded if isinstance(decoded, dict) else {"_raw_arguments": args}
-    # Non-str, non-dict (None, or a native list/number) -> empty mapping; the leading
-    # ``isinstance(args, dict)`` guard already returned every dict, so nothing to keep.
-    return {}
+    if not args:
+        # None / falsy (0, [], "" is handled by the str branch) -> nothing to preserve.
+        return {}
+    # A native non-dict (e.g. a list/number that never went over the wire as a string).
+    # Preserve it losslessly so the call still renders and the payload stays inspectable,
+    # exactly as the stringified non-dict branch above does.
+    return {"_raw_arguments": args}
 
 
 def normalize_tool_arguments(messages: list[dict], format: Literal["dict", "json"]) -> list[dict]:
