@@ -10,35 +10,31 @@ CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the scri
 ## Dockerfiles
 
 
-| Path                                                             | Builds                               | Wired into                            |
-| ---------------------------------------------------------------- | ------------------------------------ | ------------------------------------- |
-| `docker/Dockerfile`                                              | `radixark/miles` — the CI base image | `docker-build.yml` |
-| `docker/Dockerfile.rocm_MI300`, `docker/Dockerfile.rocm_MI350-5` | AMD ROCm                             | manual                                |
+| Path | Builds | Wired into |
+| ---- | ------ | ---------- |
+| `docker/Dockerfile`      | `radixark/miles` — the CUDA image (x86 + arm64) | `docker-build.yml` |
+| `docker/Dockerfile.rocm` | AMD ROCm (MI30x / MI35x)                        | `docker-build.yml` (`rocm-*` variants) |
 
-
-Only `docker/Dockerfile` is built by automation; the ROCm Dockerfiles are arch-specific and built by hand. The main Dockerfile is multi-stage: it starts `FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG}` (a pinned `lmsysorg/sglang` release, set by the `SGLANG_IMAGE_TAG` default), installs the sglang source from the `sglang-miles` branch, then layers Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, sgl-router, and prebuilt wheels from `yueming-yuan/miles-wheels`.
+`docker/Dockerfile` is multi-stage: `FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG}` (a multi-arch `lmsysorg/sglang` release), installs sglang from the `sglang-miles` branch, then layers Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and prebuilt wheels from `yueming-yuan/miles-wheels` (sgl-router among them) — selected per-arch from `TARGETARCH`, so one build serves both x86 and arm64. `docker/Dockerfile.rocm` builds the AMD variants.
 
 ## Build script
 
-`docker/build.py` builds and pushes the image. Pick a build with `--cuda {129,130}` (CUDA 12.9 / 13.0) and `--arch {x86,aarch64}`; it derives the build-args and tag from a single `(cuda, arch)` table — the single source of truth that `docker/Dockerfile`'s header defers to. A safety check rejects any build-arg the Dockerfile doesn't declare as an `ARG`, so the table can't drift from the Dockerfile.
+`docker/build.py` builds and pushes the images. Select a build with `--variant` and a tag mode with `--image-tag {dev,latest,custom}`. A single `VARIANTS` table is the source of truth for each variant's image, target platforms, Dockerfile, and build-args.
 
-The image tag is **prefix + suffix**:
-
-- **prefix** — set by `--tag`, one of:
-  - `dev` (default) — rolling CI image: `dev` + timestamped `dev-<YYYYMMDDHHMM>` sibling. PR CI pulls `dev`.
-  - `latest` — stable pointer; nightly repoints it at the new `dev` instead of building it (`--tag latest` pushes verbatim).
-  - any literal — one-off tag, pushed verbatim (no sibling, never pruned).
-- **suffix** — the CUDA variant: cu13 (`--cuda 130`) has no suffix; cu12 (`--cuda 129`) is `-cu12`. The arch is never in the tag — cu13 is meant to be one multi-arch image (x86 + aarch64; aarch64 lands in Step B), cu12 is x86-only.
-
-So `--tag dev` → `dev` (cu13) or `dev-cu12` (cu12); `--tag latest` → `latest` / `latest-cu12`.
-
-Other flags: `--test` (append `-test` to the tag, e.g. `dev-test` — a single, non-timestamped throwaway image), `--push`, `--dry-run`, `--dockerfile`.
-
-| `--cuda` | `--arch` | Tag (prefix `dev`) | Wired? |
+| `--variant` | Tag (`--image-tag dev`) | Platforms | Notes |
 |---|---|---|---|
-| 130 | x86 | `dev` | yes |
-| 130 | aarch64 | `dev` (same multi-arch manifest) | Step B |
-| 129 | x86 | `dev-cu12` | yes |
+| `cu13`         | `radixark/miles:dev`               | `linux/amd64` + `linux/arm64` | **multi-arch**, one manifest — the daily image |
+| `cu13-x86`     | `radixark/miles:dev`               | `linux/amd64`                 | x86-only build of the same image |
+| `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image |
+| `cu12-x86`     | `radixark/miles:dev-cu12`          | `linux/amd64`                 | CUDA 12.9 legacy |
+| `rocm-mi300`   | `rocm/sgl-dev:miles-rocm700-mi30x` | native                        | AMD MI30x — `docker/Dockerfile.rocm` |
+| `rocm-mi350`   | `rocm/sgl-dev:miles-rocm720-mi35x` | native                        | AMD MI35x — `docker/Dockerfile.rocm` |
+
+The cu13 variants share one CUDA base (`lmsysorg/sglang:v0.5.12`, multi-arch) and differ only in platforms. `cu13` runs a single `buildx --platform linux/amd64,linux/arm64`, picking each layer's wheels inside the Dockerfile from `TARGETARCH` (amd64→`x86_64`, arm64→`aarch64`), and pushes one manifest so `docker pull` auto-selects by host arch.
+
+The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
+
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — it can't load into the local image store; use `cu13-x86` / `cu13-aarch64` for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
 
 ## Remote docker build (`docker-build.yml`)
 
@@ -61,7 +57,7 @@ The only automated builder of `radixark/miles`. Two jobs:
 ### Steps (`build-and-push`)
 
 1. checkout → set up Buildx → install Python + typer → log in to Docker Hub.
-2. **Build and push** — `python3 docker/build.py --cuda … --arch … --tag … --dockerfile … [--test] --push`. Empty dispatch inputs fall back to the scheduled default `--cuda 130 --arch x86 --tag dev`; `tag=dev` pushes both `dev` and `dev-<YYYYMMDDHHMM>`.
+2. **Build and push** — `python3 docker/build.py --variant … --image-tag … [--custom-tag …] --dockerfile … --push`. Empty dispatch inputs fall back to the scheduled default `--variant cu13 --image-tag dev`; `--image-tag dev` pushes both `dev` and `dev-<YYYYMMDDHHMM>` (the multi-arch image).
 3. **Point `latest` to `dev`** (schedule / `simulate_schedule`) — `docker buildx imagetools create -t …:latest …:dev`.
 4. **Prune old `dev` tags** (schedule only) — keep the newest 20 `dev-<timestamp>`, delete the rest via the Docker Hub API.
 
