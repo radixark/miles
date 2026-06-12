@@ -28,11 +28,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from miles.utils.chat_template_utils import (
-    TEMPLATE_DIR,
-    apply_chat_template_from_str,
-    normalize_tool_arguments,
-)
+from miles.utils.chat_template_utils import TEMPLATE_DIR, apply_chat_template_from_str, normalize_tool_arguments
 
 _QWEN35_FIXED = (TEMPLATE_DIR / "qwen3.5_fixed.jinja").read_text()
 
@@ -124,8 +120,10 @@ def test_native_non_dict_preserved_under_raw_arguments():
     preserved losslessly under ``_raw_arguments``, exactly like a stringified non-dict.
     The two adversarial branches stay consistent and the payload remains inspectable
     instead of being silently rewritten to an empty mapping (matches the slime
-    reference ``slime/agent/auto_sample_builder/messages.py:tool_call_arguments``)."""
-    for arguments in ([1, 2, 3], 42):
+    reference ``slime/agent/auto_sample_builder/messages.py:tool_call_arguments``).
+    Falsy natives (``0``, ``[]``) are real argument values, not "no arguments" —
+    only ``None`` maps to ``{}``."""
+    for arguments in ([1, 2, 3], 42, 0, []):
         normalized = normalize_tool_arguments(_messages_with_args(arguments), "dict")
         assert _tool_call_arguments(normalized) == {"_raw_arguments": arguments}
 
