@@ -18,27 +18,40 @@ _FILTER_TEST_DATA_ROWS = [
     {"input": "What is 1+6?", "label": "7"},  # reward=1
 ]
 
+_FILTER_HOOK_ARGV = [
+    "--rollout-batch-size",
+    "2",
+    "--over-sampling-batch-size",
+    "4",
+    "--dynamic-sampling-filter-path",
+    "test:filter_by_reward",
+    "--rollout-sample-filter-path",
+    "test:sample_filter",
+    "--rollout-all-samples-process-path",
+    "test:all_samples_process",
+]
+
+# Appended after the modular defaults; argparse keeps the last occurrence, so
+# this routes the same test through the legacy built-in rollout fn, which must
+# equally not re-apply the sample filter the manager now owns.
+_LEGACY_ROLLOUT_FN_ARGV = [
+    "--rollout-function-path",
+    "miles.rollout.sglang_rollout.generate_rollout",
+    "--custom-generate-function-path",
+    "miles.rollout.sglang_rollout.generate",
+]
+
 
 @pytest.mark.parametrize(
     "rollout_env",
     [
         pytest.param(
-            integration_env_config(
-                [
-                    "--rollout-batch-size",
-                    "2",
-                    "--over-sampling-batch-size",
-                    "4",
-                    "--dynamic-sampling-filter-path",
-                    "test:filter_by_reward",
-                    "--rollout-sample-filter-path",
-                    "test:sample_filter",
-                    "--rollout-all-samples-process-path",
-                    "test:all_samples_process",
-                ],
-                data_rows=_FILTER_TEST_DATA_ROWS,
-            ),
+            integration_env_config(_FILTER_HOOK_ARGV, data_rows=_FILTER_TEST_DATA_ROWS),
             id="sample_filter_vs_all_samples",
+        ),
+        pytest.param(
+            integration_env_config(_FILTER_HOOK_ARGV + _LEGACY_ROLLOUT_FN_ARGV, data_rows=_FILTER_TEST_DATA_ROWS),
+            id="sample_filter_vs_all_samples_legacy_rollout_fn",
         ),
     ],
     indirect=True,
@@ -53,15 +66,22 @@ def test_sample_filter_and_all_samples_process(rollout_env):
         function_registry.temporary("test:sample_filter", sample_filter_mock),
         function_registry.temporary("test:all_samples_process", all_samples_process_mock),
     ):
-        load_and_call_train(env.args, env.data_source)
+        out = load_and_call_train(env.args, env.data_source)
 
-    sample_filter_mock.assert_called_once()
-    _, filtered_data = sample_filter_mock.call_args[0]
-    rewards = [g[0][0].reward if isinstance(g[0], list) else g[0].reward for g in filtered_data]
-    assert all(r == 1 for r in rewards)
+    # --rollout-sample-filter-path is applied generically in the manager
+    # (postprocess_rollout_data), NOT inside the rollout fn, so calling the
+    # rollout fn directly here must not invoke the sample filter. See
+    # tests/fast/ray/rollout/test_rollout_data_conversion.py for the
+    # manager-side coverage of the hoisted filter.
+    sample_filter_mock.assert_not_called()
 
+    # --rollout-all-samples-process-path stays in the rollout fn (it needs
+    # all_samples / data_source the manager lacks), so it is still applied here.
     all_samples_process_mock.assert_called_once()
     _, all_samples, data_source = all_samples_process_mock.call_args[0]
     assert data_source is not None
-
-    assert len(all_samples) > len(filtered_data), "all_samples_process should see more samples than sample_filter"
+    # all_samples is the full over-sampled set (4 prompts); the rollout output
+    # keeps only the dynamic-filter survivors (the 2 reward==1 prompts), so
+    # all_samples must strictly exceed the trained set.
+    trained = [s for group in out.samples for s in group]
+    assert len(all_samples) > len(trained) > 0

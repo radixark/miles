@@ -1,6 +1,7 @@
 import itertools
 import logging
 
+from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -8,7 +9,11 @@ logger = logging.getLogger(__name__)
 def postprocess_rollout_data(args, data, train_parallel_config):
     metadata = {}
 
-    # flatten the data if it is a list of lists
+    # Generic choke point: every rollout fn honors --rollout-sample-filter-path here,
+    # while `data` is still grouped list[list[Sample]] (before the flatten below).
+    if (filter_func := load_function(args.rollout_sample_filter_path)) is not None:
+        filter_func(args, data)
+
     while isinstance(data[0], list):
         data = list(itertools.chain.from_iterable(data))
 
