@@ -459,11 +459,12 @@ async def generate_rollout_async(
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
-    if (x := args.rollout_sample_filter_path) is not None:
-        filter_func = load_function(x)
-        filter_func(args, data)
+    # --rollout-sample-filter-path is now applied generically in the manager
+    # (RolloutManager._get_rollout_data -> postprocess_rollout_data), so it is
+    # no longer applied here to avoid double-filtering.
 
     # There can be circumstances where users want to process all samples including filtered ones.
+    # --rollout-all-samples-process-path stays here: it needs all_samples/data_source the manager lacks.
     if (x := args.rollout_all_samples_process_path) is not None:
         process_func = load_function(x)
         process_func(args, all_samples, data_source)
