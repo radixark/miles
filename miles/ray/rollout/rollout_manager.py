@@ -186,6 +186,10 @@ class RolloutManager:
 
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+        # Matching resume for the pause issued by offload(): only un-pause once
+        # the KV cache and CUDA graphs are back. Servers are independent, so
+        # resume them concurrently.
+        await asyncio.gather(*[srv.continue_generation() for srv in self.servers.values()])
 
     # -------------------------- engine management -----------------------------
 
