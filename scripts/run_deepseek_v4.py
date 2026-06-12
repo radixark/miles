@@ -155,6 +155,7 @@ def _is_blackwell(args: ScriptArgs) -> bool:
     major, _minor = torch.cuda.get_device_capability()
     return major >= 10
 
+
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
     match args.task:
