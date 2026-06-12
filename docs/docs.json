@@ -3,12 +3,12 @@
   "name": "Miles",
   "theme": "mint",
   "logo": {
-    "light": "/miles/docs/assets/images/miles_logo_light.png",
-    "dark": "/miles/docs/assets/images/miles_logo_dark.png",
-    "href": "/miles/docs",
+    "light": "/assets/images/miles_logo_light.png",
+    "dark": "/assets/images/miles_logo_dark.png",
+    "href": "/",
     "width": 130
   },
-  "favicon": "/miles/docs/assets/images/miles_square.png",
+  "favicon": "/assets/images/miles_square.png",
   "colors": {
     "primary": "#d55816",
     "light": "#e8722a",
@@ -34,11 +34,11 @@
         "groups": [
           {
             "group": "Welcome",
-            "root": "miles/docs/index",
+            "root": "index",
             "pages": [
-              "miles/docs/getting-started/index",
-              "miles/docs/getting-started/installation",
-              "miles/docs/getting-started/quick-start"
+              "getting-started/index",
+              "getting-started/installation",
+              "getting-started/quick-start"
             ]
           }
         ]
@@ -48,50 +48,50 @@
         "groups": [
           {
             "group": "Models",
-            "root": "miles/docs/models/index",
+            "root": "models/index",
             "pages": [
               {
                 "group": "DeepSeek",
-                "root": "miles/docs/models/deepseek/index",
+                "root": "models/deepseek/index",
                 "pages": [
                   {
                     "group": "DeepSeek-V4",
                     "pages": [
-                      "miles/docs/models/deepseek/deepseek-v4-flash",
-                      "miles/docs/models/deepseek/deepseek-v4-pro"
+                      "models/deepseek/deepseek-v4-flash",
+                      "models/deepseek/deepseek-v4-pro"
                     ],
                     "expanded": false
                   },
-                  "miles/docs/models/deepseek/deepseek"
+                  "models/deepseek/deepseek"
                 ],
                 "expanded": false
               },
               {
                 "group": "Qwen",
-                "root": "miles/docs/models/qwen/index",
+                "root": "models/qwen/index",
                 "pages": [
                   {
                     "group": "Qwen3.6",
                     "pages": [
-                      "miles/docs/models/qwen/qwen3-6",
-                      "miles/docs/models/qwen/qwen3-6-moe"
+                      "models/qwen/qwen3-6",
+                      "models/qwen/qwen3-6-moe"
                     ],
                     "expanded": false
                   },
                   {
                     "group": "Qwen3.5",
                     "pages": [
-                      "miles/docs/models/qwen/qwen3-5",
-                      "miles/docs/models/qwen/qwen3-5-moe"
+                      "models/qwen/qwen3-5",
+                      "models/qwen/qwen3-5-moe"
                     ],
                     "expanded": false
                   },
-                  "miles/docs/models/qwen/qwen3-next",
+                  "models/qwen/qwen3-next",
                   {
                     "group": "Qwen3",
                     "pages": [
-                      "miles/docs/models/qwen/qwen3",
-                      "miles/docs/models/qwen/qwen3-moe"
+                      "models/qwen/qwen3",
+                      "models/qwen/qwen3-moe"
                     ],
                     "expanded": false
                   }
@@ -100,43 +100,43 @@
               },
               {
                 "group": "GLM",
-                "root": "miles/docs/models/glm/index",
+                "root": "models/glm/index",
                 "pages": [
-                  "miles/docs/models/glm/glm5",
-                  "miles/docs/models/glm/glm4-7-flash",
-                  "miles/docs/models/glm/glm4-5",
-                  "miles/docs/models/glm/glm4"
+                  "models/glm/glm5",
+                  "models/glm/glm4-7-flash",
+                  "models/glm/glm4-5",
+                  "models/glm/glm4"
                 ],
                 "expanded": false
               },
               {
                 "group": "Kimi",
-                "root": "miles/docs/models/kimi/index",
+                "root": "models/kimi/index",
                 "pages": [
-                  "miles/docs/models/kimi/kimi-k2.5",
-                  "miles/docs/models/kimi/kimi-k2",
-                  "miles/docs/models/kimi/moonlight"
+                  "models/kimi/kimi-k2.5",
+                  "models/kimi/kimi-k2",
+                  "models/kimi/moonlight"
                 ],
                 "expanded": false
               },
               {
                 "group": "Nemotron",
-                "root": "miles/docs/models/nemotron/index",
+                "root": "models/nemotron/index",
                 "pages": [
                   {
                     "group": "Nemotron-3-Nano",
                     "pages": [
-                      "miles/docs/models/nemotron/nemotron-3-nano",
-                      "miles/docs/models/nemotron/nemotron-3-nano-moe"
+                      "models/nemotron/nemotron-3-nano",
+                      "models/nemotron/nemotron-3-nano-moe"
                     ],
                     "expanded": false
                   },
-                  "miles/docs/models/nemotron/nemotron-3-super"
+                  "models/nemotron/nemotron-3-super"
                 ],
                 "expanded": false
               },
-              "miles/docs/models/mimo/mimo",
-              "miles/docs/models/gpt-oss/gpt-oss"
+              "models/mimo/mimo",
+              "models/gpt-oss/gpt-oss"
             ]
           }
         ]
@@ -146,18 +146,18 @@
         "groups": [
           {
             "group": "User Guide",
-            "root": "miles/docs/user-guide/index",
+            "root": "user-guide/index",
             "pages": [
-              "miles/docs/user-guide/concepts",
-              "miles/docs/user-guide/argument-groups",
-              "miles/docs/user-guide/usage",
-              "miles/docs/user-guide/training-script-walkthrough",
-              "miles/docs/user-guide/monitoring",
-              "miles/docs/user-guide/customization",
-              "miles/docs/user-guide/rollout-endpoints",
-              "miles/docs/user-guide/fully-async",
-              "miles/docs/user-guide/agentic-chat-template",
-              "miles/docs/user-guide/cli-reference"
+              "user-guide/concepts",
+              "user-guide/argument-groups",
+              "user-guide/usage",
+              "user-guide/training-script-walkthrough",
+              "user-guide/monitoring",
+              "user-guide/customization",
+              "user-guide/rollout-endpoints",
+              "user-guide/fully-async",
+              "user-guide/agentic-chat-template",
+              "user-guide/cli-reference"
             ]
           }
         ]
@@ -167,38 +167,38 @@
         "groups": [
           {
             "group": "Advanced Features",
-            "root": "miles/docs/advanced/index",
+            "root": "advanced/index",
             "pages": [
               {
                 "group": "Performance",
                 "pages": [
-                  "miles/docs/advanced/fp8-low-precision",
-                  "miles/docs/advanced/int4-qat",
-                  "miles/docs/advanced/speculative-decoding",
-                  "miles/docs/advanced/lora"
+                  "advanced/fp8-low-precision",
+                  "advanced/int4-qat",
+                  "advanced/speculative-decoding",
+                  "advanced/lora"
                 ],
                 "expanded": false
               },
               {
                 "group": "Scale & Reliability",
                 "pages": [
-                  "miles/docs/advanced/fault-tolerance",
-                  "miles/docs/advanced/pd-disaggregation",
-                  "miles/docs/advanced/p2p-weight-transfer"
+                  "advanced/fault-tolerance",
+                  "advanced/pd-disaggregation",
+                  "advanced/p2p-weight-transfer"
                 ],
                 "expanded": false
               },
               {
                 "group": "MoE & Routing",
                 "pages": [
-                  "miles/docs/advanced/miles-router"
+                  "advanced/miles-router"
                 ],
                 "expanded": false
               },
               {
                 "group": "Backends",
                 "pages": [
-                  "miles/docs/advanced/architecture-support"
+                  "advanced/architecture-support"
                 ],
                 "expanded": false
               }
@@ -211,14 +211,14 @@
         "groups": [
           {
             "group": "Examples",
-            "root": "miles/docs/examples/index",
+            "root": "examples/index",
             "pages": [
-              "miles/docs/examples/fully-async",
-              "miles/docs/examples/search-r1",
-              "miles/docs/examples/retool",
-              "miles/docs/examples/multi-agent",
-              "miles/docs/examples/reproducibility",
-              "miles/docs/examples/openhermes-sft"
+              "examples/fully-async",
+              "examples/search-r1",
+              "examples/retool",
+              "examples/multi-agent",
+              "examples/reproducibility",
+              "examples/openhermes-sft"
             ]
           }
         ]
@@ -228,13 +228,13 @@
         "groups": [
           {
             "group": "Developer Guide",
-            "root": "miles/docs/developer/index",
+            "root": "developer/index",
             "pages": [
-              "miles/docs/developer/contributor-guide",
-              "miles/docs/developer/debug",
-              "miles/docs/developer/migration",
-              "miles/docs/developer/architecture",
-              "miles/docs/developer/experimental-features"
+              "developer/contributor-guide",
+              "developer/debug",
+              "developer/migration",
+              "developer/architecture",
+              "developer/experimental-features"
             ]
           }
         ]
@@ -244,10 +244,10 @@
         "groups": [
           {
             "group": "Platforms",
-            "root": "miles/docs/platforms/index",
+            "root": "platforms/index",
             "pages": [
-              "miles/docs/platforms/nvidia",
-              "miles/docs/platforms/amd"
+              "platforms/nvidia",
+              "platforms/amd"
             ]
           }
         ]
@@ -258,8 +258,8 @@
           {
             "group": "Resources",
             "pages": [
-              "miles/docs/faq",
-              "miles/docs/blog/index"
+              "faq",
+              "blog/index"
             ]
           }
         ]
