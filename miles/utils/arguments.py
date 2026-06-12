@@ -1045,7 +1045,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--custom-pg-loss-reducer-function-path",
                 type=str,
                 default=None,
-                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
+                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. For the common constant-divisor (Dr.GRPO) case, use --pg-loss-divisor instead.",
+            )
+            parser.add_argument(
+                "--pg-loss-divisor",
+                type=float,
+                default=None,
+                help="Constant divisor for pg_loss aggregation, replacing each sample's active-token count (Dr.GRPO, https://arxiv.org/abs/2503.20783; set to the model's max context length, e.g. 40960). Must be positive. Only affects pg_loss; other metrics keep the default sum_of_sample_mean. No effect with --calculate-per-token-loss (Megatron then normalizes by token count itself).",
             )
 
             parser.add_argument(
@@ -1962,6 +1968,16 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 def miles_validate_args(args):
+    if args.pg_loss_divisor is not None:
+        # `not > 0` (rather than `<= 0`) also rejects NaN.
+        if not args.pg_loss_divisor > 0:
+            raise ValueError(f"--pg-loss-divisor must be a positive number, got {args.pg_loss_divisor}.")
+        if args.custom_pg_loss_reducer_function_path is not None:
+            raise ValueError(
+                "--pg-loss-divisor and --custom-pg-loss-reducer-function-path are mutually exclusive; "
+                "the custom reducer fully replaces the pg_loss reduction, so the divisor would be silently ignored."
+            )
+
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.recompute_logprobs_via_prefill:

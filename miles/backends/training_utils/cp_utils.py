@@ -96,9 +96,15 @@ def get_sum_of_sample_mean(
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    divisor: float | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """
     Calculate correct sample mean for CP
+
+    When `divisor` is set, each sample's masked token sum is divided by that
+    constant instead of its active-token count (Dr.GRPO, arXiv:2503.20783).
+    Has no effect with `calculate_per_token_loss` (Megatron then normalizes by
+    token count itself).
     """
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
@@ -152,7 +158,16 @@ def get_sum_of_sample_mean(
                 ]
             )
 
-    return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
+    if calculate_per_token_loss:
+        return sum_of_token
+    if divisor is not None:
+        # A constant denominator factors out of the per-sample sum, so the
+        # reduction is just the masked token sum scaled by 1/divisor. The
+        # divisor is identical on every CP rank, hence Megatron's gradient
+        # sum-allreduce reproduces the cp_size == 1 value with no extra
+        # denominator communication.
+        return lambda x: sum_of_token(x) / divisor
+    return sum_of_sample_mean
 
 
 def get_local_response_loss_masks(

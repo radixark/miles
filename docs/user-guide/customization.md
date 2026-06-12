@@ -26,7 +26,7 @@ and the default it replaces.
 | | `--rollout-data-postprocess-path` | Mutate samples post-logprob |
 | **Training** | `--custom-loss-function-path` | The loss formula |
 | | `--custom-tis-function-path` | Importance sampling correction |
-| | `--custom-pg-loss-reducer-function-path` | Loss reduction (Dr.GRPO) |
+| | `--custom-pg-loss-reducer-function-path` | Loss reduction |
 | | `--custom-convert-samples-to-train-data-path` | Sample to tensor batch |
 | **Megatron hooks** | `--custom-megatron-init-path` | After Megatron init |
 | | `--custom-megatron-before-log-prob-hook-path` | Before logprob compute |
@@ -193,8 +193,7 @@ def get_pg_loss_reducer(
     ...
 ```
 
-Use case: Dr.GRPO divides by a constant instead of effective token count.
-**Reference:** [`examples/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/DrGRPO/custom_reducer.py).
+Use case: a pg_loss reduction the built-in options do not cover. For the Dr.GRPO constant-divisor normalization, use the built-in `--pg-loss-divisor` instead — see [`examples/DrGRPO`](https://github.com/radixark/miles/blob/main/examples/DrGRPO).
 
 ### `--custom-convert-samples-to-train-data-path`
 

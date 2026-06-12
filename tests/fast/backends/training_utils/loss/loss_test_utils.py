@@ -94,6 +94,7 @@ _ARGS_DEFAULTS = dict(
     tis_clip_low=0.5,
     custom_tis_function_path=None,
     custom_pg_loss_reducer_function_path=None,
+    pg_loss_divisor=None,
     use_opsm=False,
     opsm_delta=0.1,
     calculate_per_token_loss=False,

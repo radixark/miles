@@ -238,6 +238,7 @@ Sections mirror the launch-script argument groups.
 | `--use-routing-replay` | flag | off | Forward/backward routing consistency. |
 | `--use-rollout-routing-replay` | flag | off | R3 — capture inference-side expert routing and replay it during training. |
 | `--calculate-per-token-loss` | flag | off | Per-token loss reduction. |
+| `--pg-loss-divisor` | float | – | Constant pg_loss divisor (Dr.GRPO, e.g. the max context length); unset = per-sample active-token mean. Mutually exclusive with `--custom-pg-loss-reducer-function-path`. |
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
 | `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |
 

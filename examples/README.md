@@ -4,7 +4,7 @@ These examples provide concrete examples to leverage miles in your own RL workfl
 
 ## Directory Structure
 
-- **[DrGRPO](./DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
+- **[DrGRPO](./DrGRPO)**: Constant pg-loss normalization (Dr.GRPO) via `--pg-loss-divisor`.
 - **[eval](./eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
 - **[eval_multi_task](./eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
 - **[formal_math](./formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
