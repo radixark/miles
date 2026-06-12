@@ -14,6 +14,12 @@ labels=["ft"])`. The CUDA CI runner executes each entry as bare `python3 <file>`
 | `scenario_with_failure` | Comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
 | `scenario_deterministic` | Comparison, multi-phase | healing state transfer is bitwise-correct (stop+start) |
 | `scenario_ft_random` | Non-comparison | system survives random crashes without hanging |
+| `scenario_accuracy_gsm8k` | Non-comparison | model still reaches gsm8k accuracy under injected faults |
+
+`scenario_accuracy_gsm8k` has no mode variants: its single entry
+`test_trainer_ft_accuracy_gsm8k.py` reuses the recipe of
+`tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` (2-GPU colocate) and registers on the
+`stage-c-2-gpu-h200` suite with `labels=["ft", "long"]`.
 
 ## Mode Variants
 
@@ -74,8 +80,9 @@ Set `PYTHONPATH` to the repo root (CI sets it automatically). Two ways:
    dumps, or re-run a single side / phase.
 
    `scenario_ft_random` is non-comparison: only `run`, with `--seed` / `--num-steps` /
-   `--crash-probability`. Each scenario's modes, phases, and knobs are in Mode Variants and
-   Test Definitions.
+   `--crash-probability`. `scenario_accuracy_gsm8k` is likewise non-comparison (and has no
+   `--mode`): only `run`, with `--seed` / `--num-rollout` / `--metric-threshold`. Each
+   scenario's modes, phases, and knobs are in Mode Variants and Test Definitions.
 
 Dumps are written under `/node_public/dumps/<test_name>/` (see `conftest_ft/app.py`
 `resolve_dump_dir`).
@@ -247,4 +254,35 @@ Architecture (external fault injection, not inside training loop):
   6. Verify: training completes, no hangs, prod assertions pass
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.1)
+```
+
+### `scenario_accuracy_gsm8k`
+
+Non-comparison accuracy-gain test. Verifies that the model still learns end-to-end under
+injected faults — the semantic property that dump-comparison scenarios cannot observe
+(they only check numerics against a baseline; notably, whether the engines receive
+correct weights after recovery and whether the post-fault on-policy loop still improves
+accuracy are out of their reach).
+
+```
+Type: non-comparison (no baseline run; the regular CI runs of
+      tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py serve as the reference wandb curves)
+Recipe: same as the no-fault baseline test (Qwen2.5-0.5B, GRPO, 250 rollouts,
+        2-GPU colocate) plus --ft-components train (dp2 -> 2 cells)
+
+Fault schedule (seeded, fully reproducible from --seed and --num-rollout):
+  - 2 train fault units, each mirroring scenario_with_failure: rank 0 of the last
+    cell crashes before allreduce (degraded-quorum commit on retry), then the cell
+    is stopped and restarted (healing). Injected via --ci-ft-test-actions.
+  - 2 rollout engine kills via --ci-engine-kill-rollout-ids, which extends the
+    legacy one-shot --ci-test engine crash injection (RolloutManager.
+    _try_ci_fault_injection, also used by test_qwen2.5_0.5B_gsm8k_short.py) to
+    fire at the listed rollout ids; the health monitor performs the recovery.
+
+Assertion: --ci-metric-checker-key eval/gsm8k with a calibrated threshold
+  (provisional 0.45 until calibration runs land; the no-fault baseline asserts
+  0.55 at 250 steps). The checker passes if ANY eval reaches the threshold.
+
+CLI options: --seed (default 20260612), --num-rollout (default 250),
+  --metric-threshold (default 0.45)
 ```

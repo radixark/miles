@@ -259,14 +259,6 @@ def get_bool_env_var(name: str, default: str = "false") -> bool:
     return value in truthy_values
 
 
-def get_int_env_var(name: str, default: int) -> int:
-    return int(os.getenv(name, str(default)))
-
-
-def get_float_env_var(name: str, default: float) -> float:
-    return float(os.getenv(name, str(default)))
-
-
 def get_env_enable_infinite_run():
     return get_bool_env_var("MILES_TEST_ENABLE_INFINITE_RUN", "false")
 
