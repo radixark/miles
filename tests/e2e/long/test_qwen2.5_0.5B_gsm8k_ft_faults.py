@@ -41,7 +41,11 @@ def generate_fault_schedules() -> tuple[str, str]:
     rng = random.Random(FAULT_SEED)
     num_faults = NUM_TRAIN_FAULT_UNITS + NUM_ENGINE_KILLS
     fault_lo = 6
-    fault_hi = max(fault_lo + num_faults, NUM_ROLLOUT - 4)
+    fault_hi = NUM_ROLLOUT - 4
+    assert fault_hi - fault_lo >= num_faults, (
+        f"NUM_ROLLOUT={NUM_ROLLOUT} is too small to schedule {num_faults} faults in "
+        f"[{fault_lo}, {fault_hi}); the test would not exercise fault recovery at all"
+    )
     max_feasible_gap = (fault_hi - fault_lo - 1) // max(1, num_faults - 1)
     min_gap = min(max(3, NUM_ROLLOUT // 20), max_feasible_gap)
 
