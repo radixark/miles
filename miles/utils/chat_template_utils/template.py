@@ -64,10 +64,11 @@ def _dict_arguments(args: Any) -> dict:
     - ``str`` -> guarded ``json.loads`` (empty -> ``{}``); a ``JSONDecodeError`` or a
       value that decodes to a non-dict (list/number) is preserved under
       ``_raw_arguments`` so it still renders.
-    - ``None`` / falsy -> ``{}`` (nothing to preserve).
-    - any other native non-dict (a list/number that is *not* a wire string) ->
-      preserved under ``_raw_arguments``, mirroring the stringified non-dict branch
-      (``|items`` on the raw value would otherwise raise).
+    - ``None`` -> ``{}`` (no arguments).
+    - any other native non-dict (a list/number that is *not* a wire string, falsy
+      values like ``0`` / ``[]`` included) -> preserved under ``_raw_arguments``,
+      mirroring the stringified non-dict branch (``|items`` on the raw value would
+      otherwise raise).
 
     ``_raw_arguments`` is a render-only sentinel with no programmatic consumer: it
     gives ``arguments|items`` a key to iterate so a malformed call surfaces its raw
@@ -87,8 +88,7 @@ def _dict_arguments(args: Any) -> dict:
         except json.JSONDecodeError:
             return {"_raw_arguments": args}
         return decoded if isinstance(decoded, dict) else {"_raw_arguments": args}
-    if not args:
-        # None / falsy (0, [], "" is handled by the str branch) -> nothing to preserve.
+    if args is None:
         return {}
     return {"_raw_arguments": args}
 
