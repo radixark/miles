@@ -3,12 +3,14 @@ import dataclasses
 import logging
 
 import ray
+from ray.exceptions import ActorUnavailableError
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
+from miles.utils.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +86,16 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             gpu_offset += group_cfg.num_gpus
 
         if all_init_handles:
-            ray.get(all_init_handles)
+            # A momentary Ray control-plane heartbeat miss during this long wait
+            # can mark a healthy, still-initializing engine actor temporarily
+            # unavailable. Retry the *wait* only — re-getting submitted refs is
+            # idempotent, no engines are recreated. ActorDiedError and real init
+            # errors are not ActorUnavailableError and propagate immediately.
+            retry_with_backoff(
+                lambda h=all_init_handles: ray.get(h),
+                should_retry=lambda e: isinstance(e, ActorUnavailableError),
+                what=f"rollout engine bringup ({model_cfg.name})",
+            )
 
         for group, new_engine_indices in zip(server_groups, new_engine_indices_per_group, strict=True):
             group.mark_alive(engine_indices=new_engine_indices)
