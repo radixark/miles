@@ -18,9 +18,10 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
 
     This function extracts rewards, log-probs, values, and masks from
     `rollout_data`, computes KL divergences, then applies the chosen advantage
-    estimator. Supported methods: "grpo", "gspo", "ppo", "reinforce_plus_plus",
-    and "reinforce_plus_plus_baseline". On-policy distillation (OPD) is applied
-    orthogonally on top of any estimator via `args.use_opd`. When
+    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo",
+    "reinforce_plus_plus", and "reinforce_plus_plus_baseline". On-policy
+    distillation (OPD) is applied orthogonally on top of any estimator via
+    `args.use_opd`. When
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel group using masked statistics.
 
