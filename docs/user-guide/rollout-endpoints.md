@@ -2,9 +2,6 @@
 title: Rollout Endpoints
 description: How Miles talks to SGLang. The /generate endpoint and the OpenAI-format /v1/chat/completions endpoint.
 ---
-
-# Rollout Endpoints
-
 Miles supports two ways for a custom rollout function to talk to SGLang. The
 `/generate` endpoint is the most direct interface; you control tokenization. The
 OpenAI-format `/v1/chat/completions` endpoint is router-session aware and fits
@@ -229,7 +226,7 @@ inherited across turns. Each request is tokenized independently.
 
 ## Next
 
-- [Customization](customization.md): the full catalogue of `--*-path` hooks.
-- [Agentic Chat Templates](agentic-chat-template.md): verifying that a template is
+- [Customization](/user-guide/customization): the full catalog of `--*-path` hooks.
+- [Agentic Chat Templates](/user-guide/agentic-chat-template): verifying that a template is
   append-only across turns.
-- [Multi-agent example](../examples/multi-agent.md): full agentic walkthrough.
+- [Multi-agent example](/examples/multi-agent): full agentic walkthrough.

@@ -49,7 +49,7 @@ A full multi-turn agentic setup on the session-server TITO path lives in [`examp
 
 ## Add a new model
 
-Models in the table are verified by Miles maintainers — just pick the family. To support a new model (or a new append-role surface), register a `TITOTokenizer` subclass plus its fixed Jinja template (or HF-native + kwargs) and `SUPPORTED_TEMPLATES` rows in [`tito_tokenizer.py`](../../miles/utils/chat_template_utils/tito_tokenizer.py), then verify with both scripts — either failing blocks it. Each prints `Verdict: PASS/FAIL`.
+Models in the table are verified by Miles maintainers — just pick the family. To support a new model (or a new append-role surface), register a `TITOTokenizer` subclass plus its fixed Jinja template (or HF-native + kwargs) and `SUPPORTED_TEMPLATES` rows in [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py), then verify with both scripts — either failing blocks it. Each prints `Verdict: PASS/FAIL`.
 
 ```bash
 # CPU / fast — rendered token sequence is append-only
