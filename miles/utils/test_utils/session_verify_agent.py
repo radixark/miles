@@ -15,7 +15,7 @@ from enum import Enum
 
 try:
     from enum import StrEnum
-except ImportError:  # py3.10 (ROCm sglang base) lacks StrEnum (added in 3.11)
+except ImportError:
     from backports.strenum import StrEnum
 
 import httpx
