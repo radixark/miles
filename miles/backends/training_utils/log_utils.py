@@ -318,8 +318,8 @@ def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -
     """
     Compute pass@k metrics from `raw_reward` groups and log the results.
 
-    `raw_reward` is reshaped to `[group_number, group_size]`, then pass@k is
-    estimated per problem and averaged.
+    `raw_reward` is bucketed by the per-prompt `group_indices` (full-batch,
+    aligned with `raw_reward`), then pass@k is estimated per group and averaged.
     """
     parallel_state = get_parallel_state()
     if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
@@ -328,10 +328,18 @@ def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -
             if key != "raw_reward":
                 continue
 
+            # Over-sampling / dynamic-sampling filters / aborted groups make the
+            # flat reward count not an exact multiple of rollout_batch_size *
+            # n_samples_per_prompt; bucket by the group_index assigned at sample
+            # creation. Rewards without group identity (e.g. from custom
+            # conversion functions) fall back to contiguous chunking.
+            group_ids = rollout_data.get("group_indices")
+            if group_ids is not None and any(i is None for i in group_ids):
+                group_ids = None
             log_dict |= compute_pass_rate(
                 flat_rewards=val,
                 group_size=args.n_samples_per_prompt,
-                num_groups=args.rollout_batch_size,
+                group_ids=group_ids,
             )
 
         gather_log_data("passrate", args, rollout_id, log_dict)
