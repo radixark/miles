@@ -13,7 +13,7 @@ labels=["ft"])`. The CUDA CI runner executes each entry as bare `python3 <file>`
 | `scenario_no_failure` | Comparison | indep_dp matches normal DP when no faults |
 | `scenario_with_failure` | Comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
 | `scenario_deterministic` | Comparison, multi-phase | healing state transfer is bitwise-correct (stop+start) |
-| `scenario_ft_random` | Non-comparison | system survives random crashes without hanging |
+| `scenario_ft_random` | Non-comparison | system survives random crashes without hanging; the gsm8k variant additionally asserts eval accuracy |
 
 ## Mode Variants
 
@@ -73,8 +73,10 @@ Set `PYTHONPATH` to the repo root (CI sets it automatically). Two ways:
    changed and reuse what already passed — e.g. re-run just `compare` (no GPU) on existing
    dumps, or re-run a single side / phase.
 
-   `scenario_ft_random` is non-comparison: only `run`, with `--seed` / `--num-steps` /
-   `--crash-probability`. Each scenario's modes, phases, and knobs are in Mode Variants and
+   `scenario_ft_random` is non-comparison: `run` (debug-data soak, with `--seed` /
+   `--num-steps` / `--crash-probability`) and `run-gsm8k` (real gsm8k recipe + accuracy
+   assertion, no `--mode`, with `--seed` / `--num-rollout` / `--crash-probability` /
+   `--metric-threshold`). Each scenario's modes, phases, and knobs are in Mode Variants and
    Test Definitions.
 
 Dumps are written under `/node_public/dumps/<test_name>/` (see `conftest_ft/app.py`
@@ -254,4 +256,25 @@ Architecture (external fault injection, not inside training loop):
   6. Verify: training completes, no hangs, prod assertions pass
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.1)
+```
+
+The `run-gsm8k` variant (entry `test_trainer_ft_random_gsm8k.py`) runs the same external
+fault injection over the real gsm8k RL recipe of `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py`
+(whose regular CI runs serve as the no-fault reference wandb curves) and additionally
+asserts accuracy — i.e. fault recovery preserves end-to-end learning, which the
+comparison scenarios cannot observe (e.g. whether engines receive correct weights after
+recovery, and whether the post-fault on-policy loop still improves accuracy).
+
+```
+Type: non-comparison (no baseline run; reference = the baseline test's wandb curves)
+Recipe: Qwen2.5-0.5B, GRPO, 250 rollouts; parallelism mirrors dp2_cp2_real_rollout
+        (2 cells x CP2 on 4 train GPUs + 4 rollout engines x 1 GPU, disaggregated)
+Faults: same external random injection loop as `run` (train cells via control server)
+
+Assertion: --ci-metric-checker-key eval/gsm8k with a calibrated threshold
+  (provisional 0.45 until calibration runs land; the no-fault baseline asserts
+  0.55 at 250 steps). The checker passes if ANY eval reaches the threshold.
+
+CLI options: --seed (default 42), --num-rollout (default 250),
+  --crash-probability (default 0.1), --metric-threshold (default 0.45)
 ```
