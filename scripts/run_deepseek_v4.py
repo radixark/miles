@@ -471,7 +471,6 @@ def _train(args: ScriptArgs):
         sglang_a2a_backend = None
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-fp8-gemm-backend auto "
         f"--sglang-tp-size {sglang_tp_size} "
         f"--sglang-dp-size {sglang_dp_size} "
         "--sglang-enable-dp-attention "
@@ -561,22 +560,11 @@ def _train(args: ScriptArgs):
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
 
-    match args.recipe:
-        case "fp8":
-            misc_args += (
-                "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-            )
-            if not _is_blackwell(args):
-                extra_env_vars |= {
-                    "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-                }
-            else:
-                # actor_group.py unconditionally injects NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1
-                # into train actors; on Blackwell the TE blockwise recipe is emulated with
-                # MXFP8 and requires power-of-two scales, so force it back to 0 here.
-                misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}' """
-        case "bf16":
-            pass
+    if args.recipe == "fp8":
+        misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
+        # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
+        fp32_scales = "0" if _is_blackwell(args) else "1"
+        misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
 
     train_args = (
         f"{ckpt_args} "
