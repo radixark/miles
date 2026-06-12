@@ -105,13 +105,12 @@ def test_render_does_not_raise(arguments):
 
 
 def test_malformed_preserved_under_raw_arguments():
-    """Undecodable strings are preserved (not silently dropped) so the call still
-    renders and the raw payload remains inspectable."""
-    normalized = normalize_tool_arguments(_messages_with_args("{not json}"), "dict")
-    assert _tool_call_arguments(normalized) == {"_raw_arguments": "{not json}"}
-
-    normalized_list = normalize_tool_arguments(_messages_with_args("[1, 2, 3]"), "dict")
-    assert _tool_call_arguments(normalized_list) == {"_raw_arguments": "[1, 2, 3]"}
+    """Undecodable strings, and strings that decode to a non-dict (list / number),
+    are preserved verbatim (not silently dropped) so the call still renders and the
+    raw payload remains inspectable."""
+    for raw in ("{not json}", "[1, 2, 3]", "42"):
+        normalized = normalize_tool_arguments(_messages_with_args(raw), "dict")
+        assert _tool_call_arguments(normalized) == {"_raw_arguments": raw}
 
 
 def test_empty_and_none_become_empty_mapping():
