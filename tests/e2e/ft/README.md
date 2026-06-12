@@ -26,17 +26,12 @@ All modes are **disaggregated** (training and rollout on separate nodes). Modes 
 | `dp2_cp2_tp2_ep2` | 1 | 2 | 3 | CP2 TP2 EP2 | debug data | 5-layer MoE | TP + EP |
 | `dp2_cp2_pp2` | 1 | 2 | 3 | CP2 PP2 | debug data | 5-layer MoE | PP |
 | `dp4_cp2` | 1 | 4 | 5 | CP2 | debug data | 5-layer MoE | Multi-replica (>=4 cells) |
-| `dp2_cp2_real_rollout` | 1 | 2 | 3 | CP2 | 4 engines × 1 GPU | 5-layer MoE | Real weight update path (no_failure, deterministic) |
-| `dp2_cp2_real_rollout_dense` | 1 | 2 | 3 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | Real on-policy rollout under a fault (with_failure) |
+| `dp2_cp2_real_rollout` | 1 | 2 | 3 | CP2 | 4 engines × 1 GPU | 5-layer MoE | Real rollout engines + weight update path |
 | `6node_dp4_cp2_tp2_pp2_ep2_etp2` | 4+2 | 4 | 5 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | Large-scale, all parallelism |
 
 Batch sizes are deliberately **not** divisible by num_cells to test uneven sample distribution across replicas (e.g. DP4 + batch 5 → 2,1,1,1).
 
-The 1-node modes use the truncated 5-layer MoE model (`Qwen3-30B-A3B-5layer`), except
-`dp2_cp2_real_rollout_dense`, which uses a small real dense model (`Qwen3-0.6B`). The dense
-model is used by `with_failure` so the ulp-level weight drift inherent to the post-crash
-degraded-quorum commit is not amplified into token divergence by an uncalibrated truncated
-MoE model under live generation — see the `scenario_with_failure` definition below.
+The 1-node modes use the truncated 5-layer MoE model (`Qwen3-30B-A3B-5layer`).
 
 Authorized CI skips (no entry file): `6node_dp4_cp2_tp2_pp2_ep2_etp2` (multi-node) and `with_failure × dp4_cp2`.
 
@@ -179,18 +174,26 @@ The JSON `at_rollout` field specifies which rollout_id triggers the action.
 The `attempt` field (for actor-level actions like `crash_before_allreduce`) specifies which retry attempt to match.
 ```
 
-The `dp2_cp2_real_rollout_dense` mode runs this scenario with live on-policy generation
-(real sglang engines, deterministic inference, temperature 0.8) on a small real dense model
-(`Qwen3-0.6B`) instead of the truncated 5-layer MoE model. Rationale: the post-crash
-degraded-quorum commit accumulates microbatches in a different floating-point bracketing than
-the fault-free side — a fault-inherent ulp-level weight difference no collective ordering
-removes. Under live generation an uncalibrated truncated MoE model amplifies that ulp drift
-into flipped sampled tokens (near-tie logits, MoE router near-ties), so late-step metrics
-diverge by several percent even with no bug. A fully-trained dense model has calibrated
-(peaky) logits and no router, so the drift stays ulp-level and the faulted run can be compared
-strictly against the fault-free run while keeping rollout, update_weights and the
-crash→retry→heal path all real. The MoE expert-grad floor in the threshold list is inert on
-the dense model (no experts) and applies only to the MoE debug-data modes of this scenario.
+The `dp2_cp2_real_rollout` mode runs this scenario with live generation (real sglang
+engines, deterministic inference, temperature 0.8), and the target's **post-fault rollouts
+inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` pointing at
+the baseline phase_b's `--save-debug-rollout-data` output, start id = crash rollout + 1).
+Rationale: the post-crash degraded-quorum commit accumulates microbatches in a different
+floating-point bracketing than the fault-free side — a fault-inherent ulp-level weight
+difference no collective ordering removes. Under live sampling that drift flips individual
+sampled tokens (the recovered weights are numerically correct; the sampler amplifies ulps),
+after which the two runs' rollout data diverges wholesale — so a strict vs-baseline
+numerical comparison of *real-sampled* post-fault rollouts is ill-posed, not merely strict.
+Injection makes post-fault training inputs identical by construction and restores the full
+strict grad/activation/metric comparison with zero threshold relaxation.
+
+What stays real on the target during injected rollouts: engines and generation itself (the
+generated samples are discarded after the fact), update_weights after the degraded commit
+and after healing, and health-monitor pause/resume — i.e. the whole
+crash→retry→heal→weight-sync path. What this scenario deliberately does not assert: the
+content the engines generate post-fault (the injected data replaces it). Pre-fault rollouts
+(up to and including the crash rollout, whose data is generated before the crash and
+redriven by the retry) are not injected — they remain a real sampled-data comparison.
 
 ### `scenario_deterministic`
 
