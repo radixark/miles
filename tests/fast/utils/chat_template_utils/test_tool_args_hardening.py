@@ -120,12 +120,15 @@ def test_empty_and_none_become_empty_mapping():
         assert _tool_call_arguments(normalized) == {}
 
 
-def test_native_non_dict_becomes_empty_mapping():
-    """A native (already-Python) non-dict ``arguments`` — not a wire string — must also
-    be coerced to a mapping, otherwise it leaks to ``arguments|items`` and crashes."""
+def test_native_non_dict_preserved_under_raw_arguments():
+    """A native (already-Python) non-dict ``arguments`` — not a wire string — is
+    preserved losslessly under ``_raw_arguments``, exactly like a stringified non-dict.
+    The two adversarial branches stay consistent and the payload remains inspectable
+    instead of being silently rewritten to an empty mapping (matches the slime
+    reference ``slime/agent/auto_sample_builder/messages.py:tool_call_arguments``)."""
     for arguments in ([1, 2, 3], 42):
         normalized = normalize_tool_arguments(_messages_with_args(arguments), "dict")
-        assert _tool_call_arguments(normalized) == {}
+        assert _tool_call_arguments(normalized) == {"_raw_arguments": arguments}
 
 
 def test_default_valid_json_path_unchanged():
