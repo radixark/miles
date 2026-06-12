@@ -90,9 +90,6 @@ def _dict_arguments(args: Any) -> dict:
     if not args:
         # None / falsy (0, [], "" is handled by the str branch) -> nothing to preserve.
         return {}
-    # A native non-dict (e.g. a list/number that never went over the wire as a string).
-    # Preserve it losslessly so the call still renders and the payload stays inspectable,
-    # exactly as the stringified non-dict branch above does.
     return {"_raw_arguments": args}
 
 
