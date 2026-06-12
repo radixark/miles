@@ -21,7 +21,7 @@ from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
-from miles.utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
+from miles.utils.witness.allocator import WitnessIdAllocator
 
 if TYPE_CHECKING:
     import torch
@@ -115,8 +115,8 @@ class RayTrainGroup:
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
         )
-        if self._witness_allocator is not None and args.save_debug_event_data is not None:
-            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
+        if self._witness_allocator is not None and rollout_manager is not None:
+            self._witness_allocator.resume(ray.get(rollout_manager.get_persisted_witness_counter.remote()))
 
         self._test_action_executor = FTTestActionGroupExecutor.from_args(args, group=self)
 

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from pathlib import Path
 from dataclasses import dataclass
 
 import ray
@@ -33,6 +34,7 @@ from miles.utils.misc import load_function
 from miles.utils.process_identity import RolloutManagerProcessIdentity
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils import init_tracking
+from miles.utils.witness.allocator import read_persisted_witness_counter
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -183,6 +185,11 @@ class RolloutManager:
 
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
+
+    def get_persisted_witness_counter(self) -> int:
+        if self.args.save_debug_event_data is None:
+            return 0
+        return read_persisted_witness_counter(Path(self.args.save_debug_event_data))
 
     # -------------------------- offload/onload -----------------------------
 
