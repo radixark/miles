@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
-from miles.ray.rollout.metrics import _compute_metrics_from_samples, _compute_zero_std_metrics
+from miles.ray.rollout.metrics import _compute_metrics_from_samples, _compute_zero_std_metrics, log_eval_rollout_data
 
 
 class TestComputeZeroStdMetrics:
@@ -47,6 +47,32 @@ class TestComputeZeroStdMetrics:
         # No groups → no all_zero/all_one keys (the function guards on total_groups>0).
         assert "zero_std/all_zero_percentage" not in out
         assert "zero_std/all_one_percentage" not in out
+
+
+class TestLogEvalRolloutDataPassRate:
+    def test_buckets_by_group_index_not_position(self):
+        """Per-dataset n_samples_per_eval_prompt overrides make the true group
+        stride (4) differ from args.n_samples_per_eval_prompt (2); grouping must
+        follow each sample's group_index, not its position or index arithmetic."""
+        args = make_args(log_passrate=True, n_samples_per_eval_prompt=2, wandb_always_use_train_step=False)
+        rewards = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        samples = [make_sample(group_index=i // 4, index=i, reward=r) for i, r in enumerate(rewards)]
+        out = log_eval_rollout_data(0, args, {"toy": {"rewards": rewards, "samples": samples}})
+        # group 0: n=4, c=2 -> pass@2 = 1 - C(2,2)/C(4,2) = 5/6; group 1: 0.
+        # Positional pairing would give mean(1, 0, 0, 0) = 0.25 instead.
+        assert out["eval/toy-pass@1"] == pytest.approx((0.5 + 0.0) / 2)
+        assert out["eval/toy-pass@2"] == pytest.approx((5 / 6 + 0.0) / 2)
+
+    def test_falls_back_to_chunking_without_group_index(self):
+        """Samples from custom eval rollout functions may carry no group_index;
+        a ragged (non-multiple) reward count must still not crash."""
+        args = make_args(log_passrate=True, n_samples_per_eval_prompt=2, wandb_always_use_train_step=False)
+        rewards = [1.0, 0.0, 1.0, 0.0, 1.0]
+        samples = [make_sample(group_index=None, index=i, reward=r) for i, r in enumerate(rewards)]
+        out = log_eval_rollout_data(0, args, {"toy": {"rewards": rewards, "samples": samples}})
+        # chunks: [1,0], [1,0], [1]
+        assert out["eval/toy-pass@1"] == pytest.approx((0.5 + 0.5 + 1.0) / 3)
+        assert out["eval/toy-pass@2"] == pytest.approx(1.0)
 
 
 class TestTitoMismatchMetrics:

@@ -1,4 +1,5 @@
 import math
+from collections import defaultdict
 from typing import Any, Literal
 
 import numpy as np
@@ -11,28 +12,54 @@ def dict_add_prefix(d: dict[str, Any], prefix: str) -> dict[str, Any]:
 def compute_pass_rate(
     flat_rewards: list[float],
     group_size: int,
-    num_groups: int | None = None,
+    group_ids: list | None = None,
 ):
+    """Compute pass@k from a flat list of rewards.
+
+    Groups are formed one of two ways:
+
+    * ``group_ids`` given: bucket ``flat_rewards`` by the per-sample group key.
+      This is the ragged-safe path -- groups may have any (variable) number of
+      samples, e.g. over-sampling, dynamic-sampling filters, aborted/partial
+      groups, or list-expanded multi-turn/tool eval samples.
+    * ``group_ids`` is ``None``: chunk ``flat_rewards`` into contiguous
+      ``group_size`` blocks. This assumes a group-major layout (each group's
+      rewards adjacent, every group full-size) and tolerates only trailing
+      raggedness: a final partial block is kept as a smaller group, while
+      interior raggedness silently mis-groups -- pass ``group_ids`` for that.
+      For exact-multiple input this is numerically identical to the legacy
+      ``reshape(num_groups, group_size)`` path.
+
+    For each ``k`` in the pass@k list, pass@k is averaged only over groups with
+    at least ``k`` samples; undersized groups are skipped and a rung is dropped
+    entirely when no group qualifies.
+    """
     if group_size == 1:
         return {}
 
-    if num_groups is None:
-        num_groups = len(flat_rewards) // group_size
-
     pass_rate_name_list = [2**i for i in range(int(math.log2(group_size)) + 1)]
 
-    assert len(flat_rewards) == num_groups * group_size, f"{len(flat_rewards)=} {num_groups=} {group_size=}"
-    rewards_of_group = np.array(flat_rewards).reshape(num_groups, group_size)
+    if group_ids is not None:
+        assert len(group_ids) == len(flat_rewards), f"{len(group_ids)=} {len(flat_rewards)=}"
+        buckets: dict[Any, list[float]] = defaultdict(list)
+        for reward, gid in zip(flat_rewards, group_ids, strict=True):
+            buckets[gid].append(reward)
+        groups = [np.array(rewards) for rewards in buckets.values()]
+    else:
+        rewards = np.asarray(flat_rewards)
+        groups = [rewards[i : i + group_size] for i in range(0, len(rewards), group_size)]
+
+    group_sizes = np.array([len(g) for g in groups])
+    group_correct = np.array([int(np.sum(g == 1)) for g in groups])
 
     log_dict = {}
     for k in pass_rate_name_list:
-        num_correct = np.sum(rewards_of_group == 1, axis=1)
-        num_samples = np.full(num_groups, group_size)
+        eligible = group_sizes >= k
+        if not eligible.any():
+            continue
 
-        pass_k_estimates = _estimate_pass_at_k(num_samples, num_correct, k)
-
-        pass_k = np.mean(pass_k_estimates)
-        log_dict[f"pass@{k}"] = pass_k
+        pass_k_estimates = _estimate_pass_at_k(group_sizes[eligible], group_correct[eligible], k)
+        log_dict[f"pass@{k}"] = np.mean(pass_k_estimates)
 
     return log_dict
 
