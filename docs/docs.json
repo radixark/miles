@@ -9,6 +9,12 @@
     "width": 130
   },
   "favicon": "/assets/images/miles_square.png",
+  "seo": {
+    "metatags": {
+      "canonical": "https://miles.radixark.com/docs",
+      "og:site_name": "Miles Documentation"
+    }
+  },
   "colors": {
     "primary": "#d55816",
     "light": "#e8722a",
