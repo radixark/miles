@@ -9,6 +9,7 @@ def merge_samples(samples: list[Sample], tokenizer) -> Sample:
     for sample in samples[1:]:
         # Only a COMPLETED turn can be extended by a later turn; if an
         # intermediate turn truncated, the trajectory ends there.
+        # TODO (shi.dong): figure out how in-turn truncation should be handled.
         if acc.status != Sample.Status.COMPLETED:
             break
         acc = _merge_sample_pair(acc, sample, tokenizer=tokenizer)
