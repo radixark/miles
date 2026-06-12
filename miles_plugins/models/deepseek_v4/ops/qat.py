@@ -13,9 +13,8 @@ def fp8_simulate(x: torch.Tensor, block_size: int):
     the rest of the DeepSeek stack.
     """
     x_c = x.contiguous()
-    # Force fp32 scale storage: act_quant's auto dtype picks float8_e8m0fnu on
-    # Blackwell+DeepGEMM, but per_token_cast_back below only accepts int32/fp32
-    # scales. scale_fmt="ue8m0" still rounds the values to powers of two.
+    # act_quant's auto dtype picks float8_e8m0fnu on Blackwell+DeepGEMM,
+    # but per_token_cast_back below only accepts int32/fp32
     y, scale = act_quant(x_c, block_size, "ue8m0", scale_dtype=torch.float32)
 
     N = x_c.size(-1)
