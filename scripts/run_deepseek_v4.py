@@ -103,7 +103,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    fp8_training: bool | None = None
+    # Precision recipe for BOTH trainer (Megatron/TE) and rollout (sglang checkpoint):
+    #   fp8   - blockwise FP8 128x128 (Hopper: fp32 scales; Blackwell: pow2 scales, MXFP8-emulated)
+    #   bf16  - BF16 training; rollout serves the source FP8 checkpoint
+    recipe: Literal["fp8", "bf16"] = "fp8"
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -151,13 +154,6 @@ def _is_blackwell(args: ScriptArgs) -> bool:
         raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
     major, _minor = torch.cuda.get_device_capability()
     return major >= 10
-
-
-def _resolve_precision_defaults(args: ScriptArgs):
-    if args.fp8_training is None:
-        args.fp8_training = not _is_blackwell(args)
-        print(f"[precision] fp8_training auto -> {args.fp8_training}")
-
 
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
@@ -365,7 +361,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
-    _resolve_precision_defaults(args)
+    print(f"[precision] recipe={args.recipe}")
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -474,6 +470,7 @@ def _train(args: ScriptArgs):
         sglang_a2a_backend = None
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
+        "--sglang-fp8-gemm-backend auto "
         f"--sglang-tp-size {sglang_tp_size} "
         f"--sglang-dp-size {sglang_dp_size} "
         "--sglang-enable-dp-attention "
@@ -563,11 +560,22 @@ def _train(args: ScriptArgs):
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
 
-    if args.fp8_training:
-        misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        extra_env_vars |= {
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        }
+    match args.recipe:
+        case "fp8":
+            misc_args += (
+                "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
+            )
+            if not _is_blackwell(args):
+                extra_env_vars |= {
+                    "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+                }
+            else:
+                # actor_group.py unconditionally injects NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1
+                # into train actors; on Blackwell the TE blockwise recipe is emulated with
+                # MXFP8 and requires power-of-two scales, so force it back to 0 here.
+                misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}' """
+        case "bf16":
+            pass
 
     train_args = (
         f"{ckpt_args} "
