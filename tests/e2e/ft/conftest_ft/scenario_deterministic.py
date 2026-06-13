@@ -59,7 +59,6 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
 
 
 def _append_engine_checksum_args(mode: FTTestMode, dump_dir: str) -> str:
-    # phase_b only, both sides; only real engines can be checksummed.
     if not mode.has_real_rollout:
         return ""
     return f"--ci-dump-engine-weight-checksums {dump_dir}/engine_checksums "
@@ -129,13 +128,8 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
 
 
 def _compare_engine_checksums(dump_dir: str, mode: FTTestMode) -> None:
-    # Both sides train bitwise-identically (asserted above), so post-update_weights
-    # engine weights must hash identically per tensor with zero tolerance; this closes
-    # the post-heal weight-sync gap (no-op / mis-mapped / partial / corrupted push).
     if not mode.has_real_rollout:
         return
-    # Pin the expected set so a symmetric loss on both sides cannot pass silently: one
-    # initial/ dump (pre-loop sync) plus one rollout_<i>/ per phase_b rollout.
     expected_rollout_names = {INITIAL_DUMP_NAME} | {
         f"rollout_{rollout_id}" for rollout_id in range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS)
     }

@@ -868,8 +868,6 @@ class TestAllocateWitnessInfo:
 
 
 def _make_async_remote(fn: Callable[..., Any]) -> SimpleNamespace:
-    """Wrap a sync fn as a .remote(...) returning an awaitable, like a ray actor method."""
-
     async def _run(*args: Any, **kwargs: Any) -> Any:
         return fn(*args, **kwargs)
 
@@ -877,8 +875,6 @@ def _make_async_remote(fn: Callable[..., Any]) -> SimpleNamespace:
 
 
 class _FakeUpdateWeightsRolloutManager:
-    """Minimal rollout-manager actor-handle stand-in for update_weights tests."""
-
     def __init__(self, *, checksum_result: list | None = None) -> None:
         self.check_weights_calls: list[dict] = []
 

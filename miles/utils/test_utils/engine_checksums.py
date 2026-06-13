@@ -11,17 +11,6 @@ INITIAL_DUMP_NAME = "initial"
 
 
 class EngineChecksumDumper:
-    """Dump per-engine weight checksums after each update_weights (CI verification only).
-
-    Layout: ``<dump_dir>/rollout_<rollout_id>/engine_<i>.json`` (``initial/`` for the
-    weight sync before the first rollout); each file is one engine's raw sglang
-    ``weights_checker`` "checksum" response.
-
-    Engines are flattened in a stable order so ``engine_<i>`` aligns between runs with the
-    same topology. If engine-side faults are ever injected (engine set differs between
-    runs), alignment must switch to ``parallelism_info`` instead of the flat index.
-    """
-
     def __init__(self, *, dump_dir: Path, rollout_manager: ActorHandle) -> None:
         self._dump_dir = dump_dir
         self._rollout_manager = rollout_manager
@@ -36,13 +25,6 @@ class EngineChecksumDumper:
         )
 
     async def dump(self, *, rollout_id: int | None) -> None:
-        """Checksum all engines and write one JSON per engine.
-
-        Must run only after update_weights() fully completed, so checksums reflect
-        post-sync weights.
-        """
-        # Nesting: servers -> server groups -> engines. None entries are non-zero node
-        # ranks of multi-node engines (no HTTP server there); drop them.
         nested: list[list[list[dict | None]]] = await self._rollout_manager.check_weights.remote(action="checksum")
         engine_responses: list[dict] = [
             response
@@ -72,13 +54,6 @@ def compare_engine_checksum_dumps(
     expected_rollout_names: set[str],
     expected_num_engines: int,
 ) -> None:
-    """Assert two EngineChecksumDumper trees are identical per rollout / engine / tensor.
-
-    Fail-closed: missing/empty dirs, mismatched dir or file sets, and any hash difference
-    are hard failures. Both trees must match the caller's expectations exactly, so a
-    symmetric loss on both sides (e.g. all dumps landing in ``initial/``, a shrunken
-    engine set) cannot pass.
-    """
     assert expected_rollout_names, "expected_rollout_names must not be empty"
     assert expected_num_engines > 0, f"expected_num_engines must be positive, got {expected_num_engines}"
     baseline_root = Path(baseline_dir)
@@ -131,16 +106,12 @@ def _list_child_names(directory: Path) -> list[str]:
 
 
 def _compare_engine_checksum_file(*, baseline_path: Path, target_path: Path, context: str) -> int:
-    """Compare one engine's checksum response between baseline and target.
-
-    For TP>1 engines the ``ranks`` order is non-deterministic (zmq arrival order), so sort
-    both sides by ``parallelism_info["rank"]`` to pair the same rank in the zip below.
-    """
     baseline = json.loads(baseline_path.read_text())
     target = json.loads(target_path.read_text())
 
     assert baseline.get("success") is True, f"{context}: baseline checksum response not successful: {baseline}"
     assert target.get("success") is True, f"{context}: target checksum response not successful: {target}"
+    # ranks arrive in non-deterministic zmq order; sort by global rank to pair the same rank.
     baseline_ranks: list[dict] = sorted(baseline["ranks"], key=lambda rank: rank["parallelism_info"]["rank"])
     target_ranks: list[dict] = sorted(target["ranks"], key=lambda rank: rank["parallelism_info"]["rank"])
     assert len(baseline_ranks) == len(

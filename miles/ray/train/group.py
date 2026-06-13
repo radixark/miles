@@ -236,7 +236,6 @@ class RayTrainGroup:
         await retry(lambda _: self._execute_first_alive("update_weights", info=info))
 
         if self._engine_checksum_dumper is not None:
-            # Only after the await above have all ranks finished pushing weights.
             await self._engine_checksum_dumper.dump(rollout_id=rollout_id)
 
     async def onload(self):

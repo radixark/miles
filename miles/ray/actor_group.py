@@ -72,11 +72,7 @@ class RayTrainGroup:
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
     async def update_weights(self, rollout_id: int | None = None):
-        """Broadcast weights from rank 0 to all other ranks.
-
-        ``rollout_id`` is accepted only for call-site parity with v2 RayTrainGroup; v1
-        does not dump checksums.
-        """
+        """Broadcast weights from rank 0 to all other ranks."""
         assert self.args.ci_dump_engine_weight_checksums is None, (
             "--ci-dump-engine-weight-checksums is only supported by the experimental FT trainer "
             "(MILES_EXPERIMENTAL_FT_TRAINER=1, RayTrainGroup)"
