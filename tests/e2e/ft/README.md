@@ -184,6 +184,15 @@ post-fault one (rollout 2) onward — including all of phase_b, whose target res
 drift-carrying ckpt — tolerates max_abs <= 3e-3 on the measured grad families, see the
 dense-mode section below) and metrics (rtol=5e-2).
 
+Healing witness: each target phase runs the same fault timeline, so each target event dir
+must contain exactly two CellReconfigureEvents, in order — a shrink at rollout P+1 (alive
+N -> N-1, positive proof the fault injection fired) and a healing at rollout P+2 (healed =
+last cell, ckpt src = cell 0, alive back to N). Concretely the global rollout ids are
+phase_a: shrink at 1, heal at 2; phase_b: shrink at 4, heal at 5. Both baseline event dirs
+must contain zero reconfigure events. This positively proves the crash -> shrink -> heal
+path executed in every phase; without it the comparison could silently degenerate to
+fault-free runs.
+
 Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.
 The `attempt` field (for actor-level actions like `crash_before_allreduce`) specifies which retry attempt to match.
@@ -296,6 +305,14 @@ state-copy bug is easy to make and an approximate check would miss it, hence zer
 Bitwise verification: --use-fault-tolerance --ft-components train auto-enables
 --save-local-weight-checksum and --enable-event-analyzer. The event_analyzer
 cross_replica_weight_checksum rule checks cell-to-cell bitwise equality after healing.
+
+Healing witness: each target phase heals once, so each target event dir must contain
+exactly one CellReconfigureEvent — a healing at rollout P+2 (healed = last cell, ckpt src =
+cell 0, alive back to N; the stop+start pair is absorbed by a single _refresh_cells, so
+there is no standalone shrink). Concretely the global rollout ids are phase_a: heal at 2;
+phase_b: heal at 5. Both baseline event dirs must contain zero reconfigure events. This is
+the regression gate for the off-by-one class of bugs where healing silently never runs and
+the comparison passes on fault-free runs.
 ```
 
 ### `scenario_ft_random`
@@ -319,6 +336,10 @@ Architecture (external fault injection, not inside training loop):
   4. Health checker detects dead actor via heartbeat timeout
   5. Mini FT controller auto-recovers (suspend → resume)
   6. Verify: training completes, no hangs, prod assertions pass
+  7. Healing witness: the injector must report >=1 accepted injection (else the soak
+     proved nothing), and the event dir must contain >=1 healing CellReconfigureEvent.
+     Faults are random, so neither an exact sequence nor the end-state membership is
+     asserted — the witness only proves a fault was injected and healing actually ran.
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.1)
 ```

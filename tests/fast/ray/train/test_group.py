@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -8,6 +9,9 @@ from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.ray.train.group import RayTrainGroup, _paused_health_checkers
+from miles.utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.event_logger.models import CellReconfigureEvent
+from miles.utils.process_identity import MainProcessIdentity
 from miles.utils.witness.allocator import WitnessIdAllocator
 
 pytestmark = pytest.mark.asyncio
@@ -234,7 +238,7 @@ class TestRefreshCellsReconfigure:
         group.stop_cell(1)
 
         # Step 2: Refresh
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
 
         # Step 3: Quorum bumped (init was quorum 0, this is first reconfigure)
         assert group._indep_dp_quorum_id == 1
@@ -260,7 +264,7 @@ class TestRefreshCellsReconfigure:
     async def test_no_reconfigure_when_unchanged(self):
         group = await _make_alive_group(num_cells=2)
 
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
 
         assert group._indep_dp_quorum_id == 0
 
@@ -275,7 +279,7 @@ class TestRefreshCellsHealing:
         group.start_cell(2)
 
         # Step 2: Refresh heals the pending cell
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
 
         # Step 3: All 3 cells are now alive
         assert all(c.is_alive for c in group._cells)
@@ -305,7 +309,7 @@ class TestRefreshCellsHealing:
         group.start_cell(1)
         group.start_cell(2)
 
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
 
         assert all(c.is_alive for c in group._cells)
         for cell in group._cells:
@@ -326,7 +330,7 @@ class TestRefreshCellsHealing:
         group.stop_cell(1)
         group.start_cell(1)
 
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
 
         assert group._cells[1].is_alive
         for handle in group._cells[1]._get_actor_handles():
@@ -342,7 +346,7 @@ class TestRefreshCellsHealing:
         group.stop_cell(2)
         group.start_cell(2)
 
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
 
         assert group._cells[0].is_alive
         assert group._cells[1].is_stopped
@@ -351,6 +355,69 @@ class TestRefreshCellsHealing:
         assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 2]
         assert group._cells[0].indep_dp_info.alive_size == 2
         assert group._cells[2].indep_dp_info.alive_rank == 1
+
+
+class TestRefreshCellsReconfigureEvent:
+    @pytest.fixture
+    def _event_log_dir(self, tmp_path: Path):
+        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
+        try:
+            yield tmp_path
+        finally:
+            set_event_logger(None)
+
+    @staticmethod
+    def _read_reconfigure_events(log_dir: Path) -> list[CellReconfigureEvent]:
+        return [e for e in read_events(log_dir) if isinstance(e, CellReconfigureEvent)]
+
+    async def test_healing_emits_event_with_src_and_healed_cells(self, _event_log_dir: Path):
+        """A healing reconfigure emits one CellReconfigureEvent naming rollout, src cell, and healed cells."""
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(2)
+        group.start_cell(2)
+
+        await group._refresh_cells(rollout_id=7)
+
+        events = self._read_reconfigure_events(_event_log_dir)
+        assert len(events) == 1
+        assert events[0].rollout_id == 7
+        assert events[0].quorum_id == 1
+        assert events[0].src_cell_index == 0
+        assert events[0].healed_cell_indices == [2]
+        assert events[0].alive_cell_indices_after == [0, 1, 2]
+
+    async def test_shrink_emits_event_without_src(self, _event_log_dir: Path):
+        """A pure-shrink reconfigure emits one CellReconfigureEvent with no src and no healed cells."""
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(1)
+
+        await group._refresh_cells(rollout_id=4)
+
+        events = self._read_reconfigure_events(_event_log_dir)
+        assert len(events) == 1
+        assert events[0].rollout_id == 4
+        assert events[0].src_cell_index is None
+        assert events[0].healed_cell_indices == []
+        assert events[0].alive_cell_indices_after == [0, 2]
+
+    async def test_noop_refresh_emits_no_event(self, _event_log_dir: Path):
+        """A refresh that needs no reconfigure emits no CellReconfigureEvent."""
+        group = await _make_alive_group(num_cells=2)
+
+        await group._refresh_cells(rollout_id=1)
+
+        assert self._read_reconfigure_events(_event_log_dir) == []
+
+    async def test_failed_healing_emits_no_event(self, _event_log_dir: Path):
+        """When cooperative prepare fails, no CellReconfigureEvent is emitted (witness stays absent)."""
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(2)
+        group.start_cell(2)
+        group._cells[2].actor_factory = _make_failing_actor_factory()
+
+        await group._refresh_cells(rollout_id=5)
+
+        assert self._read_reconfigure_events(_event_log_dir) == []
 
 
 class TestRefreshCellsNoOp:
@@ -366,8 +433,8 @@ class TestRefreshCellsNoOp:
                 init_call_counts[id(handle)] = len(calls)
 
         # Two refreshes — neither should change anything
-        await group._refresh_cells()
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
+        await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 0
 
         # No new calls dispatched
@@ -379,10 +446,10 @@ class TestRefreshCellsNoOp:
     async def test_refresh_after_reconfigure_is_noop_on_second_call(self):
         group = await _make_alive_group(num_cells=3)
         group.stop_cell(1)
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 1
 
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 1
 
 
@@ -393,20 +460,20 @@ class TestConsecutiveStopStartCycles:
 
         # Step 1: Stop cell 1
         group.stop_cell(1)
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 1
         assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 2]
 
         # Step 2: Stop cell 2 (only cell 0 alive)
         group.stop_cell(2)
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 2
         assert group._cells[0].indep_dp_info.alive_cell_indices == [0]
         assert group._cells[0].indep_dp_info.alive_size == 1
 
         # Step 3: Start cell 1 (cells 0 and 1 alive)
         group.start_cell(1)
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 3
         assert group._cells[0].is_alive
         assert group._cells[1].is_alive
@@ -607,7 +674,7 @@ class TestRefreshCellsErrorHandling:
         group._cells[2].actor_factory = _make_failing_actor_factory()
 
         # Step 3: Refresh — healing init fails, cell auto-marks errored
-        await group._refresh_cells()
+        await group._refresh_cells(rollout_id=0)
 
         # Step 4: Cell 2 errored, cells 0 and 1 still alive
         assert group._cells[0].is_alive

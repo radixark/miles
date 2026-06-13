@@ -14,6 +14,7 @@ from miles.utils.test_utils.comparisons import (
     compare_dumps,
     compare_metrics,
 )
+from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 
 # --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count; --debug-exit-after-rollout counts rollouts in the current run.
 NUM_ROLLOUTS_PER_PHASE: int = 3
@@ -32,6 +33,25 @@ def _build_actions(phase_start_rollout_id: int) -> list[dict]:
     return [
         {"at_rollout": heal_trigger_rollout_id, "action": "stop_cell_at_end", "cell_index": -1},
         {"at_rollout": heal_trigger_rollout_id, "action": "start_cell_at_end", "cell_index": -1},
+    ]
+
+
+def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
+    # Phase-unify heals in every phase, so each target phase emits exactly one healing
+    # reconfigure; baseline phases emit none. The stop/start pair fires at the end of
+    # phase_start + 1 and a single _refresh_cells absorbs it at the start of the next
+    # rollout, so the healing lands at phase_start + 2 (no standalone shrink in this
+    # scenario). rollout_id here is the global train-loop id.
+    if not is_target:
+        return []
+    healing_rollout_id: int = PHASE_START_ROLLOUT_IDS[phase] + 2
+    return [
+        ReconfigureInfo(
+            rollout_id=healing_rollout_id,
+            src_cell_index=0,
+            healed_cell_indices=[num_cells - 1],
+            alive_cell_indices_after=list(range(num_cells)),
+        ),
     ]
 
 
@@ -90,6 +110,12 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     for phase, phase_start_rollout_id in PHASE_START_ROLLOUT_IDS.items():
         baseline_dir = f"{dump_dir}/baseline/{phase}"
         target_dir = f"{dump_dir}/target/{phase}"
+        for side, side_dir in (("baseline", baseline_dir), ("target", target_dir)):
+            assert_reconfigure_events(
+                Path(f"{side_dir}/events"),
+                expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
+            )
+
         compare_metrics(
             baseline_dir=baseline_dir,
             target_dir=target_dir,

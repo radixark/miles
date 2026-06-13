@@ -41,7 +41,7 @@ def run_ci(
 
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
 
-    stop_event, injector_thread = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
+    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
 
     try:
         U.execute_train(
@@ -59,8 +59,7 @@ def run_ci(
             },
         )
     finally:
-        stop_event.set()
-        injector_thread.join(timeout=5)
+        injector.stop_and_join(timeout_seconds=5)
 
     print(f"Random failure gsm8k accuracy test PASSED (seed={seed}, rollouts={num_rollout})")
 

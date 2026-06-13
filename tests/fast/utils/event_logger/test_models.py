@@ -5,6 +5,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.utils.event_logger.models import (
+    CellReconfigureEvent,
     Event,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
@@ -98,6 +99,44 @@ class TestTrainGroupStepEndEvent:
         assert parsed.rollout_id == 3
         assert parsed.cell_outcomes[0] == [TrainStepOutcome.NORMAL]
         assert parsed.cell_outcomes[1] == "error"
+
+
+class TestCellReconfigureEvent:
+    def test_healing_json_roundtrip(self) -> None:
+        """A healing reconfigure event (non-empty healed cells, with src) survives a JSON round-trip."""
+        event = CellReconfigureEvent(
+            timestamp=_FIXED_TS,
+            source=_FIXED_SOURCE,
+            rollout_id=3,
+            quorum_id=1,
+            src_cell_index=0,
+            healed_cell_indices=[2],
+            alive_cell_indices_after=[0, 1, 2],
+        )
+        parsed = _event_adapter.validate_json(event.model_dump_json())
+        assert isinstance(parsed, CellReconfigureEvent)
+        assert parsed.rollout_id == 3
+        assert parsed.quorum_id == 1
+        assert parsed.src_cell_index == 0
+        assert parsed.healed_cell_indices == [2]
+        assert parsed.alive_cell_indices_after == [0, 1, 2]
+
+    def test_shrink_json_roundtrip(self) -> None:
+        """A pure-shrink reconfigure event (no healed cells, src None) survives a JSON round-trip."""
+        event = CellReconfigureEvent(
+            timestamp=_FIXED_TS,
+            source=_FIXED_SOURCE,
+            rollout_id=2,
+            quorum_id=1,
+            src_cell_index=None,
+            healed_cell_indices=[],
+            alive_cell_indices_after=[0],
+        )
+        parsed = _event_adapter.validate_json(event.model_dump_json())
+        assert isinstance(parsed, CellReconfigureEvent)
+        assert parsed.src_cell_index is None
+        assert parsed.healed_cell_indices == []
+        assert parsed.alive_cell_indices_after == [0]
 
 
 class TestWitnessSnapshotParamEventWithStaleIds:

@@ -60,6 +60,16 @@ class TrainGroupStepEndEvent(EventBase):
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
 
 
+class CellReconfigureEvent(EventBase):
+    type: Literal["cell_reconfigure"] = "cell_reconfigure"
+    rollout_id: int
+    quorum_id: int
+    src_cell_index: int | None
+    # healing happened iff non-empty
+    healed_cell_indices: list[int]
+    alive_cell_indices_after: list[int]
+
+
 class TrainAdvantageComputationEvent(_ActorTrainEventBase):
     type: Literal["train_advantage_computation"] = "train_advantage_computation"
     advantages: list[list[float]]
@@ -78,6 +88,7 @@ Event = Annotated[
     | WitnessSnapshotParamEvent
     | WitnessAllocateIdEvent
     | TrainGroupStepEndEvent
+    | CellReconfigureEvent
     | TrainAdvantageComputationEvent
     | MetricEvent,
     Discriminator("type"),

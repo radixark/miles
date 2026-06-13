@@ -14,6 +14,7 @@ from miles.utils.test_utils.comparisons import (
     compare_dumps,
     compare_metrics,
 )
+from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 
 # --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count; --debug-exit-after-rollout counts rollouts in the current run.
 NUM_ROLLOUTS_PER_PHASE: int = 3
@@ -74,6 +75,31 @@ def _build_actions(phase_start_rollout_id: int) -> list[dict]:
     ]
 
 
+def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
+    # Phase-unify runs the same fault timeline in every phase, so each target phase emits a
+    # full shrink+heal pair; baseline phases emit none. The shrink lands on the fault rollout
+    # (phase_start + _FAULT_OFFSET_IN_PHASE) and the healing on the rollout after the
+    # stop/start that fires at the end of it. rollout_id here is the global train-loop id.
+    if not is_target:
+        return []
+    phase_start_rollout_id: int = PHASE_START_ROLLOUT_IDS[phase]
+    fault_rollout_id: int = phase_start_rollout_id + _FAULT_OFFSET_IN_PHASE
+    return [
+        ReconfigureInfo(
+            rollout_id=fault_rollout_id,
+            src_cell_index=None,
+            healed_cell_indices=[],
+            alive_cell_indices_after=list(range(num_cells - 1)),
+        ),
+        ReconfigureInfo(
+            rollout_id=fault_rollout_id + 1,
+            src_cell_index=0,
+            healed_cell_indices=[num_cells - 1],
+            alive_cell_indices_after=list(range(num_cells)),
+        ),
+    ]
+
+
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     phase_name: str = dump_dir.rsplit("/", 1)[-1]
     assert phase_name in PHASE_START_ROLLOUT_IDS, (
@@ -128,6 +154,12 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     for phase, phase_start_rollout_id in PHASE_START_ROLLOUT_IDS.items():
         baseline_dir = f"{dump_dir}/baseline/{phase}"
         target_dir = f"{dump_dir}/target/{phase}"
+        for side, side_dir in (("baseline", baseline_dir), ("target", target_dir)):
+            assert_reconfigure_events(
+                Path(f"{side_dir}/events"),
+                expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
+            )
+
         compare_metrics(
             baseline_dir=baseline_dir,
             target_dir=target_dir,

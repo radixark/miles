@@ -15,7 +15,7 @@ from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.event_logger.models import TrainGroupStepEndEvent, WitnessAllocateIdEvent
+from miles.utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent, WitnessAllocateIdEvent
 from miles.utils.health_checker import NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -134,7 +134,7 @@ class RayTrainGroup:
                 sample_indices=rollout_data_pack["sample_indices"],
             )
 
-            await self._refresh_cells()
+            await self._refresh_cells(rollout_id=rollout_id)
             snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
                 "train",
                 rollout_id=rollout_id,
@@ -293,7 +293,7 @@ class RayTrainGroup:
 
     # ------------------------ internals for stop/start ------------------------
 
-    async def _refresh_cells(self) -> None:
+    async def _refresh_cells(self, *, rollout_id: int) -> None:
         snapshotted_pending_indices = [c.cell_index for c in self._cells if c.is_pending]
         snapshotted_alive_indices = [c.cell_index for c in self._cells if c.is_alive]
         will_alive_indices = sorted(list(set(snapshotted_pending_indices + snapshotted_alive_indices)))
@@ -356,6 +356,32 @@ class RayTrainGroup:
 
         if not AsyncioGatherUtils.has_error(coop_prepare_outputs):
             assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
+            self._log_reconfigure_event(
+                rollout_id=rollout_id,
+                src_cell_index=src_cell_index if snapshotted_pending_indices else None,
+                healed_cell_indices=snapshotted_pending_indices,
+                alive_cell_indices_after=will_alive_indices,
+            )
+
+    def _log_reconfigure_event(
+        self,
+        *,
+        rollout_id: int,
+        src_cell_index: int | None,
+        healed_cell_indices: list[int],
+        alive_cell_indices_after: list[int],
+    ) -> None:
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                CellReconfigureEvent,
+                dict(
+                    rollout_id=rollout_id,
+                    quorum_id=self._indep_dp_quorum_id,
+                    src_cell_index=src_cell_index,
+                    healed_cell_indices=healed_cell_indices,
+                    alive_cell_indices_after=alive_cell_indices_after,
+                ),
+            )
 
     async def _kill_errored_cells_and_confirm_dead(self) -> None:
         errored_cells = [c for c in self._cells if c.is_errored]

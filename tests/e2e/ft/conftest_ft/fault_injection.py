@@ -4,6 +4,7 @@ import logging
 import random
 import threading
 import time
+from collections.abc import Callable
 
 import requests
 
@@ -27,6 +28,7 @@ def run_fault_injection_loop(
     seed: int,
     mean_interval_seconds: float,
     stop_event: threading.Event,
+    on_successful_injection: Callable[[], None],
 ) -> None:
     rng = random.Random(seed)
     last_injection_at: float = 0.0
@@ -84,23 +86,41 @@ def run_fault_injection_loop(
             )
             resp.raise_for_status()
             last_injection_at = time.monotonic()
+            on_successful_injection()
         except Exception:
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
 
-def spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> tuple[threading.Event, threading.Thread]:
+class FaultInjectorHandle:
+    def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float) -> None:
+        self.num_successful_injections: int = 0
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=run_fault_injection_loop,
+            kwargs={
+                "base_url": base_url,
+                "seed": seed,
+                "mean_interval_seconds": mean_interval_seconds,
+                "stop_event": self._stop_event,
+                "on_successful_injection": self._on_successful_injection,
+            },
+            daemon=True,
+            name="ft-random-fault-injector",
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop_and_join(self, *, timeout_seconds: float) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=timeout_seconds)
+
+    def _on_successful_injection(self) -> None:
+        self.num_successful_injections += 1
+
+
+def spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> FaultInjectorHandle:
     base_url = f"http://localhost:{CONTROL_SERVER_PORT}"
-    stop_event = threading.Event()
-    injector_thread = threading.Thread(
-        target=run_fault_injection_loop,
-        kwargs={
-            "base_url": base_url,
-            "seed": seed,
-            "mean_interval_seconds": mean_interval_seconds,
-            "stop_event": stop_event,
-        },
-        daemon=True,
-        name="ft-random-fault-injector",
-    )
-    injector_thread.start()
-    return stop_event, injector_thread
+    handle = FaultInjectorHandle(base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds)
+    handle.start()
+    return handle

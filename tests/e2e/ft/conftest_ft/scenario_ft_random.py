@@ -2,6 +2,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -15,6 +16,8 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
+
+from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
 
@@ -55,13 +58,17 @@ def run_ci(
         + "--mini-ft-controller-enable "
     )
 
-    stop_event, injector_thread = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
+    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
 
     try:
-        run_training(train_args=train_args, mode=ft_mode)
+        run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir)
     finally:
-        stop_event.set()
-        injector_thread.join(timeout=5)
+        injector.stop_and_join(timeout_seconds=5)
+
+    assert_soak_reconfigure_events(
+        Path(dump_dir) / "events",
+        num_successful_injections=injector.num_successful_injections,
+    )
 
     print(f"Random failure soak test PASSED (seed={seed}, steps={num_steps})")
 
