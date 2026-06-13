@@ -38,27 +38,21 @@ def _build_actions(phase_start_rollout_id: int) -> list[dict]:
 
 
 def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
-    # Each target phase heals once; baseline phases emit none. The stop/start pair fires at
-    # the end of phase_start + 1 and a single _refresh_cells absorbs it on the next rollout,
-    # so the heal lands at phase_start + 2 (no standalone shrink). Global rollout_id.
-    #
-    # The event dir is restored across the ckpt resume (event_logger.checkpoint copies the
-    # snapshotted dir into the resumed run), so a later phase's dir carries every earlier
-    # phase's reconfigure plus its own -- expect the cumulative, in-order sequence of one
-    # heal per phase up to and including this one.
-    if not is_target:
-        return []
-    current_start: int = PHASE_START_ROLLOUT_IDS[phase]
-    return [
-        ReconfigureInfo(
-            rollout_id=phase_start + 2,
+    def heal_at(phase_name: str) -> ReconfigureInfo:
+        return ReconfigureInfo(
+            rollout_id=PHASE_START_ROLLOUT_IDS[phase_name] + 2,
             src_cell_index=0,
             healed_cell_indices=[num_cells - 1],
             alive_cell_indices_after=list(range(num_cells)),
         )
-        for phase_start in sorted(PHASE_START_ROLLOUT_IDS.values())
-        if phase_start <= current_start
-    ]
+
+    if not is_target:
+        return []
+    if phase == "phase_a":
+        return [heal_at("phase_a")]
+    if phase == "phase_b":
+        return [heal_at("phase_a"), heal_at("phase_b")]
+    raise ValueError(f"unknown phase: {phase!r}")
 
 
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
