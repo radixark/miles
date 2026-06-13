@@ -103,7 +103,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    fp8_training: bool | None = None
+    # Precision recipe for BOTH trainer (Megatron/TE) and rollout (sglang checkpoint):
+    #   fp8   - blockwise FP8 128x128 (Hopper: fp32 scales; Blackwell: pow2 scales, MXFP8-emulated)
+    #   mxfp8 - MXFP8 1x32 ue8m0 (Blackwell only; rollout serves the BF16->MXFP8 converted ckpt)
+    #   bf16  - BF16 training; rollout serves the source FP8 checkpoint
+    recipe: Literal["fp8", "mxfp8", "bf16"] = "fp8"
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -116,6 +120,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_local_dir = self.model_dir
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
+        if self.hardware in ("H100", "H200"):
+            assert self.recipe != "mxfp8", "MXFP8 is not supported on H100/H200 (no native MXFP8)"
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         self.colocate = self.rollout_num_nodes == 0
@@ -140,6 +146,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
             return "DeepSeek-V4-Pro-BF16"
         return f"{self.model_name}-bf16"
 
+    @property
+    def mxfp8_name(self):
+        return f"{self.model_name}-MXFP8"
+
 
 def _is_blackwell(args: ScriptArgs) -> bool:
     if args.hardware != "auto":
@@ -151,12 +161,6 @@ def _is_blackwell(args: ScriptArgs) -> bool:
         raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
     major, _minor = torch.cuda.get_device_capability()
     return major >= 10
-
-
-def _resolve_precision_defaults(args: ScriptArgs):
-    if args.fp8_training is None:
-        args.fp8_training = not _is_blackwell(args)
-        print(f"[precision] fp8_training auto -> {args.fp8_training}")
 
 
 def _download_dataset(args: ScriptArgs):
@@ -221,6 +225,29 @@ def _prepare_single(args: ScriptArgs):
 def prepare_single(args: ScriptArgs):
     """FP8 -> BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
     _prepare_single(args)
+
+
+def _prepare_mxfp8(args: ScriptArgs):
+    """BF16 -> MXFP8 conversion for sglang rollout (Blackwell only).
+
+    V4 needs no --extra-high-precision-layers-hf: the BF16-precision weights
+    (head/wo_a/ffn.gate/compressor) are already covered by SKIP_WEIGHT_SUBSTRINGS
+    in tools/convert_hf_to_mxfp8.py.
+    """
+    if args.recipe != "mxfp8":
+        return
+    U.exec_command(
+        f"python tools/convert_hf_to_mxfp8.py "
+        f"--model-dir {args.model_dir}/{args.bf16_name} "
+        f"--save-dir {args.model_dir}/{args.mxfp8_name} "
+    )
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_mxfp8(args: ScriptArgs):
+    """BF16 -> MXFP8 conversion (needs prepare-single done first). One node."""
+    _prepare_mxfp8(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
@@ -291,9 +318,10 @@ def _prepare_cp(args: ScriptArgs):
         path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
         num_nodes=args.num_nodes,
     )
+    hf_name = args.mxfp8_name if args.recipe == "mxfp8" else args.model_name
     U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
+        path_src=f"{args.model_dir}/{hf_name}",
+        path_dst=f"{args.model_local_dir}/{hf_name}",
         num_nodes=args.num_nodes,
     )
 
@@ -365,7 +393,13 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
-    _resolve_precision_defaults(args)
+    if args.recipe == "mxfp8":
+        assert _is_blackwell(args), "MXFP8 requires Blackwell (B200/B300/GB200/GB300)"
+        mxfp8_checkpoint = f"{args.model_local_dir}/{args.mxfp8_name}"
+        if args.hf_checkpoint != mxfp8_checkpoint:
+            print(f"[precision] recipe=mxfp8: hf_checkpoint {args.hf_checkpoint} -> {mxfp8_checkpoint}")
+            args.hf_checkpoint = mxfp8_checkpoint
+    print(f"[precision] recipe={args.recipe}")
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -472,8 +506,11 @@ def _train(args: ScriptArgs):
         sglang_dp_size = sglang_world_size
         sglang_ep_size = sglang_world_size
         sglang_a2a_backend = None
+    # MXFP8 dense GEMM uses the cutlass backend (mirrors run_deepseek_v32.py).
+    sglang_fp8_gemm_backend = "flashinfer_cutlass" if args.recipe == "mxfp8" else "auto"
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
+        f"--sglang-fp8-gemm-backend {sglang_fp8_gemm_backend} "
         f"--sglang-tp-size {sglang_tp_size} "
         f"--sglang-dp-size {sglang_dp_size} "
         "--sglang-enable-dp-attention "
@@ -563,11 +600,24 @@ def _train(args: ScriptArgs):
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
 
-    if args.fp8_training:
-        misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        extra_env_vars |= {
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        }
+    match args.recipe:
+        case "mxfp8":
+            misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe mxfp8 "
+        case "fp8":
+            misc_args += (
+                "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
+            )
+            if not _is_blackwell(args):
+                extra_env_vars |= {
+                    "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+                }
+            else:
+                # actor_group.py unconditionally injects NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1
+                # into train actors; on Blackwell the TE blockwise recipe is emulated with
+                # MXFP8 and requires power-of-two scales, so force it back to 0 here.
+                misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}' """
+        case "bf16":
+            pass
 
     train_args = (
         f"{ckpt_args} "
@@ -610,6 +660,13 @@ def full_train(args: ScriptArgs):
         _prepare_single(args)
     else:
         print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
+
+    if args.recipe == "mxfp8":
+        mxfp8_sentinel = Path(f"{args.model_dir}/{args.mxfp8_name}") / "model.safetensors.index.json"
+        if not mxfp8_sentinel.exists():
+            _prepare_mxfp8(args)
+        else:
+            print(f"[full_train] Skipping BF16->MXFP8 conversion: {mxfp8_sentinel} already exists.")
 
     torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
     torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
