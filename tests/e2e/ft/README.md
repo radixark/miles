@@ -156,8 +156,9 @@ both start regimes: cold start (phase_a) and resume from a post-FT checkpoint (p
 ```
 Type: comparison, multi-phase (phase_a + phase_b)
 One shared builder parameterized by the phase's start rollout id P emits both phases: 3
-rollouts, the same relative fault timeline, ckpt save after every rollout (--save-interval
-1). Only the start regime differs:
+rollouts, the same relative fault timeline, ckpt saved only at the phase's last rollout
+(--save-interval 3 = NUM_ROLLOUTS_PER_PHASE — phase_a's rollout 2, the post-healing ckpt
+phase_b resumes from). Only the start regime differs:
   phase_a: cold start (no --load, start_rollout_id=0) — rollouts 0..2 (P=0)
   phase_b: resumes from phase_a's last (rollout-2) ckpt
            (start_rollout_id = loaded + 1 = 3) — rollouts 3..5 (P=3)
@@ -166,7 +167,7 @@ phase stops after its 3 rollouts via --debug-exit-after-rollout 3, which counts 
 executed within the run and fires after that rollout's ckpt save.
 
 Per-phase timeline — baseline:
-  1. Rollouts P..P+2: normal steps, save ckpt after every rollout
+  1. Rollouts P..P+2: normal steps (ckpt saved at the last rollout)
 
 Per-phase timeline — target:
   1. Rollout P: N cells normal
@@ -175,8 +176,8 @@ Per-phase timeline — target:
   3. Rollout P+1, attempt 1: _refresh_cells() reconfigure → N-1 cells → commit
   4. After rollout P+1: stop_cell_at_end(last) + start_cell_at_end(last)
   5. Rollout P+2: _refresh_cells() healing → N cells, trains with the healed cell
-  Saving after every rollout (the P+1 degraded-quorum commit and the P+2 post-healing
-  step included) makes phase_b's resume exercise a post-FT checkpoint.
+  Saving only at the last rollout means phase_a's saved ckpt is the P+2 post-healing one,
+  so phase_b's resume exercises a post-FT checkpoint.
 
 Compare: BOTH phases' dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
 also tolerate max_abs <= 1e-3; in the real_rollout mode every rollout from the first
@@ -273,8 +274,9 @@ both start regimes: cold start (phase_a) and resume from a post-healing checkpoi
 ```
 Type: comparison, multi-phase (phase_a + phase_b)
 One shared builder parameterized by the phase's start rollout id P emits both phases: 3
-rollouts, stop/start healing at the same relative offset, ckpt save after every rollout
-(--save-interval 1). Only the start regime differs:
+rollouts, stop/start healing at the same relative offset, ckpt saved only at the phase's
+last rollout (--save-interval 3 = NUM_ROLLOUTS_PER_PHASE, so phase_a's rollout 2 is the one
+phase_b resumes from). Only the start regime differs:
   phase_a: cold start (no --load, start_rollout_id=0) — rollouts 0..2 (P=0)
   phase_b: resumes from phase_a's last (rollout-2, post-healing) ckpt
            (start_rollout_id = loaded + 1 = 3) — rollouts 3..5 (P=3)
@@ -282,6 +284,9 @@ rollouts, stop/start healing at the same relative offset, ckpt save after every 
 phase stops after its 3 rollouts via --debug-exit-after-rollout 3, which counts rollouts
 executed within the run and fires after that rollout's ckpt save.
 Comparison: BOTH phases' dumps rel <= 0 (bitwise), metrics rtol=0 / atol=0 (exact)
+
+Per-phase baseline timeline: rollouts P..P+2 all normal (normal DP, no stop/start, no
+healing) — the no-fault reference the target must reproduce bit-for-bit.
 
 Per-phase target timeline:
   1. Rollout P, P+1: all N cells normal

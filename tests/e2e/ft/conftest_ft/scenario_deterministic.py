@@ -70,7 +70,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     if is_target:
         base += get_ft_args(mode)
 
-    base += f"--save {dump_dir}/ckpt --save-interval 1 "
+    base += f"--save {dump_dir}/ckpt --save-interval {NUM_ROLLOUTS_PER_PHASE} "
     base += f"--debug-exit-after-rollout {NUM_ROLLOUTS_PER_PHASE} "
     if phase_name != "phase_a":
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
