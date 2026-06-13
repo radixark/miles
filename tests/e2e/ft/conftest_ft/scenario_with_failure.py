@@ -15,21 +15,14 @@ from miles.utils.test_utils.comparisons import (
     compare_metrics,
 )
 
-# Rollout ids are global across phases: phase_a runs [0, NUM_ROLLOUTS_PER_PHASE); phase_b
-# resumes from phase_a's last ckpt and runs [NUM_ROLLOUTS_PER_PHASE, TOTAL_NUM_ROLLOUTS).
-# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count;
-# each phase stops via --debug-exit-after-rollout, which counts rollouts in the current run.
+# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count; --debug-exit-after-rollout counts rollouts in the current run.
 NUM_ROLLOUTS_PER_PHASE: int = 3
 TOTAL_NUM_ROLLOUTS: int = 2 * NUM_ROLLOUTS_PER_PHASE
 PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS_PER_PHASE}
 
-# The injected fault hits each phase's second rollout (phase start + this offset). Every
-# fault-relative rollout id below derives from this single offset.
 _FAULT_OFFSET_IN_PHASE: int = 1
 
-# First rollout id whose target weights carry the degraded-quorum commit's ulp drift: the
-# phase_a fault hits rollout 1, so drift starts the next rollout and persists into all of
-# phase_b through the ckpt (phase_b resumes from the drift-carrying phase_a ckpt).
+# Fault-inherent ulp drift persists from the phase_a fault through the ckpt into all of phase_b, so post-fault starts the rollout after the fault.
 _FIRST_POST_FAULT_ROLLOUT_ID: int = PHASE_START_ROLLOUT_IDS["phase_a"] + _FAULT_OFFSET_IN_PHASE + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
@@ -67,9 +60,6 @@ _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
 
 
 def _build_actions(phase_start_rollout_id: int) -> list[dict]:
-    # Fault on the phase's 2nd rollout: crash at attempt 0 -> degraded-quorum commit at
-    # attempt 1, then stop/start at its end so healing runs at the start of the 3rd (last)
-    # rollout, which trains with the healed cell.
     fault_rollout_id: int = phase_start_rollout_id + _FAULT_OFFSET_IN_PHASE
     return [
         {
@@ -106,10 +96,6 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     if is_target:
         base += f"--ci-ft-test-actions '{json.dumps(_build_actions(phase_start_rollout_id))}' "
         if mode.has_real_rollout:
-            # Post-fault rollouts inject the baseline's recorded data (see README), read
-            # from this phase's mirror dump dir on the baseline side. The max() makes
-            # phase_a inject from right after the fault while phase_b injects every rollout
-            # (all of phase_b's generation runs on drift-carrying weights).
             baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
             inject_start_rollout_id = max(phase_start_rollout_id, _FIRST_POST_FAULT_ROLLOUT_ID)
             base += (
@@ -139,8 +125,6 @@ def _assert_dump_leaves(side_dir: str, side: str, phase: str, expected_leaves: s
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
-    # Both phases are compared: phase_a runs fault + healing on a cold start, phase_b runs
-    # the same timeline after resuming from phase_a's post-FT ckpt.
     for phase, phase_start_rollout_id in PHASE_START_ROLLOUT_IDS.items():
         baseline_dir = f"{dump_dir}/baseline/{phase}"
         target_dir = f"{dump_dir}/target/{phase}"

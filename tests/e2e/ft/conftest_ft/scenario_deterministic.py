@@ -15,10 +15,7 @@ from miles.utils.test_utils.comparisons import (
     compare_metrics,
 )
 
-# Rollout ids are global across phases: phase_a runs [0, NUM_ROLLOUTS_PER_PHASE); phase_b
-# resumes from phase_a's last ckpt and runs [NUM_ROLLOUTS_PER_PHASE, TOTAL_NUM_ROLLOUTS).
-# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count;
-# each phase stops via --debug-exit-after-rollout, which counts rollouts in the current run.
+# --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS), not a per-run count; --debug-exit-after-rollout counts rollouts in the current run.
 NUM_ROLLOUTS_PER_PHASE: int = 3
 TOTAL_NUM_ROLLOUTS: int = 2 * NUM_ROLLOUTS_PER_PHASE
 PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS_PER_PHASE}
@@ -31,9 +28,6 @@ _DETERMINISTIC_ENV_VARS: str = (
 
 
 def _build_actions(phase_start_rollout_id: int) -> list[dict]:
-    # stop/start at the end of the phase's 2nd rollout => healing runs at the start of the
-    # 3rd (last) rollout, which trains with the healed cell. That last rollout must exist,
-    # otherwise healing is never exercised.
     heal_trigger_rollout_id: int = phase_start_rollout_id + 1
     return [
         {"at_rollout": heal_trigger_rollout_id, "action": "stop_cell_at_end", "cell_index": -1},
@@ -92,9 +86,6 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     # This requires the run to be fully deterministic on both sides.
     # Any divergence is a real bug and must be fixed at the source, never hidden by
     # loosening these thresholds.
-    #
-    # Both phases are compared: phase_a heals on a cold start, phase_b heals after resuming
-    # from phase_a's post-healing ckpt.
     grad_norm_key = "train/grad_norm"
     for phase, phase_start_rollout_id in PHASE_START_ROLLOUT_IDS.items():
         baseline_dir = f"{dump_dir}/baseline/{phase}"
