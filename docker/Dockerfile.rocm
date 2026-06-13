@@ -148,15 +148,6 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
 
-# 3.10 compatibility shim: miles uses the Python 3.11 StrEnum, but the ROCm sglang base is py3.10
-# (the NV/CUDA base is already py3.12). Backport StrEnum on <3.11 and make the imports
-# version-guarded. TODO: remove once the ROCm base is py3.11+.
-RUN pip install backports.strenum && \
-    for f in $(grep -rlE '^from enum import .*StrEnum' /root/miles/miles || true); do \
-      sed -i -E 's/^from enum import Enum, StrEnum$/from enum import Enum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f" && \
-      sed -i -E 's/^from enum import StrEnum$/try:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f"; \
-    done
-
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
