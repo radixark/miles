@@ -1,6 +1,7 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
 import os
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -61,6 +62,23 @@ def run_pipeline(
 
     if enable_dumper:
         compare_fn(dump_dir, ft_mode)
+        _cleanup_ckpt_dirs(dump_dir=dump_dir, phases=effective_phases)
+
+
+def _cleanup_ckpt_dirs(*, dump_dir: str, phases: list[str]) -> None:
+    """Remove every side/phase ckpt dir after a successful compare; absent dirs are skipped.
+
+    Scenarios that save a ckpt after every rollout produce many large checkpoints per mode,
+    enough to fill the disk across CI runs. They are only needed for debugging a failed
+    compare, so this runs only after compare_fn returns successfully.
+    """
+    for phase in phases:
+        for side in ("baseline", "target"):
+            ckpt_dir = Path(dump_dir) / _dump_subdir(side, phase) / "ckpt"
+            if not ckpt_dir.is_dir():
+                continue
+            shutil.rmtree(ckpt_dir)
+            print(f"Removed ckpt dir after successful compare: {ckpt_dir}")
 
 
 def create_comparison_app_and_run_ci(
