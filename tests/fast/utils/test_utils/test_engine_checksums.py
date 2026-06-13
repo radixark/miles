@@ -29,12 +29,24 @@ class _FakeRolloutManagerHandle:
 
 
 def _make_engine_response(checksums: dict[str, str], *, num_ranks: int = 1) -> dict:
-    parallelism_info = {"tp_rank": 0, "tp_size": 1, "dp_rank": 0, "dp_size": 1, "pp_rank": 0, "pp_size": 1}
     return {
         "success": True,
         "message": "Success.",
-        "ranks": [{"checksums": dict(checksums), "parallelism_info": parallelism_info} for _ in range(num_ranks)],
+        "ranks": [_make_rank_entry(checksums, rank=rank, num_ranks=num_ranks) for rank in range(num_ranks)],
     }
+
+
+def _make_rank_entry(checksums: dict[str, str], *, rank: int, num_ranks: int) -> dict:
+    parallelism_info = {
+        "tp_rank": rank,
+        "tp_size": num_ranks,
+        "dp_rank": 0,
+        "dp_size": 1,
+        "pp_rank": 0,
+        "pp_size": 1,
+        "rank": rank,
+    }
+    return {"checksums": dict(checksums), "parallelism_info": parallelism_info}
 
 
 def _make_args(ci_dump_engine_weight_checksums: str | None) -> SimpleNamespace:
@@ -268,6 +280,22 @@ class TestCompareEngineChecksumDumps:
                 expected_rollout_names={"rollout_1"},
                 expected_num_engines=1,
             )
+
+    def test_passes_when_ranks_arrive_in_different_order(self, tmp_path: Path):
+        """TP>1 ranks listed in different zmq arrival orders are still paired by global rank."""
+        rank_0 = _make_rank_entry({"model.w1": "aaaa"}, rank=0, num_ranks=2)
+        rank_1 = _make_rank_entry({"model.w1": "bbbb"}, rank=1, num_ranks=2)
+        in_order = {"success": True, "message": "Success.", "ranks": [rank_0, rank_1]}
+        reversed_order = {"success": True, "message": "Success.", "ranks": [rank_1, rank_0]}
+        baseline = _write_dump(tmp_path, "baseline", rollouts={"rollout_1": [in_order]})
+        target = _write_dump(tmp_path, "target", rollouts={"rollout_1": [reversed_order]})
+
+        compare_engine_checksum_dumps(
+            baseline_dir=baseline,
+            target_dir=target,
+            expected_rollout_names={"rollout_1"},
+            expected_num_engines=1,
+        )
 
     def test_fails_when_both_sides_symmetrically_miss_expected_rollouts(self, tmp_path: Path):
         """Identical trees that lack an expected rollout dir (e.g. all dumps in initial/) fail."""

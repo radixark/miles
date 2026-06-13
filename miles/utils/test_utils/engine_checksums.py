@@ -132,13 +132,20 @@ def _list_child_names(directory: Path) -> list[str]:
 
 
 def _compare_engine_checksum_file(*, baseline_path: Path, target_path: Path, context: str) -> int:
+    """Compare one engine's checksum response between baseline and target.
+
+    The ``ranks`` list order is not deterministic for multi-rank (TP>1) engines: sglang
+    fans the checksum request out and collects per-rank responses in zmq arrival order.
+    Sort both sides by the global rank in ``parallelism_info`` so the index-wise zip
+    below always pairs the same rank on both sides.
+    """
     baseline = json.loads(baseline_path.read_text())
     target = json.loads(target_path.read_text())
 
     assert baseline.get("success") is True, f"{context}: baseline checksum response not successful: {baseline}"
     assert target.get("success") is True, f"{context}: target checksum response not successful: {target}"
-    baseline_ranks: list[dict] = baseline["ranks"]
-    target_ranks: list[dict] = target["ranks"]
+    baseline_ranks: list[dict] = sorted(baseline["ranks"], key=lambda rank: rank["parallelism_info"]["rank"])
+    target_ranks: list[dict] = sorted(target["ranks"], key=lambda rank: rank["parallelism_info"]["rank"])
     assert len(baseline_ranks) == len(
         target_ranks
     ), f"{context}: rank count mismatch: baseline={len(baseline_ranks)} vs target={len(target_ranks)}"
