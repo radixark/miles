@@ -44,9 +44,7 @@ def assert_reconfigure_events(event_dir: Path, *, expected: list[ExpectedReconfi
     )
 
     assert actual == expected, (
-        f"CellReconfigureEvent sequence mismatch in {event_dir}:\n"
-        f"  expected: {expected}\n"
-        f"  actual:   {actual}"
+        f"CellReconfigureEvent sequence mismatch in {event_dir}:\n" f"  expected: {expected}\n" f"  actual:   {actual}"
     )
 
     actual_quorum_ids = [event.quorum_id for event in actual_events]
