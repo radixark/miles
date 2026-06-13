@@ -160,7 +160,9 @@ class TestAssertSoakReconfigureEvents:
     def test_fails_with_two_trailing_shrinks_even_at_final_rollout(self, tmp_path: Path) -> None:
         """Only one trailing shrink is tolerated; two in a row fail even when both carry the final rollout id."""
         first_shrink = dict(_SHRINK_PARTIAL, quorum_id=3, rollout_id=self._FINAL_ROLLOUT_ID)
-        second_shrink = dict(_SHRINK_PARTIAL, quorum_id=4, rollout_id=self._FINAL_ROLLOUT_ID, alive_cell_indices_after=[])
+        second_shrink = dict(
+            _SHRINK_PARTIAL, quorum_id=4, rollout_id=self._FINAL_ROLLOUT_ID, alive_cell_indices_after=[]
+        )
         _write_events(tmp_path, [_HEALING_PARTIAL, first_shrink, second_shrink])
 
         with pytest.raises(AssertionError, match="end fully healed"):
