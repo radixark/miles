@@ -7,8 +7,12 @@ import pytest
 
 from miles.utils.event_analyzer.analyzer import run_analysis, run_analysis_from_args
 from miles.utils.event_logger.logger import EventLogger
-from miles.utils.event_logger.models import LocalWeightChecksumEvent, LocalWeightChecksumState
-from miles.utils.process_identity import TrainProcessIdentity
+from miles.utils.event_logger.models import (
+    EngineWeightChecksumEvent,
+    LocalWeightChecksumEvent,
+    LocalWeightChecksumState,
+)
+from miles.utils.process_identity import MainProcessIdentity, TrainProcessIdentity
 
 
 def _log_checksum_event(
@@ -50,6 +54,40 @@ class TestRunAnalysis:
 
         issues = run_analysis(event_dir=tmp_path)
         assert len(issues) == 1
+
+
+def _log_engine_checksum_event(
+    event_logger: EventLogger,
+    *,
+    rollout_id: int,
+    engine_index: int,
+    checksums: dict[str, str],
+) -> None:
+    event_logger.log(
+        EngineWeightChecksumEvent,
+        dict(rollout_id=rollout_id, engine_index=engine_index, checksums=checksums),
+    )
+
+
+class TestEngineChecksumRuleWiredIn:
+    def test_engine_inconsistency_reported(self, tmp_path: Path) -> None:
+        """run_analysis surfaces engine-to-engine checksum mismatches via the registered rule."""
+        event_logger = EventLogger(log_dir=tmp_path, file_name="e.jsonl", source=MainProcessIdentity())
+        _log_engine_checksum_event(event_logger, rollout_id=0, engine_index=0, checksums={"rank0/w": "aaa"})
+        _log_engine_checksum_event(event_logger, rollout_id=0, engine_index=1, checksums={"rank0/w": "zzz"})
+        event_logger.close()
+
+        issues = run_analysis(event_dir=tmp_path)
+        assert len(issues) == 1
+
+    def test_consistent_engines_no_issue(self, tmp_path: Path) -> None:
+        """Identical engine checksums produce no issue."""
+        event_logger = EventLogger(log_dir=tmp_path, file_name="e.jsonl", source=MainProcessIdentity())
+        _log_engine_checksum_event(event_logger, rollout_id=0, engine_index=0, checksums={"rank0/w": "aaa"})
+        _log_engine_checksum_event(event_logger, rollout_id=0, engine_index=1, checksums={"rank0/w": "aaa"})
+        event_logger.close()
+
+        assert run_analysis(event_dir=tmp_path) == []
 
 
 class TestRunAnalysisFromArgs:

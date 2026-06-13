@@ -2,7 +2,8 @@
 
 from datetime import datetime, timezone
 
-from miles.utils.event_analyzer.rules.cross_replica_weight_checksum import _flatten_event, _flatten_nested, check
+from miles.utils.event_analyzer.rules.checksum_compare import flatten_nested as _flatten_nested
+from miles.utils.event_analyzer.rules.cross_replica_weight_checksum import _flatten_event, check
 from miles.utils.event_logger.models import LocalWeightChecksumEvent, LocalWeightChecksumState, OptimizerStateInfo
 from miles.utils.process_identity import TrainProcessIdentity
 

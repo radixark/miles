@@ -2,17 +2,15 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
 
+from miles.utils.event_analyzer.rules.checksum_compare import (
+    ChecksumMismatchIssue,
+    compare_flat_dicts,
+    flatten_nested,
+)
 from miles.utils.event_logger.models import Event, LocalWeightChecksumEvent
 from miles.utils.process_identity import TrainProcessIdentity
-from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
-
-class ChecksumMismatchIssue(FrozenStrictBaseModel):
-    key: str
-    label_a: str
-    label_b: str
-    value_a: str
-    value_b: str
+__all__ = ["ChecksumMismatchIssue", "check"]
 
 
 def check(events: list[Event]) -> list[ChecksumMismatchIssue]:
@@ -56,7 +54,7 @@ def _check_one_step(events: list[LocalWeightChecksumEvent]) -> Iterable[Checksum
         first = rank_events[0]
         first_flat = _flatten_event(first)
         for other in rank_events[1:]:
-            yield from _compare_flat_dicts(
+            yield from compare_flat_dicts(
                 a=first_flat,
                 b=_flatten_event(other),
                 label_a=_compute_label(first),
@@ -70,43 +68,4 @@ def _compute_label(event: LocalWeightChecksumEvent) -> str:
 
 def _flatten_event(event: LocalWeightChecksumEvent) -> dict[str, Any]:
     """Flatten all fields of an event into a flat dict with dot-separated keys."""
-    return _flatten_nested(event.state.model_dump(), prefix="")
-
-
-def _compare_flat_dicts(
-    a: dict[str, Any],
-    b: dict[str, Any],
-    label_a: str,
-    label_b: str,
-) -> Iterable[ChecksumMismatchIssue]:
-    """Compare two flat dicts and yield mismatches."""
-    all_keys = sorted(set(a.keys()) | set(b.keys()))
-
-    for key in all_keys:
-        value_a = a.get(key, "<missing>")
-        value_b = b.get(key, "<missing>")
-        if value_a != value_b:
-            yield ChecksumMismatchIssue(
-                key=key,
-                label_a=label_a,
-                label_b=label_b,
-                value_a=str(value_a),
-                value_b=str(value_b),
-            )
-
-
-def _flatten_nested(obj: Any, *, prefix: str = "") -> dict[str, Any]:
-    """Flatten a nested dict/list into a flat dict with dot-separated keys. Keeps all primitive leaf values."""
-    result: dict[str, Any] = {}
-
-    if isinstance(obj, dict):
-        for k, v in sorted(obj.items(), key=lambda x: str(x[0])):
-            child_prefix = f"{prefix}.{k}" if prefix else str(k)
-            result.update(_flatten_nested(v, prefix=child_prefix))
-    elif isinstance(obj, (list, tuple)):
-        for i, v in enumerate(obj):
-            result.update(_flatten_nested(v, prefix=f"{prefix}[{i}]"))
-    else:
-        result[prefix] = obj
-
-    return result
+    return flatten_nested(event.state.model_dump(), prefix="")

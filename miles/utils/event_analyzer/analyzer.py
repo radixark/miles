@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.utils.event_analyzer.rules import cross_replica_weight_checksum
+from miles.utils.event_analyzer.rules import engine_weight_checksum_consistency
 from miles.utils.event_analyzer.rules import witness as witness_rule
 from miles.utils.event_logger.logger import read_events
 
@@ -34,5 +35,6 @@ def run_analysis(event_dir: Path) -> list[Any]:
 
     return [
         *cross_replica_weight_checksum.check(events),
+        *engine_weight_checksum_consistency.check(events),
         *witness_rule.check(events),
     ]
