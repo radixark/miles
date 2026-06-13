@@ -2,9 +2,6 @@
 title: Kimi K2
 description: Launch recipes for Kimi-K2-Instruct and Kimi-K2-Thinking — 32 nodes × 8 GPU.
 ---
-
-# Kimi K2
-
 ## 1. Model Introduction
 
 [Kimi-K2](https://moonshotai.github.io/Kimi-K2/) is a state-of-the-art MoE language model from Moonshot AI with 32 B activated parameters and 1 T total parameters.
@@ -38,7 +35,6 @@ Both are referenced but never set inside the scripts — export them yourself be
 
 ```bash
 hf download moonshotai/Kimi-K2-Instruct --local-dir $BASE_DIR/Kimi-K2-Instruct
-# or, for Thinking (FP8 by default):
 hf download moonshotai/Kimi-K2-Thinking --local-dir $BASE_DIR/Kimi-K2-Thinking-fp8
 
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir $BASE_DIR/dapo-math-17k
@@ -168,7 +164,7 @@ CPU Adam is enabled in both:
 
 ## 6. Pairs Well With
 
-- [PD Disaggregation](../../advanced/pd-disaggregation.md)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
-- [Fault Tolerance](../../advanced/fault-tolerance.md)
-- [INT4 QAT](../../advanced/int4-qat.md)
+- [PD Disaggregation](/advanced/pd-disaggregation)
+- [P2P Weight Transfer](/advanced/p2p-weight-transfer)
+- [Fault Tolerance](/advanced/fault-tolerance)
+- [INT4 QAT](/advanced/int4-qat)

@@ -1,13 +1,18 @@
-# 1. rlsys/miles:MI350-355-latest
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
+# Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
+#
+# 1. rocm/sgl-dev:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
+#    use default settings
+#
+# 2. rocm/sgl-dev:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
+#    build-arg:GPU_ARCH=gfx942
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 
 ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
-# ======================================== Arguments =============================================
-
+# ======================================== Arguments ============================================
 ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
@@ -29,13 +34,12 @@ ARG RCCL_TESTS_PATH=projects/rccl-tests
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
 
-# ======================================== Setup =============================================
-
+# ======================================== Setup ================================================
 WORKDIR /root/
 
 ENV MAX_JOBS=${MAX_JOBS}
 
-# Build configuration for MI350 / gfx950.
+# Build configuration for the selected arch (gfx942 / gfx950).
 ENV GPU_ARCH=${GPU_ARCH}
 ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}
 ENV GPU_ARCH_LIST=${GPU_ARCH}
@@ -46,18 +50,16 @@ ENV NVTE_FRAMEWORK=pytorch
 ENV NVTE_ROCM_ARCH=${GPU_ARCH}
 ENV NVTE_USE_HIPBLASLT=1
 ENV NVTE_USE_ROCM=1
-# Keep the core package enabled and skip the extra fused-attn kernel matrix rebuild.
-ENV NVTE_FUSED_ATTN=0
 ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 
-# Patch Megatron's fused-kernel init for this toolchain.
+# Patches + requirements consumed below.
+# TODO: remove these patches once the changes are merged into the main codebase.
 COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/miles.patch /tmp/amd_patch/miles.patch
 COPY docker/amd_patch/latest/sglang_attn_bridge /tmp/amd_patch/sglang_attn_bridge
 COPY requirements.txt /tmp/requirements.txt
 
-# ======================================== Apt dependencies =============================================
-
+# ======================================== Apt dependencies =====================================
 RUN apt update
 # Install build tools and diagnostics utilities.
 RUN apt install -y build-essential cmake dnsutils ethtool git nvtop rsync
@@ -71,30 +73,14 @@ RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/ro
     cp /tmp/rocm-systems/${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
     rm -rf /tmp/rocm-systems
 
-# ====================================== Python dependencies ============================================
-
-# Rebuild AITER at the version paired with SGLang.
-RUN pip uninstall -y aiter || true
-RUN pip install flydsl==0.0.1.dev95158637 psutil pybind11
-RUN cd /sgl-workspace/aiter && \
-    git remote set-url origin ${AITER_REPO} && \
-    git checkout ${AITER_COMMIT} && \
-    git reset --hard ${AITER_COMMIT} && \
-    git clean -fdx && \
-    git submodule sync --recursive && \
-    git submodule update --init --recursive && \
-    # Temporary fixes for the current ROCm 7.2 image/toolchain combination.
-    sed -i '459 s/if.*:/if False:/' aiter/ops/triton/attention/pa_mqa_logits.py && \
-    sed -i '/c1 = torch.empty((M, D, S1 + S3), dtype=dtype, device=x.device)/i\    config = dict(config)' \
-      aiter/ops/triton/gemm/fused/fused_gemm_afp4wfp4_split_cat.py && \
-    GPU_ARCHS=${GPU_ARCH} pip install -e .
-
-# Install Transformer Engine from the requested branch.
+# ====================================== Python dependencies ====================================
+# Install Transformer Engine from the requested branch. NVTE_FUSED_ATTN=0 is scoped to
+# this build step only (skip the extra fused-attn kernel matrix rebuild), not the runtime env.
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
 RUN rm -rf /root/TransformerEngine && \
     git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
     cd /root/TransformerEngine && \
-    pip install . --no-build-isolation -v
+    NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
@@ -137,23 +123,41 @@ RUN pip install git+https://github.com/yushengsu-thu/Megatron-Bridge.git@merged-
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
+# Megatron post_training and Megatron-Bridge hard-import modelopt.
+RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
+# modelopt pulls setuptools up to 82, which drops pkg_resources and breaks deps that
+# still import it; re-pin to the base image's setuptools.
+RUN pip install "setuptools==79.0.1"
+
+# Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
+RUN pip install "typer==0.25.1" "click==8.2.1"
+
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
     pip install -r /tmp/requirements.txt
 
 # Pin numpy 1.x for Megatron compatibility.
 RUN pip install "numpy<2"
 
-# ====================================== Install main package ============================================
+# ====================================== Install main package ===================================
 
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
-git apply --3way --unidiff-zero /tmp/amd_patch/miles.patch && \
+    git apply --3way --unidiff-zero /tmp/amd_patch/miles.patch && \
     mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
 
-# ====================================== Runtime knobs ============================================
+# 3.10 compatibility shim: miles uses the Python 3.11 StrEnum, but the ROCm sglang base is py3.10
+# (the NV/CUDA base is already py3.12). Backport StrEnum on <3.11 and make the imports
+# version-guarded. TODO: remove once the ROCm base is py3.11+.
+RUN pip install backports.strenum && \
+    for f in $(grep -rlE '^from enum import .*StrEnum' /root/miles/miles || true); do \
+      sed -i -E 's/^from enum import Enum, StrEnum$/from enum import Enum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f" && \
+      sed -i -E 's/^from enum import StrEnum$/try:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f"; \
+    done
+
+# ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
 ENV HIP_FORCE_DEV_KERNARG=1

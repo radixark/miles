@@ -2,10 +2,7 @@
 title: Customization
 description: The 22 plug-points where you can drop in your own Python without forking Miles.
 ---
-
-# Customization
-
-Most of Miles's behaviour can be replaced with user-supplied Python by passing a
+Most of Miles's behavior can be replaced with user-supplied Python by passing a
 `--*-path` flag. This page lists every such hook, the function signature it expects,
 and the default it replaces.
 
@@ -92,7 +89,6 @@ configured.
 ### `--custom-rm-path`
 
 ```python
-# Single-sample mode
 async def custom_rm(args, sample: Sample) -> float:
     ...
 
@@ -281,4 +277,4 @@ ROLLOUT_ARGS+=(
 
 That is the entire delta from the stock GRPO recipe, with no source changes to Miles.
 
-→ Next: [Server arguments reference](cli-reference.md)
+→ Next: [Server arguments reference](/user-guide/cli-reference)

@@ -2,9 +2,6 @@
 title: ReTool — Code Execution Tool Use
 description: SFT + RL pipeline that teaches a model to interleave thinking with sandboxed Python execution.
 ---
-
-# ReTool — Code Execution Tool Use
-
 **What you'll learn:** the full SFT → RL pipeline for tool-augmented reasoning, with
 sandboxed Python execution and a reward function that checks both the final answer and
 the tool-use trace.
@@ -14,7 +11,7 @@ Python snippet, get the result, continue reasoning, repeat.
 
 ## Prerequisites
 
-* Familiar with [Search-R1](search-r1.md) — same general pattern.
+* Familiar with [Search-R1](/examples/search-r1) — same general pattern.
 * `radixark/miles:latest` container.
 * ~150 GB free disk for the SFT data + base model.
 
@@ -48,7 +45,6 @@ You can skip the SFT phase by using the pre-trained checkpoint we publish:
 ## Quick start (RL only)
 
 ```bash
-# 1. Download model + datasets
 hf download font-info/qwen3-4b-sft-SGLang-RL --local-dir /root/font-info/qwen3-4b-sft
 hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
