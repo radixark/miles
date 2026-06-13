@@ -239,11 +239,13 @@ class RayTrainGroup:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(lambda _: self._execute_first_alive("update_weights", info=info))
 
-        await self._maybe_log_engine_weight_checksums(rollout_id=rollout_id)
+        if rollout_id is not None:
+            await self._maybe_log_engine_weight_checksums(rollout_id=rollout_id)
 
     async def _maybe_log_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
-        if rollout_id is None or not is_event_logger_initialized():
+        if not is_event_logger_initialized():
             return
+        assert rollout_id is not None
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
