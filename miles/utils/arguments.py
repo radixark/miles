@@ -2109,9 +2109,7 @@ def miles_validate_args(args):
         args.delay_split_train_data_by_dp = True
         args.save_local_weight_checksum = True
         args.enable_event_analyzer = True
-        # The megatron.bridge model provider does not support witness yet
-        # (model_provider.wrapped_bridge_provider asserts it off), so keep it off there.
-        args.enable_witness = args.megatron_to_hf_mode != "bridge"
+        args.enable_witness = True
         args.non_persistent_ckpt_type = "local"
         if getattr(args, "non_persistent_local_ckpt_dir", None) is None:
             args.non_persistent_local_ckpt_dir = "/tmp/miles_local_ckpt"
@@ -2119,8 +2117,7 @@ def miles_validate_args(args):
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
         args.non_persistent_local_ckpt_algo = "atomic"
         logger.info(
-            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=%r, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
-            args.enable_witness,
+            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
             args.non_persistent_local_ckpt_algo,
         )
 

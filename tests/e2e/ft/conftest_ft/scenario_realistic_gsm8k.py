@@ -157,7 +157,6 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {_TRAIN_GPUS} "
-        "--megatron-to-hf-mode bridge "
     )
 
     return (
