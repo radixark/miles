@@ -103,10 +103,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    # Precision recipe for BOTH trainer (Megatron/TE) and rollout (sglang checkpoint):
-    #   fp8   - blockwise FP8 128x128 (Hopper: fp32 scales; Blackwell: pow2 scales, MXFP8-emulated)
-    #   bf16  - BF16 training; rollout serves the source FP8 checkpoint
-    recipe: Literal["fp8", "bf16"] = "fp8"
+    # Megatron-side training precision: blockwise FP8 128x128 GEMMs when True
+    # (Hopper: fp32 scales; Blackwell: pow2 scales, MXFP8-emulated), BF16 when False.
+    # Rollout always serves the source FP8 checkpoint either way.
+    fp8_training: bool = True
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -362,7 +362,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
-    print(f"[precision] recipe={args.recipe}")
+    print(f"[precision] fp8_training={args.fp8_training}")
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -560,7 +560,7 @@ def _train(args: ScriptArgs):
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
 
-    if args.recipe == "fp8":
+    if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
         # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
         fp32_scales = "0" if _is_blackwell(args) else "1"
