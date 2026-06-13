@@ -59,10 +59,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
 
 
 def _append_engine_checksum_args(mode: FTTestMode, dump_dir: str) -> str:
-    # Engine weight checksum dumping (phase_b only, both sides): after every
-    # update_weights — including the post-healing one — each engine's weights are
-    # checksummed per tensor, so _compare_engine_checksums can prove the weight sync
-    # pushed bitwise-identical weights. Only modes with real engines can checksum.
+    # phase_b only, both sides; only real engines can be checksummed.
     if not mode.has_real_rollout:
         return ""
     return f"--ci-dump-engine-weight-checksums {dump_dir}/engine_checksums "
@@ -132,18 +129,13 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
 
 
 def _compare_engine_checksums(dump_dir: str, mode: FTTestMode) -> None:
-    # Both sides train bitwise-identically (asserted above), so after every
-    # update_weights the engine weights must hash identically per tensor, zero
-    # tolerance. This is the assertion that closes the post-heal update_weights gap:
-    # a silent no-op, mis-mapped, partially-pushed, or corrupted weight sync flips a
-    # tensor's hash and fails with the rollout, engine, and tensor name.
+    # Both sides train bitwise-identically (asserted above), so post-update_weights
+    # engine weights must hash identically per tensor with zero tolerance; this closes
+    # the post-heal weight-sync gap (no-op / mis-mapped / partial / corrupted push).
     if not mode.has_real_rollout:
         return
-    # Pin the exact rollout-dir set and engine count so a *symmetric* loss on both
-    # sides (e.g. the rollout_id plumbing breaking and every dump landing in
-    # initial/, or fewer engines being checksummed) cannot pass silently: one
-    # initial/ dump for the pre-loop weight sync, then one rollout_<i>/ dump per
-    # phase_b rollout, each with exactly mode.rollout_num_engines engine files.
+    # Pin the expected set so a symmetric loss on both sides cannot pass silently: one
+    # initial/ dump (pre-loop sync) plus one rollout_<i>/ per phase_b rollout.
     expected_rollout_names = {INITIAL_DUMP_NAME} | {
         f"rollout_{rollout_id}" for rollout_id in range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS)
     }

@@ -74,8 +74,8 @@ class RayTrainGroup:
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights from rank 0 to all other ranks.
 
-        ``rollout_id`` is accepted for call-site compatibility with the v2 RayTrainGroup,
-        which uses it to dump per-engine weight checksums; v1 does not support that.
+        ``rollout_id`` is accepted only for call-site parity with v2 RayTrainGroup; v1
+        does not dump checksums.
         """
         assert self.args.ci_dump_engine_weight_checksums is None, (
             "--ci-dump-engine-weight-checksums is only supported by the experimental FT trainer "
