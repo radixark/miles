@@ -977,7 +977,7 @@ def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
     return [[engines]]
 
 
-class TestMaybeLogEngineWeightChecksums:
+class TestMaybeLogInferenceEngineWeightChecksums:
     async def test_no_event_logger_does_not_call_check_weights(self):
         """Without an initialized event logger, no check_weights request is issued."""
         rollout_mgr = MagicMock()

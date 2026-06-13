@@ -56,7 +56,7 @@ class TestRunAnalysis:
         assert len(issues) == 1
 
 
-def _log_engine_checksum_event(
+def _log_inference_engine_checksum_event(
     event_logger: EventLogger,
     *,
     rollout_id: int,
@@ -68,11 +68,11 @@ def _log_engine_checksum_event(
     )
 
 
-class TestEngineChecksumRuleWiredIn:
+class TestInferenceEngineChecksumRuleWiredIn:
     def test_engine_inconsistency_reported(self, tmp_path: Path) -> None:
         """run_analysis surfaces engine-to-engine checksum mismatches via the registered rule."""
         event_logger = EventLogger(log_dir=tmp_path, file_name="e.jsonl", source=MainProcessIdentity())
-        _log_engine_checksum_event(
+        _log_inference_engine_checksum_event(
             event_logger, rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "zzz"}]
         )
         event_logger.close()
@@ -83,7 +83,7 @@ class TestEngineChecksumRuleWiredIn:
     def test_consistent_engines_no_issue(self, tmp_path: Path) -> None:
         """Identical engine checksums produce no issue."""
         event_logger = EventLogger(log_dir=tmp_path, file_name="e.jsonl", source=MainProcessIdentity())
-        _log_engine_checksum_event(
+        _log_inference_engine_checksum_event(
             event_logger, rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]
         )
         event_logger.close()
