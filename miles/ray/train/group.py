@@ -310,7 +310,7 @@ class RayTrainGroup:
 
     async def _execute_first_alive(self, fn_name: str, *args, **kwargs):
         alive_cells = [c for c in self._cells if c.is_alive]
-        assert alive_cells, "No alive cells"
+        assert alive_cells, "No alive cells, therefore cannot heal anymore"
         return await alive_cells[0].execute(fn_name, *args, **kwargs)
 
     # ------------------------ internals for stop/start ------------------------
