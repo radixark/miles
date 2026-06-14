@@ -1209,12 +1209,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing",
             )
             parser.add_argument(
-                "--miles-router-middleware-paths",
-                type=str,
-                nargs="+",
-                default="",
-            )
-            parser.add_argument(
                 "--miles-router-timeout",
                 type=float,
                 default=None,
@@ -2097,7 +2091,14 @@ def miles_validate_args(args):
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
-        if args.load is None:
+        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
+        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
+        # Mirrors the non-bridge branch below.
+        if (
+            args.load is None
+            or not os.path.exists(args.load)
+            or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
+        ):
             args.load = args.ref_load or args.hf_checkpoint
         args.start_rollout_id = 0
     else:

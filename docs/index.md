@@ -1,9 +1,6 @@
 ---
 title: Miles Documentation
 ---
-
-# Miles
-
 Miles is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. It
 couples [SGLang](https://github.com/sgl-project/sglang) for high-throughput rollout with
 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for scalable training, and ships the precision, stability, and observability features
@@ -17,7 +14,7 @@ needed to run RL at trillion-parameter scale.
 - **Fast and stable support for the latest models.** Day-0 enablement of frontier
   releases such as DeepSeek-V4, with rapid follow-on support for new architectures
   including GLM-5, Qwen 3.6, and Nemotron-3-Super.
-- **Unified low-precision training.** Customisable precision across the rollout and
+- **Unified low-precision training.** Customizable precision across the rollout and
   training engines, with unified **BF16**, **FP8**, **MXFP8**, and **INT4 QAT** recipes
   available now and an **NVFP4** training recipe in progress.
 - **Efficient Rollout Routing Replay (R3).** For MoE models, expert routing captured
@@ -41,31 +38,19 @@ needed to run RL at trillion-parameter scale.
 
 ## Supported models
 
-<CardGroup cols={2}>
+Each model name links to its recipe page.
 
-  <Card title="Dense">
+| Family | Models |
+|---|---|
+| **DeepSeek** | [DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash)<br/>[DeepSeek-R1](/models/deepseek/deepseek)<br/>[DeepSeek-V3](/models/deepseek/deepseek) |
+| **Qwen** | [Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5)<br/>[Qwen3-Next-80B-A3B-Thinking](/models/qwen/qwen3-next)<br/>[Qwen3-30B-A3B / 235B-A22B](/models/qwen/qwen3-moe)<br/>[Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B](/models/qwen/qwen3) |
+| **GLM** | [GLM-5.1](/models/glm/glm5)<br/>[GLM-5](/models/glm/glm5)<br/>[GLM-4.7-Flash](/models/glm/glm4-7-flash)<br/>[GLM-4.5](/models/glm/glm4-5)<br/>[GLM-Z1-9B-0414](/models/glm/glm4) |
+| **Kimi** | [Kimi-K2.6](/models/kimi/kimi-k2.5)<br/>[Kimi-K2.5](/models/kimi/kimi-k2.5)<br/>[Kimi-K2-Instruct / Thinking](/models/kimi/kimi-k2)<br/>[Moonlight-16B-A3B](/models/kimi/moonlight) |
+| **Nemotron** | [Nemotron-3-Super-120B-A12B-FP8](/models/nemotron/nemotron-3-super)<br/>[Nemotron-3-Nano MoE](/models/nemotron/nemotron-3-nano-moe)<br/>[Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) |
+| **MiMo** | [MiMo-7B-RL](/models/mimo/mimo) |
+| **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
 
-    - **Qwen**: <span className="model-list">[Qwen3.6](models/qwen/qwen3-6.md), [Qwen3.5](models/qwen/qwen3-5.md), [Qwen3](models/qwen/qwen3.md)</span>
-    - **GLM**: <span className="model-list">[GLM4](models/glm/glm4.md)</span>
-    - **Nemotron**: <span className="model-list">[Nemotron-3-Nano](models/nemotron/nemotron-3-nano.md)</span>
-    - **MiMo**: <span className="model-list">[MiMo](models/mimo/mimo.md)</span>
-    - **GPT-OSS**: <span className="model-list">[GPT-OSS](models/gpt-oss/gpt-oss.md)</span>
-
-  </Card>
-
-  <Card title="Mixture of Experts">
-
-    - **DeepSeek**: <span className="model-list">[DeepSeek-V4 Pro](models/deepseek/deepseek-v4-pro.md), [DeepSeek-V4 Flash](models/deepseek/deepseek-v4-flash.md), [DeepSeek-V3 / R1](models/deepseek/deepseek.md)</span>
-    - **Qwen**: <span className="model-list">[Qwen3.6 MoE](models/qwen/qwen3-6-moe.md), [Qwen3.5 MoE](models/qwen/qwen3-5-moe.md), [Qwen3-Next](models/qwen/qwen3-next.md), [Qwen3 MoE](models/qwen/qwen3-moe.md)</span>
-    - **GLM**: <span className="model-list">[GLM5 / GLM5.1](models/glm/glm5.md), [GLM4.7](models/glm/glm4-7-flash.md), [GLM4.5](models/glm/glm4-5.md)</span>
-    - **Kimi**: <span className="model-list">[Kimi K2.5 / K2.6](models/kimi/kimi-k2.5.md), [Kimi K2](models/kimi/kimi-k2.md), [Moonlight](models/kimi/moonlight.md)</span>
-    - **Nemotron**: <span className="model-list">[Nemotron-3-Nano MoE](models/nemotron/nemotron-3-nano-moe.md), [Nemotron-3-Super](models/nemotron/nemotron-3-super.md)</span>
-
-  </Card>
-
-</CardGroup>
-
-See [Models](models/index.md) for exact conversion commands, launch scripts, and
+See [Models](/models/index) for exact conversion commands, launch scripts, and
 parallelism settings.
 
 ## Supported hardware
@@ -73,28 +58,28 @@ parallelism settings.
 - **NVIDIA**: GB300, GB200, B200, B100, H200, H100, A100.
 - **AMD**: MI300X, MI325, MI350, MI355X (via ROCm).
 
-See [Platforms](platforms/index.md).
+See [Platforms](/platforms/index).
 
 ## Latest updates
 
-- **[2026/02]** Complete argument reference. [CLI Reference](user-guide/cli-reference.md)
-- **[2026/01]** INT4 W4A16 QAT. [INT4 Quantization-Aware Training](advanced/int4-qat.md)
-- **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-Agent Co-Evolution](examples/multi-agent.md)
-- **[2025/12]** Rollout Routing Replay (R3) for MoE. [Rollout Routing Replay (R3)](advanced/miles-router.md)
-- **[2025/11]** Unified FP8 pipeline generally available. [FP8 and Low Precision](advanced/fp8-low-precision.md)
-- **[2025/11]** Speculative decoding with online MTP-SFT. [Speculative Decoding](advanced/speculative-decoding.md)
+- **[2026/02]** Complete argument reference. [CLI Reference](/user-guide/cli-reference)
+- **[2026/01]** INT4 W4A16 QAT. [INT4 Quantization-Aware Training](/advanced/int4-qat)
+- **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-Agent Co-Evolution](/examples/multi-agent)
+- **[2025/12]** Rollout Routing Replay (R3) for MoE. [Rollout Routing Replay (R3)](/advanced/miles-router)
+- **[2025/11]** Unified FP8 pipeline generally available. [FP8 and Low Precision](/advanced/fp8-low-precision)
+- **[2025/11]** Speculative decoding with online MTP-SFT. [Speculative Decoding](/advanced/speculative-decoding)
 
 ## Start here
 
-1. **[Installation](getting-started/installation.md)** — Docker, bare metal, AMD.
-2. **[Quick Start](getting-started/quick-start.md)** — a working training run in under an hour.
-3. **[Core concepts](user-guide/concepts.md)** — the four objects in every Miles job.
-4. **[Training backend](user-guide/usage.md)** — Megatron-LM, parallelism, checkpoints, and hooks.
-5. **[Training script walkthrough](user-guide/training-script-walkthrough.md)** — every
+1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
+2. **[Quick Start](/getting-started/quick-start)** — a working training run in under an hour.
+3. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
+4. **[Training backend](/user-guide/usage)** — Megatron-LM, parallelism, checkpoints, and hooks.
+5. **[Training script walkthrough](/user-guide/training-script-walkthrough)** — every
    argument group in a launch script, annotated.
 
 ## Contribute
 
 - GitHub: [github.com/radixark/miles](https://github.com/radixark/miles)
 - Slack: [slack.sglang.ai](https://slack.sglang.ai), channel `#miles`
-- Contributing: [developer guide](developer/contributing.md)
+- Contributing: [developer guide](/developer/contributor-guide)

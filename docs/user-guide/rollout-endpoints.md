@@ -2,9 +2,6 @@
 title: Rollout Endpoints
 description: How Miles talks to SGLang. The /generate endpoint and the OpenAI-format /v1/chat/completions endpoint.
 ---
-
-# Rollout Endpoints
-
 Miles supports two ways for a custom rollout function to talk to SGLang. The
 `/generate` endpoint is the most direct interface; you control tokenization. The
 OpenAI-format `/v1/chat/completions` endpoint is router-session aware and fits
@@ -36,7 +33,7 @@ Key modules:
 |---|---|
 | `miles/rollout/base_types.py` | `GenerateFnInput` / `GenerateFnOutput` |
 | `miles/rollout/inference_rollout/inference_rollout_common.py` | Builds a `GenerateState` and calls the generate function |
-| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/openai_format/*.sh`) |
+| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/experimental/swe-agent-v2`) |
 
 ### Generate function basics
 
@@ -98,28 +95,6 @@ Helpers:
   `--generate-max-turns`, `--generate-tool-specs-path`, `--generate-tool-call-parser`,
   `--generate-execute-tool-function-path`, `--generate-multi-samples`.
 - **`benchmarkers.py`**: forces random output sequence length for benchmarking.
-
-### Radix-tree middleware (full TITO for `/generate`)
-
-For token-in / token-out caching on `/generate`, enable the radix-tree middleware.
-It is independent of the OpenAI session middleware and only affects the `/generate`
-and `/retrieve_from_text` routes.
-
-What it does:
-
-- Caches token ids and logprobs by prompt text in a radix tree.
-- Lets `/generate` requests include `input_tokens`, skipping re-tokenization.
-- Enables `update_sample_from_response` to fetch tokens via `/retrieve_from_text`
-  during training.
-
-Enable it:
-
-```bash
---miles-router-middleware-paths miles.router.middleware_hub.radix_tree_middleware.RadixTreeMiddleware
-```
-
-Make sure `--sglang-router-ip` and `--sglang-router-port` point at the router so
-`/retrieve_from_text` is reachable during rollout.
 
 ---
 
@@ -185,18 +160,17 @@ Generator entry point:
 - `miles/rollout/generate_hub/agentic_tool_call.py`: OpenAI-format agent loop via
   router sessions.
 
-Examples:
+Example:
 
-- [`examples/openai_format/dapo_math.py`](https://github.com/radixark/miles/blob/main/examples/openai_format/dapo_math.py):
-  single-turn OpenAI-format agent (DAPO math).
-- [`examples/openai_format/run-qwen3-4B.sh`](https://github.com/radixark/miles/blob/main/examples/openai_format/run-qwen3-4B.sh): launcher.
+- [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2):
+  multi-turn agentic SWE agent on the session-server TITO path, with ready-to-run launchers.
 
-Wire-up:
+Wire-up (as used by swe-agent-v2):
 
 ```bash
 CUSTOM_ARGS=(
    --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
-   --custom-agent-function-path    examples.openai_format.dapo_math.run_agent
+   --custom-agent-function-path    swe_agent_function.run
 )
 ```
 
@@ -252,7 +226,7 @@ inherited across turns. Each request is tokenized independently.
 
 ## Next
 
-- [Customization](customization.md): the full catalogue of `--*-path` hooks.
-- [Agentic Chat Templates](agentic-chat-template.md): verifying that a template is
+- [Customization](/user-guide/customization): the full catalog of `--*-path` hooks.
+- [Agentic Chat Templates](/user-guide/agentic-chat-template): verifying that a template is
   append-only across turns.
-- [Multi-agent example](../examples/multi-agent.md): full agentic walkthrough.
+- [Multi-agent example](/examples/multi-agent): full agentic walkthrough.

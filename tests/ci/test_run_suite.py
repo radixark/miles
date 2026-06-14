@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
-from tests.ci.run_suite import PER_COMMIT_SUITES, filter_tests, strip_run_ci_prefix
+from tests.ci.run_suite import PER_COMMIT_SUITES, build_cpu_pytest_cmd, filter_tests, strip_run_ci_prefix
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
@@ -49,6 +49,23 @@ def _make(
         disabled=disabled,
         implicit=False,
     )
+
+
+# --- build_cpu_pytest_cmd: -x gated on continue_on_error --------------------
+
+
+class TestBuildCpuPytestCmd:
+    def test_x_present_by_default(self):
+        # Default per-commit run stops at the first failure.
+        cmd = build_cpu_pytest_cmd(["tests/fast/a.py", "tests/fast/b.py"], continue_on_error=False)
+        assert "-x" in cmd
+
+    def test_x_dropped_on_continue_on_error(self):
+        # bypass-fastfail passes --continue-on-error -> run every file to the end.
+        cmd = build_cpu_pytest_cmd(["tests/fast/a.py", "tests/fast/b.py"], continue_on_error=True)
+        assert "-x" not in cmd
+        assert cmd[0] == "pytest"
+        assert "tests/fast/a.py" in cmd and "tests/fast/b.py" in cmd
 
 
 # --- PER_COMMIT_SUITES locked to the new taxonomy ---------------------------
