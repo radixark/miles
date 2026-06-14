@@ -93,10 +93,6 @@ class RolloutManager:
                     monitor = RolloutHealthMonitor(group, args)
                     monitor.start()
                     self._health_monitors.append(monitor)
-            # CI fault injection here crashes a ROLLOUT engine (see _try_ci_fault_injection),
-            # so it is a rollout fault-tolerance probe. Only arm it when rollout is actually in
-            # ft_components; otherwise a trainer-only FT test (--ft-components train, e.g.
-            # realistic_gsm8k) would kill an engine it is not configured to recover.
             self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
 
     # -------------------------- lifecycle -----------------------------
