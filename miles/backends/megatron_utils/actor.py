@@ -556,13 +556,20 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             reload_process_groups()
 
-        if has_new_engines:
+        # A cell respawned by an FT heal gets a brand-new weight_updater that never
+        # connected to the rollout engines, while has_new_engines tracks only engine
+        # restarts (not cell reconfigures). Connect when this actor has not connected yet
+        # (self.rollout_engines is None) too, since info.rollout_engines is always
+        # populated; otherwise weight_updater.update_weights() below raises
+        # "'UpdateWeightFromDistributed' object has no attribute 'rollout_engines'".
+        if has_new_engines or self.rollout_engines is None:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
+            self.rollout_engines = rollout_engines
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
