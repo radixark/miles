@@ -233,12 +233,6 @@ class RayTrainGroup:
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
         # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Restart any dead rollout engines first (like V1 RayActorGroup.update_weights): a
-        # crashed or health-killed engine must be relaunched before we wait on the engine set
-        # below, otherwise get_updatable_engines_and_lock's wait_all_engines_alive spins until
-        # its 600s timeout. This is what recovers the CI-injected engine crash in real-rollout.
-        if self.args.use_fault_tolerance:
-            await self._rollout_manager.recover_updatable_engines.remote()
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
         info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
