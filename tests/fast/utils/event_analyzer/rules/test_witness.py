@@ -338,6 +338,26 @@ class TestZeroAdvantageExclusion:
         assert 11 in issues[0].actual_witness_ids
         assert 11 not in issues[0].expected_witness_ids
 
+    def test_empty_advantage_shard_under_cp_is_not_treated_as_zero_advantage(self) -> None:
+        """CP regression: an empty per-rank advantage shard must not excuse a present witness.
+
+        Under CP>1 a short sample's response can land entirely on the other CP rank, leaving
+        this rank's advantage shard empty while witness_ids still spans the full sample. The
+        sample's real advantage is nonzero on the rank that owns it, so its witness is
+        legitimately present and must not be flagged 'extra' (all(v == 0.0 for v in []) is
+        vacuously True).
+        """
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
+            # CP rank that owns sample 1's response: real nonzero advantage.
+            _make_advantage(rollout_id=0, advantages=[[0.5, 0.5], [-0.54, -0.54]], witness_ids=[[10, 10], [11, 11]]),
+            # CP rank without sample 1's response tokens: empty advantage shard, full witness_ids.
+            _make_advantage(rollout_id=0, advantages=[[0.5, 0.5], []], witness_ids=[[10, 10], [11, 11]]),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11]),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        assert check(events) == []
+
     def test_zero_advantage_exclusion_uses_final_attempt_only(self) -> None:
         """A crashed attempt's all-zero advantage events must not excuse ids the successful retry trains."""
         events: list[Event] = [

@@ -95,11 +95,19 @@ def _compute_zero_advantage_witness_ids(
     Only the highest-attempt events per rollout count, mirroring the allocate-event
     handling: a crashed attempt's partial advantage events would otherwise excuse ids
     that the successful retry trains for real.
+
+    An EMPTY per-sample advantage list is skipped, not treated as zero-advantage.
+    Under CP>1 the advantage tensor logged by a rank holds only that rank's local
+    shard of the response tokens, while witness_ids spans the full sample; a short
+    sample whose response lands entirely on the other CP rank leaves this rank's
+    advantage shard empty. `all(v == 0.0 for v in [])` is vacuously True, so without
+    this guard such a sample would be falsely excused and then flagged 'extra' once
+    its (real, nonzero-advantage) witness shows up present on the rank that owns it.
     """
     result: dict[int, set[int]] = defaultdict(set)
     for event in _filter_to_latest_attempt(events, group_key=lambda e: e.rollout_id):
         for adv_tokens, wid_tokens in zip(event.advantages, event.witness_ids, strict=True):
-            if all(v == 0.0 for v in adv_tokens):
+            if adv_tokens and all(v == 0.0 for v in adv_tokens):
                 result[event.rollout_id].add(wid_tokens[0])
 
     return dict(result)
