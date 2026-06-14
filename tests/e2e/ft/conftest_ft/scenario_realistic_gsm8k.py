@@ -42,14 +42,12 @@ def run_ci(
         os.environ.pop(proxy_var, None)
 
     dump_dir: str = resolve_dump_dir(TEST_NAME)
-    # Mirror execution.run_training: start from a clean dump dir. CI machines are reused
-    # across tests/reruns, and the event analyzer reads every event in this dir; stale
-    # events from a previous run would make the cross-replica checksum rule compare this
-    # run's weights against the previous run's (false mismatch). Other FT scenarios get
-    # this via run_training; gsm8k builds its own args and calls execute_train directly.
+    # Start from a clean dump dir so the event analyzer never reads a previous run's
+    # stale events (run_training does this for the other scenarios; gsm8k bypasses it).
     if os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     os.makedirs(dump_dir, exist_ok=True)
+
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
     train_args += f"--save-debug-event-data {dump_dir}/events "
 
