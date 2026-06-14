@@ -21,7 +21,7 @@ async def main(args):
 
     controller = create_multi_lora_controller(args)
     args.data_source_path = "miles.rollout.multi_lora_data_source.MultiLoRADataSource"
-    args.custom_generate_state_hooks_path = "miles.ray.multi_lora_controller.MultiLoRAHooks"
+    args.custom_generate_state_hooks_path = "miles.rollout.multi_lora_hooks.MultiLoRAHooks"
 
     # For cli adapters
     for name, path in args.multi_lora_adapters:
