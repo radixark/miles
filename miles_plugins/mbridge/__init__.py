@@ -4,7 +4,7 @@ from .glm4 import GLM4Bridge
 from .glm4moe import GLM4MoEBridge
 from .glm4moe_lite import GLM4MoELiteBridge
 from .mimo import MimoBridge
-from .minimax_m2 import MinimaxM2Bridge
+from .minimax_m2 import MiniMaxM2Bridge, MinimaxM2Bridge
 from .qwen3_5 import Qwen3_5Bridge
 from .qwen3_next import Qwen3NextBridge
 
@@ -16,6 +16,7 @@ __all__ = [
     "Qwen3_5Bridge",
     "MimoBridge",
     "DeepseekV32Bridge",
+    "MiniMaxM2Bridge",
     "MinimaxM2Bridge",
     "DeepseekV4Bridge",
 ]

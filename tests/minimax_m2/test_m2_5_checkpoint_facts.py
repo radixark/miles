@@ -6,17 +6,16 @@ checkpoint stored at /home/yangchengyi/data/models/MiniMax-M2.5:
 1. **No MTP weights ship in the checkpoint.** Despite ``use_mtp: true,
    num_mtp_modules: 3`` in config.json, every key in
    ``model.safetensors.index.json`` falls under ``model.layers.0..61`` /
-   ``model.embed_tokens`` / ``model.norm`` / ``lm_head``. The bridge's
-   MTP modules (``mtp_num_layers = 3`` from config) are therefore trained
-   from random initialization (the launcher must pass ``--enable-mtp-training``).
+   ``model.embed_tokens`` / ``model.norm`` / ``lm_head``. The slime-aligned
+   launcher therefore must not enable MTP training by default.
 
 2. **MoE experts use Mixtral-style ``block_sparse_moe.experts.{i}.{w1,w2,w3}``.**
-   :class:`miles_plugins.mbridge.minimax_m2.MinimaxM2Bridge` hard-codes this
+   :class:`miles_plugins.mbridge.minimax_m2.MiniMaxM2Bridge` hard-codes this
    layout in ``_MLP_MAPPING``.
 
 3. **Per-layer Q/K-Norm and routing bias are present in the checkpoint.**
-   Training uses ``--spec ... get_minimax_m2_spec`` so Megatron applies
-   ``PerLayerRMSNorm``; mbridge maps ``q_norm`` / ``k_norm`` and
+   Training uses ``--spec ... get_minimax_m2_layer_spec`` so Megatron swaps in
+   ``MiniMaxM2SelfAttention``; mbridge maps ``q_norm`` / ``k_norm`` and
    ``e_score_correction_bias`` for HF round-trip.
 
 If any of these assertions ever fails, MiniMax has changed the checkpoint
@@ -48,14 +47,12 @@ def test_m2_5_checkpoint_has_no_mtp_weights(weight_map):
 
     If this fails, MiniMax has shipped MTP weights and we need to:
     1. Inspect the new key names (likely model.layers.{62..64}.* or mtp.*).
-    2. Update MTP name handling in
-       :mod:`miles_plugins.mbridge.minimax_m2` (``_weight_name_mapping_mtp``)
-       to match the actual HF names.
+    2. Revisit the slime-aligned launcher/model spec before enabling MTP.
     """
     mtp_keys = sorted(k for k in weight_map if "mtp" in k.lower())
     assert mtp_keys == [], (
         f"Released M2.5 checkpoint now contains {len(mtp_keys)} MTP weight(s) "
-        f"-- update the MTP mapping plan. Sample: {mtp_keys[:5]}"
+        f"-- revisit the slime-aligned launcher/model spec. Sample: {mtp_keys[:5]}"
     )
 
 
@@ -86,7 +83,7 @@ def test_m2_5_has_aux_loss_free_routing_bias(weight_map):
 
 
 def test_m2_5_has_per_layer_qk_norm(weight_map):
-    """spec swaps q_layernorm / k_layernorm to PerLayerRMSNorm; verify HF ships them."""
+    """MiniMaxM2SelfAttention stores full-dimension q_norm / k_norm weights."""
     assert any(".self_attn.q_norm.weight" in k for k in weight_map), (
         "Expected per-layer q_norm.weight in M2.5"
     )

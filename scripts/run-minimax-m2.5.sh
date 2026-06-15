@@ -1,5 +1,5 @@
 #!/bin/bash
-# Launcher for MiniMax-M2.5 RL training (mbridge HF weights + raw Megatron build, MTP from scratch).
+# Launcher for MiniMax-M2.5 RL training, aligned with THUDM/slime#1929.
 #
 # ============================================================================
 # Prerequisites (run once inside the docker container 9e16408bd232):
@@ -7,13 +7,8 @@
 #   docker exec -it 9e16408bd232 bash
 #   cd /home/yangchengyi/data/miles
 #
-#   # 1) FP8 -> bf16 dequant (offline GPU job; outputs new HF dir).
-#   python tools/fp8_cast_bf16.py \
-#       --input-fp8-hf-path  /home/yangchengyi/data/models/MiniMax-M2.5 \
-#       --output-bf16-hf-path /home/yangchengyi/data/models/MiniMax-M2.5-bf16
-#
-#   # 2) Optional: HF -> torch_dist for a local Megatron ckpt layout.
-#   #    Weight naming is handled by miles_plugins.mbridge.minimax_m2.MinimaxM2Bridge.
+#   # Optional: HF -> torch_dist for a local Megatron ckpt layout.
+#   # Weight naming is handled by miles_plugins.mbridge.minimax_m2.MiniMaxM2Bridge.
 #   # ============================================================================
 #   bash scripts/run-minimax-m2.5.sh
 
@@ -45,16 +40,27 @@ source "${SCRIPT_DIR}/models/minimax-m2.5.sh"
 # Host -> container shared mount of large assets.
 BASE_FOLDER=${BASE_FOLDER:-/home/yangchengyi/data/models}
 DATA_FOLDER=${DATA_FOLDER:-/home/yangchengyi/data/datasets}
+HF_CHECKPOINT=${HF_CHECKPOINT:-${BASE_FOLDER}/MiniMax-M2.5}
+REF_LOAD=${REF_LOAD:-${BASE_FOLDER}/MiniMax-M2.5_torch_dist}
+TRAIN_CKPT=${TRAIN_CKPT:-${BASE_FOLDER}/MiniMax-M2.5_miles/}
+AIME_DATA=${AIME_DATA:-${DATA_FOLDER}/aime-2024/aime-2024.jsonl}
+ACTOR_NUM_NODES=${ACTOR_NUM_NODES:-16}
+ACTOR_NUM_GPUS_PER_NODE=${ACTOR_NUM_GPUS_PER_NODE:-8}
+TP=${TP:-2}
+PP=${PP:-2}
+CP=${CP:-1}
+EP=${EP:-4}
+ROLLOUT_NUM_GPUS_PER_ENGINE=${ROLLOUT_NUM_GPUS_PER_ENGINE:-16}
+SGLANG_EP_SIZE=${SGLANG_EP_SIZE:-16}
 
 CKPT_ARGS=(
-   # --hf-checkpoint: bf16 HF directory produced by tools/fp8_cast_bf16.py
-   --hf-checkpoint ${BASE_FOLDER}/MiniMax-M2.5-bf16
-   # --ref-load: same HF tree for SGLang / reward (raw training still uses mbridge for weight sync).
-   --ref-load      ${BASE_FOLDER}/MiniMax-M2.5-bf16
-   # --load/--save: miles' own training checkpoint dir (initially empty)
-   --load          ${BASE_FOLDER}/MiniMax-M2.5_miles/
-   --save          ${BASE_FOLDER}/MiniMax-M2.5_miles/
+   --hf-checkpoint ${HF_CHECKPOINT}
+   --ref-load ${REF_LOAD}
+   --load ${TRAIN_CKPT}
+   --save ${TRAIN_CKPT}
    --save-interval 20
+   --megatron-to-hf-mode raw
+   --model-name minimax_m2
 )
 
 ROLLOUT_ARGS=(
@@ -65,31 +71,32 @@ ROLLOUT_ARGS=(
    --rollout-shuffle
    --rm-type deepscaler
    --num-rollout 3000
-   --rollout-batch-size 32
+   --rollout-batch-size 128
    --n-samples-per-prompt 8
-   --rollout-max-response-len 8192
+   --rollout-max-response-len 32768
    --rollout-temperature 1
 
-   --global-batch-size 256
+   --over-sampling-batch-size 256
+   --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+
+   --num-steps-per-rollout 4
    --balance-data
 )
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime ${DATA_FOLDER}/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
+   --eval-prompt-data aime ${AIME_DATA}
+   --n-samples-per-eval-prompt 8
+   --eval-max-response-len 32768
    --eval-top-p 1
 )
 
-# TP=4 / EP=8 / CP=2 -- aligned with origin/feat/minimax_m2_1202's run_minimax_m2.py.
-# PerLayerRMSNorm is TP-aware (all_gather + slice) so TP>1 is correct.
 PERF_ARGS=(
-   --tensor-model-parallel-size 4
+   --tensor-model-parallel-size ${TP}
    --sequence-parallel
-   --pipeline-model-parallel-size 1
-   --context-parallel-size 2
-   --expert-model-parallel-size 8
+   --pipeline-model-parallel-size ${PP}
+   --context-parallel-size ${CP}
+   --expert-model-parallel-size ${EP}
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -97,7 +104,7 @@ PERF_ARGS=(
    --recompute-num-layers 1
 
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 16384
+   --max-tokens-per-gpu 8192
 )
 
 GRPO_ARGS=(
@@ -130,23 +137,14 @@ WANDB_ARGS=(
    # --wandb-key ${WANDB_KEY}
 )
 
-# SGLang rollout: EAGLE speculative decoding ON (M2.5's MTP heads drive it).
-# Note: with --enable-mtp-training the MTP head is updated alongside the trunk,
-# and the bridge round-trips its weights into the SGLang FP8 quantizer.
+TB_ARGS=(
+   --use-tensorboard
+)
+
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
+   --rollout-num-gpus-per-engine ${ROLLOUT_NUM_GPUS_PER_ENGINE}
    --sglang-mem-fraction-static 0.7
-   --sglang-ep-size 8
-
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
-
-   # MTP / EAGLE
-   --sglang-speculative-algorithm EAGLE
-   --sglang-speculative-num-steps 2
-   --sglang-speculative-eagle-topk 1
-   --sglang-speculative-num-draft-tokens 3
-
-   --sglang-max-running-requests 512
+   --sglang-ep-size ${SGLANG_EP_SIZE}
 )
 
 MISC_ARGS=(
@@ -155,17 +153,18 @@ MISC_ARGS=(
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
    --attention-backend flash
-
-   --moe-token-dispatcher-type flex
 )
 
 # Master node IP for ray (single-node defaults to localhost)
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
+export no_proxy="127.0.0.1,${MASTER_ADDR}"
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 \
     --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
+    \"no_proxy\": \"localhost,127.0.0.1,0.0.0.0,${MASTER_ADDR}\",
+    \"MASTER_ADDR\": \"${MASTER_ADDR}\",
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
@@ -175,16 +174,16 @@ RUNTIME_ENV_JSON="{
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-nodes ${ACTOR_NUM_NODES} \
+   --actor-num-gpus-per-node ${ACTOR_NUM_GPUS_PER_NODE} \
    --colocate \
    ${MODEL_ARGS[@]} \
-   ${MODEL_ARGS_MTP_TRAIN[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} \
+   ${TB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \

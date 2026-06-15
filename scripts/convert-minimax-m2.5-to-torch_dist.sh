@@ -43,17 +43,25 @@ model_name="${MODEL_NAME:-MiniMax-M2.5}"
 HF_CKPT="${HF_CKPT:-/home/yangchengyi/data/models/${model_name}}"
 TORCH_DIST_OUT="${TORCH_DIST_OUT:-/home/yangchengyi/data/models/${model_name}_torch_dist}"
 
-NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
-MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
-MASTER_PORT="${MASTER_PORT:-29526}"
-
-# Default 8-GPU slice (OOM-safer for MiniMax-M2.5 MoE):
-# TP=1 × PP=2 × EP=4 = 8. This lowers local experts per rank (256/EP) from 128 -> 64.
-# If you have 4 GPUs: NPROC_PER_NODE=4 TP=1 PP=2 EP=2.
-TENSOR_MODEL_PARALLEL_SIZE="${TENSOR_MODEL_PARALLEL_SIZE:-1}"
+# Default slime#1929 layout:
+# TP=2 × PP=2 × EP=4 = 16 ranks. For a single 8-GPU node, override one of
+# these env vars explicitly instead of silently changing the model recipe.
+TENSOR_MODEL_PARALLEL_SIZE="${TENSOR_MODEL_PARALLEL_SIZE:-2}"
 PIPELINE_MODEL_PARALLEL_SIZE="${PIPELINE_MODEL_PARALLEL_SIZE:-2}"
 EXPERT_MODEL_PARALLEL_SIZE="${EXPERT_MODEL_PARALLEL_SIZE:-4}"
 CONTEXT_PARALLEL_SIZE="${CONTEXT_PARALLEL_SIZE:-1}"
+
+WORLD_SIZE="${WORLD_SIZE:-$((TENSOR_MODEL_PARALLEL_SIZE * PIPELINE_MODEL_PARALLEL_SIZE * EXPERT_MODEL_PARALLEL_SIZE * CONTEXT_PARALLEL_SIZE))}"
+NNODES="${NNODES:-1}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-$((WORLD_SIZE / NNODES))}"
+NODE_RANK="${NODE_RANK:-0}"
+MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+MASTER_PORT="${MASTER_PORT:-29526}"
+
+if (( NPROC_PER_NODE * NNODES != WORLD_SIZE )); then
+  echo "NPROC_PER_NODE * NNODES must equal WORLD_SIZE (${WORLD_SIZE})." >&2
+  exit 1
+fi
 
 cd "${MILES_ROOT}"
 # shellcheck source=/dev/null
@@ -74,12 +82,15 @@ CONVERT_EXTRA_ARGS=(
 )
 
 exec torchrun \
-  --nproc_per_node="${NPROC_PER_NODE}" \
-  --master_addr="${MASTER_ADDR}" \
-  --master_port="${MASTER_PORT}" \
+  --nproc-per-node "${NPROC_PER_NODE}" \
+  --nnodes "${NNODES}" \
+  --node-rank "${NODE_RANK}" \
+  --master-addr "${MASTER_ADDR}" \
+  --master-port "${MASTER_PORT}" \
   "${MILES_ROOT}/tools/convert_hf_to_torch_dist.py" \
   "${MODEL_ARGS[@]}" \
   "${CONVERT_PARALLEL_ARGS[@]}" \
   "${CONVERT_EXTRA_ARGS[@]}" \
+  --megatron-to-hf-mode raw \
   --hf-checkpoint "${HF_CKPT}" \
   --save "${TORCH_DIST_OUT}"

@@ -1,77 +1,66 @@
-# slime_plugins/models/minimax_bridge.py
-
-"""MiniMax-M2 Bridge implementation."""
-
 from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
 
 
 @register_model("minimax_m2")
-class MinimaxM2Bridge(Qwen2MoEBridge):
-    
+class MiniMaxM2Bridge(Qwen2MoEBridge):
+    """
+    Bridge for MiniMax-M2.5 (229B MoE).
+
+    Key differences from standard Qwen2MoE:
+    - HF uses `block_sparse_moe` prefix (not `mlp`) with expert naming w1/w2/w3
+    - Full-dimension QK Norm: custom SelfAttention uses `q_norm`/`k_norm` fields
+      (NOT the default `q_layernorm`/`k_layernorm`), so state_dict key is
+      `self_attention.q_norm.weight` / `self_attention.k_norm.weight`
+    - Sigmoid router with e_score_correction_bias
+    - Partial RoPE (rotary_percent=0.5)
+    - No shared experts
+    """
+
     _ATTENTION_MAPPING = {
-        "self_attention.linear_qkv.layer_norm_weight": [
-            "model.layers.{layer_number}.input_layernorm.weight"
-        ],
-        
-        "self_attention.linear_qkv.weight": [
-            "model.layers.{layer_number}.self_attn.q_proj.weight",
-            "model.layers.{layer_number}.self_attn.k_proj.weight",
-            "model.layers.{layer_number}.self_attn.v_proj.weight",
-        ],
-        
-        "self_attention.q_layernorm.weight": [
-            "model.layers.{layer_number}.self_attn.q_norm.weight"
-        ],
-        "self_attention.k_layernorm.weight": [
-            "model.layers.{layer_number}.self_attn.k_norm.weight"
-        ],
-        
-        "self_attention.linear_proj.weight": [
-            "model.layers.{layer_number}.self_attn.o_proj.weight"
-        ],
+        **Qwen2MoEBridge._ATTENTION_MAPPING,
+        # Override QK norm: custom MiniMaxM2SelfAttention uses self.q_norm / self.k_norm
+        # instead of the default self.q_layernorm / self.k_layernorm
+        "self_attention.q_norm.weight": ["model.layers.{layer_number}.self_attn.q_norm.weight"],
+        "self_attention.k_norm.weight": ["model.layers.{layer_number}.self_attn.k_norm.weight"],
     }
-    
+
     _MLP_MAPPING = {
-        **(Qwen2MoEBridge._MLP_MAPPING),
-        "mlp.router.expert_bias": [
-            "model.layers.{layer_number}.block_sparse_moe.e_score_correction_bias"
-        ],
-        "mlp.router.weight": [
-            "model.layers.{layer_number}.block_sparse_moe.gate.weight"
-        ],
+        "pre_mlp_layernorm": ["model.layers.{layer_number}.post_attention_layernorm.weight"],
+        "mlp.router.weight": ["model.layers.{layer_number}.block_sparse_moe.gate.weight"],
+        "mlp.router.expert_bias": ["model.layers.{layer_number}.block_sparse_moe.e_score_correction_bias"],
         "mlp.experts.linear_fc1": [
-            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w1.weight",
-            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w3.weight",
+            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w1.weight",  # gate_proj
+            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w3.weight",  # up_proj
         ],
-        
         "mlp.experts.linear_fc2": [
-            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight"
+            "model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight",  # down_proj
         ],
     }
-    def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
-        if "block_sparse_moe" in mcore_weights_name:
-            return self._weight_name_mapping_mlp(mcore_weights_name)
-        return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
 
     def _build_config(self):
-        config= self._build_base_config(
+        return self._build_base_config(
             use_cpu_initialization=False,
-            moe_ffn_hidden_size=self.hf_config.intermediate_size,
-            moe_router_bias_update_rate=0.001,
-            moe_router_topk=self.hf_config.num_experts_per_tok,
-            num_moe_experts=self.hf_config.num_local_experts,
-            # moe_aux_loss_coeff=self.hf_config.router_aux_loss_coef,
-            # moe_router_load_balancing_type="aux_loss",
-            moe_router_enable_expert_bias=True,
-            moe_router_load_balancing_type="none",  # default None for RL
-            moe_grouped_gemm=True,
-            moe_router_score_function="sigmoid",
             persist_layer_norm=True,
             bias_activation_fusion=True,
             bias_dropout_fusion=True,
-            moe_router_pre_softmax=False,
+            # MoE config
+            moe_ffn_hidden_size=self.hf_config.intermediate_size,
+            moe_router_topk=self.hf_config.num_experts_per_tok,
+            num_moe_experts=self.hf_config.num_local_experts,
+            moe_router_score_function="sigmoid",
+            moe_router_enable_expert_bias=True,
+            moe_router_pre_softmax=True,
+            moe_router_dtype="fp32",
+            moe_grouped_gemm=True,
+            moe_router_load_balancing_type="none",
+            # Attention config
             qk_layernorm=True,
+            rotary_percent=0.5,
+            add_qkv_bias=False,
+            add_bias_linear=False,
+            rotary_interleaved=False,
         )
-        print(f"moe_router_enable_expert_bias = {config.moe_router_enable_expert_bias}")
-        return config
+
+
+MinimaxM2Bridge = MiniMaxM2Bridge

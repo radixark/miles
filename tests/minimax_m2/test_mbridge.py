@@ -10,7 +10,7 @@ pytest.importorskip("mbridge")
 
 import miles_plugins.mbridge  # noqa: F401
 from mbridge.core import auto_bridge
-from miles_plugins.mbridge.minimax_m2 import MinimaxM2Bridge
+from miles_plugins.mbridge.minimax_m2 import MiniMaxM2Bridge, MinimaxM2Bridge
 
 
 def _hf_config():
@@ -26,18 +26,17 @@ def _hf_config():
         rope_theta=5_000_000.0,
         num_local_experts=256,
         num_experts_per_tok=8,
-        use_mtp=True,
-        num_mtp_modules=3,
     )
 
 
 def test_minimax_m2_registered_in_mbridge():
     assert "minimax_m2" in auto_bridge._MODEL_REGISTRY
-    assert auto_bridge._MODEL_REGISTRY["minimax_m2"] is MinimaxM2Bridge
+    assert auto_bridge._MODEL_REGISTRY["minimax_m2"] is MiniMaxM2Bridge
+    assert MinimaxM2Bridge is MiniMaxM2Bridge
 
 
 def _stub_bridge():
-    b = MinimaxM2Bridge.__new__(MinimaxM2Bridge)
+    b = MiniMaxM2Bridge.__new__(MiniMaxM2Bridge)
     b.hf_config = _hf_config()
     return b
 
@@ -71,8 +70,11 @@ def test_maps_qkv_attention():
     ]
 
 
-def test_maps_mtp_head_tensors():
+def test_maps_full_dimension_qk_norms():
     b = _stub_bridge()
-    assert b._weight_name_mapping_mcore_to_hf("mtp.layers.1.enorm.weight") == [
-        "model.mtp.layers.1.enorm.weight"
+    assert b._weight_name_mapping_mcore_to_hf("decoder.layers.0.self_attention.q_norm.weight") == [
+        "model.layers.0.self_attn.q_norm.weight"
+    ]
+    assert b._weight_name_mapping_mcore_to_hf("decoder.layers.61.self_attention.k_norm.weight") == [
+        "model.layers.61.self_attn.k_norm.weight"
     ]
