@@ -22,6 +22,29 @@ register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short"])
 Suite mapping keeps the CUDA suite's GPU count and swaps the device tag to `mi350`
 (`-h100`/`-h200` → `-mi350`).
 
+## Update — 2 enablement fixes + 3 more greens since first draft (13 GREEN total)
+
+Beyond the pure-registration work, two small ROCm-gated, CUDA-byte-identical fixes were added
+(each validated end-to-end on the hardware), turning previously-failing tests green:
+
+1. **sglang test server FA3→triton on ROCm** (`tests/e2e/sglang/utils/sglang_server.py`):
+   sglang's deterministic attention-backend auto-select has no HIP branch and defaults to `fa3`
+   (NV-Hopper-only) on gfx9xx, crashing the server. Inject `--attention-backend triton` on ROCm only.
+   → **`sglang/test_chat_input_ids_equivalence`** now PASS (registered).
+2. **megatron Ray launch keeps HIP_VISIBLE_DEVICES for num_gpus=0 coordinators**
+   (`miles/utils/external_utils/command_utils.py`): Ray blanks `HIP_VISIBLE_DEVICES=""` for the
+   num_gpus=0 driver/coordinator process that Megatron `validate_args` probes, which is the
+   `convert_checkpoint→train "No HIP GPUs"` blocker (investigate item #3 below — now fixed). Export
+   `RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0` before `ray start --head`, ROCm-gated. Confirmed by an A/B
+   probe + 4B phase-1 + v32/r3 reaching train. → **`megatron/test_mimo_7B_mtp_only_grad`** (7B) and
+   **`megatron/test_qwen3_30B_A3B/test_baseline`** (30B-A3B MoE) now PASS (registered).
+
+So the suite is now 13 registered GREEN (10 original + chat_input_ids + mimo_7B + 30B_A3B baseline).
+The convert→train fix also clears the No-HIP-GPUs blocker for the rest of the qwen3_30B_A3B suite +
+deepseek_v32, but those hit their own separate feature-specific gaps (routing-replay return-routed-experts,
+deepep/fp8/int4 backends, sglang `DeepseekV32ForCausalLM` not registered, a TE `quantized_tensor` module
+on the 4B-ckpt load path) — documented in RESULTS.md, not registered. See RESULTS.md for the full matrix.
+
 ## Registered tests (verified GREEN on MI350X / gfx950)
 
 | test | AMD suite | est_time / labels |
