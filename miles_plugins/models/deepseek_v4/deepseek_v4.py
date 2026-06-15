@@ -170,7 +170,7 @@ class DeepSeekV4Attention(MegatronModule):
             )
             if self.compress_ratio == 4:
                 indexer_impl = os.environ.get("V4_INDEXER_IMPL", "tilelang")
-                topk_backend = getattr(config, "miles_dsa_topk_backend", "torch")
+                topk_backend = config.miles_dsa_topk_backend
                 if indexer_impl == "tilelang":
                     self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
                 else:

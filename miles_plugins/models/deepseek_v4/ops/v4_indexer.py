@@ -30,7 +30,7 @@ class V4Indexer(MegatronModule):
         self.index_n_heads = config.dsa_indexer_n_heads
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
-        self.topk_backend = getattr(config, "miles_dsa_topk_backend", "torch")
+        self.topk_backend = config.miles_dsa_topk_backend
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
         self.use_fp8_qat = config.fp8 is not None
