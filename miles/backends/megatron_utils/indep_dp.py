@@ -124,8 +124,11 @@ def _allreduce_grads_and_losses_across_replicas(
         **parallel_state.indep_dp.debug_info,
     )
 
+    loss_reduced: dict[str, float] = {}
     allreduce_success = True
     try:
+        if mpu.is_pipeline_last_stage(ignore_virtual=True):
+            loss_reduced = aggregate_train_losses(losses_reduced)
         for model_chunk in model:
             # mimic: DistributedDataParallel.start_grad_sync
             for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
@@ -142,22 +145,6 @@ def _allreduce_grads_and_losses_across_replicas(
             members=parallel_state.indep_dp.size,
             exc_info=True,
         )
-
-    loss_reduced: dict[str, float] = {}
-    if allreduce_success and mpu.is_pipeline_last_stage(ignore_virtual=True):
-        try:
-            loss_reduced = aggregate_train_losses(losses_reduced)
-        except Exception:
-            allreduce_success = False
-            log_structured(
-                logger.error,
-                op="cross_cell",
-                phase="fail",
-                kind="loss_allreduce",
-                cell_rank=parallel_state.indep_dp.rank,
-                members=parallel_state.indep_dp.size,
-                exc_info=True,
-            )
 
     # pg.errored() can force a CUDA/stream sync, so call it exactly once per step here -- do NOT
     # sprinkle extra errored() probes. When it does report an async error it MUST be logged loudly:
