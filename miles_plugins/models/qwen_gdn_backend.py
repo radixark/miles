@@ -1,5 +1,10 @@
 import torch
 
+try:
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule as _fla_chunk_gated_delta_rule
+except ImportError:
+    _fla_chunk_gated_delta_rule = None
+
 
 def _parse_version(version):
     version = version.split("+", 1)[0]
@@ -27,11 +32,9 @@ def _validate_flashqla_runtime():
 
 def get_chunk_gated_delta_rule(backend: str):
     if backend == "fla":
-        try:
-            from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-        except ImportError as exc:
-            raise ImportError("Qwen GDN backend 'fla' requires flash-linear-attention.") from exc
-        return chunk_gated_delta_rule
+        if _fla_chunk_gated_delta_rule is None:
+            raise ImportError("Qwen GDN backend 'fla' requires flash-linear-attention.")
+        return _fla_chunk_gated_delta_rule
 
     if backend == "flashqla":
         try:
