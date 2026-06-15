@@ -55,7 +55,7 @@ FULLY_ASYNC_DIR = _FULLY_ASYNC_DIR
 # raw node count so ckpt conversion doesn't starve the rest of the cluster.
 MAX_CONVERT_GPUS = 92
 
-MODEL_DIR="/home/yangchengyi/data/models"
+MODEL_DIR="/fs/open_plms/Qwen"
 CKPTS_DIR="/home/yangchengyi/data/ckpts"
 traj_dir="/home/yangchengyi/data/trajs"
 debug_msgs_dir="/home/yangchengyi/data/debug_msgs"
@@ -119,7 +119,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     use_precision_aware_optimizer: bool = True
 
     # W&B settings
-    wandb_key: str = os.environ.get("WANDB_KEY",  "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")
+    wandb_key: str = os.environ.get("WANDB_KEY",  "")
     wandb_project: str = os.environ.get("WANDB_PROJECT", "miles-agentic")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
     wandb_run_name: str = f'{variant}_{time.strftime("%Y%m%d_%H%M%S", time.gmtime(time.time() + 8 * 3600))}'

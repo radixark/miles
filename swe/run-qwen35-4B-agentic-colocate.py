@@ -332,7 +332,6 @@ def execute(args: ScriptArgs):
         f"--sglang-chunked-prefill-size {sglang_chunked_prefill_size} "
         # f"--sglang-server-concurrency {sglang_server_concurrency} "
         "--sglang-tool-call-parser qwen3_coder "
-        "--sglang-reasoning-parser qwen3 "
         "--use-sglang-tool-choice-required "
         "--sglang-grammar-backend xgrammar "
         "--use-miles-router "

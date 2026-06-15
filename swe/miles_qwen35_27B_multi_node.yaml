@@ -15,29 +15,18 @@ spec:
       replicas: 1
       template:
         spec:
-          securityContext:
-            supplementalGroups: [2216, 2239, 3001]  # nlp-intern, nlp-train, docker
-          tolerations:
-          - key: shunjietest
-            operator: Equal
-            value: "true"
-            effect: NoSchedule
           # 不要覆盖 nameservers 为公网 DNS，否则无法解析 agent-env / miles-session 等 *.svc.cluster.local
           containers:
-          - image: harbor.unisound.ai/unisound/miles_ycy:v3
-            imagePullPolicy: Always
+          - image: harbor.unisound.ai/unisound/miles_ycy:v1
             lifecycle:
                postStart:
                 exec:
                  command:
                  - /bin/bash
                  - -c
-                 - /etc/init.d/ssh start; 
+                 - /etc/init.d/ssh start; /usr/local/bin/init-home-symlinks.sh
             securityContext:
-              runAsUser: 2243
-              runAsGroup: 2243
               privileged: false
-            workingDir: /fs/nlp-intern/yangchengyi
             name: mpi-launcher
             command:
             - /bin/bash
@@ -61,6 +50,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            - name: DATA_LINK_SRC
+              value: "/fs/nlp-intern/yangchengyi" # 与调试机 ~/data 软链目标一致，供 init-home-symlinks.sh 使用
             # 方案 A：Harbor agent 通过 Service DNS 访问 session-server（见文件末尾 miles-session Service）
             - name: AGENT_SERVER_URL
               value: http://172.31.72.29:11000
@@ -68,6 +59,8 @@ spec:
               value: "64"
             - name: MEGATRON_PATH
               value: "/fs/nlp-intern/yangchengyi/Megatron-LM"
+            - name: AGENT_MAX_CONCURRENT
+              value: "64"
             - name: MILES_SCRIPT_EXTERNAL_RAY
               value: "true"
             - name: SLURM_JOB_NUM_NODES
@@ -75,6 +68,8 @@ spec:
             volumeMounts:
             - mountPath: /fs #必须填写，对应调试机的目录
               name: jfs
+            - mountPath: /home/yangchengyi #必须填写，与 Worker 一致，便于 cd 进 miles 目录
+              name: home
             - mountPath: /var/run/docker.sock
               name: dockersock
             - mountPath: /usr/sbin/docker
@@ -83,6 +78,9 @@ spec:
           - name: jfs
             hostPath:
               path: /fs #必须填写，对应调试机的目录
+          - name: home
+            hostPath:
+              path: /home/yangchengyi #必须填写，对应运行 Pod 的节点上的家目录
           - name: dockersock
             hostPath:
               path: /var/run/docker.sock
@@ -98,24 +96,18 @@ spec:
             miles-group: colocate
             app: miles-session
         spec:
-          securityContext:
-            supplementalGroups: [2216, 2239, 3001]  # nlp-intern, nlp-train, docker
           # 使用集群默认 DNS，解析 agent-env / miles-session
           containers:
-          - image: harbor.unisound.ai/unisound/miles_ycy:v3
-            imagePullPolicy: Always
+          - image: harbor.unisound.ai/unisound/miles_ycy:v1
             lifecycle:
               postStart:
                 exec:
                  command:
                  - /bin/bash
                  - -c
-                 - /etc/init.d/ssh start; 
+                 - /etc/init.d/ssh start; /usr/local/bin/init-home-symlinks.sh
             securityContext:  # 特权模式
-              runAsUser: 2243
-              runAsGroup: 2243
               privileged: true
-            workingDir: /fs/nlp-intern/yangchengyi
             command: ["/bin/sh","-c"]
             args: [
                 sleep 28d
@@ -138,8 +130,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            - name: DATA_LINK_SRC
+              value: "/fs/nlp-intern/yangchengyi" # 与调试机 ~/data 软链目标一致，供 init-home-symlinks.sh 使用
             - name: AGENT_SERVER_URL
               value: http://172.31.72.29:11000
+            - name: AGENT_MAX_CONCURRENT
+              value: "64"
             - name: MEGATRON_PATH
               value: "/fs/nlp-intern/yangchengyi/Megatron-LM"
             - name: AGENT_MAX_CONCURRENT
@@ -157,6 +153,8 @@ spec:
             volumeMounts:
             - mountPath: /fs #必须填写，对应调试机的目录
               name: jfs
+            - mountPath: /home/yangchengyi #必须填写，对应调试机的目录
+              name: home
             - name: dshm
               mountPath: /dev/shm
             - mountPath: /var/run/docker.sock
@@ -167,6 +165,9 @@ spec:
           - name: jfs
             hostPath:
               path: /fs #必须填写，对应调试机的目录
+          - name: home
+            hostPath:
+              path: /home/yangchengyi #必须填写，对应运行 Pod 的节点上的家目录
           - name: dshm
             emptyDir: { medium: Memory, sizeLimit: 64Gi }
           - name: dockersock
@@ -175,3 +176,4 @@ spec:
           - name: dockerbin
             hostPath:
               path: /usr/sbin/docker
+

@@ -44,8 +44,8 @@ mkdir -p "${log_dir}"
 log_path=${log_dir}/${MODEL_NAME}_${DATA_NAME}_agentic_async_$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S).log
 exec > >(tee -a "${log_path}") 2>&1
 CKPT_ARGS=(
-   --hf-checkpoint /home/yangchengyi/data/models/${MODEL_NAME}
-   --ref-load /home/yangchengyi/data/models/${MODEL_NAME}_torch_dist
+   --hf-checkpoint /fs/open_plms/Qwen/${MODEL_NAME}
+   --ref-load /fs/open_plms/Qwen/${MODEL_NAME}_torch_dist
    --save /home/yangchengyi/data/ckpts/${MODEL_NAME}_agentic_async/
    --save-interval 5
 )

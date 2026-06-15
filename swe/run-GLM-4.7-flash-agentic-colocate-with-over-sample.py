@@ -1,24 +1,11 @@
-"""Qwen3.5-4B fully-async code-agent training with SWE-bench data.
+"""GLM-4.7-Flash colocated agentic training with SWEGym data.
 
-Disaggregated fully-async variant for code-agent tasks: training and rollout run
-on separate nodes concurrently. Uses train_async.py and the fully_async_rollout
-module so that weight updates do not block generation. Agent tasks are dispatched
-to a Harbor-based agent server.
+Colocated variant for agentic SWE tasks: training and rollout share the same
+4-node allocation. Agent tasks are dispatched to a Harbor-based agent server.
 
-Tuned for long multi-turn code-agent trajectories (tool calls, reasoning, patches).
-Default context budget is 32k tokens (session total); per-turn generation is capped at 8k.
-Batch sizes and max_tokens_per_gpu are kept conservative to avoid training OOM on long
-agent trajectories with CP=4.
-
-Qwen3.5-4B architecture: 32 layers (24 linear-attn + 8 full-attn), 16 attention
-heads, hidden_size=2560, GQA (4 KV heads), attention-output-gate, vocab=248320.
-TP must divide 16 (valid: 1, 2, 4, 8). Default split: 2 nodes training + 2 nodes
-inference (configurable via --train-num-nodes), sized for a 4-node job.
-
-SGLang note: Qwen3.5 requires rollout-num-gpus-per-engine=1 (TP>1 produces
-garbage output on older SGLang builds). Unlike GLM Flash (8-GPU MoE engine +
-DP-attention), dense 4B uses single-GPU engines; concurrency is KV-cache bound
-and scales inversely with context length.
+GLM-4.7-Flash architecture: 47 layers, 20 attention heads, 64 routed experts,
+hidden_size=2048, first_k_dense_replace=1. TP must divide 20 (valid: 1,2,4,5).
+For a 4-node colocated run we use all 32 GPUs for actors and colocated rollout.
 
 Data preparation (run separately before training):
     python download_and_process_data.py \\
@@ -27,9 +14,8 @@ Data preparation (run separately before training):
         --agent-name mini-swe-agent --split test
 
 Usage:
-    python run-qwen35-4B-agentic-async.py --num-nodes 4
-    python run-qwen35-4B-agentic-async.py --num-nodes 2 --train-num-nodes 1
-    python run-qwen35-4B-agentic-async.py --num-nodes 4 \\
+    python run-GLM-4.7-flash-agentic-colocate-with-over-sample.py --num-nodes 4
+    python run-GLM-4.7-flash-agentic-colocate-with-over-sample.py --num-nodes 4 \\
         --agent-server-url http://ts-egress-aws-agent-server:8080
 """
 
@@ -64,7 +50,7 @@ FULLY_ASYNC_DIR = _FULLY_ASYNC_DIR
 # raw node count so ckpt conversion doesn't starve the rest of the cluster.
 MAX_CONVERT_GPUS = 92
 
-MODEL_DIR = "/fs/open_plms/Qwen"
+MODEL_DIR = "/models/zai-org"
 CKPTS_DIR = "/fs/nlp-intern/yangchengyi/ckpts"
 traj_dir = "/fs/nlp-intern/yangchengyi/trajs"
 debug_msgs_dir = "/fs/nlp-intern/yangchengyi/debug_msgs"
@@ -76,16 +62,16 @@ task = "swegym"
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only","debug_train_only"] = "normal"
     run_id: str = U.create_run_id()
-    megatron_model_type: str = "qwen3.5-4B"
+    megatron_model_type: str = "glm4.7-flash"
     num_nodes: int = 4
     num_gpus_per_node: int = 8
     megatron_path: str = os.environ.get("MEGATRON_PATH", "/fs/nlp-intern/yangchengyi/Megatron-LM")
 
     # Paths
     skip_prepare: bool = False
-    model_name: str = "Qwen3.5-4B"
+    model_name: str = "GLM-4.7-Flash"
     data_name: str = "swegym"
-    variant: str = f"{data_name}_{model_name}_agentic_async_debug_session"
+    variant: str = f"{data_name}_{model_name}_agentic_colocate_over_sample"
     hf_checkpoint: str = f"{MODEL_DIR}/{model_name}"
     ref_load: str = f"{MODEL_DIR}/{model_name}_torch_dist"
     save_dir: str = f"{CKPTS_DIR}/{variant}/"
@@ -95,17 +81,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     save_traces_dir: str = f"{traj_dir}/{wandb_run_name}"
     prompt_data: str = f"{data_dir}/{data_name}.jsonl"
-    # Code-agent trajectories (multi-turn tool calls) can be very long.
-    # max_seq_len: total session budget (prompt + all assistant turns + tool outputs).
-    # rollout_max_response_len: max_new_tokens per single model call (one turn).
+    # max_seq_len: total session budget (prompt + assistant turns + tool outputs).
+    # rollout_max_response_len: max_new_tokens per single model call.
+    # max_seq_len: int = 16384
     max_seq_len: int = 65536
     rollout_max_response_len: int = 4096
-    sglang_context_length: int = 32768
     sglang_mem_fraction: float = 0.80
-    # Baseline per-engine slots at 8k ctx (Qwen3.5-9B colocate: 96 / 8 GPUs).
-    sglang_short_ctx_slots_per_engine: int = 12
-    sglang_context_ref_len: int = 8192
-    sglang_decode_max_bs: int = 8
+
     save_interval: int = 50
 
     # Rollout / training batch sizing — kept small for long-context memory budget.
@@ -113,7 +95,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 8
     global_batch_size: int = 32
-    over_sampling_batch_size: int = 4
+    over_sampling_batch_size: int = 8
 
     # Rollout precision
     rollout_fp8: bool = False
@@ -127,14 +109,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", f"{harbor_dir}/{task}")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
+    agent_environment_build_timeout_sec: float = 300
+    agent_setup_timeout_sec: float = 1200
+    agent_timeout_sec: float = 3600
+    agent_verifier_timeout_sec: float = 600
 
-    # Disaggregated fully-async settings
-    train_num_nodes: int = 2
+    # Colocated settings: 4 nodes total, training and rollout share the actors.
+    train_num_nodes: int = 4
     pause_generation_mode: Literal["in_place", "retract"] = "in_place"
     update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
     accumulate_allreduce_grads_in_fp32: bool = True
-    # Cap tokens packed into one training microbatch per GPU (dynamic batch size).
-    # Do NOT tie this to rollout_max_response_len — long agent trajectories OOM easily.
+    # Conservative for 4 colocated nodes and long agent trajectories.
     max_tokens_per_gpu: int = 2048
     optimizer_cpu_offload: bool = True
     use_precision_aware_optimizer: bool = True
@@ -174,6 +159,10 @@ def cleanup():
     print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
+def build_pythonpath(args: ScriptArgs) -> str:
+    return f"{MILES_ROOT}:{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}"
+
+
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format."""
     max_convert_nodes = MAX_CONVERT_GPUS // args.num_gpus_per_node
@@ -188,6 +177,9 @@ def prepare(args: ScriptArgs):
         dir_dst=str(Path(args.ref_load).parent),
         hf_checkpoint=args.hf_checkpoint,
         megatron_path=args.megatron_path,
+        env_vars={
+            "PYTHONPATH": build_pythonpath(args),
+        },
     )
 
 
@@ -206,7 +198,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
+        # "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
         "--metadata-key metadata "
@@ -218,45 +210,40 @@ def execute(args: ScriptArgs):
         f"--rollout-max-response-len {args.rollout_max_response_len} "
         f"--max-seq-len {args.max_seq_len} "
         f"--over-sampling-batch-size {args.over_sampling_batch_size} "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted_and_reward_nonzero_std "
         f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
         f"--pause-generation-mode {args.pause_generation_mode} "
-        "--max-weight-staleness 2 "
+        # "--max-weight-staleness 2 "
     )
 
     eval_args = ""
 
-    # Disaggregated split: training on train_num_nodes, inference on the rest.
-    rollout_num_nodes = args.num_nodes - args.train_num_nodes
-    assert rollout_num_nodes > 0, (
-        f"train_num_nodes ({args.train_num_nodes}) must be less than "
-        f"num_nodes ({args.num_nodes}) to leave room for inference"
+    assert args.train_num_nodes == args.num_nodes, (
+        "This script is the colocated 4-node launcher: train_num_nodes should "
+        f"match num_nodes (got train_num_nodes={args.train_num_nodes}, num_nodes={args.num_nodes})."
     )
     train_gpus = args.train_num_nodes * args.num_gpus_per_node
-    rollout_gpus = rollout_num_nodes * args.num_gpus_per_node
-    print(
-        f"Disagg split: {args.train_num_nodes} nodes ({train_gpus} GPUs) training, "
-        f"{rollout_num_nodes} nodes ({rollout_gpus} GPUs) inference"
-    )
+    print(f"Colocated run: {args.train_num_nodes} nodes ({train_gpus} GPUs) for training + rollout")
 
-    # Training parallelism for 4B + long context: TP=2, PP=1, CP=4 splits the
-    # sequence across GPUs. With 2 train nodes (16 GPUs): DP = 16 / 8 = 2.
-    tp, pp, cp = 2, 1, 4
+    # GLM-4.7-Flash: TP=4 divides 20 attention heads. Keep PP/CP small for the
+    # 4-node colocated job, and shard 64 MoE experts over DP with EP=8.
+    tp, pp, cp = 4, 1, 1
     dp = train_gpus // (tp * pp * cp)
     assert train_gpus % (tp * pp * cp) == 0, (
         f"train GPUs ({train_gpus}) must be divisible by TP*PP*CP ({tp * pp * cp})"
     )
-    print(f"Training parallelism: TP={tp}, PP={pp}, CP={cp}, DP={dp}")
+    num_experts = 64
+    ep = max(d for d in range(1, dp + 1) if num_experts % d == 0 and dp % d == 0)
+    print(f"Training parallelism: TP={tp}, PP={pp}, CP={cp}, DP={dp}, EP={ep}")
     perf_args = (
         f"--tensor-model-parallel-size {tp} "
         "--sequence-parallel "
         f"--pipeline-model-parallel-size {pp} "
         f"--context-parallel-size {cp} "
-        # "--expert-model-parallel-size 1 "
-        # "--expert-tensor-parallel-size 1 "
+        f"--expert-model-parallel-size {ep} "
+        "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
-        # "--allgather-cp "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
@@ -286,38 +273,19 @@ def execute(args: ScriptArgs):
         "--adam-beta2 0.98 "
     )
 
-    # SGLang: dense Qwen3.5-4B, 1 GPU/engine (TP=1 workaround).
-    # Unlike GLM Flash MoE (world=8, attn_tp=4, decode_bs=256), dense engines are
-    # KV-cache bound — slot count shrinks as context length grows.
-    sglang_gpus_per_engine = 1
-    num_engines = rollout_gpus // sglang_gpus_per_engine
-    assert rollout_gpus % sglang_gpus_per_engine == 0, (
-        f"rollout GPUs ({rollout_gpus}) must be divisible by "
-        f"sglang_gpus_per_engine ({sglang_gpus_per_engine})"
+    # GLM Flash inference: one 8-GPU MoE engine per node. Attention uses DP
+    # attention because GLM has 20 heads, so attn_tp=4 and attn_dp=2.
+    sglang_gpus_per_engine = args.num_gpus_per_node
+    sglang_decode_max_bs = 256
+    sglang_attn_tp_size = 4
+    assert sglang_gpus_per_engine % sglang_attn_tp_size == 0, (
+        f"sglang world ({sglang_gpus_per_engine}) must be divisible by "
+        f"attn_tp_size ({sglang_attn_tp_size})"
     )
-    print(f"Inference: {num_engines} engines x {sglang_gpus_per_engine} GPU/engine")
-
-    ctx_scale = max(1, args.sglang_context_length // args.sglang_context_ref_len)
-    sglang_per_engine_slots = max(1, args.sglang_short_ctx_slots_per_engine // ctx_scale)
-    sglang_chunked_prefill_size = min(
-        max(args.sglang_context_length // 16, 4096),
-        16384,
-    )
-    sglang_decode_max_bs = min(args.sglang_decode_max_bs, sglang_per_engine_slots * 4)
-    # Per-engine caps passed to each SGLang server; miles scales client semaphore
-    # cluster-wide as: server_concurrency * rollout_gpus // gpus_per_engine.
-    sglang_max_running_requests = sglang_per_engine_slots
-    sglang_server_concurrency = sglang_per_engine_slots
-    cluster_max_connections = (
-        sglang_server_concurrency * rollout_gpus // sglang_gpus_per_engine
-    )
+    sglang_attn_dp_size = sglang_gpus_per_engine // sglang_attn_tp_size
     print(
-        f"SGLang (dense): ctx={args.sglang_context_length}, ctx_scale={ctx_scale}, "
-        f"per_engine_slots={sglang_per_engine_slots}, "
-        f"max_running/engine={sglang_max_running_requests}, "
-        f"chunked_prefill={sglang_chunked_prefill_size}, "
-        f"decode_max_bs={sglang_decode_max_bs}, "
-        f"cluster_connections={cluster_max_connections}"
+        f"Colocated inference: {args.num_nodes} engines x {sglang_gpus_per_engine} GPUs/engine "
+        f"(attn_tp={sglang_attn_tp_size}, attn_dp={sglang_attn_dp_size})"
     )
 
     sglang_p2p_extra = ""
@@ -327,31 +295,36 @@ def execute(args: ScriptArgs):
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_gpus_per_engine} "
         f"--sglang-mem-fraction-static {args.sglang_mem_fraction} "
-        # f"--sglang-context-length {args.sglang_context_length} "
-        # f"--sglang-max-running-requests {sglang_max_running_requests} "
-        f"--sglang-chunked-prefill-size {sglang_chunked_prefill_size} "
-        # f"--sglang-server-concurrency {sglang_server_concurrency} "
-        "--sglang-tool-call-parser qwen3_coder "
-        "--sglang-reasoning-parser qwen3 "
-        "--use-sglang-tool-choice-required "
-        "--sglang-grammar-backend xgrammar "
+        f"--sglang-tp-size {sglang_gpus_per_engine} "
+        f"--sglang-ep-size {sglang_gpus_per_engine} "
+        "--sglang-enable-dp-attention "
+        f"--sglang-dp-size {sglang_attn_dp_size} "
+        "--sglang-moe-dense-tp-size 1 "
+        "--sglang-enable-dp-lm-head "
+        f"--sglang-max-running-requests {sglang_gpus_per_engine * sglang_decode_max_bs // sglang_attn_tp_size} "
+        f"--sglang-chunked-prefill-size {sglang_gpus_per_engine * sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        "--sglang-tool-call-parser glm47 "
+        "--sglang-reasoning-parser glm45 "
         "--use-miles-router "
         "--sglang-router-port 31000 "
         f"{sglang_p2p_extra}"
     )
-    sglang_extra_env_vars: dict[str, str] = {
-        "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
-    }
+    sglang_extra_env_vars: dict[str, str] = {}
 
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
         "--custom-rm-path generate.reward_func "
-        "--tito-model qwen35 "
+        "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
         "--tito-allowed-append-roles user tool "
         f"--session-debug-dump-dir {os.path.join(debug_msgs_dir, args.wandb_run_name)} "
+        f"--agent-environment-build-timeout-sec {args.agent_environment_build_timeout_sec} "
+        f"--agent-setup-timeout-sec {args.agent_setup_timeout_sec} "
+        f"--agent-timeout-sec {args.agent_timeout_sec} "
+        f"--agent-verifier-timeout-sec {args.agent_verifier_timeout_sec} "
     )
 
     misc_args = (
@@ -363,13 +336,11 @@ def execute(args: ScriptArgs):
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         f"--actor-num-nodes {args.train_num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        f"--num-gpus-per-node {args.num_gpus_per_node} "
-        f"--rollout-num-gpus {rollout_gpus} "
-        # "--grad-reduce-in-bf16 "
         "--bf16 "
-        "--log-probs-chunk-size 256 "
+        "--log-probs-chunk-size 1024 "
         "--use-fault-tolerance "
         f"--rollout-health-check-first-wait {args.rollout_health_check_first_wait} "
+        "--colocate "
     )
     if args.accumulate_allreduce_grads_in_fp32:
         misc_args += "--accumulate-allreduce-grads-in-fp32 "
@@ -378,16 +349,7 @@ def execute(args: ScriptArgs):
     if traces_dir != "disabled":
         misc_args += f"--dump-details {traces_dir} "
 
-    # debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
     debug_args = ""
-    # if args.mode == "debug_rollout_only":
-    #     debug_args += "--debug-rollout-only "
-    # elif args.mode == "debug_train_only":
-    #     debug_args += (
-    #     "--debug-train-only "
-    #     "--load-debug-rollout-data "
-    #     "/fs/nlp-intern/yangchengyi/trajs/swegym_Qwen3.5-4B_agentic_async_debug_session/rollout_data/0.pt "
-    # )
     wandb_args = ""
     if args.wandb_key:
         wandb_args = (
@@ -440,7 +402,7 @@ def execute(args: ScriptArgs):
     has_nvlink = U.check_has_nvlink()
     print(f"HAS_NVLINK: {int(has_nvlink)} (auto-detected via nvidia-smi topo)")
     extra_env_vars = {
-        "PYTHONPATH": f"{miles_root}:{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}",
+        "PYTHONPATH": build_pythonpath(args),
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(has_nvlink))),
         "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "false",
@@ -461,7 +423,7 @@ def execute(args: ScriptArgs):
         "config": args,
         "num_gpus_per_node": args.num_gpus_per_node,
         "megatron_model_type": args.megatron_model_type,
-        "train_script": str(miles_root / "train_async.py"),
+        "train_script": str(miles_root / "train.py"),
         "megatron_path": args.megatron_path,
         "extra_env_vars": extra_env_vars,
     }

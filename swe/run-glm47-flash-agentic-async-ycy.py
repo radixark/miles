@@ -18,72 +18,48 @@ Data preparation (run separately before training):
 
 Usage:
     python run-glm47-flash-agentic-async.py --num-nodes 8
-    python run-glm47-flash-agentic-async.py --num-nodes 2 --train-num-nodes 1
+    python run-glm47-flash-agentic-async.py --num-nodes 8 --train-num-nodes 1
     python run-glm47-flash-agentic-async.py --num-nodes 8 \\
         --agent-server-url http://ts-egress-aws-agent-server:8080
 """
 
 import os
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-# Must run before `import miles`: launcher and Ray job both need this repo on sys.path.
-SCRIPT_DIR = Path(__file__).resolve().parent
-MILES_ROOT = SCRIPT_DIR.parent.resolve()
-_FULLY_ASYNC_DIR = (MILES_ROOT / "examples" / "fully_async").resolve()
-_miles_root_s = str(MILES_ROOT)
-if _miles_root_s not in sys.path:
-    sys.path.insert(0, _miles_root_s)
-_pp = os.environ.get("PYTHONPATH", "")
-if _miles_root_s not in _pp.split(os.pathsep):
-    os.environ["PYTHONPATH"] = f"{_miles_root_s}{os.pathsep}{_pp}" if _pp else _miles_root_s
-
-import inspect
-
 import typer
 
 import miles.utils.external_utils.command_utils as U
-from miles.utils.misc import exec_command
 
-FULLY_ASYNC_DIR = _FULLY_ASYNC_DIR
+SCRIPT_DIR = Path(__file__).resolve().parent
+FULLY_ASYNC_DIR = (Path(__file__).resolve().parent.parent / "examples" / "fully_async").resolve()
 
 # Cluster-wide GPU-node ceiling for the ckpt-conversion job. Kept below the
 # raw node count so ckpt conversion doesn't starve the rest of the cluster.
 MAX_CONVERT_GPUS = 92
 
-MODEL_DIR="/fs/open_plms/Qwen"
-CKPTS_DIR="/home/yangchengyi/data/ckpts"
-traj_dir="/home/yangchengyi/data/trajs"
-debug_msgs_dir="/home/yangchengyi/data/debug_msgs"
-data_dir="/home/yangchengyi/data/datasets"
-harbor_dir="/home/yangchengyi/data/harbor/datasets/"
-task="swegym"
-# os.makedirs(CKPTS_DIR, exist_ok=True)
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["normal", "debug_rollout_only"] = "debug_rollout_only"
+    mode: Literal["normal", "debug_rollout_only"] = "normal"
     run_id: str = U.create_run_id()
-    megatron_model_type: str = "qwen3-0.6B"
+    megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
-    megatron_path: str = "/root/Megatron-LM"    
-    
+    megatron_path: str = "/root/Megatron-LM"
 
     # Paths
     skip_prepare: bool = False
-    model_name: str = "Qwen3-0.6B"
-    data_name="swegym"
-    variant=f"{data_name}_{model_name}_agentic_async"
-    hf_checkpoint: str = f"{MODEL_DIR}/{model_name}"
-    ref_load: str = f"{MODEL_DIR}/{model_name}_torch_dist"
-    save_dir: str = f"{CKPTS_DIR}/{model_name}_agentic_async/"
+    model_name: str = "GLM-4.7-Flash"
+    hf_checkpoint: str = "/models/zai-org/GLM-4.7-Flash"
+    ref_load: str = "/models/zai-org/GLM-4.7-Flash_torch_dist"
+    save_dir: str = "/root/GLM-4.7-Flash_agentic_async/"
     # Directory to dump rollout + training traces (per-rollout .pt files). Empty
     # means default to ``<save_dir>/traces``; set to ``"disabled"`` to skip.
-    save_traces_dir: str = f"{traj_dir}/{variant}"
-    prompt_data: str = f"{data_dir}/{data_name}.jsonl"
+    save_traces_dir: str = ""
+    prompt_data: str = "/root/swe_train.jsonl"
     max_seq_len: int = 16384
     rollout_max_response_len: int = 8192
     save_interval: int = 5
@@ -100,11 +76,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_health_check_first_wait: int = 1800
 
     # Agent settings
-    agent_server_url: str = os.environ.get(
-        "AGENT_SERVER_URL", "http://houjue-harbor-server-ycy.houjue.svc.cluster.local:11000"
-    )
-    agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", f"{model_name}")
-    harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", f"{harbor_dir}/{task}")
+    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://ts-egress-aws-agent-server:8080")
+    agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
+    harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
@@ -118,16 +92,16 @@ class ScriptArgs(U.ExecuteTrainConfig):
     use_precision_aware_optimizer: bool = True
 
     # W&B settings
-    wandb_key: str = os.environ.get("WANDB_KEY",  "")
-    wandb_project: str = os.environ.get("WANDB_PROJECT", "miles-agentic")
+    wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
+    wandb_project: str = os.environ.get("WANDB_PROJECT", "glm47-flash-agentic")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
-    wandb_run_name: str = f'{variant}_{time.strftime("%Y%m%d_%H%M%S", time.gmtime(time.time() + 8 * 3600))}'
+    wandb_run_name: str = "glm47-flash-swe-async"
     disable_wandb_random_suffix: bool = True
 
     # Prometheus settings
     use_prometheus: bool = True
     prometheus_port: int = 9090
-    prometheus_run_name: str = variant
+    prometheus_run_name: str = "glm47-flash-swe-async"
 
 
 def cleanup():
@@ -154,12 +128,11 @@ def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format."""
     max_convert_nodes = MAX_CONVERT_GPUS // args.num_gpus_per_node
     convert_nodes = min(args.num_nodes, max_convert_nodes)
-    multi_node=args.num_nodes > 1
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
-        multinode=multi_node,
+        multinode=True,
         num_nodes=convert_nodes,
         dir_dst=str(Path(args.ref_load).parent),
         hf_checkpoint=args.hf_checkpoint,
@@ -204,7 +177,6 @@ def execute(args: ScriptArgs):
 
     # Disaggregated split: training on train_num_nodes, inference on the rest.
     rollout_num_nodes = args.num_nodes - args.train_num_nodes
-    # rollout_num_nodes = 1
     assert rollout_num_nodes > 0, (
         f"train_num_nodes ({args.train_num_nodes}) must be less than "
         f"num_nodes ({args.num_nodes}) to leave room for inference"
@@ -216,13 +188,20 @@ def execute(args: ScriptArgs):
         f"{rollout_num_nodes} nodes ({rollout_gpus} GPUs) inference"
     )
 
-    
+    # Training parallelism for Flash: TP=4 (divides 20-head attention), PP=1,
+    # EP = largest divisor of 64 that also divides DP.
+    tp, pp = 4, 1
+    dp = train_gpus // (tp * pp)
+    assert train_gpus % (tp * pp) == 0, f"train GPUs ({train_gpus}) must be divisible by TP*PP ({tp * pp})"
+    num_experts = 64
+    ep = max(d for d in range(1, dp + 1) if num_experts % d == 0 and dp % d == 0)
+
     perf_args = (
-        f"--tensor-model-parallel-size 1 "
+        f"--tensor-model-parallel-size {tp} "
         "--sequence-parallel "
-        f"--pipeline-model-parallel-size 1 "
+        f"--pipeline-model-parallel-size {pp} "
         "--context-parallel-size 1 "
-        f"--expert-model-parallel-size 1 "
+        f"--expert-model-parallel-size {ep} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -277,10 +256,19 @@ def execute(args: ScriptArgs):
         sglang_p2p_extra = "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {sglang_world_size} "
         "--sglang-mem-fraction-static 0.80 "
-        "--sglang-tool-call-parser qwen25 "
-        "--sglang-reasoning-parser qwen3 "
+        f"--sglang-tp-size {sglang_world_size} "
+        f"--sglang-ep-size {sglang_world_size} "
+        "--sglang-enable-dp-attention "
+        f"--sglang-dp-size {sglang_attn_dp_size} "
+        "--sglang-moe-dense-tp-size 1 "
+        "--sglang-enable-dp-lm-head "
+        f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
+        f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        "--sglang-tool-call-parser glm47 "
+        "--sglang-reasoning-parser glm45 "
         "--use-miles-router "
         "--sglang-router-port 31000 "
         f"{sglang_p2p_extra}"
@@ -291,11 +279,10 @@ def execute(args: ScriptArgs):
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
         "--custom-rm-path generate.reward_func "
-        "--tito-model qwen3 "
+        "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
         "--tito-allowed-append-roles user tool "
-        f"--session-debug-dump-dir {os.path.join(debug_msgs_dir, args.wandb_run_name)} "
     )
 
     misc_args = (
@@ -358,21 +345,10 @@ def execute(args: ScriptArgs):
         f"{debug_args}"
     )
 
-    # K8s: Ray cluster is started by ray_init_simple.sh; only ray job submit here.
-    os.environ.setdefault("MILES_SCRIPT_EXTERNAL_RAY", "true")
-    if not os.environ.get("MASTER_ADDR") and os.environ.get("POD_IP"):
-        os.environ["MASTER_ADDR"] = os.environ["POD_IP"]
-    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-    ray_dashboard_port = os.environ.get("RAY_DASHBOARD_PORT", "8265")
-    os.environ.setdefault("RAY_ADDRESS", f"http://{master_addr}:{ray_dashboard_port}")
-    print(
-        f"External Ray: MASTER_ADDR={master_addr}, RAY_ADDRESS={os.environ['RAY_ADDRESS']} "
-        f"(set MILES_SCRIPT_EXTERNAL_RAY=0 to let the script start Ray locally)"
-    )
+    miles_root = U.repo_base_dir
 
-    miles_root = MILES_ROOT
     extra_env_vars = {
-        "PYTHONPATH": f"{miles_root}:{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}",
+        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}:{miles_root}",
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "NCCL_NVLS_ENABLE": os.environ.get("HAS_NVLINK", "0"),
         "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "false",
@@ -383,24 +359,18 @@ def execute(args: ScriptArgs):
     }
     if args.router_external_host:
         extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
-        print(f'{extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"]=}')
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
-        print(f'{extra_env_vars["MILES_HOST_IP"]=}')
-    
-    
-    execute_train_kw = {
-        "train_args": train_args,
-        "config": args,
-        "num_gpus_per_node": args.num_gpus_per_node,
-        "megatron_model_type": args.megatron_model_type,
-        "train_script": str(miles_root / "train_async.py"),
-        "megatron_path": args.megatron_path,
-        "extra_env_vars": extra_env_vars,
-    }
-    if "skip_cleanup" in inspect.signature(U.execute_train).parameters:
-        execute_train_kw["skip_cleanup"] = True
-    U.execute_train(**execute_train_kw)
+
+    U.execute_train(
+        train_args=train_args,
+        config=args,
+        num_gpus_per_node=args.num_gpus_per_node,
+        megatron_model_type=args.megatron_model_type,
+        train_script="train_async.py",
+        megatron_path=args.megatron_path,
+        extra_env_vars=extra_env_vars,
+    )
 
 
 @U.dataclass_cli
