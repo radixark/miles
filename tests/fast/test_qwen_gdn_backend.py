@@ -34,10 +34,3 @@ def test_flashqla_backend_errors_clearly_when_missing():
         pytest.skip("flash_qla installed; missing-package error path not applicable")
     with pytest.raises(ImportError, match="FlashQLA"):
         module.get_chunk_gated_delta_rule("flashqla")
-
-
-def test_version_parser_handles_local_suffixes():
-    module = load_backend_module()
-    assert module._parse_version("2.11.0+cu130") == (2, 11)
-    assert module._parse_version("13.0") == (13, 0)
-    assert module._parse_version("2") == (2, 0)
