@@ -18,10 +18,12 @@ on:
         required: true
         type: choice
         options:
-          - primary
-          - cu129-arm64
-          - cu13-arm64
-          - debug
+          - cu13
+          - cu13-x86
+          - cu13-aarch64
+          - cu12-x86
+          - rocm-mi300
+          - rocm-mi350
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
         required: true
@@ -153,7 +155,7 @@ jobs:
       - name: Build and push
         run: |
           python3 docker/build.py \
-            --variant ${{ inputs.variant || 'primary' }} \
+            --variant ${{ inputs.variant || 'cu13' }} \
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \

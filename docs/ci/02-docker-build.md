@@ -1,6 +1,7 @@
 ---
 
 ## title: Docker build
+
 description: The Dockerfiles, the build script, the remote build workflow, and how to build & push manually.
 
 # Docker build
@@ -10,31 +11,52 @@ CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the scri
 ## Dockerfiles
 
 
-| Path | Builds | Wired into |
-| ---- | ------ | ---------- |
-| `docker/Dockerfile`      | `radixark/miles` — the CUDA image (x86 + arm64) | `docker-build.yml` |
-| `docker/Dockerfile.rocm` | AMD ROCm (MI30x / MI35x)                        | `docker-build.yml` (`rocm-*` variants) |
+| Path                     | Builds                   | Wired into                             |
+| ------------------------ | ------------------------ | -------------------------------------- |
+| `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`                     |
+| `docker/Dockerfile.rocm` | AMD ROCm (MI30x / MI35x) | `docker-build.yml` (`rocm-*` variants) |
 
-`docker/Dockerfile` is multi-stage: `FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG}` (a multi-arch `lmsysorg/sglang` release), installs sglang from the `sglang-miles` branch, then layers Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and prebuilt wheels from `yueming-yuan/miles-wheels` (sgl-router among them) — selected per-arch from `TARGETARCH`, so one build serves both x86 and arm64. `docker/Dockerfile.rocm` builds the AMD variants.
+
+### `docker/Dockerfile` — inputs & output
+
+The Dockerfile is the build recipe and nothing more: it knows no variants and no tags. Everything it needs arrives as build-args; it emits one image. `build.py` owns the variant → build-arg mapping (see Build script), so the boundary stays clean — e.g. the wheels-repo tag naming lives only in `build.py`, never here.
+
+**Inputs (build-args)**
+
+
+| Arg                                                                                                    | Meaning                                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SGLANG_IMAGE_TAG`                                                                                     | base `lmsysorg/sglang` tag (default `v0.5.12`, a multi-arch release)                                                                                                                                                                          |
+| `ENABLE_CUDA_13`                                                                                       | `1` = CUDA 13 (default), `0` = CUDA 12.9                                                                                                                                                                                                      |
+| `WHEELS_REPO`                                                                                          | prebuilt-wheels GitHub repo (`yueming-yuan/miles-wheels`)                                                                                                                                                                                     |
+| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | the two **complete** wheels release tags (e.g. `cu130-x86_64-v0.5.12` / `cu130-aarch64-v0.5.12`), the wheels repo's own names. In a multi-arch build the Dockerfile **picks one by `TARGETARCH`** (the only per-platform value buildx varies) and installs it **verbatim** — never assembling a tag from parts; cu12-x86 overrides `WHEELS_TAG_X86` |
+| `SGLANG_BRANCH` / `SGLANG_COMMIT`, `MEGATRON_REPO` / `MEGATRON_BRANCH`, `MILES_COMMIT`, `SGL_ROUTER_*` | source pins for the layered repos                                                                                                                                                                                                             |
+
+
+**Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
+
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`).
 
 ## Build script
 
 `docker/build.py` builds and pushes the images. Select a build with `--variant` and a tag mode with `--image-tag {dev,latest,custom}`. A single `VARIANTS` table is the source of truth for each variant's image, target platforms, Dockerfile, and build-args.
 
-| `--variant` | Tag (`--image-tag dev`) | Platforms | Notes |
-|---|---|---|---|
-| `cu13`         | `radixark/miles:dev`               | `linux/amd64` + `linux/arm64` | **multi-arch**, one manifest — the daily image |
-| `cu13-x86`     | `radixark/miles:dev`               | `linux/amd64`                 | x86-only build of the same image |
-| `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image |
-| `cu12-x86`     | `radixark/miles:dev-cu12`          | `linux/amd64`                 | CUDA 12.9 legacy |
-| `rocm-mi300`   | `rocm/sgl-dev:miles-rocm700-mi30x` | native                        | AMD MI30x — `docker/Dockerfile.rocm` |
-| `rocm-mi350`   | `rocm/sgl-dev:miles-rocm720-mi35x` | native                        | AMD MI35x — `docker/Dockerfile.rocm` |
 
-The cu13 variants share one CUDA base (`lmsysorg/sglang:v0.5.12`, multi-arch) and differ only in platforms. `cu13` runs a single `buildx --platform linux/amd64,linux/arm64`, picking each layer's wheels inside the Dockerfile from `TARGETARCH` (amd64→`x86_64`, arm64→`aarch64`), and pushes one manifest so `docker pull` auto-selects by host arch.
+| `--variant`    | Tag (`--image-tag dev`)            | Platforms                     | Notes                                          |
+| -------------- | ---------------------------------- | ----------------------------- | ---------------------------------------------- |
+| `cu13`         | `radixark/miles:dev`               | `linux/amd64` + `linux/arm64` | **multi-arch**, one manifest — the daily image |
+| `cu13-x86`     | `radixark/miles:dev`               | `linux/amd64`                 | x86-only build of the same image               |
+| `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image             |
+| `cu12-x86`     | `radixark/miles:dev-cu12`          | `linux/amd64`                 | CUDA 12.9 legacy                               |
+| `rocm-mi300`   | `rocm/sgl-dev:miles-rocm700-mi30x` | native                        | AMD MI30x — `docker/Dockerfile.rocm`           |
+| `rocm-mi350`   | `rocm/sgl-dev:miles-rocm720-mi35x` | native                        | AMD MI35x — `docker/Dockerfile.rocm`           |
+
+
+The cu13 variants share one CUDA base (`lmsysorg/sglang:v0.5.12`, multi-arch) and differ only in platforms. `cu13` runs a single `buildx --platform linux/amd64,linux/arm64` — buildx builds both arches and pushes them as one manifest in a single shot, with the Dockerfile picking each layer's wheels by `TARGETARCH` (see Dockerfile inputs), so `docker pull` auto-selects by host arch.
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
-A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — it can't load into the local image store; use `cu13-x86` / `cu13-aarch64` for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
 
 ## Remote docker build (`docker-build.yml`)
 
@@ -47,12 +69,14 @@ The only automated builder of `radixark/miles`. Two jobs:
 
 ### Per-trigger behavior
 
-| Trigger | `check-upstream` | builds | `latest`→`dev` | prune |
-|---|---|---|---|---|
-| schedule (cron 00:00 / 12:00 UTC) | runs; build only if upstream moved | `dev` (default) | yes | yes |
-| push to `main` touching `docker/Dockerfile` | skipped | `dev` (default) | no | no |
-| `workflow_dispatch` | skipped | per inputs | no | no |
-| `workflow_dispatch` + `simulate_schedule` | runs | `dev` (default) | yes | no |
+
+| Trigger                                     | `check-upstream`                   | builds          | `latest`→`dev` | prune |
+| ------------------------------------------- | ---------------------------------- | --------------- | -------------- | ----- |
+| schedule (cron 00:00 / 12:00 UTC)           | runs; build only if upstream moved | `dev` (default) | yes            | yes   |
+| push to `main` touching `docker/Dockerfile` | skipped                            | `dev` (default) | no             | no    |
+| `workflow_dispatch`                         | skipped                            | per inputs      | no             | no    |
+| `workflow_dispatch` + `simulate_schedule`   | runs                               | `dev` (default) | yes            | no    |
+
 
 ### Steps (`build-and-push`)
 
