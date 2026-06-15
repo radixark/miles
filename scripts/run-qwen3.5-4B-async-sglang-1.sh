@@ -41,7 +41,7 @@ RAY_JOB_SUBMIT_ADDRESS="${RAY_JOB_SUBMIT_ADDRESS:-http://${MASTER_ADDR}:${RAY_DA
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
-export WANDB_KEY=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
+export WANDB_KEY="${WANDB_KEY:-${WANDB_API_KEY:-}}"
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
