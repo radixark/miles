@@ -13,6 +13,7 @@ __all__ = [
     "discover_ci_files",
     "register_cpu_ci",
     "register_cuda_ci",
+    "register_rocm_ci",
     "ut_parse_one_file",
 ]
 
@@ -23,7 +24,7 @@ _POSITIONAL_PARAMS = ("est_time", "suite")
 # All accepted keyword arguments (in addition to the positional pair above).
 _VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled"})
 
-_REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci"})
+_REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci", "register_rocm_ci"})
 
 _UNSET = object()
 
@@ -31,6 +32,7 @@ _UNSET = object()
 class HWBackend(Enum):
     CPU = auto()
     CUDA = auto()
+    ROCM = auto()
 
 
 @dataclass
@@ -81,9 +83,26 @@ def register_cuda_ci(
     return None
 
 
+def register_rocm_ci(
+    est_time: float,
+    suite: str,
+    *,
+    labels: list[str] | None = None,
+    nightly: bool = False,
+    disabled: str | None = None,
+):
+    """Marker for ROCm (AMD) CI registration (parsed via AST; runtime no-op).
+
+    A test that passes on AMD GPUs adds a register_rocm_ci(...) call alongside
+    its register_cuda_ci(...) call. See `register_cpu_ci` for label semantics.
+    """
+    return None
+
+
 _REGISTER_BACKEND_MAP = {
     "register_cpu_ci": HWBackend.CPU,
     "register_cuda_ci": HWBackend.CUDA,
+    "register_rocm_ci": HWBackend.ROCM,
 }
 
 
