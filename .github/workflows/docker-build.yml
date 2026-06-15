@@ -76,18 +76,22 @@ jobs:
           MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
             "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
 
-          # Check the miles-wheels release the image installs from (sgl-router +
-          # the other prebuilt wheels). Tracks the scheduled build's default tag
-          # cu130-x86_64-v0.5.12; bumping WHEELS_TAG is a Dockerfile change that
-          # already triggers a build via the push trigger. Asset re-uploads keep
-          # the tag's commit fixed, so fingerprint the asset list, not a SHA.
-          WHEELS_FP=$(curl -s \
-            "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/cu130-x86_64-v0.5.12" \
-            | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')")
+          # Fingerprint the miles-wheels releases the images install from (sgl-router +
+          # the other prebuilt wheels). cu13 installs cu130-x86_64; cu12-x86 installs
+          # cu129-x86_64 — both build automatically, so track both. Bumping a WHEELS_TAG
+          # is a Dockerfile change already caught by the push trigger; asset re-uploads
+          # keep the tag's commit fixed, so fingerprint the asset list, not a SHA.
+          wheels_fp() {
+            curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
+              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
+          }
+          WHEELS_FP=$(wheels_fp cu130-x86_64-v0.5.12)
+          WHEELS_CU12_FP=$(wheels_fp cu129-x86_64-v0.5.12)
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
           echo "wheels FP:     ${WHEELS_FP}"
+          echo "wheels FP cu12:${WHEELS_CU12_FP}"
 
           # Compare against last known values stored in cache
           CACHE_FILE="last_upstream_shas.txt"
@@ -95,13 +99,15 @@ jobs:
             LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
             LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
             LAST_WHEELS=$(sed -n '3p' "$CACHE_FILE")
+            LAST_WHEELS_CU12=$(sed -n '4p' "$CACHE_FILE")
           else
             LAST_SGLANG=""
             LAST_MEGATRON=""
             LAST_WHEELS=""
+            LAST_WHEELS_CU12=""
           fi
 
-          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_FP" != "$LAST_WHEELS" ]; then
+          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_FP" != "$LAST_WHEELS" ] || [ "$WHEELS_CU12_FP" != "$LAST_WHEELS_CU12" ]; then
             SHOULD_BUILD=true
             echo "Upstream change detected"
           else
@@ -112,6 +118,7 @@ jobs:
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
           echo "${WHEELS_FP}" >> "$CACHE_FILE"
+          echo "${WHEELS_CU12_FP}" >> "$CACHE_FILE"
 
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
 
@@ -161,10 +168,20 @@ jobs:
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
             --push
 
+      - name: Build and push cu12-x86 (automatic builds only)
+        # schedule / push-to-main leave inputs.variant empty → also build the cu12.9 legacy
+        # image; a manual workflow_dispatch builds only the single variant the user picked.
+        if: ${{ !inputs.variant }}
+        run: |
+          python3 docker/build.py --variant cu12-x86 --image-tag dev --push
+
       - name: Point latest to current dev
-        if: github.event_name == 'schedule' || inputs.simulate_schedule == true
+        # schedule only: latest is published registry state, so — like prune — a [DEBUG]
+        # simulate_schedule must not move it. A scheduled run always builds both variants.
+        if: github.event_name == 'schedule'
         run: |
           docker buildx imagetools create -t radixark/miles:latest radixark/miles:dev
+          docker buildx imagetools create -t radixark/miles:latest-cu12 radixark/miles:dev-cu12
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
@@ -178,38 +195,41 @@ jobs:
             -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
             | jq -r .token)
 
-          # Collect all dev-YYYYMMDDHHMM tags (paginated)
-          DEV_TAGS=""
-          URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
-          while [ "$URL" != "null" ] && [ -n "$URL" ]; do
-            RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
-            PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E '^dev-[0-9]{12}$' || true)
-            DEV_TAGS="${DEV_TAGS}${PAGE_TAGS}"$'\n'
-            URL=$(echo "$RESP" | jq -r '.next')
-          done
+          # Keep the newest $KEEP timestamped tags matching $1, delete the rest.
+          # cu13 (dev-<ts>) and cu12-x86 (dev-cu12-<ts>) are pruned as independent series.
+          prune_series() {
+            PATTERN="$1"
+            TAGS=""
+            URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
+            while [ "$URL" != "null" ] && [ -n "$URL" ]; do
+              RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
+              PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E "$PATTERN" || true)
+              TAGS="${TAGS}${PAGE_TAGS}"$'\n'
+              URL=$(echo "$RESP" | jq -r '.next')
+            done
 
-          # Sort and find tags to delete
-          SORTED=$(echo "$DEV_TAGS" | grep -v '^$' | sort)
-          COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
-          echo "Found ${COUNT} dev tags"
-
-          if [ "$COUNT" -le "$KEEP" ]; then
-            echo "Nothing to prune (keep=${KEEP})"
-            exit 0
-          fi
-
-          DELETE_COUNT=$((COUNT - KEEP))
-          TO_DELETE=$(echo "$SORTED" | head -n "$DELETE_COUNT")
-          echo "Pruning ${DELETE_COUNT} old dev tags..."
-
-          echo "$TO_DELETE" | while read -r TAG; do
-            [ -z "$TAG" ] && continue
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: JWT ${TOKEN}" \
-              "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  Deleted ${TAG}"
-            else
-              echo "  Failed to delete ${TAG} (HTTP ${HTTP_CODE})"
+            SORTED=$(echo "$TAGS" | grep -v '^$' | sort)
+            COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
+            echo "Found ${COUNT} tags matching ${PATTERN}"
+            if [ "$COUNT" -le "$KEEP" ]; then
+              echo "Nothing to prune for ${PATTERN} (keep=${KEEP})"
+              return
             fi
-          done
+
+            DELETE_COUNT=$((COUNT - KEEP))
+            echo "Pruning ${DELETE_COUNT} old tags matching ${PATTERN}..."
+            echo "$SORTED" | head -n "$DELETE_COUNT" | while read -r TAG; do
+              [ -z "$TAG" ] && continue
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: JWT ${TOKEN}" \
+                "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  Deleted ${TAG}"
+              else
+                echo "  Failed to delete ${TAG} (HTTP ${HTTP_CODE})"
+              fi
+            done
+          }
+
+          prune_series '^dev-[0-9]{12}$'
+          prune_series '^dev-cu12-[0-9]{12}$'
