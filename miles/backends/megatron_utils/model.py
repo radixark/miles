@@ -23,7 +23,7 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
-from miles.backends.megatron_utils.indep_dp import _allreduce_grads_across_replicas
+from miles.backends.megatron_utils.indep_dp import _allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -495,7 +495,7 @@ def train_one_step(
         if ft_actor_executor is not None:
             ft_actor_executor.maybe_crash(rollout_id=rollout_id, attempt=attempt)
 
-        ok, indep_dp_loss_reduced = _allreduce_grads_across_replicas(
+        ok, indep_dp_loss_reduced = _allreduce_grads_and_losses_across_replicas(
             args, model, parallel_state, losses_reduced=losses_reduced
         )
         if not ok:
@@ -556,8 +556,6 @@ def train_one_step(
             witness_dump_and_clear_stale(model=model, witness_info=witness_info, optimizer=optimizer)
 
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
-            # indep_dp mode already aggregated losses inside the guarded grad all-reduce (so a peer
-            # death there discards the step instead of being swallowed); otherwise aggregate here.
             loss_reduced = (
                 indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
             )

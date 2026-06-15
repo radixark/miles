@@ -175,7 +175,7 @@ def _build_full_grad_getter(
     """Build get_grad(param): all-gather distributed-optimizer grad shards into a
     fresh buffer (grad_data is read, not mutated) and return per-param views."""
     grad_map: dict[torch.nn.Parameter, torch.Tensor] = {}
-    # Bucket iteration copied from indep_dp._allreduce_grads_across_replicas,
+    # Bucket iteration copied from indep_dp._allreduce_grads_and_losses_across_replicas,
     # which cross-cell all-reduces these same bucket.grad_data buffers.
     bucket_groups = list(getattr(model_chunk, "bucket_groups", [])) + list(
         getattr(model_chunk, "expert_parallel_bucket_groups", [])

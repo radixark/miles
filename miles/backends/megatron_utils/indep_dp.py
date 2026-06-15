@@ -11,6 +11,7 @@ from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
 from miles.utils.structured_log import log_structured
 
+from ..training_utils.log_utils import aggregate_train_losses
 from ..training_utils.parallel import ParallelState
 
 if TYPE_CHECKING:
@@ -102,7 +103,7 @@ def reconfigure_indep_dp_group(
     )
 
 
-def _allreduce_grads_across_replicas(
+def _allreduce_grads_and_losses_across_replicas(
     args, model: Sequence["DDP"], parallel_state: ParallelState, losses_reduced: list
 ) -> tuple[bool, dict[str, float]]:
     assert not args.calculate_per_token_loss, "calculate_per_token_loss is not supported with indep_dp yet"
@@ -142,15 +143,8 @@ def _allreduce_grads_across_replicas(
             exc_info=True,
         )
 
-    # Loss aggregation also all-reduces across cells (effective_dp_cp spans indep_dp). Run it
-    # inside this guarded region so a peer death during it is caught by the errored() probe below
-    # (-> consensus=False -> DISCARDED -> reconfigure), instead of being swallowed later in the
-    # train-step tail (where its failure is ignored and the step is wrongly kept NORMAL). Skipped
-    # when the grad all-reduce already failed (the step will be discarded regardless).
     loss_reduced: dict[str, float] = {}
     if allreduce_success and mpu.is_pipeline_last_stage(ignore_virtual=True):
-        from ..training_utils.log_utils import aggregate_train_losses
-
         try:
             loss_reduced = aggregate_train_losses(losses_reduced)
         except Exception:
@@ -166,8 +160,7 @@ def _allreduce_grads_across_replicas(
             )
 
     # pg.errored() can force a CUDA/stream sync, so call it exactly once per step here -- do NOT
-    # sprinkle extra errored() probes. It covers the async failure of BOTH the grad and the loss
-    # all-reduce above. When it does report an async error it MUST be logged loudly:
+    # sprinkle extra errored() probes. When it does report an async error it MUST be logged loudly:
     # a swallowed cross-cell error means an un-reduced (wrong) gradient would be applied silently.
     if (e := pg.errored()) is not None:
         allreduce_success = False
