@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from miles.utils.event_logger.models import Event, EventBase
 from miles.utils.process_identity import ProcessIdentity
+from miles.utils.structured_log import log_structured, prune_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,8 @@ class EventLogger:
             with self._path.open("a", encoding="utf-8") as f:
                 f.write(line)
         if print_log:
-            logger.info("Event logged: %s", getattr(event, "type", type(event).__name__))
+            payload = prune_for_log(event.model_dump(mode="json", exclude={"timestamp", "source"}))
+            log_structured(logger.info, op="event", event=type(event).__name__, **payload)
 
     def close(self) -> None:
         pass
