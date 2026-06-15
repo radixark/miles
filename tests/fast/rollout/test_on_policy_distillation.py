@@ -82,6 +82,17 @@ def test_topk_intersection_uses_overlap_only():
     )
 
 
+def test_topk_only_teacher_does_not_need_student_top_logprobs():
+    sample = Sample(tokens=[10, 11, 12], response_length=2)
+
+    reverse_kl = _compute_topk_reverse_kl(_args("only-teacher"), sample, _teacher_payload())
+
+    expected_0 = (2 / 3) * math.log(0.4 / 0.5) + (1 / 3) * math.log(0.2 / 0.5)
+    expected_1 = (7 / 8) * math.log(0.7 / 0.8) + (1 / 8) * math.log(0.1 / 0.2)
+
+    assert reverse_kl.tolist() == pytest.approx([expected_0, expected_1])
+
+
 def test_topk_xor_uses_symmetric_difference_without_normalization():
     reverse_kl = _compute_topk_reverse_kl(_args("xor", "none"), _sample(), _teacher_payload())
 

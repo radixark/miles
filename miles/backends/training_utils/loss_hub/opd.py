@@ -37,13 +37,12 @@ def apply_opd_kl_to_advantages(
                 f"opd_reverse_kl={len(precomputed_reverse_kls)}."
             )
 
-        device = student_log_probs[0].device
         reverse_kls = []
         for i, adv in enumerate(advantages):
             reverse_kl = precomputed_reverse_kls[i]
             if not torch.is_tensor(reverse_kl):
                 reverse_kl = torch.tensor(reverse_kl, dtype=torch.float32)
-            reverse_kl = reverse_kl.to(device=device)
+            reverse_kl = reverse_kl.to(device=adv.device)
             if adv.shape != reverse_kl.shape:
                 raise ValueError(
                     f"OPD shape mismatch at sample {i}: advantages={tuple(adv.shape)}, "

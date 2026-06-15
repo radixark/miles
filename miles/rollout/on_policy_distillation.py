@@ -14,6 +14,11 @@ LogprobMaps = list[dict[int, float]]
 TOP_K_STRATEGIES = {"only-student", "only-teacher", "intersection", "union", "xor"}
 REWARD_WEIGHT_MODES = {"student_p", "teacher_p", "none"}
 
+STUDENT_TOP_STRATEGIES = TOP_K_STRATEGIES - {"only-teacher"}
+TEACHER_TOP_STRATEGIES = TOP_K_STRATEGIES - {"only-student"}
+TEACHER_ON_STUDENT_STRATEGIES = {"only-student", "union", "xor"}
+STUDENT_ON_TEACHER_STRATEGIES = {"only-teacher", "union", "xor"}
+
 
 def _get_opd_top_k(args: Namespace) -> int:
     return max(0, int(getattr(args, "opd_log_prob_top_k", 0) or 0))
@@ -205,23 +210,26 @@ def _compute_topk_reverse_kl(
     strategy = _get_top_k_strategy(args)
     weight_mode = _get_reward_weight_mode(args)
 
-    student_top = _student_top_logprobs(sample, response_length)
-    student_top_maps = [_top_entries_to_map(entries) for entries in student_top]
+    student_top_maps = (
+        [_top_entries_to_map(entries) for entries in _student_top_logprobs(sample, response_length)]
+        if strategy in STUDENT_TOP_STRATEGIES
+        else [{} for _ in range(response_length)]
+    )
 
     teacher_response = reward_payload["teacher"]
     teacher_top_maps = (
         _input_logprob_maps(teacher_response, "input_top_logprobs", response_length)
-        if strategy != "only-student"
+        if strategy in TEACHER_TOP_STRATEGIES
         else [{} for _ in range(response_length)]
     )
     teacher_on_student_maps = (
         _input_logprob_maps(teacher_response, "input_token_ids_logprobs", response_length)
-        if strategy in {"only-student", "union", "xor"}
+        if strategy in TEACHER_ON_STUDENT_STRATEGIES
         else [{} for _ in range(response_length)]
     )
     student_on_teacher_maps = (
         _input_logprob_maps(reward_payload["student_on_teacher"], "input_token_ids_logprobs", response_length)
-        if strategy in {"only-teacher", "union", "xor"}
+        if strategy in STUDENT_ON_TEACHER_STRATEGIES
         else [{} for _ in range(response_length)]
     )
 
@@ -267,15 +275,21 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
         return await _post_json(args.rm_url, _score_payload(sample.tokens))
 
     strategy = _get_top_k_strategy(args)
-    student_top = _student_top_logprobs(sample, sample.response_length)
 
-    teacher_top_k = top_k if strategy != "only-student" else 0
-    teacher_token_ids = _unique_ids(student_top) if strategy in {"only-student", "union", "xor"} else None
-    teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k, token_ids=teacher_token_ids)
+    teacher_token_ids = None
+    if strategy in TEACHER_ON_STUDENT_STRATEGIES:
+        student_top = _student_top_logprobs(sample, sample.response_length)
+        teacher_token_ids = _unique_ids(student_top)
+
+    teacher_payload = _score_payload(
+        sample.tokens,
+        top_k=top_k if strategy in TEACHER_TOP_STRATEGIES else 0,
+        token_ids=teacher_token_ids,
+    )
     teacher_response = await _post_json(args.rm_url, teacher_payload)
 
     reward_payload = {"teacher": teacher_response}
-    if strategy in {"only-teacher", "union", "xor"}:
+    if strategy in STUDENT_ON_TEACHER_STRATEGIES:
         teacher_top = _trim_input_field(teacher_response["meta_info"], "input_top_logprobs", sample.response_length)
         student_token_ids = _unique_ids(teacher_top)
         reward_payload["student_on_teacher"] = await _post_json(
