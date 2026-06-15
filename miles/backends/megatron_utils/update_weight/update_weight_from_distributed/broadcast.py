@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
+from miles.utils.test_utils.hang_repro_hack import maybe_kill_at_update_weights
 
 from .mixin import DistBucketedWeightUpdateMixin
 
@@ -181,6 +182,7 @@ def update_weights_from_distributed(
     handles = []
     for _, param in converted_named_tensors:
         handles.append(dist.broadcast(param.data, 0, group=group, async_op=True))
+    maybe_kill_at_update_weights("mid_engine_broadcast")
     for handle in handles:
         handle.wait()
 

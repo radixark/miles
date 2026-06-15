@@ -196,12 +196,16 @@ def run_training(
 ) -> None:
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
-    hang_repro_kill = os.environ.get("MILES_FT_HACK_KILL_AT_UPDATE_WEIGHTS")
+    hang_repro_env = {
+        k: os.environ[k]
+        for k in ("MILES_FT_HACK_KILL_AT_UPDATE_WEIGHTS", "MILES_FT_HACK_KILL_PHASE")
+        if k in os.environ
+    }
     merged_env_vars = {
         **_DETERMINISTIC_ENV_VARS,
         **_TRAINER_FT_ENV_VARS,
         **_HANG_REPRO_ENV_VARS,
-        **({"MILES_FT_HACK_KILL_AT_UPDATE_WEIGHTS": hang_repro_kill} if hang_repro_kill else {}),
+        **hang_repro_env,
         # Run eager (no torch.compile). A cell respawned after a crash cold-recompiles its first
         # forward; under dynamic batch sizes that is a per-shape Inductor compile that is slow
         # (observed 124s..1510s, growing) and memory-heavy enough to OOM-kill the actor. That
