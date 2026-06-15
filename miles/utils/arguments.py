@@ -140,11 +140,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The qkv layout.",
             )
             parser.add_argument(
-                "--qwen-gdn-backend",
+                "--linear-attention-backend",
                 type=str,
                 choices=["fla", "flashqla"],
                 default="fla",
-                help="GDN implementation backend for Qwen linear-attention layers.",
+                help=(
+                    "Backend for Qwen GDN linear-attention layers. "
+                    "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
+                    "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                ),
             )
             parser.add_argument(
                 "--true-on-policy-mode",
