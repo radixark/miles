@@ -11,15 +11,6 @@ import tilelang
 import tilelang.language as T
 import torch
 
-# Hardware-aware UE8M0 selection: matches SGLang's DEEPGEMM_SCALE_UE8M0
-# (true only on Blackwell + JIT DeepGEMM enabled). Hopper (H100/H200) falls
-# back to fp32 scales, which is also DeepSeek's official default.
-try:
-    from miles.backends.megatron_utils.sglang import should_deepgemm_weight_requant_ue8m0
-except ImportError:
-    should_deepgemm_weight_requant_ue8m0 = None
-
-
 tilelang.set_log_level("WARNING")
 
 pass_configs = {
@@ -116,38 +107,18 @@ def act_quant_kernel(
     return act_quant_kernel_
 
 
-def _resolve_scale_dtype(scale_fmt: str | None, block_size: int) -> torch.dtype:
-    """Pick scale dtype consistent with the SGLang runtime:
-    - UE8M0 (``torch.float8_e8m0fnu``) on Blackwell when DeepGEMM JIT is on.
-    - FP32 elsewhere (Hopper, no DeepGEMM, sglang absent) — DeepSeek default.
-    Only matters when scales are rounded-to-pow2 (``scale_fmt`` set);
-    plain ``scale_fmt=None`` stays fp32 regardless of hardware.
-    """
-    if scale_fmt is None or should_deepgemm_weight_requant_ue8m0 is None:
-        return torch.float32
-    return (
-        torch.float8_e8m0fnu if should_deepgemm_weight_requant_ue8m0(weight_block_size=block_size) else torch.float32
-    )
-
-
 def act_quant(
     x: torch.Tensor,
     block_size: int = 128,
     scale_fmt: str | None = None,
-    scale_dtype: torch.dtype | None = None,
+    scale_dtype: torch.dtype = torch.float32,
     inplace: bool = False,
 ) -> torch.Tensor:
     """Block-wise FP8 quantization. inplace=True does fused quant+dequant back to BF16.
     When scale_fmt is set, scales are rounded to power-of-2 (MXFP).
-
-    ``scale_dtype=None`` (default) auto-selects fp32 vs ``float8_e8m0fnu`` based
-    on the SGLang runtime (Blackwell + DeepGEMM → UE8M0, otherwise fp32).
-    Pass an explicit dtype to override.
     """
     N = x.size(-1)
     assert N % block_size == 0
-    if scale_dtype is None:
-        scale_dtype = _resolve_scale_dtype(scale_fmt, block_size)
     tl_dtype = FE8M0 if scale_dtype == torch.float8_e8m0fnu else FP32
     z = x.contiguous()
     y = torch.empty_like(z) if inplace else torch.empty_like(z, dtype=torch.float8_e4m3fn)

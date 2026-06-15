@@ -2,9 +2,6 @@
 title: Core Concepts
 description: The four objects that make up every Miles job, and how data flows between them.
 ---
-
-# Core Concepts
-
 A Miles training job is a loop over four objects. Once you understand what each one
 *is* and how data flows between them, every flag in the system has an obvious home.
 
@@ -76,19 +73,19 @@ Use this map when reading any launch script:
 
 | Argument group | Concerns |
 |---|---|
-| [`MODEL_ARGS`](argument-groups.md#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
-| [`CKPT_ARGS`](argument-groups.md#ckpt-args) | Filesystem paths for the actor / reference / save directory |
-| [`ROLLOUT_ARGS`](argument-groups.md#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
-| [`EVAL_ARGS`](argument-groups.md#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
-| [`PERF_ARGS`](argument-groups.md#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
-| [`GRPO_ARGS`](argument-groups.md#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| [`OPTIMIZER_ARGS`](argument-groups.md#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
-| [`SGLANG_ARGS`](argument-groups.md#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`MODEL_ARGS`](/user-guide/argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`CKPT_ARGS`](/user-guide/argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`ROLLOUT_ARGS`](/user-guide/argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`EVAL_ARGS`](/user-guide/argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`PERF_ARGS`](/user-guide/argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`GRPO_ARGS`](/user-guide/argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`OPTIMIZER_ARGS`](/user-guide/argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`SGLANG_ARGS`](/user-guide/argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ## Next
 
-- [Training Backend](usage.md) — Megatron-LM, parallelism, checkpoints, and hooks.
-- [Argument Groups](argument-groups.md) — where each launch-script array belongs.
-- [Training Script Walkthrough](training-script-walkthrough.md) — the launch script
+- [Training Backend](/user-guide/usage) — Megatron-LM, parallelism, checkpoints, and hooks.
+- [Argument Groups](/user-guide/argument-groups) — where each launch-script array belongs.
+- [Training Script Walkthrough](/user-guide/training-script-walkthrough) — the launch script
   group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).
-- [CLI Reference](cli-reference.md) — every flag, grouped and fully catalogued.
+- [CLI Reference](/user-guide/cli-reference) — every flag, grouped and fully catalogd.
