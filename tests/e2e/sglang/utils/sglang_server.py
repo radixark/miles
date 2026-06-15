@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import IO
 
 import requests
+import torch
 
 from miles.utils.http_utils import find_available_port
 
@@ -72,6 +73,19 @@ def start_sglang_server(
         cmd.append("--enable-deterministic-inference")
     if extra_args:
         cmd.extend(extra_args)
+
+    # On ROCm, sglang's deterministic-inference attention-backend auto-select has no HIP branch:
+    # gfx9xx falls into the "Hopper and older" else-branch and defaults to fa3 (FlashAttention-3),
+    # which has no AMD/ROCm kernel and crashes the server at startup ("Can not import FA3 in
+    # sgl_kernel"). triton is the AMD-compatible backend in DETERMINISTIC_ATTENTION_BACKEND_CHOICES.
+    # Inject it only on ROCm, only under deterministic inference, and only when the caller hasn't
+    # already chosen a backend -- the CUDA codepath is left byte-identical.
+    if (
+        enable_deterministic_inference
+        and getattr(torch.version, "hip", None) is not None
+        and not any(a == "--attention-backend" or a.startswith("--attention-backend=") for a in cmd)
+    ):
+        cmd.extend(["--attention-backend", "triton"])
 
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
