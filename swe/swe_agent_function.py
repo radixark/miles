@@ -16,9 +16,14 @@ import os
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
 
-from miles.utils.http_utils import post
+from swe.agent_run_client import AgentRunAborted, AgentRunRetryPolicy, post_agent_run
 
 logger = logging.getLogger(__name__)
+
+_AGENT_RUN_CLIENT_KWARGS = {
+    "agent_run_max_attempts",
+    "agent_run_retry_backoff_sec",
+}
 
 
 async def run(
@@ -26,7 +31,7 @@ async def run(
     prompt: Any,
     request_kwargs: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
-    variant: str = "",
+    # variant: str = "",
     **kwargs,
 ) -> dict[str, Any] | None:
     """Run a single task instance via the Harbor agent server."""
@@ -43,7 +48,7 @@ async def run(
     )
 
     session_url = f"{base_url}/v1"
-    
+
     external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
     if external_host:
         parsed = urlparse(session_url)
@@ -55,7 +60,8 @@ async def run(
         "base_url": session_url,
         "model": f"openai/{model_name}",
         "sampling_params": request_kwargs,
-        "trials_subdir":variant,
+        **{k: v for k, v in (kwargs or {}).items() if k not in _AGENT_RUN_CLIENT_KWARGS},
+        # "environment_build_timeout_sec":
         # "trials_dir":
     }
 
@@ -74,17 +80,36 @@ async def run(
     if session_server_instance_id is not None:
         request["session_server_instance_id"] = session_server_instance_id
 
+    request_id = kwargs.get("session_id")
+    if not request_id:
+        logger.error("Missing session_id for Harbor request id")
+        return None
+
+    timeout_sec = kwargs.get("agent_timeout_sec", 3600)
+    retry_policy = AgentRunRetryPolicy(
+        max_attempts=int(kwargs.get("agent_run_max_attempts", 2)),
+        backoff_sec=float(kwargs.get("agent_run_retry_backoff_sec", 0.5)),
+    )
     try:
         response = await asyncio.wait_for(
-            post(f"{agent_server_url}/run", request),
-            timeout=3600,  # 1 hour max per trial
+            post_agent_run(
+                f"{agent_server_url}/run",
+                request,
+                request_id=request_id,
+                timeout_sec=timeout_sec,
+                retry_policy=retry_policy,
+            ),
+            timeout=timeout_sec,
         )
+    except AgentRunAborted:
+        logger.info("Agent server call aborted request_id=%s", request_id)
+        return None
     except asyncio.TimeoutError:
-        logger.error("Agent server call timed out after 3600s")
+        logger.error(f"Agent server call timed out after {timeout_sec}s")
         return None
     except asyncio.CancelledError:
-        logger.warning("Agent server call cancelled (sibling task failure?)")
-        return None
+        logger.warning("Agent server call cancelled request_id=%s", request_id)
+        raise
     except Exception as e:
         logger.error(f"Agent server call failed: {e}")
         return None

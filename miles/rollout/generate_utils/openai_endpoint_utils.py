@@ -91,6 +91,17 @@ class OpenAIEndpointTracer:
 
         return (records or []), metadata
 
+    async def close_session(self) -> bool:
+        try:
+            await asyncio.wait_for(
+                post(f"{self.base_url}/close", {}, max_retries=2, action="post"),
+                timeout=_SESSION_REQUEST_TIMEOUT,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to close session {self.session_id}: {e}")
+            return False
+        return True
+
 
 def compute_samples_from_openai_records(
     args: Namespace,

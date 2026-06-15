@@ -65,7 +65,7 @@ import numpy as np
 import pybase64
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_hub.agentic_tool_call import build_chat_request_kwargs
+from miles.rollout.generate_hub.agentic_tool_call import build_chat_request_kwargs, _cut_after_first_terminal_turn
 from miles.rollout.generate_utils.openai_endpoint_utils import (
     OpenAIEndpointTracer,
     compute_samples_from_openai_records,
@@ -177,10 +177,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
+    samples, terminal_turn_metadata = _cut_after_first_terminal_turn(samples, f"[session={tracer.session_id}]")
+
     if not input.args.generate_multi_samples:
         samples = merge_samples(samples, input.state.tokenizer)
+        samples.metadata.update(terminal_turn_metadata)
         samples.metadata.update(session_metadata)
     else:
+        for sample in samples:
+            sample.metadata.update(terminal_turn_metadata)
         samples[-1].metadata.update(session_metadata)
     return GenerateFnOutput(samples=samples)
     # ── End step 4 ─────────────────────────────────────────────────────

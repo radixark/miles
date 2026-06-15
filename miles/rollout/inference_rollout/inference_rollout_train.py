@@ -13,10 +13,19 @@ from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_roll
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.utils import dumper_utils
 from miles.utils.http_utils import get, post
-from miles.utils.misc import as_completed_async, load_function
+from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+
+
+def _consume_late_task_result(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("[rollout-abort] pending task finished after abort with error: %r", exc)
 
 
 async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[list[Sample]]:
@@ -24,25 +33,85 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
     assert not state.aborted
     state.aborted = True
+    logger.info(
+        "[rollout-abort] start rollout_id=%s pending_tasks=%d partial_rollout=%s",
+        rollout_id,
+        len(pendings),
+        args.partial_rollout,
+    )
+    timeout = float(getattr(args, "rollout_abort_timeout_sec", 30.0))
+
+    logger.info("[rollout-abort] running custom abort handlers")
+    try:
+        await asyncio.wait_for(state.run_abort_handlers(pendings), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("[rollout-abort] custom abort handlers timed out after %.1fs", timeout)
+    logger.info("[rollout-abort] custom abort handlers finished")
 
     urls = await get_worker_urls(args)
-    logger.info(f"Abort request for {urls}")
-    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
+    logger.info("[rollout-abort] sending sglang abort to %d workers: %s", len(urls), urls)
+    try:
+        sglang_results = await asyncio.wait_for(
+            asyncio.gather(
+                *[post(f"{url}/abort_request", {"abort_all": True}) for url in urls],
+                return_exceptions=True,
+            ),
+            timeout=timeout,
+        )
+        sglang_failures = [result for result in sglang_results if isinstance(result, BaseException)]
+        if sglang_failures:
+            logger.warning("[rollout-abort] sglang abort had %d failures: %r", len(sglang_failures), sglang_failures)
+    except asyncio.TimeoutError:
+        logger.warning("[rollout-abort] sglang abort timed out after %.1fs", timeout)
+    logger.info("[rollout-abort] sglang abort finished")
 
-    # make sure all the pending tasks are finished
     aborted_samples = []
-    async for group in as_completed_async(pendings):
-        if not args.partial_rollout:
-            continue
+    completed_groups = 0
+    pending_after_wait: set[asyncio.Task] = set()
 
-        # for partial rollout, collect the partial samples into the data buffer
-        for sample in group:
-            if sample.response and "start_rollout_id" not in sample.metadata:
-                sample.metadata["start_rollout_id"] = rollout_id
-        aborted_samples.append(group)
+    if pendings:
+        if not args.partial_rollout:
+            for task in pendings:
+                task.cancel()
+            done, pending_after_wait = await asyncio.wait(pendings, timeout=timeout)
+            for task in done:
+                _consume_late_task_result(task)
+        else:
+            done, pending_after_wait = await asyncio.wait(pendings, timeout=timeout)
+            for task in done:
+                try:
+                    group = task.result()
+                except asyncio.CancelledError:
+                    continue
+                except Exception as exc:
+                    logger.warning("[rollout-abort] partial pending task failed after abort: %r", exc)
+                    continue
+                completed_groups += 1
+                for sample in group:
+                    if sample.response and "start_rollout_id" not in sample.metadata:
+                        sample.metadata["start_rollout_id"] = rollout_id
+                aborted_samples.append(group)
+            for task in pending_after_wait:
+                task.cancel()
+
+        for task in pending_after_wait:
+            task.add_done_callback(_consume_late_task_result)
+        logger.info(
+            "[rollout-abort] bounded pending cleanup done=%d still_pending=%d timeout=%.1fs collect_partial=%s",
+            len(done),
+            len(pending_after_wait),
+            timeout,
+            args.partial_rollout,
+        )
 
     if args.partial_rollout:
         logger.info(f"Collected {sum(len(x) for x in aborted_samples)} partial samples into the data buffer")
+    logger.info(
+        "[rollout-abort] finish rollout_id=%s pending_completed=%d partial_groups_collected=%d",
+        rollout_id,
+        completed_groups,
+        len(aborted_samples),
+    )
 
     return aborted_samples
 

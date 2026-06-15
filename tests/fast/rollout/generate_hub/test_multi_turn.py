@@ -10,6 +10,13 @@ from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
 
+from miles.rollout.generate_hub.agentic_tool_call import (
+    AGENTIC_INTERMEDIATE_TRUNCATED_KEY,
+    AGENTIC_TERMINAL_TURN_DROPPED_COUNT_KEY,
+    AGENTIC_TERMINAL_TURN_INDEX_KEY,
+    AGENTIC_TERMINAL_TURN_STATUS_KEY,
+    _cut_after_first_terminal_turn,
+)
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
@@ -718,6 +725,34 @@ class TestAgentMetadata:
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
             assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
+
+
+class TestAgenticTerminalTurnHandling:
+    def test_cut_after_intermediate_truncated_turn(self):
+        samples = [
+            Sample(status=Sample.Status.COMPLETED, response="turn-0", response_length=1),
+            Sample(status=Sample.Status.TRUNCATED, response="turn-1", response_length=1),
+            Sample(status=Sample.Status.COMPLETED, response="turn-2", response_length=1),
+        ]
+
+        clipped, metadata = _cut_after_first_terminal_turn(samples, "[session=test]")
+
+        assert clipped == samples[:2]
+        assert metadata[AGENTIC_TERMINAL_TURN_STATUS_KEY] == str(Sample.Status.TRUNCATED)
+        assert metadata[AGENTIC_TERMINAL_TURN_INDEX_KEY] == 1
+        assert metadata[AGENTIC_TERMINAL_TURN_DROPPED_COUNT_KEY] == 1
+        assert metadata[AGENTIC_INTERMEDIATE_TRUNCATED_KEY] is True
+
+    def test_final_truncated_turn_is_not_cut(self):
+        samples = [
+            Sample(status=Sample.Status.COMPLETED, response="turn-0", response_length=1),
+            Sample(status=Sample.Status.TRUNCATED, response="turn-1", response_length=1),
+        ]
+
+        clipped, metadata = _cut_after_first_terminal_turn(samples, "[session=test]")
+
+        assert clipped == samples
+        assert metadata == {}
 
 
 class TestAgentNoRecords:

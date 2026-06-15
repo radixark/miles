@@ -5,19 +5,22 @@ The generate function is provided by:
     miles.rollout.generate_hub.agentic_tool_call.generate
 with --custom-agent-function-path pointing to swe_agent_function.run
 
-Task-type agnostic — reward is pre-computed by the Harbor environment
-and stored in sample.metadata["reward"] regardless of task type.
+Task-type agnostic — verifier reward is pre-computed by the Harbor
+environment and stored in sample.metadata["reward"] regardless of task type.
+For SWE agent training, the verifier reward is only used when the agent
+actually submitted a solution.
 
 Dynamic filter uses the general-purpose ``check_no_aborted`` from
 ``miles.rollout.filter_hub.dynamic_sampling_filters``.
 
 Components:
-  - reward_func: reads pre-computed reward from sample metadata
+  - reward_func: gates verifier reward by agent exit status
   - aggregate_agent_metrics: aggregates agent timing/count metrics
   - RolloutFn: InferenceRolloutFn subclass that logs agent metrics
 """
 
 import logging
+from collections import Counter
 
 from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
@@ -29,15 +32,66 @@ logger = logging.getLogger(__name__)
 # -- Reward --
 
 
+_REWARD_ELIGIBLE_EXIT_STATUSES = {"submitted"}
+
+
+def _metadata_reward(sample: Sample) -> float:
+    metadata = sample.metadata or {}
+    reward = float(metadata.get("reward", 0.0) or 0.0)
+    exit_status = str(metadata.get("exit_status", "")).lower()
+    if exit_status not in _REWARD_ELIGIBLE_EXIT_STATUSES:
+        return 0.0
+    return reward
+
+
+def _reward_inputs(sample: Sample) -> tuple[float, str, float]:
+    metadata = sample.metadata or {}
+    verifier_reward = float(metadata.get("reward", 0.0) or 0.0)
+    exit_status = str(metadata.get("exit_status", ""))
+    train_reward = _metadata_reward(sample)
+    return verifier_reward, exit_status, train_reward
+
+
+def _log_reward_summary(samples: list[Sample], train_rewards: list[float]) -> None:
+    exit_statuses = [str((s.metadata or {}).get("exit_status", "")) for s in samples]
+    verifier_rewards = [float((s.metadata or {}).get("reward", 0.0) or 0.0) for s in samples]
+    gated_positive = sum(1 for verifier, train in zip(verifier_rewards, train_rewards, strict=True) if verifier > 0 and train == 0)
+    logger.info(
+        "[reward-gate] batch_size=%d exit_status_counts=%s verifier_reward_counts=%s "
+        "train_reward_counts=%s gated_positive=%d",
+        len(samples),
+        dict(Counter(exit_statuses)),
+        dict(Counter(verifier_rewards)),
+        dict(Counter(train_rewards)),
+        gated_positive,
+    )
+
+
 async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float | list[float]:
-    """Reward is pre-computed by the agent environment during generate().
+    """Return verifier reward only for agent runs that submitted a solution.
+
+    ``metadata["reward"]`` means the verifier passed. ``metadata["exit_status"]``
+    tells whether the agent produced an actual submission. We only encourage
+    submitted solutions here; statuses such as LimitsExceeded, Timeout, or
+    Exception receive zero reward even if the verifier-side signal is positive.
 
     Handles both single-sample calls (from ``async_rm``) and batched calls
     (from ``batched_async_rm`` when ``--custom-rm-path`` is set).
     """
     if isinstance(samples, list):
-        return [s.metadata.get("reward", 0.0) for s in samples]
-    return samples.metadata.get("reward", 0.0)
+        rewards = [_metadata_reward(s) for s in samples]
+        _log_reward_summary(samples, rewards)
+        return rewards
+
+    verifier_reward, exit_status, train_reward = _reward_inputs(samples)
+    if verifier_reward != train_reward:
+        logger.info(
+            "[reward-gate] single verifier_reward=%s exit_status=%r train_reward=%s",
+            verifier_reward,
+            exit_status,
+            train_reward,
+        )
+    return train_reward
 
 
 # -- Agent Metrics Aggregation --

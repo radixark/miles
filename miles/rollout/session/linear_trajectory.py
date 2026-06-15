@@ -89,7 +89,7 @@ class LinearTrajectory:
             raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
 
         return tito_tokenizer.merge_tokens(
-            old_messages=self.messages,
+            old_messages=self.messages, # rollback
             new_messages=request_messages,
             pretokenized_token_ids=self.token_ids,
             tools=tools,
@@ -161,6 +161,13 @@ class LinearTrajectory:
         Example — agent retries after the first tool call::
 
             stored:  [sys, user, assistant₁, tool₁, assistant₂]
+                      ───────────────────── ▲
+                      checkpoint 0 (assistant₁)   checkpoint 1 (assistant₂)
+
+            request: [sys, user, assistant₁, tool₁_different, ...]
+                                             ↑ diverges here (index 3)
+
+            stored:  [sys, user, assistant₁, tool₁, assistant₂]->[sys, user, assistant₁, tool₁, tool_call_error]->[sys, user, assistant₁]->
                       ───────────────────── ▲
                       checkpoint 0 (assistant₁)   checkpoint 1 (assistant₂)
 

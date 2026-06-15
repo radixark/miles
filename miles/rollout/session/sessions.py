@@ -97,8 +97,6 @@ def setup_session_routes(app, backend, args):
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: str):
         session = registry.get_session(session_id)
-        if session.closing:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
         session.closing = True
         logger.debug(
             f"[session-server] DELETE waiting for lock: session={session_id} lock_locked={session.lock.locked()}"
@@ -110,6 +108,25 @@ def setup_session_routes(app, backend, args):
         finally:
             session.lock.release()
         return Response(status_code=204)
+
+    @app.post("/sessions/{session_id}/close")
+    async def close_session(session_id: str):
+        """Seal a session without deleting records.
+
+        Closing is used by rollout abort: future model calls for this session
+        must stop before reaching SGLang, while GET/DELETE still work so Miles
+        can collect whatever records were already completed.
+        """
+        session = registry.get_session(session_id)
+        already_closing = session.closing
+        session.closing = True
+        logger.info(
+            "[session-server] closed session=%s already_closing=%s records=%d",
+            session_id,
+            already_closing,
+            len(session.records),
+        )
+        return {"session_id": session_id, "closed": True, "already_closing": already_closing}
 
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):
@@ -172,6 +189,10 @@ def setup_session_routes(app, backend, args):
 
             # --- Phase 2: proxy to SGLang (NO lock held) ---
             result = await backend.do_proxy(request, "v1/chat/completions", body=body)
+            # import random
+            # if random.random() < 0.1:
+            #     logger.info(f"SGLang request body: {json.dumps(request_body, indent=2)}")
+            #     logger.info(f"SGLang response: {json.dumps(result, indent=2)}")
 
             # If SGLang returned a non-200 error (e.g. 400 for context too long),
             # pass it through to the agent without recording — the agent can retry
