@@ -14,7 +14,7 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
         rollout_log_probs=[-9.0, -9.0, -9.0],
         status=Sample.Status.COMPLETED,
     )
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False, rollout_temperature=0.7)
     seen = {}
 
     async def fake_post(url, payload, headers=None):
@@ -50,7 +50,24 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
     assert seen["payload"]["return_logprob"] is True
     assert seen["payload"]["logprob_start_len"] == 2
     assert seen["payload"]["sampling_params"]["max_new_tokens"] == 0
-    assert seen["payload"]["sampling_params"]["temperature"] == 0
+    # Recompute must score at the rollout temperature (not a hardcoded 0) so the
+    # log-probs match the decode-path / training-side log-probs it is compared against.
+    assert seen["payload"]["sampling_params"]["temperature"] == 0.7
+
+
+def test_prefill_scoring_payload_uses_rollout_temperature():
+    sample = Sample(tokens=[10, 11, 20, 21], response_length=2, status=Sample.Status.COMPLETED)
+
+    # explicit rollout temperature flows into the scoring request
+    args = SimpleNamespace(sglang_enable_lora=False, rollout_temperature=1.3)
+    payload = prefill_logprobs._build_prefill_scoring_payload(args, sample, {"max_new_tokens": 64})
+    assert payload["sampling_params"]["temperature"] == 1.3
+    assert payload["sampling_params"]["max_new_tokens"] == 0
+
+    # missing rollout_temperature falls back to 1.0 (raw log-probs; pre-fix behavior at T=1)
+    args_no_temp = SimpleNamespace(sglang_enable_lora=False)
+    payload_default = prefill_logprobs._build_prefill_scoring_payload(args_no_temp, sample, {})
+    assert payload_default["sampling_params"]["temperature"] == 1.0
 
 
 @pytest.mark.asyncio

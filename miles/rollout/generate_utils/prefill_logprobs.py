@@ -27,7 +27,10 @@ def _build_prefill_scoring_payload(
         "sampling_params": {
             **dict(sampling_params),
             "max_new_tokens": 0,
-            "temperature": 0,
+            # Score at rollout_temperature, not 0: SGLang scales input_token_logprobs by
+            # the sampling temperature, so this matches the decode-path rollout log-probs
+            # and the training side (get_responses also scales by rollout_temperature).
+            "temperature": getattr(args, "rollout_temperature", 1.0),
             "skip_special_tokens": False,
         },
         "return_logprob": True,
