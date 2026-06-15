@@ -89,7 +89,7 @@ The only automated builder of `radixark/miles`. Two jobs:
 
 Use `docker-build.yml`'s manual `workflow_dispatch` (Actions → Run workflow): it builds `docker/Dockerfile` via `build.py` and pushes under the tag you pick (`dev` / `latest` / `custom`).
 
-To pin specific repo versions, `docker/Dockerfile` already takes `MEGATRON_BRANCH` / `SGLANG_COMMIT` / `MILES_COMMIT` build-args. `build.py` does not yet forward arbitrary build-args, so commit-pinning from the workflow needs a small `build.py` change first.
+To pin specific repo versions, `docker/Dockerfile` already takes `MEGATRON_BRANCH` / `SGLANG_COMMIT` / `MILES_COMMIT` build-args. `build.py` does not yet forward arbitrary build-args and the `workflow_dispatch` exposes no input for them, so commit-pinning from the workflow needs two changes first: a passthrough in `build.py` and matching inputs in `docker-build.yml`.
 
 ## Image retention (open)
 
