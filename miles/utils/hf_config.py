@@ -35,6 +35,7 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         base_module="transformers.models.deepseek_v3.configuration_deepseek_v3",
         base_class="DeepseekV3Config",
         compat_class_name="DeepseekV32Config",
+        override_hf_native=True,
     ),
     _HFConfigAlias(
         model_type="deepseek_v4",
