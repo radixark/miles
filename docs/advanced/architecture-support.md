@@ -2,9 +2,6 @@
 title: Backends Beyond Megatron
 description: Embed HuggingFace implementations as black-box modules inside Megatron's parallel pipeline.
 ---
-
-# Backends Beyond Megatron
-
 Adding a new architecture (such as Qwen3-Next's Gated-Delta-Net) directly to
 Megatron-LM's native code path is invasive. Miles takes a different approach:
 wrap the model's official HuggingFace implementation as a black-box module and
@@ -33,7 +30,6 @@ starts from `get_gpt_decoder_block_spec`, then for the layers whose HF
 params={"args": args})` (referenced from `miles_plugins/models/`):
 
 ```python
-# miles_plugins/models/qwen3_next.py (simplified excerpt)
 transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
 ...
 for layer_id in range(num_layers_to_build):
@@ -122,10 +118,8 @@ of the model is bf16. Qwen3.5's `A_log` is the canonical example. Rounding it
 to bf16 makes Megatron-side activations diverge from SGLang-side rollout,
 causing precision drift.
 
-The canonical cast point is Megatron's `Float16Module`, which (per the
-docstring on `enforce_marked_param_dtypes` in
-`miles/backends/megatron_utils/fp32_param_utils.py`) "unconditionally casts
-every floating-point parameter to bf16/fp16 at wrap time". The mbridge
+The canonical cast point is Megatron's `Float16Module`, which casts
+every floating-point parameter to bf16/fp16 at wrap time. The mbridge
 weight-conversion path (`_weight_to_mcore_format` and friends) is the
 other place fp32 weights can be silently downcast. Two steps are required
 to keep tagged params in fp32.
