@@ -4,7 +4,7 @@ from argparse import Namespace
 import pytest
 from tests.ci.ci_register import register_cpu_ci
 
-from miles.rollout.on_policy_distillation import _compute_topk_reverse_kl
+from miles.rollout.on_policy_distillation import _compute_topk_reverse_kl, _score_payload
 from miles.utils.types import Sample
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu")
@@ -100,3 +100,10 @@ def test_topk_xor_uses_symmetric_difference_without_normalization():
     expected_1 = math.log(0.3 / 0.6) + math.log(0.1 / 0.2)
 
     assert reverse_kl.tolist() == pytest.approx([expected_0, expected_1])
+
+
+def test_score_payload_uses_rollout_temperature():
+    payload = _score_payload([10, 11, 12], temperature=0.7)
+
+    assert payload["sampling_params"]["temperature"] == 0.7
+    assert payload["sampling_params"]["max_new_tokens"] == 0

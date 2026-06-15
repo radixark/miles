@@ -27,7 +27,7 @@ def _build_prefill_scoring_payload(
         "sampling_params": {
             **dict(sampling_params),
             "max_new_tokens": 0,
-            "temperature": 0,
+            "temperature": args.rollout_temperature,
             "skip_special_tokens": False,
         },
         "return_logprob": True,
