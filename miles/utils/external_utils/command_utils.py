@@ -134,8 +134,23 @@ def execute_train(
     )
 
     if not external_ray:
+        try:
+            import torch
+
+            _is_rocm = torch.version.hip is not None
+        except Exception:
+            _is_rocm = False
+        # On ROCm, Ray blanks HIP_VISIBLE_DEVICES="" for processes it schedules with num_gpus=0
+        # (the driver / coordinator actors, e.g. RolloutManager). Megatron validate_args probes the
+        # device via torch.cuda on such a process, so it crashes with "No HIP GPUs are available" --
+        # this is what fails every convert_checkpoint->train test on AMD, while the actual num_gpus=1
+        # train actors and the num_gpus=0.2 rollout engines (which self-manage visibility) are fine.
+        # Opt out of the blanking so the coordinator keeps GPU visibility. Emitted on ROCm only so the
+        # CUDA path stays byte-identical.
+        rocm_ray_accel = "export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0 && " if _is_rocm else ""
         exec_command(
             # will prevent ray from buffering stdout/stderr
+            f"{rocm_ray_accel}"
             f"export PYTHONBUFFERED=16 && "
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
