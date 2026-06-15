@@ -103,7 +103,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    fp8_training: bool | None = None
+    # Megatron-side training precision: blockwise FP8 128x128 GEMMs when True
+    # (Hopper: fp32 scales; Blackwell: pow2 scales, MXFP8-emulated), BF16 when False.
+    # Rollout always serves the source FP8 checkpoint either way.
+    fp8_training: bool = True
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -151,12 +154,6 @@ def _is_blackwell(args: ScriptArgs) -> bool:
         raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
     major, _minor = torch.cuda.get_device_capability()
     return major >= 10
-
-
-def _resolve_precision_defaults(args: ScriptArgs):
-    if args.fp8_training is None:
-        args.fp8_training = not _is_blackwell(args)
-        print(f"[precision] fp8_training auto -> {args.fp8_training}")
 
 
 def _download_dataset(args: ScriptArgs):
@@ -365,7 +362,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
-    _resolve_precision_defaults(args)
+    print(f"[precision] fp8_training={args.fp8_training}")
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -565,9 +562,9 @@ def _train(args: ScriptArgs):
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        extra_env_vars |= {
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        }
+        # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
+        fp32_scales = "0" if _is_blackwell(args) else "1"
+        misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
 
     train_args = (
         f"{ckpt_args} "
