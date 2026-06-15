@@ -10,6 +10,7 @@ from typing import Any
 from miles.utils.clock import Clock, RealClock
 from miles.utils.control_server.models import TriState
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
@@ -114,24 +115,24 @@ class SimpleHealthChecker(BaseHealthChecker):
     async def start(self) -> None:
         if self._task is not None:
             return
-        logger.info(f"[{self._name}] Starting health checker (config={self._config})")
+        log_structured(logger.info, op="health", phase="start", name=self._name)
         self._task = asyncio.create_task(self._loop())
         await asyncio.sleep(0)
 
     def stop(self) -> None:
         if self._task is not None:
-            logger.info(f"[{self._name}] Stopping health checker")
+            log_structured(logger.info, op="health", phase="stop", name=self._name)
             self._task.cancel()
             self._task = None
         self._status = TriState.UNKNOWN
 
     def pause(self) -> None:
-        logger.info(f"[{self._name}] Pausing health checker")
+        log_structured(logger.info, op="health", phase="pause", name=self._name)
         self._paused = True
         self._status = TriState.UNKNOWN
 
     def resume(self) -> None:
-        logger.info(f"[{self._name}] Resuming health checker")
+        log_structured(logger.info, op="health", phase="resume", name=self._name)
         self._paused = False
         self._need_first_wait = True
         self._status = TriState.UNKNOWN
@@ -141,7 +142,7 @@ class SimpleHealthChecker(BaseHealthChecker):
         while True:
             if self._need_first_wait:
                 self._need_first_wait = False
-                logger.info(f"[{self._name}] Waiting {self._config.first_wait}s before first check")
+                log_structured(logger.info, op="health", phase="first_wait", name=self._name, wait_s=self._config.first_wait)
                 await self._clock.sleep(self._config.first_wait)
 
             if not self._paused:
@@ -150,7 +151,7 @@ class SimpleHealthChecker(BaseHealthChecker):
                     await asyncio.wait_for(self._check_fn(), timeout=self._config.timeout)
                     success = True
                 except Exception:
-                    logger.error(f"[{self._name}] Health check failed", exc_info=True)
+                    log_structured(logger.error, op="health", phase="check_failed", name=self._name, exc_info=True)
 
                 prev_status = self._status
                 if success:
@@ -161,15 +162,25 @@ class SimpleHealthChecker(BaseHealthChecker):
                     if self._consecutive_failures >= self._config.failure_threshold:
                         self._status = TriState.FALSE
 
-                logger.info(
-                    f"FT/health {self._name} poll ok={success} status={self._status.value} "
-                    f"consecutive_failures={self._consecutive_failures}"
+                log_structured(
+                    logger.info,
+                    op="health",
+                    phase="poll",
+                    name=self._name,
+                    ok=success,
+                    status=self._status.value,
+                    consecutive_failures=self._consecutive_failures,
                 )
 
                 if prev_status != self._status:
-                    logger.info(
-                        f"[{self._name}] Status changed: {prev_status.value} -> {self._status.value} "
-                        f"(consecutive_failures={self._consecutive_failures})"
+                    log_structured(
+                        logger.info,
+                        op="health",
+                        phase="status_change",
+                        name=self._name,
+                        from_status=prev_status.value,
+                        to_status=self._status.value,
+                        consecutive_failures=self._consecutive_failures,
                     )
 
                 if self._on_result is not None:

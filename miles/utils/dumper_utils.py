@@ -15,6 +15,7 @@ import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
@@ -278,27 +279,41 @@ def _barrier_after_dump_dir_cleanup() -> None:
 
     indep_dp = get_parallel_state().indep_dp
     if indep_dp.group is not None:
-        logger.info(
-            "FT/xcell start kind=dump_barrier cell_rank=%d members=%d quorum=%s",
-            indep_dp.rank,
-            indep_dp.size,
-            indep_dp.quorum_id,
+        log_structured(
+            logger.info,
+            op="xcell",
+            phase="start",
+            kind="dump_barrier",
+            cell_rank=indep_dp.rank,
+            members=indep_dp.size,
+            quorum=indep_dp.quorum_id,
         )
         try:
             indep_dp.group.barrier()
-            logger.info(
-                "FT/xcell end kind=dump_barrier cell_rank=%d members=%d quorum=%s success=True",
-                indep_dp.rank,
-                indep_dp.size,
-                indep_dp.quorum_id,
+            log_structured(
+                logger.info,
+                op="xcell",
+                phase="end",
+                kind="dump_barrier",
+                cell_rank=indep_dp.rank,
+                members=indep_dp.size,
+                quorum=indep_dp.quorum_id,
+                success=True,
             )
         except Exception:
             # A dead peer aborts the cross-cell PG and releases this barrier with an
             # error. Proceed: the peer cannot dump anyway, and the gradient allreduce
             # later in the step turns the abort into DISCARDED_SHOULD_RETRY.
-            logger.error(
-                "FT/xcell end kind=dump_barrier success=False; "
-                "cross-cell barrier after dump dir cleanup raised; continuing degraded",
+            log_structured(
+                logger.error,
+                op="xcell",
+                phase="end",
+                kind="dump_barrier",
+                cell_rank=indep_dp.rank,
+                members=indep_dp.size,
+                quorum=indep_dp.quorum_id,
+                success=False,
+                degraded=True,
                 exc_info=True,
             )
 

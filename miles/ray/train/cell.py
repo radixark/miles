@@ -18,6 +18,7 @@ from miles.ray.train.cell_state import (
 from miles.utils.control_server.models import CellStatus
 from miles.utils.health_checker import BaseHealthChecker
 from miles.utils.indep_dp import IndepDPInfo
+from miles.utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ class RayTrainCell:
 
     def stop(self) -> None:
         if self.is_stopped:
-            logger.info(f"stop: cell {self.cell_index} already stopped, skipping")
+            log_structured(logger.info, op="state", name="stop", cell=self.cell_index, skipped=True, reason="already_stopped")
             return
 
         if self.is_allocated:
@@ -130,14 +131,14 @@ class RayTrainCell:
         handles = self._get_actor_handles() if self.is_allocated else []
         self.stop()
 
-        logger.info(f"FT/confirm_dead start cell={self.cell_index} n_actors={len(handles)}")
+        log_structured(logger.info, op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles))
         start = time.monotonic()
         await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
-        logger.info(f"FT/confirm_dead end cell={self.cell_index} elapsed={time.monotonic() - start:.1f}s")
+        log_structured(logger.info, op="confirm_dead", phase="end", cell=self.cell_index, elapsed_s=round(time.monotonic() - start, 1))
 
     def mark_as_pending(self) -> None:
         if self.is_pending or self.is_allocated:
-            logger.info(f"mark_as_pending: cell {self.cell_index} already {type(self._state).__name__}, skipping")
+            log_structured(logger.info, op="state", name="mark_as_pending", cell=self.cell_index, skipped=True, current=type(self._state).__name__)
             return
 
         self._change_state("mark_as_pending", StateStopped, StatePending())
@@ -184,10 +185,10 @@ class RayTrainCell:
         old_state_cls: type[CellState] | tuple[type[CellState], ...],
         new_state: CellState,
     ) -> None:
-        logger.info(f"{debug_name} start {self.cell_index=} old={self._state}")
+        log_structured(logger.info, op="state", phase="start", name=debug_name, cell=self.cell_index, from_state=type(self._state).__name__)
         assert isinstance(self._state, old_state_cls), f"{self.cell_index=} {self._state=}"
         self._state = new_state
-        logger.info(f"{debug_name} end {self.cell_index=} new={self._state}")
+        log_structured(logger.info, op="state", phase="end", name=debug_name, cell=self.cell_index, to_state=type(self._state).__name__)
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
@@ -207,7 +208,7 @@ class RayTrainCell:
         mark_errored_on_failure: bool = True,
     ) -> list:
         handles = self._get_actor_handles()
-        logger.info(f"FT/execute start cell={self.cell_index} fn={fn_name} n_actors={len(handles)}")
+        log_structured(logger.info, op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles))
         start = time.monotonic()
         try:
             result = await asyncio.gather(
@@ -216,14 +217,24 @@ class RayTrainCell:
                     for i, actor in enumerate(handles)
                 ]
             )
-            logger.info(
-                f"FT/execute end cell={self.cell_index} fn={fn_name} ok elapsed={time.monotonic() - start:.1f}s"
+            log_structured(
+                logger.info,
+                op="execute",
+                phase="end",
+                cell=self.cell_index,
+                fn=fn_name,
+                ok=True,
+                elapsed_s=round(time.monotonic() - start, 1),
             )
             return result
         except Exception:
-            logger.error(
-                f"Cell {self.cell_index} failed in {fn_name} "
-                f"(FT/execute fail elapsed={time.monotonic() - start:.1f}s)",
+            log_structured(
+                logger.error,
+                op="execute",
+                phase="fail",
+                cell=self.cell_index,
+                fn=fn_name,
+                elapsed_s=round(time.monotonic() - start, 1),
                 exc_info=True,
             )
             if mark_errored_on_failure:

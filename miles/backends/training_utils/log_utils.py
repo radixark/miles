@@ -11,6 +11,7 @@ from miles.utils import train_metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
 from miles.utils.process_group_utils import MultiPGUtil
+from miles.utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils
@@ -43,18 +44,22 @@ def gather_log_data(
     # which would propagate up and mark THIS healthy cell as errored — same
     # cascade pattern as the rmtree-on-NFS case. Logging is convenience; do
     # not let a failed gather take down the cell.
-    logger.info("FT/xcell start kind=log_gather rank=%d", pg.rank)
+    log_structured(logger.info, op="xcell", phase="start", kind="log_gather", rank=pg.rank)
     try:
         gathered_log_dict = MultiPGUtil.gather_object(
             obj=log_dict,
             groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
         )
-        logger.info("FT/xcell end kind=log_gather rank=%d success=True", pg.rank)
+        log_structured(logger.info, op="xcell", phase="end", kind="log_gather", rank=pg.rank, success=True)
     except RuntimeError:
-        logger.warning(
-            "FT/xcell end kind=log_gather rank=%d success=False; "
-            "gather_log_data failed (peer cell likely dead); skipping log this step",
-            pg.rank,
+        log_structured(
+            logger.warning,
+            op="xcell",
+            phase="end",
+            kind="log_gather",
+            rank=pg.rank,
+            success=False,
+            degraded=True,
             exc_info=True,
         )
         return None

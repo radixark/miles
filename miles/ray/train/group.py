@@ -26,6 +26,7 @@ from miles.utils.health_checker import NoopHealthChecker, SimpleHealthCheckerCon
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
+from miles.utils.structured_log import log_structured
 from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
 from miles.utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 
@@ -141,7 +142,7 @@ class RayTrainGroup:
                 sample_indices=rollout_data_pack["sample_indices"],
             )
 
-            logger.info(f"FT/train start rollout={rollout_id} attempt={attempt}")
+            log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
             await self._refresh_cells(rollout_id=rollout_id)
             snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
                 "train",
@@ -205,21 +206,24 @@ class RayTrainGroup:
 
         non_error_results = [r for r in results if not isinstance(r, BaseException)]
         if not non_error_results:
-            logger.error(
-                f"FT/check errored={errored} discarded={discarded} normal={normal} -> retry (all alive cells failed)"
+            log_structured(
+                logger.error, op="check", errored=errored, discarded=discarded, normal=normal,
+                decision="retry", reason="all alive cells failed",
             )
             raise RuntimeError("All cells failed in this training attempt")
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others
         if discarded:
-            logger.warning(
-                f"FT/check errored={errored} discarded={discarded} normal={normal} -> retry (DISCARDED_SHOULD_RETRY)"
+            log_structured(
+                logger.warning, op="check", errored=errored, discarded=discarded, normal=normal,
+                decision="retry", reason="discarded_should_retry",
             )
             raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
 
-        logger.info(
-            f"FT/check errored={errored} discarded={discarded} normal={normal} -> no_retry (survivors NORMAL, gradients valid)"
+        log_structured(
+            logger.info, op="check", errored=errored, discarded=discarded, normal=normal,
+            decision="no_retry", reason="survivors normal, gradients valid",
         )
 
     # ------------------------ API :: others ------------------------
@@ -249,7 +253,7 @@ class RayTrainGroup:
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
-        logger.info(f"FT/update_weights start rollout={rollout_id}")
+        log_structured(logger.info, op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
@@ -338,9 +342,15 @@ class RayTrainGroup:
         snapshotted_alive_indices = [c.cell_index for c in self._cells if c.is_alive]
         snapshotted_errored_indices = [c.cell_index for c in self._cells if c.is_errored]
         will_alive_indices = sorted(list(set(snapshotted_pending_indices + snapshotted_alive_indices)))
-        logger.info(
-            f"FT/refresh start rollout={rollout_id} alive={snapshotted_alive_indices} "
-            f"pending={snapshotted_pending_indices} errored={snapshotted_errored_indices} quorum={self._indep_dp_quorum_id}"
+        log_structured(
+            logger.info,
+            op="refresh",
+            phase="start",
+            rollout=rollout_id,
+            alive=snapshotted_alive_indices,
+            pending=snapshotted_pending_indices,
+            errored=snapshotted_errored_indices,
+            quorum=self._indep_dp_quorum_id,
         )
         assert len(snapshotted_alive_indices) > 0, "Cannot recover when all cells are dead"
 
@@ -353,9 +363,14 @@ class RayTrainGroup:
         exists_pending_cell = len(snapshotted_pending_indices) != 0
         needs_reconfigure = exists_pending_cell or exists_alive_cell_changed_config
         if not needs_reconfigure:
-            logger.info(
-                f"FT/refresh decision rollout={rollout_id} needs_reconfigure=False "
-                f"(alive config unchanged, no pending; quorum stays {self._indep_dp_quorum_id})"
+            log_structured(
+                logger.info,
+                op="refresh",
+                phase="decision",
+                rollout=rollout_id,
+                needs_reconfigure=False,
+                reason="alive_config_unchanged,no_pending",
+                quorum=self._indep_dp_quorum_id,
             )
             return
         reason = "+".join(
@@ -366,9 +381,16 @@ class RayTrainGroup:
             ]
             if on
         )
-        logger.info(
-            f"FT/refresh decision rollout={rollout_id} needs_reconfigure=True reason={reason} "
-            f"will_alive={will_alive_indices} quorum {self._indep_dp_quorum_id}->{self._indep_dp_quorum_id + 1}"
+        log_structured(
+            logger.info,
+            op="refresh",
+            phase="decision",
+            rollout=rollout_id,
+            needs_reconfigure=True,
+            reason=reason,
+            will_alive=will_alive_indices,
+            quorum_from=self._indep_dp_quorum_id,
+            quorum_to=self._indep_dp_quorum_id + 1,
         )
 
         # Step 1: Kill any errored cells and confirm their processes are gone
@@ -417,9 +439,15 @@ class RayTrainGroup:
 
         if not AsyncioGatherUtils.has_error(coop_prepare_outputs):
             assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
-            logger.info(
-                f"FT/refresh end rollout={rollout_id} quorum={self._indep_dp_quorum_id} "
-                f"alive={will_alive_indices} healed={snapshotted_pending_indices} reconfigured=True"
+            log_structured(
+                logger.info,
+                op="refresh",
+                phase="end",
+                rollout=rollout_id,
+                quorum=self._indep_dp_quorum_id,
+                alive=will_alive_indices,
+                healed=snapshotted_pending_indices,
+                reconfigured=True,
             )
             self._log_reconfigure_event(
                 rollout_id=rollout_id,
@@ -428,9 +456,14 @@ class RayTrainGroup:
                 alive_cell_indices_after=will_alive_indices,
             )
         else:
-            logger.error(
-                f"FT/refresh end rollout={rollout_id} reconfigure FAILED during cooperative prepare "
-                f"(quorum={self._indep_dp_quorum_id}); cells that raised are auto-marked errored"
+            log_structured(
+                logger.error,
+                op="refresh",
+                phase="end",
+                rollout=rollout_id,
+                reconfigured=False,
+                quorum=self._indep_dp_quorum_id,
+                reason="cooperative_prepare_raised",
             )
 
     def _log_reconfigure_event(
@@ -458,7 +491,7 @@ class RayTrainGroup:
         if not errored_cells:
             return
 
-        logger.info(f"Killing errored cells before reconfigure: {[c.cell_index for c in errored_cells]}")
+        log_structured(logger.info, op="kill_errored", cells=[c.cell_index for c in errored_cells])
         await asyncio.gather(*[c.stop_and_confirm_dead() for c in errored_cells])
 
     def _compute_indep_dp_info(self, cell_index: int, alive_cell_indices: list[int]) -> IndepDPInfo:

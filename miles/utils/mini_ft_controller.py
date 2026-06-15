@@ -13,6 +13,7 @@ import httpx
 
 from miles.utils.control_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,10 @@ class _MiniFTController:
     async def _poll_and_heal(self) -> None:
         try:
             cells = await self._get_cells()
-            logger.info("FT/controller poll cells=%s", {c.name: c.status.value for c in cells})
+            log_structured(
+                logger.info, op="controller", phase="poll",
+                cells=",".join(f"{c.name}:{c.status.value}" for c in cells),
+            )
 
             unhealthy_names: set[str] = set()
             for cell in cells:
@@ -186,26 +190,28 @@ class _MiniFTController:
 
     async def _heal(self, *, cell_name: str, backoff: _CellBackoff) -> None:
         try:
-            logger.info("Healing cell %s: suspending", cell_name)
+            log_structured(logger.info, op="heal", phase="suspend", cell=cell_name)
             await self._suspend_cell(cell_name)
 
-            logger.info("Healing cell %s: sleeping for resume_delay seconds", cell_name)
+            log_structured(logger.info, op="heal", phase="sleep", cell=cell_name, resume_delay_s=self._resume_delay)
             await asyncio.sleep(self._resume_delay)
 
-            logger.info("Healing cell %s: resuming", cell_name)
+            log_structured(logger.info, op="heal", phase="resume", cell=cell_name)
             await self._resume_cell(cell_name)
 
             backoff.consecutive_failures = 0
             backoff.next_attempt_at = self._clock() + self._resume_delay
-            logger.info("Successfully healed cell %s, cooldown until %.0f", cell_name, backoff.next_attempt_at)
+            log_structured(logger.info, op="heal", phase="done", cell=cell_name, cooldown_until=round(backoff.next_attempt_at))
         except Exception:
             backoff.consecutive_failures += 1
             delay = min(5 * (2**backoff.consecutive_failures), 300)
             backoff.next_attempt_at = self._clock() + delay
-            logger.warning(
-                "Failed to heal cell %s (attempt %d), next attempt in %.0fs",
-                cell_name,
-                backoff.consecutive_failures,
-                delay,
+            log_structured(
+                logger.warning,
+                op="heal",
+                phase="fail",
+                cell=cell_name,
+                attempt=backoff.consecutive_failures,
+                next_attempt_in_s=round(delay),
                 exc_info=True,
             )

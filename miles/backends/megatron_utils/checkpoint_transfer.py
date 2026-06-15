@@ -13,6 +13,7 @@ from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensor
 
 from miles.backends.megatron_utils.in_memory_checkpoint import InMemoryCheckpointManager, save_to_memory
 from miles.utils.process_group_utils import GroupInfo
+from miles.utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def send_ckpt(
     payload = _TransportCodec.encode(state_dict=state_dict, iteration=iteration)
 
     transport = _create_transport(indep_dp, timeout)
-    logger.info(f"FT/xcell start kind=ckpt_send iteration={iteration} to_alive_rank={dst_rank}")
+    log_structured(logger.info, op="xcell", phase="start", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank)
     transport.send_checkpoint(
         dst_ranks=[dst_rank],
         step=0,
@@ -59,7 +60,7 @@ def send_ckpt(
         timeout=timeout,
     )
     transport.disallow_checkpoint()
-    logger.info(f"FT/xcell end kind=ckpt_send iteration={iteration} to_alive_rank={dst_rank} (Sent checkpoint)")
+    log_structured(logger.info, op="xcell", phase="end", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank)
 
 
 def recv_ckpt(
@@ -83,7 +84,7 @@ def recv_ckpt(
         initialize_model_and_optimizer to consume.
     """
     transport = _create_transport(indep_dp, timeout)
-    logger.info(f"FT/xcell start kind=ckpt_recv from_alive_rank={src_rank}")
+    log_structured(logger.info, op="xcell", phase="start", kind="ckpt_recv", from_alive_rank=src_rank)
     payload = transport.recv_checkpoint(
         src_rank=src_rank,
         metadata=transport.metadata(),
@@ -92,7 +93,7 @@ def recv_ckpt(
     )
 
     iteration, state_dict = _TransportCodec.decode(payload)
-    logger.info(f"FT/xcell end kind=ckpt_recv iteration={iteration} from_alive_rank={src_rank} (Received checkpoint)")
+    log_structured(logger.info, op="xcell", phase="end", kind="ckpt_recv", iteration=iteration, from_alive_rank=src_rank)
 
     manager = InMemoryCheckpointManager()
     manager.save(state_dict, iteration=iteration)
