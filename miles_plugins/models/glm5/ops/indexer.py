@@ -1,7 +1,7 @@
 import torch
 
 from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn, torch_dsa_topk
+from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 from .tilelang_indexer_bwd import indexer_bwd_interface
 from .tilelang_indexer_fwd import indexer_fwd_interface
@@ -13,10 +13,6 @@ def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):
     scores = torch.gather(logits, dim=dim, index=safe_indices)
     scores = torch.where(valid_mask, scores, float("-inf"))
     return scores
-
-
-def _original_topk(logits, topk):
-    return torch_dsa_topk(logits, topk)
 
 
 class IndexerFunction(torch.autograd.Function):
