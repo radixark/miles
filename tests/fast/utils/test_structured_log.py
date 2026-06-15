@@ -1,24 +1,87 @@
 import logging
 
-from miles.utils.structured_log import _to_logfmt, log_structured, prune_for_log
+from miles.utils.structured_log import _format_value, _to_logfmt, log_structured, prune_for_log
+
+
+class TestFormatValue:
+    def test_int_renders_bare(self):
+        """An int renders as a bare number."""
+        assert _format_value(7) == "7"
+
+    def test_float_renders_bare(self):
+        """A float renders as a bare number."""
+        assert _format_value(49.3) == "49.3"
+
+    def test_true_and_false_render_lowercase(self):
+        """Bools render as lowercase true/false (and take precedence over the int branch)."""
+        assert _format_value(True) == "true"
+        assert _format_value(False) == "false"
+
+    def test_none_renders_as_empty(self):
+        """None renders as an empty value."""
+        assert _format_value(None) == ""
+
+    def test_empty_string_renders_as_empty(self):
+        """An empty string renders as an empty value with no quotes."""
+        assert _format_value("") == ""
+
+    def test_plain_string_renders_bare(self):
+        """A string with no space, '=' or quote renders bare."""
+        assert _format_value("train") == "train"
+
+    def test_string_with_space_is_quoted(self):
+        """A string containing a space is double-quoted so it stays one token."""
+        assert _format_value("survivors normal") == '"survivors normal"'
+
+    def test_string_with_equals_is_quoted(self):
+        """A string containing '=' is quoted so it can't be mis-read as a new key."""
+        assert _format_value("a=b") == '"a=b"'
+
+    def test_string_with_quote_is_escaped(self):
+        """A string containing a double-quote is quoted with the inner quote escaped."""
+        assert _format_value('say "hi"') == '"say \\"hi\\""'
+
+    def test_string_with_backslash_and_space_escapes_backslash(self):
+        """When quoting is triggered, backslashes are escaped too."""
+        assert _format_value("a\\b c") == '"a\\\\b c"'
+
+    def test_list_of_ints_is_comma_joined_no_space(self):
+        """A list renders comma-joined with no spaces."""
+        assert _format_value([0, 1, 2]) == "0,1,2"
+
+    def test_list_of_bools_lowercased(self):
+        """List elements that are bools also render lowercase."""
+        assert _format_value([True, False]) == "true,false"
+
+    def test_empty_list_renders_as_empty(self):
+        """An empty list renders as an empty value."""
+        assert _format_value([]) == ""
+
+    def test_tuple_behaves_like_list(self):
+        """A tuple renders the same as the equivalent list."""
+        assert _format_value((0, 1)) == "0,1"
+
+    def test_list_whose_joined_form_has_a_space_is_quoted(self):
+        """If a list element introduces a space, the whole joined value is quoted."""
+        assert _format_value(["a b", "c"]) == '"a b,c"'
+
+    def test_dict_renders_as_quoted_compact_json(self):
+        """A dict value renders as quoted compact JSON."""
+        assert _format_value({"a": 1}) == '"{\\"a\\":1}"'
 
 
 class TestToLogfmt:
-    def test_scalars_and_bools_lowercased(self):
-        """Scalars render bare and bools render as lowercase true/false."""
-        assert _to_logfmt({"cell": 1, "ok": True, "bad": False}) == "cell=1 ok=true bad=false"
+    def test_fields_join_with_space_in_insertion_order(self):
+        """Fields render as space-separated key=value in insertion order."""
+        assert _to_logfmt({"cell": 1, "fn": "train", "ok": True}) == "cell=1 fn=train ok=true"
 
-    def test_list_is_comma_joined_without_spaces(self):
-        """Lists render comma-joined with no spaces so a space-split parser keeps them one token."""
-        assert _to_logfmt({"alive": [0, 1]}) == "alive=0,1"
+    def test_empty_fields_render_as_empty_string(self):
+        """No fields renders as an empty string."""
+        assert _to_logfmt({}) == ""
 
-    def test_empty_list_and_none_render_as_empty_value(self):
-        """Empty list and None both render as an empty logfmt value."""
-        assert _to_logfmt({"pending": [], "x": None}) == "pending= x="
-
-    def test_value_with_spaces_is_quoted(self):
-        """A value containing spaces is double-quoted so it stays a single token."""
-        assert _to_logfmt({"reason": "survivors normal"}) == 'reason="survivors normal"'
+    def test_list_and_empty_fields_keep_one_token_each(self):
+        """A list field stays one token; an empty field renders as a trailing 'key='."""
+        assert _to_logfmt({"alive": [0, 1], "pending": []}) == "alive=0,1 pending="
 
 
 class TestPruneForLog:
@@ -28,20 +91,57 @@ class TestPruneForLog:
         assert prune_for_log(payload, cap=160) == payload
 
     def test_large_list_field_summarized_small_siblings_kept(self):
-        """An oversized list field becomes a length summary while small siblings stay inline."""
+        """An oversized list field becomes a length summary; small siblings stay inline."""
         pruned = prune_for_log({"quorum_id": 1, "checksums": list(range(500))}, cap=80)
-        assert pruned["quorum_id"] == 1
-        assert pruned["checksums"] == "<list len=500>"
+        assert pruned == {"quorum_id": 1, "checksums": "<list len=500>"}
 
     def test_large_string_field_summarized(self):
         """An oversized string field becomes a char-count summary."""
-        assert prune_for_log({"blob": "x" * 1000}, cap=80)["blob"] == "<str 1000 chars>"
+        assert prune_for_log({"blob": "x" * 1000}, cap=80) == {"blob": "<str 1000 chars>"}
+
+    def test_nested_dict_prunes_only_the_big_subfield(self):
+        """Recursion summarizes only the oversized nested field, keeping small ones."""
+        pruned = prune_for_log({"a": 1, "b": {"big": list(range(500)), "small": 2}}, cap=60)
+        assert pruned == {"a": 1, "b": {"big": "<list len=500>", "small": 2}}
+
+    def test_large_tuple_summarized_as_list(self):
+        """An oversized tuple is summarized like a list."""
+        assert prune_for_log(tuple(range(500)), cap=80) == "<list len=500>"
+
+    def test_value_at_cap_kept_just_over_summarized(self):
+        """A value whose compact-JSON length is <= cap is kept; one char over is summarized."""
+        assert prune_for_log("x" * 8, cap=10) == "x" * 8  # json '"xxxxxxxx"' is exactly 10 chars
+        assert prune_for_log("x" * 9, cap=10) == "<str 9 chars>"  # json is 11 chars
 
 
 class TestLogStructured:
-    def test_emits_ft_prefixed_logfmt_line_via_given_log_fn(self, caplog):
+    def test_emits_ft_prefixed_logfmt_via_given_method(self, caplog):
         """log_structured emits one 'ft '-prefixed logfmt line through the passed logger method."""
-        logger = logging.getLogger("test_structured_log")
-        with caplog.at_level(logging.INFO, logger="test_structured_log"):
+        logger = logging.getLogger("t_emit")
+        with caplog.at_level(logging.INFO, logger="t_emit"):
             log_structured(logger.info, op="execute", phase="start", cell=1, fn="train")
         assert caplog.messages == ["ft op=execute phase=start cell=1 fn=train"]
+
+    def test_uses_the_level_of_the_passed_method(self, caplog):
+        """The record's level is that of the bound method passed (warning here)."""
+        logger = logging.getLogger("t_level")
+        with caplog.at_level(logging.DEBUG, logger="t_level"):
+            log_structured(logger.warning, op="x")
+        assert caplog.records[0].levelno == logging.WARNING
+
+    def test_exc_info_is_forwarded(self, caplog):
+        """exc_info=True attaches the active exception to the record."""
+        logger = logging.getLogger("t_exc")
+        with caplog.at_level(logging.ERROR, logger="t_exc"):
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                log_structured(logger.error, op="x", exc_info=True)
+        assert caplog.records[0].exc_info[0] is ValueError
+
+    def test_stacklevel_points_to_caller_not_helper(self, caplog):
+        """stacklevel=2 makes the record's filename the caller's, not structured_log.py."""
+        logger = logging.getLogger("t_stack")
+        with caplog.at_level(logging.INFO, logger="t_stack"):
+            log_structured(logger.info, op="x")
+        assert caplog.records[0].filename == "test_structured_log.py"
