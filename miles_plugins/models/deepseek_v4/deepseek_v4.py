@@ -169,9 +169,16 @@ class DeepSeekV4Attention(MegatronModule):
                 cp_group=self.cp_group,
             )
             if self.compress_ratio == 4:
-                if os.environ.get("V4_INDEXER_IMPL", "tilelang") == "tilelang":
+                indexer_impl = os.environ.get("V4_INDEXER_IMPL", "tilelang")
+                topk_backend = getattr(config, "miles_dsa_topk_backend", "torch")
+                if indexer_impl == "tilelang":
                     self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
                 else:
+                    if topk_backend != "torch":
+                        raise ValueError(
+                            "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
+                            f"got {topk_backend=} with {indexer_impl=}."
+                        )
                     indexer_submodules = DSAIndexerSubmodules(
                         linear_wq_b=TELinear,
                         linear_wk=TELinear,
@@ -339,6 +346,7 @@ def get_dsv4_spec(args, config, vp_stage):
     """
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
+    config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

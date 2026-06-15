@@ -16,6 +16,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
+from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 
 class V4Indexer(MegatronModule):
@@ -29,6 +30,7 @@ class V4Indexer(MegatronModule):
         self.index_n_heads = config.dsa_indexer_n_heads
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
+        self.topk_backend = getattr(config, "miles_dsa_topk_backend", "torch")
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
         self.use_fp8_qat = config.fp8 is not None
@@ -129,6 +131,6 @@ class V4Indexer(MegatronModule):
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
         topk_count = min(self.index_topk, index_scores.size(-1))
-        topk_indices = index_scores.topk(topk_count, dim=-1)[1]
+        topk_indices = get_dsa_topk_fn(self.topk_backend)(index_scores, topk_count)
 
         return topk_indices

@@ -1,15 +1,10 @@
 import torch
 
 from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.dsa_topk import get_dsa_topk_fn, torch_dsa_topk
 
 from .tilelang_indexer_bwd import indexer_bwd_interface
 from .tilelang_indexer_fwd import indexer_fwd_interface
-
-
-_FLASHINFER_TIE_BREAK_VALUES = {
-    "small": 1,
-    "large": 2,
-}
 
 
 def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):
@@ -21,48 +16,7 @@ def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):
 
 
 def _original_topk(logits, topk):
-    score, indices = torch.topk(logits, topk, dim=-1)
-    indices = indices.to(torch.int32)
-    return indices.masked_fill(score == -torch.inf, -1)
-
-
-def _flashinfer_tie_break_value() -> int:
-    from sglang.srt.environ import envs
-
-    mode = envs.SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK.get()
-    if mode is None:
-        return 0
-    mode = mode.lower()
-    if mode not in _FLASHINFER_TIE_BREAK_VALUES:
-        raise RuntimeError(
-            "SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK must be one of "
-            f"{tuple(_FLASHINFER_TIE_BREAK_VALUES)} or unset, got {mode!r}."
-        )
-    return _FLASHINFER_TIE_BREAK_VALUES[mode]
-
-
-def _flashinfer_topk(logits, topk):
-    import flashinfer
-    from sglang.srt.environ import envs
-
-    score, indices = flashinfer.top_k(
-        logits,
-        topk,
-        sorted=False,
-        deterministic=envs.SGLANG_DSA_TOPK_FLASHINFER_DETERMINISTIC.get(),
-        tie_break=_flashinfer_tie_break_value(),
-        dsa_graph_safe=True,
-    )
-    indices = indices.to(torch.int32)
-    return indices.masked_fill(score == -torch.inf, -1)
-
-
-def _get_topk_fn(topk_backend: str):
-    if topk_backend == "torch":
-        return _original_topk
-    if topk_backend == "flashinfer":
-        return _flashinfer_topk
-    raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
+    return torch_dsa_topk(logits, topk)
 
 
 class IndexerFunction(torch.autograd.Function):
@@ -105,7 +59,7 @@ def lighting_indexer(
     logits = indexer_fwd_interface(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True)
 
     if topk_indices is None:
-        topk_fn = indexer_replay_manager.get_topk_fn(_get_topk_fn(topk_backend), return_probs=False)
+        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(topk_backend), return_probs=False)
         topk_indices = topk_fn(logits, topk)
 
     index_score = IndexerFunction.apply(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, logits, topk_indices)
