@@ -7,9 +7,11 @@ import json
 import os
 import random
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
@@ -29,6 +31,8 @@ def convert_checkpoint(
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
     megatron_path: str = "/root/Megatron-LM",
+    env_vars: Mapping[str, str] | None = None,
+    runtime_env: dict[str, Any] | None = None,
 ):
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
@@ -46,12 +50,12 @@ def convert_checkpoint(
         )
 
     if multinode:
-        fn = partial(exec_command_all_ray_node, num_nodes=num_nodes)
+        fn = partial(exec_command_all_ray_node, num_nodes=num_nodes, env_vars=env_vars, runtime_env=runtime_env)
     else:
         fn = exec_command
     fn(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        f"PYTHONPATH={megatron_path} "
+        f"PYTHONPATH={repo_base_dir}:{megatron_path}:${{PYTHONPATH:-}} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"

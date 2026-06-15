@@ -3,6 +3,8 @@ import importlib
 import re
 import subprocess
 from contextlib import contextmanager
+from collections.abc import Mapping
+from typing import Any
 
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
@@ -102,7 +104,11 @@ def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
 
 
 def exec_command_all_ray_node(
-    cmd: str, capture_output: bool = False, num_nodes: int | None = None
+    cmd: str,
+    capture_output: bool = False,
+    num_nodes: int | None = None,
+    env_vars: Mapping[str, str] | None = None,
+    runtime_env: dict[str, Any] | None = None,
 ) -> list[str | None]:
     """Execute a shell command on every alive Ray node in parallel.
 
@@ -114,7 +120,18 @@ def exec_command_all_ray_node(
 
     Args:
         num_nodes: If set, only use the first `num_nodes` nodes instead of all alive nodes.
+        env_vars: Environment variables to set for the Ray task worker before
+            importing/running the remote command function.
+        runtime_env: Extra Ray runtime_env fields. If both runtime_env["env_vars"]
+            and env_vars are provided, env_vars takes precedence.
     """
+    task_runtime_env = dict(runtime_env or {})
+    if env_vars:
+        task_runtime_env["env_vars"] = {
+            **dict(task_runtime_env.get("env_vars", {})),
+            **dict(env_vars),
+        }
+
     ray.init(address="auto")
     try:
         current_ip = get_current_node_ip()
@@ -150,6 +167,7 @@ def exec_command_all_ray_node(
                         node_id=node["NodeID"],
                         soft=False,
                     ),
+                    **({"runtime_env": task_runtime_env} if task_runtime_env else {}),
                 ).remote(node_cmd, capture_output=capture_output)
             )
         return ray.get(refs)
