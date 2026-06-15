@@ -94,6 +94,20 @@ jobs:
         ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit
 
+  # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
+  # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
+  stage-b-cpu:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      cpu_runner: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+    secrets: inherit
+
   stage-b-2-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |

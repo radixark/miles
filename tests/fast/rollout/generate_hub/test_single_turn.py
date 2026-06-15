@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=220, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=[])
 
 import numpy as np
 import pybase64
