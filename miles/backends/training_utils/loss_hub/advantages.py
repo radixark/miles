@@ -28,7 +28,7 @@ def compute_advantages(
     Returns:
         (advantages, returns) — both lists of tensors, one per sample.
     """
-    if args.advantage_estimator in ["grpo", "gspo"]:
+    if args.advantage_estimator in ["grpo", "gspo", "reinforce"]:
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
         returns = get_grpo_returns(rewards, kl)
         # TODO: is the copy necessary?
