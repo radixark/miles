@@ -32,7 +32,7 @@ def configure_logger_raw(name: str = "") -> None:
 
     logging.basicConfig(
         level=logging.INFO,
-        format=f"[%(asctime)s {name}] %(filename)s:%(lineno)d - %(message)s",
+        format=f"[%(asctime)s.%(msecs)03d {name}] %(filename)s:%(lineno)d - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
     )
