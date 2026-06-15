@@ -63,19 +63,28 @@ grad_norms, comparator diffs) is in the collection log `amd-ci-worker/RESULTS.md
   `sglang.launch_server` without `--attention-backend`, so it defaults to FA3 (FlashAttention-3, NV-Hopper-only)
   → `ImportError: Can not import FA3 in sgl_kernel`. The util should pass `--attention-backend flash` (which the
   training tests' rollout engine already uses successfully on AMD).
-- **`sglang/session_server/*` — inconclusive / slow.** `test_qwen3` (30B-FP8) is not FA3-blocked (uses the miles
-  rollout engine, GPUs busy throughout) but its session-verify ran 47 min without completing (est 400s; >7x over
-  budget — possible AMD FP8-serving perf gap). `test_qwen35` (35B-FP8) / `test_glm47` deferred as the same slow
-  path + large downloads.
+- **`sglang/session_server/test_qwen3` — generation-backend 502 (platform gap, NOT flaky).** HTTP/CRUD layer OK
+  (200/204) but every generate (`POST .../v1/chat/completions`) 502s; downstream "missing driver events ...
+  events=[]" assertion accumulated >128k @ ~14-50/s over 45min (no model call ever completes). Server log "not
+  supported on current platform" ×111 — suspected FA3-at-generate, same family as the chat_input_ids FA3 crash.
+  `test_qwen35` / `test_glm47` deferred (same generation backend → same 502). Fix: default the sglang serving
+  backend to `--attention-backend flash` on ROCm.
+- **DeepSeek truncated CI tests — RUN, both FAIL (two distinct AMD gaps).** `deepseek_v4_flash_4layer_ci`: hard
+  `ImportError: cannot import name 'fused_qk_rmsnorm' from aiter.ops.fused_qk_norm_rope_cache_quant` in sglang's
+  `deepseek_common.attention_backend_handler` — the ROCm aiter build lacks the `fused_qk_rmsnorm` op DeepSeek-V4
+  attention needs. `deepseek_v32_5layer_fp8`: gets past import, converts, then the train actor hits the same
+  convert→train "No HIP GPUs" issue above. (These two were briefly mis-HELD as 744B-scale; they're ~28.6G
+  truncated models — re-classified and run for real; disk reclaimed after.)
 - **FSDP — unsupported on AMD (hangs).** `tests/e2e/fsdp/*` + `short/test_qwen3_0.6B_fsdp_colocated_2xGPU`.
 - **CUDA-disabled (no enabled baseline to mirror; reasons are non-AMD):** `qwen3_4B_ppo` (PPO port bug),
   `qwen3_4B_p2p` (RDMA), `qwen3_5_35B_A3B_cp` (flaky), `quick_start_glm4_9B` (naive), `glm47_flash_ckpt` (bugs),
   `glm47_flash/test_r3_mtp_deepep` (deepep bug), `session_server/test_qwennext` (timeout),
   `qwen3_30B_A3B/test_r3_deepep_fp8` (fp8/bf16 mismatch), `precision/test_qwen3_0.6B_parallel_check` (bugs),
   `deepseek_v32_5layer_mxfp8` (superseded).
-- **Held — exceed shared-disk headroom (would endanger a co-tenant training job; need disk expansion / dedicated
-  machine):** `glm5_744b_a40b_4layer*`, `kimi_k25_4layer`, `deepseek_v32_5layer_{fp8,mxfp8}`,
-  `deepseek_v4_flash_4layer`, `session_server/{minimax_m27 (~230B), nemotron3 (120B)}`.
+- **Held — genuinely too large for the shared disk (would endanger a co-tenant training job; need disk expansion
+  / dedicated machine):** `glm5_744b_a40b_4layer*`, `kimi_k25_4layer`,
+  `session_server/{minimax_m27 (~230B), nemotron3 (120B)}`. (The `deepseek_v4`/`deepseek_v32_5layer_fp8` tests were
+  initially in this list by mistake — they're ~28.6G truncated CI models, since run for real, see above.)
 
 ## Follow-up (not in this PR)
 
