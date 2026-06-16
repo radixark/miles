@@ -1065,6 +1065,39 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
             )
+            parser.add_argument(
+                "--loss-aggregation",
+                type=str,
+                default="sample_mean",
+                choices=["sample_mean", "prompt_mean", "token_mean", "constant"],
+                help=(
+                    "How pg_loss is aggregated across the step (applies to pg_loss only; "
+                    "pg_clipfrac, ppo_kl, entropy_loss, kl_loss keep the default sample-mean reducer "
+                    "-- same scope as --custom-pg-loss-reducer-function-path, which still takes "
+                    "precedence when set). Modes follow the ScaleRL taxonomy (arXiv:2510.13786 section "
+                    "3.2): "
+                    "'sample_mean' (default, GRPO): each sequence is averaged by its own active-token "
+                    "count, then averaged across sequences (same behavior as the prior default). "
+                    "'prompt_mean' (DAPO, ScaleRL's recommended default for new recipes): every token in "
+                    "a prompt group weighs equally -- normalize by the group's total active tokens across "
+                    "its completions, then average over prompt groups. "
+                    "'token_mean': global per-token mean; the same objective as the legacy "
+                    "--calculate-per-token-loss flag (prefer --loss-aggregation token_mean). "
+                    "'constant' (Dr.GRPO, arXiv:2503.20783 Eq.2): divide the summed token loss by the "
+                    "fixed --loss-aggregation-divisor (no data-dependent denominator)."
+                ),
+            )
+            parser.add_argument(
+                "--loss-aggregation-divisor",
+                type=float,
+                default=None,
+                help=(
+                    "Constant divisor L for --loss-aggregation constant (Dr.GRPO): the model's max "
+                    "generation/context length (e.g. 40960). Required when --loss-aggregation=constant; "
+                    "must be a positive number. No default is provided, so a missing value raises "
+                    "instead of training with an arbitrary denominator."
+                ),
+            )
 
             parser.add_argument(
                 "--use-routing-replay",
@@ -2008,6 +2041,43 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+def _validate_loss_aggregation_args(args):
+    """Reconcile --loss-aggregation with its legacy alias --calculate-per-token-loss."""
+    if args.loss_aggregation == "constant":
+        if args.loss_aggregation_divisor is None or not args.loss_aggregation_divisor > 0:
+            raise ValueError(
+                "--loss-aggregation constant requires --loss-aggregation-divisor <positive number> "
+                "(the model's max generation/context length, e.g. 40960), got "
+                f"{args.loss_aggregation_divisor!r}."
+            )
+    elif args.loss_aggregation_divisor is not None:
+        raise ValueError(
+            "--loss-aggregation-divisor is only used with --loss-aggregation constant, "
+            f"but --loss-aggregation={args.loss_aggregation!r}."
+        )
+
+    if args.loss_aggregation == "token_mean":
+        args.calculate_per_token_loss = True
+    elif args.calculate_per_token_loss:
+        if args.loss_aggregation == "sample_mean":
+            args.loss_aggregation = "token_mean"
+        else:
+            raise ValueError(
+                f"--loss-aggregation {args.loss_aggregation} is incompatible with --calculate-per-token-loss "
+                "(use --loss-aggregation token_mean for the per-token global mean)."
+            )
+    if (
+        args.loss_aggregation == "prompt_mean"
+        and args.global_batch_size is not None
+        and args.global_batch_size % args.n_samples_per_prompt != 0
+    ):
+        raise ValueError(
+            "--loss-aggregation prompt_mean requires global_batch_size to be a multiple of "
+            "n_samples_per_prompt so each prompt group stays within one training step "
+            f"(got global_batch_size={args.global_batch_size}, n_samples_per_prompt={args.n_samples_per_prompt})."
+        )
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -2332,6 +2402,8 @@ def miles_validate_args(args):
                 f"// num_steps_per_rollout {args.num_steps_per_rollout}"
             )
         args.global_batch_size = global_batch_size
+
+    _validate_loss_aggregation_args(args)
 
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False

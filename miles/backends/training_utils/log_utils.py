@@ -390,20 +390,37 @@ def aggregate_train_losses(
     keys = losses_reduced[0]["keys"]
 
     values = None
+    normalizers = None
     for log_dict in losses_reduced:
         if values is None:
             values = log_dict["values"].clone()
         else:
             values += log_dict["values"]
+        if "normalizers" in log_dict:
+            if normalizers is None:
+                normalizers = log_dict["normalizers"].clone()
+            else:
+                normalizers += log_dict["normalizers"]
 
-    assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
+    if normalizers is None:
+        assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
+    else:
+        assert len(keys) == values.numel(), f"Expected {len(keys)} values, got {values.numel()}"
+        assert len(keys) == normalizers.numel(), f"Expected {len(keys)} normalizers, got {normalizers.numel()}"
 
     dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp.group)
+    if normalizers is not None:
+        dist.all_reduce(normalizers, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp.group)
 
     loss_reduced = {}
     values = values.tolist()
-    num_samples_or_tokens = values[0]
+    if normalizers is not None:
+        normalizers = normalizers.tolist()
+        for key, value, normalizer in zip(keys, values, normalizers, strict=False):
+            loss_reduced[key] = value * parallel_state.cp.size / normalizer
+        return loss_reduced
 
+    num_samples_or_tokens = values[0]
     for key, value in zip(keys, values[1:], strict=False):
         loss_reduced[key] = value * parallel_state.cp.size / num_samples_or_tokens
 

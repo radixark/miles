@@ -189,8 +189,60 @@ def get_pg_loss_reducer(
     ...
 ```
 
-Use case: Dr.GRPO divides by a constant instead of effective token count.
+Use case: a normalization not covered by `--loss-aggregation` below. The four
+standard modes are available first class; reach for this hook only for a custom
+reducer. When set, it takes precedence over `--loss-aggregation`.
 **Reference:** [`examples/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/DrGRPO/custom_reducer.py).
+
+### `--loss-aggregation`
+
+`--loss-aggregation {sample_mean,prompt_mean,token_mean,constant}` selects how
+pg_loss is aggregated across a training step (pg_loss only; every other metric -
+`pg_clipfrac`, `ppo_kl`, `entropy_loss`, `kl_loss` - keeps the default sample-mean
+reducer, the same scope as the custom hook above). Modes follow the ScaleRL
+taxonomy ([arXiv:2510.13786](https://arxiv.org/abs/2510.13786) section 3.2):
+
+| Mode | Paper | pg_loss denominator |
+| :--- | :--- | :--- |
+| `sample_mean` (default) | GRPO sample average | Per-rollout token-weighted mean; each rollout contributes equally regardless of fan-out. Same behavior as the prior default. |
+| `prompt_mean` | DAPO prompt average | Per-prompt-group token-weighted mean (all rollouts sharing a `Sample.group_index` share one denominator). ScaleRL's recommended default for new recipes. |
+| `token_mean` | token average | Global per-token mean. This is the same objective as the legacy `--calculate-per-token-loss` flag (see below); prefer `--loss-aggregation token_mean`. |
+| `constant` | Dr.GRPO ([arXiv:2503.20783](https://arxiv.org/abs/2503.20783)) | `sum(token_loss * loss_mask) / L`, where `L = --loss-aggregation-divisor` (e.g. the max context length). |
+
+`--calculate-per-token-loss` is the legacy spelling of `--loss-aggregation
+token_mean`: both select the global per-token mean. It is kept for backward
+compatibility (existing Megatron-style recipes), but new recipes should prefer
+`--loss-aggregation token_mean`. The two spellings are reconciled onto one axis at
+startup: `--calculate-per-token-loss` alone reports `loss_aggregation=token_mean`,
+and either spelling alone is accepted. They
+may not be combined with a *different* mode: `prompt_mean` or `constant` together
+with `--calculate-per-token-loss` is rejected at startup (per-token loss would
+renormalize by the token count and undo that mode's denominator).
+
+`--loss-aggregation-divisor L` is required (validated `> 0` at startup) only for
+`constant`; it is ignored for the other modes.
+
+Every mode shares the same outer structure: each step's pg_loss sum is divided by
+`global_batch_size` (the standard step average). The per-mode denominator above is
+the *inner* per-sample scale. For `constant`, the effective denominator is therefore
+`L * global_batch_size`: `L` sets the data-independent per-token scale (so loss is
+length-unbiased, Dr.GRPO's point) and the `/ global_batch_size` step average is
+identical to every other mode. Pick `L` on the order of the max response length to
+keep the loss magnitude comparable to the data-dependent modes.
+
+`prompt_mean` weights every prompt group equally: each group's token-weighted
+mean contributes once, and the final scalar is the mean over prompt groups. It
+requires `global_batch_size` to be a multiple of `n_samples_per_prompt`, so a
+contiguous train step keeps each prompt group whole instead of normalizing
+against a partially-present group total.
+
+For custom train-data converters, `prompt_mean` should mirror the built-in
+converter and emit both `prompt_mask_sums` and `prompt_group_indices`.
+`prompt_mask_sums` is required for the standard full-step denominator, and
+`prompt_group_indices` lets the reducer rebuild denominators from the current
+pg_loss masks when TIS/RS changes the active mask. A custom
+`--custom-convert-samples-to-train-data-path` that omits the required
+`prompt_mean` fields will fail before pg_loss reduction.
 
 ### `--custom-convert-samples-to-train-data-path`
 
@@ -211,6 +263,9 @@ def convert_samples_to_train_data(args, samples) -> dict:
         "metadata":                [...],
         "multimodal_train_inputs": [...],
         "teacher_log_probs":       [...],
+        # required when args.loss_aggregation == "prompt_mean"
+        "prompt_group_indices":    [...],
+        "prompt_mask_sums":        [...],
     }
 ```
 

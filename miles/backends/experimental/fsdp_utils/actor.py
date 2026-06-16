@@ -465,6 +465,8 @@ class FSDPTrainRayActor(TrainRayActor):
                             "returns",
                             "ref_log_probs",
                             "rollout_log_probs",
+                            "prompt_group_indices",
+                            "prompt_mask_sums",
                         ],
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,

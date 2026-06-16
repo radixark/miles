@@ -123,13 +123,14 @@ def loss_function(
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
     num_samples = len(batch["response_lengths"])
 
+    # --loss-aggregation applies to pg_loss only; metrics keep this reducer.
     sum_of_sample_mean = get_sum_of_sample_mean(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
-        args.qkv_format,
-        batch.get("max_seq_lens", None),
+        calculate_per_token_loss=False,
+        qkv_format=args.qkv_format,
+        max_seq_lens=batch.get("max_seq_lens", None),
     )
 
     func = get_loss_function(args)
@@ -166,17 +167,33 @@ def loss_function(
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
 
-    return (
-        loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
-        {
-            "keys": list(log.keys()),
-            "values": torch.tensor(
-                [
-                    num_samples if not args.calculate_per_token_loss else num_tokens,
-                ]
-                + list(log.values()),
+    log_keys = list(log.keys())
+    log_dict = {
+        "keys": log_keys,
+        "values": torch.tensor(
+            [
+                num_samples,
+            ]
+            + list(log.values()),
+            device=logits.device,
+        ),
+    }
+    if args.calculate_per_token_loss:
+        log_dict = {
+            "keys": log_keys,
+            "values": torch.tensor(list(log.values()), device=logits.device),
+            "normalizers": torch.tensor(
+                [num_tokens if key in {"loss", "pg_loss", "ess_ratio"} else num_samples for key in log_keys],
                 device=logits.device,
             ),
-        },
+        }
+
+    return (
+        loss,
+        (
+            num_tokens.to(device=logits.device)
+            if args.calculate_per_token_loss
+            else torch.tensor(1, device=logits.device)
+        ),
+        log_dict,
     )
