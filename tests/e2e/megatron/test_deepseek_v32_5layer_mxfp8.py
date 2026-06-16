@@ -216,7 +216,6 @@ def execute():
 
     misc_args = (
         "--use-rollout-routing-replay "
-        "--use-miles-router "
         "--freeze-indexer "
         "--sglang-disable-shared-experts-fusion "
         "--attention-dropout 0.0 "
