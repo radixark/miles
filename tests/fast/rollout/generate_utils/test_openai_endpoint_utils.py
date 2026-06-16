@@ -288,6 +288,43 @@ class TestMultiTurnPrefixChain:
         assert len(merged.teacher_log_probs) == merged.response_length
         merged.validate()  # the new teacher_log_probs length assertion must hold
 
+    def test_two_turn_merge_propagates_opd_student_top_logprobs_metadata(self):
+        """Top-k OPD student top-logprobs are per-token metadata, not equal metadata."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11], output_log_probs=[-0.1, -0.2]),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+                output_token_ids=[30, 31],
+                output_log_probs=[-0.3, -0.4],
+            ),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        turn_0_top_logprobs = [[[-0.1, 101]], [[-0.2, 102]]]
+        turn_1_top_logprobs = [[[-0.3, 103]], [[-0.4, 104]]]
+        samples[0].metadata = {
+            "opd_student_top_logprobs": turn_0_top_logprobs,
+            "shared_metadata": "same",
+        }
+        samples[1].metadata = {
+            "opd_student_top_logprobs": turn_1_top_logprobs,
+            "shared_metadata": "same",
+        }
+
+        merged = merge_samples(samples, tok)
+
+        assert merged.metadata["shared_metadata"] == "same"
+        assert merged.metadata["opd_student_top_logprobs"] == [
+            *turn_0_top_logprobs,
+            [],
+            [],
+            *turn_1_top_logprobs,
+        ]
+        assert len(merged.metadata["opd_student_top_logprobs"]) == merged.response_length
+
     def test_two_turn_merge_teacher_log_probs_none_stays_none(self):
         """Non-OPD runs leave teacher_log_probs unset; merge must keep it None."""
         tok = _mock_tokenizer()
