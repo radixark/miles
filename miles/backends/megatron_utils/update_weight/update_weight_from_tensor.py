@@ -195,7 +195,7 @@ class UpdateWeightFromTensor:
             if (
                 not skip_base_sync
                 and self.quantization_config
-                and self.quantization_config["quant_method"] in ["compressed-tensors"]
+                and self.quantization_config["quant_method"] in ["compressed-tensors", "fp8"]
             ):
                 post_process_weights(
                     rollout_engines=self.rollout_engines,
