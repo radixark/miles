@@ -59,6 +59,54 @@ class LossFunction(Protocol):
         ...
 
 
+def get_pg_loss_reducer(
+    args: Namespace,
+    batch: RolloutBatch,
+    *,
+    total_lengths: list[int],
+    response_lengths: list[int],
+    pg_loss_masks: list[torch.Tensor],
+    max_seq_lens: list[int] | None,
+    default_reducer: Callable[[torch.Tensor], torch.Tensor],
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """Select the pg_loss reducer for ``--loss-aggregation``."""
+    mode = args.loss_aggregation
+    if mode in ("sample_mean", "token_mean"):
+        return default_reducer
+    if mode == "prompt_mean":
+        prompt_mask_sums = batch.get("prompt_mask_sums")
+        if prompt_mask_sums is None:
+            raise ValueError(
+                "--loss-aggregation prompt_mean requires per-prompt-group mask sums "
+                "(batch['prompt_mask_sums']), but they are missing. A custom "
+                "--custom-convert-samples-to-train-data-path must populate "
+                "'prompt_mask_sums' (grouped by Sample.group_index)."
+            )
+        reducer = get_sum_of_sample_mean(
+            total_lengths,
+            response_lengths,
+            pg_loss_masks,
+            prompt_mask_sums,
+            qkv_format=args.qkv_format,
+            max_seq_lens=max_seq_lens,
+        )
+
+        def prompt_mean_reducer(x: torch.Tensor) -> torch.Tensor:
+            return reducer(x) * args.n_samples_per_prompt
+
+        return prompt_mean_reducer
+    if mode == "constant":
+        return get_sum_of_sample_mean(
+            total_lengths,
+            response_lengths,
+            pg_loss_masks,
+            qkv_format=args.qkv_format,
+            max_seq_lens=max_seq_lens,
+            constant_divisor=args.loss_aggregation_divisor,
+        )
+    raise ValueError(f"Unknown --loss-aggregation mode: {mode!r}")
+
+
 def policy_loss_function(
     args: Namespace,
     batch: RolloutBatch,
@@ -234,21 +282,28 @@ def policy_loss_function(
             total_lengths,
             response_lengths,
             modified_response_masks,
-            args.calculate_per_token_loss,
-            args.qkv_format,
-            max_seq_lens,
+            calculate_per_token_loss=args.calculate_per_token_loss,
+            qkv_format=args.qkv_format,
+            max_seq_lens=max_seq_lens,
         )
 
-    # Determine pg_loss reducer: use custom if specified, otherwise default
+    pg_loss_masks = modified_response_masks if (args.get_mismatch_metrics or args.use_tis) else batch["loss_masks"]
+
     if args.custom_pg_loss_reducer_function_path is not None:
         custom_pg_loss_reducer_func = load_function(args.custom_pg_loss_reducer_function_path)
-        # Determine which loss_masks to use for pg_loss reducer
-        pg_loss_masks = modified_response_masks if (args.get_mismatch_metrics or args.use_tis) else batch["loss_masks"]
         pg_loss_reducer = custom_pg_loss_reducer_func(
             total_lengths, response_lengths, pg_loss_masks, args.calculate_per_token_loss
         )
     else:
-        pg_loss_reducer = sum_of_sample_mean
+        pg_loss_reducer = get_pg_loss_reducer(
+            args,
+            batch,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            pg_loss_masks=pg_loss_masks,
+            max_seq_lens=max_seq_lens,
+            default_reducer=sum_of_sample_mean,
+        )
 
     # ESS (Effective Sample Size) ratio from per-token IS weights
     # w = π_new/π_old = exp(-ppo_kl).  A value of 1.0 is on-policy; near 0

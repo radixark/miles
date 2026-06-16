@@ -55,6 +55,14 @@ def convert_samples_to_train_data(
         loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
 
+    if getattr(args, "loss_aggregation", "sample_mean") == "prompt_mean":
+        group_mask_totals: dict[int, int] = {}
+        for sample, loss_mask in zip(samples, loss_masks, strict=True):
+            if sample.group_index is None:
+                raise ValueError("--loss-aggregation prompt_mean requires every Sample.group_index to be set.")
+            group_mask_totals[sample.group_index] = group_mask_totals.get(sample.group_index, 0) + sum(loss_mask)
+        train_data["prompt_mask_sums"] = [group_mask_totals[sample.group_index] for sample in samples]
+
     # overwriting the raw reward
     if samples[0].metadata and "raw_reward" in samples[0].metadata:
         train_data["raw_reward"] = [sample.metadata["raw_reward"] for sample in samples]
@@ -158,6 +166,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "teacher_log_probs",
             "opd_reverse_kl",
             "weight_versions",
+            "prompt_mask_sums",
         ]:
             if key not in data:
                 continue

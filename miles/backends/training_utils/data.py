@@ -45,6 +45,11 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
     ]
+    if "prompt_mask_sums" in rollout_data:
+        rollout_data["prompt_mask_sums"] = [
+            torch.tensor(d, dtype=torch.float32, device=torch.cuda.current_device())
+            for d in rollout_data["prompt_mask_sums"]
+        ]
     if "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [
