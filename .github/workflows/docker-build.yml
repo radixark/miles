@@ -72,42 +72,47 @@ jobs:
           SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
             "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
 
-          # Check Megatron-LM (main branch)
+          # Check Megatron-LM (miles-main branch)
           MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/NVIDIA/Megatron-LM/commits/main")
+            "https://api.github.com/repos/radixark/Megatron-LM/commits/miles-main")
 
           # Fingerprint the miles-wheels releases the images install from (sgl-router +
-          # the other prebuilt wheels). cu13 installs cu130-x86_64; cu12-x86 installs
-          # cu129-x86_64 — both build automatically, so track both. Bumping a WHEELS_TAG
-          # is a Dockerfile change already caught by the push trigger; asset re-uploads
-          # keep the tag's commit fixed, so fingerprint the asset list, not a SHA.
+          # the other prebuilt wheels). cu13 installs cu130-x86_64 / cu130-aarch64;
+          # cu12-x86 installs cu129-x86_64 — both build automatically, so track all
+          # release tags they bake. Bumping a WHEELS_TAG is a Dockerfile change already
+          # caught by the push trigger; asset re-uploads keep the tag's commit fixed, so
+          # fingerprint the asset list, not a SHA.
           wheels_fp() {
             curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
           }
-          WHEELS_FP=$(wheels_fp cu130-x86_64-v0.5.12)
-          WHEELS_CU12_FP=$(wheels_fp cu129-x86_64-v0.5.12)
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-x86_64-v0.5.12)
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-aarch64-v0.5.12)
+          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64-v0.5.12)
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
-          echo "wheels FP:     ${WHEELS_FP}"
-          echo "wheels FP cu12:${WHEELS_CU12_FP}"
+          echo "wheels FP cu13 x86:   ${WHEELS_CU13_X86_FP}"
+          echo "wheels FP cu13 arm64: ${WHEELS_CU13_ARM64_FP}"
+          echo "wheels FP cu12 x86:   ${WHEELS_CU12_X86_FP}"
 
           # Compare against last known values stored in cache
           CACHE_FILE="last_upstream_shas.txt"
           if [ -f "$CACHE_FILE" ]; then
             LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
             LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
-            LAST_WHEELS=$(sed -n '3p' "$CACHE_FILE")
-            LAST_WHEELS_CU12=$(sed -n '4p' "$CACHE_FILE")
+            LAST_WHEELS_CU13_X86=$(sed -n '3p' "$CACHE_FILE")
+            LAST_WHEELS_CU13_ARM64=$(sed -n '4p' "$CACHE_FILE")
+            LAST_WHEELS_CU12_X86=$(sed -n '5p' "$CACHE_FILE")
           else
             LAST_SGLANG=""
             LAST_MEGATRON=""
-            LAST_WHEELS=""
-            LAST_WHEELS_CU12=""
+            LAST_WHEELS_CU13_X86=""
+            LAST_WHEELS_CU13_ARM64=""
+            LAST_WHEELS_CU12_X86=""
           fi
 
-          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_FP" != "$LAST_WHEELS" ] || [ "$WHEELS_CU12_FP" != "$LAST_WHEELS_CU12" ]; then
+          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ] || [ "$WHEELS_CU12_X86_FP" != "$LAST_WHEELS_CU12_X86" ]; then
             SHOULD_BUILD=true
             echo "Upstream change detected"
           else
@@ -117,8 +122,9 @@ jobs:
           # Save current values for next run
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
-          echo "${WHEELS_FP}" >> "$CACHE_FILE"
-          echo "${WHEELS_CU12_FP}" >> "$CACHE_FILE"
+          echo "${WHEELS_CU13_X86_FP}" >> "$CACHE_FILE"
+          echo "${WHEELS_CU13_ARM64_FP}" >> "$CACHE_FILE"
+          echo "${WHEELS_CU12_X86_FP}" >> "$CACHE_FILE"
 
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
 
@@ -132,10 +138,10 @@ jobs:
   build-and-push:
     needs: [check-upstream]
     # schedule: only build if upstream changed
-    # push/dispatch: check-upstream skipped → build
+    # push/dispatch: build; simulate_schedule runs the check but does not gate the manual build
     if: |
       always() &&
-      (needs.check-upstream.result == 'skipped' || needs.check-upstream.outputs.should_build == 'true')
+      (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
     runs-on: self-hosted
     steps:
       - name: Checkout repository

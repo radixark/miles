@@ -1,3 +1,4 @@
+# doc-dev: docs/ci/02-docker-build.md
 # Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
 #
 # 1. rocm/sgl-dev:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)

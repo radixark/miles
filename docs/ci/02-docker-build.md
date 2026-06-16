@@ -94,7 +94,7 @@ What **moves a shared tag**: `--image-tag dev` overwrites `:dev` (or `:dev-cu12`
 
 ### Trigger a build yourself
 
-Manual builds run through `workflow_dispatch` — `check-upstream` is skipped and the image is built straight from the inputs you pass (see the `workflow_dispatch` rows in the table above for how this differs from schedule). Start one two ways:
+Manual builds run through `workflow_dispatch` — by default the image is built straight from the inputs you pass; with `simulate_schedule`, `check-upstream` runs first for signal but does not gate the manual build (see the `workflow_dispatch` rows in the table above for how this differs from schedule). Start one two ways:
 
 - **Web UI** — Actions → "Docker Build & Push" → **Run workflow**, then fill the inputs below.
 - **CLI** — `gh` dispatches on the repo's default branch; pass `--ref <branch>` to build another branch's workflow.
@@ -133,4 +133,4 @@ Pushes use a Docker Hub credential, not your identity:
 
 ## Image retention (open)
 
-`docker-build.yml` prunes `dev-<timestamp>` tags to the newest 20 (~10 days at 2 builds/day), and `dev` / `latest` move forward. So there is no durable record of which image a past CI run used — reproducing an old run needs retention / immutable tagging, which is a separate, unsolved design.
+`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. So there is no durable record of which image a past CI run used — reproducing an old run needs retention / immutable tagging, which is a separate, unsolved design.
