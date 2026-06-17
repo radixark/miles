@@ -2152,6 +2152,7 @@ def miles_validate_args(args):
         assert (
             getattr(args, "prefill_num_servers", None) is None
         ), "P2P weight transfer mode has not been tested when PD is enabled."
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
     if args.colocate:
         if args.offload_train is None:
