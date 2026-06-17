@@ -15,7 +15,7 @@ The mapping is kept in sync by hand on both sides:
 - A `suite=` with no matching job never runs.
 - A stage job whose suite no test uses runs zero tests and exits 0 (intended during incremental migration).
 
-Stage names follow `stage-<tier>-<gpus>-<hw>` (e.g. `stage-c-4-gpu-h200`): `tier ∈ {a, b, c}` classifies cost/role, `gpus` is the GPU count the test needs, `hw ∈ {cpu, h100, h200}` is the hardware class.
+Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e.g. `stage-a-cpu`): `tier ∈ {a, b, c}` classifies cost/role, `gpus` is the GPU count the test needs, `hw ∈ {cpu, h100, h200}` is the hardware class.
 
 ## Stage roster
 

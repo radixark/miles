@@ -55,12 +55,12 @@ Each `test_*.py` under `tests/fast/` is auto-registered as a CPU test (backend C
 
 By default CI fails fast on two levels:
 
-- Cross-stage: GPU stages skip if `stage-a-cpu` fails (`!failure()` in their `if`).
+- Cross-stage: GPU stages run only when `stage-a-cpu` succeeds — the `if` requires `needs.stage-a-cpu.result == 'success'`.
 - Within-stage: each suite stops at the first failure (`pytest -x` for CPU; `run_unittest_files` breaks on the first failing file for CUDA).
 
 The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
 
-- Cross-stage: each GPU stage's `if` becomes `(!failure() || contains(..., 'bypass-fastfail'))`, so GPU stages run even after `stage-a-cpu` fails.
+- Cross-stage: each GPU stage's check becomes `(needs.stage-a-cpu.result == 'success' || (needs.stage-a-cpu.result == 'failure' && contains(..., 'bypass-fastfail')))`, so GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: each stage adds `--continue-on-error` (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
 
 Like the meta-labels, `bypass-fastfail` is matched directly in `pr-test.yml` and is not in `KNOWN_LABELS`.
