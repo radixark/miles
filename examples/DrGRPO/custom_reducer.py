@@ -4,7 +4,7 @@ This module provides a custom reducer that divides by a constant instead of
 the number of effective tokens. This is useful for Dr.GRPO algorithm.
 
 Usage:
-    --custom-pg-loss-reducer-function-path examples.Dr.GRPO.custom_reducer:get_pg_loss_reducer
+    --custom-pg-loss-reducer-function-path examples.DrGRPO.custom_reducer.get_pg_loss_reducer
 """
 
 from collections.abc import Callable
