@@ -2,13 +2,13 @@
 Update SchedulerActor engines via RDT/NIXL for p2p weight transfer.
 
 Trainer all-gathers params (bucketed) and converts them to HF format using
-``DistBucketedWeightUpdateMixin`` exactly like the P2P path. Instead of holding
+``DistBucketedWeightUpdateMixin``. Instead of holding
 a full GPU replica of the rollout model, each engine rank is backed by a small,
 reusable fixed-size GPU bucket. For every flush the bucket is re-staged to the
 shapes of the ready params, ``model_replica.load_weights`` writes the
 TP-rank-correct sglang shard into the bucket views, and the views are exported
 via ``ray.put(..., _tensor_transport="nixl")``. Each rollout ``SchedulerActor``
-then pulls its shard via RDMA directly into its own ``param.data`` buffers.
+then pulls its shard via RDT directly into its own ``param.data`` buffers.
 
 Lifecycle (inherited from the mixin):
     1. Pause engines, flush cache, pre-process quantization
@@ -51,73 +51,6 @@ from .update_weight_from_distributed.p2p_transfer_utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def prefer_libfabric_nixl_backend():
-    """Make Ray's NIXL agents try the LIBFABRIC backend before UCX.
-
-    Ray (<=2.55) hardcodes ``nixl_agent_config(backends=["UCX"])``. On AWS EFA
-    clusters UCX cannot drive the EFA NICs (libfabric-only) and intra-node GPU
-    transfers degrade to software-emulated TCP at ~300 MB/s (UCX proto:
-    "software emulation | tcp/eth0"); NIXL itself logs a warning recommending
-    LIBFABRIC. Patch nixl_agent creation so a UCX-only config is upgraded to
-    LIBFABRIC when that plugin loads, falling back to UCX otherwise. Must run
-    on BOTH transfer sides (trainer + SchedulerActor) before the first
-    ray.put/ray.get with the nixl transport, so both agents share a backend.
-    Opt-in via MILES_RDT_NIXL_USE_LIBFABRIC=1 (must be set for BOTH the trainer
-    and the SchedulerActors): per-process auto-negotiation is unsafe because the
-    two sides can diverge (observed: trainer's bucket-size validation failed ->
-    UCX while an engine's validation passed -> LIBFABRIC, and the mismatched
-    backends made every read fail with NIXL_ERR_BACKEND).
-    """
-    import os
-
-    if os.environ.get("MILES_RDT_NIXL_USE_LIBFABRIC") != "1":
-        return
-    import nixl._api as nixl_api
-
-    if getattr(nixl_api, "_miles_libfabric_pref_patched", False):
-        return
-    nixl_api._miles_libfabric_pref_patched = True
-
-    orig_agent_cls = nixl_api.nixl_agent
-    orig_config_cls = nixl_api.nixl_agent_config
-
-    def _validate_cuda_registration(agent):
-        """Register/deregister a CUDA buffer of realistic size to prove GPUDirect works.
-
-        On pods without functional GPUDirect RDMA (nvidia-peermem/dmabuf), the
-        LIBFABRIC backend instantiates fine and even registers SMALL CUDA buffers
-        (EFA stages them via its ~32 MiB host bounce pool), but fi_mr_reg of the
-        real staging bucket fails with "Bad address" / NIXL_ERR_BACKEND — so the
-        probe must use the size we actually register. miles sets
-        MILES_RDT_NIXL_VALIDATE_BYTES to --update-weight-buffer-size.
-        """
-        nbytes = int(os.environ.get("MILES_RDT_NIXL_VALIDATE_BYTES", str(3 * 1024**3 // 2)))
-        probe = torch.zeros(nbytes, dtype=torch.uint8, device=torch.cuda.current_device())
-        try:
-            reg = agent.register_memory(
-                [(probe.data_ptr(), probe.numel(), probe.get_device(), "")], mem_type="cuda"
-            )
-            agent.deregister_memory(reg)
-        finally:
-            del probe
-
-    def agent_with_libfabric_pref(name, agent_config=None, *args, **kwargs):
-        if agent_config is not None and getattr(agent_config, "backends", None) == ["UCX"]:
-            agent = None
-            try:
-                lf_config = orig_config_cls(backends=["LIBFABRIC"])
-                agent = orig_agent_cls(name, lf_config, *args, **kwargs)
-                _validate_cuda_registration(agent)
-                logger.info("[RDT] NIXL agent '%s' using LIBFABRIC backend", name)
-                return agent
-            except Exception as e:
-                logger.info("[RDT] NIXL LIBFABRIC unusable (%s), falling back to UCX", e)
-                del agent
-        return orig_agent_cls(name, agent_config, *args, **kwargs)
-
-    nixl_api.nixl_agent = agent_with_libfabric_pref
 
 
 class _EngineRankBucket:
@@ -195,7 +128,6 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
 
-        prefer_libfabric_nixl_backend()
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._group_name = "miles-rdt"
@@ -283,9 +215,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True on the source
             # alone reproduces the slowdown. Allocate the bucket from a
             # non-expandable segment.
-            expandable = "expandable_segments:True" in os.environ.get(
-                "PYTORCH_CUDA_ALLOC_CONF", ""
-            )
+            expandable = "expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
             if expandable:
                 torch.cuda.memory._set_allocator_settings("expandable_segments:False")
             try:
@@ -482,9 +412,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             t = time.perf_counter()
             ray.get(futures)
             phase["pull_wait"] += time.perf_counter() - t
-            phase["bytes"] += sum(v.numel() * v.element_size() for v in tensor_views) * len(
-                self._transfer_meta_list
-            )
+            phase["bytes"] += sum(v.numel() * v.element_size() for v in tensor_views) * len(self._transfer_meta_list)
             phase["flushes"] += 1
             del weight_refs
             if pbar is not None:
@@ -508,9 +436,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             gib = phase.pop("bytes", 0) / 1024**3
             flushes = int(phase.pop("flushes", 0))
             breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in sorted(phase.items()))
-            logger.info(
-                f"[RDT] sync phase breakdown ({flushes} flushes, {gib:.2f} GiB staged): {breakdown}"
-            )
+            logger.info(f"[RDT] sync phase breakdown ({flushes} flushes, {gib:.2f} GiB staged): {breakdown}")
             self._phase_seconds.clear()
         # The `update_weight_version` here is necessary because the engine was not
         # aware that the RDMA pull happened. After transfer, some models (e.g.
