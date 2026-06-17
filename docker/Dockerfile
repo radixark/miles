@@ -6,15 +6,15 @@
 #
 # 3. radixark/miles:dev-cu129-x86  (x86_64, CUDA 12.9) — legacy fallback
 #    build-arg:ENABLE_CUDA_13=0 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu129 \
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.13-cu129 \
 #    build-arg:WHEELS_TAG=cu129-x86_64-v0.5.12 \
 
-ARG SGLANG_IMAGE_TAG=v0.5.12
+ARG SGLANG_IMAGE_TAG=v0.5.13
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
 
-ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_BRANCH=sglang-miles-v0.5.13
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
