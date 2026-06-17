@@ -472,3 +472,31 @@ class TestSplitTrainDataByDp:
         parts = [ray.get(r.inner) for r in refs]
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
+
+    def test_balance_data_handles_count_not_divisible_by_dp_size(self):
+        """Regression for #969: with --balance-data, a valid sample count that is
+        not divisible by dp_size (e.g. after invalid rollout samples are dropped)
+        must still partition by token balance instead of asserting `N % dp != 0`.
+
+        The strided non-balance path already tolerates this; the balance path
+        should too. We require a real partition (every sample assigned exactly
+        once, no empty rank), matching the documented token-balancing intent."""
+        args = make_args(balance_data=True)
+        n = 6  # 6 % 4 != 0 — the divisibility that used to crash
+        # varied lengths so token balancing is actually exercised
+        lengths = [1, 2, 3, 4, 5, 6]
+        data = {
+            "tokens": [list(range(length)) for length in lengths],
+            "response_lengths": lengths,
+            "rewards": [0] * n,
+            "truncated": [0] * n,
+            "loss_masks": [[1] * length for length in lengths],
+            "sample_indices": list(range(n)),
+        }
+        refs = split_train_data_by_dp(args, data, dp_size=4)
+        parts = [ray.get(r.inner) for r in refs]
+        # every sample assigned exactly once
+        all_indices = sorted(i for p in parts for i in p["partition"])
+        assert all_indices == list(range(n))
+        # no rank left empty
+        assert all(len(p["partition"]) >= 1 for p in parts)

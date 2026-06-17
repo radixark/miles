@@ -132,7 +132,12 @@ def split_train_data_by_dp(args, data, dp_size):
     data["total_lengths"] = total_lengths
 
     if args.balance_data:
-        partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
+        # Require equal per-rank sample counts only when the totals divide evenly.
+        # When invalid samples are dropped, the valid count may not be divisible by
+        # dp_size (e.g. 206 % 4); in that case balance by token count alone, matching
+        # the strided path below which already yields uneven per-rank counts.
+        equal_size = len(total_lengths) % dp_size == 0
+        partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=equal_size)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
