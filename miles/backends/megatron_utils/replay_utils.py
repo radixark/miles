@@ -1,24 +1,60 @@
-from megatron.core.transformer.transformer_block import get_num_layers_to_build
+import re
+
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
+from miles.utils.replay_base import BaseReplayManager, RoutingReplayManager
 
-def register_replay_list_moe(replay_list, replay_data, *, models, **_kwargs):
-    """Map replay streams to Megatron MoE layers using the local model layout."""
-    layer_indices = []
+
+
+_DECODER_LAYER_NAME_RE = re.compile(r"(?:^|\.)decoder\.layers\.(\d+)(?:\.|$)")
+
+
+def _iter_local_routing_replays(models):
+    seen_replays = set()
     for vp_stage, model in enumerate(models):
-        config = model.module.config
-        num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
+        module = getattr(model, "module", model)
+        config = module.config
         offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
-        for layer_id in range(offset, offset + num_layers_to_build):
-            if isinstance(config.moe_layer_freq, int):
-                if layer_id % config.moe_layer_freq != 0:
-                    continue
-            elif isinstance(config.moe_layer_freq, list):
-                assert len(config.moe_layer_freq) == config.num_layers
-                if config.moe_layer_freq[layer_id] == 0:
-                    continue
-            layer_indices.append(layer_id)
 
-    for replay_idx, layer_idx in enumerate(layer_indices):
+        for module_name, submodule in module.named_modules():
+            replay = getattr(submodule, "routing_replay", None)
+            if replay is None or id(replay) in seen_replays:
+                continue
+
+            match = _DECODER_LAYER_NAME_RE.search(module_name)
+            if match is None:
+                raise ValueError(
+                    f"Found routing replay attached to an unexpected module path: {module_name!r}. "
+                    "Expected a decoder.layers.<idx> path."
+                )
+
+            seen_replays.add(id(replay))
+            local_layer_idx = int(match.group(1))
+            yield offset + local_layer_idx, replay
+
+
+def _register_replay_list_moe(replay_list, replay_data, models):
+    del replay_list
+
+    if replay_data.ndim != 3:
+        raise ValueError(f"Expected replay_data to be 3D [tokens, layers, topk], got shape {tuple(replay_data.shape)}")
+
+    local_routing_replays = list(_iter_local_routing_replays(models))
+    if not local_routing_replays:
+        return
+
+    num_layers = replay_data.shape[1]
+    for layer_idx, replay in local_routing_replays:
+        if layer_idx >= num_layers:
+            raise IndexError(
+                f"Replay layer index {layer_idx} is out of bounds for replay_data with {num_layers} layers."
+            )
         layer_data = replay_data[:, layer_idx]
-        replay_list[replay_idx].record(layer_data)
+        replay.record(layer_data)
+
+
+def get_register_replay_list_func(manager: BaseReplayManager):
+    if isinstance(manager, RoutingReplayManager):
+        return _register_replay_list_moe
+    else:
+        raise ValueError(f"Unsupported manager type: {type(manager)}")

@@ -18,15 +18,20 @@ from .common import (
     get_atomic_update_groups,
     get_named_update_units,
     named_params_and_buffers,
+    rollout_sync_named_params_and_buffers,
 )
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
 class HfWeightIteratorDirect(HfWeightIteratorBase):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, include_predictive_params: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
+        self.include_predictive_params = include_predictive_params
         self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(
-            self.args, self.model, self.model_name
+            self.args,
+            self.model,
+            self.model_name,
+            include_predictive_params=self.include_predictive_params,
         )
 
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
@@ -117,7 +122,11 @@ def _get_megatron_full_params(
 
 
 def _get_megatron_local_param_info_buckets(
-    args: Namespace, model: Sequence[torch.nn.Module], model_name: str
+    args: Namespace,
+    model: Sequence[torch.nn.Module],
+    model_name: str,
+    *,
+    include_predictive_params: bool = False,
 ) -> list[list[ParamInfo]]:
     """
     Partition params into buckets ≤ update_weight_buffer_size (with TP replication).
@@ -125,7 +134,11 @@ def _get_megatron_local_param_info_buckets(
     Model-specific atomic update groups are kept in the same bucket because
     some rollout loaders must see related tensors in the same load_weights call.
     """
-    param_infos = _get_megatron_local_param_infos(args, model)
+    param_infos = _get_megatron_local_param_infos(
+        args,
+        model,
+        include_predictive_params=include_predictive_params,
+    )
     param_names = [info.name for info in param_infos]
     atomic_update_groups = get_atomic_update_groups(args, model_name)
     update_units = get_named_update_units(param_names, atomic_update_groups)
@@ -159,7 +172,12 @@ def _pack_update_units(
     return param_info_buckets
 
 
-def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Module]) -> list[ParamInfo]:
+def _get_megatron_local_param_infos(
+    args: Namespace,
+    model: Sequence[torch.nn.Module],
+    *,
+    include_predictive_params: bool = False,
+) -> list[ParamInfo]:
     """
     Build global param metadata: collect → exchange PP/EP → resolve duplicates (MTP virtual PP)
     by min src_rank → validate. Returns sorted ParamInfo identical across all ranks.
@@ -169,7 +187,12 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
 
     param_infos = {}
     rank = dist.get_rank()
-    for name, param in named_params_and_buffers(args, model):
+    named_tensors = (
+        named_params_and_buffers(args, model)
+        if include_predictive_params
+        else rollout_sync_named_params_and_buffers(args, model)
+    )
+    for name, param in named_tensors:
         param_infos[name] = ParamInfo(
             name=name,
             dtype=param.dtype,

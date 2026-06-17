@@ -12,6 +12,22 @@ from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
+HOP_BY_HOP_RESPONSE_HEADERS = {
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "upgrade",
+}
+
+
+def _filter_response_headers(headers: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP_RESPONSE_HEADERS}
+
 
 def run_router(args):
     """
@@ -161,8 +177,7 @@ class MilesRouter:
         """Build HTTP response from proxy result."""
         content = result["response_body"]
         status_code = result["status_code"]
-        headers = result["headers"]
-        headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
+        headers = _filter_response_headers(result["headers"])
         content_type = headers.get("content-type", "")
         try:
             data = json.loads(content)
