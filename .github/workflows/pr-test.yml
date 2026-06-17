@@ -94,9 +94,8 @@ jobs:
         ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit
 
-  # Stage B: CPU-only bucket (currently empty; reserved for future CPU tests
-  # that don't fit stage-a-cpu's fast budget). Always runs on PR. Empty result
-  # exits 0 in run_suite.py (see tests/ci/run_suite.py L149-L151).
+  # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
+  # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
