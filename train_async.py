@@ -29,6 +29,9 @@ async def train(args):
     if args.check_weight_update_equal:
         await rollout_manager.check_weights.remote(action="compare")
 
+    if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
+        await rollout_manager.eval.remote(0)
+
     # async train loop.
     rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
