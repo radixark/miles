@@ -255,6 +255,54 @@ def test_accept_none_tools_and_known_kwargs():
 
 
 # ---------------------------------------------------------------------------
+# enable_thinking -> thinking_mode translation (miles alias for the encoder knob)
+# ---------------------------------------------------------------------------
+
+
+def test_enable_thinking_true_maps_to_thinking():
+    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=True) == deepseek_v32.render_messages(
+        _MSGS_BASIC, thinking_mode="thinking"
+    )
+
+
+def test_enable_thinking_false_maps_to_chat():
+    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=False) == deepseek_v32.render_messages(
+        _MSGS_BASIC, thinking_mode="chat"
+    )
+
+
+def test_enable_thinking_absent_defaults_to_thinking():
+    # No enable_thinking and no thinking_mode -> the cfg default ("thinking").
+    assert deepseek_v32.render_messages(_MSGS_BASIC) == deepseek_v32.render_messages(
+        _MSGS_BASIC, thinking_mode="thinking"
+    )
+
+
+def test_enable_thinking_none_defaults_to_thinking():
+    # Explicit None is treated as absent: falls through to the "thinking" default.
+    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=None) == deepseek_v32.render_messages(
+        _MSGS_BASIC, thinking_mode="thinking"
+    )
+
+
+def test_explicit_thinking_mode_wins_over_enable_thinking():
+    assert deepseek_v32.render_messages(
+        _MSGS_BASIC, enable_thinking=False, thinking_mode="thinking"
+    ) == deepseek_v32.render_messages(_MSGS_BASIC, thinking_mode="thinking")
+
+
+def test_enable_thinking_is_consumed_not_rejected():
+    # enable_thinking is translated away, so it is not rejected as an unknown kwarg.
+    deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=True)
+
+
+def test_build_config_does_not_mutate_input_kwargs():
+    kwargs = {"enable_thinking": True}
+    deepseek_v32._build_deepseek_encode_config(kwargs)
+    assert kwargs == {"enable_thinking": True}
+
+
+# ---------------------------------------------------------------------------
 # Cross-version detection exactness (the V3.2 detector must not match V4)
 # ---------------------------------------------------------------------------
 

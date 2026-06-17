@@ -29,7 +29,7 @@ def _args() -> ScriptArgs:
         num_rollout=2,
         extra_args=(
             "--ci-test --bf16 --freeze-indexer "
-            "--use-rollout-routing-replay --use-miles-router "
+            "--use-rollout-routing-replay "
             "--sglang-disable-shared-experts-fusion "
         ),
     )

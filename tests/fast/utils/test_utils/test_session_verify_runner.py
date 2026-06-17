@@ -48,6 +48,18 @@ def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
     assert "--ci-test" in train_args
 
 
+def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():
+    train_args = _build_args()
+
+    assert "--sglang-expert-parallel-size" not in train_args
+
+
+def test_namespace_to_train_args_emits_expert_parallel_for_moe():
+    train_args = _build_args(sglang_expert_parallel_size=8)
+
+    assert "--sglang-expert-parallel-size 8" in train_args
+
+
 def _write_metrics(path, entries: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
 

@@ -49,6 +49,9 @@ def is_deepseek_v4(tokenizer: Any) -> bool:
 
 
 def _build_deepseek_encode_config(kwargs: dict) -> dict:
+    kwargs = dict(kwargs)
+    if (enable_thinking := kwargs.pop("enable_thinking", None)) is not None:
+        kwargs.setdefault("thinking_mode", "thinking" if enable_thinking else "chat")
     # reject unknown kwargs to avoid silent config drop
     unknown = set(kwargs) - _KNOWN_KWARGS
     if unknown:

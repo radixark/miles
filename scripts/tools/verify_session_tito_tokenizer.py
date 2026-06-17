@@ -96,6 +96,7 @@ def main() -> int:
     print(f"sglang reasoning parser:{args.sglang_reasoning_parser}")
     print(f"sglang tool-call parser:{args.sglang_tool_call_parser or '(none)'}")
     print(f"Rollout GPUs per engine:{args.rollout_num_gpus_per_engine}")
+    print(f"sglang expert-parallel: {args.sglang_expert_parallel_size}")
     print(f"Actor nodes:            {args.actor_num_nodes}")
     print(f"Actor GPUs per node:    {args.actor_num_gpus_per_node}")
     print(f"Samples per prompt:     {args.n_samples_per_prompt}")

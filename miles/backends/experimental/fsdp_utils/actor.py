@@ -56,8 +56,8 @@ class FSDPTrainRayActor(TrainRayActor):
     """
 
     @with_defer(lambda: Timer().start("train_wait"))
-    def init(self, args: Namespace, role: str, with_ref: bool = False) -> int:  # type: ignore[override]
-        super().init(args, role, with_ref)
+    def init(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> int:  # type: ignore[override]
+        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
