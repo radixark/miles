@@ -177,6 +177,51 @@ def get_seqlen_balanced_partitions(seqlen_list: list[int], k_partitions: int, eq
     return _check_and_sort_partitions(partitions)
 
 
+def get_seqlen_bounded_partitions(seqlen_list: list[int], k_partitions: int) -> list[list[int]]:
+    """Partition item indices into k groups that balance total sequence length
+    while bounding the per-group item count: any two groups differ by at most
+    one item.
+
+    This sits between the two modes of ``get_seqlen_balanced_partitions``:
+    ``equal_size=True`` gives exactly equal counts but requires
+    ``len(seqlen_list) % k_partitions == 0``; ``equal_size=False`` balances
+    tokens but allows arbitrarily uneven counts. This balances tokens *and*
+    caps the count skew at 1, so it works for any
+    ``len(seqlen_list) >= k_partitions`` (e.g. when dropped samples leave a
+    count not divisible by ``k_partitions``).
+
+    Returns ``k_partitions`` lists of indices, each sorted ascending.
+    """
+    n = len(seqlen_list)
+    assert n >= k_partitions, f"number of items:[{n}] < k_partitions:[{k_partitions}]"
+
+    # At most `rem` groups may hold one extra item (ceil); the rest hold floor.
+    # Tracking the extra-item budget dynamically — rather than pinning which
+    # groups get it — lets the extra items land in whichever groups end up
+    # lightest, improving the token balance while still bounding the count
+    # delta at 1.
+    base, rem = divmod(n, k_partitions)
+    extra_budget = rem
+
+    partitions: list[list[int]] = [[] for _ in range(k_partitions)]
+    sums = [0] * k_partitions
+
+    # Longest-processing-time greedy: place the longest items first into the
+    # lightest group that still has spare capacity.
+    for idx in sorted(range(n), key=lambda i: seqlen_list[i], reverse=True):
+        limit = base + 1 if extra_budget > 0 else base
+        target = min(
+            (j for j in range(k_partitions) if len(partitions[j]) < limit),
+            key=lambda j: sums[j],
+        )
+        partitions[target].append(idx)
+        sums[target] += seqlen_list[idx]
+        if len(partitions[target]) > base:
+            extra_budget -= 1
+
+    return [sorted(p) for p in partitions]
+
+
 def get_reverse_idx(idx_map):
     reverse_idx_map = copy.deepcopy(idx_map)
 

@@ -500,6 +500,9 @@ class TestSplitTrainDataByDp:
         assert all_indices == list(range(n))
         # no rank left empty
         assert all(len(p["partition"]) >= 1 for p in parts)
+        # bounded-uneven (#970): per-rank sample counts differ by at most 1
+        sizes = [len(p["partition"]) for p in parts]
+        assert max(sizes) - min(sizes) <= 1
 
     def test_balance_data_falls_back_when_fewer_samples_than_dp_size(self):
         """Also #969: when so many samples are dropped that the valid count is
