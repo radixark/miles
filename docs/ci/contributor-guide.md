@@ -41,8 +41,8 @@ A test that isn't picked up fails silently — it just never appears, and CI sta
 
 1. **Locally**, from the repo root, list the plan for your suite (no GPU needed):
    ```bash
-   python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200 --match-all-labels --list-only
-   # CPU: python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu --match-all-labels --list-only
+   python3 tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200 --match-all-labels --list-only
+   # CPU: python3 tests/ci/run_suite.py --hw cpu --suite stage-a-cpu --match-all-labels --list-only
    ```
    Your file must appear under `Enabled N test(s)`. This command also validates registration across all tests — if any discovered file is missing its declaration, it errors here.
 2. **On the PR**, open the matching stage job and read the **Resolve suite plan** step — it prints the same plan, so you can confirm your file is listed in the real environment.
