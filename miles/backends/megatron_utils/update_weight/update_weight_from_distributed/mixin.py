@@ -318,7 +318,7 @@ class DistBucketedWeightUpdateMixin:
             # Base weight sync model:
             #   full-param RL: base weights change every step -> always sync.
             #   LoRA RL: base is frozen -> only sync once, on the first iteration.
-            if not (getattr(self, "is_lora", False) and self._lora_base_synced):
+            if not (self.is_lora and self._lora_base_synced):
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
                 self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
