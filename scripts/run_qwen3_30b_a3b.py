@@ -42,34 +42,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.no_colocate:
             self.actor_num_gpus_per_node = self.actor_num_gpus_per_node or self.num_gpus_per_node // 2
             self.rollout_num_gpus = self.rollout_num_gpus or self.num_gpus_per_node - self.actor_num_gpus_per_node
-            assert self.actor_num_gpus_per_node > 0, "actor_num_gpus_per_node must be positive"
-            assert self.rollout_num_gpus > 0, "rollout_num_gpus must be positive"
-            assert (
-                self.actor_num_gpus_per_node + self.rollout_num_gpus <= self.num_gpus_per_node
-            ), "actor and rollout GPU allocations cannot exceed num_gpus_per_node"
         else:
             self.actor_num_gpus_per_node = self.actor_num_gpus_per_node or self.num_gpus_per_node
             self.rollout_num_gpus = self.rollout_num_gpus or self.num_gpus_per_node
-        if self.rollout_int4:
-            assert not self.rollout_fp8, "rollout_int4 and rollout_fp8 cannot be enabled at the same time"
-            assert not self.rollout_mxfp8, "rollout_int4 and rollout_mxfp8 cannot be enabled at the same time"
-            assert not self.rollout_nvfp4, "rollout_int4 and rollout_nvfp4 cannot be enabled at the same time"
-        if self.rollout_mxfp8:
-            assert not self.rollout_fp8, "rollout_mxfp8 and rollout_fp8 cannot be enabled at the same time"
-            assert not self.rollout_nvfp4, "rollout_mxfp8 and rollout_nvfp4 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "rollout_mxfp8 only supports Blackwell GPUs"
-        if self.rollout_nvfp4:
-            assert not self.rollout_fp8, "rollout_nvfp4 and rollout_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "rollout_nvfp4 only supports Blackwell GPUs"
-        if self.train_mxfp8:
-            assert not self.train_fp8, "train_mxfp8 and train_fp8 cannot be enabled at the same time"
-            assert not self.train_nvfp4, "train_mxfp8 and train_nvfp4 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "train_mxfp8 only supports Blackwell GPUs"
-            assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8 to be enabled"
-        if self.train_nvfp4:
-            assert not self.train_fp8, "train_nvfp4 and train_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "train_nvfp4 only supports Blackwell GPUs"
-            assert self.rollout_nvfp4, "train_nvfp4 requires rollout_nvfp4 to be enabled"
+
+        assert (
+            sum((self.rollout_fp8, self.rollout_mxfp8, self.rollout_int4, self.rollout_nvfp4)) <= 1
+        ), "only one rollout precision mode can be enabled"
+        assert (
+            sum((self.train_fp8, self.train_mxfp8, self.train_nvfp4)) <= 1
+        ), "only one train precision mode can be enabled"
+        if any((self.rollout_mxfp8, self.rollout_nvfp4, self.train_mxfp8, self.train_nvfp4)):
+            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "mxfp8 and nvfp4 only support Blackwell GPUs"
 
 
 def prepare(args: ScriptArgs):
