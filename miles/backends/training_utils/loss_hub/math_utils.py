@@ -11,6 +11,19 @@ import torch.nn.functional as F
 from miles.backends.training_utils.cp_utils import slice_loss_masks_for_local_cp
 from miles.backends.training_utils.parallel import get_parallel_state
 
+_LOG_RATIO_EXP_CLAMP = 20.0
+
+
+def _safe_exp_neg_ppo_kl(ppo_kl: torch.Tensor) -> torch.Tensor:
+    log_ratio = torch.nan_to_num(
+        -ppo_kl.float(),
+        nan=0.0,
+        posinf=_LOG_RATIO_EXP_CLAMP,
+        neginf=-_LOG_RATIO_EXP_CLAMP,
+    )
+    log_ratio = torch.clamp(log_ratio, min=-_LOG_RATIO_EXP_CLAMP, max=_LOG_RATIO_EXP_CLAMP)
+    return log_ratio.exp()
+
 
 def compute_ess_ratio_contribution(
     ppo_kl: torch.Tensor,
@@ -38,7 +51,7 @@ def compute_ess_ratio_contribution(
         max_seq_lens,
     )
     local_lengths = [mask.size(0) for mask in local_masks]
-    is_weights_per_sample = (-ppo_kl.detach().float()).exp().split(local_lengths, dim=0)
+    is_weights_per_sample = _safe_exp_neg_ppo_kl(ppo_kl.detach()).split(local_lengths, dim=0)
 
     partial_sums = torch.zeros(len(loss_masks), 2, device=ppo_kl.device, dtype=torch.float32)
     for i, (weights, mask) in enumerate(zip(is_weights_per_sample, local_masks, strict=False)):
@@ -143,6 +156,14 @@ def compute_approx_kl(
         # http://joschu.net/blog/kl-approx.html
         # Besides non negative, it is also unbiased and have lower variance.
         log_ratio = -log_ratio
+        if kl_loss_type == "low_var_kl":
+            log_ratio = torch.nan_to_num(
+                log_ratio.float(),
+                nan=0.0,
+                posinf=_LOG_RATIO_EXP_CLAMP,
+                neginf=-_LOG_RATIO_EXP_CLAMP,
+            )
+            log_ratio = torch.clamp(log_ratio, min=-_LOG_RATIO_EXP_CLAMP, max=_LOG_RATIO_EXP_CLAMP)
         kl = log_ratio.exp() - 1 - log_ratio
     else:
         raise ValueError(f"Unknown kl_loss_type: {kl_loss_type}")
@@ -236,7 +257,7 @@ def compute_policy_loss(
     eps_clip_high: float,
     eps_clip_c: float | None = None,
 ):
-    ratio = (-ppo_kl).exp()
+    ratio = _safe_exp_neg_ppo_kl(ppo_kl)
     pg_losses1 = -ratio * advantages
     pg_losses2 = -ratio.clamp(1 - eps_clip, 1 + eps_clip_high) * advantages
     clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
