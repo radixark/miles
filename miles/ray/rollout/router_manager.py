@@ -1,17 +1,16 @@
+import copy
 import logging
 import multiprocessing
 import random
 import uuid
 
+from sglang_router.launch_router import RouterArgs
 
-from miles.utils.http_utils import (
-    _wrap_ipv6,
-    find_available_port,
-    get_host_info,
-    is_port_available,
-    wait_for_server_ready,
-)
-
+from miles.rollout.session.session_server import run_session_server
+from miles.router.router import run_router as run_miles_router
+from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available
+from miles.utils.http_utils import run_router as run_sglang_router
+from miles.utils.http_utils import wait_for_server_ready
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +33,15 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
             router_port = find_available_port(random.randint(3000, 4000))
 
     if args.use_miles_router:
-        import copy
-
         assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
-        from miles.router.router import run_router
 
+        run_router = run_miles_router
         router_args = copy.copy(args)
         router_args.sglang_router_ip = router_ip
         router_args.sglang_router_port = router_port
 
     else:
-        from sglang_router.launch_router import RouterArgs
-
-        from miles.utils.http_utils import run_router
-
+        run_router = run_sglang_router
         router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
         router_args.host = router_ip
         router_args.port = router_port
@@ -112,8 +106,6 @@ def start_session_server(args):
         )
 
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-
-    from miles.rollout.session.session_server import run_session_server
 
     # spawn (not fork): see start_router for rationale.
     process = multiprocessing.get_context("spawn").Process(target=run_session_server, args=(args, router_url))

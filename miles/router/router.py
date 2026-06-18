@@ -10,6 +10,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from miles.utils.logging_utils import configure_logger
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,6 +19,8 @@ def run_router(args):
     """
     Run the Miles router with the specified configuration.
     """
+    # Spawned as a fresh interpreter, so it inherits no logging config.
+    configure_logger()
     # Visible to `pkill -9 miles`; without this the daemon inherits "python".
     setproctitle.setproctitle("miles-router")
 
@@ -45,9 +49,7 @@ class MilesRouter:
 
         max_connections = getattr(args, "miles_router_max_connections", None)
         if max_connections is None:
-            max_connections = (
-                args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
-            )
+            max_connections = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
 
         timeout = getattr(args, "miles_router_timeout", None)
 
