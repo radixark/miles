@@ -56,7 +56,9 @@ class SessionServer:
             body = await request.body()
         if headers is None:
             headers = dict(request.headers)
-        headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding", "host")}
+        headers = {
+            k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding", "host")
+        }
 
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
