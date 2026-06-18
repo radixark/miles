@@ -1,8 +1,9 @@
 accelerate
+backports.strenum; python_version < "3.11"
 blobfile
 datasets
 httpx[http2]
-hypothesis
+hypothesis>=5.40
 mcp[cli]
 memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
 omegaconf
