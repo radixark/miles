@@ -4,11 +4,11 @@ import os
 
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
+from miles.utils.iter_utils import chunk_named_params_by_size
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
-from .common import get_atomic_update_groups
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
@@ -44,7 +44,6 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     cpu=False,
                     show_progress=False,
                 )
-                atomic_update_groups = []
             elif weight_type == "base":
                 conversion_tasks = self._bridge.get_conversion_tasks(self.model)
                 conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
@@ -54,35 +53,19 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     conversion_tasks=conversion_tasks,
                     merge_adapter_weights=False,
                 )
-                # Params trained separately in Megatron but fused into a single rollout
-                # tensor (e.g. q_a_proj + kv_a_proj_with_mqa -> fused_qkv_a_proj_with_mqa)
-                # must reach the rollout's load_weights in the same call, otherwise the
-                # fused param is never assembled. Keep each atomic-update group in one chunk.
-                atomic_update_groups = get_atomic_update_groups(self.args, self.model_name)
 
-            # Postprocess + quantize each atomic unit together (when targeting a quantized
-            # rollout, e.g. FP8/INT4 sglang) so update_weights_from_tensor lands real
-            # weight + scale pairs; LoRA adapters are passed through unchanged. Chunking is
-            # done at unit granularity so a fused group is never split across chunks.
-            bucket = []
-            bucket_size = 0
-            for unit in _iter_atomic_units(named_weights, atomic_update_groups):
-                quantized_unit = list(self._postprocess_and_quantize(iter(unit), weight_type))
-                if weight_type == "base":
-                    quantized_unit = [(n, t) for n, t in quantized_unit if not is_lora_weight_name(n)]
-                else:
-                    quantized_unit = [(n, t) for n, t in quantized_unit if is_lora_weight_name(n)]
-                if not quantized_unit:
-                    continue
-                unit_size = sum(t.nbytes for _, t in quantized_unit)
-                if bucket and bucket_size + unit_size >= self.args.update_weight_buffer_size:
-                    yield bucket
-                    bucket = []
-                    bucket_size = 0
-                bucket.extend(quantized_unit)
-                bucket_size += unit_size
-            if bucket:
-                yield bucket
+            # Apply postprocess + quantization (when targeting a quantized rollout,
+            # e.g. FP8 sglang). Base weights are quantized to match the rollout's
+            # storage format so update_weights_from_tensor lands real weight + scale
+            # pairs; LoRA adapters are passed through unchanged.
+            named_weights = self._postprocess_and_quantize(named_weights, weight_type)
+
+            if weight_type == "base":
+                named_weights = ((n, t) for n, t in named_weights if not is_lora_weight_name(n))
+            elif weight_type == "lora":
+                named_weights = ((n, t) for n, t in named_weights if is_lora_weight_name(n))
+
+            yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
 
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
         for hf_param_name, weight, megatron_param_name in named_weights:
@@ -100,41 +83,6 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                 yield from quantize_params(self.args, qmegatron_name, [(hf_name, weight)], self.quantization_config)
             else:
                 yield hf_name, weight
-
-
-def _iter_atomic_units(named_weights, atomic_update_groups):
-    """Group ``(hf_name, weight, megatron_name)`` tuples into atomic update units.
-
-    Params whose Megatron name matches an atomic-update group (e.g. the q_lora
-    ``linear_q_down_proj`` + ``linear_kv_down_proj`` that the rollout fuses into
-    ``fused_qkv_a_proj_with_mqa``, see ``common.get_atomic_update_groups``) are buffered
-    and emitted together as one unit so downstream chunking keeps them in a single
-    ``load_weights`` call; every other param is emitted as a singleton unit.
-    """
-
-    def _match(megatron_name):
-        for group in atomic_update_groups:
-            for suffix in group.suffixes:
-                if megatron_name.endswith(suffix):
-                    return megatron_name[: -len(suffix)], group
-        return None
-
-    pending: dict[tuple[str, str], list] = {}
-    for hf_name, weight, megatron_name in named_weights:
-        matched = _match(megatron_name)
-        if matched is None:
-            yield [(hf_name, weight, megatron_name)]
-            continue
-        prefix, group = matched
-        key = (prefix, group.key)
-        members = pending.setdefault(key, [])
-        members.append((hf_name, weight, megatron_name))
-        if len({m for _, _, m in members}) == len(group.suffixes):
-            yield pending.pop(key)
-    # Incomplete groups should not happen for well-formed checkpoints; emit the
-    # buffered members rather than silently dropping weights.
-    for members in pending.values():
-        yield members
 
 
 def _load_quantized_param_basenames(hf_checkpoint):
