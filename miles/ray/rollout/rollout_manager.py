@@ -82,7 +82,15 @@ class RolloutManager:
         # child's single uvicorn event-loop thread blocks it forever and the server
         # stops accepting connections. Forking before wandb.init() avoids inheriting
         # that state entirely.
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        # router_addr stays None when the router was not started (e.g. debug_train_only),
+        # otherwise "http://None:None" would slip past the `is not None` guard in
+        # init_wandb_secondary and point metric forwarding at an invalid endpoint.
+        router_addr = (
+            f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+            if args.sglang_router_ip and args.sglang_router_port
+            else None
+        )
+        init_tracking(args, primary=False, router_addr=router_addr)
 
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
