@@ -9,8 +9,6 @@ import re
 import shutil
 import socket
 import sys
-import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -117,7 +115,6 @@ class TaskResult:
     node: str
     pid: int
     shards: tuple[ShardManifest, ...]
-    phase_totals_s: dict[str, float]
     source_bytes: int
     output_bytes: int
     weights: int
@@ -151,24 +148,6 @@ class PlannedShard:
     final_filename: str
     weight_keys: tuple[str, ...]
     bytes: int
-
-
-class PhaseTimer:
-    def __init__(self, actor_id: int, task_id: int, node: str, pid: int, cuda_device_id: int | None):
-        self.actor_id = actor_id
-        self.task_id = task_id
-        self.node = node
-        self.pid = pid
-        self.cuda_device_id = cuda_device_id
-        self.phase_totals_s: dict[str, float] = {}
-
-    @contextmanager
-    def timed(self, phase: str):
-        start = time.time()
-        try:
-            yield
-        finally:
-            self.phase_totals_s[phase] = self.phase_totals_s.get(phase, 0.0) + time.time() - start
 
 
 class WrappedStorageReader(dist_cp.FileSystemReader):
@@ -208,10 +187,9 @@ class ChunkedStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
         super().set_up_planner(state_dict, metadata, is_coordinator)
 
 
-class ProfiledStorageReader(WrappedStorageReader):
-    def __init__(self, path: str, timer: PhaseTimer):
+class AccountingStorageReader(WrappedStorageReader):
+    def __init__(self, path: str):
         super().__init__(path)
-        self.timer = timer
         self.read_items = 0
         self.files = 0
         self.storage_bytes = 0
@@ -246,18 +224,16 @@ class ProfiledStorageReader(WrappedStorageReader):
 
                     seekable = transform_from if transform_from.seekable() else io.BytesIO(transform_from.read(-1))
                     seekable.seek(0)
-                    with self.timer.timed("dcp_torch_load"):
-                        tensor = cast(torch.Tensor, torch.load(seekable, map_location="cpu", weights_only=True))
+                    tensor = cast(torch.Tensor, torch.load(seekable, map_location="cpu", weights_only=True))
                     tensor = narrow_tensor_by_index(tensor, req.storage_offsets, req.lengths)
-                    with self.timer.timed("dcp_tensor_copy"):
-                        target_tensor = planner.resolve_tensor(req).detach()
-                        if target_tensor.size() != tensor.size():
-                            raise AssertionError(
-                                f"DCP tensor size mismatch for {req.storage_index}: "
-                                f"{target_tensor.size()} vs {tensor.size()}"
-                            )
-                        target_tensor.copy_(tensor)
-                        planner.commit_tensor(req, target_tensor)
+                    target_tensor = planner.resolve_tensor(req).detach()
+                    if target_tensor.size() != tensor.size():
+                        raise AssertionError(
+                            f"DCP tensor size mismatch for {req.storage_index}: "
+                            f"{target_tensor.size()} vs {tensor.size()}"
+                        )
+                    target_tensor.copy_(tensor)
+                    planner.commit_tensor(req, target_tensor)
             finally:
                 stream_context.__exit__(*sys.exc_info())
 
@@ -298,11 +274,10 @@ def prepare_cached_metadata_for_reader(
 def load_tensor_chunk(
     input_dir: str,
     keys_to_load: set[str],
-    timer: PhaseTimer,
     metadata: dist_cp.metadata.Metadata,
 ) -> DcpLoadResult:
     state_dict: dict[str, torch.Tensor] = {}
-    storage_reader = ProfiledStorageReader(input_dir, timer)
+    storage_reader = AccountingStorageReader(input_dir)
     metadata = prepare_cached_metadata_for_reader(metadata, storage_reader)
     planner = ChunkedStateDictLoadPlanner(keys_to_load)
     planner.set_up_planner(state_dict, metadata, is_coordinator=True)
@@ -548,14 +523,13 @@ def converted_moe_tensors_from_chunk(
 def load_moe_block_direct(
     input_dir: str,
     block: MoeBlockSpec,
-    timer: PhaseTimer,
     metadata: dist_cp.metadata.Metadata,
 ) -> DirectMoeLoadResult:
     md = metadata.state_dict_metadata[block.source_key]
     if not isinstance(md, dist_cp.metadata.TensorStorageMetadata):
         raise TypeError(f"{block.source_key} is not tensor metadata")
 
-    storage_reader = ProfiledStorageReader(input_dir, timer)
+    storage_reader = AccountingStorageReader(input_dir)
     metadata = prepare_cached_metadata_for_reader(metadata, storage_reader)
     storage_reader.set_up_storage_reader(metadata, is_coordinator=True)
     read_items = create_direct_moe_read_items(block, md)
@@ -578,8 +552,7 @@ def load_moe_block_direct(
             )
             seekable = transform_from if transform_from.seekable() else io.BytesIO(transform_from.read(-1))
             seekable.seek(0)
-            with timer.timed("dcp_torch_load"):
-                tensor = cast(torch.Tensor, torch.load(seekable, map_location="cpu", weights_only=True))
+            tensor = cast(torch.Tensor, torch.load(seekable, map_location="cpu", weights_only=True))
             tensor = narrow_tensor_by_index(tensor, read_item.storage_offsets, read_item.lengths)
             tensor_groups.extend(
                 converted_moe_tensors_from_chunk(
@@ -844,14 +817,12 @@ def append_to_shards(
     converted_named_tensors: tuple[tuple[str, torch.Tensor], ...] | list[tuple[str, torch.Tensor]],
     max_file_bytes: int,
     shards: list[ShardManifest],
-    timer: PhaseTimer,
 ) -> tuple[int, int, int]:
     total_size = 0
     for converted_name, converted_param in converted_named_tensors:
         tensor_size = converted_param.numel() * converted_param.element_size()
         if tensor_size + current_size > max_file_bytes and current_tensors:
-            with timer.timed("safetensors_save"):
-                shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size))
+            shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size))
             shard_idx += 1
             current_tensors.clear()
             current_size = 0
@@ -864,20 +835,18 @@ def append_to_shards(
 def prepare_moe_block_task_tensors(
     task: TaskSpec,
     input_dir: str,
-    timer: PhaseTimer,
     metadata: dist_cp.metadata.Metadata,
 ) -> PreparedTaskTensors:
     groups: list[PreparedTensorGroup] = []
     total_read_items = 0
     total_files = 0
     total_storage_bytes = 0
-    with timer.timed("dcp_load"):
-        for block in task.moe_blocks:
-            result = load_moe_block_direct(input_dir, block, timer, metadata)
-            groups.extend(result.tensor_groups)
-            total_read_items += result.read_items
-            total_files += result.files
-            total_storage_bytes += result.storage_bytes
+    for block in task.moe_blocks:
+        result = load_moe_block_direct(input_dir, block, metadata)
+        groups.extend(result.tensor_groups)
+        total_read_items += result.read_items
+        total_files += result.files
+        total_storage_bytes += result.storage_bytes
     return PreparedTaskTensors(tuple(groups), TaskLoadStats(total_read_items, total_files, total_storage_bytes))
 
 
@@ -886,20 +855,17 @@ def prepare_whole_source_task_tensors(
     input_dir: str,
     megatron_args: Any,
     model_name: str,
-    timer: PhaseTimer,
     metadata: dist_cp.metadata.Metadata,
 ) -> PreparedTaskTensors:
-    with timer.timed("dcp_load"):
-        load_result = load_tensor_chunk(input_dir, set(task.keys), timer, metadata)
-        state_dict = load_result.state_dict
+    load_result = load_tensor_chunk(input_dir, set(task.keys), metadata)
+    state_dict = load_result.state_dict
 
     groups: list[PreparedTensorGroup] = []
     try:
         for name, param in get_named_params(megatron_args, state_dict):
             if getattr(megatron_args, "vocab_size", None) is not None:
                 param = m2hf.remove_padding(name, param, megatron_args.vocab_size)
-            with timer.timed("convert_to_hf"):
-                converted_named_tensors = m2hf._convert_to_hf_core(megatron_args, model_name, name, param)
+            converted_named_tensors = m2hf._convert_to_hf_core(megatron_args, model_name, name, param)
             groups.append(PreparedTensorGroup(name, tuple(converted_named_tensors)))
         return PreparedTaskTensors(
             tuple(groups),
@@ -917,7 +883,6 @@ def write_prepared_tensor_groups(
     quantization_config: dict[str, Any] | None,
     max_file_bytes: int,
     cuda_device_id: int | None,
-    timer: PhaseTimer,
 ) -> tuple[tuple[ShardManifest, ...], int]:
     current_tensors: dict[str, torch.Tensor] = {}
     current_size = 0
@@ -930,12 +895,11 @@ def write_prepared_tensor_groups(
         if quantization_config is not None:
             if cuda_device_id is not None:
                 torch.cuda.set_device(cuda_device_id)
-            with timer.timed("quantization"):
-                converted_named_tensors = tuple(
-                    m2hf.quantize_params(
-                        megatron_args, group.source_name, list(converted_named_tensors), quantization_config
-                    )
+            converted_named_tensors = tuple(
+                m2hf.quantize_params(
+                    megatron_args, group.source_name, list(converted_named_tensors), quantization_config
                 )
+            )
         shard_idx, current_size, added_size = append_to_shards(
             staging_dir,
             task_id,
@@ -945,13 +909,11 @@ def write_prepared_tensor_groups(
             converted_named_tensors,
             max_file_bytes,
             shards,
-            timer,
         )
         total_size += added_size
 
     if current_tensors:
-        with timer.timed("safetensors_save"):
-            shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size))
+        shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size))
     return tuple(shards), total_size
 
 
@@ -997,12 +959,11 @@ class ConversionWorker:
     def convert(self, task: TaskSpec) -> TaskResult:
         node = socket.gethostname()
         pid = os.getpid()
-        timer = PhaseTimer(self.actor_id, task.task_id, node, pid, self.cuda_device_id)
         if task.moe_blocks:
-            prepared = prepare_moe_block_task_tensors(task, self.input_dir, timer, self.metadata)
+            prepared = prepare_moe_block_task_tensors(task, self.input_dir, self.metadata)
         else:
             prepared = prepare_whole_source_task_tensors(
-                task, self.input_dir, self.megatron_args, self.model_name, timer, self.metadata
+                task, self.input_dir, self.megatron_args, self.model_name, self.metadata
             )
         shards, total_size = write_prepared_tensor_groups(
             self.staging_dir,
@@ -1012,7 +973,6 @@ class ConversionWorker:
             self.quantization_config,
             self.max_file_bytes,
             self.cuda_device_id,
-            timer,
         )
         return TaskResult(
             task_id=task.task_id,
@@ -1020,7 +980,6 @@ class ConversionWorker:
             node=node,
             pid=pid,
             shards=shards,
-            phase_totals_s=dict(timer.phase_totals_s),
             source_bytes=task.estimated_source_bytes,
             output_bytes=total_size,
             weights=sum(len(shard.weight_keys) for shard in shards),

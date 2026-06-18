@@ -102,7 +102,6 @@ def test_plan_global_shards_is_deterministic_and_rejects_duplicates():
             module.ShardManifest("tmp-b.safetensors", None, ("b",), 8, 1),
             module.ShardManifest("tmp-a.safetensors", None, ("a",), 4, 1),
         ),
-        phase_totals_s={},
         source_bytes=12,
         output_bytes=12,
         weights=2,
