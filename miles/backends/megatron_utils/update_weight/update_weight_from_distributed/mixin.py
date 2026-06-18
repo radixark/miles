@@ -327,7 +327,7 @@ class DistBucketedWeightUpdateMixin:
                 dist.barrier(group=get_gloo_group())
 
             # LoRA adapter weights: every iteration.
-            if getattr(self, "is_lora", False):
+            if self.is_lora:
                 self._update_lora_weights()
                 dist.barrier(group=get_gloo_group())
                 if not self._lora_base_synced:
