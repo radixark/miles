@@ -70,7 +70,9 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
             f"Run 'pkill -9 python' to kill it, then retry."
         )
 
-    process = multiprocessing.Process(
+    # spawn (not fork): the child must not inherit threads/finalizers from this
+    # Ray actor (e.g. wandb's service thread), which deadlock a forked child.
+    process = multiprocessing.get_context("spawn").Process(
         target=run_router,
         args=(router_args,),
     )
@@ -113,7 +115,8 @@ def start_session_server(args):
 
     from miles.rollout.session.session_server import run_session_server
 
-    process = multiprocessing.Process(target=run_session_server, args=(args, router_url))
+    # spawn (not fork): see start_router for rationale.
+    process = multiprocessing.get_context("spawn").Process(target=run_session_server, args=(args, router_url))
     process.daemon = True
     process.start()
     wait_for_server_ready(ip, port, process, timeout=30)
