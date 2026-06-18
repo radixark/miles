@@ -2164,7 +2164,14 @@ def miles_validate_args(args):
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            modules = [
+                # dense attention + MLP
+                "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
+                # MLA (DeepSeek / GLM MLA attention)
+                "q_a_proj", "kv_a_proj_with_mqa", "q_b_proj", "kv_b_proj",
+                # DSA indexer (GLM-5.1 / DeepSeek-V3.2)
+                "wq_b", "wk", "weights_proj",
+            ]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
         else:
