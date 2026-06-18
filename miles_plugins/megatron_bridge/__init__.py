@@ -60,6 +60,48 @@ except Exception as _e:  # best-effort
     logger.warning("miles bridge shim _install_bridge_pp_group_unwrap not applied: %s", _e)
 
 
+def _install_remove_non_pickleables_reloadable_pg_shim() -> None:
+    """Strip :class:`~miles.utils.reloadable_process_group.ReloadableProcessGroup` in bridge export.
+
+    ``megatron.bridge``'s ``remove_non_pickleables`` drops ``ProcessGroup`` and
+    ``ProcessGroupCollection`` before ``copy.copy``, but miles wraps groups in
+    ``ReloadableProcessGroup``. Those wrappers have ``__dict__`` and are not in
+    the upstream allowlist, so weight export via ``--megatron-to-hf-mode bridge``
+    fails with ``TypeError: cannot pickle 'ReloadableProcessGroup'``.
+    """
+    from megatron.bridge.models.conversion import utils as bridge_utils
+
+    from miles.utils.reloadable_process_group import ReloadableProcessGroup
+
+    if getattr(bridge_utils, "_miles_reloadable_pg_remove_non_pickleables_installed", False):
+        return
+
+    _orig = bridge_utils.remove_non_pickleables
+
+    def remove_non_pickleables(obj, max_depth: int = 3, current_depth: int = 0):
+        if isinstance(obj, ReloadableProcessGroup):
+            return None
+        return _orig(obj, max_depth, current_depth)
+
+    bridge_utils.remove_non_pickleables = remove_non_pickleables
+
+    # ``param_mapping`` binds this name at import time; keep it in sync if loaded early.
+    try:
+        from megatron.bridge.models.conversion import param_mapping as pm
+
+        pm.remove_non_pickleables = remove_non_pickleables
+    except ImportError:
+        pass
+
+    bridge_utils._miles_reloadable_pg_remove_non_pickleables_installed = True
+
+
+try:
+    _install_remove_non_pickleables_reloadable_pg_shim()
+except Exception as _e:  # best-effort
+    logger.warning("miles bridge shim _install_remove_non_pickleables_reloadable_pg_shim not applied: %s", _e)
+
+
 # Model-specific bridge subclasses. Each submodule self-installs on import.
 # Keep imports here so merely importing ``miles_plugins.megatron_bridge`` is
 # enough to pick up every miles bridge (mirrors ``miles_plugins.mbridge``).
