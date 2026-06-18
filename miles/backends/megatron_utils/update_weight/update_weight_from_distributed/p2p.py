@@ -61,6 +61,8 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        assert not is_lora, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+        self.is_lora = False
 
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())

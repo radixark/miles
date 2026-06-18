@@ -1,8 +1,9 @@
+import dataclasses
 import inspect
 import logging
 import re
 from argparse import Namespace
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 
 import ray
 import torch
@@ -15,6 +16,114 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import ParamInfo
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class AtomicUpdateGroup:
+    key: str
+    suffixes: tuple[str, ...]
+
+
+def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
+    model_groups = _get_model_atomic_update_groups(model_name)
+    if model_groups:
+        return model_groups
+    return _get_q_lora_atomic_update_groups(args)
+
+
+def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
+    if args.q_lora_rank is None:
+        return []
+
+    return [
+        AtomicUpdateGroup(
+            key="q_lora_a_proj",
+            suffixes=(
+                ".self_attention.linear_q_down_proj.weight",
+                ".self_attention.linear_kv_down_proj.weight",
+            ),
+        )
+    ]
+
+
+def _get_model_atomic_update_groups(model_name) -> list[AtomicUpdateGroup]:
+    model_name = model_name.lower()
+    if "deepseekv4" in model_name:
+        from ..megatron_to_hf.deepseekv4 import get_deepseek_v4_atomic_update_groups
+
+        return get_deepseek_v4_atomic_update_groups()
+    return []
+
+
+@dataclasses.dataclass(frozen=True)
+class NamedUpdateUnit:
+    """A set of params that must be transferred and packed together."""
+
+    names: tuple[str, ...]
+
+
+def get_named_update_units(param_names: Sequence[str], atomic_update_groups) -> list[NamedUpdateUnit]:
+    position = {}
+    for i, name in enumerate(param_names):
+        assert name not in position, f"Duplicate param name: {name}"
+        position[name] = i
+
+    grouped_names: set[str] = set()
+    group_keys: set[str] = set()
+    ordered_units: list[tuple[int, NamedUpdateUnit]] = []
+    pending_groups: dict[tuple[str, str], list[str | None]] = {}
+    matched_group_keys: set[str] = set()
+
+    for group in atomic_update_groups:
+        key = group.key
+        suffixes = group.suffixes
+        assert key not in group_keys, f"Duplicate atomic update group: {key}"
+        assert suffixes, f"Atomic update group {key} has no suffixes"
+        assert all(suffixes), f"Atomic update group {key} contains empty suffix"
+        assert len(set(suffixes)) == len(suffixes), f"Atomic update group {key} contains duplicate suffixes"
+        group_keys.add(key)
+
+    for name in param_names:
+        matches = [
+            (group, suffix_idx, suffix)
+            for group in atomic_update_groups
+            for suffix_idx, suffix in enumerate(group.suffixes)
+            if name.endswith(suffix)
+        ]
+        assert len(matches) <= 1, f"Param {name} matches multiple atomic update groups"
+        if not matches:
+            continue
+
+        group, suffix_idx, suffix = matches[0]
+        prefix = name[: -len(suffix)]
+        names = pending_groups.setdefault((prefix, group.key), [None] * len(group.suffixes))
+        names[suffix_idx] = name
+        grouped_names.add(name)
+        matched_group_keys.add(group.key)
+
+    for group in atomic_update_groups:
+        assert (
+            group.key in matched_group_keys
+        ), f"Atomic update group {group.key} references no params matching suffixes {group.suffixes}"
+
+    for (prefix, key), names in pending_groups.items():
+        assert all(names), f"Atomic update group {prefix}:{key} is incomplete: {names}"
+        resolved_names = tuple(names)
+        ordered_units.append((min(position[name] for name in resolved_names), NamedUpdateUnit(names=resolved_names)))
+
+    for name in param_names:
+        if name not in grouped_names:
+            ordered_units.append((position[name], NamedUpdateUnit(names=(name,))))
+
+    return [unit for _position, unit in sorted(ordered_units, key=lambda item: item[0])]
+
+
+def get_named_value_update_units(
+    named_values: Sequence[tuple[str, object]], atomic_update_groups
+) -> list[list[tuple[str, object]]]:
+    update_units = get_named_update_units([name for name, _value in named_values], atomic_update_groups)
+    value_by_name = dict(named_values)
+    return [[(name, value_by_name[name]) for name in unit.names] for unit in update_units]
 
 
 def _gather_with_stride(
@@ -201,7 +310,7 @@ def _named_params_and_buffers_global(
             if not name.startswith("module.module."):
                 name = "module." + name
 
-            decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
+            decoder_layers_pattern = r"module\.module\.(?:language_model\.)?decoder\.layers\.(\d+)\.(.+)"
             match = re.match(decoder_layers_pattern, name)
             if not match:
                 # MTP (Multi-Token Prediction) layers for speculative decoding
@@ -246,7 +355,7 @@ def _named_params_and_buffers_global(
             if not name.startswith("module.module."):
                 name = "module." + name
 
-            decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
+            decoder_layers_pattern = r"module\.module\.(?:language_model\.)?decoder\.layers\.(\d+)\.(.+)"
             match = re.match(decoder_layers_pattern, name)
             if not match:
                 yield name, buffer
@@ -261,7 +370,7 @@ def collect_named_tensors_for_weight_transfer(
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
     translate_gpu_to_cpu: bool = False,
-    is_expert: bool = False,
+    is_expert: bool | None = False,
 ) -> Iterator[tuple[str, torch.Tensor]]:
 
     for name, tensor in named_params_and_buffers(
@@ -270,7 +379,7 @@ def collect_named_tensors_for_weight_transfer(
         convert_to_global_name,
         translate_gpu_to_cpu,
     ):
-        if is_expert == (".experts." in name):
+        if is_expert is None or is_expert == (".experts." in name):
             yield name, tensor
 
 
@@ -296,3 +405,27 @@ def post_process_weights(
             for engine in rollout_engines
         ]
     )
+
+
+def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
+    """Validate return values from rollout engine weight-sync RPCs.
+
+    Raises RuntimeError if any engine reports failure, preventing silent
+    failures when SGLang versions are incompatible.
+    """
+    sync_type = "LoRA" if is_lora else "Base model"
+    for result in results:
+        if isinstance(result, Mapping):
+            success = result.get("success")
+            error_msg = result.get("error_message") or result.get("error") or "unknown error"
+        elif hasattr(result, "success"):
+            success = result.success
+            error_msg = getattr(result, "error_message", "unknown error")
+        else:
+            continue
+
+        if success is False:
+            raise RuntimeError(
+                f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
+                f"Check SGLang version compatibility."
+            )

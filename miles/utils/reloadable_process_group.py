@@ -70,6 +70,7 @@ def monkey_patch_torch_dist():
     dist.all_to_all = get_new_function(dist.all_to_all)
     dist.all_to_all_single = get_new_function(dist.all_to_all_single)
     dist.broadcast = get_new_function(dist.broadcast)
+    dist.broadcast_object_list = get_new_function(dist.broadcast_object_list)
     dist.reduce = get_new_function(dist.reduce)
     dist.reduce_scatter = get_new_function(dist.reduce_scatter)
     dist.reduce_scatter_tensor = get_new_function(dist.reduce_scatter_tensor)
@@ -278,5 +279,6 @@ def _wrap_low_level_call():
         yield
     except Exception as e:
         mem_info = print_memory("after torch distributed error")
-        e.add_note(f"{mem_info=}")
+        if hasattr(e, "add_note"):
+            e.add_note(f"{mem_info=}")
         raise

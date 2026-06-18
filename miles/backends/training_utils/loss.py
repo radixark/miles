@@ -8,6 +8,7 @@ from miles.backends.training_utils.loss_hub.advantages import compute_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
+from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
@@ -18,7 +19,8 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     This function extracts rewards, log-probs, values, and masks from
     `rollout_data`, computes KL divergences, then applies the chosen advantage
     estimator. Supported methods: "grpo", "gspo", "ppo", "reinforce_plus_plus",
-    "reinforce_plus_plus_baseline", and "on_policy_distillation". When
+    and "reinforce_plus_plus_baseline". On-policy distillation (OPD) is applied
+    orthogonally on top of any estimator via `args.use_opd`. When
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel group using masked statistics.
 
@@ -69,8 +71,16 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         values=values,
-        teacher_log_probs=rollout_data.get("teacher_log_probs"),
     )
+
+    # Apply on-policy distillation KL penalty to advantages (orthogonal to advantage estimator)
+    if args.use_opd:
+        apply_opd_kl_to_advantages(
+            args=args,
+            rollout_data=rollout_data,
+            advantages=advantages,
+            student_log_probs=log_probs,
+        )
 
     if args.normalize_advantages:
         advantages = normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)

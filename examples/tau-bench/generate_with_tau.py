@@ -19,20 +19,37 @@ from miles.utils.types import Sample
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 
+# User simulator configuration.
+# tau-bench drives the user simulator through litellm, so any litellm-supported
+# provider works. Pick the provider/model with the env vars below and supply the
+# matching key through that provider's own *_API_KEY env var:
+#   Gemini  : TAU_USER_MODEL_PROVIDER=gemini   TAU_USER_MODEL=gemini-2.5-flash-lite  GEMINI_API_KEY=...
+#   DeepSeek: TAU_USER_MODEL_PROVIDER=deepseek TAU_USER_MODEL=deepseek-chat          DEEPSEEK_API_KEY=...
+# Defaults preserve the original Gemini behavior.
+USER_MODEL_PROVIDER = os.environ.get("TAU_USER_MODEL_PROVIDER", "gemini")
+USER_MODEL = os.environ.get("TAU_USER_MODEL", "gemini-2.5-flash-lite")
+
+# litellm reads the provider's own *_API_KEY env var; just confirm it is set so
+# the run fails fast with a clear message instead of deep inside a rollout.
+_PROVIDER_KEY_ENV = {"gemini": "GEMINI_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
+_key_env = _PROVIDER_KEY_ENV.get(USER_MODEL_PROVIDER, f"{USER_MODEL_PROVIDER.upper()}_API_KEY")
+if not os.environ.get(_key_env):
+    raise RuntimeError(
+        f"tau-bench user simulator needs {_key_env} set for provider "
+        f"'{USER_MODEL_PROVIDER}'. Export it before launching the run."
+    )
+
 # Tau-bench configuration
 TAU_CONFIGS = {
     "env": "retail",  # Select between ["retail", "airline"]
     "agent": "tool-calling",  # Select between ["tool-calling", "act", "react", "few-shot"]
-    "user_model": "gemini-2.5-flash-lite",  # Cheap Model for user simulator
+    "user_model": USER_MODEL,  # Cheap model for the user simulator
     "task_split": "train",  # Select between ["train", "test", "dev"] for retail
     "user_strategy": "llm",  # Select between ["llm", "react", "verify", "reflection"]
     "model_provider": "auto_router",  # Unused, required
     "model": "qwen3-4b",  # Unused, required
-    "user_model_provider": "gemini",
+    "user_model_provider": USER_MODEL_PROVIDER,
 }
-# Replace with your actual API key for user sim
-GEMINI_API_KEY = "NONE"
-os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 tau_config = RunConfig(**TAU_CONFIGS)
 
 

@@ -2,14 +2,11 @@
 title: DeepSeek-V4 Flash
 description: Launch recipe for DeepSeek-V4-Flash (284 B) — FP8 rollout / BF16 train, 8-node H200 (64 GPUs).
 ---
-
-# DeepSeek-V4 Flash
-
 DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046).
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. The miles + Megatron-Core (`mcore`) integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, plus the published images `radixark/miles:deepseek-v4` (H200 / B200, cu129 x86) and `radixark/miles:gb300-dev-dskv4` (GB300, cu130 arm64).
+[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. It ships in the `radixark/miles:latest` image. The larger [DeepSeek-V4-Pro](/models/deepseek/deepseek-v4-pro) shares the same V4 architecture family at Pro scale.
 
 **Key highlights:**
 
@@ -32,16 +29,19 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 One command runs the full pipeline — dataset download, FP8 → BF16 cast, distributed `torch_dist` conversion, and the training loop:
 
 ```bash
-# Pull the image matching your cluster:
-#   H200 / B200 (cu129 x86) -> radixark/miles:deepseek-v4
-#   GB300       (cu130 arm64) -> radixark/miles:gb300-dev-dskv4
-docker pull radixark/miles:deepseek-v4
+# Pull the image:
+docker pull radixark/miles:latest
 
-# 8-node Flash run, inside the container
+# 8-node Flash run (colocated), inside the container
 cd /root/miles
 python scripts/run_deepseek_v4.py full-train \
    --model-name DeepSeek-V4-Flash-FP8 \
    --num-nodes 8 --num-gpus-per-node 8
+
+# 16-node disaggregated run: 8 actor (training) nodes + 8 dedicated rollout nodes
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash-FP8 \
+   --num-nodes 16 --num-gpus-per-node 8 --rollout-num-nodes 8
 ```
 
 The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
@@ -54,10 +54,14 @@ The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts as separate sibling sub-directories |
-| `--model-local-dir` | `/root/local_data` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk instead of shared storage |
+| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk instead of shared storage (only worth setting when `--model-dir` is on shared/remote storage) |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
-You can override these on the launcher when your cluster mounts a different layout. There are no `MILES_SCRIPT_*` env vars that preconfigure these paths; the only env vars the launcher reads are `MILES_SCRIPT_EXTERNAL_RAY` and `MILES_SCRIPT_ENABLE_RAY_SUBMIT` (both governing Ray bootstrapping, see [§4.3](#43-multi-node-fan-out)).
+You can override these via the CLI flags above or equivalently via env vars — every launcher option binds to `MILES_SCRIPT_<FIELD_NAME_UPPER>` (e.g. `MILES_SCRIPT_MODEL_DIR`), with precedence CLI flag > env var > built-in default; run `train --help` to see each option's `[env var: …]` name.
+
+### 3.3 Colocated vs. disaggregated rollout
+
+By default the launcher runs **colocated**: training and SGLang rollout share all `--num-nodes × --num-gpus-per-node` GPUs. Pass `--rollout-num-nodes N` (`0 < N < --num-nodes`) to run **disaggregated**: `N` nodes serve rollout, the rest train. The verified parallelism recipes are keyed on the **training** nodes, so the 8-node Flash recipe in disaggregated form is `--num-nodes 16 --rollout-num-nodes 8` (8 train + 8 rollout — the validated layout).
 
 ## 4. Script breakdown
 
@@ -66,8 +70,7 @@ In this section, we explain what `full-train` does under the hood, and how to dr
 ### 4.1 Download model + datasets
 
 ```bash
-# inside the radixark/miles:deepseek-v4 (H200 / B200) or
-# radixark/miles:gb300-dev-dskv4 (GB300) container
+# inside the radixark/miles:latest container
 hf download sgl-project/DeepSeek-V4-Flash-FP8 --local-dir /root/models/DeepSeek-V4-Flash-FP8
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024
@@ -105,7 +108,7 @@ The Python launcher's `prepare-spmd` subcommand drives the same conversion.
 
 ### 4.3 Multi-node fan-out
 
-The Python launcher manages Ray internally — start each pod with the appropriate image for the cluster (`radixark/miles:deepseek-v4` on H200 / B200, `radixark/miles:gb300-dev-dskv4` on GB300) and a working shared filesystem mounted at the same path on every node, then on the head node:
+The Python launcher manages Ray internally — start each pod with the `radixark/miles:latest` image and a working shared filesystem mounted at the same path on every node, then on the head node:
 
 ```bash
 ray start --head --num-gpus 8 --disable-usage-stats
@@ -130,6 +133,8 @@ These are the validated layouts shipped with the launcher; All parallelisms are 
 | H200 | 8 × 8 = 64 | 8 | 8 | 1 | 8 | 1 | first 4 / last 3 layers |
 | GB300 | 8 × 4 = 32 | 8 | 4 | 1 | 8 | 1 | first 11 / last 10 layers |
 | GB300 | 8 × 4 = 32 | 2 | 8 | 2 | 4 | 1 | first 4 / last 3 layers |
+
+The Nodes × GPUs column counts **actor (training) nodes** — in disaggregated mode (see [§3.3](#33-colocated-vs-disaggregated-rollout)) rollout nodes come on top of these.
 
 ### 5.2 Algorithm
 
@@ -161,7 +166,6 @@ SGLANG_ARGS=(
    --sglang-chunked-prefill-size 8192
    --sglang-mem-fraction-static 0.5  # leave headroom for Megatron during wake_up
    --use-rollout-routing-replay  # MoE routing replay (R3)
-   --use-miles-router  # miles router fronts /generate
 )
 ```
 
@@ -185,5 +189,5 @@ The `--low-memory-resume` flag (off by default) puts optimizer states on CPU dur
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
-- [Architecture Support](../../advanced/architecture-support.md) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.
+- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Architecture Support](/advanced/architecture-support) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.

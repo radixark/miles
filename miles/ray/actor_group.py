@@ -32,12 +32,14 @@ class RayTrainGroup:
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
+        with_opd_teacher: bool = False,
     ) -> None:
         self.args = args
         self._num_nodes = num_nodes
         self._num_gpus_per_node = num_gpus_per_node
         self.role = role
         self.with_ref = with_ref
+        self.with_opd_teacher = with_opd_teacher
 
         # Allocate the GPUs for actors w/o instantiating them
         self._actor_handles = self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
@@ -109,7 +111,9 @@ class RayTrainGroup:
         """
         Allocate GPU resourced and initialize model, optimizer, local ckpt, etc.
         """
-        return await self._broadcast("init", self.args, self.role, with_ref=self.with_ref)
+        return await self._broadcast(
+            "init", self.args, self.role, with_ref=self.with_ref, with_opd_teacher=self.with_opd_teacher
+        )
 
     async def train(self, rollout_id, rollout_data_ref):
         """Do one rollout training"""
@@ -121,7 +125,15 @@ class RayTrainGroup:
 
     async def update_weights(self):
         """Broadcast weights from rank 0 to all other ranks."""
-        await self._broadcast("update_weights")
+        if self.args.debug_train_only or self.args.debug_rollout_only:
+            return
+
+        if self.args.use_fault_tolerance:
+            await self.rollout_manager.recover_updatable_engines.remote()
+
+        info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
+
+        await self._broadcast("update_weights", info=info)
 
     async def onload(self):
         await self._broadcast("wake_up")
@@ -140,6 +152,7 @@ class RayTrainGroup:
         await asyncio.gather(*refs)
 
     async def set_rollout_manager(self, rollout_manager):
+        self.rollout_manager = rollout_manager
         await self._broadcast("set_rollout_manager", rollout_manager)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:

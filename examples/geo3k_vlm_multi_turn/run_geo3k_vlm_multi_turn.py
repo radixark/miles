@@ -15,7 +15,7 @@ assert MODEL_NAME in {
 
 NUM_GPUS = int(os.environ.get("MILES_SCRIPT_NUM_GPUS", "4"))
 EXTERNAL_RAY = int(os.environ.get("MILES_SCRIPT_EXTERNAL_RAY", "0"))
-TRAIN_BACKEND = os.environ.get("MILES_SCRIPT_TRAIN_BACKEND", "fsdp").lower()
+TRAIN_BACKEND = os.environ.get("MILES_SCRIPT_TRAIN_BACKEND", "megatron").lower()
 assert TRAIN_BACKEND in {"fsdp", "megatron"}
 
 DATASET_NAME = "VeraIsHere/geo3k_imgurl_processed"

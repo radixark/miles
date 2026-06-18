@@ -11,7 +11,15 @@ register_cuda_ci(
     disabled="Disabled due to sglang deepep code path bug.",
 )
 
-CASE = CaseConfig(use_deepep=True, num_gpus_per_node=8, cp_size=2, pp_size=2)
+CASE = CaseConfig(
+    use_deepep=True,
+    num_gpus_per_node=8,
+    cp_size=2,
+    pp_size=2,
+    sglang_ep_size=8,
+    # GLM-4.7-Flash has 20 attention heads; non-EP SGLang TP must divide it.
+    rollout_num_gpus_per_engine=4,
+)
 
 
 if __name__ == "__main__":

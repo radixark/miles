@@ -14,6 +14,7 @@ from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
+from megatron.core.optimizer.muon import get_megatron_muon_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
@@ -101,6 +102,10 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
 # ---------------------------------------------------------------------------
 
 
+def _is_muon_optimizer(optimizer: str | None) -> bool:
+    return optimizer is not None and "muon" in optimizer.lower()
+
+
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -143,11 +148,19 @@ def setup_model_and_optimizer(
     config = OptimizerConfig(**kwargs)
     config.timers = None
 
-    optimizer = get_megatron_optimizer(
-        config=config,
-        model_chunks=model,
-        use_gloo_process_groups=args.enable_gloo_process_groups,
-    )
+    if _is_muon_optimizer(config.optimizer):
+        optimizer = get_megatron_muon_optimizer(
+            config=config,
+            model_chunks=model,
+            use_gloo_process_groups=args.enable_gloo_process_groups,
+            layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
+        )
+    else:
+        optimizer = get_megatron_optimizer(
+            config=config,
+            model_chunks=model,
+            use_gloo_process_groups=args.enable_gloo_process_groups,
+        )
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 
@@ -403,6 +416,7 @@ def train_one_step(
                 "returns",
                 "rollout_log_probs",
                 "max_seq_lens",
+                "opd_reverse_kl",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -438,8 +452,8 @@ def train_one_step(
             if args.enable_mtp_training:
                 forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
 
-            if batch["multimodal_train_inputs"] is not None:
-                forward_kwargs.update(batch["multimodal_train_inputs"])
+            if (x := batch["multimodal_train_inputs"]) is not None:
+                forward_kwargs.update(x)
 
             output_tensor = model(**forward_kwargs)
 
@@ -635,10 +649,10 @@ def train(
             tracker = MTPLossLoggingHelper.tracker
             if "values" in tracker:
                 values = tracker["values"]
-                if tracker.get("reduce_group") is not None:
-                    torch.distributed.all_reduce(values, group=tracker.get("reduce_group"))
-                if tracker.get("avg_group") is not None:
-                    torch.distributed.all_reduce(values, group=tracker["avg_group"], op=torch.distributed.ReduceOp.AVG)
+                if (x := tracker.get("reduce_group")) is not None:
+                    torch.distributed.all_reduce(values, group=x)
+                if (x := tracker.get("avg_group")) is not None:
+                    torch.distributed.all_reduce(values, group=x, op=torch.distributed.ReduceOp.AVG)
                 # here we assume only one mtp layer
                 mtp_losses = (tracker["values"] * mtp_loss_scale).item()
                 MTPLossLoggingHelper.clean_loss_in_tracker()

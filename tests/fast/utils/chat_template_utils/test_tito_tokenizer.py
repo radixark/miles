@@ -47,10 +47,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
-
 import pytest
 from transformers import AutoTokenizer
 
@@ -108,7 +104,6 @@ _TITO_MODELS: dict[str, tuple[str, type[TITOTokenizer], TITOTokenizerType]] = {
     "qwen3": ("Qwen/Qwen3-4B", Qwen3TITOTokenizer, TITOTokenizerType.QWEN3),
     "glm47": ("zai-org/GLM-4.7-Flash", GLM47TITOTokenizer, TITOTokenizerType.GLM47),
 }
-
 
 _ALLOWED_APPEND_ROLES = ["tool", "user", "system"]
 
@@ -203,7 +198,6 @@ _TRAJ_CASES = [
     for traj_cls in _TOOL_TRAJECTORIES
     for pos in _find_tito_splits(traj_cls)
 ]
-
 
 # ---------------------------------------------------------------------------
 # TestConfig — subclass configuration smoke-checks
@@ -521,6 +515,8 @@ class TestParserBinding:
             (TITOTokenizerType.KIMI26, "kimi_k2", "kimi_k2_raw_id"),
             (TITOTokenizerType.MINIMAX_M25, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
+            (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
+            (TITOTokenizerType.DEEPSEEKV4, "deepseek-v4", "deepseekv4"),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )
@@ -535,6 +531,7 @@ class TestParserBinding:
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN3) == ("qwen3", "qwen25")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47) == ("glm45", "glm47")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEEPSEEKV4) == ("deepseek-v4", "deepseekv4")
         # DEFAULT family has no binding for either parser; both come back None.
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEFAULT) == (None, None)
 

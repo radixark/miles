@@ -2,7 +2,7 @@ name: PR Test
 
 on:
   pull_request:
-    types: [synchronize, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
   workflow_dispatch:
     inputs:
       infinite_run:
@@ -40,6 +40,11 @@ concurrency:
 # `--labels` list collapses to empty; `--match-all-labels` is then added
 # unconditionally to bypass the labels predicate inside run_suite.py and run
 # every enabled test in the suite.
+#
+# The `bypass-fastfail` PR label opts a PR out of fast-fail on two levels: GPU
+# stages run even when stage-a-cpu fails (cross-stage), and every stage passes
+# `--continue-on-error` so one failing test no longer stops the rest of its
+# suite (within-stage). One CI run then surfaces every failure.
 
 jobs:
   resolve-ci-image:
@@ -74,18 +79,23 @@ jobs:
   stage-a-cpu:
     needs: [resolve-ci-image]
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit
 
-  # Stage B: CPU-only bucket (currently empty; reserved for future CPU tests
-  # that don't fit stage-a-cpu's fast budget). Always runs on PR. Empty result
-  # exits 0 in run_suite.py (see tests/ci/run_suite.py L149-L151).
+  # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
+  # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
@@ -95,12 +105,16 @@ jobs:
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-b-2-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
@@ -110,12 +124,16 @@ jobs:
         python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-c-8-gpu-h100:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
@@ -130,12 +148,16 @@ jobs:
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-c-4-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
@@ -150,12 +172,16 @@ jobs:
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-c-2-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
-      always() && !failure() && !cancelled() &&
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     strategy:
       fail-fast: false
@@ -170,4 +196,5 @@ jobs:
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
     secrets: inherit

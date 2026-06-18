@@ -28,7 +28,12 @@ class Sample:
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     )
+    rollout_indexer_topk: numpy.ndarray | None = (
+        None  # Indexer topk from rollout engine. shape: (num_tokens-1, num_indexer_layers, index_topk), dtype=int32
+    )
     remove_sample: bool = False
+    teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
+    opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
 
     class Status(Enum):
         PENDING = "pending"
@@ -166,10 +171,22 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.teacher_log_probs is not None:
+            assert (
+                len(self.teacher_log_probs) == self.response_length
+            ), f"teacher_log_probs length ({len(self.teacher_log_probs)}) != response_length ({self.response_length})"
+        if self.opd_reverse_kl is not None:
+            assert (
+                len(self.opd_reverse_kl) == self.response_length
+            ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
+        if self.rollout_indexer_topk is not None:
+            actual = len(self.rollout_indexer_topk)
+            expect = len(self.tokens) - 1
+            assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
 
     def strip_last_output_tokens(self, n: int, tokenizer) -> None:
         """Remove the last *n* output tokens and all associated per-token info."""
@@ -182,11 +199,19 @@ class Sample:
         self.response_length -= n
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
+        if self.teacher_log_probs is not None:
+            self.teacher_log_probs = self.teacher_log_probs[:-n]
+        if self.opd_reverse_kl is not None:
+            self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        if self.metadata and "opd_student_top_logprobs" in self.metadata:
+            self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:
             self.loss_mask = self.loss_mask[:-n]
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
         if self.rollout_routed_experts is not None:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
+        if self.rollout_indexer_topk is not None:
+            self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
 
     def reset_for_retry(self) -> None:
         """Reset generated outputs so the original prompt can be re-sampled.
@@ -204,6 +229,7 @@ class Sample:
         self.weight_versions = []
         self.rollout_log_probs = None
         self.rollout_routed_experts = None
+        self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()

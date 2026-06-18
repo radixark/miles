@@ -6,8 +6,10 @@ import time
 
 import torch
 import torch.distributed.checkpoint as dist_cp
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM
 from typing_extensions import override
+
+from miles.utils.hf_config import load_hf_config
 
 
 class UnpicklerWrapper(pickle.Unpickler):
@@ -117,7 +119,7 @@ def _convert_fsdp_to_hf(
 
     tensor_items = {k: v for k, v in state_dict.items() if isinstance(v, torch.Tensor)}
 
-    config = AutoConfig.from_pretrained(origin_hf_dir, trust_remote_code=True)
+    config = load_hf_config(origin_hf_dir)
     hf_model = AutoModelForCausalLM.from_config(config)
     target_keys = set(hf_model.state_dict().keys())
 

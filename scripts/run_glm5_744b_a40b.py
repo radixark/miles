@@ -5,8 +5,7 @@ GLM-5 744B-A40B Training Script
 
 Tested on H200, B200, GB300
 
-For H200, B200, please use `radixark/miles:glm5` docker
-For GB300, please use `radixark/miles:glm5-gb300` docker
+Please use the `radixark/miles:dev` docker image.
 
 =====================
 

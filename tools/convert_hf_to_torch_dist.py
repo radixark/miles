@@ -18,7 +18,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import print_memory
 
 
-def add_convertion_args(parser):
+def add_conversion_args(parser):
     """Add conversion arguments to the parser"""
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
     parser.add_argument(
@@ -35,7 +35,7 @@ def add_convertion_args(parser):
 
 
 def get_args():
-    args = parse_args(add_convertion_args)
+    args = parse_args(add_conversion_args)
     args = set_default_megatron_args(args)
 
     # set to pass megatron validate_args
@@ -44,9 +44,9 @@ def get_args():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     args.global_batch_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-    assert world_size <= args.num_layers, (
-        f"World size {world_size} must be <= number of layers {args.num_layers}. "
-        "Use fewer GPUs (--nproc-per-node) for this conversion."
+    assert args.pipeline_model_parallel_size <= args.num_layers, (
+        f"Pipeline model parallel size {args.pipeline_model_parallel_size} must be less than or equal to "
+        f"number of layers {args.num_layers}."
     )
 
     def ceildiv(a, b):

@@ -1,12 +1,10 @@
 import argparse
-import glob
 import subprocess
 import sys
 import warnings
 from collections.abc import Iterable
-from pathlib import Path
 
-from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests
+from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.ci_utils import run_unittest_files
 
 HW_MAPPING = {
@@ -141,20 +139,6 @@ def auto_partition(files: list[CIRegistry], rank, size):
     return []
 
 
-def _is_e2e_discovery_file(filename: str) -> bool:
-    basename = Path(filename).name
-    return (
-        basename != "conftest.py"
-        and basename != "__init__.py"
-        and not basename.startswith("_")
-        and not filename.endswith(".gitkeep")
-        # Exclude helper modules that aren't test files
-        and "/sglang_patch/sglang_server.py" not in filename
-        and "/sglang/utils/" not in filename
-        and "short/test_dumper.py" not in filename
-    )
-
-
 def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIRegistry]):
     hw = HW_MAPPING[args.hw]
     suite = args.suite
@@ -184,9 +168,24 @@ def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIR
         total_est_time = sum(t.est_time for t in ci_tests)
         msg += f"Enabled {len(ci_tests)} test(s) (est total {total_est_time:.0f}s):\n"
         for t in ci_tests:
-            msg += f"  - {t.filename} (est_time={t.est_time}s)\n"
+            suffix = " [implicit]" if t.implicit else ""
+            msg += f"  - {t.filename} (est_time={t.est_time}s){suffix}\n"
 
     print(msg, flush=True)
+
+
+def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[str]:
+    """Build the single pytest invocation for a CPU suite.
+
+    `-x` (stop at first failure) is the default per-commit behavior. With
+    continue_on_error -- e.g. a PR carrying the `bypass-fastfail` label -- drop
+    `-x` so every file runs; pytest still exits non-zero if any failed, so the
+    stage stays red.
+    """
+    cmd = ["pytest", *filenames, "-v"]
+    if not continue_on_error:
+        cmd.append("-x")
+    return cmd
 
 
 def run_a_suite(args):
@@ -196,19 +195,8 @@ def run_a_suite(args):
     auto_partition_id = args.auto_partition_id
     auto_partition_size = args.auto_partition_size
 
-    # Discover test files: e2e/ for CUDA, fast/ for CPU
-    e2e_files = [f for f in glob.glob("tests/e2e/**/*.py", recursive=True) if _is_e2e_discovery_file(f)]
-    fast_files = [
-        f
-        for f in glob.glob("tests/fast/**/*.py", recursive=True)
-        if "/test_" in f
-        and not f.endswith("/conftest.py")
-        and not f.endswith("/__init__.py")
-        and not f.endswith("/utils.py")
-    ] + glob.glob("tests/utils/test_*.py")
-    files = e2e_files + fast_files
-
-    all_tests = collect_tests(files, sanity_check=False)
+    files = discover_ci_files()
+    all_tests = collect_tests(files, sanity_check=True)
     stripped_labels = strip_run_ci_prefix(args.labels or [])
     ci_tests, skipped_tests = filter_tests(
         all_tests,
@@ -233,7 +221,7 @@ def run_a_suite(args):
 
     # CPU tests (fast/) use pytest; CUDA tests use python3 per-file
     if hw == HWBackend.CPU:
-        cmd = ["pytest"] + [t.filename for t in ci_tests] + ["-x", "-v"]
+        cmd = build_cpu_pytest_cmd([t.filename for t in ci_tests], args.continue_on_error)
         print(f"Running: {' '.join(cmd)}", flush=True)
         return subprocess.call(cmd)
 

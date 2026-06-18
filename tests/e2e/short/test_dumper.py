@@ -225,5 +225,13 @@ def compare(
     _verify_comparator(dump_subdir=config_name, dump_dir=dump_dir)
 
 
+@app.callback(invoke_without_command=True)
+def _ci_default(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    for mode in CONFIGS:
+        run(mode=mode)
+
+
 if __name__ == "__main__":
     app()

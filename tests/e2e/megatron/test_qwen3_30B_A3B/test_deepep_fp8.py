@@ -14,6 +14,7 @@ CASE = CaseConfig(
     num_gpus_per_node=8,
     cp_size=2,
     pp_size=2,
+    sglang_ep_size=8,
 )
 
 

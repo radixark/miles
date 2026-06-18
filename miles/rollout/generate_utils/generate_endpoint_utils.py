@@ -53,6 +53,7 @@ def compute_request_payload(
         "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
         "return_logprob": True,
         "return_routed_experts": args.use_rollout_routing_replay,
+        "return_indexer_topk": args.use_rollout_indexer_replay,
     }
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
@@ -67,44 +68,57 @@ async def update_sample_from_response(
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
 
-    if args.use_miles_router and "RadixTreeMiddleware" in args.miles_router_middleware_paths:
-        from miles.router.middleware_hub.radix_tree_middleware import postprocess_sample_with_radix_tree
-
-        # TODO may rename to match
-        await postprocess_sample_with_radix_tree(args, sample, output)
-
-        assert not update_loss_mask, "This code branch has not implemented update_loss_mask"
+    if x := output["meta_info"].get("output_token_logprobs"):
+        new_response_tokens = [item[1] for item in x]
+        new_response_log_probs = [item[0] for item in x]
     else:
-        if x := output["meta_info"].get("output_token_logprobs"):
-            new_response_tokens = [item[1] for item in x]
-            new_response_log_probs = [item[0] for item in x]
-        else:
-            new_response_tokens, new_response_log_probs = [], []
+        new_response_tokens, new_response_log_probs = [], []
 
-        # Update sample with tokens directly - avoiding re-tokenization
-        sample.tokens = sample.tokens + new_response_tokens
-        sample.response_length += len(new_response_tokens)
-        sample.response += output["text"]
+    # Update sample with tokens directly - avoiding re-tokenization
+    sample.tokens = sample.tokens + new_response_tokens
+    sample.response_length += len(new_response_tokens)
+    sample.response += output["text"]
 
-        if sample.rollout_log_probs is None:
-            sample.rollout_log_probs = []
-        sample.rollout_log_probs += new_response_log_probs
+    if sample.rollout_log_probs is None:
+        sample.rollout_log_probs = []
+    sample.rollout_log_probs += new_response_log_probs
 
-        if update_loss_mask:
-            if sample.loss_mask is None:
-                sample.loss_mask = []
-            sample.loss_mask += [1] * len(new_response_tokens)
+    if update_loss_mask:
+        if sample.loss_mask is None:
+            sample.loss_mask = []
+        sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = get_rollout_topk_from_response(args, output, sample, "routed_experts")
+    sample.rollout_routed_experts = get_routed_experts_from_response(args, output, sample)
+    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
 
 
-def get_rollout_topk_from_response(args, output, sample, key):
-    info = output["meta_info"].get(key)
+def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) -> np.ndarray:
+    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
+    if num_tokens <= 0:
+        return np.empty((0, num_layers, max(0, topk)), dtype=np.int32)
+    if topk == -1:  # indexer: topk dim recovered from buffer length
+        topk = len(x) // (num_tokens * num_layers)
+    return x.reshape(num_tokens, num_layers, topk)
+
+
+def get_routed_experts_from_response(args, output, sample):
+    info = output["meta_info"].get("routed_experts")
     if info is None:
         return None
-    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
-    return x.reshape(len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
+    return _decode_topk_buffer(info, len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
+
+
+def get_indexer_topk_from_response(args, output, sample):
+    info = output["meta_info"].get("indexer_topk")
+    if info is None:
+        return None
+    num_layers = output["meta_info"].get("indexer_topk_num_layers")
+    assert num_layers is not None, (
+        "Server returned indexer_topk without indexer_topk_num_layers; "
+        "sglang-miles must include the layer count in meta_info."
+    )
+    return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)

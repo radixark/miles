@@ -13,7 +13,12 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import (
+    LORA_ADAPTER_NAME,
+    convert_target_modules_to_hf,
+    is_lora_enabled,
+    lora_base_cpu_backup_enabled,
+)
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
@@ -35,7 +40,7 @@ def get_base_gpu_id(args, rank):
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
         return physical_gpu_id  # no remapping
     # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
@@ -253,7 +258,8 @@ class SGLangEngine(RayActor):
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            e.add_note(f"{response.text=}")
+            if hasattr(e, "add_note"):
+                e.add_note(f"{response.text=}")
             raise
         return response.json()
 
@@ -334,17 +340,17 @@ class SGLangEngine(RayActor):
     def load_lora_adapter_from_tensors(
         self,
         lora_name: str,
-        serialized_tensors: str,
         config_dict: dict,
+        serialized_named_tensors: list,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
     ):
-        """Load a LoRA adapter from serialized tensor data."""
+        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
         payload = {
             "lora_name": lora_name,
-            "serialized_tensors": serialized_tensors,
             "config_dict": config_dict,
+            "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
         if load_format is not None:
@@ -354,6 +360,41 @@ class SGLangEngine(RayActor):
 
         return self._make_request(
             "load_lora_adapter_from_tensors",
+            payload,
+        )
+
+    def load_lora_adapter_from_distributed(
+        self,
+        lora_name: str,
+        config_dict: dict,
+        names: list,
+        dtypes: list,
+        shapes: list,
+        group_name: str,
+        pinned: bool = False,
+        added_tokens_config: dict | None = None,
+    ):
+        """Load a LoRA adapter whose weights are broadcast over ``group_name``.
+
+        Mirrors ``update_weights_from_distributed``: only metadata is sent here;
+        the tensors arrive via NCCL broadcast (src=0), so no CUDA IPC is used and
+        this works across nodes. ``init_weights_update_group`` must have created
+        ``group_name`` already.
+        """
+        payload = {
+            "lora_name": lora_name,
+            "config_dict": config_dict,
+            "names": names,
+            "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
+            "shapes": shapes,
+            "group_name": group_name,
+            "pinned": pinned,
+        }
+        if added_tokens_config is not None:
+            payload["added_tokens_config"] = added_tokens_config
+
+        return self._make_request(
+            "load_lora_adapter_from_distributed",
             payload,
         )
 
@@ -630,6 +671,8 @@ def _compute_server_args(
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
         "enable_draft_weights_cpu_backup": True,
+        # always serve /metrics so Prometheus scrapers can read engine stats.
+        "enable_metrics": True,
     }
 
     if sglang_overrides:
@@ -637,7 +680,7 @@ def _compute_server_args(
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
-        kwargs["load_balance_method"] = "round_robin"
+        kwargs.setdefault("load_balance_method", "round_robin")
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
@@ -648,6 +691,8 @@ def _compute_server_args(
 
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
+    if args.use_rollout_indexer_replay:
+        kwargs["enable_return_indexer_topk"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
@@ -664,6 +709,18 @@ def _compute_server_args(
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
+
+        if lora_base_cpu_backup_enabled(args):
+            # Host-RAM mirror of the base weights so they survive
+            # torch_memory_saver.pause() across rollout/training swaps without
+            # needing to be re-shipped from the trainer. The trainer mirrors
+            # this by skipping the base weight sync entirely (see
+            # UpdateWeightFromTensor.update_weights).
+            kwargs["enable_weights_cpu_backup"] = True
+            logger.info(
+                "LoRA + colocate: enabling SGLang enable_weights_cpu_backup=True; "
+                "the trainer will skip per-step base weight sync."
+            )
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
@@ -690,5 +747,6 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "dist_init_addr",
     "skip_server_warmup",
     "enable_draft_weights_cpu_backup",
+    "enable_metrics",
     "mem_fraction_static",
 ]
