@@ -56,7 +56,11 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
-_DSV4_TE_PRECISION_CONFIG = """
+# DeepSeek V4 DSA indexer: the per-head weighting projection (indexer.weights_proj)
+# must stay BF16 on BOTH trainer and rollout
+DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_HF = (".weights_proj.",)
+DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (".indexer.linear_weights_proj",)
+_DSV4_MXFP8_TE_PRECISION_CONFIG = """
 configs:
   bf16:
     transformer_engine_config_type: "TEQuantizationParams"
@@ -243,16 +247,19 @@ def prepare_single(args: ScriptArgs):
 def _prepare_mxfp8(args: ScriptArgs):
     """BF16 -> MXFP8 conversion for sglang rollout (Blackwell only).
 
-    V4 needs no --extra-high-precision-layers-hf: the BF16-precision weights
-    (head/wo_a/ffn.gate/compressor) are already covered by SKIP_WEIGHT_SUBSTRINGS
-    in tools/convert_hf_to_mxfp8.py.
+    head/wo_a/ffn.gate/compressor/norms/embed are already kept BF16 by
+    SKIP_WEIGHT_SUBSTRINGS in tools/convert_hf_to_mxfp8.py. We additionally pass
+    --extra-high-precision-layers-hf for the DSA indexer weights_proj so the
+    rollout checkpoint matches the trainer's te-precision override (see _train).
     """
     if args.recipe != "mxfp8":
         return
+    extra_hp_hf = " ".join(DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_HF)
     U.exec_command(
         f"python tools/convert_hf_to_mxfp8.py "
         f"--model-dir {args.model_dir}/{args.bf16_name} "
         f"--save-dir {args.model_dir}/{args.mxfp8_name} "
+        f"--extra-high-precision-layers-hf {extra_hp_hf} "
     )
 
 
@@ -614,6 +621,22 @@ def _train(args: ScriptArgs):
     match args.recipe:
         case "mxfp8":
             misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe mxfp8 "
+            # Keep the DSA indexer weights_proj (a TELinear) in BF16 to match the
+            # rollout checkpoint, on all three precision paths:
+            #   - trainer forward          -> --te-precision-config-file (TE per-module override)
+            #   - mcore->hf weight update  -> --extra-high-precision-layers-megatron (quantizer_mxfp8 skip)
+            #   - rollout-side load skip   -> --extra-high-precision-layers-hf
+            if "--extra-high-precision-layers-hf" not in args.extra_args:
+                misc_args += (
+                    f"--extra-high-precision-layers-hf {' '.join(DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_HF)} "
+                    f"--extra-high-precision-layers-megatron "
+                    f"{' '.join(DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_MEGATRON)} "
+                )
+            if "--te-precision-config-file" not in args.extra_args:
+                misc_args += (
+                    f"--te-precision-config-file "
+                    f"{U.save_to_temp_file(_DSV4_MXFP8_TE_PRECISION_CONFIG, 'yaml')} "
+                )
         case "fp8":
             misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
             # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
@@ -622,8 +645,8 @@ def _train(args: ScriptArgs):
         case "bf16":
             pass
 
-    if args.recipe != "bf16" and "--te-precision-config-file" not in args.extra_args:
-        misc_args += f"--te-precision-config-file " f"{U.save_to_temp_file(_DSV4_TE_PRECISION_CONFIG, 'yaml')} "
+    if args.recipe == "fp8" and "--te-precision-config-file" not in args.extra_args:
+        misc_args += f"--te-precision-config-file " f"{U.save_to_temp_file(_DSV4_MXFP8_TE_PRECISION_CONFIG, 'yaml')} "
 
     train_args = (
         f"{ckpt_args} "
