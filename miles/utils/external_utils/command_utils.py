@@ -134,17 +134,8 @@ def execute_train(
     )
 
     if not external_ray:
-        try:
-            import torch
-
-            _is_rocm = torch.version.hip is not None
-        except Exception:
-            _is_rocm = False
-        # Keep GPUs visible to ROCm coordinators so Megatron device checks do not crash.
-        rocm_ray_accel = "export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0 && " if _is_rocm else ""
         exec_command(
             # will prevent ray from buffering stdout/stderr
-            f"{rocm_ray_accel}"
             f"export PYTHONBUFFERED=16 && "
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
         )

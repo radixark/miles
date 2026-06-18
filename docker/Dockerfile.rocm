@@ -163,6 +163,8 @@ ENV SGLANG_USE_ROCM700A=1
 ENV NCCL_MIN_NCHANNELS=112
 ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
+# Keep GPUs visible to Ray num_gpus=0 coordinators so Megatron device checks do not crash.
+ENV RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 
