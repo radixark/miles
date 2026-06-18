@@ -33,6 +33,7 @@ class Sample:
     )
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
+    opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
 
     class Status(Enum):
         PENDING = "pending"
@@ -174,6 +175,10 @@ class Sample:
             assert (
                 len(self.teacher_log_probs) == self.response_length
             ), f"teacher_log_probs length ({len(self.teacher_log_probs)}) != response_length ({self.response_length})"
+        if self.opd_reverse_kl is not None:
+            assert (
+                len(self.opd_reverse_kl) == self.response_length
+            ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -196,6 +201,10 @@ class Sample:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
         if self.teacher_log_probs is not None:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
+        if self.opd_reverse_kl is not None:
+            self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        if self.metadata and "opd_student_top_logprobs" in self.metadata:
+            self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:
             self.loss_mask = self.loss_mask[:-n]
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""

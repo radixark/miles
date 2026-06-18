@@ -121,7 +121,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
 
-    ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=True)
+    use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
+    ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=use_distributed_optimizer)
     ddp_config.finalize()
 
     if args.offload_train:

@@ -462,29 +462,28 @@ def _train(args: ScriptArgs):
         sglang_tp_size = 32
         sglang_dp_size = 32
         sglang_ep_size = 32
-        sglang_a2a_backend = "deepep"
     else:
-        sglang_world_size = args.num_gpus_per_node
-        sglang_tp_size = sglang_world_size
-        sglang_dp_size = sglang_world_size
-        sglang_ep_size = sglang_world_size
-        sglang_a2a_backend = None
+        sglang_world_size = 4
+        sglang_tp_size = 4
+        sglang_dp_size = 1
+        sglang_ep_size = 4
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         f"--sglang-tp-size {sglang_tp_size} "
         f"--sglang-dp-size {sglang_dp_size} "
-        "--sglang-enable-dp-attention "
-        "--sglang-attention-backend compressed "
-        "--sglang-page-size 256 "
-        "--sglang-max-running-requests 64 "
-        "--sglang-chunked-prefill-size 8192 "
-        "--sglang-server-concurrency 1024 "
+        f"--sglang-ep-size {sglang_ep_size} "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
-    if sglang_a2a_backend:
-        sglang_args += f"--sglang-moe-a2a-backend {sglang_a2a_backend} " "--sglang-cuda-graph-max-bs 8 "
+    if args.model_name == "DeepSeek-V4-Pro-FP8":
+        sglang_args += (
+            "--sglang-enable-dp-attention "
+            "--sglang-cuda-graph-max-bs 8 "
+            "--sglang-moe-runner-backend deep_gemm "
+            "--sglang-moe-a2a-backend deepep "
+            "--sglang-deepep-mode low_latency "
+        )
     if args.enable_mtp:
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
@@ -492,7 +491,6 @@ def _train(args: ScriptArgs):
             "--sglang-speculative-eagle-topk 1 "
             "--sglang-speculative-num-draft-tokens 4 "
         )
-    sglang_args += f"--sglang-ep-size {sglang_ep_size} "
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
