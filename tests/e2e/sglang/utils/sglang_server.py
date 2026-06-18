@@ -75,11 +75,10 @@ def start_sglang_server(
         cmd.extend(extra_args)
 
     # Use Triton as the deterministic-inference attention backend on ROCm.
-    if (
-        enable_deterministic_inference
-        and getattr(torch.version, "hip", None) is not None
-        and not any(a == "--attention-backend" or a.startswith("--attention-backend=") for a in cmd)
-    ):
+    is_rocm = torch.version.hip is not None
+    has_attention_backend = any(arg.startswith("--attention-backend") for arg in cmd)
+
+    if enable_deterministic_inference and is_rocm and not has_attention_backend:
         cmd.extend(["--attention-backend", "triton"])
 
     env = os.environ.copy()
