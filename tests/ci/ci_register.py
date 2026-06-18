@@ -91,10 +91,10 @@ def register_rocm_ci(
     nightly: bool = False,
     disabled: str | None = None,
 ):
-    """Marker for ROCm (AMD) CI registration (parsed via AST; runtime no-op).
+    """Marker for ROCm CI registration (parsed via AST; runtime no-op).
 
-    A test that passes on AMD GPUs adds a register_rocm_ci(...) call alongside
-    its register_cuda_ci(...) call. See `register_cpu_ci` for label semantics.
+    See `register_cpu_ci` for label semantics.
+
     """
     return None
 
