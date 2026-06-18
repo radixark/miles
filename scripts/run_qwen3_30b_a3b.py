@@ -1,23 +1,10 @@
 import os
-import shlex
 from dataclasses import dataclass
 from typing import Literal
 
 import typer
 
 import miles.utils.external_utils.command_utils as U
-
-
-def fp4_env_vars() -> dict[str, str]:
-    fp4_env_markers = ["NVTE", "FLASHINFER", "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"]
-    return {key: value for key, value in os.environ.items() if any(marker in key for marker in fp4_env_markers)}
-
-
-def env_prefix(env_vars: dict[str, str]) -> str:
-    if not env_vars:
-        return ""
-    assignments = (f"{key}={shlex.quote(value)}" for key, value in sorted(env_vars.items()))
-    return " ".join(assignments) + " "
 
 
 @dataclass
@@ -101,14 +88,17 @@ def prepare(args: ScriptArgs):
             f"{args.extra_args} "
         )
 
-    if args.rollout_nvfp4 or args.train_nvfp4:
-        nvfp4_env_prefix = env_prefix(
-            {
-                "NVTE_USE_FAST_MATH": "0",
-                "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH": "1",
-                **fp4_env_vars(),
-            }
-        )
+    if args.rollout_nvfp4:
+        nvfp4_env_vars = {
+            "NVTE_USE_FAST_MATH": "0",
+            "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH": "1",
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if "NVTE" in key or "FLASHINFER" in key or key == "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"
+            },
+        }
+        nvfp4_env_prefix = " ".join(f"{key}={value}" for key, value in nvfp4_env_vars.items()) + " "
         U.exec_command(
             f"{nvfp4_env_prefix}"
             f"python tools/convert_hf_to_nvfp4.py --model-dir {args.model_dir}/{args.model_name} "
@@ -146,7 +136,7 @@ def execute(args: ScriptArgs):
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
     elif args.train_mxfp8:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
-    elif args.rollout_nvfp4 or args.train_nvfp4:
+    elif args.rollout_nvfp4:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-NVFP4"
     elif args.rollout_int4:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-INT4"
@@ -388,6 +378,11 @@ matchers:
                     "SGLANG_FLASHINFER_NVFP4_PER_TOKEN_ACTIVATION": "1",
                     "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH": "1",
                 }
+                misc_env_vars |= {
+                    key: value
+                    for key, value in os.environ.items()
+                    if "NVTE" in key or "FLASHINFER" in key or key == "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"
+                }
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
         case _:
@@ -427,9 +422,6 @@ tis_batch_normalize: true
         f"{misc_args} "
         f"{args.extra_args} "
     )
-
-    if args.rollout_nvfp4 or args.train_nvfp4:
-        misc_env_vars |= fp4_env_vars()
 
     U.execute_train(
         train_args=train_args,
