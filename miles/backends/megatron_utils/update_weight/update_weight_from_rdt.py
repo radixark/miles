@@ -20,9 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from argparse import Namespace
-from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 
 import ray
@@ -141,9 +139,6 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         # One entry per engine rank this source is responsible for.
         self._transfer_meta_list: list[_EngineRankBucket] = []
         self._scheduler_actors_cache: dict[int, list[ActorHandle]] = {}
-        # Per-sync wall-clock breakdown of the RDT-specific transfer phases,
-        # logged and reset in _finalize_and_resume_engines.
-        self._phase_seconds: dict[str, float] = defaultdict(float)
 
     @property
     def _is_source(self) -> bool:
@@ -382,38 +377,25 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
 
         if transfer_ready_params and ready_hf_tensors:
-            phase = self._phase_seconds
             weight_refs = []
             futures = []
             for meta in self._transfer_meta_list:
-                t = time.perf_counter()
                 meta.stage(transfer_ready_params)
-                phase["stage"] += time.perf_counter() - t
 
-                t = time.perf_counter()
                 meta.model_replica.load_weights(ready_hf_tensors)
-                # Synchronize so async GPU copy time is attributed to "load",
-                # not to the cuda.synchronize inside ray.put.
+                # Make sure the async GPU copy finishes before ray.put hands the
+                # views to NIXL.
                 torch.cuda.synchronize()
-                phase["load"] += time.perf_counter() - t
 
                 # Re-read post-load in case a weight loader reassigned param.data.
                 tensor_views = [meta.params_dict[name].data for name in transfer_ready_params]
 
-                t = time.perf_counter()
                 weights_ref = ray.put(tensor_views, _tensor_transport="nixl")
-                phase["put"] += time.perf_counter() - t
                 weight_refs.append(weights_ref)
-                t = time.perf_counter()
                 for actor in meta.actors:
                     futures.append(actor.pull_weights.remote([weights_ref], transfer_ready_params))
-                phase["submit"] += time.perf_counter() - t
 
-            t = time.perf_counter()
             ray.get(futures)
-            phase["pull_wait"] += time.perf_counter() - t
-            phase["bytes"] += sum(v.numel() * v.element_size() for v in tensor_views) * len(self._transfer_meta_list)
-            phase["flushes"] += 1
             del weight_refs
             if pbar is not None:
                 pbar.update(len(transfer_ready_params))
@@ -431,13 +413,6 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         )
 
     def _finalize_and_resume_engines(self):
-        if self._is_source and self._phase_seconds:
-            phase = dict(self._phase_seconds)
-            gib = phase.pop("bytes", 0) / 1024**3
-            flushes = int(phase.pop("flushes", 0))
-            breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in sorted(phase.items()))
-            logger.info(f"[RDT] sync phase breakdown ({flushes} flushes, {gib:.2f} GiB staged): {breakdown}")
-            self._phase_seconds.clear()
         # The `update_weight_version` here is necessary because the engine was not
         # aware that the RDMA pull happened. After transfer, some models (e.g.
         # Deepseek-arch) on the rollout side must invoke `post_load_weights` to
