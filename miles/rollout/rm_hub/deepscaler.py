@@ -48,15 +48,11 @@ def get_deepscaler_rule_based_reward(response, label):
 
 
 def get_gemma_math_reward(response, label):
-    """Boxed-answer math reward for Gemma-4, kept separate from the shared deepscaler gate.
+    """Boxed-answer math reward for Gemma-4.
 
-    Gemma-4 wraps its reasoning in ``<|channel>thought ... <channel|>`` tags rather than
-    ``</think>`` / ``###Response``. In the default (thinking-off) chat-template setup the Gemma-4
-    RL scripts use, the prompt pre-emits and closes the thought channel, so the response is the
-    answer alone with no marker -- which the shared ``get_deepscaler_rule_based_reward`` gate would
-    score 0 even when correct. Rather than loosen that gate for every ``--rm-type deepscaler`` run,
-    grade the whole response here; if reasoning IS emitted (thinking-on), grade only the text after
-    the final ``<channel|>`` close tag.
+    Gemma-4 closes reasoning with a ``<channel|>`` tag (thinking-on) or emits the answer
+    alone (thinking-off). Grade the text after the final ``<channel|>`` if present, else
+    the whole response.
     """
     if "<channel|>" in response:
         response = response.split("<channel|>")[-1]
