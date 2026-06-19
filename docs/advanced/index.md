@@ -35,6 +35,13 @@ Routing Replay for MoE, speculative decoding, and LoRA training and serving.
 
   </Card>
 
+  <Card title="On-Policy Distillation" icon="graduation-cap" href="/advanced/on-policy-distillation">
+
+    Train a student on its own rollouts while matching teacher token
+    probabilities through SGLang or Megatron teacher modes.
+
+  </Card>
+
   <Card title="LoRA Training and Serving" icon="sliders" href="/advanced/lora">
 
     Train LoRA adapters with SFT or RL and serve them through SGLang from the

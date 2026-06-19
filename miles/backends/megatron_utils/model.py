@@ -14,6 +14,7 @@ from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
+from megatron.core.optimizer.muon import get_megatron_muon_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
@@ -101,6 +102,10 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
 # ---------------------------------------------------------------------------
 
 
+def _is_muon_optimizer(optimizer: str | None) -> bool:
+    return optimizer is not None and "muon" in optimizer.lower()
+
+
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -143,11 +148,19 @@ def setup_model_and_optimizer(
     config = OptimizerConfig(**kwargs)
     config.timers = None
 
-    optimizer = get_megatron_optimizer(
-        config=config,
-        model_chunks=model,
-        use_gloo_process_groups=args.enable_gloo_process_groups,
-    )
+    if _is_muon_optimizer(config.optimizer):
+        optimizer = get_megatron_muon_optimizer(
+            config=config,
+            model_chunks=model,
+            use_gloo_process_groups=args.enable_gloo_process_groups,
+            layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
+        )
+    else:
+        optimizer = get_megatron_optimizer(
+            config=config,
+            model_chunks=model,
+            use_gloo_process_groups=args.enable_gloo_process_groups,
+        )
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 

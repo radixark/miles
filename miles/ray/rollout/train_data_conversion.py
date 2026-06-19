@@ -85,6 +85,9 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+    if samples[0].opd_reverse_kl is not None:
+        train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
+
     x = metadata.get("dynamic_global_batch_size")
     assert args.use_dynamic_global_batch_size == (x is not None)
     if x is not None:
@@ -153,6 +156,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "rollout_indexer_topk",
             "prompt",
             "teacher_log_probs",
+            "opd_reverse_kl",
             "weight_versions",
         ]:
             if key not in data:

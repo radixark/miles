@@ -103,8 +103,7 @@ class ServerGroup:
                     # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
                     # to enable this isolation.
                     "SGLANG_DG_CACHE_DIR": f"/tmp/sglang_deep_gemm/{self.worker_type}_rank_{global_rank}",
-                    "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+                    "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
                     "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
                     "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
                         "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"

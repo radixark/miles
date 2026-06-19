@@ -12,7 +12,6 @@ from transformers.activations import ACT2FN
 
 try:
     from fla.modules import FusedRMSNormGated, ShortConvolution
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
     from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextAttention, Qwen3NextRMSNorm
 except ImportError:
     pass
@@ -20,6 +19,7 @@ except ImportError:
 from miles.backends.training_utils.cp_utils import build_gdn_cp_context
 
 from .hf_attention import HuggingfaceAttention
+from .qwen_gdn_backend import get_chunk_gated_delta_rule
 
 
 # adapt from https://github.com/huggingface/transformers/blob/38a08b6e8ae35857109cedad75377997fecbf9d0/src/transformers/models/qwen3_next/modeling_qwen3_next.py#L564
@@ -28,8 +28,10 @@ class Qwen3NextGatedDeltaNet(nn.Module):
     Qwen3NextGatedDeltaNet with varlen support
     """
 
-    def __init__(self, config, layer_idx: int):
+    def __init__(self, config, layer_idx: int, args=None):
         super().__init__()
+        self.gdn_backend = getattr(args, "linear_attention_backend", "fla")
+        self.chunk_gated_delta_rule = get_chunk_gated_delta_rule(self.gdn_backend)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
         self.num_k_heads = config.linear_num_key_heads
@@ -146,7 +148,11 @@ class Qwen3NextGatedDeltaNet(nn.Module):
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
         if cp_context is not None:
-            core_attn_out, _ = chunk_gated_delta_rule(
+            if self.gdn_backend != "fla":
+                raise NotImplementedError(
+                    f"GDN context parallelism requires the 'fla' backend, got {self.gdn_backend!r}."
+                )
+            core_attn_out, _ = self.chunk_gated_delta_rule(
                 query,
                 key,
                 value,
@@ -157,7 +163,13 @@ class Qwen3NextGatedDeltaNet(nn.Module):
                 cp_context=cp_context,
             )
         else:
-            core_attn_out, _ = chunk_gated_delta_rule(
+            if self.gdn_backend == "flashqla":
+                query = query.contiguous()
+                key = key.contiguous()
+                value = value.contiguous()
+                g = g.contiguous()
+                beta = beta.contiguous()
+            core_attn_out, _ = self.chunk_gated_delta_rule(
                 query,
                 key,
                 value,
@@ -200,7 +212,7 @@ class Attention(HuggingfaceAttention):
         if Qwen3NextAttention is None:
             raise ImportError("Please install transformers>=4.35.0 to use Qwen3NextAttention.")
 
-        self.linear_attn = Qwen3NextGatedDeltaNet(self.hf_config, self.hf_layer_idx)
+        self.linear_attn = Qwen3NextGatedDeltaNet(self.hf_config, self.hf_layer_idx, args=args)
         self.input_layernorm = Qwen3NextRMSNorm(self.hf_config.hidden_size, eps=self.hf_config.rms_norm_eps)
 
     def hf_forward(self, hidden_states, packed_seq_params):
