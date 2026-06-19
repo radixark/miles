@@ -14,7 +14,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
     batched_indexer_fwd,
 )
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
-from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, ensure_freqs_cis, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 
@@ -99,6 +99,9 @@ class V4Indexer(MegatronModule):
         rd = self.rope_head_dim
         cp_size = parallel_state.get_context_parallel_world_size()
         cp_group = self.pg_collection.cp if hasattr(self.pg_collection, "cp") else None
+        # Grow the rope table on demand for samples longer than the budgeted length.
+        rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
+        ensure_freqs_cis(self, self.config, self.rope_head_dim, rope_base, False, seqlen * cp_size)
         freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen, cp_size, cp_group, stride=1)
         q = q.clone()
         q = einops.rearrange(q, "s b ... -> b s ...")

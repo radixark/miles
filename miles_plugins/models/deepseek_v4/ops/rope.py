@@ -3,6 +3,7 @@ from functools import lru_cache
 
 import torch
 from megatron.core.transformer import TransformerConfig
+from megatron.training.global_vars import get_args
 
 
 @lru_cache(2)
@@ -62,9 +63,21 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = F
 
 
 def wrapped_precompute_freqs_cis(
-    config: TransformerConfig, rope_head_dim: int, base: float, yarn_disabled: bool = False
+    config: TransformerConfig, rope_head_dim: int, base: float, yarn_disabled: bool = False, min_seq_len: int = 0
 ):
-    max_seq_len = 65536
+    # The freqs_cis table must cover the global sequence length that
+    # get_freqs_cis_for_cp slices (positions up to cp_size * seqlen_local). In
+    # packed-THD dynamic-batch mode the real maximum is max_tokens_per_gpu *
+    # cp_size (args.seq_length does not reflect the packed length), so derive it
+    # from the run config rather than hardcoding. min_seq_len lets the forward
+    # pass grow the table on demand (see ensure_freqs_cis).
+    args = get_args()
+    cp_size = getattr(args, "context_parallel_size", 1) or 1
+    if getattr(args, "max_tokens_per_gpu", None):
+        budget = args.max_tokens_per_gpu * cp_size
+    else:
+        budget = args.seq_length
+    max_seq_len = max(budget, config.original_max_position_embeddings, min_seq_len)
 
     # yarn_disabled=True → original_seq_len=0, which makes precompute_freqs_cis skip the YaRN
     # correction-range interpolation. Used by 0415 for pure-window (compress_ratio==0) layers.
@@ -93,3 +106,14 @@ def wrapped_precompute_freqs_cis(
     )
 
     return precompute_freqs_cis(**inputs)
+
+
+def ensure_freqs_cis(module, config, rope_head_dim, base, yarn_disabled, seqlen_global):
+    # A single packed sample may exceed the max_tokens_per_gpu * cp_size budget
+    # (while still fitting in memory), so the table built at init can be too
+    # short. Grow module.freqs_cis monotonically to cover seqlen_global.
+    if seqlen_global > module.freqs_cis.size(0):
+        grown = wrapped_precompute_freqs_cis(
+            config, rope_head_dim=rope_head_dim, base=base, yarn_disabled=yarn_disabled, min_seq_len=seqlen_global
+        )
+        module.freqs_cis = grown.to(device=module.freqs_cis.device, dtype=module.freqs_cis.dtype)

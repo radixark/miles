@@ -34,7 +34,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
 )
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
-from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, ensure_freqs_cis, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
 
@@ -229,6 +229,11 @@ class DeepSeekV4Attention(MegatronModule):
         x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
+        # A long packed sample can exceed the budgeted table length; grow on demand.
+        rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
+        ensure_freqs_cis(
+            self, self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size
+        )
         freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen_local, self.cp_size, self.cp_group)
         win = self.window_size
         ratio = self.compress_ratio

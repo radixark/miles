@@ -7,7 +7,7 @@ from torch.nn import Linear
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
 from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
-from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, ensure_freqs_cis, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 
@@ -149,6 +149,10 @@ class DeepSeekV4Compressor(nn.Module):
 
         kv = self.norm(kv.to(dtype))
 
+        # Grow the rope table on demand for samples longer than the budgeted length.
+        ensure_freqs_cis(
+            self, self.config, self.rope_head_dim, self.config.dsv4_compress_rope_theta, False, seqlen_local * self.cp_size
+        )
         freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen_local, self.cp_size, self.cp_group, stride=ratio)
 
         apply_rotary_emb(kv[..., -self.rope_head_dim :], freqs_cis)
