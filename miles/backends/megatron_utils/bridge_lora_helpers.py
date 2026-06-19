@@ -128,34 +128,9 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if args.offload_train:
         patch_param_grad_buffer_for_colocate_mode_lora()
 
-    # megatron-core's experimental-attention dispatcher only wires "gated_delta_net" and
-    # raises for "dsa" (GLM-5.1 / DeepSeek-V3.2), even though it already ships a DSA builder
-    # (get_dsa_module_spec_for_backend). Bridge model build goes through that dispatcher (it does
-    # NOT use the --spec get_glm5_spec path), so temporarily route "dsa" -> the existing DSA builder
-    # while the model is built. Same monkey-patch pattern as deepseek_v4.get_dsv4_spec.
-    from megatron.core.models.gpt import experimental_attention_variant_module_specs as _eav_specs
-
-    _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
-
-    def _patched_get_spec(config, backend=None):
-        if getattr(config, "experimental_attention_variant", None) == "dsa":
-            # Mirror the dispatcher's backend defaulting before delegating to the DSA builder.
-            if backend is None:
-                backend = _eav_specs._get_backend_spec_provider(config=config)
-            spec = _eav_specs.get_dsa_module_spec_for_backend(config=config, backend=backend)
-            # get_dsa_module_spec_for_backend omits metainfo, but the experimental-variant
-            # layer builder reads attention.metainfo["fuse_input_layernorm"] (KeyError otherwise).
-            # MLA-based DSA keeps a separate (non-fused) input layernorm -- same as the
-            # deepseek_v4 dsv4 spec -> False (gated_delta_net uses True).
-            if spec.metainfo is None:
-                spec.metainfo = {}
-            spec.metainfo.setdefault("fuse_input_layernorm", False)
-            return spec
-        return _orig_get_spec(config, backend)
-
-    _eav_specs.get_experimental_attention_variant_module_spec = _patched_get_spec
-    try:
-        model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
-    finally:
-        _eav_specs.get_experimental_attention_variant_module_spec = _orig_get_spec
+    # The GLM-5 / GLM-5.1 "dsa" experimental-attention-variant spec is registered by the
+    # Megatron-Bridge GLM-5 bridge itself (glm5_bridge.py sets
+    # provider.transformer_layer_spec = _build_glm5_dsa_block_spec), so the model builds
+    # via the bridge without a caller-side monkey-patch of megatron-core here.
+    model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
     return model
