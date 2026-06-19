@@ -230,7 +230,7 @@ def execute(args: ScriptArgs, *, wandb_file: str = __file__):
                 sglang_args += (
                     "--sglang-enable-dp-attention "
                     f"--rollout-num-gpus-per-engine {sglang_world_size} "
-                    "--sglang-fp8-gemm-backend flashinfer_cutlass "
+                    "--sglang-fp8-gemm-backend flashinfer_trtllm "
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "
