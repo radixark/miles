@@ -88,10 +88,6 @@ PERF_ARGS=(
    --bf16
    --fp8-format e4m3
    --fp8-recipe blockwise
-   # ROCm/gfx950 blockwise grouped FP8 first-cut does not yet implement wgrad fusion.
-   # Disable it so the MoE GroupedLinear returns a plain wgrad and Megatron's DDP
-   # post-hook accumulates it into the fp32 main_grad (numerically equivalent for bring-up).
-   --no-gradient-accumulation-fusion
    # --fp8-param-gather
 )
 
