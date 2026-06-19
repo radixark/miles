@@ -98,6 +98,8 @@ def get_model_provider_func(
         provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
         provider.sequence_parallel = args.sequence_parallel
         provider.context_parallel_size = args.context_parallel_size
+        # CP>1 VL models assert this; bridge configs skip core_transformer_config_from_args.
+        provider.calculate_per_token_loss = args.calculate_per_token_loss
         provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
         provider.variable_seq_lengths = args.variable_seq_lengths
         if hasattr(args, "moe_token_dispatcher_type"):
