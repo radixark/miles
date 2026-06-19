@@ -1,4 +1,3 @@
-import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -14,7 +13,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["H100", "B200", "B300", "GB200", "GB300", "MI300X", "MI350X"] = "H100"
+    hardware: Literal["H100", "B200", "B300", "GB200", "GB300", "MI350X", "MI355X"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -32,10 +31,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
-        if self.hardware in ("MI300X", "MI350X"):
-            self.num_gpus_per_node = self.num_gpus_per_node or 8
-        else:
-            self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.rollout_int4:
             assert not self.rollout_fp8, "rollout_int4 and rollout_fp8 cannot be enabled at the same time"
             assert not self.rollout_mxfp8, "rollout_int4 and rollout_mxfp8 cannot be enabled at the same time"
@@ -177,9 +173,6 @@ def execute(args: ScriptArgs):
         "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
-    if args.hardware in ("MI300X", "MI350X"):
-        os.environ.setdefault("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES", "1")
-        os.environ.setdefault("RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES", "1")
     misc_env_vars = {}
 
     if args.rollout_int4:
@@ -212,10 +205,9 @@ def execute(args: ScriptArgs):
                 misc_env_vars |= {
                     "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
                 }
-            case "MI300X" | "MI350X":
-                # ROCm gfx950 blockwise FP8 via ported Triton kernels. ROCm has no
-                # wgrad fusion yet, so disable gradient-accumulation-fusion (wgrad
-                # returns a plain grad; Megatron DDP accumulates into fp32 main_grad).
+            case "MI350X" | "MI355X":
+                # ROCm gfx950: blockwise FP8 via ported Triton kernels.
+                # ROCm has no wgrad fusion yet, so turn off gradient-accumulation-fusion.
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
@@ -293,7 +285,7 @@ def execute(args: ScriptArgs):
                 )
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
-        case ("MI300X" | "MI350X", 1):
+        case ("MI350X" | "MI355X", 1):
             perf_args += (
                 "--tensor-model-parallel-size 1 "
                 "--sequence-parallel "
