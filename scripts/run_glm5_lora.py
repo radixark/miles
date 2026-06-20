@@ -65,7 +65,7 @@ _HF_REPO = {
 
 _MEGATRON_MODEL_TYPE = {
     "GLM-5.1": "glm5-744B-A40B",
-    "GLM-5.1-6layer": "glm5-744B-A40B_6layer",
+    "GLM-5.1-6layer": "glm5.1-744B-A40B_6layer",
     "GLM-5.1-4layer": "glm5-744B-A40B_4layer",
     "GLM-5.1-20layer": "glm5-744B-A40B_20layer",
     "GLM-5.2": "glm5.2-744B-A40B",

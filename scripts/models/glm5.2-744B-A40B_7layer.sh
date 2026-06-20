@@ -2,7 +2,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/glm5.2-744B-A40B.sh"
 
 # Override for the 7-layer pruned GLM-5.2 toy (jybsuper/GLM-5.2-7layer):
-# first 7 layers = 3 dense + 4 MoE.  (Same pattern as glm5-744B-A40B_6layer.sh.)
+# first 7 layers = 3 dense + 4 MoE.  (Same pattern as glm5.1-744B-A40B_6layer.sh.)
 #
 # This keeps the DSA cross-layer index-sharing schedule exercised: with
 # index_topk_freq=4 / index_skip_topk_offset=3, the computing layers are the
