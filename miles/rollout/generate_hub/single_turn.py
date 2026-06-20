@@ -40,7 +40,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
 
-    output = await post(url, payload)
+    # /generate is non-idempotent: a retry after the request reached the server
+    # would re-issue generation. Only pre-send connection errors are retried.
+    output = await post(url, payload, idempotent=False)
     await update_sample_from_response(args, sample, payload=payload, output=output)
 
     return GenerateFnOutput(samples=sample)
