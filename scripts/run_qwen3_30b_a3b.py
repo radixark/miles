@@ -293,10 +293,10 @@ def execute(args: ScriptArgs):
                 "--context-parallel-size 2 "
                 "--expert-model-parallel-size 4 "
                 "--expert-tensor-parallel-size 1 "
-                "--max-tokens-per-gpu 8192 "
+                "--max-tokens-per-gpu 16384 "
             )
             sglang_args = (
-                "--rollout-num-gpus-per-engine 8 "
+                "--rollout-num-gpus-per-engine 2 "
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-max-running-requests 512 "
             )
