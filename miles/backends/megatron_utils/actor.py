@@ -430,6 +430,7 @@ class MegatronTrainRayActor(TrainRayActor):
                         self.compute_log_prob(
                             data_iterator,
                             num_microbatches,
+                            rollout_id=rollout_id,
                             store_prefix="teacher_",
                         )
                     )
