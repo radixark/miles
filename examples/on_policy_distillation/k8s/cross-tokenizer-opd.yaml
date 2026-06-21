@@ -1,0 +1,202 @@
+# Cross-tokenizer on-policy distillation on Kubernetes:
+#   GLM5.2 teacher  ->  Qwen3.6-35B-A3B student.
+#
+# TOPOLOGY (the runnable, primary artifact): TWO nodes, one role each.
+#   * `glm52-teacher`  Deployment + Service: SGLang server for the 744B-A40B GLM5.2
+#     teacher on one 8xH200 node (TP=8, intra-node NVLink). Queried for per-token
+#     logprobs only (max_new_tokens=0), so it never generates.
+#   * `qwen36-trainer` Job: the Qwen3.6-35B-A3B student, colocated train+rollout on
+#     the OTHER 8xH200 node (EP=8). Reaches the teacher over HTTP at
+#     http://glm52-teacher:30000/generate.
+#
+# WHY TWO NODES (not the single-Pod / two-container design): a 744B-A40B teacher
+# needs a whole 8xH200 node to serve, and the 35B-A3B student needs a whole node to
+# train+roll out, so 8+8 GPUs cannot co-fit on one 8-GPU node. With distinct
+# tokenizers there is no shared weight/engine to colocate either. The two roles only
+# exchange HTTP (scoring requests) over the pod network, so each role is a single
+# node internally (NVLink) and NO RDMA/IB or multi-node NCCL is required. A
+# single-Pod, two-container variant is viable ONLY for a teacher small enough to
+# co-fit (see the commented note at the bottom).
+#
+# BEFORE APPLYING — set the placeholders marked `# <<< SET`:
+#   * TEACHER_MODEL  : GLM5.2 HF repo id (or a local /weka path)
+#   * STUDENT_MODEL  : Qwen3.6-35B-A3B HF repo id (or a local /weka path)
+#   * GIT_REF        : the pushed branch/sha of williammtan/miles with this feature
+#   * (optional) create secret `hf-token` (key HF_TOKEN) for gated repos.
+#
+# Storage: reuses the existing RWX `weka-data` PVC (32Ti) for model weights, the
+# HF cache, the torch_dist checkpoint, and run checkpoints — shared by both pods.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glm52-teacher
+  labels: { app: glm52-teacher }
+spec:
+  selector: { app: glm52-teacher }
+  ports:
+    - name: http
+      port: 30000
+      targetPort: 30000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glm52-teacher
+  labels: { app: glm52-teacher }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: glm52-teacher }
+  template:
+    metadata:
+      labels: { app: glm52-teacher }
+    spec:
+      restartPolicy: Always
+      # Keep the teacher and trainer on different nodes (each wants a full 8-GPU node).
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app: qwen36-trainer }
+              topologyKey: kubernetes.io/hostname
+      volumes:
+        - name: weka
+          persistentVolumeClaim: { claimName: weka-data }
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 64Gi }
+      containers:
+        - name: teacher
+          image: radixark/miles:latest-cu12
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TEACHER_MODEL
+              value: "GLM52_HF_REPO_ID"          # <<< SET (e.g. zai-org/GLM-5.2 — confirm the real id)
+            - name: HF_HOME
+              value: /weka/hf
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: HF_TOKEN, optional: true }
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -ex
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+              MODEL_DIR=/weka/models/glm5.2
+              if [ ! -e "$MODEL_DIR/config.json" ]; then
+                hf download "$TEACHER_MODEL" --local-dir "$MODEL_DIR"
+              fi
+              exec python3 -m sglang.launch_server \
+                --model-path "$MODEL_DIR" \
+                --tp 8 \
+                --host 0.0.0.0 --port 30000 \
+                --mem-fraction-static 0.85 \
+                --chunked-prefill-size 8192 \
+                --trust-remote-code
+          ports:
+            - containerPort: 30000
+          readinessProbe:
+            httpGet: { path: /health_generate, port: 30000 }
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 120
+          resources:
+            limits:
+              nvidia.com/gpu: "8"
+              cpu: "32"
+              memory: 512Gi
+          volumeMounts:
+            - { name: weka, mountPath: /weka }
+            - { name: dshm, mountPath: /dev/shm }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen36-trainer
+  labels: { app: qwen36-trainer }
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: { app: qwen36-trainer }
+    spec:
+      restartPolicy: Never
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app: glm52-teacher }
+              topologyKey: kubernetes.io/hostname
+      volumes:
+        - name: weka
+          persistentVolumeClaim: { claimName: weka-data }
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 128Gi }
+      containers:
+        - name: trainer
+          image: radixark/miles:latest-cu12
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: STUDENT_MODEL_ID
+              value: "QWEN36_35B_A3B_HF_REPO_ID"  # <<< SET (e.g. Qwen/Qwen3.6-35B-A3B — confirm the real id)
+            - name: TEACHER_TOKENIZER
+              value: "GLM52_HF_REPO_ID"           # <<< SET (same GLM5.2 id; only the tokenizer is pulled here)
+            - name: GIT_REPO
+              value: "https://github.com/williammtan/miles"
+            - name: GIT_REF
+              value: "feat/cross-tokenizer-opd"    # <<< SET to the pushed branch/sha
+            - name: RM_URL
+              value: "http://glm52-teacher:30000/generate"
+            - name: HF_HOME
+              value: /weka/hf
+            - name: MEGATRON_PATH
+              value: /root/Megatron-LM
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: HF_TOKEN, optional: true }
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -ex
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+              # Stage the fork at the feature branch (or pre-copy the working tree to
+              # /weka/code/miles and skip this clone).
+              CODE_DIR=/weka/code/miles
+              if [ ! -d "$CODE_DIR/.git" ]; then git clone "$GIT_REPO" "$CODE_DIR"; fi
+              cd "$CODE_DIR"
+              git fetch --all && git checkout "$GIT_REF" && (git pull --ff-only || true)
+              pip install -e . >/dev/null 2>&1 || true
+
+              # Download the student weights (shared on the PVC).
+              STUDENT_DIR=/weka/models/qwen3.6-35B-A3B
+              if [ ! -e "$STUDENT_DIR/config.json" ]; then
+                hf download "$STUDENT_MODEL_ID" --local-dir "$STUDENT_DIR"
+              fi
+              export STUDENT_MODEL="$STUDENT_DIR"
+              export STUDENT_TORCH_DIST=/weka/models/qwen3.6-35B-A3B_torch_dist
+              export DATA_PATH=/weka/data/dapo-math-17k/dapo-math-17k.jsonl
+              if [ ! -e "$DATA_PATH" ]; then
+                hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /weka/data/dapo-math-17k
+              fi
+
+              # The run script waits for the teacher's /health_generate, converts the
+              # student to torch_dist if needed, then launches colocated train+rollout.
+              exec bash examples/on_policy_distillation/run-qwen3.6-35B-A3B-glm5.2-cross-tokenizer.sh
+          resources:
+            limits:
+              nvidia.com/gpu: "8"
+              cpu: "64"
+              memory: 1024Gi
+          volumeMounts:
+            - { name: weka, mountPath: /weka }
+            - { name: dshm, mountPath: /dev/shm }
+#
+# ---------------------------------------------------------------------------
+# SINGLE-POD, TWO-CONTAINER VARIANT (only if the teacher co-fits on one node):
+# Replace the Deployment+Service+Job above with one Pod whose `teacher` and
+# `trainer` containers share `/dev/shm` and the PVC. The trainer then uses
+# RM_URL=http://localhost:30000/generate. This needs teacher_gpus + student_gpus
+# <= 8, so it is NOT usable for the 744B GLM5.2 teacher — only for a small teacher
+# (e.g. a GLM "flash"/dense variant) sharing the node. The two-node topology above
+# is the correct one for this model pair.
+# ---------------------------------------------------------------------------

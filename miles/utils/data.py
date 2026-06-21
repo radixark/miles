@@ -210,6 +210,11 @@ class Dataset:
                     add_generation_prompt=True,
                     **(apply_chat_template_kwargs or {}),
                 )
+                # Preserve the pre-template prompt (conversation) so cross-tokenizer OPD can
+                # re-render it with the teacher's own chat template at reward time; otherwise
+                # only the student-templated string survives on the Sample.
+                # See miles/rollout/cross_tokenizer_opd.py.
+                metadata.setdefault("opd_raw_prompt", prompt)
             else:
                 output_prompt = prompt
 

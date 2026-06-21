@@ -1161,6 +1161,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
             )
+            parser.add_argument(
+                "--opd-teacher-tokenizer",
+                type=str,
+                default=None,
+                help=(
+                    "HF id or local path of the TEACHER tokenizer. Setting this enables "
+                    "cross-tokenizer OPD (arXiv 2606.09456 'Breaking the Tokenizer Barrier'): the "
+                    "teacher and student use different tokenizers, so the per-token distillation "
+                    "signal is computed via DPCA chunk alignment at rollout time and stored in "
+                    "opd_reverse_kl. Requires --opd-type=sglang and --opd-log-prob-top-k=0, and the "
+                    "cross-tokenizer reward path "
+                    "(miles.rollout.cross_tokenizer_opd.reward_func / post_process_rewards). "
+                    "Leave unset for the standard shared-tokenizer OPD path."
+                ),
+            )
             return parser
 
         def add_lora_arguments(parser):
@@ -2101,6 +2116,22 @@ def miles_validate_args(args):
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
 
+        if args.opd_teacher_tokenizer is not None:
+            # Cross-tokenizer OPD (arXiv 2606.09456). The megatron in-process teacher assumes a
+            # shared architecture/tokenizer, and top-k token-set matching requires a shared
+            # tokenizer, so both are incompatible with a distinct teacher tokenizer.
+            if args.opd_type != "sglang":
+                raise ValueError(
+                    "--opd-teacher-tokenizer (cross-tokenizer OPD) is only supported with "
+                    "--opd-type=sglang, since the teacher must be a separate SGLang server."
+                )
+            if args.opd_log_prob_top_k > 0:
+                raise ValueError(
+                    "--opd-teacher-tokenizer (cross-tokenizer OPD) cannot be combined with "
+                    "--opd-log-prob-top-k>0; top-k token-set matching requires a shared tokenizer. "
+                    "Set --opd-log-prob-top-k=0 to use the sampled-token (DPCA) cross-tokenizer path."
+                )
+
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:
                 raise ValueError(
@@ -2126,6 +2157,8 @@ def miles_validate_args(args):
     else:
         if args.opd_teacher_load is not None:
             raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
+        if args.opd_teacher_tokenizer is not None:
+            raise ValueError("--opd-teacher-tokenizer is set but --use-opd is not enabled. Please add --use-opd flag.")
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":

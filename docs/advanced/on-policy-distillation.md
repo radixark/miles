@@ -12,6 +12,7 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 | `--opd-log-prob-top-k` | Number of top-k tokens retained for the Rethinking OPD token reward. `0` uses sampled-token OPD; `16` matches the paper recipe default. |
 | `--opd-top-k-strategy` | Top-k token set strategy: `only-student`, `only-teacher`, `intersection`, `union`, or `xor`. |
 | `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
+| `--opd-teacher-tokenizer` | HF id/path of the **teacher** tokenizer. Setting it enables **cross-tokenizer OPD** (DPCA), where teacher and student use different tokenizers. Requires `--opd-type=sglang` and `--opd-log-prob-top-k=0`. |
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
 
@@ -91,6 +92,43 @@ The teacher model is loaded directly into Megatron via `--opd-teacher-load`. Tea
 ```
 
 > **Note**: The teacher checkpoint must be in Megatron format (`torch_dist` or `torch`). You can convert from HuggingFace format using `tools/convert_hf_to_torch_dist.py`.
+
+## Cross-Tokenizer OPD (different teacher/student tokenizers)
+
+The SGLang and Megatron modes above assume the teacher and student **share a tokenizer**, so the teacher can score the student's own token ids 1:1. To distill *across* model families — e.g. a **GLM5.2** teacher into a **Qwen3.6-35B-A3B** student — set `--opd-teacher-tokenizer` to the teacher's tokenizer. This enables the cross-tokenizer reward path (`miles.rollout.cross_tokenizer_opd`), which implements the DPCA chunk alignment from ["Breaking the Tokenizer Barrier" (arXiv:2606.09456)](https://arxiv.org/abs/2606.09456). The teacher is a separate SGLang server (the student and teacher do not share weights or tokenizer).
+
+**How it works**
+
+1. The student rolls out as usual; `sample.rollout_log_probs` are its per-token (old-policy) logprobs.
+2. During rollout, the reward function renders the prompt with the **teacher's own chat template**, appends the student's response text tokenized by the **teacher**, and queries the teacher SGLang server for the teacher's per-token logprobs of that response (`max_new_tokens=0` — scoring only, the teacher never generates).
+3. Post-processing runs **DPCA**: a dual-pointer alignment that partitions the student and teacher token sequences into minimal *synchronized chunks* of identical decoded text (handling 1:1, many:1, and 1:many correspondences, including multibyte splits).
+4. For the chunk `c` containing student token `i` it stores a per-token signal in `sample.opd_reverse_kl`:
+
+$$
+\text{reverse\_kl}_i = \left(1 - \frac{\mathcal{L}_T^{(c)}}{\mathcal{L}_S^{(c)}}\right)\log p_i
+$$
+
+where $\mathcal{L}_S^{(c)}$ / $\mathcal{L}_T^{(c)}$ are the summed student / teacher logprobs over the chunk and $\log p_i$ is the student logprob of token `i`. This reduces **exactly** to `student_logp_i − teacher_logp_i` when the tokenizers agree (every chunk is one token), so it is a strict generalization of the shared-tokenizer path: the training side is unchanged and simply consumes the precomputed `opd_reverse_kl` via the same `apply_opd_kl_to_advantages` penalty.
+
+**Scope / constraints**
+
+- **SGLang teacher mode only.** Requires `--opd-type sglang` and `--opd-log-prob-top-k 0` (enforced by argument validation). The Megatron in-process teacher assumes a shared architecture/tokenizer, and the top-k token-set recipe assumes a shared tokenizer.
+- Unalignable spans (decoding artifacts) are folded and reported via a mean *unaligned-token fraction* log line; the rollout never raises.
+
+**Configuration**
+
+```bash
+--use-opd
+--opd-type sglang
+--opd-kl-coef 1.0
+--opd-log-prob-top-k 0
+--opd-teacher-tokenizer <teacher-hf-id-or-path>
+--custom-rm-path miles.rollout.cross_tokenizer_opd.reward_func
+--custom-reward-post-process-path miles.rollout.cross_tokenizer_opd.post_process_rewards
+--rm-url http://<TEACHER_IP>:<TEACHER_PORT>/generate
+```
+
+Runnable example: `examples/on_policy_distillation/run-qwen3.6-35B-A3B-glm5.2-cross-tokenizer.sh`, with the two-node (teacher + trainer) Kubernetes topology in `examples/on_policy_distillation/k8s/cross-tokenizer-opd.yaml`.
 
 ## Running the Examples
 
