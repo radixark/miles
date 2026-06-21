@@ -363,6 +363,41 @@ class SGLangEngine(RayActor):
             payload,
         )
 
+    def load_lora_adapter_from_distributed(
+        self,
+        lora_name: str,
+        config_dict: dict,
+        names: list,
+        dtypes: list,
+        shapes: list,
+        group_name: str,
+        pinned: bool = False,
+        added_tokens_config: dict | None = None,
+    ):
+        """Load a LoRA adapter whose weights are broadcast over ``group_name``.
+
+        Mirrors ``update_weights_from_distributed``: only metadata is sent here;
+        the tensors arrive via NCCL broadcast (src=0), so no CUDA IPC is used and
+        this works across nodes. ``init_weights_update_group`` must have created
+        ``group_name`` already.
+        """
+        payload = {
+            "lora_name": lora_name,
+            "config_dict": config_dict,
+            "names": names,
+            "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
+            "shapes": shapes,
+            "group_name": group_name,
+            "pinned": pinned,
+        }
+        if added_tokens_config is not None:
+            payload["added_tokens_config"] = added_tokens_config
+
+        return self._make_request(
+            "load_lora_adapter_from_distributed",
+            payload,
+        )
+
     def flush_cache(self):
         """Flush the cache of the server."""
         if self.node_rank != 0:

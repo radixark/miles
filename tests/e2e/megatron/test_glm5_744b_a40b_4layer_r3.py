@@ -32,8 +32,6 @@ def _args() -> ScriptArgs:
             "--ci-disable-logprobs-checker "
             "--disable-weights-backuper "
             "--use-rollout-indexer-replay "
-            # TODO: support indexer topk in sgl-router
-            "--use-miles-router "
             "--rollout-max-response-len 4096 "
             # preserve to avoid CPU OOM
             "--sglang-max-total-tokens 1900000 "
