@@ -70,7 +70,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: TEACHER_MODEL
-              value: "zai-org/GLM-5.2"           # glm_moe_dsa, ~1.5TB bf16 download, served in FP8
+              value: "zai-org/GLM-5.2-FP8"       # pre-quantized block-FP8 (~750GB); loads ~94GB/GPU on 8xH200
             - name: HF_HOME
               value: /weka/hf
             - name: HF_HUB_ENABLE_HF_TRANSFER
@@ -82,16 +82,17 @@ spec:
           args:
             - |
               set -ex
-              MODEL_DIR=/weka/models/glm5.2
+              MODEL_DIR=/weka/models/glm5.2-fp8
               if [ ! -e "$MODEL_DIR/config.json" ]; then
                 hf download "$TEACHER_MODEL" --local-dir "$MODEL_DIR"
               fi
-              # GLM-5.2 (glm_moe_dsa) is not pre-quantized; FP8 is required to fit the
-              # 744B-A40B weights on one 8xH200 node (~744GB in FP8 of 1144GB).
+              # Pre-quantized block-FP8 (config has quant_method=fp8, weight_block_size
+              # [128,128]); SGLang auto-detects it and loads FP8 directly (~94GB/GPU), so no
+              # --quantization flag (online fp8 would load bf16 first and OOM). glm_moe_dsa
+              # (DeepSeek-V3.2-style DSA) attention is handled by SGLang's native loader.
               exec python3 -m sglang.launch_server \
                 --model-path "$MODEL_DIR" \
                 --tp 8 \
-                --quantization fp8 \
                 --host 0.0.0.0 --port 30000 \
                 --mem-fraction-static 0.85 \
                 --chunked-prefill-size 8192 \
@@ -144,7 +145,7 @@ spec:
             - name: STUDENT_MODEL_ID
               value: "Qwen/Qwen3.6-35B-A3B"
             - name: TEACHER_TOKENIZER
-              value: "zai-org/GLM-5.2"             # only the tokenizer is pulled here
+              value: "zai-org/GLM-5.2-FP8"         # tokenizer == GLM-5.2; only tokenizer files pulled
             - name: RM_URL
               value: "http://will-glm52-teacher:30000/generate"
             - name: NUM_ROLLOUT

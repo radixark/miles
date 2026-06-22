@@ -50,6 +50,16 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3.6-35B-A3B.sh"
 
+# Convert the student HF checkpoint to Megatron torch_dist if not already present.
+# Done before waiting on the teacher so it overlaps with the teacher's bring-up.
+if [ ! -d "${STUDENT_TORCH_DIST}" ]; then
+    echo "Building student torch_dist at ${STUDENT_TORCH_DIST} ..."
+    PYTHONPATH="${MEGATRON_PATH}" python3 tools/convert_hf_to_torch_dist.py \
+        "${MODEL_ARGS[@]}" \
+        --hf-checkpoint "${STUDENT_MODEL}" \
+        --save "${STUDENT_TORCH_DIST}"
+fi
+
 # Wait for the GLM5.2 teacher server to be ready.
 TEACHER_HEALTH="${RM_URL%/generate}/health_generate"
 echo "Waiting for the GLM5.2 teacher server at ${TEACHER_HEALTH} ..."
@@ -58,15 +68,6 @@ until curl -sf "${TEACHER_HEALTH}" >/dev/null; do
     sleep 10
 done
 echo "GLM5.2 teacher server is up."
-
-# Convert the student HF checkpoint to Megatron torch_dist if not already present.
-if [ ! -d "${STUDENT_TORCH_DIST}" ]; then
-    echo "Building student torch_dist at ${STUDENT_TORCH_DIST} ..."
-    PYTHONPATH="${MEGATRON_PATH}" python3 tools/convert_hf_to_torch_dist.py \
-        "${MODEL_ARGS[@]}" \
-        --hf-checkpoint "${STUDENT_MODEL}" \
-        --save "${STUDENT_TORCH_DIST}"
-fi
 
 CKPT_ARGS=(
    --hf-checkpoint "${STUDENT_MODEL}"
