@@ -31,7 +31,7 @@ def _set_random_seed(
     seed = seed_ + (100 * get_parallel_state().pp.rank)
     # Ensure different data parallel ranks get different seeds
     if data_parallel_random_init:
-        seed = seed + (10 * get_parallel_state().intra_dp.rank)
+        seed = seed + (10 * get_parallel_state().effective_dp.rank)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

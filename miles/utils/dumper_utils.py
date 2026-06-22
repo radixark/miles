@@ -160,7 +160,7 @@ class DumperMegatronUtil:
         # (barrier, broadcast, allgather) but don't produce output files.
         # TODO: optimize — non-DP-rank-0 ranks currently run full dumper logic
         # (forward hooks, model iteration) without producing output.
-        if get_parallel_state().intra_dp.rank != 0:
+        if get_parallel_state().effective_dp.rank != 0:
             merged["enable_output_file"] = False
             merged["enable_output_console"] = False
 
