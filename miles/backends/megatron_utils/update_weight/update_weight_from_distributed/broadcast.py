@@ -43,6 +43,8 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale: bool = False
         self._init_lora(
             args=args,
             model=model,
@@ -50,6 +52,13 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             quantization_config=quantization_config,
             is_lora=is_lora,
         )
+
+    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
+    def is_rollout_engines_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
 
     def connect_rollout_engines(
         self,
@@ -62,6 +71,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
+        self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
         self._engine_gpu_counts = engine_gpu_counts
 
