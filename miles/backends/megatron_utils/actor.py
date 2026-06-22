@@ -23,6 +23,7 @@ from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
+from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
@@ -78,6 +79,13 @@ class MegatronTrainRayActor(TrainRayActor):
             args,
             indep_dp_store_addr=self._indep_dp_store_addr,
             indep_dp_info=indep_dp_info,
+        )
+
+        self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
+            args,
+            cell_index=indep_dp_info.cell_index,
+            num_cells=indep_dp_info.num_cells,
+            rank=self._rank,
         )
 
         if args.dumper_enable:
@@ -440,6 +448,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     num_microbatches,
                     witness_info=witness_info,
                     attempt=attempt,
+                    ft_test_action_executor=self._ft_test_action_executor,
                 )
 
             self.prof.step(rollout_id=rollout_id)
