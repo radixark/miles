@@ -12,3 +12,17 @@ def enable_experimental_rollout_refactor() -> bool:
         _printed_experimental_rollout_refactor = True
 
     return result
+
+
+_printed_experimental_ft_trainer = False
+
+
+def enable_experimental_ft_trainer() -> bool:
+    result = bool(int(os.environ.get("MILES_EXPERIMENTAL_FT_TRAINER", "0")))
+
+    global _printed_experimental_ft_trainer
+    if result and not _printed_experimental_ft_trainer:
+        print("MILES_EXPERIMENTAL_FT_TRAINER=1 is enabled (experimental feature)")
+        _printed_experimental_ft_trainer = True
+
+    return result
