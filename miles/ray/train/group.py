@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import ray
 from ray.util.placement_group import PlacementGroup
 
+from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.utils.async_utils import AsyncioGatherUtils
@@ -14,6 +15,7 @@ from miles.utils.event_logger.models import WitnessAllocateIdEvent
 from miles.utils.health_checker import NoopHealthChecker
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.retry_utils import retry
 from miles.utils.structured_log import log_structured
 from miles.utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 
@@ -22,6 +24,8 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_RETRY_MAX_ATTEMPTS = 30
 
 
 class RayTrainGroup:
@@ -125,7 +129,7 @@ class RayTrainGroup:
             )
             self._check_train_one_attempt(snapshot_alive_cells, results)
 
-        await _fn(attempt=0)
+        await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
@@ -149,9 +153,15 @@ class RayTrainGroup:
     @staticmethod
     def _check_train_one_attempt(snapshot_alive_cells, results):
         outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
-        if not outcomes["normal"]:
+        if not outcomes["normal"] and not outcomes["discarded"]:
             log_structured(logger.error, op="check", **outcomes, decision="retry", reason="all alive cells failed")
             raise RuntimeError("All cells failed in this training attempt")
+
+        # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
+        #       This may happen when some cells fails *after* exchanging gradients w/ others
+        if outcomes["discarded"]:
+            log_structured(logger.warning, op="check", **outcomes, decision="retry", reason="discarded_should_retry")
+            raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
 
         log_structured(
             logger.info, op="check", **outcomes, decision="no_retry", reason="survivors normal, gradients valid"
@@ -161,8 +171,13 @@ class RayTrainGroup:
     def _compute_attempt_outcomes(snapshot_alive_cells, results) -> dict[str, list[int]]:
         paired = list(zip(snapshot_alive_cells, results, strict=True))
         errored = [c.cell_index for c, r in paired if isinstance(r, BaseException)]
-        normal = [c.cell_index for c, r in paired if c.cell_index not in errored]
-        return {"errored": errored, "normal": normal}
+        discarded = [
+            c.cell_index
+            for c, r in paired
+            if not isinstance(r, BaseException) and any(o == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
+        ]
+        normal = [c.cell_index for c, r in paired if c.cell_index not in errored and c.cell_index not in discarded]
+        return {"errored": errored, "discarded": discarded, "normal": normal}
 
     # ------------------------ API :: others ------------------------
 
@@ -186,7 +201,11 @@ class RayTrainGroup:
 
     async def save_model(self, rollout_id: int, force_sync: bool = False):
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
-        await self._execute_first_alive("save_model", rollout_id, force_sync=force_sync)
+        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+        await retry(
+            lambda _: self._execute_first_alive("save_model", rollout_id, force_sync=force_sync),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
@@ -196,7 +215,11 @@ class RayTrainGroup:
         # ranks observe a consistent engine set; the actor releases the lock itself.
         info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
         await self._rollout_manager.health_monitoring_pause.remote()
-        await self._execute_first_alive("update_weights", info=info)
+        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+        await retry(
+            lambda _: self._execute_first_alive("update_weights", info=info),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
 
     async def onload(self):
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
