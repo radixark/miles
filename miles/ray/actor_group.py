@@ -87,7 +87,9 @@ class RayTrainGroup:
 
             actor_impl = FSDPTrainRayActor
 
-        TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
+        TrainRayActor = ray.remote(
+            num_gpus=1, runtime_env={"env_vars": env_vars}, concurrency_groups={"fault_injector": 1}
+        )(actor_impl)
 
         # Create worker actors
         actor_handles = []
