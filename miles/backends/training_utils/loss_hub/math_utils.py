@@ -859,6 +859,7 @@ def calculate_log_probs_and_entropy(
     tokens,
     tp_group,
     with_entropy: bool = False,
+    entropy_requires_grad: bool = True,
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
@@ -869,6 +870,7 @@ def calculate_log_probs_and_entropy(
             tokens,
             tp_group,
             with_entropy=with_entropy,
+            entropy_requires_grad=entropy_requires_grad,
             vocab_size=vocab_size,
         )
 
@@ -877,6 +879,13 @@ def calculate_log_probs_and_entropy(
     # Without the clone, the backward will trigger inplace edit error.
     # It seems that the function with tp will modify the logits inplace.
     entropy = None
+
+    def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
+        if entropy_requires_grad:
+            return compute_entropy_from_logits(logits_chunk.clone(), tp_group)
+        with torch.no_grad():
+            return compute_entropy_from_logits(logits_chunk.detach().clone(), tp_group)
+
     if logits.size(0) != 0:
         if chunk_size > 0:
             num_chunks = (logits.size(0) - 1) // chunk_size + 1
@@ -890,13 +899,13 @@ def calculate_log_probs_and_entropy(
             if with_entropy:
                 entropys = []
                 for _, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                    entropy = compute_entropy_from_logits(logits_chunk.clone(), tp_group)
+                    entropy = compute_entropy(logits_chunk)
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
             log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
             if with_entropy:
-                entropy = compute_entropy_from_logits(logits.clone(), tp_group)
+                entropy = compute_entropy(logits)
     else:
         log_prob = logits.new_zeros((0,))
         if with_entropy:
@@ -910,6 +919,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     tokens: torch.Tensor,
     tp_group: dist.ProcessGroup | None,
     with_entropy: bool = False,
+    entropy_requires_grad: bool = True,
     vocab_size: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
@@ -920,6 +930,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         tokens: Target tokens of shape ``[R]``.
         tp_group: Tensor-parallel process group for vocab gather.
         with_entropy: If True, also compute entropy.
+        entropy_requires_grad: If False, compute entropy as an observed metric
+            without attaching it to the autograd graph.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
 
@@ -941,7 +953,13 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     entropy = None
     if with_entropy:
-        probs = log_probs_full.exp()
-        entropy = -(probs * log_probs_full).sum(dim=-1)
+        entropy_log_probs = log_probs_full if entropy_requires_grad else log_probs_full.detach()
+        if entropy_requires_grad:
+            probs = entropy_log_probs.exp()
+            entropy = -(probs * entropy_log_probs).sum(dim=-1)
+        else:
+            with torch.no_grad():
+                probs = entropy_log_probs.exp()
+                entropy = -(probs * entropy_log_probs).sum(dim=-1)
 
     return log_prob, entropy
