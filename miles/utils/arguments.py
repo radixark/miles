@@ -12,6 +12,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -699,6 +700,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
+            SimpleHealthCheckerConfig.add_arguments(parser, prefix="trainer-heartbeat-checker")
             return parser
 
         # data

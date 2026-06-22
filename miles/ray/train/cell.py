@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 import ray
 
+from miles.ray.train.cell_monitor import compute_cell_status
 from miles.ray.train.cell_state import (
     CellState,
     StateAllocatedAlive,
@@ -14,6 +15,7 @@ from miles.ray.train.cell_state import (
     StatePending,
     StateStopped,
 )
+from miles.utils.control_server.models import CellStatus
 from miles.utils.health_checker import BaseHealthChecker
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.structured_log import log_structured
@@ -296,6 +298,9 @@ class RayTrainCell:
     @property
     def state_name(self) -> str:
         return type(self._state).__name__
+
+    def cell_status(self) -> CellStatus:
+        return compute_cell_status(self._state, self.health_checker.status)
 
     @property
     def indep_dp_info(self) -> IndepDPInfo | None:

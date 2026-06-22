@@ -11,10 +11,11 @@ from ray.util.placement_group import PlacementGroup
 from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
+from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.event_logger.models import CellReconfigureEvent, WitnessAllocateIdEvent
-from miles.utils.health_checker import NoopHealthChecker
+from miles.utils.health_checker import NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
@@ -77,6 +78,10 @@ class RayTrainGroup:
         else:
             self._indep_dp_store, indep_dp_store_addr = None, None
 
+        health_checker_config = (
+            SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker") if num_cells > 1 else None
+        )
+
         def _create_cell(cell_index: int):
             cell_pg = _slice_pg(pg, start=cell_index * gpus_per_cell, end=(cell_index + 1) * gpus_per_cell)
 
@@ -98,6 +103,12 @@ class RayTrainGroup:
                 ),
                 health_checker=NoopHealthChecker(),
             )
+
+            if health_checker_config is not None:
+                cell.health_checker = create_trainer_cell_health_checker(
+                    cell=cell,
+                    config=health_checker_config,
+                )
 
             return cell
 
