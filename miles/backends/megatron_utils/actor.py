@@ -13,6 +13,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
+from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.event_logger.logger import event_logger_context
@@ -37,7 +38,10 @@ from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
+from .checkpoint_transfer import recv_ckpt
+from .checkpoint_transfer import send_ckpt as _send_ckpt
 from .in_memory_checkpoint import InMemoryCheckpointManager
+from .indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
@@ -65,6 +69,7 @@ class MegatronTrainRayActor(TrainRayActor):
         *,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
+        recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
     ) -> int | None:
         monkey_patch_torch_dist()
@@ -137,12 +142,22 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
         checkpointing_context = None
-        if args.non_persistent_ckpt_type == "local":
+        if recv_ckpt_src_rank is not None:
+            ckpt_manager = recv_ckpt(
+                indep_dp=get_parallel_state().indep_dp,
+                src_rank=recv_ckpt_src_rank,
+            )
+            checkpointing_context = {"local_checkpoint_manager": ckpt_manager}
+        elif args.non_persistent_ckpt_type == "local":
             checkpointing_context = {"local_checkpoint_manager": InMemoryCheckpointManager()}
 
-        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
-            args, role, checkpointing_context=checkpointing_context
+        heal_load_overrides: dict[str, object] = (
+            dict(no_load_optim=False, no_load_rng=False, finetune=False) if recv_ckpt_src_rank is not None else {}
         )
+        with inplace_modify_args(args, heal_load_overrides):
+            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+                args, role, checkpointing_context=checkpointing_context
+            )
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -629,4 +644,26 @@ class MegatronTrainRayActor(TrainRayActor):
             world_size=world_size,
             rank=0 if self.role == "actor" else 1,
             group_name=group_name,
+        )
+
+    def send_ckpt(self, dst_rank: int) -> None:
+        # These states are not handled
+        assert not self.args.keep_old_actor
+
+        _send_ckpt(
+            indep_dp=get_parallel_state().indep_dp,
+            model=self.model,
+            optimizer=self.optimizer,
+            opt_param_scheduler=self.opt_param_scheduler,
+            iteration=self._last_rollout_id,
+            dst_rank=dst_rank,
+        )
+
+    def reconfigure_indep_dp(self, indep_dp_info: IndepDPInfo) -> None:
+        reconfigure_indep_dp_group(
+            parallel_state=get_parallel_state(),
+            store_addr=self._indep_dp_store_addr,
+            indep_dp_info=indep_dp_info,
+            megatron_rank=dist.get_rank(),
+            megatron_world_size=dist.get_world_size(),
         )
