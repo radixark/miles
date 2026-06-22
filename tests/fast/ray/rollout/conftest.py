@@ -44,6 +44,7 @@ def make_args(**overrides: Any) -> Namespace:
         use_dynamic_global_batch_size=False,
         disable_rollout_trim_samples=False,
         balance_data=False,
+        delay_split_train_data_by_dp=False,
         # advantage / reward
         advantage_estimator="grpo",
         rewards_normalization=True,
@@ -97,6 +98,13 @@ def make_args(**overrides: Any) -> Namespace:
         save_debug_rollout_data=None,
         load_debug_rollout_data=None,
         load_debug_rollout_data_subsample=None,
+        ci_inject_rollout_data_path=None,
+        ci_inject_rollout_data_start_rollout_id=None,
+        ci_inject_rollout_data_min_match_ratio=0.9,
+        # event checkpointing (event_logger.restore/snapshot in RolloutManager)
+        save_debug_event_data=None,
+        load=None,
+        save=None,
         # CI
         ci_test=False,
         # dumper (sglang debug dumper integration)
