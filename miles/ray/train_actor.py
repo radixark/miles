@@ -14,6 +14,7 @@ from miles.ray.ray_actor import RayActor
 from miles.utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
+from miles.utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.process_identity import TrainProcessIdentity
@@ -51,6 +52,7 @@ class TrainRayActor(RayActor):
         )
         self.args = args
 
+        self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
         self._indep_dp_store_addr = indep_dp_store_addr
@@ -132,7 +134,11 @@ class TrainRayActor(RayActor):
         except Exception as e:
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
 
-    @ray.method(concurrency_group="fault_injector")
+        self._heartbeat.bump()
+
+    def get_heartbeat_status(self) -> HeartbeatStatus:
+        return self._heartbeat.status()
+
     def inject_fault(self, mode: str) -> None:
         _inject_fault(mode=mode)
 
