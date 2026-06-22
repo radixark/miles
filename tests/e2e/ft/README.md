@@ -117,3 +117,58 @@ Steps: 2
 Roughly equal, not bitwise — allreduce kernel ordering differs across topologies.
 ```
 
+### `scenario_deterministic`
+
+```
+Type: comparison, multi-phase (phase_a + phase_b)
+One shared builder parameterized by the phase's start rollout id P emits both phases: 3
+rollouts, stop/start healing at the same relative offset, ckpt saved only at the phase's
+last rollout (--save-interval 3 = NUM_ROLLOUTS_PER_PHASE). Only the start regime differs:
+  phase_a: cold start (no --load, start_rollout_id=0) — rollouts 0..2 (P=0)
+  phase_b: resumes from phase_a's last (rollout-2, post-healing) ckpt
+           (start_rollout_id = loaded + 1 = 3) — rollouts 3..5 (P=3)
+--num-rollout is 6 (exclusive end rollout id, not a per-run count); each phase stops after
+3 rollouts via --debug-exit-after-rollout 3, which counts rollouts within the run and fires
+after that rollout's ckpt save.
+Comparison: BOTH phases' dumps rel <= 0 (bitwise), metrics rtol=0 / atol=0 (exact)
+
+Per-phase baseline timeline: rollouts P..P+2 all normal (normal DP, no stop/start, no
+healing) — the no-fault reference the target must reproduce bit-for-bit.
+
+Per-phase target timeline:
+  1. Rollout P, P+1: all N cells normal
+  2. After rollout P+1: stop_cell_at_end(last) + start_cell_at_end(last) — trigger healing
+  3. Rollout P+2: healing at start (recv_ckpt from cell_0), then normal execution
+     (P+2 must exist, otherwise healing never executes)
+
+phase_a exercises healing on a cold-started run (no --load sets
+no_load_optim/no_load_rng/finetune); phase_b exercises it after resume and — reproducing
+the baseline bit-for-bit — also proves phase_a's post-healing ckpt round-trips bitwise.
+
+Both baseline and target use --deterministic-mode + env vars (NCCL_ALGO=Ring,
+NVTE_ALLOW_NONDETERMINISTIC_ALGO=0, CUBLAS_WORKSPACE_CONFIG=:4096:8) for kernel
+determinism, plus --debug-deterministic-collective so every order-sensitive SUM
+collective uses a fixed-tree fold and the different reduction topologies of normal DP
+(baseline) and indep_dp (target) become bitwise-comparable. Together they make the run
+fully deterministic, so healing must reproduce the no-fault baseline bit-for-bit. A
+state-copy bug is easy to make and an approximate check would miss it, hence zero tolerance.
+
+Bitwise verification: --use-fault-tolerance --ft-components train auto-enables
+--save-local-weight-checksum and --enable-event-analyzer. The event_analyzer
+cross_replica_weight_checksum rule checks cell-to-cell bitwise equality after healing.
+
+Inference engine weight checksum (real_rollout mode only): each update_weights logs one
+InferenceEngineWeightChecksumEvent per rollout (all engines). _compare asserts per phase that baseline
+and target pushed bitwise-identical weights for every (rollout, engine) pair; the
+event_analyzer inference_engine_weight_checksum_consistency rule independently checks that all engines
+of a rollout agree (the production-facing function A).
+
+Healing witness: each target phase heals once, so each target event dir must contain
+exactly one CellReconfigureEvent — a healing at rollout P+2 (healed = last cell, ckpt src =
+cell 0, alive back to N; the stop+start pair is absorbed by a single _refresh_cells, so
+there is no standalone shrink). Global ids: phase_a heal 2; phase_b heal 5. Both baseline
+event dirs must contain zero reconfigure events. This is the regression gate for the
+off-by-one class of bugs where healing silently never runs and the comparison passes on
+fault-free runs.
+```
+
