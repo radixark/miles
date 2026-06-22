@@ -72,8 +72,10 @@ echo "GLM5.2 teacher server is up."
 CKPT_ARGS=(
    --hf-checkpoint "${STUDENT_MODEL}"
    --ref-load "${STUDENT_TORCH_DIST}"
-   --load /root/Qwen3.6-35B-A3B_miles/
-   --save /root/Qwen3.6-35B-A3B_miles/
+   # Persist checkpoints on the shared PVC (NOT the container-ephemeral /root), so the
+   # distilled model survives the pod. Resumes from here if a prior run saved.
+   --load "${SAVE_DIR:-/weka/checkpoints/qwen3.6-35B-A3B-glm5.2-opd}"
+   --save "${SAVE_DIR:-/weka/checkpoints/qwen3.6-35B-A3B-glm5.2-opd}"
    --save-interval 50
 )
 

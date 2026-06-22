@@ -199,7 +199,7 @@ spec:
             - name: RM_URL
               value: "http://will-glm52-teacher:30000/generate"
             - name: NUM_ROLLOUT
-              value: "1000"                        # set to e.g. "3" for a wiring smoke first
+              value: "200"                         # short real run; checkpoints persist to /weka
             - name: GIT_REPO
               value: "https://github.com/williammtan/miles"
             - name: GIT_REF
