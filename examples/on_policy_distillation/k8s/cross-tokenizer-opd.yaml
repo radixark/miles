@@ -90,12 +90,16 @@ spec:
               # [128,128]); SGLang auto-detects it and loads FP8 directly (~94GB/GPU), so no
               # --quantization flag (online fp8 would load bf16 first and OOM). glm_moe_dsa
               # (DeepSeek-V3.2-style DSA) attention is handled by SGLang's native loader.
+              # --skip-server-warmup: GLM-5.2's DSA warmup uses a ~16k-token dummy prefill
+              # that overflows an attention buffer (start+length > 16384). Real OPD scoring
+              # requests are short (prompt + <=8192-token response), so skip the warmup.
               exec python3 -m sglang.launch_server \
                 --model-path "$MODEL_DIR" \
                 --tp 8 \
                 --host 0.0.0.0 --port 30000 \
                 --mem-fraction-static 0.85 \
                 --chunked-prefill-size 8192 \
+                --skip-server-warmup \
                 --trust-remote-code
           ports:
             - containerPort: 30000
