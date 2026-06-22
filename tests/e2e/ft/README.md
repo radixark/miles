@@ -117,6 +117,66 @@ Steps: 2
 Roughly equal, not bitwise — allreduce kernel ordering differs across topologies.
 ```
 
+### `scenario_with_failure`
+
+```
+Type: comparison, multi-phase (phase_a + phase_b)
+Phase A steps: 1, Phase B steps: 3 (rollouts 1..3; --num-rollout 4 resumed from the
+rollout-0 checkpoint), metrics rtol: 5e-2
+
+Phase A (both baseline and target):
+  1. Run 1 step of training
+  2. Save checkpoint (--save-interval 1)
+
+Phase B — baseline:
+  1. Resume from phase_a checkpoint
+  2. Run 3 normal steps (rollouts 1..3)
+
+Phase B — target:
+  1. Resume from phase_a checkpoint
+  2. Rollout 1: N cells normal
+  3. Rollout 2, attempt 0: crash_before_allreduce on last cell rank 0
+     → os._exit(1) → allreduce timeout → should_commit=false → retry
+  4. Rollout 2, attempt 1: _refresh_cells() reconfigure → N-1 cells → commit
+  5. After rollout 2: stop_cell_at_end(last) + start_cell_at_end(last)
+  6. Rollout 3: _refresh_cells() healing → N cells, trains with the healed cell
+
+Compare: phase_b dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
+also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault/injected rollouts'
+grads tolerate max_abs <= 3e-3 — see the dense-mode section below) and metrics (rtol=5e-2).
+
+Healing witness: the target phase_b event dir must contain exactly two
+CellReconfigureEvents, in order — a shrink at rollout 2 (alive N -> N-1, positive proof
+the fault injection fired) and a healing at rollout 3 (healed = last cell, ckpt src =
+cell 0, alive back to N). Baseline and phase_a event dirs must contain zero reconfigure
+events. This positively proves the crash -> shrink -> heal path executed; without it the
+comparison could silently degenerate to two fault-free runs.
+
+Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
+The JSON `at_rollout` field specifies which rollout_id triggers the action.
+The `attempt` field (for actor-level actions like `crash_before_allreduce`) specifies which retry attempt to match.
+```
+
+#### `dp2_cp2_real_rollout_dense` mode
+
+Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
+
+- Post-fault rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout + 1).
+- Why inject: the degraded-quorum commit accumulates microbatches in a different fp bracketing than the fault-free side — a fault-inherent ulp diff no collective ordering removes. Under live sampling it flips sampled tokens, after which the two runs' rollout data diverges wholesale, so a strict vs-baseline comparison of real-sampled post-fault rollouts is ill-posed. Injection makes training inputs identical by construction → full strict comparison, zero relaxation.
+- Stays real on the target: engines + generation (samples discarded), `update_weights` after the degraded commit and after healing, health-monitor pause/resume — the whole crash→retry→heal→weight-sync path.
+- Post-healing `update_weights` is consumed: real_rollout asserts the target pushed bitwise-identical engine weights to the baseline (see inference engine weight checksum).
+- Injected rollouts' dump comparison floors `max_abs <= 3e-3` on the **noisy grad families only** (decoder-layer QK-norms, folded `layer_norm_weight`s, attn/MLP matrices): training data is bitwise-identical, but target weights carry the degraded commit's ulp drift, landing as ≤2.8e-3 absolute noise in those near-zero grads while real grads sit ~1e-2 (40 tensors, 2026-06-12; same argument as the 1e-3 QK-norm floor, recalibrated for the dense model). Embedding/output/final-norm grads, all activations, and all pre-fault rollouts keep the strict set.
+- Generation is still asserted: each injected rollout checks generated responses match the recording at a mean per-token ratio above threshold with bitwise-identical prompts (`RolloutDataInjectionUtil.assert_matches_generated`). Gross weight bugs (e.g. broken `update_weights`) drop the ratio ~2 orders → still fail. Exact post-fault sampled content beyond the ratio is not asserted. Pre-fault rollouts are not injected (real comparison).
+
+Guard calibration (2026-06-12, first post-fault rollout, 256 samples, correct weights; metric counts everything after a response's first flipped token as mismatched):
+
+| Model | mean response-token match | min |
+|-------|---------------------------|-----|
+| dense Qwen3-0.6B | **0.63** | 0.035 |
+| 5-layer MoE | **0.19** | 0.005 |
+
+- Needs the **dense** model: on the truncated MoE, uncalibrated logits + router near-ties amplify ulp drift to near-wholesale divergence (0.19, not separable from the unrelated-content regime); dense's 0.63 sits 2 orders above. Scenario uses `--ci-inject-rollout-data-min-match-ratio 0.5` (below the legitimate 0.63, far above any gross corruption).
+
 ### `scenario_deterministic`
 
 ```
