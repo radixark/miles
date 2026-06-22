@@ -1,3 +1,8 @@
+# FROZEN: v1 RayTrainGroup is the non-FT default path. Only critical bugfixes
+# go here; new features land in miles/ray/train/group.py (v2). Dispatch between
+# v1 and v2 happens in miles/ray/placement_group.py based on the env var
+# MILES_EXPERIMENTAL_FT_TRAINER (default off -> v1).
+
 import asyncio
 
 from ray.util.placement_group import PlacementGroup
@@ -26,6 +31,7 @@ class RayTrainGroup:
         num_gpus_per_node,
         pg: tuple[PlacementGroup, list[int], list[int]],
         *,
+        rollout_manager: object | None,
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
@@ -36,6 +42,7 @@ class RayTrainGroup:
         self._num_gpus_per_node = num_gpus_per_node
         self.role = role
         self.with_ref = with_ref
+        self._rollout_manager = rollout_manager
         self.with_opd_teacher = with_opd_teacher
 
         # Allocate the GPUs for actors w/o instantiating them
@@ -47,6 +54,9 @@ class RayTrainGroup:
             gpus_per_cell=self._num_nodes * self._num_gpus_per_node,
             pg=pg,
             num_gpus_per_actor=num_gpus_per_actor,
+            indep_dp_store_addr=None,
+            role=self.role,
+            cell_index=0,
         )
 
     async def init(self):
@@ -65,7 +75,7 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
-    async def update_weights(self):
+    async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights from rank 0 to all other ranks."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
@@ -74,6 +84,7 @@ class RayTrainGroup:
             await self.rollout_manager.recover_updatable_engines.remote()
 
         info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
+        await self.rollout_manager.health_monitoring_pause.remote()
 
         await self._broadcast("update_weights", info=info)
 
@@ -93,9 +104,9 @@ class RayTrainGroup:
         ]
         await asyncio.gather(*refs)
 
-    async def set_rollout_manager(self, rollout_manager):
-        self.rollout_manager = rollout_manager
-        await self._broadcast("set_rollout_manager", rollout_manager)
+    async def set_rollout_manager(self):
+        self.rollout_manager = self._rollout_manager
+        await self._broadcast("set_rollout_manager", self._rollout_manager)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:
         refs = [getattr(actor, method_name).remote(*args, **kwargs) for actor in self._actor_handles]
