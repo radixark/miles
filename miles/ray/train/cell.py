@@ -126,7 +126,7 @@ class RayTrainCell:
 
         self._change_state("stop", (StatePending, StateAllocatedBase), StateStopped())
 
-    async def _stop_and_confirm_dead(self) -> None:
+    async def stop_and_confirm_dead(self) -> None:
         if self.is_stopped:
             return
 
@@ -181,6 +181,10 @@ class RayTrainCell:
         )
 
     def _mark_as_errored(self) -> None:
+        # NOTE: do NOT kill actors here — external ft controller may need the actors
+        # to be still there for stacktrace diagnostics before calling stop() to kill them
+        # Validate state BEFORE building the new state, otherwise StateAllocatedUninitialized
+        # has no `indep_dp_info` and we'd raise AttributeError instead of the expected AssertionError.
         assert isinstance(
             self._state, (StateAllocatedAlive, StateAllocatedErrored)
         ), f"{self.cell_index=} {self._state=}"
@@ -217,12 +221,12 @@ class RayTrainCell:
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
-    async def execute(self, fn_name: str, *args, kill_on_failure: bool = True, **kwargs) -> list:
+    async def execute(self, fn_name: str, *args, mark_errored_on_failure: bool = True, **kwargs) -> list:
         return await self._execute_raw(
             fn_name,
             compute_args=lambda _: args,
             compute_kwargs=lambda _: kwargs,
-            kill_on_failure=kill_on_failure,
+            mark_errored_on_failure=mark_errored_on_failure,
         )
 
     async def _execute_raw(
@@ -230,7 +234,7 @@ class RayTrainCell:
         fn_name: str,
         compute_args,
         compute_kwargs,
-        kill_on_failure: bool = True,
+        mark_errored_on_failure: bool = True,
     ) -> list:
         handles = self._get_actor_handles()
         log_structured(
@@ -264,9 +268,8 @@ class RayTrainCell:
                 elapsed_s=round(time.monotonic() - start, 1),
                 exc_info=True,
             )
-            if kill_on_failure:
+            if mark_errored_on_failure:
                 self._mark_as_errored()
-                await self._stop_and_confirm_dead()
             raise
 
     # ------------------------ state and misc queries ------------------------
