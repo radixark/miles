@@ -66,7 +66,7 @@ spec:
           emptyDir: { medium: Memory, sizeLimit: 64Gi }
       containers:
         - name: teacher
-          image: radixark/miles:latest
+          image: radixark/miles:dev
           imagePullPolicy: IfNotPresent
           env:
             - name: TEACHER_MODEL
@@ -90,15 +90,28 @@ spec:
               # [128,128]); SGLang auto-detects it and loads FP8 directly (~94GB/GPU), so no
               # --quantization flag (online fp8 would load bf16 first and OOM). glm_moe_dsa
               # (DeepSeek-V3.2-style DSA) attention is handled by SGLang's native loader.
-              # --skip-server-warmup: GLM-5.2's DSA warmup uses a ~16k-token dummy prefill
-              # that overflows an attention buffer (start+length > 16384). Real OPD scoring
-              # requests are short (prompt + <=8192-token response), so skip the warmup.
+              # GLM-5.2 (glm_moe_dsa, DSA cross-layer index sharing) serving config, ported
+              # from the validated launcher scripts/run_glm5_2_744b_a40b.py (support-glm5.2):
+              # DP-attention + EP, NSA attention with nsa-decode-backend=flashmla_kv (NOT
+              # flashmla_sparse, which mis-slices the 192-dim heads), fp8_e4m3 KV cache, and
+              # chunked-prefill 16384. --skip-server-warmup since real OPD scoring is short.
               exec python3 -m sglang.launch_server \
                 --model-path "$MODEL_DIR" \
                 --tp 8 \
-                --host 0.0.0.0 --port 30000 \
+                --dp-size 8 \
+                --enable-dp-attention \
+                --ep-size 8 \
+                --moe-dense-tp-size 1 \
+                --enable-dp-lm-head \
+                --attention-backend nsa \
+                --nsa-prefill-backend flashmla_sparse \
+                --nsa-decode-backend flashmla_kv \
+                --kv-cache-dtype fp8_e4m3 \
+                --page-size 64 \
+                --chunked-prefill-size 16384 \
                 --mem-fraction-static 0.85 \
-                --chunked-prefill-size 8192 \
+                --max-running-requests 512 \
+                --watchdog-timeout 3600 \
                 --skip-server-warmup \
                 --trust-remote-code
           ports:
