@@ -5,6 +5,7 @@ import pytest
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
+from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.witness.allocator import WitnessIdAllocator
 
@@ -147,7 +148,7 @@ class TestExecuteFirstAlive:
     async def test_picks_first_alive_cell(self):
         group = await _make_alive_group(num_cells=3)
 
-        await group._execute_first("save_model", 42)
+        await group._execute_first_alive("save_model", 42)
 
         for handle in group._cells[0]._get_actor_handles():
             calls = ray.get(handle.get_calls.remote())
@@ -157,6 +158,16 @@ class TestExecuteFirstAlive:
             for handle in cell._get_actor_handles():
                 calls = ray.get(handle.get_calls.remote())
                 assert not any(c[0] == "save_model" for c in calls)
+
+    async def test_skips_stopped_picks_next(self):
+        group = await _make_alive_group(num_cells=2)
+        group._cells[0]._mark_as_errored()
+
+        await group._execute_first_alive("update_weights")
+
+        for handle in group._cells[1]._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            assert any(c[0] == "update_weights" for c in calls)
 
 
 class TestComputeIndepDPInfo:
@@ -176,6 +187,25 @@ class TestComputeIndepDPInfo:
 
         assert info.alive_rank == 1
         assert info.alive_size == 2
+
+
+class TestExecuteAllAliveAndCatch:
+    async def test_skips_stopped_cells(self):
+        group = await _make_alive_group(num_cells=2)
+        group._cells[1]._mark_as_errored()
+
+        await group._execute_all_alive_and_catch("train")
+
+        for handle in group._cells[0]._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            assert any(c[0] == "train" for c in calls)
+
+    async def test_asserts_on_no_alive_cells(self):
+        group = await _make_alive_group(num_cells=1)
+        group._cells[0]._mark_as_errored()
+
+        with pytest.raises(AssertionError, match="No alive cells"):
+            await group._execute_all_alive_and_catch("train")
 
 
 class TestTrain:
@@ -211,6 +241,107 @@ class TestTrain:
                 assert not any(c[0] == "reconfigure_indep_dp" for c in new_calls)
                 train_calls = [c for c in new_calls if c[0] == "train"]
                 assert len(train_calls) == 3
+
+
+class TestPerCellErrorIsolation:
+    async def test_one_cell_failure_marks_errored_others_ok(self):
+        """One cell's actor fails during broadcast, that cell is errored, others complete normally."""
+        group = await _make_alive_group(num_cells=3)
+
+        # Step 1: Make cell 1's actors fail on train
+        for handle in group._cells[1]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["train"]))
+
+        # Step 2: Broadcast train
+        await group._execute_all_alive_and_catch("train", 0, "data")
+
+        # Step 3: Cell 1 is errored, others alive
+        assert group._cells[0].is_alive
+        assert group._cells[1].is_errored
+        assert group._cells[2].is_alive
+
+        # Step 4: Other cells received train call
+        for cell_idx in [0, 2]:
+            for handle in group._cells[cell_idx]._get_actor_handles():
+                calls = ray.get(handle.get_calls.remote())
+                assert any(c[0] == "train" for c in calls)
+
+    async def test_errored_cell_skipped_in_next_broadcast(self):
+        """After marking a cell errored, subsequent broadcasts skip it."""
+        group = await _make_alive_group(num_cells=2)
+
+        # Step 1: Make cell 0 fail
+        for handle in group._cells[0]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["train"]))
+
+        await group._execute_all_alive_and_catch("train", 0, "data")
+        assert group._cells[0].is_errored
+
+        # Step 2: Next broadcast only goes to cell 1
+        await group._execute_all_alive_and_catch("train", 1, "data")
+
+        for handle in group._cells[1]._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            train_calls = [c for c in calls if c[0] == "train"]
+            assert len(train_calls) == 2
+
+
+class TestExecuteFirstAliveFallback:
+    async def test_single_execute_first_alive_raises_on_failure(self):
+        """A single _execute_first_alive call raises (no retry) when the first cell fails."""
+        group = await _make_alive_group(num_cells=2)
+
+        for handle in group._cells[0]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["save_model"]))
+
+        with pytest.raises(Exception):  # noqa: B017
+            await group._execute_first_alive("save_model", 42)
+
+        assert group._cells[0].is_errored
+
+
+NORMAL = TrainStepOutcome.NORMAL
+
+_ERR = RuntimeError("boom")
+_ERR2 = ValueError("boom2")
+
+
+def _alive_cells_for(results) -> list[SimpleNamespace]:
+    """Mock alive cells aligned with a `results` list; only `.cell_index` is read."""
+    return [SimpleNamespace(cell_index=i) for i in range(len(results))]
+
+
+class TestCheckTrainOneAttempt:
+    """_check_train_one_attempt raises RuntimeError when all alive cells failed."""
+
+    @pytest.mark.parametrize(
+        "results",
+        [
+            [[NORMAL]],  # single cell, single actor
+            [[NORMAL, NORMAL], [NORMAL]],  # multi cell, multi actor
+            [_ERR, [NORMAL, NORMAL]],  # errored + normal → ok
+            [[]],  # cell with empty actor list → vacuously ok
+        ],
+    )
+    def test_no_retry_when_no_discarded(self, results):
+        RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)  # should not raise
+
+    @pytest.mark.parametrize(
+        "results",
+        [
+            [_ERR],  # single cell errored
+            [_ERR, _ERR2],  # multiple cells all errored
+        ],
+    )
+    def test_raises_when_all_cells_errored(self, results):
+        with pytest.raises(RuntimeError, match="All cells failed"):
+            RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)
+
+    def test_compute_attempt_outcomes_buckets_cells_by_index(self):
+        """_compute_attempt_outcomes buckets each alive cell into errored / normal by index."""
+        results = [_ERR, [NORMAL], [NORMAL, NORMAL]]
+        outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
+        assert outcomes == {"errored": [0], "normal": [1, 2]}
 
 
 class TestAllocateWitnessInfo:
