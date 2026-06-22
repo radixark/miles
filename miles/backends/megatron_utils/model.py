@@ -25,6 +25,7 @@ from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.indep_dp import allreduce_grads_and_losses_across_replicas
+from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.types import TrainStepOutcome
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
@@ -558,6 +559,8 @@ def train_one_step(
     )
 
     if outcome == TrainStepOutcome.NORMAL:
+        dump_local_weight_checksums(args=args, model=model, optimizer=optimizer)
+
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
             loss_reduced = (
                 indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
