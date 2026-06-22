@@ -27,6 +27,7 @@ from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
 from miles.utils.structured_log import log_structured
+from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
 from miles.utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 
 if TYPE_CHECKING:
@@ -127,6 +128,8 @@ class RayTrainGroup:
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
+        self._test_action_executor = FTTestActionGroupExecutor.from_args(args, group=self)
+
     # ------------------------ API :: train ------------------------
 
     async def train(self, rollout_id: int, rollout_data_pack):
@@ -159,6 +162,8 @@ class RayTrainGroup:
             )
 
         await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
+
+        self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
