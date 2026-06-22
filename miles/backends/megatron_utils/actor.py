@@ -16,6 +16,7 @@ from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.hf_config import load_hf_config
+from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -57,8 +58,10 @@ class MegatronTrainRayActor(TrainRayActor):
         self,
         args: Namespace,
         role: str,
+        *,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
+        indep_dp_info: IndepDPInfo,
     ) -> int | None:
         monkey_patch_torch_dist()
 
