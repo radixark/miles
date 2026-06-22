@@ -14,6 +14,7 @@ from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_config import load_hf_config
+from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
@@ -56,8 +57,19 @@ class FSDPTrainRayActor(TrainRayActor):
     """
 
     @with_defer(lambda: Timer().start("train_wait"))
-    def init(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> int:  # type: ignore[override]
+    def init(
+        self,
+        args: Namespace,
+        role: str,
+        *,
+        with_ref: bool = False,
+        with_opd_teacher: bool = False,
+        indep_dp_info: IndepDPInfo,
+    ) -> int | None:  # type: ignore[override]
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+
+        # Unsupported
+        assert indep_dp_info.quorum_id == 0
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
