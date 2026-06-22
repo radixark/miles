@@ -16,12 +16,27 @@ name (which maps to the ``glm5.2-744B-A40B*`` registry, identical to GLM-5.1 exc
 Modeled on ``scripts/run_deepseek_v4.py`` (typer app + ScriptArgs(ExecuteTrainConfig)
 + model-name -> megatron_model_type registry + ``_get_parallel_config`` + ``U.execute_train``).
 
+DSA kernel backend (``--dsa-attention-backend``; bridge path only). Orthogonal to model version
+and to LoRA -- BOTH backends run GLM-5.1 *and* GLM-5.2, full or LoRA:
+  * ``megatron-bridge`` (default): the portable unfused megatron-core DSA kernels (DSAttention /
+    CrossLayerDSAttention). No extra deps. Uses the ``bshd`` query layout.
+  * ``slime``: the vendored fused TileLang kernels (SparseMLA + lighting_indexer), matching slime's
+    rollout kernels for rollout<->train numerical parity (incl. R3 indexer replay). Needs the
+    optional ``tilelang`` dep and the ``thd`` (packed) layout. Training/forward-only (no KV cache):
+    it cannot serve generation -- the rollout is always served by sglang.
+  This launcher selects the matching ``--qkv-format`` automatically from the backend (see
+  ``_get_parallel_config``); just pass ``--dsa-attention-backend slime`` or leave the default. See
+  the Megatron-Bridge ``models/glm_moe_dsa/__init__.py`` docstring for the full backend matrix.
+
 Two DSA specifics:
   * ``--target-modules`` excludes the 3 DSA indexer modules (wq_b/wk/weights_proj) by default --
-    the indexer stays a frozen base capability; this run does not train it.
-  * ``--qkv-format bshd`` + ``--micro-batch-size 1`` (no ``--use-dynamic-batch-size``):
-    megatron-core's DSA core-attention needs a 4D (bshd) query; the default ``thd``
-    packing yields a 3D query and raises "not enough values to unpack".
+    the indexer stays a frozen base capability; this run does not train it. On the slime backend the
+    indexer adapter gets no gradient anyway (a genuine no-op); on the default backend it would get a
+    tiny aux-loss gradient (~1e-5), so excluding it there is a deliberate choice.
+  * ``--micro-batch-size 1`` (no ``--use-dynamic-batch-size``): both backends pin a static
+    micro-batch. The query layout follows the backend -- ``bshd`` (megatron-core's DSA
+    core-attention needs a 4D query; the default ``thd`` packing yields a 3D query and raises "not
+    enough values to unpack") for ``megatron-bridge``, ``thd`` (packed) for ``slime``.
 
 Supported model variants (HF checkpoint must be the native config,
 model_type=glm_moe_dsa / GlmMoeDsaForCausalLM):
@@ -32,7 +47,11 @@ model_type=glm_moe_dsa / GlmMoeDsaForCausalLM):
 
 Usage (run ON the devbox; miles editable-installed under /personal):
   python scripts/run_glm5_lora.py prepare    --model-name GLM-5.1-6layer   # download model + gsm8k
+  # default (megatron-bridge / unfused) backend:
   python scripts/run_glm5_lora.py full-train --model-name GLM-5.1-6layer --num-gpus-per-node 4
+  # fused slime backend (GLM-5.2 shown; works for GLM-5.1 too):
+  python scripts/run_glm5_lora.py full-train --model-name GLM-5.2-7layer \\
+      --dsa-attention-backend slime --num-gpus-per-node 4
 
 GLM-5.2 rollout caveat: sglang does not yet serve the GLM-5.2 cross-layer (subset-indexer)
 checkpoint, so a full rollout->train loop is blocked on the rollout side. The *training* side
@@ -96,6 +115,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     megatron_path: str = "/root/Megatron-LM"
 
+    # DSA sparse-MLA kernel backend (bridge path only). Orthogonal to model version & LoRA: BOTH
+    # backends support GLM-5.1 AND GLM-5.2, full or LoRA.
+    #   "megatron-bridge" (default): portable unfused megatron-core DSA kernels; bshd layout; no
+    #                                extra deps.
+    #   "slime":                     vendored fused TileLang SparseMLA + lighting_indexer; thd
+    #                                layout; needs tilelang; matches slime's rollout kernels for
+    #                                rollout<->train parity (incl. R3 indexer replay);
+    #                                training/forward-only (no KV cache, cannot serve inference).
+    # The matching --qkv-format is chosen from this automatically (see _get_parallel_config).
+    dsa_attention_backend: Literal["megatron-bridge", "slime"] = "megatron-bridge"
+
     # performance
     num_gpus_per_node: int = 4
 
@@ -134,11 +164,20 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def _get_parallel_config(args: ScriptArgs) -> str:
     """Single-node MoE layout: TP = EP = num_gpus_per_node, DP1 (mirrors run_glm5_744b_a40b).
 
-    bshd (4D query) is REQUIRED for DSA core-attention and forbids --use-dynamic-batch-size,
-    hence --micro-batch-size 1.
+    The DSA kernel backend dictates the query layout; both forbid --use-dynamic-batch-size, hence
+    --micro-batch-size 1:
+      * megatron-bridge (unfused megatron-core DSA core-attention): needs bshd (4D query); the
+        default thd packing yields a 3D query and raises "not enough values to unpack".
+      * slime (fused TileLang SparseMLA + lighting_indexer): needs thd (packed) -- the fused
+        kernels index by cu_seqlens and use a [t, heads, dim] layout; bshd has no cu_seqlens.
     """
     ngpu = args.num_gpus_per_node
-    return f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 --context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 --qkv-format bshd --micro-batch-size 1 "
+    qkv_format = "thd" if args.dsa_attention_backend == "slime" else "bshd"
+    return (
+        f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
+        f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "
+        f"--qkv-format {qkv_format} --micro-batch-size 1 "
+    )
 
 
 def _download_dataset(args: ScriptArgs):
@@ -155,10 +194,13 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _train(args: ScriptArgs):
-    print(f"[run] GLM-5 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}")
+    print(f"[run] GLM-5 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}")
     load_save_path = f"{args.save_dir}/{args.run_id}"
 
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
+    ckpt_args = (
+        f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
+        f"--dsa-attention-backend {args.dsa_attention_backend} "
+    )
 
     lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{args.target_modules}" '
 
