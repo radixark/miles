@@ -1587,6 +1587,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
             )
             parser.add_argument(
+                "--enable-event-analyzer",
+                action="store_true",
+                help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
+            )
+            parser.add_argument(
                 "--enable-witness",
                 action="store_true",
                 help="Enable forward/backward pass witness.",
