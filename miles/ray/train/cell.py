@@ -9,6 +9,7 @@ from miles.ray.train.cell_state import (
     CellState,
     StateAllocatedAlive,
     StateAllocatedBase,
+    StateAllocatedErrored,
     StateAllocatedUninitialized,
     StatePending,
 )
@@ -97,6 +98,21 @@ class RayTrainCell:
             StateAllocatedAlive(actor_handles=self._state.actor_handles, indep_dp_info=indep_dp_info),
         )
 
+    def _mark_as_errored(self) -> None:
+        # NOTE: do NOT kill actors here — external ft controller may need the actors
+        # to be still there for stacktrace diagnostics before calling stop() to kill them
+        # Validate state BEFORE building the new state, otherwise StateAllocatedUninitialized
+        # has no `indep_dp_info` and we'd raise AttributeError instead of the expected AssertionError.
+        assert isinstance(
+            self._state, (StateAllocatedUninitialized, StateAllocatedAlive, StateAllocatedErrored)
+        ), f"{self.cell_index=} {self._state=}"
+        indep_dp_info = None if isinstance(self._state, StateAllocatedUninitialized) else self._state.indep_dp_info
+        self._change_state(
+            "_mark_as_errored",
+            (StateAllocatedUninitialized, StateAllocatedAlive, StateAllocatedErrored),
+            StateAllocatedErrored(actor_handles=self._state.actor_handles, indep_dp_info=indep_dp_info),
+        )
+
     def _change_state(
         self,
         debug_name: str,
@@ -124,11 +140,12 @@ class RayTrainCell:
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
-    async def execute(self, fn_name: str, *args, **kwargs) -> list:
+    async def execute(self, fn_name: str, *args, mark_errored_on_failure: bool = True, **kwargs) -> list:
         return await self._execute_raw(
             fn_name,
             compute_args=lambda _: args,
             compute_kwargs=lambda _: kwargs,
+            mark_errored_on_failure=mark_errored_on_failure,
         )
 
     async def _execute_raw(
@@ -136,6 +153,7 @@ class RayTrainCell:
         fn_name: str,
         compute_args,
         compute_kwargs,
+        mark_errored_on_failure: bool = True,
     ) -> list:
         handles = self._get_actor_handles()
         log_structured(
@@ -169,6 +187,8 @@ class RayTrainCell:
                 elapsed_s=round(time.monotonic() - start, 1),
                 exc_info=True,
             )
+            if mark_errored_on_failure:
+                self._mark_as_errored()
             raise
 
     # ------------------------ state and misc queries ------------------------
@@ -186,12 +206,16 @@ class RayTrainCell:
         return isinstance(self._state, StateAllocatedAlive)
 
     @property
+    def is_errored(self) -> bool:
+        return isinstance(self._state, StateAllocatedErrored)
+
+    @property
     def state_name(self) -> str:
         return type(self._state).__name__
 
     @property
-    def indep_dp_info(self) -> IndepDPInfo:
-        assert isinstance(self._state, StateAllocatedAlive)
+    def indep_dp_info(self) -> IndepDPInfo | None:
+        assert isinstance(self._state, (StateAllocatedAlive, StateAllocatedErrored))
         return self._state.indep_dp_info
 
     def _get_actor_handles(self) -> list[ray.actor.ActorHandle]:
