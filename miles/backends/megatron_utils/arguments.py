@@ -38,4 +38,7 @@ def set_default_megatron_args(args):
         args.tokenizer_model = args.hf_checkpoint
         args.tokenizer_type = "HuggingFaceTokenizer"
 
+    if not hasattr(args, "miles_dsa_topk_backend"):
+        args.miles_dsa_topk_backend = "torch"
+
     return args
