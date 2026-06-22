@@ -97,6 +97,9 @@ def init(args):
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True, warn_only=False)
 
+    if args.debug_deterministic_collective:
+        assert not args.overlap_grad_reduce, "deterministic collectives require synchronous grad sync"
+
     if args.tp_comm_overlap:
         from megatron.training.initialize import _initialize_tp_communicators
 
