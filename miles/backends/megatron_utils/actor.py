@@ -41,7 +41,7 @@ from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
 from .in_memory_checkpoint import InMemoryCheckpointManager
-from .initialize import init, is_first_replica_megatron_main_rank
+from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
@@ -89,9 +89,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
             dumper.apply_source_patches()
 
-        self._is_first_replica_megatron_main_rank = is_first_replica_megatron_main_rank()
+        self._is_main_rank = is_megatron_main_rank()
 
-        if self._is_first_replica_megatron_main_rank:
+        if self._is_main_rank:
             init_tracking(args, primary=False)
 
         unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
@@ -227,8 +227,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
-        should_log_cpu_memory = is_first_replica_megatron_main_rank() and hasattr(self, "_last_rollout_id")
-
         destroy_process_groups()
 
         tag = "default" if is_lora_enabled(self.args) else None
@@ -236,7 +234,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         print_memory("after offload model")
 
-        if should_log_cpu_memory:
+        if self._is_main_rank and hasattr(self, "_last_rollout_id"):
             log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
 
     @timer
@@ -465,7 +463,7 @@ class MegatronTrainRayActor(TrainRayActor):
             and "ref" in self.weights_backuper.backup_tags
         ):
             with timer("ref_model_update"):
-                if is_first_replica_megatron_main_rank():
+                if is_megatron_main_rank():
                     logger.info(f"Updating ref model at rollout_id {rollout_id}")
                 self.weights_backuper.backup("ref")
 
