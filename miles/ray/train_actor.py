@@ -15,7 +15,6 @@ from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
 if TYPE_CHECKING:
     from miles.ray.rollout.rollout_manager import EnginesAndLock
@@ -54,7 +53,6 @@ class TrainRayActor(RayActor):
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
 
-    # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
         self.args = args
         self.role = role
@@ -110,10 +108,6 @@ class TrainRayActor(RayActor):
             logger.info("Warning: pynvml not available, skipping NUMA affinity setup")
         except Exception as e:
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
-
-    @ray.method(concurrency_group="fault_injector")
-    def inject_fault(self, mode: str) -> None:
-        _inject_fault(mode=mode)
 
     def clear_memory(self):
         print_memory("before TrainRayActor.clear_memory")
