@@ -28,7 +28,7 @@ def create_trainer_cell_health_checker(
         if not cell.is_alive:
             return
 
-        await cell.execute("get_heartbeat_status", mark_errored_on_failure=False)
+        await cell.execute("get_heartbeat_status", kill_on_failure=False)
 
     return SimpleHealthChecker(
         name=f"trainer-cell-{cell.cell_index}",
