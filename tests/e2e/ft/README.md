@@ -232,3 +232,53 @@ off-by-one class of bugs where healing silently never runs and the comparison pa
 fault-free runs.
 ```
 
+### `scenario_ft_random`
+
+```
+Type: non-comparison (no baseline, no compare)
+Steps: 30 (default), configurable via --num-steps
+
+Architecture (external fault injection, not inside training loop):
+  1. Start training with indep_dp + control server (port 18080) + mini FT controller
+  2. Start a background daemon thread that:
+     a. Sleeps a random interval (exponential, mean = 60s / crash_probability ≈ 120s at the default)
+     b. GET /api/v1/cells — read each cell's Healthy condition
+     c. Count the genuinely-alive cells — reported Healthy, minus cells we injected that have
+        not finished a down->up recovery (RecoveryGate) — and skip if injecting would leave
+        <=1 of them. The control server reports a just-killed cell Healthy for ~95s >> the
+        inject interval, so excluding still-recovering cells is what keeps >=1 live replica
+        (indep_dp cannot heal from zero survivors).
+     d. Otherwise POST /api/v1/cells/{name}/inject-fault with a random failure mode
+     e. Repeat until training finishes
+  3. The actor's inject_fault() runs in a dedicated ray concurrency group thread
+     and kills the process immediately (SIGKILL, os._exit, or segfault)
+  4. Health checker detects dead actor via heartbeat timeout
+  5. Mini FT controller auto-recovers (suspend → resume)
+  6. Verify: training completes, no hangs, prod assertions pass
+  7. Healing witness: the injector must report >=2 accepted injections (a single heal could
+     be a fluke) and the event dir must contain >=2 healing CellReconfigureEvents. The default
+     --crash-probability is set high enough that the soak reliably clears this floor. Faults are
+     random, so neither an exact sequence nor the end-state membership is asserted — the
+     witness only proves repeated faults were injected and healing actually ran.
+
+CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.5)
+```
+
+### `scenario_realistic_gsm8k`
+
+Entry `test_trainer_ft_realistic_gsm8k.py`, no mode variants. Runs the same external fault injection as `scenario_ft_random` (shared `conftest_ft/fault_injection.py`) over the real gsm8k RL recipe of `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` (its regular CI runs are the no-fault reference wandb curves), and additionally asserts accuracy — i.e. fault recovery preserves end-to-end learning, which the comparison scenarios cannot observe.
+
+```
+Type: non-comparison (no baseline run; reference = the baseline test's wandb curves)
+Recipe: Qwen2.5-0.5B, GRPO, 250 rollouts; parallelism mirrors dp2_cp2_real_rollout
+        (2 cells x CP2 on 4 train GPUs + 4 rollout engines x 1 GPU, disaggregated)
+Faults: same external random injection loop as scenario_ft_random
+        (train cells via control server)
+
+Assertion: --ci-metric-checker-key eval/gsm8k with a threshold that must stay
+  identical to the no-fault baseline's (0.55): fault recovery must not cost
+  accuracy. The checker passes if ANY eval reaches the threshold.
+
+CLI options: --seed (default 42), --num-rollout (default 250),
+  --crash-probability (default 0.1), --metric-threshold (default 0.55)
+```
