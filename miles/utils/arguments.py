@@ -1587,6 +1587,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
             )
             parser.add_argument(
+                "--enable-witness",
+                action="store_true",
+                help="Enable forward/backward pass witness.",
+            )
+            parser.add_argument(
+                "--witness-buffer-size",
+                type=int,
+                default=1048576,
+                help="Maximum number of unique witness IDs before recycling.",
+            )
+            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
