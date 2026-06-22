@@ -13,8 +13,15 @@ from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
+from miles.utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.event_logger.models import CellReconfigureEvent, WitnessAllocateIdEvent
+from miles.utils.event_logger.models import (
+    CellReconfigureEvent,
+    InferenceEngineWeightChecksumEvent,
+    TrainGroupStepEndEvent,
+    WitnessAllocateIdEvent,
+)
 from miles.utils.health_checker import NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -125,6 +132,8 @@ class RayTrainGroup:
     async def train(self, rollout_id: int, rollout_data_pack):
         """Do one rollout training"""
 
+        event_analyzer.run_analysis_from_args(self.args)
+
         async def _fn(attempt: int):
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
@@ -142,6 +151,12 @@ class RayTrainGroup:
                 attempt=attempt,
             )
             self._check_train_one_attempt(snapshot_alive_cells, results)
+
+            self._log_step_end_event(
+                rollout_id=rollout_id,
+                snapshot_alive_cells=snapshot_alive_cells,
+                results=results,
+            )
 
         await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
@@ -163,6 +178,17 @@ class RayTrainGroup:
             )
 
         return witness_info
+
+    def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
+        if is_event_logger_initialized():
+            cell_outcomes = {
+                cell.cell_index: ("error" if isinstance(cell_results, BaseException) else [r for r in cell_results])
+                for cell, cell_results in zip(snapshot_alive_cells, results, strict=True)
+            }
+            get_event_logger().log(
+                TrainGroupStepEndEvent,
+                dict(rollout_id=rollout_id, cell_outcomes=cell_outcomes),
+            )
 
     @staticmethod
     def _check_train_one_attempt(snapshot_alive_cells, results):
@@ -233,6 +259,21 @@ class RayTrainGroup:
         await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
+
+        await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
+
+    async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
+        if not is_event_logger_initialized():
+            return
+        if self.args.debug_train_only or self.args.debug_rollout_only:
+            return
+
+        check_weights_result = await self._rollout_manager.check_weights.remote("checksum")
+        engine_checksums = flatten_inference_engine_checksums(check_weights_result)
+        get_event_logger().log(
+            InferenceEngineWeightChecksumEvent,
+            dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
         )
 
     async def onload(self):
