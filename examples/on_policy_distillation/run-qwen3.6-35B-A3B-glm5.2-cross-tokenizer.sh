@@ -16,6 +16,7 @@
 #   STUDENT_TORCH_DIST     torch_dist checkpoint dir for the student (built here if missing)
 #   DATA_PATH              prompt jsonl (default /root/dapo-math-17k/dapo-math-17k.jsonl)
 #   OPD_KL_COEF            distillation strength (default 1.0)
+#   NUM_ROLLOUT            number of rollout steps (default 1000; set small to smoke-test)
 #   MEGATRON_PATH          Megatron-LM path (default /root/Megatron-LM)
 #
 # usage: bash examples/on_policy_distillation/run-qwen3.6-35B-A3B-glm5.2-cross-tokenizer.sh
@@ -38,6 +39,7 @@ RM_URL="${RM_URL:?set RM_URL to the GLM5.2 SGLang server, e.g. http://glm52-teac
 STUDENT_TORCH_DIST="${STUDENT_TORCH_DIST:-${STUDENT_MODEL%/}_torch_dist}"
 DATA_PATH="${DATA_PATH:-/root/dapo-math-17k/dapo-math-17k.jsonl}"
 OPD_KL_COEF="${OPD_KL_COEF:-1.0}"
+NUM_ROLLOUT="${NUM_ROLLOUT:-1000}"
 MEGATRON_PATH="${MEGATRON_PATH:-/root/Megatron-LM}"
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -80,7 +82,7 @@ ROLLOUT_ARGS=(
    --label-key label
    --apply-chat-template
    --rollout-shuffle
-   --num-rollout 1000
+   --num-rollout "${NUM_ROLLOUT}"
    --rollout-batch-size 16
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192

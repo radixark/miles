@@ -74,12 +74,21 @@ def _teacher_prompt_ids(teacher_tok, raw_prompt: str | list[dict[str, str]], too
     if isinstance(raw_prompt, str):
         # No conversation structure available; feed the string verbatim.
         return teacher_tok.encode(raw_prompt, add_special_tokens=False)
-    return teacher_tok.apply_chat_template(
+    # tokenize=True may return a flat list[int] OR a BatchEncoding depending on the
+    # tokenizer/version; return_dict=True normalizes to a dict we read input_ids from
+    # (iterating a BatchEncoding would otherwise yield its string keys).
+    encoded = teacher_tok.apply_chat_template(
         raw_prompt,
         tools=tools,
         add_generation_prompt=True,
         tokenize=True,
+        return_dict=True,
     )
+    ids = encoded["input_ids"]
+    # A single conversation may come back batched as [[...]]; flatten one level.
+    if ids and isinstance(ids[0], list):
+        ids = ids[0]
+    return [int(i) for i in ids]
 
 
 async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[str, Any]:
