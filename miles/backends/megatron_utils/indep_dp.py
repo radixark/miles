@@ -1,13 +1,20 @@
 import logging
+from collections.abc import Sequence
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import torch.distributed as dist
+from megatron.core import mpu
 
 from miles.utils.indep_dp import IndepDPInfo
-from miles.utils.process_group_utils import GroupInfo
+from miles.utils.process_group_utils import GeneralPGUtil, GroupInfo
 from miles.utils.structured_log import log_structured
 
+from ..training_utils.log_utils import aggregate_train_losses
 from ..training_utils.parallel import ParallelState
+
+if TYPE_CHECKING:
+    from megatron.core.distributed import DistributedDataParallel as DDP
 
 logger = logging.getLogger(__name__)
 
@@ -93,3 +100,45 @@ def reconfigure_indep_dp_group(
     log_structured(
         logger.info, op="reconfig", phase="end", cell=indep_dp_info.cell_index, quorum=indep_dp_info.quorum_id
     )
+
+
+def allreduce_grads_and_losses_across_replicas(
+    args, model: Sequence["DDP"], parallel_state: ParallelState, losses_reduced: list
+) -> dict[str, float]:
+    assert not args.calculate_per_token_loss, "calculate_per_token_loss is not supported with indep_dp yet"
+    assert parallel_state.intra_dp.size == 1, (
+        f"indep_dp requires intra_dp.size == 1, got {parallel_state.intra_dp.size}. "
+        "Simultaneous intra and indep DP is not supported."
+    )
+
+    pg = parallel_state.indep_dp.group
+    util = GeneralPGUtil.create(pg)
+    log_structured(
+        logger.info,
+        op="cross_cell",
+        phase="start",
+        kind="grad_allreduce",
+        cell_rank=parallel_state.indep_dp.rank,
+        members=parallel_state.indep_dp.size,
+        **parallel_state.indep_dp.debug_info,
+    )
+
+    loss_reduced: dict[str, float] = {}
+    if mpu.is_pipeline_last_stage(ignore_virtual=True):
+        loss_reduced = aggregate_train_losses(losses_reduced)
+    for model_chunk in model:
+        # mimic: DistributedDataParallel.start_grad_sync
+        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
+            for bucket in bucket_group.buckets:
+                util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
+
+    log_structured(
+        logger.info,
+        op="cross_cell",
+        phase="end",
+        kind="grad_allreduce",
+        cell_rank=parallel_state.indep_dp.rank,
+        members=parallel_state.indep_dp.size,
+        **parallel_state.indep_dp.debug_info,
+    )
+    return loss_reduced
