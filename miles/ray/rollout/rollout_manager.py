@@ -28,6 +28,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
+from miles.utils.process_identity import RolloutManagerProcessIdentity
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils import init_tracking
 
@@ -43,7 +44,7 @@ class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
 
     def __init__(self, args, pg):
-        configure_logger()
+        configure_logger(args, source=RolloutManagerProcessIdentity())
 
         self.pg = pg
         self.args = args

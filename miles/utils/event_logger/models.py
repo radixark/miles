@@ -84,6 +84,13 @@ class TrainAdvantageComputationEvent(_ActorTrainEventBase):
     witness_ids: list[list[int]]
 
 
+class MetricEvent(EventBase):
+    type: Literal["metric"] = "metric"
+    rollout_id: int | None = None
+    attempt: int | None = None
+    metrics: dict[str, Any]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -91,7 +98,8 @@ Event = Annotated[
     | TrainGroupStepEndEvent
     | CellReconfigureEvent
     | InferenceEngineWeightChecksumEvent
-    | TrainAdvantageComputationEvent,
+    | TrainAdvantageComputationEvent
+    | MetricEvent,
     Discriminator("type"),
 ]
 
