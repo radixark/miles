@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,7 +13,7 @@ from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.event_logger.models import WitnessAllocateIdEvent
+from miles.utils.event_logger.models import CellReconfigureEvent, WitnessAllocateIdEvent
 from miles.utils.health_checker import NoopHealthChecker
 from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -120,6 +122,7 @@ class RayTrainGroup:
             )
 
             log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
+            await self._refresh_cells(rollout_id=rollout_id)
             snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
                 "train",
                 rollout_id=rollout_id,
@@ -279,6 +282,165 @@ class RayTrainGroup:
         assert alive_cells, "No alive cells, therefore cannot heal anymore"
         return await alive_cells[0].execute(fn_name, *args, **kwargs)
 
+    # ------------------------ internals for stop/start ------------------------
+
+    async def _refresh_cells(self, *, rollout_id: int) -> None:
+        snapshotted_pending_indices = [c.cell_index for c in self._cells if c.is_pending]
+        snapshotted_alive_indices = [c.cell_index for c in self._cells if c.is_alive]
+        will_alive_indices = sorted(list(set(snapshotted_pending_indices + snapshotted_alive_indices)))
+        all_states = [(c.cell_index, c.state_name) for c in self._cells]
+        log_structured(
+            logger.info,
+            op="refresh",
+            phase="start",
+            rollout=rollout_id,
+            alive=snapshotted_alive_indices,
+            pending=snapshotted_pending_indices,
+            all_states=all_states,
+            quorum=self._indep_dp_quorum_id,
+        )
+        assert len(snapshotted_alive_indices) > 0, "Cannot recover when all cells are dead"
+
+        # Step 0: Determine whether need to reconfigure
+        exists_alive_cell_changed_config = any(
+            cell.indep_dp_info.alive_cell_indices != will_alive_indices
+            for cell in self._cells
+            if cell.cell_index in snapshotted_alive_indices
+        )
+        exists_pending_cell = len(snapshotted_pending_indices) != 0
+        needs_reconfigure = exists_pending_cell or exists_alive_cell_changed_config
+        if not needs_reconfigure:
+            log_structured(
+                logger.info,
+                op="refresh",
+                phase="decision",
+                rollout=rollout_id,
+                needs_reconfigure=False,
+                reason="alive_config_unchanged,no_pending",
+                quorum=self._indep_dp_quorum_id,
+            )
+            return
+        reason = "+".join(
+            r
+            for r, on in [
+                ("pending_cell", exists_pending_cell),
+                ("alive_config_changed", exists_alive_cell_changed_config),
+            ]
+            if on
+        )
+        log_structured(
+            logger.info,
+            op="refresh",
+            phase="decision",
+            rollout=rollout_id,
+            needs_reconfigure=True,
+            reason=reason,
+            will_alive=will_alive_indices,
+            quorum_from=self._indep_dp_quorum_id,
+            quorum_to=self._indep_dp_quorum_id + 1,
+        )
+
+        # Step 1: Kill any errored cells and confirm their processes are gone
+        # BEFORE the surviving cells reconfigure. Otherwise, indep_dp NCCL abort hangs.
+        await self._kill_errored_cells_and_confirm_dead()
+
+        # Step 2: Bump states
+        self._indep_dp_quorum_id += 1
+
+        # Step 3: Allocate pending actors
+        # We currently do not consider this phase to have errors (because it does not touch GPUs)
+        for c in self._cells:
+            if c.cell_index in snapshotted_pending_indices:
+                c.allocate_for_pending()
+
+        # Step 4: Cooperatively prepare
+        src_cell_index = snapshotted_alive_indices[0]  # TODO make it balanced, and support multi-src-to-one-dst
+        src_alive_rank = will_alive_indices.index(src_cell_index)
+        ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_pending_indices]
+
+        with _paused_health_checkers(self._cells):
+            coop_prepare_outputs = await asyncio.gather(
+                *[
+                    (
+                        c.prepare_indep_dp_mode_alive(
+                            indep_dp_info=self._compute_indep_dp_info(
+                                c.cell_index, alive_cell_indices=will_alive_indices
+                            ),
+                            send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_index == src_cell_index else [],
+                        )
+                        if c.cell_index in snapshotted_alive_indices
+                        else c.prepare_indep_dp_mode_healing(
+                            indep_dp_info=self._compute_indep_dp_info(
+                                c.cell_index, alive_cell_indices=will_alive_indices
+                            ),
+                            recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_pending_indices else None,
+                        )
+                    )
+                    for c in self._cells
+                    if c.cell_index in will_alive_indices
+                ],
+                return_exceptions=True,
+            )
+        # No need to do anything else - cells with exceptions will auto mark itself as errored
+        AsyncioGatherUtils.log_error(coop_prepare_outputs, debug_name="refresh_cells#cooperatively_prepare")
+
+        if not AsyncioGatherUtils.has_error(coop_prepare_outputs):
+            assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
+            log_structured(
+                logger.info,
+                op="refresh",
+                phase="end",
+                rollout=rollout_id,
+                quorum=self._indep_dp_quorum_id,
+                alive=will_alive_indices,
+                healed=snapshotted_pending_indices,
+                reconfigured=True,
+            )
+            self._log_reconfigure_event(
+                rollout_id=rollout_id,
+                src_cell_index=src_cell_index if snapshotted_pending_indices else None,
+                healed_cell_indices=snapshotted_pending_indices,
+                alive_cell_indices_after=will_alive_indices,
+            )
+        else:
+            log_structured(
+                logger.error,
+                op="refresh",
+                phase="end",
+                rollout=rollout_id,
+                reconfigured=False,
+                quorum=self._indep_dp_quorum_id,
+                reason="cooperative_prepare_raised",
+            )
+
+    def _log_reconfigure_event(
+        self,
+        *,
+        rollout_id: int,
+        src_cell_index: int | None,
+        healed_cell_indices: list[int],
+        alive_cell_indices_after: list[int],
+    ) -> None:
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                CellReconfigureEvent,
+                dict(
+                    rollout_id=rollout_id,
+                    quorum_id=self._indep_dp_quorum_id,
+                    src_cell_index=src_cell_index,
+                    healed_cell_indices=healed_cell_indices,
+                    alive_cell_indices_after=alive_cell_indices_after,
+                ),
+            )
+
+    async def _kill_errored_cells_and_confirm_dead(self) -> None:
+        errored_cells = [c for c in self._cells if c.is_errored]
+        if not errored_cells:
+            return
+
+        log_structured(logger.info, op="kill_errored", cells=[c.cell_index for c in errored_cells])
+        await asyncio.gather(*[c.stop_and_confirm_dead() for c in errored_cells])
+
     def _compute_indep_dp_info(self, cell_index: int, alive_cell_indices: list[int]) -> IndepDPInfo:
         return IndepDPInfo(
             cell_index=cell_index,
@@ -316,3 +478,14 @@ def _create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
     host = ray.util.get_node_ip_address()
     port = store.port
     return store, f"{host}:{port}"
+
+
+@contextmanager
+def _paused_health_checkers(cells: Sequence[RayTrainCell]) -> Iterator[None]:
+    for c in cells:
+        c.health_checker.pause()
+    try:
+        yield
+    finally:
+        for c in cells:
+            c.health_checker.resume()

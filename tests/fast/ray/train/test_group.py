@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -6,7 +8,10 @@ import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 from miles.backends.megatron_utils.types import TrainStepOutcome
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import RayTrainGroup, _paused_health_checkers
+from miles.utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.event_logger.models import CellReconfigureEvent
+from miles.utils.process_identity import MainProcessIdentity
 from miles.utils.witness.allocator import WitnessIdAllocator
 
 pytestmark = pytest.mark.asyncio
@@ -226,6 +231,259 @@ class TestExecuteAllAliveAndCatch:
             await group._execute_all_alive_and_catch("train")
 
 
+class TestRefreshCellsReconfigure:
+    async def test_reconfigure_triggers_on_alive_change(self):
+        """When a cell is stopped, _refresh_cells reconfigures remaining alive cells."""
+        group = await _make_alive_group(num_cells=3)
+
+        # Step 1: Stop cell 1
+        group.stop_cell(1)
+
+        # Step 2: Refresh
+        await group._refresh_cells(rollout_id=0)
+
+        # Step 3: Quorum bumped (init was quorum 0, this is first reconfigure)
+        assert group._indep_dp_quorum_id == 1
+
+        # Step 4: Remaining alive cells have updated indep_dp_info
+        assert group._cells[0].is_alive
+        assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 2]
+        assert group._cells[0].indep_dp_info.alive_rank == 0
+        assert group._cells[0].indep_dp_info.alive_size == 2
+
+        assert group._cells[2].is_alive
+        assert group._cells[2].indep_dp_info.alive_rank == 1
+
+        # Step 5: Stopped cell untouched
+        assert group._cells[1].is_stopped
+
+        # Step 6: Actors received reconfigure_indep_dp
+        for cell in [group._cells[0], group._cells[2]]:
+            for handle in cell._get_actor_handles():
+                calls = ray.get(handle.get_calls.remote())
+                assert any(c[0] == "reconfigure_indep_dp" for c in calls)
+
+    async def test_no_reconfigure_when_unchanged(self):
+        group = await _make_alive_group(num_cells=2)
+
+        await group._refresh_cells(rollout_id=0)
+
+        assert group._indep_dp_quorum_id == 0
+
+
+class TestRefreshCellsHealing:
+    async def test_pending_cell_gets_healed(self):
+        """A pending cell goes through allocate + healing with correct alive_rank."""
+        group = await _make_alive_group(num_cells=3)
+
+        # Step 1: Stop cell 2, then start it (pending)
+        group.stop_cell(2)
+        group.start_cell(2)
+
+        # Step 2: Refresh heals the pending cell
+        await group._refresh_cells(rollout_id=0)
+
+        # Step 3: All 3 cells are now alive
+        assert all(c.is_alive for c in group._cells)
+
+        # Step 4: All cells have consistent indep_dp_info
+        for cell in group._cells:
+            assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
+            assert cell.indep_dp_info.alive_size == 3
+
+        # Step 5: Healed cell's actors received init
+        for handle in group._cells[2]._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            assert any(c[0] == "init" for c in calls)
+
+        # Step 6: Source cell sent ckpt to healed cell's alive_rank
+        for handle in group._cells[0]._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            send_calls = [c for c in calls if c[0] == "send_ckpt"]
+            assert len(send_calls) == 1
+            assert send_calls[0][2]["dst_rank"] == 2
+
+    async def test_multiple_pending_cells_healed(self):
+        """Multiple pending cells healed simultaneously."""
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(1)
+        group.stop_cell(2)
+        group.start_cell(1)
+        group.start_cell(2)
+
+        await group._refresh_cells(rollout_id=0)
+
+        assert all(c.is_alive for c in group._cells)
+        for cell in group._cells:
+            assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
+
+        # Source (cell 0) sent ckpt to both healed cells
+        for handle in group._cells[0]._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            send_calls = [c for c in calls if c[0] == "send_ckpt"]
+            assert len(send_calls) == 2
+            dst_ranks = sorted(c[2]["dst_rank"] for c in send_calls)
+            assert dst_ranks == [1, 2]
+
+    async def test_healed_cell_receives_set_rollout_manager(self):
+        """Healed cell receives set_rollout_manager after init."""
+        rollout_mgr = MagicMock()
+        group = await _make_alive_group(num_cells=2, rollout_manager=rollout_mgr)
+        group.stop_cell(1)
+        group.start_cell(1)
+
+        await group._refresh_cells(rollout_id=0)
+
+        assert group._cells[1].is_alive
+        for handle in group._cells[1]._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            assert any(c[0] == "set_rollout_manager" for c in calls)
+
+    async def test_pending_cell_with_stopped_cell(self):
+        """Pending + stopped: only alive and pending participate, stopped excluded."""
+        group = await _make_alive_group(num_cells=3)
+
+        # cell 1 stopped (not restarted), cell 2 pending
+        group.stop_cell(1)
+        group.stop_cell(2)
+        group.start_cell(2)
+
+        await group._refresh_cells(rollout_id=0)
+
+        assert group._cells[0].is_alive
+        assert group._cells[1].is_stopped
+        assert group._cells[2].is_alive
+
+        assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 2]
+        assert group._cells[0].indep_dp_info.alive_size == 2
+        assert group._cells[2].indep_dp_info.alive_rank == 1
+
+
+class TestRefreshCellsReconfigureEvent:
+    @pytest.fixture
+    def _event_log_dir(self, tmp_path: Path):
+        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
+        try:
+            yield tmp_path
+        finally:
+            set_event_logger(None)
+
+    @staticmethod
+    def _read_reconfigure_events(log_dir: Path) -> list[CellReconfigureEvent]:
+        return [e for e in read_events(log_dir) if isinstance(e, CellReconfigureEvent)]
+
+    async def test_healing_emits_event_with_src_and_healed_cells(self, _event_log_dir: Path):
+        """A healing reconfigure emits one CellReconfigureEvent naming rollout, src cell, and healed cells."""
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(2)
+        group.start_cell(2)
+
+        await group._refresh_cells(rollout_id=7)
+
+        events = self._read_reconfigure_events(_event_log_dir)
+        assert len(events) == 1
+        assert events[0].rollout_id == 7
+        assert events[0].quorum_id == 1
+        assert events[0].src_cell_index == 0
+        assert events[0].healed_cell_indices == [2]
+        assert events[0].alive_cell_indices_after == [0, 1, 2]
+
+    async def test_shrink_emits_event_without_src(self, _event_log_dir: Path):
+        """A pure-shrink reconfigure emits one CellReconfigureEvent with no src and no healed cells."""
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(1)
+
+        await group._refresh_cells(rollout_id=4)
+
+        events = self._read_reconfigure_events(_event_log_dir)
+        assert len(events) == 1
+        assert events[0].rollout_id == 4
+        assert events[0].src_cell_index is None
+        assert events[0].healed_cell_indices == []
+        assert events[0].alive_cell_indices_after == [0, 2]
+
+    async def test_noop_refresh_emits_no_event(self, _event_log_dir: Path):
+        """A refresh that needs no reconfigure emits no CellReconfigureEvent."""
+        group = await _make_alive_group(num_cells=2)
+
+        await group._refresh_cells(rollout_id=1)
+
+        assert self._read_reconfigure_events(_event_log_dir) == []
+
+    async def test_failed_healing_emits_no_event(self, _event_log_dir: Path):
+        """When cooperative prepare fails, no CellReconfigureEvent is emitted (witness stays absent)."""
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(2)
+        group.start_cell(2)
+        group._cells[2].actor_factory = _make_failing_actor_factory()
+
+        await group._refresh_cells(rollout_id=5)
+
+        assert self._read_reconfigure_events(_event_log_dir) == []
+
+
+class TestRefreshCellsNoOp:
+    async def test_repeated_refresh_without_change_does_not_reconfigure(self):
+        """Calling _refresh_cells multiple times without state changes dispatches no actor calls."""
+        group = await _make_alive_group(num_cells=3)
+
+        # Clear init calls by noting current call count
+        init_call_counts = {}
+        for cell in group._cells:
+            for handle in cell._get_actor_handles():
+                calls = ray.get(handle.get_calls.remote())
+                init_call_counts[id(handle)] = len(calls)
+
+        # Two refreshes — neither should change anything
+        await group._refresh_cells(rollout_id=0)
+        await group._refresh_cells(rollout_id=0)
+        assert group._indep_dp_quorum_id == 0
+
+        # No new calls dispatched
+        for cell in group._cells:
+            for handle in cell._get_actor_handles():
+                calls = ray.get(handle.get_calls.remote())
+                assert len(calls) == init_call_counts[id(handle)]
+
+    async def test_refresh_after_reconfigure_is_noop_on_second_call(self):
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(1)
+        await group._refresh_cells(rollout_id=0)
+        assert group._indep_dp_quorum_id == 1
+
+        await group._refresh_cells(rollout_id=0)
+        assert group._indep_dp_quorum_id == 1
+
+
+class TestConsecutiveStopStartCycles:
+    async def test_stop_train_stop_train_start_train(self):
+        """Consecutive: stop 1 → refresh → stop 2 → refresh → start 1 → refresh."""
+        group = await _make_alive_group(num_cells=3)
+
+        # Step 1: Stop cell 1
+        group.stop_cell(1)
+        await group._refresh_cells(rollout_id=0)
+        assert group._indep_dp_quorum_id == 1
+        assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 2]
+
+        # Step 2: Stop cell 2 (only cell 0 alive)
+        group.stop_cell(2)
+        await group._refresh_cells(rollout_id=0)
+        assert group._indep_dp_quorum_id == 2
+        assert group._cells[0].indep_dp_info.alive_cell_indices == [0]
+        assert group._cells[0].indep_dp_info.alive_size == 1
+
+        # Step 3: Start cell 1 (cells 0 and 1 alive)
+        group.start_cell(1)
+        await group._refresh_cells(rollout_id=0)
+        assert group._indep_dp_quorum_id == 3
+        assert group._cells[0].is_alive
+        assert group._cells[1].is_alive
+        assert group._cells[2].is_stopped
+        assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 1]
+        assert group._cells[1].indep_dp_info.alive_cell_indices == [0, 1]
+
+
 class TestTrain:
     async def test_train_refreshes_and_dispatches(self):
         group = await _make_alive_group(num_cells=2)
@@ -272,6 +530,48 @@ class TestTrain:
                 assert not any(c[0] == "reconfigure_indep_dp" for c in new_calls)
                 train_calls = [c for c in new_calls if c[0] == "train"]
                 assert len(train_calls) == 3
+
+    async def test_rapid_stop_start_before_train(self):
+        """Cell stopped and immediately started before next train — healed in one shot."""
+        group = await _make_alive_group(num_cells=3)
+
+        group.stop_cell(1)
+        group.start_cell(1)
+
+        await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        assert all(c.is_alive for c in group._cells)
+        for cell in group._cells:
+            assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
+
+    async def test_full_lifecycle_through_train(self):
+        """End-to-end: normal → degraded → steady degraded → healing → full."""
+        group = await _make_alive_group(num_cells=3)
+
+        # Step 1: Normal training (no reconfigure)
+        await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
+        assert group._indep_dp_quorum_id == 0
+
+        # Step 2: Stop cell 2 → degraded (triggers reconfigure)
+        group.stop_cell(2)
+        await group.train(rollout_id=1, rollout_data_pack=_DUMMY_DATA_PACK)
+        assert group._indep_dp_quorum_id == 1
+        assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 1]
+
+        # Step 3: Steady degraded (no reconfigure)
+        await group.train(rollout_id=2, rollout_data_pack=_DUMMY_DATA_PACK)
+        assert group._indep_dp_quorum_id == 1
+
+        # Step 4: Start cell 2 → healing (triggers reconfigure)
+        group.start_cell(2)
+        await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
+        assert group._indep_dp_quorum_id == 2
+        assert all(c.is_alive for c in group._cells)
+        assert group._cells[2].indep_dp_info.alive_cell_indices == [0, 1, 2]
+
+        # Step 5: Full training again (no reconfigure)
+        await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
+        assert group._indep_dp_quorum_id == 2
 
 
 class TestPerCellErrorIsolation:
@@ -350,8 +650,77 @@ class TestExecuteFirstAliveFallback:
         assert group._cells[0].is_errored
 
 
+def _make_failing_actor_factory() -> Callable:
+    """Create a factory that returns actors pre-configured to fail on init."""
+
+    def factory():
+        actor = DummyTrainActor.remote()
+        ray.get(actor.set_fail_methods.remote(["init"]))
+        return [actor]
+
+    return factory
+
+
+class TestRefreshCellsErrorHandling:
+    async def test_healing_failure_marks_pending_cell_errored_keeps_alive(self):
+        """When healing init fails, pending cell is marked errored (via _execute_raw's
+        except path), alive cells unaffected. The external FT controller is then
+        responsible for transitioning the errored cell to stopped."""
+        group = await _make_alive_group(num_cells=3)
+
+        # Step 1: Stop cell 2 and start it (pending)
+        group.stop_cell(2)
+        group.start_cell(2)
+
+        # Step 2: Replace actor factory so new actors fail on init
+        group._cells[2].actor_factory = _make_failing_actor_factory()
+
+        # Step 3: Refresh — healing init fails, cell auto-marks errored
+        await group._refresh_cells(rollout_id=0)
+
+        # Step 4: Cell 2 errored, cells 0 and 1 still alive
+        assert group._cells[0].is_alive
+        assert group._cells[1].is_alive
+        assert group._cells[2].is_errored
+
+
+def _make_mock_cells(n: int) -> list[MagicMock]:
+    return [MagicMock(health_checker=MagicMock()) for _ in range(n)]
+
+
+class TestPausedHealthCheckersContextManager:
+    def test_pauses_all_on_enter_resumes_all_on_exit(self):
+        cells = _make_mock_cells(3)
+
+        with _paused_health_checkers(cells):
+            for c in cells:
+                c.health_checker.pause.assert_called_once()
+                c.health_checker.resume.assert_not_called()
+
+        for c in cells:
+            c.health_checker.resume.assert_called_once()
+
+    def test_resumes_all_even_when_block_raises(self):
+        """Regression: must release health_checker.resume() even on exception, otherwise
+        a transient failure during healing would leave checkers paused indefinitely."""
+        cells = _make_mock_cells(3)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with _paused_health_checkers(cells):
+                raise RuntimeError("boom")
+
+        for c in cells:
+            c.health_checker.pause.assert_called_once()
+            c.health_checker.resume.assert_called_once()
+
+    def test_empty_cells_is_a_noop(self):
+        with _paused_health_checkers([]):
+            pass
+
+
 NORMAL = TrainStepOutcome.NORMAL
 DISCARDED = TrainStepOutcome.DISCARDED_SHOULD_RETRY
+
 
 _ERR = RuntimeError("boom")
 _ERR2 = ValueError("boom2")
