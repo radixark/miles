@@ -28,6 +28,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
+from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils import init_tracking
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -117,7 +118,12 @@ class RolloutManager:
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
-        return split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+        sample_indices = data.get("sample_indices")
+        if self.args.delay_split_train_data_by_dp:
+            data_ref = Box(ray.put(data))
+        else:
+            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+        return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(self, rollout_id):
         if self.args.debug_train_only:
