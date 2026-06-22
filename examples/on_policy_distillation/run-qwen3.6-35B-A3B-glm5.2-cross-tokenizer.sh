@@ -212,8 +212,9 @@ pkill -9 python || true
 # (done by the `teacher` container in the K8s manifest, NOT by this script):
 #
 #   python3 -m sglang.launch_server \
-#       --model-path "${TEACHER_MODEL}" \
+#       --model-path "${TEACHER_MODEL}" \      # e.g. zai-org/GLM-5.2
 #       --tp 8 \
+#       --quantization fp8 \                   # GLM-5.2 (glm_moe_dsa) is not pre-quantized; FP8 fits 744B on 8xH200
 #       --host 0.0.0.0 --port 30000 \
 #       --mem-fraction-static 0.85 \
 #       --chunked-prefill-size 8192 \

@@ -71,7 +71,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: TEACHER_MODEL
-              value: "GLM52_HF_REPO_ID"          # <<< SET (e.g. zai-org/GLM-5.2 — confirm the real id)
+              value: "zai-org/GLM-5.2"           # confirmed; glm_moe_dsa, ~1.5TB bf16 download, served in FP8
             - name: HF_HOME
               value: /weka/hf
             - name: HF_TOKEN
@@ -86,9 +86,12 @@ spec:
               if [ ! -e "$MODEL_DIR/config.json" ]; then
                 hf download "$TEACHER_MODEL" --local-dir "$MODEL_DIR"
               fi
+              # GLM-5.2 (glm_moe_dsa) is not pre-quantized; FP8 is required to fit the
+              # 744B-A40B weights on one 8xH200 node (~744GB in FP8 of 1144GB).
               exec python3 -m sglang.launch_server \
                 --model-path "$MODEL_DIR" \
                 --tp 8 \
+                --quantization fp8 \
                 --host 0.0.0.0 --port 30000 \
                 --mem-fraction-static 0.85 \
                 --chunked-prefill-size 8192 \
@@ -138,9 +141,9 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: STUDENT_MODEL_ID
-              value: "QWEN36_35B_A3B_HF_REPO_ID"  # <<< SET (e.g. Qwen/Qwen3.6-35B-A3B — confirm the real id)
+              value: "Qwen/Qwen3.6-35B-A3B"        # confirmed
             - name: TEACHER_TOKENIZER
-              value: "GLM52_HF_REPO_ID"           # <<< SET (same GLM5.2 id; only the tokenizer is pulled here)
+              value: "zai-org/GLM-5.2"             # confirmed; only the tokenizer is pulled here
             - name: GIT_REPO
               value: "https://github.com/williammtan/miles"
             - name: GIT_REF
