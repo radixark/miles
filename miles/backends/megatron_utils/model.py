@@ -24,6 +24,7 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
+from miles.backends.megatron_utils.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.witness.allocator import WitnessInfo
@@ -487,6 +488,14 @@ def train_one_step(
 
     valid_step = True
     grad_norm = 0.0
+    indep_dp_loss_reduced: dict[str, float] = {}
+
+    parallel_state = get_parallel_state()
+    if parallel_state.indep_dp.size > 1:
+        assert step_id == 0, "indep-dp does not support multi step per train yet"
+        indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
+            args, model, parallel_state, losses_reduced=losses_reduced
+        )
 
     if (not disable_optimizer) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
         found_inf_flag = optimizer.prepare_grads()
@@ -526,7 +535,9 @@ def train_one_step(
         optimizer.zero_grad()
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
-        loss_reduced = aggregate_train_losses(losses_reduced)
+        loss_reduced = (
+            indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
+        )
         return loss_reduced, grad_norm
     return {}, grad_norm
 
