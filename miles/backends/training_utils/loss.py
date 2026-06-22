@@ -10,6 +10,8 @@ from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.event_logger.models import TrainAdvantageComputationEvent
 from miles.utils.types import RolloutBatch
 
 
@@ -179,4 +181,23 @@ def loss_function(
                 device=logits.device,
             ),
         },
+    )
+
+
+def log_train_advantage_computation_event(rollout_data: RolloutBatch) -> None:
+    if not is_event_logger_initialized():
+        return
+
+    advantages = rollout_data.get("advantages")
+    witness_ids = rollout_data.get("witness_ids")
+    if advantages is None or witness_ids is None:
+        return
+
+    get_event_logger().log(
+        TrainAdvantageComputationEvent,
+        dict(
+            advantages=[x.tolist() for x in advantages],
+            witness_ids=[x.tolist() for x in witness_ids],
+        ),
+        print_log=False,
     )
