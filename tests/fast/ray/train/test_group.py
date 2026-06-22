@@ -576,7 +576,7 @@ class TestTrain:
 
 class TestPerCellErrorIsolation:
     async def test_one_cell_failure_marks_errored_others_ok(self):
-        """One cell's actor fails during broadcast, that cell is errored, others complete normally."""
+        """One cell's actor fails during broadcast, that cell is killed and stopped, others complete normally."""
         group = await _make_alive_group(num_cells=3)
 
         # Step 1: Make cell 1's actors fail on train
@@ -588,7 +588,7 @@ class TestPerCellErrorIsolation:
 
         # Step 3: Cell 1 is errored, others alive
         assert group._cells[0].is_alive
-        assert group._cells[1].is_errored
+        assert group._cells[1].is_stopped
         assert group._cells[2].is_alive
 
         # Step 4: Other cells received train call
@@ -606,7 +606,7 @@ class TestPerCellErrorIsolation:
             ray.get(handle.set_fail_methods.remote(["train"]))
 
         await group._execute_all_alive_and_catch("train", 0, "data")
-        assert group._cells[0].is_errored
+        assert group._cells[0].is_stopped
 
         # Step 2: Next broadcast only goes to cell 1
         await group._execute_all_alive_and_catch("train", 1, "data")
@@ -619,7 +619,7 @@ class TestPerCellErrorIsolation:
 
 class TestExecuteFirstAliveFallback:
     async def test_first_cell_fails_retry_falls_back_to_next(self):
-        """If the first alive cell fails, retry in save_model marks it errored and picks the next."""
+        """If the first alive cell fails, retry in save_model kills+stops it and picks the next."""
         group = await _make_alive_group(num_cells=3)
 
         # Step 1: Make cell 0 fail on save_model
@@ -630,7 +630,7 @@ class TestExecuteFirstAliveFallback:
         await group.save_model(rollout_id=42)
 
         # Step 3: Cell 0 errored, cell 1 handled it
-        assert group._cells[0].is_errored
+        assert group._cells[0].is_stopped
         assert group._cells[1].is_alive
 
         for handle in group._cells[1]._get_actor_handles():
@@ -647,7 +647,7 @@ class TestExecuteFirstAliveFallback:
         with pytest.raises(Exception):  # noqa: B017
             await group._execute_first_alive("save_model", 42)
 
-        assert group._cells[0].is_errored
+        assert group._cells[0].is_stopped
 
 
 def _make_failing_actor_factory() -> Callable:
@@ -663,9 +663,8 @@ def _make_failing_actor_factory() -> Callable:
 
 class TestRefreshCellsErrorHandling:
     async def test_healing_failure_marks_pending_cell_errored_keeps_alive(self):
-        """When healing init fails, pending cell is marked errored (via _execute_raw's
-        except path), alive cells unaffected. The external FT controller is then
-        responsible for transitioning the errored cell to stopped."""
+        """When healing init fails, the pending cell is killed and stopped (via _execute_raw's
+        except path, which marks errored then confirms-dead), alive cells unaffected."""
         group = await _make_alive_group(num_cells=3)
 
         # Step 1: Stop cell 2 and start it (pending)
@@ -681,7 +680,7 @@ class TestRefreshCellsErrorHandling:
         # Step 4: Cell 2 errored, cells 0 and 1 still alive
         assert group._cells[0].is_alive
         assert group._cells[1].is_alive
-        assert group._cells[2].is_errored
+        assert group._cells[2].is_stopped
 
 
 class TestHeartbeatMonitor:
@@ -914,7 +913,7 @@ class TestTrainRetry:
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
         # Step 3: Cell 1 errored, alive cells each got 1 train call (no retry)
-        assert group._cells[1].is_errored
+        assert group._cells[1].is_stopped
         for i in [0, 2]:
             assert _count_train_calls(group, i) == 1
 

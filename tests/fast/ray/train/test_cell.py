@@ -244,6 +244,20 @@ class TestAsyncInit:
             assert kwargs["recv_ckpt_src_rank"] is None
 
 
+class TestAsyncInitFailure:
+    async def test_init_failure_leaves_cell_stopped_not_alive(self):
+        """A failed remote init routes through errored to stopped; the cell is never reported alive."""
+        cell = make_cell(actor_count=1)
+        for handle in cell._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["init"]))
+
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await cell.init(indep_dp_info=make_indep_dp_info())
+
+        assert not cell.is_alive
+        assert cell.is_stopped
+
+
 class TestPrepareIndepDPModeAlive:
     async def test_reconfigure_and_update_info(self):
         cell = make_alive_cell(0, alive_cell_indices=[0, 1, 2])
