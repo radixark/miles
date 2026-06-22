@@ -22,6 +22,10 @@ ARG MEGATRON_BRANCH=miles-main
 
 ARG MILES_COMMIT=main
 
+# Forked sglang-router that preserves R3 rollout routing-replay request fields.
+ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
+ARG SGL_ROUTER_BRANCH=main
+
 ARG GPU_ARCH=gfx950
 ARG MAX_JOBS=128
 
@@ -148,6 +152,29 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
+
+# ====================================== Install sgl-model-gateway ==============================
+# The R3 rollout routing-replay path needs `return_routed_experts` /
+# `routed_experts_start_len` to survive the router's deserialize -> re-serialize. The PyPI
+# `sglang_router` drops these unknown request fields; the miles fork
+# (radixark/sgl-router-for-miles) adds them as explicit typed fields.
+#
+# Unlike the NVIDIA image (which can install a pre-built wheel + gateway tarball), ROCm
+# always builds from source: the `sglang_router` python wheel (drop-in over the deps' copy)
+# and the `sgl-model-gateway` binary (used by the direct-router `sgl` variant).
+RUN git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+    curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    export PATH="/root/.cargo/bin:${PATH}" && \
+    python3 -m pip install maturin && \
+    cd /build/sgl-model-gateway/bindings/python && \
+    ulimit -n 65536 && \
+    maturin build --release --features vendored-openssl --out /build/gateway_wheels && \
+    cd /build/sgl-model-gateway && \
+    cargo build --release --bin sgl-model-gateway --features vendored-openssl && \
+    cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
+    chmod +x /usr/local/bin/sgl-model-gateway && \
+    pip install --force-reinstall /build/gateway_wheels/sglang_router-*.whl && \
+    rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels
 
 # ====================================== Runtime knobs ==========================================
 
