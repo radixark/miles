@@ -30,6 +30,7 @@ class ParallelState:
     pp: GroupInfo
     ep: GroupInfo
     etp: GroupInfo
+    indep_dp: GroupInfo
     cp_comm_type: str | list[str] | tuple[str, ...] | None = None
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1

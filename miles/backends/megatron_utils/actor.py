@@ -74,7 +74,11 @@ class MegatronTrainRayActor(TrainRayActor):
             m.register_replay_list_func = register_replay_list_sequential
         routing_replay_manager.register_replay_list_func = register_replay_list_moe
 
-        init(args)
+        init(
+            args,
+            indep_dp_store_addr=self._indep_dp_store_addr,
+            indep_dp_info=indep_dp_info,
+        )
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
