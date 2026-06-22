@@ -42,7 +42,8 @@ def monkey_patch_torch_dist():
         if len(ranks) == 1:
             return group
 
-        group = ReloadableProcessGroup(group, ranks)
+        backend = args[2] if len(args) >= 3 else kwargs.get("backend")
+        group = ReloadableProcessGroup(group, ranks, backend=backend)
         return group
 
     dist.new_group = new_group
@@ -112,7 +113,7 @@ def monkey_patch_torch_dist():
 class ReloadableProcessGroup(torch.distributed.ProcessGroup):
     GROUPS = {}
 
-    def __init__(self, group, ranks):
+    def __init__(self, group, ranks, backend=None):
         super().__init__(
             rank=dist.get_rank(group),
             size=dist.get_world_size(group),
@@ -120,6 +121,8 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         self.group = group
         self.group_info = {
             "ranks": ranks,
+            # None = inherit the default backend at reload time.
+            "backend": backend,
         }
         pid = os.getpid()
         if pid not in ReloadableProcessGroup.GROUPS:
@@ -155,7 +158,9 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in reloadable_groups:
             if reloadable_group.group is not None:
                 continue
-            group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend="nccl")
+            group = old_new_group(
+                ranks=reloadable_group.group_info["ranks"], backend=reloadable_group.group_info["backend"]
+            )
             reloadable_group.group = group
 
     def rank(self) -> int:

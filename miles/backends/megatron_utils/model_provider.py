@@ -19,6 +19,7 @@ from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.utils.misc import load_function
 from miles.utils.replay_base import routing_replay_manager
+from miles.utils.witness.module import install_witness
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ def get_model_provider_func(
                 model.output_layer = LinearForLastLayer(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
+            _maybe_install_witness(args, model)
             return model
 
         return wrapped_model_provider
@@ -127,7 +129,9 @@ def get_model_provider_func(
             # caller's pg_collection here, those code paths hit AttributeError.
             if pg_collection is not None:
                 provider._pg_collection = pg_collection
-            return provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            assert not args.enable_witness, "Witness is not supported yet in this mode"
+            return model
 
         return wrapped_bridge_provider
 
@@ -257,6 +261,20 @@ def get_model_provider_func(
         if post_process and role == "critic":
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
 
+        _maybe_install_witness(args, model)
+
         return model
 
     return model_provider
+
+
+def _maybe_install_witness(
+    args: argparse.Namespace,
+    model: GPTModel,
+) -> None:
+    if getattr(args, "enable_witness", False):
+        install_witness(
+            model,
+            buffer_size=args.witness_buffer_size,
+            sequence_parallel=getattr(model.config, "sequence_parallel", False),
+        )
