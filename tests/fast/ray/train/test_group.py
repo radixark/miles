@@ -684,6 +684,57 @@ class TestRefreshCellsErrorHandling:
         assert group._cells[2].is_errored
 
 
+class TestHeartbeatMonitor:
+    async def test_heartbeat_normal_does_not_mark_errored(self):
+        """When heartbeat returns recent timestamp, cells stay alive."""
+        group = await _make_alive_group(num_cells=2)
+
+        for cell in group._cells:
+            await cell.health_checker._check_fn()
+
+        assert all(c.is_alive for c in group._cells)
+
+    async def test_heartbeat_stale_timestamp_does_not_mark_errored(self):
+        """A stale heartbeat timestamp alone keeps the cell healthy: cell health is
+        liveness, not training progress, so a cell legitimately blocked in a cross-cell
+        collective (whose training loop stops bumping the heartbeat) must not be reported
+        unhealthy as long as the heartbeat RPC still returns."""
+        group = await _make_alive_group(num_cells=2)
+
+        # Drive cell 1's last-active timestamp to the epoch (maximally stale); the
+        # liveness check must ignore staleness while the heartbeat RPC keeps returning.
+        for handle in group._cells[1]._get_actor_handles():
+            ray.get(handle.set_last_active_timestamp.remote(0.0))
+
+        # Neither check raises (a returned heartbeat proves the process is alive) and
+        # both cells stay alive despite cell 1's stale timestamp.
+        await group._cells[1].health_checker._check_fn()
+        await group._cells[0].health_checker._check_fn()
+        assert all(c.is_alive for c in group._cells)
+
+    async def test_heartbeat_timeout_marks_errored(self):
+        """When heartbeat call fails (actor unresponsive), cell is marked errored."""
+        group = await _make_alive_group(num_cells=2)
+
+        for handle in group._cells[0]._get_actor_handles():
+            ray.get(handle.set_heartbeat_fail.remote(True))
+
+        with pytest.raises(RuntimeError, match="Injected heartbeat failure"):
+            await group._cells[0].health_checker._check_fn()
+
+    async def test_pause_resume(self):
+        """Pause/resume on cell propagates to its checker."""
+        group = await _make_alive_group(num_cells=2)
+
+        for cell in group._cells:
+            cell.health_checker.pause()
+        assert all(c.health_checker._paused for c in group._cells)
+
+        for cell in group._cells:
+            cell.health_checker.resume()
+        assert all(not c.health_checker._paused for c in group._cells)
+
+
 def _make_mock_cells(n: int) -> list[MagicMock]:
     return [MagicMock(health_checker=MagicMock()) for _ in range(n)]
 
