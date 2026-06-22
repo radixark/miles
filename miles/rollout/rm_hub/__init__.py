@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import random
 
 import aiohttp
@@ -62,6 +63,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         return compute_ifbench_reward(response, label, metadata=metadata)
     elif rm_type == "random":
         return random.randint(0, 1)
+    elif rm_type == "deterministic_random":
+        content = str(sample.tokens) + response
+        content_hash = hashlib.sha256(content.encode()).digest()
+        return int(content_hash[0]) % 2
     elif rm_type:
         raise NotImplementedError(f"Rule-based RM for {rm_type} is not implemented.")
     else:
