@@ -15,7 +15,9 @@ from ..training_utils.parallel import ParallelState, get_parallel_state
 logger = logging.getLogger(__name__)
 
 
-def create_megatron_parallel_state() -> ParallelState:
+def create_megatron_parallel_state(
+    indep_dp: GroupInfo,
+) -> ParallelState:
     vpp_size, microbatch_group_size_per_vp_stage = _compute_vpp_fields()
     args = get_args()
 
@@ -56,6 +58,7 @@ def create_megatron_parallel_state() -> ParallelState:
             size=mpu.get_expert_tensor_parallel_world_size(),
             group=mpu.get_expert_tensor_parallel_group(),
         ),
+        indep_dp=indep_dp,
         is_pp_last_stage=mpu.is_pipeline_last_stage(),
         vpp_size=vpp_size,
         microbatch_group_size_per_vp_stage=microbatch_group_size_per_vp_stage,
