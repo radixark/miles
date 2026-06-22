@@ -10,6 +10,8 @@ import torch.distributed as dist
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from miles.utils.process_group_utils import MultiPGUtil
+from miles.utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
 from ...utils import tracking_utils
@@ -36,20 +38,30 @@ def gather_log_data(
 
     parallel_state = get_parallel_state()
 
-    pg = parallel_state.intra_dp_cp
-    dp_size = pg.size
-    gathered_log_dict = [None] * dp_size
-    # Not sure if this will be a performance bottleneck.
-    dist.gather_object(
-        log_dict,
-        gathered_log_dict if pg.rank == 0 else None,
-        dst=dist.get_global_rank(pg.gloo_group, 0),
-        group=pg.gloo_group,
-    )
+    pg = parallel_state.effective_dp_cp
+    log_structured(logger.info, op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
+    try:
+        gathered_log_dict = MultiPGUtil.gather_object(
+            obj=log_dict,
+            groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
+        )
+        log_structured(logger.info, op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True)
+    except RuntimeError:
+        log_structured(
+            logger.warning,
+            op="cross_cell",
+            phase="end",
+            kind="log_gather",
+            rank=pg.rank,
+            success=False,
+            degraded=True,
+            exc_info=True,
+        )
+        return None
 
     if pg.rank == 0:
         reduced_log_dict = {
-            f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / dp_size for key in log_dict
+            f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / pg.size for key in log_dict
         }
         logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
@@ -344,7 +356,9 @@ def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None =
         rollout_id=rollout_id,
         args=args,
         is_primary_rank=(
-            parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage and parallel_state.intra_dp_cp.rank == 0
+            parallel_state.tp.rank == 0
+            and parallel_state.is_pp_last_stage
+            and parallel_state.effective_dp_cp.rank == 0
         ),
         compute_total_fwd_flops=lambda seq_lens: calculate_fwd_flops(seqlens=seq_lens, args=args)
         / dist.get_world_size()
@@ -400,7 +414,8 @@ def aggregate_train_losses(
 
     assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
 
-    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp.group)
+    for group in parallel_state.effective_dp_cp.groups_inner_to_outer:
+        MultiPGUtil.all_reduce(values, [group], op=dist.ReduceOp.SUM)
 
     loss_reduced = {}
     values = values.tolist()
