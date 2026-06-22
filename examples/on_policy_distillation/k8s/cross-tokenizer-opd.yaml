@@ -32,6 +32,9 @@ metadata:
   labels: { app: will-glm52-teacher }
 spec:
   selector: { app: will-glm52-teacher }
+  # The teacher's readiness can lag (slow model load + DSA warmup); publish its address
+  # so the trainer can reach it as soon as the bridge is up.
+  publishNotReadyAddresses: true
   ports:
     - name: http
       port: 30000
@@ -71,6 +74,9 @@ spec:
           env:
             - name: TEACHER_MODEL
               value: "zai-org/GLM-5.2-FP8"       # pre-quantized block-FP8 (~750GB); loads ~94GB/GPU on 8xH200
+            - name: POD_IP
+              valueFrom:
+                fieldRef: { fieldPath: status.podIP }
             - name: HF_HOME
               value: /weka/hf
             - name: HF_HUB_ENABLE_HF_TRANSFER
@@ -95,7 +101,10 @@ spec:
               # DP-attention + EP, NSA attention with nsa-decode-backend=flashmla_kv (NOT
               # flashmla_sparse, which mis-slices the 192-dim heads), fp8_e4m3 KV cache, and
               # chunked-prefill 16384. --skip-server-warmup since real OPD scoring is short.
-              exec python3 -m sglang.launch_server \
+              # SGLang under --enable-dp-attention binds the HTTP server to 127.0.0.1
+              # (ignores --host), so run it in the background and bridge $POD_IP:30000 -> it
+              # so the Service / cross-node trainer can reach it.
+              python3 -m sglang.launch_server \
                 --model-path "$MODEL_DIR" \
                 --tp 8 \
                 --dp-size 8 \
@@ -113,13 +122,37 @@ spec:
                 --max-running-requests 512 \
                 --watchdog-timeout 3600 \
                 --skip-server-warmup \
-                --trust-remote-code
+                --trust-remote-code &
+              exec python3 -c '
+              import socket, threading, os
+              listen = (os.environ["POD_IP"], 30000); dest = ("127.0.0.1", 30000)
+              def pipe(a, b):
+               try:
+                while True:
+                 d = a.recv(65536)
+                 if not d: break
+                 b.sendall(d)
+               except Exception: pass
+              def handle(c):
+               try: u = socket.create_connection(dest)
+               except Exception: c.close(); return
+               threading.Thread(target=pipe, args=(c, u), daemon=True).start()
+               threading.Thread(target=pipe, args=(u, c), daemon=True).start()
+              s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              s.bind(listen); s.listen(512)
+              print("teacher bridge", listen, "->", dest, flush=True)
+              while True:
+               c, _ = s.accept(); threading.Thread(target=handle, args=(c,), daemon=True).start()
+              '
           ports:
             - containerPort: 30000
+          # /health (not /health_generate, which runs a slow generation and times out the
+          # 1s default probe) with a generous timeout while the model loads + warms up.
           readinessProbe:
-            httpGet: { path: /health_generate, port: 30000 }
+            httpGet: { path: /health, port: 30000 }
             initialDelaySeconds: 120
             periodSeconds: 30
+            timeoutSeconds: 10
             failureThreshold: 240
           resources:
             limits:
