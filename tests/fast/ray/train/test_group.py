@@ -144,6 +144,24 @@ class TestInit:
         assert group._cells[2].indep_dp_info.alive_rank == 2
 
 
+class TestStopStartCell:
+    async def test_stop_cell_transitions_to_stopped(self):
+        group = await _make_alive_group(num_cells=2)
+
+        group.stop_cell(1)
+
+        assert group._cells[1].is_stopped
+        assert group._cells[0].is_alive
+
+    async def test_start_cell_transitions_to_pending(self):
+        group = await _make_alive_group(num_cells=2)
+        group.stop_cell(1)
+
+        group.start_cell(1)
+
+        assert group._cells[1].is_pending
+
+
 class TestExecuteFirstAlive:
     async def test_picks_first_alive_cell(self):
         group = await _make_alive_group(num_cells=3)
@@ -161,7 +179,7 @@ class TestExecuteFirstAlive:
 
     async def test_skips_stopped_picks_next(self):
         group = await _make_alive_group(num_cells=2)
-        group._cells[0]._mark_as_errored()
+        group._cells[0].stop()
 
         await group._execute_first_alive("update_weights")
 
@@ -192,7 +210,7 @@ class TestComputeIndepDPInfo:
 class TestExecuteAllAliveAndCatch:
     async def test_skips_stopped_cells(self):
         group = await _make_alive_group(num_cells=2)
-        group._cells[1]._mark_as_errored()
+        group._cells[1].stop()
 
         await group._execute_all_alive_and_catch("train")
 
@@ -202,7 +220,7 @@ class TestExecuteAllAliveAndCatch:
 
     async def test_asserts_on_no_alive_cells(self):
         group = await _make_alive_group(num_cells=1)
-        group._cells[0]._mark_as_errored()
+        group._cells[0].stop()
 
         with pytest.raises(AssertionError, match="No alive cells"):
             await group._execute_all_alive_and_catch("train")
@@ -218,6 +236,19 @@ class TestTrain:
             for handle in cell._get_actor_handles():
                 calls = ray.get(handle.get_calls.remote())
                 assert any(c[0] == "train" for c in calls)
+
+    async def test_train_with_stopped_cell_only_dispatches_to_alive(self):
+        group = await _make_alive_group(num_cells=3)
+        group.stop_cell(1)
+
+        await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        for cell in [group._cells[0], group._cells[2]]:
+            for handle in cell._get_actor_handles():
+                calls = ray.get(handle.get_calls.remote())
+                assert any(c[0] == "train" for c in calls)
+
+        assert group._cells[1].is_stopped
 
     async def test_consecutive_train_no_reconfigure_overhead(self):
         """Multiple train calls with no state changes — no reconfigure overhead."""
