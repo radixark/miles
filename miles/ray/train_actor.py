@@ -11,6 +11,7 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
+from miles.utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.logging_utils import configure_logger
@@ -72,6 +73,11 @@ class TrainRayActor(RayActor):
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(f"cuda:{local_rank}")
+
+        if args.debug_deterministic_collective:
+            register_det_nccl_backend()
+            args.distributed_backend = DET_NCCL_BACKEND_NAME
+            logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
         # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
         backend = args.distributed_backend
