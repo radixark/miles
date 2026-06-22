@@ -6,8 +6,10 @@ from typing import TYPE_CHECKING
 import torch.distributed as dist
 from megatron.core import mpu
 
+from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.environ import enable_experimental_ft_trainer
 from miles.utils.indep_dp import IndepDPInfo
-from miles.utils.process_group_utils import GeneralPGUtil, GroupInfo
+from miles.utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
 from miles.utils.structured_log import log_structured
 
 from ..training_utils.log_utils import aggregate_train_losses
@@ -104,7 +106,7 @@ def reconfigure_indep_dp_group(
 
 def allreduce_grads_and_losses_across_replicas(
     args, model: Sequence["DDP"], parallel_state: ParallelState, losses_reduced: list
-) -> dict[str, float]:
+) -> tuple[bool, dict[str, float]]:
     assert not args.calculate_per_token_loss, "calculate_per_token_loss is not supported with indep_dp yet"
     assert parallel_state.intra_dp.size == 1, (
         f"indep_dp requires intra_dp.size == 1, got {parallel_state.intra_dp.size}. "
@@ -124,14 +126,47 @@ def allreduce_grads_and_losses_across_replicas(
     )
 
     loss_reduced: dict[str, float] = {}
-    if mpu.is_pipeline_last_stage(ignore_virtual=True):
-        loss_reduced = aggregate_train_losses(losses_reduced)
-    for model_chunk in model:
-        # mimic: DistributedDataParallel.start_grad_sync
-        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
-            for bucket in bucket_group.buckets:
-                util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
+    allreduce_success = True
+    try:
+        if mpu.is_pipeline_last_stage(ignore_virtual=True):
+            loss_reduced = aggregate_train_losses(losses_reduced)
+        for model_chunk in model:
+            # mimic: DistributedDataParallel.start_grad_sync
+            for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
+                for bucket in bucket_group.buckets:
+                    util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
+    except Exception:
+        if not enable_experimental_ft_trainer():
+            raise
+        allreduce_success = False
+        log_structured(
+            logger.error,
+            op="cross_cell",
+            phase="fail",
+            kind="grad_allreduce",
+            cell_rank=parallel_state.indep_dp.rank,
+            members=parallel_state.indep_dp.size,
+            exc_info=True,
+        )
 
+    # pg.errored() can force a CUDA/stream sync, so call it exactly once per step here -- do NOT
+    # sprinkle extra errored() probes. When it does report an async error it MUST be logged loudly:
+    # a swallowed cross-cell error means an un-reduced (wrong) gradient would be applied silently.
+    if (e := pg.errored()) is not None:
+        allreduce_success = False
+        log_structured(
+            logger.error,
+            op="cross_cell",
+            phase="async_error",
+            kind="grad_allreduce",
+            cell_rank=parallel_state.indep_dp.rank,
+            members=parallel_state.indep_dp.size,
+            error=str(e),
+        )
+
+    # Intra-cell consensus: if ANY rank's allreduce failed, ALL ranks discard.
+    # get_gloo_group() is cell-local (created from the default world PG).
+    consensus = collective_bool_and(value=allreduce_success, group=get_gloo_group())
     log_structured(
         logger.info,
         op="cross_cell",
@@ -140,5 +175,7 @@ def allreduce_grads_and_losses_across_replicas(
         cell_rank=parallel_state.indep_dp.rank,
         members=parallel_state.indep_dp.size,
         **parallel_state.indep_dp.debug_info,
+        this_rank_ok=allreduce_success,
+        consensus_ok=consensus,
     )
-    return loss_reduced
+    return consensus, loss_reduced
