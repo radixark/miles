@@ -79,8 +79,7 @@ async def train(args):
                     rollout_id,
                     force_sync=rollout_id == args.num_rollout - 1,
                 )
-            if args.rollout_global_dataset:
-                await rollout_manager.save.remote(rollout_id)
+            await rollout_manager.save.remote(rollout_id)
 
         if (rollout_id + 1) % args.update_weights_interval == 0:
             # sync generate before update weights to prevent update weight in the middle of generation
