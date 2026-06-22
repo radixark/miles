@@ -3,7 +3,6 @@ import random
 
 import numpy as np
 import torch
-import torch.distributed as dist
 from megatron.core import mpu, tensor_parallel
 from megatron.core.config import set_experimental_flag
 from megatron.core.num_microbatches_calculator import init_num_microbatches_calculator
@@ -11,9 +10,7 @@ from megatron.training.global_vars import _build_tokenizer, set_args
 
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.utils.hf_config import register_hf_config_aliases
-from miles.utils.indep_dp import IndepDPInfo
 
-from .indep_dp import create_indep_dp_group
 from .parallel import create_megatron_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -61,14 +58,7 @@ def _initialize_distributed(args, get_embedding_ranks=None, get_position_embeddi
     )
 
 
-def init(
-    args,
-    indep_dp_store_addr: str | None = None,
-    indep_dp_info: IndepDPInfo | None = None,
-):
-    if indep_dp_info is None:
-        indep_dp_info = IndepDPInfo.create_trivial()
-
+def init(args):
     set_args(args)
     if args.enable_experimental:
         logger.info("Enable megatron experimental")
@@ -77,18 +67,7 @@ def init(
     # Pytorch distributed.
     _initialize_distributed(args)
 
-    indep_dp = create_indep_dp_group(
-        store_addr=indep_dp_store_addr,
-        indep_dp_info=indep_dp_info,
-        megatron_rank=dist.get_rank(),
-        megatron_world_size=dist.get_world_size(),
-    )
-
-    set_parallel_state(create_megatron_parallel_state(indep_dp=indep_dp))
-
-    # sanity check
-    if getattr(args, "indep_dp", False):
-        assert args.data_parallel_size == 1
+    set_parallel_state(create_megatron_parallel_state())
 
     # https://github.com/NVIDIA/Megatron-LM/issues/1563
     assert np.__version__.startswith("1."), "Megatron does not support numpy 2.x"
