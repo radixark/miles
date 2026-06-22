@@ -61,6 +61,8 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        assert not is_lora, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+        self.is_lora = False
 
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())
@@ -272,8 +274,8 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         # after RDMA transfer via post_process_weights(post_load_weights=True).
         from sglang.srt.model_loader import loader as model_loader_module
 
-        original_post_load_weights = model_loader_module.post_load_weights
-        model_loader_module.post_load_weights = lambda *args, **kwargs: None
+        original_post_load_weights = model_loader_module._post_load_weights
+        model_loader_module._post_load_weights = lambda *args, **kwargs: None
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
@@ -282,7 +284,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                     device_config=DeviceConfig(device="cpu"),
                 )
         finally:
-            model_loader_module.post_load_weights = original_post_load_weights
+            model_loader_module._post_load_weights = original_post_load_weights
 
         # Also patch the instance method for subsequent load_weights() calls
         # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).

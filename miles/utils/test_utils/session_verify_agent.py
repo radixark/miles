@@ -11,7 +11,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from enum import Enum, StrEnum
+from enum import Enum
+
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 import httpx
 

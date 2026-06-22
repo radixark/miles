@@ -177,7 +177,7 @@ def execute():
         "--sglang-kv-cache-dtype bf16 "
         "--sglang-page-size 64 "
         f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
-        "--sglang-fp8-gemm-backend flashinfer_cutlass "
+        "--sglang-fp8-gemm-backend flashinfer_trtllm "
         "--sglang-moe-runner-backend flashinfer_trtllm_routed "
         f"--sglang-tp-size {ROLLOUT_GPUS_PER_ENGINE} "
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
