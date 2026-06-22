@@ -1150,6 +1150,71 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Weighting scheme for top-k OPD token rewards.",
             )
             parser.add_argument(
+                "--opd-topk-per-position",
+                action="store_true",
+                default=False,
+                help=(
+                    "Send per-position token ids to the teacher/student scoring server "
+                    "(token_ids_logprob_positions) instead of the global top-k union, so the "
+                    "response is O(response_len * k) instead of O(response_len * |union|). "
+                    "Requires a patched sglang server that supports token_ids_logprob_positions; "
+                    "leave off for an unpatched server."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-urls",
+                type=str,
+                nargs="+",
+                default=None,
+                metavar="NAME=URL[@W][,URL[@W]...]",
+                help=(
+                    "Multi-teacher routing/ensemble map for --opd-type=sglang, e.g. "
+                    "--opd-teacher-urls math=http://h1:30001/generate code=http://h2:30002/generate. "
+                    "Each sample is routed to the teacher group named by "
+                    "sample.metadata[--opd-teacher-key]; the reserved name 'default' is the "
+                    "fallback for samples with a missing or unknown name. A name mapping to "
+                    "several comma-separated URLs is an ensemble: every member scores the "
+                    "sample in parallel and the targets are combined as a weighted mixture "
+                    "in probability space (logsumexp of weighted logprobs); per-URL weights "
+                    "default to 1.0 (uniform). With --opd-log-prob-top-k > 0, ensembles "
+                    "require --opd-top-k-strategy only-student. When unset, all samples are "
+                    "scored by the single teacher at --rm-url (original behavior)."
+                ),
+            )
+            parser.add_argument(
+                "--opd-topk-tail-bucket",
+                action="store_true",
+                default=False,
+                help=(
+                    "Compute the top-k OPD reward as the exact reverse KL over the selected "
+                    "token ids plus one tail bucket (k+1 buckets summing to 1), instead of "
+                    "the softmax-renormalized truncated estimate. Keeps the estimate "
+                    "sensitive to probability mass the student moves outside the top-k. "
+                    "Requires --opd-log-prob-top-k > 0 and --opd-reward-weight-mode "
+                    "student_p (the bucket weights are the raw student probabilities)."
+                ),
+            )
+            parser.add_argument(
+                "--opd-scoring-timeout-secs",
+                type=float,
+                default=None,
+                help=(
+                    "Per-request timeout for OPD teacher/student scoring calls. Defaults to "
+                    "--sglang-router-request-timeout-secs; set this to give (typically "
+                    "larger, slower) teacher servers a different bound than generation "
+                    "requests without touching the shared router timeout."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-key",
+                type=str,
+                default="opd_teacher",
+                help=(
+                    "Sample metadata key holding the teacher name used for --opd-teacher-urls "
+                    "routing. Populated from the dataset's metadata column (see --metadata-key)."
+                ),
+            )
+            parser.add_argument(
                 "--opd-teacher-load",
                 type=str,
                 default=None,
@@ -2100,6 +2165,38 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
+        if args.opd_teacher_urls:
+            if args.opd_type != "sglang":
+                raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")
+            # Local import to keep miles.utils free of rollout imports at module load.
+            from miles.rollout.on_policy_distillation import parse_teacher_urls
+
+            url_map = parse_teacher_urls(args.opd_teacher_urls)  # fail fast on malformed/duplicate entries
+            has_ensemble_group = any(len(targets) > 1 for targets in url_map.values())
+            if has_ensemble_group and args.opd_log_prob_top_k > 0 and args.opd_top_k_strategy != "only-student":
+                raise ValueError(
+                    "Teacher ensembles (--opd-teacher-urls groups with multiple URLs) require "
+                    "--opd-top-k-strategy only-student: every group member must be scored at the "
+                    f"same student top-k token ids, got {args.opd_top_k_strategy!r}."
+                )
+        if args.opd_topk_tail_bucket:
+            if args.opd_log_prob_top_k <= 0:
+                raise ValueError("--opd-topk-tail-bucket requires --opd-log-prob-top-k > 0.")
+            if args.opd_reward_weight_mode != "student_p":
+                raise ValueError(
+                    "--opd-topk-tail-bucket uses raw student probabilities as bucket weights and is "
+                    f"incompatible with --opd-reward-weight-mode {args.opd_reward_weight_mode!r}; use student_p."
+                )
+            if args.opd_top_k_strategy not in ("only-student", "intersection"):
+                raise ValueError(
+                    "--opd-topk-tail-bucket requires --opd-top-k-strategy only-student or intersection: the k+1 "
+                    "bucket partition is only exact when all student logprobs at the selected ids come from "
+                    "one softmax (the rollout harvest). With "
+                    f"{args.opd_top_k_strategy!r}, student logprobs mix the rollout harvest with a separate "
+                    "rescoring pass, so the bucket masses do not come from a single distribution."
+                )
+        if args.opd_scoring_timeout_secs is not None and args.opd_scoring_timeout_secs <= 0:
+            raise ValueError("--opd-scoring-timeout-secs must be positive when set.")
 
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:
@@ -2126,6 +2223,14 @@ def miles_validate_args(args):
     else:
         if args.opd_teacher_load is not None:
             raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
+        if args.opd_teacher_urls:
+            raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
+        if args.opd_topk_tail_bucket:
+            raise ValueError("--opd-topk-tail-bucket is set but --use-opd is not enabled. Please add --use-opd flag.")
+        if args.opd_scoring_timeout_secs is not None:
+            raise ValueError(
+                "--opd-scoring-timeout-secs is set but --use-opd is not enabled. Please add --use-opd flag."
+            )
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":

@@ -12,6 +12,10 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 | `--opd-log-prob-top-k` | Number of top-k tokens retained for the Rethinking OPD token reward. `0` uses sampled-token OPD; `16` matches the paper recipe default. |
 | `--opd-top-k-strategy` | Top-k token set strategy: `only-student`, `only-teacher`, `intersection`, `union`, or `xor`. |
 | `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
+| `--opd-topk-tail-bucket` | Compute the top-k reward as the exact reverse KL over the selected ids plus one tail bucket (k+1 buckets summing to 1) instead of the renormalized truncated estimate. Requires `--opd-reward-weight-mode student_p`. |
+| `--opd-teacher-urls` | Optional multi-teacher routing/ensemble map (`NAME=URL[@W][,URL[@W]...]` entries, SGLang mode only). Routes each sample to a teacher group by `sample.metadata[--opd-teacher-key]`; reserved name `default` is the fallback. A group with several comma-separated URLs is a weighted probability-space ensemble. Unset = single teacher at `--rm-url`. |
+| `--opd-teacher-key` | Metadata key holding the teacher name for routing (default: `opd_teacher`). |
+| `--opd-scoring-timeout-secs` | Per-request timeout for teacher/student scoring. Defaults to `--sglang-router-request-timeout-secs`; set it to bound slow teacher servers without changing the shared router timeout. Scoring requests also get one automatic retry on transient failures (timeout, connection error, HTTP 5xx). |
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
 
@@ -43,6 +47,16 @@ The token set is controlled by `--opd-top-k-strategy`:
 
 `--opd-reward-weight-mode` controls whether each selected token is weighted by student probability, teacher probability, or uniformly. For compatibility, `--opd-log-prob-top-k=0` keeps the original sampled-token OPD path.
 
+### Tail-Mass Bucket
+
+The default weighting renormalizes over the selected token set, so the estimate cannot see probability mass the student moves *outside* the top-k. `--opd-topk-tail-bucket` instead treats the position as k+1 buckets that sum to 1 — the selected ids at their exact full-softmax probabilities, plus one aggregated tail bucket — and computes the exact reverse KL over that partition:
+
+$$
+D_{\text{KL}} = \sum_{v \in S} p_s(v)\,\big(\log p_s(v) - \log p_T(v)\big) \;+\; \big(1 - \textstyle\sum_{v \in S} p_s(v)\big)\,\big(\log \text{tail}_s - \log \text{tail}_T\big)
+$$
+
+No renormalization is needed because both sides are exact log-probs at the same ids; the tail term penalizes the student for pushing mass off the support. The math runs in float64 (scoring log-probs arrive as JSON doubles) with `log1p` for the tail, so it avoids the precision cliffs a bf16 training-side implementation hits when top-k mass rounds to 1. Requires `--opd-reward-weight-mode student_p` and `--opd-top-k-strategy only-student` or `intersection` — the bucket partition is only exact when all student log-probs at the selected ids come from a single softmax (the rollout harvest); the other strategies fill in student log-probs from a separate rescoring pass, whose mass cannot be combined into one distribution. The per-position result still ships as a single scalar in `sample.opd_reverse_kl`, so training-side cost is unchanged.
+
 ## Two Teacher Modes
 
 ### SGLang Mode (`--opd-type sglang`)
@@ -70,6 +84,79 @@ The teacher runs on an external SGLang server. Teacher log-probs are obtained du
 --custom-reward-post-process-path miles.rollout.on_policy_distillation.post_process_rewards
 --rm-url http://<TEACHER_IP>:<TEACHER_PORT>/generate
 ```
+
+### Multi-Teacher Routing (SGLang mode only)
+
+`--opd-teacher-urls` routes each sample to a task-specific teacher, e.g. a math
+specialist for math prompts and a code specialist for code prompts. Each sample
+is still scored by exactly one teacher, so scoring cost is identical to
+single-teacher OPD and the loss is unchanged — `teacher_log_probs` /
+`opd_reverse_kl` are per-sample and do not care which teacher produced them.
+
+**How it works**:
+1. Tag each prompt with a teacher name in its dataset metadata column
+   (read via `--metadata-key`, default `metadata`):
+   ```json
+   {"prompt": "...", "metadata": {"opd_teacher": "math"}}
+   {"prompt": "...", "metadata": {"opd_teacher": "code"}}
+   ```
+2. Map names to teacher endpoints with `--opd-teacher-urls NAME=URL ...`.
+   The reserved name `default` is the fallback for samples whose name is
+   missing or unknown; without a `default` entry such samples raise an error
+   (failing loudly beats silently distilling from the wrong teacher).
+3. `reward_func` resolves the URL per sample; everything downstream is
+   unchanged.
+
+**Configuration** (on top of the SGLang-mode flags above; `--rm-url` is ignored
+when the routing map is set):
+```bash
+--opd-teacher-urls math=http://<H1>:<P1>/generate code=http://<H2>:<P2>/generate default=http://<H1>:<P1>/generate
+--opd-teacher-key opd_teacher   # metadata key holding the teacher name (default)
+```
+
+> **Notes**: All teachers must share the student's tokenizer — scoring sends
+> `input_ids` and gathers per-token-id log-probs. Works with both the
+> sampled-token path and the top-k path (student-side scoring still goes to the
+> student router). For throughput, point multiple names (or one name backed by
+> an sglang router) at replicas; `--opd-teacher-urls` is for *different*
+> teachers, not load balancing.
+
+### Teacher Ensembles (SGLang mode only)
+
+A routed name can map to a *group* of teachers. Every group member scores the
+sample and the targets are combined as a **weighted mixture in probability
+space**: per token id, $\log \bar{p}(v) = \log\big(\sum_m w_m\, p_m(v) / \sum_m w_m\big)$
+(a `logsumexp` over weighted log-probs). This is the log-probability of the
+mixture distribution — averaging log-probs directly would be an unnormalized
+geometric mean and is *not* a valid distillation target.
+
+```bash
+# Two peers ensembled uniformly for math prompts; a single default teacher otherwise.
+--opd-teacher-urls math=http://<H1>:<P1>/generate,http://<H2>:<P2>/generate default=http://<H3>:<P3>/generate
+# Optional per-teacher weights (default 1.0):
+--opd-teacher-urls math=http://<H1>:<P1>/generate@2.0,http://<H2>:<P2>/generate@1.0
+```
+
+**How it works**: `reward_func` fans the identical scoring request out to every
+group member in parallel (`asyncio.gather`), so wall clock is the slowest
+member's latency, not the sum, and all teacher compute stays on dedicated
+inference GPUs — training-step time is untouched and the per-sample tensors
+shipped to training are unchanged. With the sampled-token path the mixture is
+taken at each sampled token; with the top-k path each member is scored at the
+student's top-k ids (the global per-sample union by default, or per-position
+ids with `--opd-topk-per-position`) and raw probabilities are mixed per id
+*before* any weighting (a mixture of renormalized truncations is not the
+truncation of the mixture), which is why ensembles require
+`--opd-top-k-strategy only-student`.
+
+**Routing vs. ensembling**: reverse KL to a mixture is mode-seeking, and
+uniformly averaging a confident in-domain specialist with a confused
+out-of-domain teacher pollutes the target. Route *across* domains (one
+specialist per task) and ensemble only same-domain peers within a group —
+e.g. several SFT/RL variants of the same teacher family. Ensemble members may
+have different architectures and sizes as long as they share the student's
+tokenizer. Combines well with `--opd-topk-tail-bucket`: the mixture tail is
+the weighted average of member tails, so the k+1-bucket KL stays exact.
 
 ### Megatron Mode (`--opd-type megatron`)
 

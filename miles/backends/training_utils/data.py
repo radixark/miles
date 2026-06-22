@@ -93,6 +93,35 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
                 )
             )
         ]
+    # OPD tensors from sglang-mode rollout scoring arrive full response length and must
+    # be CP-sliced like rollout_log_probs so they line up with the CP-local student
+    # log_probs/advantages in apply_opd_kl_to_advantages. (Megatron-mode teacher
+    # logprobs are produced by the trainer's own CP-sliced forward and never pass
+    # through here.) At cp_size == 1 this is an identity slice.
+    for opd_key in ("teacher_log_probs", "opd_reverse_kl"):
+        if opd_key in rollout_data:
+            sliced_values = []
+            for i, (value, total_length, response_length) in enumerate(
+                zip(
+                    rollout_data[opd_key],
+                    rollout_data["total_lengths"],
+                    rollout_data["response_lengths"],
+                    strict=False,
+                )
+            ):
+                value = slice_log_prob_with_cp(
+                    value,
+                    total_length,
+                    response_length,
+                    args.qkv_format,
+                    rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
+                )
+                if not torch.is_tensor(value):
+                    value = torch.tensor(value, dtype=torch.float32)
+                # On GPU like rollout_log_probs: downstream CP collectives (multimodal
+                # re-slicing) run on the NCCL group and need device tensors.
+                sliced_values.append(value.to(device=torch.cuda.current_device()))
+            rollout_data[opd_key] = sliced_values
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:

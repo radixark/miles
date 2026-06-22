@@ -113,6 +113,37 @@ class TestConvertSamplesToTrainData:
         )
         assert out["rollout_log_probs"][0] == [-0.1, -0.2, -0.3, -0.4]
 
+    def test_opd_fields_passed_through_when_set_on_all_samples(self):
+        args = make_args(rewards_normalization=False)
+        samples = [make_sample(index=i) for i in range(2)]
+        for s in samples:
+            s.teacher_log_probs = [-0.1] * s.response_length
+            s.opd_reverse_kl = [0.2] * s.response_length
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert len(out["teacher_log_probs"]) == 2
+        assert len(out["opd_reverse_kl"]) == 2
+
+    def test_opd_fields_partially_set_raises_instead_of_silently_dropping(self):
+        # Gating on samples[0] alone would silently drop the key (or crash later on
+        # a length mismatch) when teacher scoring covered only part of the batch.
+        args = make_args(rewards_normalization=False)
+        samples = [make_sample(index=i) for i in range(2)]
+        samples[1].teacher_log_probs = [-0.1] * samples[1].response_length
+        with pytest.raises(ValueError, match="teacher scoring must cover the whole batch"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
     def test_optional_field_round_number_from_metadata(self):
         args = make_args(rewards_normalization=False)
         s = make_sample()

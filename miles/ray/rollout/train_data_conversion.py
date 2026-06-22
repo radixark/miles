@@ -82,11 +82,18 @@ def convert_samples_to_train_data(
     if any(sample.weight_versions for sample in samples):
         train_data["weight_versions"] = [sample.weight_versions for sample in samples]
 
-    if samples[0].teacher_log_probs is not None:
-        train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
-
-    if samples[0].opd_reverse_kl is not None:
-        train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
+    for opd_key in ("teacher_log_probs", "opd_reverse_kl"):
+        values = [getattr(sample, opd_key) for sample in samples]
+        num_present = sum(value is not None for value in values)
+        if num_present == 0:
+            continue
+        if num_present != len(samples):
+            missing = [i for i, value in enumerate(values) if value is None]
+            raise ValueError(
+                f"{opd_key} is set on {num_present}/{len(samples)} samples (missing at indices "
+                f"{missing[:5]}{'...' if len(missing) > 5 else ''}); teacher scoring must cover the whole batch."
+            )
+        train_data[opd_key] = values
 
     x = metadata.get("dynamic_global_batch_size")
     assert args.use_dynamic_global_batch_size == (x is not None)
