@@ -1687,6 +1687,32 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "cell_index -1 means last cell.",
             )
             parser.add_argument(
+                "--ci-inject-rollout-data-path",
+                type=str,
+                default=None,
+                help="CI comparison tests only: path template (with {rollout_id}) of rollout "
+                "data recorded via --save-debug-rollout-data. For rollouts at or after "
+                "--ci-inject-rollout-data-start-rollout-id, generation still runs normally "
+                "but its result is discarded and the recorded data is used for training "
+                "instead. Unlike --load-debug-rollout-data, sglang engines stay alive "
+                "(debug_train_only is not forced).",
+            )
+            parser.add_argument(
+                "--ci-inject-rollout-data-start-rollout-id",
+                type=int,
+                default=None,
+                help="First rollout_id whose training data is replaced by the "
+                "--ci-inject-rollout-data-path recordings.",
+            )
+            parser.add_argument(
+                "--ci-inject-rollout-data-min-match-ratio",
+                type=float,
+                default=0.9,
+                help="Minimum mean response-token match ratio between the discarded generated "
+                "data and the injected recording. Below this the engine weights are considered "
+                "wrong (legitimate ulp-level drift only flips occasional sampled tokens).",
+            )
+            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
@@ -2428,6 +2454,15 @@ def miles_validate_args(args):
             "will not instantiate sglang servers and will only run the training process."
         )
         args.debug_train_only = True
+
+    assert (args.ci_inject_rollout_data_path is None) == (args.ci_inject_rollout_data_start_rollout_id is None), (
+        "--ci-inject-rollout-data-path and --ci-inject-rollout-data-start-rollout-id " "must be set together."
+    )
+    if args.ci_inject_rollout_data_path is not None:
+        assert args.load_debug_rollout_data is None, (
+            "--ci-inject-rollout-data-path replaces data of individual rollouts while engines "
+            "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
+        )
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.critic_num_gpus_per_node is None:

@@ -7,7 +7,7 @@ import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.ray.rollout.addr_allocator import PortCursors
-from miles.ray.rollout.debug_data import load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
@@ -110,7 +110,7 @@ class RolloutManager:
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
-        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False)
+        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = convert_samples_to_train_data(
             self.args,
@@ -148,8 +148,7 @@ class RolloutManager:
 
     async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
-            data = load_debug_rollout_data(self.args, rollout_id=rollout_id)
-            metadata = {}  # save/load metadata into debug rollout data as well
+            data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
         else:
             if self.use_experimental_refactor:
@@ -165,6 +164,13 @@ class RolloutManager:
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self.train_parallel_config
             )
+            if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
+                generated_data = data
+                data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
+                RolloutDataInjectionUtil.assert_matches_generated(
+                    self.args, generated=generated_data, injected=data, rollout_id=rollout_id
+                )
+                metrics = None
 
         return data, metadata, metrics
 
