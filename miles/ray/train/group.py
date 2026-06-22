@@ -8,6 +8,7 @@ from ray.util.placement_group import PlacementGroup
 
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
+from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.event_logger.models import WitnessAllocateIdEvent
 from miles.utils.health_checker import NoopHealthChecker
@@ -106,20 +107,25 @@ class RayTrainGroup:
 
     async def train(self, rollout_id: int, rollout_data_pack):
         """Do one rollout training"""
-        witness_info = self._allocate_witness_info(
-            rollout_id=rollout_id,
-            attempt=0,
-            sample_indices=rollout_data_pack["sample_indices"],
-        )
 
-        log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=0)
-        await self._execute_all(
-            "train",
-            rollout_id=rollout_id,
-            rollout_data_ref=rollout_data_pack["data_ref"],
-            witness_info=witness_info,
-            attempt=0,
-        )
+        async def _fn(attempt: int):
+            witness_info = self._allocate_witness_info(
+                rollout_id=rollout_id,
+                attempt=attempt,
+                sample_indices=rollout_data_pack["sample_indices"],
+            )
+
+            log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
+            snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
+                "train",
+                rollout_id=rollout_id,
+                rollout_data_ref=rollout_data_pack["data_ref"],
+                witness_info=witness_info,
+                attempt=attempt,
+            )
+            self._check_train_one_attempt(snapshot_alive_cells, results)
+
+        await _fn(attempt=0)
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
@@ -139,6 +145,24 @@ class RayTrainGroup:
             )
 
         return witness_info
+
+    @staticmethod
+    def _check_train_one_attempt(snapshot_alive_cells, results):
+        outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
+        if not outcomes["normal"]:
+            log_structured(logger.error, op="check", **outcomes, decision="retry", reason="all alive cells failed")
+            raise RuntimeError("All cells failed in this training attempt")
+
+        log_structured(
+            logger.info, op="check", **outcomes, decision="no_retry", reason="survivors normal, gradients valid"
+        )
+
+    @staticmethod
+    def _compute_attempt_outcomes(snapshot_alive_cells, results) -> dict[str, list[int]]:
+        paired = list(zip(snapshot_alive_cells, results, strict=True))
+        errored = [c.cell_index for c, r in paired if isinstance(r, BaseException)]
+        normal = [c.cell_index for c, r in paired if c.cell_index not in errored]
+        return {"errored": errored, "normal": normal}
 
     # ------------------------ API :: others ------------------------
 
@@ -162,7 +186,7 @@ class RayTrainGroup:
 
     async def save_model(self, rollout_id: int, force_sync: bool = False):
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
-        await self._execute_first("save_model", rollout_id, force_sync=force_sync)
+        await self._execute_first_alive("save_model", rollout_id, force_sync=force_sync)
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
@@ -172,20 +196,23 @@ class RayTrainGroup:
         # ranks observe a consistent engine set; the actor releases the lock itself.
         info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
         await self._rollout_manager.health_monitoring_pause.remote()
-        await self._execute_first("update_weights", info=info)
+        await self._execute_first_alive("update_weights", info=info)
 
     async def onload(self):
-        await self._execute_all("wake_up")
+        # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
+        await self._execute_all_alive_and_catch("wake_up")
         for cell in self._cells:
             cell.health_checker.resume()
 
     async def offload(self):
         for cell in self._cells:
             cell.health_checker.pause()
-        await self._execute_all("sleep")
+        # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
+        await self._execute_all_alive_and_catch("sleep")
 
     async def clear_memory(self):
-        await self._execute_all("clear_memory")
+        # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
+        await self._execute_all_alive_and_catch("clear_memory")
 
     async def connect(self, critic_group: "RayTrainGroup"):
         assert len(self._cells) == len(critic_group._cells), (
@@ -204,11 +231,23 @@ class RayTrainGroup:
 
     # ------------------------ utils to forward calls to cells ------------------------
 
-    async def _execute_all(self, fn_name: str, *args, **kwargs):
-        return await asyncio.gather(*[cell.execute(fn_name, *args, **kwargs) for cell in self._cells])
+    async def _execute_all_alive_and_catch(self, fn_name: str, *args, **kwargs):
+        snapshot_alive_cells = [c for c in self._cells if c.is_alive]
+        assert snapshot_alive_cells, "No alive cells"
+        # NOTE: no timeout here. If a cell hangs, the external FT controller
+        # detects stale heartbeat via cell_status(), calls cell.stop() to kill
+        # actors, which unblocks this gather with ActorDiedError.
+        outputs = await asyncio.gather(
+            *[cell.execute(fn_name, *args, **kwargs) for cell in snapshot_alive_cells],
+            return_exceptions=True,
+        )
+        AsyncioGatherUtils.log_error(outputs, debug_name=f"execute_all_alive_and_catch#{fn_name}")
+        return snapshot_alive_cells, outputs
 
-    async def _execute_first(self, fn_name: str, *args, **kwargs):
-        return await self._cells[0].execute(fn_name, *args, **kwargs)
+    async def _execute_first_alive(self, fn_name: str, *args, **kwargs):
+        alive_cells = [c for c in self._cells if c.is_alive]
+        assert alive_cells, "No alive cells, therefore cannot heal anymore"
+        return await alive_cells[0].execute(fn_name, *args, **kwargs)
 
     def _compute_indep_dp_info(self, cell_index: int, alive_cell_indices: list[int]) -> IndepDPInfo:
         return IndepDPInfo(

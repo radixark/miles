@@ -25,8 +25,13 @@ class StateAllocatedAlive(StateAllocatedBase):
     indep_dp_info: IndepDPInfo
 
 
+# TODO may remove this state
+class StateAllocatedErrored(StateAllocatedBase):
+    indep_dp_info: IndepDPInfo | None
+
+
 class StateStopped(StateBase):
     pass
 
 
-CellState = StatePending | StateAllocatedUninitialized | StateAllocatedAlive | StateStopped
+CellState = StatePending | StateAllocatedUninitialized | StateAllocatedAlive | StateAllocatedErrored | StateStopped

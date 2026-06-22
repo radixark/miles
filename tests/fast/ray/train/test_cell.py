@@ -48,6 +48,36 @@ class TestMarkAsAlive:
             cell._mark_as_alive(indep_dp_info=make_indep_dp_info())
 
 
+class TestMarkAsErrored:
+    def test_transitions_alive_to_errored(self):
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        info = cell.indep_dp_info
+
+        cell._mark_as_errored()
+
+        assert cell.is_errored
+        assert not cell.is_alive
+        assert cell.is_allocated
+        assert cell.indep_dp_info == info
+
+    def test_errored_is_idempotent(self):
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        cell._mark_as_errored()
+
+        cell._mark_as_errored()
+
+        assert cell.is_errored
+
+    def test_transitions_uninitialized_to_errored_without_info(self):
+        """A cell whose init never completed can still be marked errored; its indep_dp_info is None."""
+        cell = make_cell()
+
+        cell._mark_as_errored()
+
+        assert cell.is_errored
+        assert cell.indep_dp_info is None
+
+
 class TestInvalidTransitions:
     def test_allocate_for_pending_rejects_from_alive(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
@@ -82,6 +112,7 @@ class TestStatePredicates:
         assert not cell.is_pending
         assert cell.is_allocated
         assert not cell.is_alive
+        assert not cell.is_errored
 
     def test_alive(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
@@ -89,3 +120,13 @@ class TestStatePredicates:
         assert not cell.is_pending
         assert cell.is_allocated
         assert cell.is_alive
+        assert not cell.is_errored
+
+    def test_errored(self):
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        cell._mark_as_errored()
+
+        assert not cell.is_pending
+        assert cell.is_allocated
+        assert not cell.is_alive
+        assert cell.is_errored
