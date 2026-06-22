@@ -29,6 +29,10 @@ def ray_local_mode():
             log_to_driver=False,
         )
         if not os.environ.get("RAY_ADDRESS"):
+            # address="local" forces a fresh cluster: with no address, ray.init
+            # auto-connects to any leaked local cluster (via /tmp/ray), and
+            # connecting with num_cpus/num_gpus set is a hard ValueError.
+            kwargs["address"] = "local"
             kwargs["num_cpus"] = 32
             # Logical GPU resource so real_ray placement-group tests (engines
             # are mocked via MockSGLangEngine; no real GPU is used) can satisfy
