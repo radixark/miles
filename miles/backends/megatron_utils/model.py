@@ -40,7 +40,7 @@ from .ci_utils import (
     compute_model_hashes_by_layer,
     save_model_hashes,
 )
-from .initialize import is_megatron_main_rank
+from .initialize import is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
@@ -136,7 +136,7 @@ def setup_model_and_optimizer(
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
-        if is_megatron_main_rank():
+        if is_first_replica_megatron_main_rank():
             logger.warning(
                 "Skipping Megatron optimizer and LR scheduler initialization "
                 "because --debug-disable-optimizer is set."
@@ -599,7 +599,7 @@ def train(
     pre_hook_enabled = False
 
     if args.reset_optimizer_states and not disable_optimizer:
-        if is_megatron_main_rank():
+        if is_first_replica_megatron_main_rank():
             print("Reset optimizer states")
         for chained_optimizer in optimizer.chained_optimizers:
             for group in chained_optimizer.optimizer.param_groups:
@@ -679,7 +679,7 @@ def train(
                     check_mtp_loss(mtp_losses)
 
         # per train step log.
-        if is_megatron_main_rank():
+        if is_first_replica_megatron_main_rank():
             accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
             role = getattr(model[0], "role", "actor")
             role_tag = "" if role == "actor" else f"{role}-"
