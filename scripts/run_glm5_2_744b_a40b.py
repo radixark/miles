@@ -183,7 +183,8 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         extra_args += (
             "--pipeline-model-parallel-size 4 "
             "--expert-model-parallel-size 32 "
-            "--decoder-last-pipeline-num-layers 18 "
+            "--decoder-first-pipeline-num-layers 18 "
+            "--decoder-last-pipeline-num-layers 20 "
         )
 
     U.convert_checkpoint(
