@@ -26,6 +26,8 @@ KNOWN_LABELS: dict[str, str] = {
     "ckpt": "Checkpoint save / load tests",
     "lora": "LoRA training tests",
     "precision": "Numerical precision parity tests",
+    "ft-short": "Fault-tolerance trainer comparison tests (no_failure / deterministic / with_failure)",
+    "ft-long": "Fault-tolerance trainer soak tests (random-crash survival, realistic-gsm8k convergence)",
     "weight-update": "Weight update tests",
     "replay": "Routing / indexer replay tests",
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
