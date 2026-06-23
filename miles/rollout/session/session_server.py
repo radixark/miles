@@ -8,12 +8,13 @@ load balancing and forwarding to worker engines.
 
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import setproctitle
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from miles.rollout.session.sessions import setup_session_routes
@@ -37,6 +38,12 @@ class SessionServer:
 
         # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
         self.app.router.on_shutdown.append(self.client.aclose)
+
+        self.cpu_executor = ThreadPoolExecutor(
+            max_workers=getattr(args, "session_server_cpu_workers", None) or min(16, os.cpu_count() or 1),
+            thread_name_prefix="session-cpu",
+        )
+        self.app.router.on_shutdown.append(lambda: self.cpu_executor.shutdown(wait=False, cancel_futures=True))
 
         setup_session_routes(self.app, self, args)
 
@@ -79,21 +86,20 @@ class SessionServer:
         }
 
     def build_proxy_response(self, result: dict) -> Response:
-        content = result["response_body"]
-        status_code = result["status_code"]
-        # Drop wire-level framing headers from upstream so Starlette rebuilds them
-        # from the body we actually send: transfer-encoding is hop-by-hop
+        # httpx already decoded the body, so upstream content-encoding/length are
+        # stale framing headers; drop them and let Starlette rebuild from the body.
         headers = {
             k: v
             for k, v in result["headers"].items()
             if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
         }
         content_type = headers.get("content-type", "")
-        try:
-            data = json.loads(content)
-            return JSONResponse(content=data, status_code=status_code, headers=headers)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
+        return Response(
+            content=result["response_body"],
+            status_code=result["status_code"],
+            headers=headers,
+            media_type=content_type,
+        )
 
 
 def run_session_server(args, backend_url: str):
@@ -108,4 +114,7 @@ def run_session_server(args, backend_url: str):
         args.session_server_port,
         backend_url,
     )
+    # Single uvicorn worker on purpose: extra workers would each own a separate
+    # SessionRegistry + asyncio.Lock, so a session_id could land on a process that
+    # doesn't own it. Multi-process needs sticky session ownership and is deferred.
     uvicorn.run(server.app, host=args.session_server_ip, port=args.session_server_port, log_level="info")

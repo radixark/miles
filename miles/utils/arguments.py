@@ -1803,6 +1803,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Message roles allowed to be appended after the pretokenized "
                 "assistant prefix in TITO sessions (default: tool).",
             )
+            parser.add_argument(
+                "--session-server-cpu-workers",
+                type=int,
+                default=min(16, os.cpu_count() or 1),
+                help="Max worker threads for the session server's bounded CPU thread pool "
+                "(offloads stateless JSON parse/dump and response validation off the event loop). "
+                "Higher values improve event-loop responsiveness under load but raise peak memory; "
+                "the GIL means stdlib JSON does not gain CPU throughput from more threads.",
+            )
             return parser
 
         def add_user_provided_function_arguments(parser):
