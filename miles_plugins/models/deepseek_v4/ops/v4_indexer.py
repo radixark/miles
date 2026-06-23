@@ -67,10 +67,6 @@ class V4Indexer(MegatronModule):
             cp_group=pg_collection.cp,
         )
 
-        rope_base = config.dsv4_compress_rope_theta if self.compress_ratio else config.rotary_base
-        freqs_cis = wrapped_precompute_freqs_cis(config, rope_head_dim=self.rope_head_dim, base=rope_base)
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
-
     def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
         """Forward pass.
 
@@ -99,7 +95,11 @@ class V4Indexer(MegatronModule):
         rd = self.rope_head_dim
         cp_size = parallel_state.get_context_parallel_world_size()
         cp_group = self.pg_collection.cp if hasattr(self.pg_collection, "cp") else None
-        freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen, cp_size, cp_group, stride=1)
+        rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
+        freqs_cis = wrapped_precompute_freqs_cis(
+            self.config, self.rope_head_dim, rope_base, False, seqlen * cp_size, x.device
+        )
+        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen, cp_size, cp_group, stride=1)
         q = q.clone()
         q = einops.rearrange(q, "s b ... -> b s ...")
         apply_rotary_emb(q[..., -rd:], freqs_cis)
