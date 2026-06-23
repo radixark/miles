@@ -125,7 +125,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(cell=cell, config=SimpleHealthCheckerConfig())
 
         await checker._check_fn()
-        execute.assert_awaited_once_with("get_heartbeat_status", mark_errored_on_failure=False)
+        execute.assert_awaited_once_with("get_heartbeat_status", kill_on_failure=False)
 
     @pytest.mark.asyncio
     async def test_rpc_error_propagates_as_unhealthy(self):
