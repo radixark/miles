@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
@@ -11,6 +12,8 @@ from miles.utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.process_identity import MainProcessIdentity
 from miles.utils.tracking_utils import finish_tracking, init_tracking
+
+logger = logging.getLogger(__name__)
 
 
 async def train(args):
@@ -112,6 +115,17 @@ async def train(args):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await rollout_manager.eval.remote(rollout_id)
+
+        if (
+            args.debug_exit_after_rollout is not None
+            and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
+        ):
+            logger.info(
+                "debug_exit_after_rollout=%d reached at rollout_id=%d, exiting",
+                args.debug_exit_after_rollout,
+                rollout_id,
+            )
+            break
 
     await rollout_manager.dispose.remote()
 

@@ -668,6 +668,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of rollout steps. If not set, we will calculate the number of rollout steps from the dataset size.",
             )
             parser.add_argument(
+                "--debug-exit-after-rollout",
+                type=int,
+                default=None,
+                help="Exit training after this many rollouts (for testing checkpoint resume with consistent scheduler params).",
+            )
+            parser.add_argument(
                 "--num-epoch",
                 type=int,
                 default=None,
