@@ -4,10 +4,7 @@ from types import SimpleNamespace
 
 import torch
 
-from miles.backends.experimental.fsdp_utils.adaptations.precision import (
-    apply_fp32_master,
-    resolve_precision_policy,
-)
+from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
 
 
 def test_resolve_precision_policy_gating_and_dtypes():

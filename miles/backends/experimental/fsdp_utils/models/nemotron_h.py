@@ -101,8 +101,9 @@ def _patch_attn_forward(attn_cls):
         kf = kk.transpose(1, 2).reshape(q, self.num_heads, self.head_dim).contiguous()
         vf = vv.transpose(1, 2).reshape(q, self.num_heads, self.head_dim).contiguous()
         ml = int((cu[1:] - cu[:-1]).max())
-        o = flash_attn_varlen_func(qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu,
-                                   max_seqlen_q=ml, max_seqlen_k=ml, causal=True)
+        o = flash_attn_varlen_func(
+            qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True
+        )
         o = o.reshape(b, q, self.num_heads * self.head_dim)
         return self.o_proj(o), None, kwargs.get("past_key_value")
 
@@ -155,6 +156,9 @@ def apply_nemotron_h_sglang_match_patch(model):
     if attn_cls is not None:
         _patch_attn_forward(attn_cls)
     _patch_causallm_forward(type(model), mixer_cls, attn_cls)
-    logger.info("[fsdp] NemotronH packed-doc reset applied (mamba seq_idx + attention varlen cu_seqlens); "
-                "mixer=%s attn=%s", mixer_cls.__module__, attn_cls.__name__ if attn_cls else None)
+    logger.info(
+        "[fsdp] NemotronH packed-doc reset applied (mamba seq_idx + attention varlen cu_seqlens); " "mixer=%s attn=%s",
+        mixer_cls.__module__,
+        attn_cls.__name__ if attn_cls else None,
+    )
     return True

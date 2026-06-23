@@ -33,9 +33,7 @@ def apply_flash_attn_saux_guard() -> bool:
     if "if s_aux is not None" in src or BUG not in src:
         return False  # already guarded, or an unrecognized layout
 
-    new_src = textwrap.dedent(src).replace(
-        BUG, "s_aux=(s_aux.to(query.dtype) if s_aux is not None else None)"
-    )
+    new_src = textwrap.dedent(src).replace(BUG, "s_aux=(s_aux.to(query.dtype) if s_aux is not None else None)")
     ns = vars(fa)
     try:
         exec(compile(new_src, fa.__file__, "exec"), ns)  # noqa: S102 - controlled recompile

@@ -6,12 +6,7 @@ that transformers' _init_weights re-initializes after loading). Both need the in
 """
 
 from ..packing.registry import PackingPatch, register_packing_patch
-from ..post_load_fixups import (
-    PostLoadFixup,
-    _is_mamba_hybrid,
-    _reload_clobbered_from_disk,
-    register_post_load_fixup,
-)
+from ..post_load_fixups import PostLoadFixup, _is_mamba_hybrid, _reload_clobbered_from_disk, register_post_load_fixup
 
 
 def _packing_applies(hf_config) -> bool:

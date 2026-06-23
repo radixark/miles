@@ -14,7 +14,7 @@ from .precision import PrecisionPolicy, apply_fp32_master, register_fp32_master_
 from .weight_bridge import ParamTransform, get_param_transform, register_param_transform
 
 # MUST be last: importing the specs registers each arch's hooks into the mechanism registries above.
-from . import specs  # noqa: F401,E402
+from . import specs  # noqa: F401,E402  # isort: skip
 
 __all__ = [
     "ModelPatchHook",

@@ -10,14 +10,14 @@ Covers:
 
 import torch
 
-from miles.backends.experimental.fsdp_utils.update_weight_utils import _iter_sync_named_params
 from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import _qwen3_moe_expand, get_param_transform
+from miles.backends.experimental.fsdp_utils.update_weight_utils import _iter_sync_named_params
 
 
 def test_split_gate_up_proj_rows_and_names():
-    # [E=2, 2I=6, H=4]: fused rows are [gate(:3) | up(3:)]
-    E, I, H = 2, 3, 4
-    full = torch.arange(E * 2 * I * H, dtype=torch.float32).reshape(E, 2 * I, H)
+    # [E=2, 2*inter=6, H=4]: fused rows are [gate(:3) | up(3:)]
+    E, inter, H = 2, 3, 4
+    full = torch.arange(E * 2 * inter * H, dtype=torch.float32).reshape(E, 2 * inter, H)
     out = dict(_qwen3_moe_expand("model.layers.0.mlp.experts.gate_up_proj", full))
 
     assert set(out) == {
@@ -29,15 +29,15 @@ def test_split_gate_up_proj_rows_and_names():
     for e in range(E):
         g = out[f"model.layers.0.mlp.experts.{e}.gate_proj.weight"]
         u = out[f"model.layers.0.mlp.experts.{e}.up_proj.weight"]
-        assert g.shape == (I, H) and u.shape == (I, H)
-        torch.testing.assert_close(g, full[e, :I, :])
-        torch.testing.assert_close(u, full[e, I:, :])
+        assert g.shape == (inter, H) and u.shape == (inter, H)
+        torch.testing.assert_close(g, full[e, :inter, :])
+        torch.testing.assert_close(u, full[e, inter:, :])
         assert g.is_contiguous() and u.is_contiguous()
 
 
 def test_split_down_proj():
-    E, H, I = 2, 4, 3
-    full = torch.arange(E * H * I, dtype=torch.float32).reshape(E, H, I)
+    E, H, inter = 2, 4, 3
+    full = torch.arange(E * H * inter, dtype=torch.float32).reshape(E, H, inter)
     out = dict(_qwen3_moe_expand("model.layers.5.mlp.experts.down_proj", full))
     assert set(out) == {
         "model.layers.5.mlp.experts.0.down_proj.weight",
@@ -45,7 +45,7 @@ def test_split_down_proj():
     }
     for e in range(E):
         d = out[f"model.layers.5.mlp.experts.{e}.down_proj.weight"]
-        assert d.shape == (H, I)
+        assert d.shape == (H, inter)
         torch.testing.assert_close(d, full[e])
 
 
@@ -169,7 +169,9 @@ def test_model_patch_registry_gating():
     assert by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3_moe"))
     assert not by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3"))
     # off-mode dispatch applies the legacy patch (a no-op on transformers>=5.6 batched experts); must not raise
-    by_name["qwen3_moe_moe_patch"].apply(SimpleNamespace(model_type="qwen3_moe"), SimpleNamespace(true_on_policy_mode=False))
+    by_name["qwen3_moe_moe_patch"].apply(
+        SimpleNamespace(model_type="qwen3_moe"), SimpleNamespace(true_on_policy_mode=False)
+    )
 
 
 def test_packed_seq_context_boundaries():
