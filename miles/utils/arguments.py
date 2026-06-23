@@ -14,6 +14,7 @@ from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
+            )
+            parser.add_argument(
+                "--indep-dp",
+                action="store_true",
+                default=False,
+                help="Launch each DP replica as an independent Megatron instance instead of using Megatron-internal data parallelism.",
             )
             parser.add_argument(
                 "--delay-split-train-data-by-dp",
@@ -2030,6 +2037,14 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if args.indep_dp:
+        assert (
+            args.train_backend == "megatron"
+        ), f"indep_dp requires train_backend='megatron', got '{args.train_backend}'"
+        per_replica_size = compute_megatron_world_size_except_dp(args)
+        logger.info(f"indep_dp: adjusting args.world_size from {args.world_size} to {per_replica_size} (per-cell)")
+        args.world_size = per_replica_size
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
