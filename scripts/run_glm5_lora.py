@@ -117,14 +117,19 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # DSA sparse-MLA kernel backend (bridge path only). Orthogonal to model version & LoRA: BOTH
     # backends support GLM-5.1 AND GLM-5.2, full or LoRA.
-    #   "megatron-bridge" (default): portable unfused megatron-core DSA kernels; bshd layout; no
-    #                                extra deps.
-    #   "slime":                     vendored fused TileLang SparseMLA + lighting_indexer; thd
-    #                                layout; needs tilelang; matches slime's rollout kernels for
-    #                                rollout<->train parity (incl. R3 indexer replay);
-    #                                training/forward-only (no KV cache, cannot serve inference).
+    #   "slime" (default):  vendored fused TileLang SparseMLA + lighting_indexer; thd layout; needs
+    #                       tilelang; matches slime's rollout kernels for rollout<->train parity
+    #                       (incl. R3 indexer replay); training/forward-only (no KV cache).
+    #   "megatron-bridge":  portable unfused megatron-core DSA kernels; bshd layout; no extra deps.
     # The matching --qkv-format is chosen from this automatically (see _get_parallel_config).
-    dsa_attention_backend: Literal["megatron-bridge", "slime"] = "megatron-bridge"
+    dsa_attention_backend: Literal["megatron-bridge", "slime"] = "slime"
+
+    # R3 (rollout routing replay, arxiv 2510.11370): during training, replay the rollout's recorded
+    # MoE top-8 so the train-side expert selection matches the rollout (on-policy). Adds
+    # --use-rollout-routing-replay; on the slime backend it ALSO adds --use-rollout-indexer-replay
+    # (the DSA indexer top-k replay), which only the slime backend self-registers -- the unfused
+    # megatron-bridge path has no indexer replay, so it is skipped there.
+    use_r3: bool = True
 
     # performance
     num_gpus_per_node: int = 4
@@ -139,6 +144,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 1
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 4
+    # NB: the GLM-5.2 DSA indexer has index_topk=2048. It performs genuine SPARSE top-k selection
+    # (and thus exercises the cross-layer DSA path) only when the full sequence (prompt + response)
+    # EXCEEDS 2048; at shorter seq (the gsm8k default below) the indexer degenerates to DENSE
+    # (top-k >= seq -> selects all keys). Use a longer prompt/response (> 2048) to hit sparse indexing.
     rollout_max_response_len: int = 256
     global_batch_size: int = 16
 
@@ -194,7 +203,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _train(args: ScriptArgs):
-    print(f"[run] GLM-5 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}")
+    print(f"[run] GLM-5 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}")
     load_save_path = f"{args.save_dir}/{args.run_id}"
 
     ckpt_args = (
@@ -222,6 +231,15 @@ def _train(args: ScriptArgs):
 
     grpo_args = "--advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
+    # R3 (rollout routing replay): replay the rollout's MoE top-8 in training so the train-side
+    # selection matches the rollout (on-policy). The DSA indexer replay is added only on the slime
+    # backend, which self-registers the replay stream (the unfused megatron-bridge path has none).
+    r3_args = ""
+    if args.use_r3:
+        r3_args = "--use-rollout-routing-replay "
+        if args.dsa_attention_backend == "slime":
+            r3_args += "--use-rollout-indexer-replay "
+
     optimizer_args = "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
 
     perf_args = _get_parallel_config(args)
@@ -234,7 +252,7 @@ def _train(args: ScriptArgs):
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
-    train_args = f"{ckpt_args} {lora_args} {rollout_args} {optimizer_args} {grpo_args} {wandb_args} {perf_args} {sglang_args} {save_args} {misc_args} {args.extra_args} "
+    train_args = f"{ckpt_args} {lora_args} {rollout_args} {optimizer_args} {grpo_args} {r3_args} {wandb_args} {perf_args} {sglang_args} {save_args} {misc_args} {args.extra_args} "
 
     U.execute_train(
         train_args=train_args,
