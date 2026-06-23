@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 
 from miles.utils.data import get_minimum_num_micro_batch_size
+from miles.utils.process_group_utils import GeneralPGUtil
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 from miles.utils.witness.allocator import WitnessInfo
@@ -40,8 +41,8 @@ def get_rollout_data(
     rollout_data = process_rollout_data(
         args,
         rollout_data_ref,
-        parallel_state.intra_dp.rank,
-        parallel_state.intra_dp.size,
+        parallel_state.effective_dp.rank,
+        parallel_state.effective_dp.size,
         witness_info=witness_info,
     )
     # move tokens to GPU in advance
@@ -399,8 +400,8 @@ def get_data_iterator(
     expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
-    dp_size = parallel_state.intra_dp.size
-    dp_group = parallel_state.intra_dp.group
+    dp_size = parallel_state.effective_dp.size
+    dp_group = parallel_state.effective_dp.group
     vpp_size = parallel_state.vpp_size
     microbatch_group_size_per_vp_stage = parallel_state.microbatch_group_size_per_vp_stage
 
@@ -440,7 +441,7 @@ def get_data_iterator(
             )
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
-        dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=dp_group)
+        GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
 
         if vpp_size > 1:
             # vpp requies the number of microbatches to be divisible by vpp_size
