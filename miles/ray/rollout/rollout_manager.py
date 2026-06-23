@@ -23,6 +23,8 @@ from miles.rollout.base_types import (
 )
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.environ import enable_experimental_rollout_refactor
+from miles.utils.event_analyzer import analyzer as event_analyzer
+from miles.utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
@@ -44,6 +46,7 @@ class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
 
     def __init__(self, args, pg):
+        event_logger_checkpoint.restore(args)
         configure_logger(args, source=RolloutManagerProcessIdentity())
 
         self.pg = pg
@@ -90,12 +93,13 @@ class RolloutManager:
                     monitor = RolloutHealthMonitor(group, args)
                     monitor.start()
                     self._health_monitors.append(monitor)
-            self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
+            self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
 
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
 
     def dispose(self):
+        event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
@@ -177,7 +181,9 @@ class RolloutManager:
     # -------------------------- checkpointing -----------------------------
 
     def save(self, rollout_id):
-        self.data_source.save(rollout_id)
+        if self.args.rollout_global_dataset:
+            self.data_source.save(rollout_id)
+        event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)

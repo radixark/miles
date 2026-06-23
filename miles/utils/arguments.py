@@ -37,6 +37,9 @@ def reset_arg(parser, name, **kwargs):
         parser.add_argument(name, **kwargs)
 
 
+_FT_CHOICES = ["rollout", "train"]
+
+
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
         # Ray
@@ -600,6 +603,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="Enable fault tolerance. Use --ft-components to select which components.",
+            )
+            parser.add_argument(
+                "--ft-components",
+                nargs="+",
+                default=None,
+                choices=_FT_CHOICES,
+                help="FT components to enable (requires --use-fault-tolerance). "
+                "Choices: rollout, train. Default when omitted: rollout.",
             )
             parser.add_argument(
                 "--rollout-health-check-interval",
@@ -2077,8 +2088,39 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+_FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
+
+
+def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
+    if not args.use_fault_tolerance:
+        if args.ft_components is not None:
+            logger.warning("--ft-components is ignored without --use-fault-tolerance")
+        return []
+    if args.ft_components is None:
+        return list(_FT_DEFAULT_COMPONENTS)
+    return list(args.ft_components)
+
+
 def miles_validate_args(args):
+    args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if "train" in args.ft_components:
+        args.indep_dp = True
+        args.delay_split_train_data_by_dp = True
+        args.save_local_weight_checksum = True
+        args.enable_event_analyzer = True
+        args.enable_witness = True
+        args.non_persistent_ckpt_type = "local"
+        if getattr(args, "non_persistent_local_ckpt_dir", None) is None:
+            args.non_persistent_local_ckpt_dir = "/tmp/miles_local_ckpt"
+        # atomic: each rank saves independently, no collective communication.
+        # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
+        args.non_persistent_local_ckpt_algo = "atomic"
+        logger.info(
+            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
+            args.non_persistent_local_ckpt_algo,
+        )
 
     if args.indep_dp:
         assert (
