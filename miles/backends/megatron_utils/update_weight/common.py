@@ -281,8 +281,9 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
         for name, buffer in model_module.named_buffers():
             # Collect all real buffers so gemma4's per-layer/router/vision buffers
             # (layer_scalar, per_expert_scale, std_bias/scale) are available for the
-            # HF<->Megatron weight conversion; skip only TE serialization state.
-            if "_extra_state" in name:
+            # HF<->Megatron weight conversion; skip TE serialization state and
+            # recomputable rotary caches (cos_cached/sin_cached) that aren't weights.
+            if "_extra_state" in name or "rotary_pos_emb" in name:
                 continue
             yield _compute_fqn(name), buffer
 
@@ -352,8 +353,9 @@ def _named_params_and_buffers_global(
         for name, buffer in model_module.named_buffers():
             # Collect all real buffers so gemma4's per-layer/router/vision buffers
             # (layer_scalar, per_expert_scale, std_bias/scale) are available for the
-            # HF<->Megatron weight conversion; skip only TE serialization state.
-            if "_extra_state" in name:
+            # HF<->Megatron weight conversion; skip TE serialization state and
+            # recomputable rotary caches (cos_cached/sin_cached) that aren't weights.
+            if "_extra_state" in name or "rotary_pos_emb" in name:
                 continue
             # for model without ddp wrap
             if not name.startswith("module.module."):
