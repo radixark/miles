@@ -7,7 +7,7 @@ wrong values and sync them to the rollout. Each affected arch registers a fixup 
 instantiated model + checkpoint path and re-asserts disk ground truth.
 
 This is the FSDP backend's fourth registry, alongside ``weight_bridge`` (train->rollout param
-contract), ``hf_compat_patches.ModelPatchHook`` (config-time HF-compat patches), and ``packing``
+contract), ``class_patches.ModelPatchHook`` (config-time HF-compat patches), and ``packing``
 (packed-sequence layout). A new arch registers a fixup here instead of editing the actor.
 """
 

@@ -40,7 +40,7 @@ def apply_flash_attn_saux_guard() -> bool:
     try:
         exec(compile(new_src, fa.__file__, "exec"), ns)  # noqa: S102 - controlled recompile
     except Exception as e:  # pragma: no cover
-        logger.warning(f"[fsdp hf_compat] s_aux guard compile failed: {e}")
+        logger.warning(f"[fsdp class_patches] s_aux guard compile failed: {e}")
         return False
     patched = ns["flash_attention_forward"]
     patched._saux_guarded = True
@@ -63,9 +63,9 @@ def apply_flash_attn_saux_guard() -> bool:
                     except Exception:
                         pass
     except Exception as e:  # pragma: no cover
-        logger.warning(f"[fsdp hf_compat] s_aux guard re-register skipped: {e}")
+        logger.warning(f"[fsdp class_patches] s_aux guard re-register skipped: {e}")
 
-    logger.info("[fsdp hf_compat] applied flash-attention s_aux None-guard")
+    logger.info("[fsdp class_patches] applied flash-attention s_aux None-guard")
     return True
 
 
@@ -83,7 +83,7 @@ def check_train_infer_consistency(hf_config) -> None:
     )
     if is_dsa:
         logger.warning(
-            "[fsdp hf_compat] DeepSeek sparse-attention (DSA) detected (model_type=%s): the HF "
+            "[fsdp class_patches] DeepSeek sparse-attention (DSA) detected (model_type=%s): the HF "
             "training forward has no indexer, so it is dropped and train attention is DENSE while "
             "the rollout is SPARSE. RL on DSA via FSDP is not currently consistent.",
             model_type,
@@ -111,7 +111,7 @@ class ModelPatchHook:
     ``apply(hf_config, args)`` action (``args`` is the actor Namespace, e.g. for true_on_policy_mode).
 
     Makes the per-arch dispatch a first-class registry instead of a hardcoded per-arch if-chain.
-    New archs register a hook rather than editing ``apply_hf_compat_patches``. Self-gating checks
+    New archs register a hook rather than editing ``apply_class_patches``. Self-gating checks
     (fp8 fail-fast, DSA warn) use ``applies_to=_has_config`` and gate internally.
     """
 
@@ -145,7 +145,7 @@ register_model_patch(
 # (adaptations/specs/), so this module keeps only the generic, always-applicable HF-compat patches.
 
 
-def apply_hf_compat_patches(hf_config=None, args=None) -> None:
+def apply_class_patches(hf_config=None, args=None) -> None:
     """Apply all registered FSDP HF-compat/model patches. Safe to call once at actor init.
 
     Scope is the ModelPatchHook registry only. The actor driver invokes the other registries

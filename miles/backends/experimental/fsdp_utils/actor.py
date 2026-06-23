@@ -103,13 +103,14 @@ class FSDPTrainRayActor(TrainRayActor):
         # FSDP trains stock HF modeling: apply HF-version compat patches, then the config-lifetime
         # packed-sequence patches (GatedDeltaNet class-forward patches, before construction). No-op
         # for archs that pack natively (glm MLA) or don't pack (dense Qwen3, qwen3_moe).
-        from .adaptations.class_patches import apply_hf_compat_patches
+        from .adaptations.class_patches import apply_class_patches
         from .adaptations.packing import apply_packing
 
-        apply_hf_compat_patches(self.hf_config, self.args)
+        apply_class_patches(self.hf_config, self.args)
         apply_packing(None, self.hf_config, "config")
 
-        # Needs hf_config (gates the qwen3_moe-specific MoE patches on model_type), so run after load.
+        # Backend-level true-on-policy setup (batch-invariant ops). The qwen3_moe-specific MoE-block
+        # patch is a ModelPatchHook applied in apply_class_patches above, not here.
         self._enable_true_on_policy_optimizations(args)
 
         init_context = self._get_init_weight_context_manager()
@@ -220,7 +221,7 @@ class FSDPTrainRayActor(TrainRayActor):
     def _enable_true_on_policy_optimizations(self, args):
         """Backend-level true-on-policy setup (batch-invariant ops), gated purely on the run mode.
 
-        The qwen3_moe-specific MoE-block patch is a ModelPatchHook (applied in apply_hf_compat_patches);
+        The qwen3_moe-specific MoE-block patch is a ModelPatchHook (applied in apply_class_patches);
         only the backend-wide batch-invariant ops live here, since they are not per-model.
         """
         if args.true_on_policy_mode:

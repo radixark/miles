@@ -9,7 +9,7 @@ native HF varlen via FlashAttentionKwargs) simply don't — ``apply_packing`` is
 All patches share the one boundary derivation in ``boundaries.py``.
 
 This is the third FSDP-backend registry, alongside ``weight_bridge`` (train->rollout param
-contract) and ``hf_compat_patches.ModelPatchHook`` (config-time HF-compat patches); a new arch
+contract) and ``class_patches.ModelPatchHook`` (config-time HF-compat patches); a new arch
 plugs into a registry instead of editing a sync/patch/dispatch loop.
 
 Two lifetimes, because the archs patch at different times:

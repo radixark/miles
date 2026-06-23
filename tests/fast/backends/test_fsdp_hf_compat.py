@@ -144,10 +144,10 @@ def test_weight_bridge_registry():
 
 
 def test_model_patch_registry_gating():
-    # The ModelPatchHook registry replaces the hardcoded per-arch dispatch in apply_hf_compat_patches.
+    # The ModelPatchHook registry replaces the hardcoded per-arch dispatch in apply_class_patches.
     # Verify the predicates gate correctly (s_aux always; config-checks need a config). Packed-sequence
     # layout patches (GDN, ...) moved out of this registry into the unified packing registry
-    # (test_packing_registry below); apply_hf_compat_patches now dispatches them via apply_packing.
+    # (test_packing_registry below); apply_class_patches now dispatches them via apply_packing.
     from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}

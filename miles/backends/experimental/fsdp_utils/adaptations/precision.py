@@ -6,8 +6,8 @@ fp32 master because the FSDP2 bf16 reshard perturbs stored weights ~1 bf16 ULP v
 load, which surfaces as a train<->rollout logprob gap.
 
 This is the precision half of the per-arch adaptation layer (alongside weight_bridge,
-hf_compat_patches, packing, post_load_fixups); a new arch that needs an fp32 master adds its
-model_type here instead of editing the actor.
+class_patches, packing, post_load_fixups); a new arch that needs an fp32 master calls
+``register_fp32_master_type`` in its spec (adaptations/specs/) instead of editing the actor.
 """
 
 from dataclasses import dataclass
