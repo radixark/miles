@@ -46,12 +46,16 @@ model_type=glm_moe_dsa / GlmMoeDsaForCausalLM):
   GLM-5.1-4layer / -20layer   other GLM-5.1 prunes
 
 Usage (run ON the devbox; miles editable-installed under /personal):
-  python scripts/run_glm5_lora.py prepare    --model-name GLM-5.1-6layer   # download model + gsm8k
+  python scripts/run_glm5_lora.py prepare    --model-name GLM-5.1-6layer   # download model + task dataset (default gsm8k)
   # default (megatron-bridge / unfused) backend:
   python scripts/run_glm5_lora.py full-train --model-name GLM-5.1-6layer --num-gpus-per-node 4
   # fused slime backend (GLM-5.2 shown; works for GLM-5.1 too):
   python scripts/run_glm5_lora.py full-train --model-name GLM-5.2_5layer \\
       --dsa-attention-backend slime --num-gpus-per-node 4
+  # DAPO-Math example (zhuzilin/dapo-math-17k, long-CoT competition math -- use a longer response len):
+  python scripts/run_glm5_lora.py prepare --model-name GLM-5.2_5layer --task dapo-math
+  python scripts/run_glm5_lora.py train   --model-name GLM-5.2_5layer --task dapo-math \\
+      --rollout-max-response-len 4096 --num-gpus-per-node 4   # add --dapo-dynamic-sampling on a real model
 
 GLM-5.2 rollout caveat: sglang does not yet serve the GLM-5.2 cross-layer (subset-indexer)
 checkpoint, so a full rollout->train loop is blocked on the rollout side. The *training* side
@@ -107,7 +111,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
         "GLM-5.2",
         "GLM-5.2_5layer",
     ] = "GLM-5.1-6layer"
-    task: Literal["gsm8k"] = "gsm8k"
+    # Example task / dataset (math RL, --rm-type math for both):
+    #   gsm8k     -> zhuzilin/gsm8k, short-answer grade-school math (~256-tok responses).
+    #   dapo-math -> zhuzilin/dapo-math-17k (DAPO-Math-17k), hard long-CoT competition math.
+    #                Pass a larger --rollout-max-response-len (e.g. 4096); a >2048 total seq is
+    #                also what makes the GLM-5.2 DSA indexer go genuinely SPARSE (cross-layer
+    #                path), unlike the dense short gsm8k case. Optionally enable DAPO dynamic
+    #                sampling (see dapo_dynamic_sampling below). Mirrors run_deepseek_v4.py.
+    task: Literal["gsm8k", "dapo-math"] = "gsm8k"
 
     hf_checkpoint: str | None = None
     model_dir: str = "/root/models"
@@ -150,6 +161,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # (top-k >= seq -> selects all keys). Use a longer prompt/response (> 2048) to hit sparse indexing.
     rollout_max_response_len: int = 256
     global_batch_size: int = 16
+
+    # DAPO dynamic sampling (only used when task="dapo-math") -- DAPO's signature trick: drop
+    # prompt-groups whose samples ALL get the same reward (no learning signal), oversampling to
+    # refill the batch. OFF by default: on a model that scores 0 on every sample (e.g. the toy
+    # pruned checkpoints) it would reject every batch and resample forever. Enable only with a
+    # model that actually solves some of the problems.
+    dapo_dynamic_sampling: bool = False
+    over_sampling_batch_size: int = 32  # used only when dapo_dynamic_sampling; should exceed rollout_batch_size
 
     # rollout engine
     rollout_num_gpus_per_engine: int = 2  # rollout tp=2
@@ -197,8 +216,11 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _download_dataset(args: ScriptArgs):
-    if args.task == "gsm8k":
-        U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
+    match args.task:
+        case "gsm8k":
+            U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
+        case "dapo-math":
+            U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
 def _prepare_download(args: ScriptArgs):
@@ -220,10 +242,10 @@ def _train(args: ScriptArgs):
 
     lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{args.target_modules}" '
 
-    # gsm8k + math reward
+    # Math RL (both tasks score with the boxed/SymPy verifier --rm-type math). Shared rollout
+    # args; the per-task block sets --prompt-data + --input-key. Same task-dispatch shape as
+    # run_deepseek_v4.py.
     rollout_args = (
-        f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
-        "--input-key messages "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
@@ -235,6 +257,18 @@ def _train(args: ScriptArgs):
         "--rollout-temperature 1.0 "
         f"--global-batch-size {args.global_batch_size} "
     )
+    match args.task:
+        case "gsm8k":  # zhuzilin/gsm8k ships {messages, label} parquet
+            rollout_args += f"--prompt-data {args.data_dir}/gsm8k/train.parquet --input-key messages "
+        case "dapo-math":  # zhuzilin/dapo-math-17k ships {prompt, label} jsonl (prompt = chat messages)
+            rollout_args += f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl --input-key prompt "
+    # DAPO dynamic sampling (opt-in; see knob above). The filter drops zero-std (all-same-reward)
+    # groups, so over-sampling-batch-size must exceed rollout-batch-size to refill the batch.
+    if args.dapo_dynamic_sampling:
+        rollout_args += (
+            f"--over-sampling-batch-size {args.over_sampling_batch_size} "
+            "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
+        )
 
     grpo_args = "--advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
@@ -274,7 +308,7 @@ def _train(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def prepare(args: ScriptArgs):
-    """Download the model checkpoint (for a known HF repo) and the task dataset (gsm8k). Run once per node before training."""
+    """Download the model checkpoint (for a known HF repo) and the task dataset (gsm8k or dapo-math). Run once per node before training."""
     _prepare_download(args)
 
 
