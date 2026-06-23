@@ -13,7 +13,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.hf_config import is_dsa, load_hf_config
-from miles.utils.logging_utils import configure_logger
+from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -1891,7 +1891,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
 def parse_args(add_custom_arguments=None):
     # Users may call `parse_args` very early, thus we ensure logger is configured here
-    configure_logger("main")
+    configure_logger_raw("main")
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
 
