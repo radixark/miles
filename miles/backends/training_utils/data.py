@@ -215,25 +215,29 @@ def get_batch(
 
     batch["tokens"] = tokens
 
-    if get_position_ids:
+    def _compute_transform_like_token_ids(ids_list: list):
         assert not allgather_cp, "allgather CP is not supported for FSDP"
+        if qkv_format == "bshd":
+            ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in ids_list]
+            ids = torch.stack(ids)
+        elif qkv_format == "thd":
+            ids = [slice_with_cp(p, 0, qkv_format) for p in ids_list]
+            ids = torch.cat(ids)
+            if pad != 0:
+                ids = F.pad(ids, (0, pad), value=0)
+            ids = ids.unsqueeze(0)
+        else:
+            raise NotImplementedError
+        return ids
+
+    if get_position_ids:
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
             seq_len = t.size(0)
             pos_ids = torch.arange(seq_len, device=t.device, dtype=torch.long)
             position_ids_list.append(pos_ids)
 
-        if qkv_format == "bshd":
-            position_ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in position_ids_list]
-            position_ids = torch.stack(position_ids)
-        elif qkv_format == "thd":
-            position_ids = [slice_with_cp(p, 0, qkv_format) for p in position_ids_list]
-            position_ids = torch.cat(position_ids)
-            if pad != 0:
-                position_ids = F.pad(position_ids, (0, pad), value=0)
-            position_ids = position_ids.unsqueeze(0)
-
-        batch["position_ids"] = position_ids
+        batch["position_ids"] = _compute_transform_like_token_ids(position_ids_list)
 
     # loss masks
     loss_masks = []
