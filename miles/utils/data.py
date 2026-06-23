@@ -9,6 +9,7 @@ import numpy as np
 import ray
 
 from .data_utils import split_train_data_by_dp
+from .witness.allocator import WitnessInfo
 
 try:
     import pyarrow.parquet as pq
@@ -279,13 +280,17 @@ def process_rollout_data(
     rollout_data_ref,
     dp_rank,
     dp_size,
+    witness_info: WitnessInfo | None,
 ):
     if args.delay_split_train_data_by_dp:
         raw = ray.get(rollout_data_ref.inner)
+        if (x := witness_info) is not None:
+            raw = {**raw, "seq_witness_ids": x.witness_ids}
         raw = split_train_data_by_dp(args, raw, dp_size=dp_size)
         rollout_data = raw[dp_rank]
     else:
         assert len(rollout_data_ref) == dp_size
+        assert witness_info is None
         rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
 
     partition = rollout_data.pop("partition")

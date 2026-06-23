@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
+from miles.utils.witness.allocator import WitnessInfo
 
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
@@ -28,7 +29,11 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
-def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
+def get_rollout_data(
+    args: Namespace,
+    rollout_data_ref: Box,
+    witness_info: WitnessInfo | None = None,
+) -> RolloutBatch:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
@@ -37,6 +42,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         rollout_data_ref,
         parallel_state.intra_dp.rank,
         parallel_state.intra_dp.size,
+        witness_info=witness_info,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
@@ -45,6 +51,13 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
     ]
+    if args.enable_witness:
+        seq_witness_ids = rollout_data.pop("seq_witness_ids")
+        rollout_data["witness_ids"] = [
+            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=torch.cuda.current_device())
+            for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
+        ]
+
     if "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [
@@ -238,6 +251,9 @@ def get_batch(
             position_ids_list.append(pos_ids)
 
         batch["position_ids"] = _compute_transform_like_token_ids(position_ids_list)
+
+    if (witness_ids := batch.get("witness_ids")) is not None:
+        batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
 
     # loss masks
     loss_masks = []
