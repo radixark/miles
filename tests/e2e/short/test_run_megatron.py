@@ -19,7 +19,7 @@ if str(_MILES_ROOT) not in sys.path:
 
 import typer
 from tests.ci.ci_register import register_cuda_ci
-from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
+from tests.e2e.conftest_dumper import clear_proxy_env, get_megatron_patcher_yaml
 
 import miles.utils.external_utils.command_utils as U
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
@@ -85,7 +85,9 @@ def _prepare(dump_dir: Path, config: _ModeConfig) -> Path:
 
     source_patcher_path: Path = _RUN_DIR / "megatron_source_patcher.yaml"
     yaml_content: str = (
-        MEGATRON_PATCHER_YAMLS[config.format].replace(" ep:replicated", "").replace(" etp:replicated", "")
+        get_megatron_patcher_yaml(config.format)
+        .replace(" ep:replicated", "")
+        .replace(" etp:replicated", "")
     )
     source_patcher_path.write_text(yaml_content)
     return source_patcher_path
