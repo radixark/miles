@@ -100,7 +100,7 @@ class _EngineRankBucket:
 
 
 class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
-    """RDT/NIXL weight transfer built on the P2P bucketed all-gather + HF conversion.
+    """RDT/NIXL p2p weight transfer built on the P2P bucketed all-gather + HF conversion.
 
     All training GPUs sharing the same PP rank hold a complete weight replica
     after TP/EP all-gather; each source rank transfers to its planned rollout
@@ -137,17 +137,16 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self._shared_param_mapper: ParameterMapper | None = None
 
         # One entry per engine rank this source is responsible for.
-        self._transfer_meta_list: list[_EngineRankBucket] = []
+        self._engine_rank_buckets: list[_EngineRankBucket] = []
         self._scheduler_actors_cache: dict[int, list[ActorHandle]] = {}
 
     @property
     def _is_source(self) -> bool:
         """Whether this training rank sends weights to rollout.
 
-        Mirrors the P2P path: all training GPUs sharing the same PP rank hold a
-        complete weight replica after TP/EP all-gather. Only the first
-        ``_rollout_num_gpus`` ranks (by gathered_dp_rank) are sources; the rest
-        are idle during transfer.
+        All training GPUs sharing the same PP rank hold a complete weight replica
+        after TP/EP all-gather. Only the first ``_rollout_num_gpus`` ranks (by
+        gathered_dp_rank) are sources; the rest are idle during transfer.
         """
         return self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
 
@@ -160,17 +159,19 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     ) -> None:
         """Plan transfers, build a GPU replica + fixed bucket per engine rank.
 
-        ``engine_gpu_counts/offsets`` are accepted for caller-interface parity
-        with the NCCL broadcast path but unused here -- NIXL routes via
-        SchedulerActor handles resolved from the transfer plan.
+        ``rollout_engine_lock`` and ``engine_gpu_counts/offsets`` are accepted
+        for caller-interface parity with the NCCL broadcast path but unused
+        here -- NIXL routes via SchedulerActor handles resolved from the
+        transfer plan, and the one-sided RDMA pulls have no collective that
+        could deadlock (inference is already gated by the mixin's pause/resume
+        lifecycle), so no engine lock is required.
         """
         self.rollout_engines = rollout_engines
-        self.rollout_engine_lock = rollout_engine_lock
         self._staged_tensors.clear()
         self._tensor_update_pending.clear()
         self._shared_params_dict = {}
         self._shared_param_mapper = None
-        self._transfer_meta_list.clear()
+        self._engine_rank_buckets.clear()
         self._scheduler_actors_cache.clear()
 
         if not self._is_source:
@@ -205,14 +206,13 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             # CRITICAL: the bucket must NOT live in an expandable (VMM /
             # cuMemCreate) segment. VMM memory cannot export legacy CUDA-IPC
             # handles, so UCX's cuda_ipc lane silently drops for it and NIXL
-            # falls back to software-emulated RMA over TCP at ~0.3 GB/s (vs
-            # ~150 GB/s NVLink) — bisected on 2026-06-10:
+            # falls back to software-emulated RMA over TCP.
             # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True on the source
             # alone reproduces the slowdown. Allocate the bucket from a
             # non-expandable segment.
             expandable = "expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
             if expandable:
-                torch.cuda.memory._set_allocator_settings("expandable_segments:False")
+                torch._C._accelerator_setAllocatorSettings("expandable_segments:False")
             try:
                 gpu_bucket = torch.empty(
                     self.args.update_weight_buffer_size,
@@ -221,7 +221,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                 )
             finally:
                 if expandable:
-                    torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+                    torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
             # Pin the bucket's NIXL registration for the process lifetime.
             # Otherwise every per-flush ray.put registers the full bucket and
             # the ref drop afterwards deregisters it AND bumps the NIXL agent
@@ -236,7 +236,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                 engine_actors = self._get_engine_scheduler_actors(rollout_engines, t.engine_ind)
                 actors.append(engine_actors[t.engine_rank])
 
-            self._transfer_meta_list.append(
+            self._engine_rank_buckets.append(
                 _EngineRankBucket(model_replica, params_dict, param_specs, gpu_bucket, actors)
             )
 
@@ -379,20 +379,20 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         if transfer_ready_params and ready_hf_tensors:
             weight_refs = []
             futures = []
-            for meta in self._transfer_meta_list:
-                meta.stage(transfer_ready_params)
+            for bucket in self._engine_rank_buckets:
+                bucket.stage(transfer_ready_params)
 
-                meta.model_replica.load_weights(ready_hf_tensors)
+                bucket.model_replica.load_weights(ready_hf_tensors)
                 # Make sure the async GPU copy finishes before ray.put hands the
                 # views to NIXL.
                 torch.cuda.synchronize()
 
                 # Re-read post-load in case a weight loader reassigned param.data.
-                tensor_views = [meta.params_dict[name].data for name in transfer_ready_params]
+                tensor_views = [bucket.params_dict[name].data for name in transfer_ready_params]
 
                 weights_ref = ray.put(tensor_views, _tensor_transport="nixl")
                 weight_refs.append(weights_ref)
-                for actor in meta.actors:
+                for actor in bucket.actors:
                     futures.append(actor.pull_weights.remote([weights_ref], transfer_ready_params))
 
             ray.get(futures)
