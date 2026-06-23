@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 from typing import Any
@@ -645,3 +646,23 @@ class TestRunnerPatchCell:
         assert call_args[0][0] == "/api/v1/cells/actor-0"
         body = json.loads(call_args[1]["content"])
         assert body == {"spec": {"suspend": False}}
+
+
+class TestArgumentValidation:
+    def test_requires_control_server_port(self) -> None:
+        """mini_ft_controller_enable=True + control_server_port=0 → error."""
+        from miles.utils.arguments import miles_validate_args
+
+        args = argparse.Namespace(
+            mini_ft_controller_enable=True,
+            control_server_port=0,
+            use_fault_tolerance=False,
+            ft_components=None,
+            eval_datasets=None,
+            eval_data=None,
+            eval_config=None,
+            eval_prompt_data=None,
+        )
+
+        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --control-server-port"):
+            miles_validate_args(args)

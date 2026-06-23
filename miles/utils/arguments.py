@@ -630,6 +630,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
+            parser.add_argument(
+                "--control-server-port",
+                type=int,
+                default=0,
+                help="Port for HTTP control server. 0 = disabled.",
+            )
+            parser.add_argument(
+                "--mini-ft-controller-enable",
+                action="store_true",
+                default=False,
+                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells.",
+            )
+            parser.add_argument(
+                "--mini-ft-controller-poll-interval",
+                type=float,
+                default=10.0,
+                help="Interval in seconds between cell health polls.",
+            )
+            parser.add_argument(
+                "--mini-ft-controller-resume-delay",
+                type=float,
+                default=10.0,
+                help="Delay in seconds between suspending and resuming a cell during heal.",
+            )
             SimpleHealthCheckerConfig.add_arguments(parser, prefix="trainer-heartbeat-checker")
             return parser
 
@@ -2104,6 +2128,9 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 def miles_validate_args(args):
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if args.mini_ft_controller_enable and args.control_server_port == 0:
+        raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
 
     if "train" in args.ft_components:
         args.indep_dp = True
