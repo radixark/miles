@@ -123,7 +123,7 @@ def create_placement_groups(args):
 
 
 def allocate_train_group(
-    args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool, with_opd_teacher: bool = False
+    args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool, rollout_manager, with_opd_teacher: bool = False
 ):
     return RayTrainGroup(
         args=args,
@@ -133,6 +133,7 @@ def allocate_train_group(
         num_gpus_per_actor=0.4,
         role=role,
         with_ref=with_ref,
+        rollout_manager=rollout_manager,
         with_opd_teacher=with_opd_teacher,
     )
 
@@ -145,6 +146,7 @@ async def create_training_models(args, pgs, rollout_manager):
         pg=pgs["actor"],
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
+        rollout_manager=rollout_manager,
         with_opd_teacher=args.use_opd and args.opd_type == "megatron",
     )
     if args.use_critic:
@@ -155,6 +157,7 @@ async def create_training_models(args, pgs, rollout_manager):
             pg=pgs["critic"],
             role="critic",
             with_ref=False,
+            rollout_manager=None,
         )
         critic_init_task = await eager_create_task(critic_model.init())
     else:
@@ -170,7 +173,7 @@ async def create_training_models(args, pgs, rollout_manager):
         await critic_init_task
         await actor_model.connect(critic_model)
 
-    await actor_model.set_rollout_manager(rollout_manager)
+    await actor_model.set_rollout_manager()
     if args.rollout_global_dataset:
         await rollout_manager.load.remote(args.start_rollout_id - 1)
 

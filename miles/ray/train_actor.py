@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import ray
 import torch
@@ -14,7 +14,9 @@ from miles.ray.ray_actor import RayActor
 from miles.utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
+from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.process_identity import TrainProcessIdentity
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
 if TYPE_CHECKING:
@@ -33,9 +35,25 @@ def get_local_gpu_id():
 
 
 class TrainRayActor(RayActor):
-    def __init__(self, world_size, rank, master_addr, master_port):
+    def __init__(
+        self,
+        args,
+        world_size: int,
+        rank: int,
+        master_addr,
+        master_port,
+        indep_dp_store_addr: str,
+        role: Literal["actor", "critic"],
+        cell_index: int,
+    ):
+        configure_logger(
+            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
+        )
+        self.args = args
+
         self._world_size = world_size
         self._rank = rank
+        self._indep_dp_store_addr = indep_dp_store_addr
         if master_addr:
             self.master_addr, self.master_port = master_addr, master_port
         else:

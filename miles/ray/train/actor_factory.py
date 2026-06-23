@@ -12,6 +12,9 @@ def allocate_gpus_for_actor(
     gpus_per_cell: int,
     pg: tuple[PlacementGroup, list[int], list[int]],
     num_gpus_per_actor: float,
+    indep_dp_store_addr: str,
+    role: str,
+    cell_index: int,
 ):
     world_size = gpus_per_cell
 
@@ -56,7 +59,9 @@ def allocate_gpus_for_actor(
         actor_impl = FSDPTrainRayActor
 
     TrainRayActor = ray.remote(
-        num_gpus=1, runtime_env={"env_vars": env_vars}, concurrency_groups={"fault_injector": 1}
+        num_gpus=1,
+        runtime_env={"env_vars": env_vars},
+        concurrency_groups={"heartbeat_status": 1, "default": 1, "fault_injector": 1},
     )(actor_impl)
 
     # Create worker actors
@@ -70,7 +75,16 @@ def allocate_gpus_for_actor(
                 placement_group=pg,
                 placement_group_bundle_index=reordered_bundle_indices[rank],
             ),
-        ).remote(world_size, rank, master_addr, master_port)
+        ).remote(
+            args,
+            world_size,
+            rank,
+            master_addr,
+            master_port,
+            indep_dp_store_addr=indep_dp_store_addr,
+            role=role,
+            cell_index=cell_index,
+        )
         if rank == 0:
             master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
         actor_handles.append(actor)

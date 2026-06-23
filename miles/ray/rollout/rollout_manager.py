@@ -180,7 +180,7 @@ class RolloutManager:
 
     # TODO may parallelly execute offload/onload across services
     async def offload(self, tags: list[str] | None = None):
-        self._health_monitoring_pause()
+        self.health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -229,7 +229,7 @@ class RolloutManager:
         Recovers the updatable model (the one that receives weight
         updates from training).
         """
-        self._health_monitoring_pause()
+        self.health_monitoring_pause()
         srv = self._get_updatable_server()
         if self.rollout_id == -1 or srv is None:
             return
@@ -276,7 +276,7 @@ class RolloutManager:
 
     # -------------------------- utils -----------------------------
 
-    def _health_monitoring_pause(self) -> None:
+    def health_monitoring_pause(self) -> None:
         for monitor in self._health_monitors:
             monitor.pause()
 
