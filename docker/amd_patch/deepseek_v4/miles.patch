@@ -57,17 +57,42 @@ index 7a3b27452..e5e15c1b1 100644
 +            logger.warning("Torch distributed error context: %s", note)
          raise
 diff --git a/miles_plugins/models/deepseek_v4/ops/hyper_connection.py b/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
-index 51e9ae673..2838ff04f 100644
+index 51e9ae673..d69decc 100644
 --- a/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
 +++ b/miles_plugins/models/deepseek_v4/ops/hyper_connection.py
-@@ -124,6 +124,12 @@ class DeepSeekV4HyperConnectionUtil:
+@@ -32,6 +32,20 @@ from torch import Tensor
+ _HC_POST_MULT_VALUE = 2.0
+-
+-
+-class HCHeadParams(MegatronModule):
++
++
++class _ContiguousGrad(torch.autograd.Function):
++    @staticmethod
++    def forward(ctx, x: Tensor) -> Tensor:
++        return x
++
++    @staticmethod
++    def backward(ctx, grad_output: Tensor) -> Tensor:
++        return grad_output.contiguous()
++
++
++def _contiguous_grad(x: Tensor) -> Tensor:
++    return _ContiguousGrad.apply(x)
++
++
++class HCHeadParams(MegatronModule):
+     def __init__(self, config: TransformerConfig):
+         super().__init__(config)
+@@ -124,6 +138,13 @@ class DeepSeekV4HyperConnectionUtil:
          ``post``/``comb`` in fp32.
          """
          dtype = x.dtype
 +        if getattr(torch.version, "hip", None):
 +            post_expanded = post if post.dim() == x.dim() + 1 else post.unsqueeze(-1)
++            comb = _contiguous_grad(comb)
 +            term1 = post_expanded * x.unsqueeze(-2)
-+            term2 = torch.matmul(comb, residual.to(comb.dtype))
++            term2 = torch.matmul(comb.transpose(-1, -2), residual.to(comb.dtype))
 +            return (term1 + term2).to(dtype)
 +
          x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
