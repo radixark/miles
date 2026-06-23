@@ -213,6 +213,7 @@ def forward_only(
     model: Sequence[DDP],
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
+    rollout_id: int,
     store_prefix: str = "",
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
@@ -226,13 +227,14 @@ def forward_only(
         model: Sequence of DDP-wrapped model chunks.
         data_iterator: Iterable(s) yielding batches for inference.
         num_microbatches: Number of microbatches per rollout step.
+        rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
         store_prefix: Prefix to prepend to stored output keys.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
     """
 
-    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_ONLY)
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_ONLY, rollout_id=rollout_id)
 
     # reset data iterator
     for iterator in data_iterator:
@@ -278,6 +280,7 @@ def forward_only(
         packed_seq_params = get_packed_seq_params(batch, args)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
+
         output_tensor = model(
             input_ids=tokens,
             position_ids=None,
@@ -372,7 +375,7 @@ def train_one_step(
         Reduced loss dictionary (last stage only) and gradient norm for logging.
     """
     args = get_args()
-    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD)
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
 
     # Set grad to zero.
