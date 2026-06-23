@@ -276,6 +276,8 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
             return f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}"
 
         for name, param in model_module.named_parameters():
+            if getattr(param, "_is_witness_param", False):
+                continue
             yield _compute_fqn(name), param
 
         for name, buffer in model_module.named_buffers():
@@ -306,6 +308,8 @@ def _named_params_and_buffers_global(
         else:
             layer_offset = get_transformer_layer_offset(model_module.config)
         for name, param in model_module.named_parameters():
+            if getattr(param, "_is_witness_param", False):
+                continue
             # for model without ddp wrap
             if not name.startswith("module.module."):
                 name = "module." + name
