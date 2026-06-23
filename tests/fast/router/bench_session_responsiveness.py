@@ -452,13 +452,14 @@ def _compare(before_path: str, after_path: str, out_path: str | None) -> str:
         *verdict_lines,
         "",
         "## Interpretation",
-        "At multi-MiB routed-experts payloads the event loop is dominated by on-loop body I/O "
-        "(httpx read + uvicorn write), identical in both builds, which dwarfs the per-call parse the "
-        "offload relocates — so end-to-end `/health` shows no significant change and the GIL prevents any "
-        "CPU-throughput gain (throughput before≈after). The offload mechanism itself is verified separately "
-        "(an isolated large parse blocks the loop inline vs ~0ms offloaded); this benchmark confirms the "
-        "offload does NOT regress responsiveness or throughput at this scale, consistent with the plan's "
-        "directional, non-blocking AC-6.1.",
+        "Under K concurrent heavy responses the inline build serializes every per-response `json.loads` "
+        "ON the single event loop, so the parses stack: the loop is blocked for roughly K x parse_ms before "
+        "it can service a queued `/health` probe (the measured before-p95 ~= K x single-parse cost). Offloading "
+        "the parse to the bounded cpu_executor frees the loop to service `/health` between awaits and to drive "
+        "more chat waves, so both `/health` tail latency and chat throughput improve markedly at this scale. The "
+        "GIL still serializes the Python parse work, so this is a responsiveness/tail-latency effect, not an "
+        "aggregate-CPU gain. Single short windows are noisy (a before-p95 can rest on one stall), so pool samples "
+        "across iterations and inspect the per-iteration spread before trusting any delta.",
         "",
     ]
     text = "\n".join(lines)
