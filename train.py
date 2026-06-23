@@ -74,8 +74,7 @@ async def train(args):
                 rollout_id,
                 force_sync=rollout_id == args.num_rollout - 1,
             )
-        if args.rollout_global_dataset:
-            await rollout_manager.save.remote(rollout_id)
+        await rollout_manager.save.remote(rollout_id)
 
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
