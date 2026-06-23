@@ -102,3 +102,18 @@ huggingface-cli upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-
 
 ## Test Definitions
 
+### `scenario_no_failure`
+
+```
+Type: comparison (baseline=normal DP, target=indep_dp)
+Steps: 2
+
+1. Baseline: run normal DP training with debug rollout data
+2. Target: run indep_dp training with the same data
+3. Compare:
+   - Tensor-level: compare_dumps (weights, grads via dumper & sglang comparator), rel <= 0.0085
+   - Metric-level: compare_metrics (MetricEvent, requires train/grad_norm and train/loss)
+
+Roughly equal, not bitwise — allreduce kernel ordering differs across topologies.
+```
+
