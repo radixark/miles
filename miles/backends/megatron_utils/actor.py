@@ -39,7 +39,7 @@ from .checkpoint import load_checkpoint
 from .in_memory_checkpoint import InMemoryCheckpointManager
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
-from .model import forward_only, initialize_model_and_optimizer, save, train
+from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
@@ -292,7 +292,7 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_data_ref: Box,
         witness_info: WitnessInfo | None,
         attempt: int,
-    ) -> None:
+    ) -> TrainStepOutcome:
         self._last_rollout_id = rollout_id
         if self.args.offload_train:
             self.wake_up()
@@ -301,14 +301,14 @@ class MegatronTrainRayActor(TrainRayActor):
             rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=witness_info)
             if self.args.debug_rollout_only:
                 log_rollout_data(rollout_id, self.args, rollout_data)
-                return
+                return TrainStepOutcome.NORMAL
 
         if self.role == "critic":
             return self.train_critic(rollout_id, rollout_data)
         else:
             return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
 
-    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
+    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         rollout_data.update(
@@ -328,7 +328,7 @@ class MegatronTrainRayActor(TrainRayActor):
         compute_advantages_and_returns(self.args, rollout_data)
 
         self.args.loss_type = "value_loss"
-        train(
+        train_step_outcome: TrainStepOutcome = train(
             rollout_id,
             self.model,
             self.optimizer,
@@ -339,12 +339,14 @@ class MegatronTrainRayActor(TrainRayActor):
             attempt=0,
         )
 
+        return train_step_outcome
+
     def _use_rollout_replay(self, m) -> bool:
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     def train_actor(
         self, rollout_id: int, rollout_data: RolloutBatch, *, witness_info: WitnessInfo | None, attempt: int
-    ) -> None:
+    ) -> TrainStepOutcome:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
@@ -429,7 +431,7 @@ class MegatronTrainRayActor(TrainRayActor):
             # Train
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
-                train(
+                train_step_outcome = train(
                     rollout_id,
                     self.model,
                     self.optimizer,
@@ -448,24 +450,27 @@ class MegatronTrainRayActor(TrainRayActor):
             if m.enabled:
                 m.clear_all()
 
-        # update the cpu actor weight to the latest model
-        if self._enable_weight_backup:
-            self.weights_backuper.backup("actor")
-        else:
-            torch.cuda.synchronize()
+        if train_step_outcome == TrainStepOutcome.NORMAL:
+            # update the cpu actor weight to the latest model
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
+            else:
+                torch.cuda.synchronize()
 
-        # Update ref model if needed
-        if (
-            self.args.ref_update_interval is not None
-            and (rollout_id + 1) % self.args.ref_update_interval == 0
-            and "ref" in self.weights_backuper.backup_tags
-        ):
-            with timer("ref_model_update"):
-                if is_first_replica_megatron_main_rank():
-                    logger.info(f"Updating ref model at rollout_id {rollout_id}")
-                self.weights_backuper.backup("ref")
+            # Update ref model if needed
+            if (
+                self.args.ref_update_interval is not None
+                and (rollout_id + 1) % self.args.ref_update_interval == 0
+                and "ref" in self.weights_backuper.backup_tags
+            ):
+                with timer("ref_model_update"):
+                    if is_first_replica_megatron_main_rank():
+                        logger.info(f"Updating ref model at rollout_id {rollout_id}")
+                    self.weights_backuper.backup("ref")
 
         log_perf_data(rollout_id, self.args)
+
+        return train_step_outcome
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
