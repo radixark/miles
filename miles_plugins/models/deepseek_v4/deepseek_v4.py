@@ -171,7 +171,7 @@ class DeepSeekV4Attention(MegatronModule):
             )
             if self.compress_ratio == 4:
                 if os.environ.get("V4_INDEXER_IMPL", "tilelang") == "tilelang":
-                    self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
+                    self.indexer = V4Indexer(config=config, pg_collection=pg_collection, layer_id=layer_id)
                 else:
                     indexer_submodules = DSAIndexerSubmodules(
                         linear_wq_b=TELinear,
