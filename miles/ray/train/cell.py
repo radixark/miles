@@ -12,6 +12,7 @@ from miles.ray.train.cell_state import (
     StateAllocatedErrored,
     StateAllocatedUninitialized,
     StatePending,
+    StateStopped,
 )
 from miles.utils.health_checker import BaseHealthChecker
 from miles.utils.indep_dp import IndepDPInfo
@@ -82,6 +83,51 @@ class RayTrainCell:
         return []
 
     # ------------------------ state transition ------------------------
+
+    def stop(self) -> None:
+        if self.is_stopped:
+            log_structured(
+                logger.info, op="state", name="stop", cell=self.cell_index, skipped=True, reason="already_stopped"
+            )
+            return
+
+        if self.is_allocated:
+            for actor in self._get_actor_handles():
+                ray.kill(actor)
+
+        self._change_state("stop", (StatePending, StateAllocatedBase), StateStopped())
+
+    async def stop_and_confirm_dead(self) -> None:
+        if self.is_stopped:
+            return
+
+        handles = self._get_actor_handles() if self.is_allocated else []
+        self.stop()
+
+        log_structured(logger.info, op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles))
+        start = time.monotonic()
+        await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
+        log_structured(
+            logger.info,
+            op="confirm_dead",
+            phase="end",
+            cell=self.cell_index,
+            elapsed_s=round(time.monotonic() - start, 1),
+        )
+
+    def mark_as_pending(self) -> None:
+        if self.is_pending or self.is_allocated:
+            log_structured(
+                logger.info,
+                op="state",
+                name="mark_as_pending",
+                cell=self.cell_index,
+                skipped=True,
+                current=type(self._state).__name__,
+            )
+            return
+
+        self._change_state("mark_as_pending", StateStopped, StatePending())
 
     def allocate_for_pending(self) -> None:
         actor_handles = self.actor_factory()
@@ -209,6 +255,10 @@ class RayTrainCell:
         return isinstance(self._state, StateAllocatedErrored)
 
     @property
+    def is_stopped(self) -> bool:
+        return isinstance(self._state, StateStopped)
+
+    @property
     def state_name(self) -> str:
         return type(self._state).__name__
 
@@ -222,3 +272,26 @@ class RayTrainCell:
             self._state, StateAllocatedBase
         ), f"Cell {self.cell_index} is not allocated (state={type(self._state).__name__})"
         return self._state.actor_handles
+
+
+async def _confirm_actor_dead(handle: ray.actor.ActorHandle) -> None:
+    CONFIRM_DEAD_TIMEOUT_S = 120.0
+    CONFIRM_DEAD_PROBE_INTERVAL_S = 1.0
+
+    async def _probe() -> None:
+        await handle.__ray_ready__.remote()
+
+    deadline = time.monotonic() + CONFIRM_DEAD_TIMEOUT_S
+    while True:
+        try:
+            await asyncio.wait_for(_probe(), timeout=CONFIRM_DEAD_PROBE_INTERVAL_S)
+        except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
+            return
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+
+        if time.monotonic() >= deadline:
+            logger.error("Timed out after %.0fs confirming actor death; proceeding anyway", CONFIRM_DEAD_TIMEOUT_S)
+            return
+
+        await asyncio.sleep(CONFIRM_DEAD_PROBE_INTERVAL_S)

@@ -244,6 +244,13 @@ class RayTrainGroup:
     async def set_rollout_manager(self):
         await asyncio.gather(*[cell.set_rollout_manager() for cell in self._cells])
 
+    def stop_cell(self, cell_index: int) -> None:
+        self._cells[cell_index].stop()
+
+    def start_cell(self, cell_index: int) -> None:
+        """Mark a stopped cell as pending. Actual startup happens in train()."""
+        self._cells[cell_index].mark_as_pending()
+
     # ------------------------ utils to forward calls to cells ------------------------
 
     async def _execute_all_alive_and_catch(self, fn_name: str, *args, **kwargs):
