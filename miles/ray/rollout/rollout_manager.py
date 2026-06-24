@@ -262,10 +262,7 @@ class RolloutManager:
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
     async def check_weights(self, action: str, allow_quant_error: bool = False):
-        # The snapshot/reset/compare round-trip only makes sense for the model
-        # that actually receives a training weight update. A frozen model (e.g.
-        # the "ref" in mixed-offload) is restored from disk at load time and
-        # never re-synced, so resetting + comparing it would always mismatch.
+        # Only the updatable model is re-synced; a frozen model would always mismatch.
         srv = self._get_updatable_server()
         if srv is None:
             return []

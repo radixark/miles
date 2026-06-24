@@ -389,10 +389,7 @@ def begin_weight_update(rollout_engines: Sequence[ActorHandle]):
 
 
 def end_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """
-    Close the weight-update session (post-load + quant post-process on the full model).
-    The engine decides internally whether post_load is needed.
-    """
+    """Close the weight-update session (post-load + quant post-process on the full model)."""
     ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
 
 

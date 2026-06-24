@@ -560,10 +560,7 @@ class SGLangEngine(RayActor):
         return self._make_request("begin_weight_update", {})
 
     def end_weight_update(self):
-        """
-        Close the weight-update session (post-load + quant post-process on the full model).
-        The engine decides internally whether post_load is needed.
-        """
+        """Close the weight-update session (post-load + quant post-process on the full model)."""
         return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
