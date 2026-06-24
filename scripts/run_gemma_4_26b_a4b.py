@@ -1,21 +1,15 @@
 """
-Gemma-4 26B-A4B-it MoE GRPO training script (single-node 8x H200).
+Gemma-4 26B-A4B-it MoE GRPO training (single-node 8x H200).
 
-Gemma-4 is shipped as a VLM repo; RL trains the text path. Megatron loads it via
-the HF<->Megatron bridge (`--megatron-to-hf-mode bridge`), so there is no offline
-torch_dist conversion. `prepare` downloads the model and builds an LLM-view
-checkpoint whose config.json promotes text_config and sets
-architectures=["Gemma4ForCausalLM"], so AutoBridge/sglang take the text-LLM path.
-MODEL_ARGS come from scripts/models/gemma-4-26b-a4b-it.sh.
-
-Requires the radixark/Megatron-Bridge gemma4 branch and transformers>=5.5.0.
+Trained via the HF<->Megatron bridge (`--megatron-to-hf-mode bridge`) on the base
+VLM checkpoint directly — sglang runs Gemma4ForConditionalGeneration (hybrid swa),
+which loads gemma-4's hybrid head_dim weights correctly. MODEL_ARGS come from
+scripts/models/gemma-4-26b-a4b-it.sh.
 
 Single-node smoke test:
   python scripts/run_gemma_4_26b_a4b.py full-train --num-nodes 1
 """
 
-import json
-import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -47,10 +41,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.mode = "debug_minimal"
 
 
-def _llm_ckpt_dir(args: ScriptArgs) -> str:
-    return f"{args.model_dir}/{args.model_name}-llm"
-
-
 def _prepare_download(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
@@ -59,31 +49,12 @@ def _prepare_download(args: ScriptArgs):
         U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
 
-def _build_llm_view(args: ScriptArgs):
-    """LLM-view checkpoint: symlink weights/tokenizer, rewrite config.json to the text LLM."""
-    src = f"{args.model_dir}/{args.model_name}"
-    dst = _llm_ckpt_dir(args)
-    os.makedirs(dst, exist_ok=True)
-    for fn in os.listdir(src):
-        if fn == "config.json":
-            continue
-        link = os.path.join(dst, fn)
-        if not os.path.lexists(link):
-            os.symlink(os.path.join(src, fn), link)
-    with open(os.path.join(src, "config.json")) as f:
-        cfg = json.load(f)
-    text_cfg = cfg.get("text_config", cfg)
-    text_cfg["architectures"] = ["Gemma4ForCausalLM"]
-    with open(os.path.join(dst, "config.json"), "w") as f:
-        json.dump(text_cfg, f, indent=2)
-
-
 def _execute_train(args: ScriptArgs):
-    llm_ckpt = _llm_ckpt_dir(args)
+    ckpt = f"{args.model_dir}/{args.model_name}"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint {llm_ckpt} "
-        f"--ref-load {llm_ckpt} "
+        f"--hf-checkpoint {ckpt} "
+        f"--ref-load {ckpt} "
         "--megatron-to-hf-mode bridge "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
@@ -205,18 +176,16 @@ def _execute_train(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def full_train(args: ScriptArgs):
-    """Full pipeline: download, build LLM view, train."""
+    """Download model/data, then train."""
     _prepare_download(args)
-    _build_llm_view(args)
     _execute_train(args)
 
 
 @app.command()
 @U.dataclass_cli
 def prepare(args: ScriptArgs):
-    """Download model/data and build the LLM-view checkpoint."""
+    """Download model and data."""
     _prepare_download(args)
-    _build_llm_view(args)
 
 
 @app.command()
