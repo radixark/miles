@@ -295,9 +295,7 @@ class AccountingStorageReader(WrappedStorageReader):
 
         for relative_path, reqs in per_file.items():
             new_path = self.fs.concat_path(self.path, relative_path)
-            stream_context = self.fs.create_stream(new_path, "rb")
-            stream = stream_context.__enter__()
-            try:
+            with self.fs.create_stream(new_path, "rb") as stream:
                 for req in reqs:
                     item_md = self.storage_data[req.storage_index]
                     file_slice = cast(io.IOBase, _create_file_view(stream, item_md.offset, item_md.length))
@@ -325,8 +323,6 @@ class AccountingStorageReader(WrappedStorageReader):
                         )
                     target_tensor.copy_(tensor)
                     planner.commit_tensor(req, target_tensor)
-            finally:
-                stream_context.__exit__(*sys.exc_info())
 
         fut: Future[None] = Future()
         fut.set_result(None)
@@ -630,9 +626,7 @@ def load_moe_block_direct(
 
     tensor_groups: list[PreparedTensorGroup] = []
     new_path = storage_reader.fs.concat_path(storage_reader.path, block.relative_path)
-    stream_context = storage_reader.fs.create_stream(new_path, "rb")
-    stream = stream_context.__enter__()
-    try:
+    with storage_reader.fs.create_stream(new_path, "rb") as stream:
         for read_item in read_items:
             item_md = storage_reader.storage_data[read_item.storage_index]
             file_slice = cast(io.IOBase, _create_file_view(stream, item_md.offset, item_md.length))
@@ -656,8 +650,6 @@ def load_moe_block_direct(
                     md.size,
                 )
             )
-    finally:
-        stream_context.__exit__(*sys.exc_info())
 
     return DirectMoeLoadResult(tuple(tensor_groups), read_count, file_count, storage_bytes)
 
@@ -850,10 +842,15 @@ def summarize_plan(tasks: list[TaskSpec], model_name: str, concurrency: int, out
     }
 
 
-def load_quantization_config(origin_hf_dir: str | None) -> dict[str, Any] | None:
+def load_hf_config(origin_hf_dir: str | None) -> Any | None:
     if origin_hf_dir is None:
         return None
-    hf_config = AutoConfig.from_pretrained(origin_hf_dir, trust_remote_code=True)
+    return AutoConfig.from_pretrained(origin_hf_dir, trust_remote_code=True)
+
+
+def load_quantization_config(hf_config: Any | None) -> dict[str, Any] | None:
+    if hf_config is None:
+        return None
     quantization_config = getattr(hf_config, "quantization_config", None)
     if quantization_config is not None:
         return dict(quantization_config)
@@ -865,14 +862,13 @@ def load_quantization_config(origin_hf_dir: str | None) -> dict[str, Any] | None
     return None
 
 
-def get_hf_vocab_size(origin_hf_dir: str | None) -> int | None:
-    if origin_hf_dir is None:
+def get_hf_vocab_size(hf_config: Any | None) -> int | None:
+    if hf_config is None:
         return None
-    config = AutoConfig.from_pretrained(origin_hf_dir, trust_remote_code=True)
-    text_config = getattr(config, "text_config", None)
+    text_config = getattr(hf_config, "text_config", None)
     if text_config is not None and hasattr(text_config, "vocab_size"):
         return int(text_config.vocab_size)
-    vocab_size = getattr(config, "vocab_size", None)
+    vocab_size = getattr(hf_config, "vocab_size", None)
     return int(vocab_size) if vocab_size is not None else None
 
 
@@ -1306,9 +1302,10 @@ def convert_torch_dist_to_hf_ray(args: Args) -> str:
     if not os.path.exists(common_pt):
         raise FileNotFoundError(f"Expected {common_pt}")
 
-    vocab_size = get_hf_vocab_size(args.origin_hf_dir)
+    hf_config = load_hf_config(args.origin_hf_dir)
+    vocab_size = get_hf_vocab_size(hf_config)
     megatron_args, model_name = load_megatron_args(args.input_dir, args.model_name, vocab_size)
-    quantization_config = load_quantization_config(args.origin_hf_dir)
+    quantization_config = load_quantization_config(hf_config)
 
     metadata, tasks = read_metadata_and_plan(args, megatron_args)
     concurrency = args.concurrency or min(max(len(tasks), 1), 16)
