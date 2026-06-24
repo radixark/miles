@@ -1,6 +1,4 @@
-import json
 import os
-from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
 
@@ -11,8 +9,8 @@ register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["megatron"],
 
 USE_FP8_ROLLOUT = U.get_bool_env_var("MILES_TEST_USE_FP8_ROLLOUT", "false")
 
-MODEL_NAME = "GLM-5_4layer"
-MODEL_TYPE = "glm5-744B-A40B_4layer"
+MODEL_NAME = "GLM-5_5layer"
+MODEL_TYPE = "glm5-744B-A40B_5layer"
 MODEL_ORG = "Pinaster"
 NUM_GPUS = 8
 
@@ -20,38 +18,10 @@ MODEL_DIR = "/root/models"
 DATA_DIR = "/root/datasets"
 
 
-def _process_glm_checkpoint():
-    """Patch config.json to use DeepseekV32 architecture if not already patched."""
-    config_path = Path(MODEL_DIR) / MODEL_NAME / "config.json"
-    if not config_path.exists():
-        print(f"Warning: {config_path} not found, skipping checkpoint processing")
-        return
-
-    with open(config_path) as f:
-        config = json.load(f)
-
-    if config.get("model_type") == "deepseek_v32":
-        print("Checkpoint already patched, skipping")
-        return
-
-    config["architectures"] = ["DeepseekV32ForCausalLM"]
-    config["auto_map"] = {
-        "AutoConfig": "configuration_deepseek_v32.DeepseekV32Config",
-        "AutoModelForCausalLM": "modeling_deepseek_v32.DeepseekV32ForCausalLM",
-    }
-    config["model_type"] = "deepseek_v32"
-
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-    print(f"Patched {config_path}")
-
-
 def prepare():
     U.exec_command(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
     U.exec_command(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
-
-    _process_glm_checkpoint()
 
     if USE_FP8_ROLLOUT:
         U.exec_command(
@@ -61,7 +31,7 @@ def prepare():
             "--strategy block --block-size 128 128"
         )
 
-    # For 4-layer model: use 4 GPUs, TP=1, PP=1, EP=1, ETP=1
+    # For 5-layer model: use 4 GPUs, TP=1, PP=1, EP=1, ETP=1
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
@@ -86,7 +56,7 @@ def execute():
         "--save-interval 20 "
     )
 
-    # debug_minimal mode for single-node 4-layer test: short response length
+    # debug_minimal mode for single-node 5-layer test: short response length
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "

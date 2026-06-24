@@ -2,7 +2,7 @@
 
 # Multi-node (4-node) profiling script for Qwen3-30B-A3B with broadcasting/p2p weight transfer.
 #
-# Converted from: examples/p2p_weight_transfer/test_glm5_744b_a40b_4layer.py
+# Converted from: examples/p2p_weight_transfer/test_glm5_744b_a40b_5layer.py
 # Only the qwen3-30b model config is included.
 #
 # Usage:

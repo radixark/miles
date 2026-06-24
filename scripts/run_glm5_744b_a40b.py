@@ -12,10 +12,10 @@ Please use the `radixark/miles:dev` docker image.
 Args:
   --model-name: Model variant to use.
       GLM-5         Full 744B model (requires >=16 nodes)
-      GLM-5_4layer  4-layer pruned model (single-node testing)
+      GLM-5_5layer  5-layer pruned model (single-node testing)
       GLM-5_20layer 20-layer pruned model (multi-node testing)
   --num-nodes: Number of nodes for training. Determines parallelism config:
-      1  -> for GLM-5_4layer minimal test
+      1  -> for GLM-5_5layer minimal test
       6  -> for GLM-5_20layer multi-node test
       16+-> for full GLM-5 model
   --num-gpus-per-node: GPUs per node (default: 8)
@@ -31,7 +31,7 @@ Args:
 =====================
 
 I. Usage for single node minimal test:
-  `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_4layer --num-nodes 1`
+  `python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5_5layer --num-nodes 1`
 
 =====================
 
@@ -81,6 +81,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_mtp: bool = False
     enable_pd: bool = True
     enable_optimizer_offload: bool = False
+    save_checkpoint: bool = True
     num_rollout: int = 3000
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -105,7 +106,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
         if self.model_name == "GLM-5":
             self.model_org = "zai-org"
-        elif self.model_name in ["GLM-5_4layer", "GLM-5_20layer"]:
+        elif self.model_name in ["GLM-5_5layer", "GLM-5_20layer"]:
             self.model_org = "Pinaster"
         else:
             raise NotImplementedError(f"{self.model_name} is not supported")
@@ -169,7 +170,7 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
     num_nodes = None
 
     num_layers_match = re.search(r"(\d+)layer", args.model_name)
-    if num_layers_match and int(num_layers_match.group(1)) <= 4:
+    if num_layers_match and int(num_layers_match.group(1)) <= 5:
         extra_args += "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         num_gpus_per_node = min(4, num_gpus_per_node)
         multinode = False
@@ -213,15 +214,14 @@ def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
 
 
 def _execute_train(args: ScriptArgs):
-    load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     hf_name = f"{args.model_name}_fp8" if args.fp8_rollout else args.model_name
     ckpt_args = (
         f"--hf-checkpoint {args.model_local_dir}/{hf_name} "
         f"--ref-load {args.model_local_dir}/{args.model_name}_torch_dist "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
-        "--save-interval 20 "
     )
+    if args.save_checkpoint:
+        load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
+        ckpt_args += f"--load {load_save_path} " f"--save {load_save_path} " "--save-interval 20 "
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -242,7 +242,7 @@ def _execute_train(args: ScriptArgs):
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += "--eval-interval 20 " "--eval-top-p 1 "
 
-    if args.num_nodes == 1:  # minimal test for 4 layers model
+    if args.num_nodes == 1:  # minimal test for 5 layers model
         perf_args = (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
