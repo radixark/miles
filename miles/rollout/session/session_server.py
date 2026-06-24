@@ -12,9 +12,10 @@ import logging
 import httpx
 import setproctitle
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from starlette.responses import Response
 
+from miles.rollout.session.session_core import ProxyRequest, _proxy_result_to_core_response
 from miles.rollout.session.sessions import setup_session_routes
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 class SessionServer:
     """Lightweight FastAPI server that manages sessions and proxies inference
-    requests through the inference router (sglang or miles)."""
+    requests through the inference router (sglang or miles).
+
+    The request-handling logic lives in the transport-neutral ``SessionCore``
+    (see ``session_core``); this class owns the FastAPI app, the httpx client,
+    and the upstream proxy (``do_proxy``)."""
 
     def __init__(self, args, backend_url: str):
         self.backend_url = backend_url
@@ -41,19 +46,19 @@ class SessionServer:
 
     async def do_proxy(
         self,
-        request: Request,
+        request: ProxyRequest,
         path: str,
         body: bytes | None = None,
         headers: dict | None = None,
     ) -> dict:
+        # ``request`` is a transport-neutral ProxyRequest (method + raw query),
+        # not a fastapi.Request: the core drives the proxy from primitives. The
+        # signature stays (request, path, body=None, headers=None) so tests can
+        # still patch SessionServer.do_proxy and forward through it.
         url = f"{self.backend_url}/{path}"
-        if request.url.query:
-            url = f"{url}?{request.url.query}"
+        if request.query:
+            url = f"{url}?{request.query}"
 
-        if body is None:
-            body = await request.body()
-        if headers is None:
-            headers = dict(request.headers)
         headers = {
             k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding", "host")
         }
@@ -78,19 +83,14 @@ class SessionServer:
         }
 
     def build_proxy_response(self, result: dict) -> Response:
-        # httpx already decoded the body, so upstream content-encoding/length are
-        # stale framing headers; drop them and let Starlette rebuild from the body.
-        headers = {
-            k: v
-            for k, v in result["headers"].items()
-            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
-        }
-        content_type = headers.get("content-type", "")
+        # Thin Starlette adapter over the core's passthrough builder; kept on
+        # SessionServer because the unit tests call it directly.
+        core_response = _proxy_result_to_core_response(result)
         return Response(
-            content=result["response_body"],
-            status_code=result["status_code"],
-            headers=headers,
-            media_type=content_type,
+            content=core_response.body,
+            status_code=core_response.status_code,
+            headers=core_response.headers,
+            media_type=core_response.media_type,
         )
 
 
