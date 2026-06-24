@@ -53,7 +53,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
-    miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())  # cluster/pod IP
+    # Prefer explicit MILES_HOST_IP; else MASTER_ADDR when set (avoids unresolvable pod hostnames on workers).
+    miles_host_ip: str = (
+        os.environ.get("MILES_HOST_IP") or os.environ.get("MASTER_ADDR", "").strip() or socket.gethostname()
+    )
 
     # W&B settings
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
