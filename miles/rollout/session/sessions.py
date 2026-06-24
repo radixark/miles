@@ -176,7 +176,28 @@ def setup_session_routes(app, backend, args):
             # pass it through to the agent without recording — the agent can retry
             # or handle the error.
             if result["status_code"] != 200:
-                return backend.build_proxy_response(result)
+                # Rollback failures indicate corrupted prefix-cache state in SGLang.
+                # Retry once without pretokenized input_ids so SGLang processes the
+                # request from scratch instead of attempting prefix continuation.
+                error_body = result.get("response_body") or b""
+                if isinstance(error_body, bytes):
+                    error_body = error_body.decode("utf-8", errors="replace")
+                if (
+                    result["status_code"] == 400
+                    and "rollback failed" in error_body.lower()
+                    and "input_ids" in request_body
+                ):
+                    logger.warning(
+                        "SGLang rollback failed for session %s, retrying without prefix continuation",
+                        session_id,
+                    )
+                    request_body.pop("input_ids", None)
+                    retry_body = json.dumps(request_body).encode()
+                    result = await backend.do_proxy(request, "v1/chat/completions", body=retry_body)
+                    if result["status_code"] != 200:
+                        return backend.build_proxy_response(result)
+                else:
+                    return backend.build_proxy_response(result)
 
             response = json.loads(result["response_body"])
 
