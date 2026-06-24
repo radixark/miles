@@ -54,6 +54,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())  # cluster/pod IP
+    randomize_agent_names: bool = False  # per-request pick between mini-swe-agent and terminus-2
 
     # W&B settings
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
@@ -234,6 +235,7 @@ def execute(args: ScriptArgs):
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         "MILES_HOST_IP": args.miles_host_ip,
+        "MILES_SWE_AGENT_RANDOMIZE_NAMES": "1" if args.randomize_agent_names else "0",
     }
 
     U.execute_train(
