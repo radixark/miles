@@ -4,6 +4,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Awaitable
 
 import aiohttp
 
@@ -49,6 +50,59 @@ class _CachedWeightVersion:
 _cached_version = _CachedWeightVersion()
 
 
+async def _run_group_with_timeout(
+    coro: Awaitable[list[Sample]],
+    group: list[Sample],
+    timeout_s: float | None,
+) -> list[Sample]:
+    """Run a group-generation coroutine with a hard timeout and exception safety.
+
+    Contract: always returns the group list and NEVER raises. On timeout or any
+    exception, every sample in ``group`` is marked ``Sample.Status.ABORTED`` so
+    the outer collector's aborted-requeue path in ``generate_rollout_async``
+    re-adds the group to the data buffer for retry.
+
+    This is the single choke point that fixes two historical bugs in the
+    continuous worker loop:
+      1. Hung group-tasks (e.g. an agent stuck in an infinite tool-call loop)
+         that would otherwise own a concurrency slot forever.
+      2. Silent group-loss when ``generate_and_rm_group``'s ``asyncio.gather``
+         propagates a sub-task exception — previously swallowed by a bare
+         ``except Exception: print`` in the worker loop, dropping the group
+         without requeueing it.
+
+    A ``timeout_s`` of None or a non-positive value disables the time bound;
+    exception safety still applies.
+    """
+    use_timeout = timeout_s is not None and timeout_s > 0
+    try:
+        if use_timeout:
+            return await asyncio.wait_for(coro, timeout=timeout_s)
+        return await coro
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Group task exceeded timeout of %.1fs; marking %d samples ABORTED for requeue",
+            timeout_s,
+            len(group),
+        )
+    except asyncio.CancelledError:
+        # Propagate cancellation (e.g. worker shutdown) without silencing it,
+        # but first mark samples so any caller that catches can requeue.
+        for s in group:
+            s.status = Sample.Status.ABORTED
+        raise
+    except Exception as e:
+        logger.warning(
+            "Group task raised %s: %s; marking %d samples ABORTED for requeue",
+            type(e).__name__,
+            e,
+            len(group),
+        )
+    for s in group:
+        s.status = Sample.Status.ABORTED
+    return group
+
+
 # Global worker manager
 _global_worker = None
 _worker_lock = threading.Lock()
@@ -88,6 +142,10 @@ class AsyncRolloutWorker:
         self.output_queue = queue.Queue(maxsize=1000)  # Continuous output queue
         self.worker_thread = None
         self.state = GenerateState(args)
+        # Per-task timeout bounds how long a single group-generation task may run
+        # before its samples are marked ABORTED and requeued. See
+        # _run_group_with_timeout for the full contract.
+        self.group_task_timeout_s: float | None = getattr(args, "rollout_group_timeout_s", 1800.0)
 
     async def continuous_worker_loop(self):
         """Continuous work loop - constantly get data from data_buffer and process"""
@@ -99,14 +157,18 @@ class AsyncRolloutWorker:
 
         while self.running:
             try:
-                # Clean up completed tasks
+                # Clean up completed tasks. The timeout/exception wrapper used at
+                # dispatch time guarantees the wrapped coroutine never raises
+                # (see _run_group_with_timeout) so task.result() here is a
+                # defensive safety net; any raised exception is logged and the
+                # slot is reclaimed without dropping a group silently.
                 if active_tasks:
                     done_tasks = {task for task in active_tasks if task.done()}
                     for task in done_tasks:
                         try:
-                            task.result()  # Results are already handled in callbacks
+                            task.result()
                         except Exception as e:
-                            print(f"Task failed with exception: {e}")
+                            logger.exception("Unexpected error from wrapped group task: %s", e)
                     active_tasks -= done_tasks
 
                 # If active task count hasn't reached limit, try to get new data and start tasks
@@ -117,13 +179,20 @@ class AsyncRolloutWorker:
                         group_id = group_id_counter
                         group_id_counter += 1
 
-                        # Create new async task
+                        # Create new async task wrapped with a per-task timeout
+                        # and exception safety net so a single stuck trial cannot
+                        # own a concurrency slot forever, and transport errors
+                        # never silently drop a group (see _run_group_with_timeout).
                         task = asyncio.create_task(
-                            generate_and_rm_group(
-                                self.args,
+                            _run_group_with_timeout(
+                                generate_and_rm_group(
+                                    self.args,
+                                    group,
+                                    sampling_params=self.state.sampling_params.copy(),
+                                    evaluation=False,
+                                ),
                                 group,
-                                sampling_params=self.state.sampling_params.copy(),
-                                evaluation=False,
+                                timeout_s=self.group_task_timeout_s,
                             )
                         )
 
