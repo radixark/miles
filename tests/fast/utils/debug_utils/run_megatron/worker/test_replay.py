@@ -282,6 +282,23 @@ class TestLoadReplayCpSlicing:
         _load_replay(save_path, rank=0, sequence_parallel=False)
         assert replay_obj.top_indices_list[0].tolist() == [0, 1, 2, 3]
 
+    @patch("miles.utils.debug_utils.run_megatron.worker.replay.routing_replay_manager")
+    @patch("miles.utils.debug_utils.run_megatron.worker.replay._get_parallel_ranks")
+    def test_cp_allgather_slicing(self, mock_ranks: MagicMock, mock_mgr: MagicMock, tmp_path: Path) -> None:
+        """cp_size>1, allgather_cp=True → rank k owns contiguous [k*local, (k+1)*local)."""
+        mock_ranks.return_value = _ParallelRanks(cp_size=2, cp_rank=1, tp_size=1, tp_rank=0)
+        mock_mgr.if_sp_region = False
+
+        replay_obj = SimpleNamespace(top_indices_list=[], forward_index=0, backward_index=0)
+        mock_mgr.replays = [replay_obj]
+
+        saved_data = [[torch.arange(8)]]
+        save_path = tmp_path / "rank0_routing_replay.pt"
+        torch.save(saved_data, save_path)
+
+        _load_replay(save_path, rank=0, sequence_parallel=False, allgather_cp=True)
+        assert replay_obj.top_indices_list[0].tolist() == [4, 5, 6, 7]
+
 
 class TestLoadReplayMismatch:
     @patch("miles.utils.debug_utils.run_megatron.worker.replay._get_parallel_ranks")
