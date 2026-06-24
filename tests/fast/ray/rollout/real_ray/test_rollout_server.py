@@ -79,8 +79,8 @@ class TestCheckWeightsAggregation:
                 cw_calls = [c for c in calls if c[0] == "check_weights"]
                 assert len(cw_calls) == 1
                 _, args, kwargs = cw_calls[0]
-                # server_group dispatches via kwarg; older code passed positional
-                assert (args == ("report",) and not kwargs) or kwargs == {"action": "report"}
+                # server_group dispatches via kwargs (allow_quant_error defaults False)
+                assert not args and kwargs == {"action": "report", "allow_quant_error": False}
         finally:
             _kill_group(a)
             _kill_group(b)

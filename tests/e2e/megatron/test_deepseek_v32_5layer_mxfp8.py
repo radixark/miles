@@ -186,7 +186,7 @@ def execute():
         "--sglang-cuda-graph-max-bs 256 "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --check-weight-update-allow-quant-error "
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "

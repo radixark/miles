@@ -192,6 +192,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         sglang_args += "--sglang-enable-dp-attention "
 
     ci_args = "--ci-test "
+    if case.use_fp8_rollout or case.use_int4_rollout:
+        ci_args += "--check-weight-update-allow-quant-error "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -208,7 +210,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
 
     if case.update_weight_transfer_mode is not None:
-        misc_args += "--check-weight-update-equal "
         misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
 
     if case.use_bridge:

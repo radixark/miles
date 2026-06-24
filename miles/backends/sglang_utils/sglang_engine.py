@@ -486,8 +486,8 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str):
-        return self._make_request("weights_checker", {"action": action})
+    def check_weights(self, action: str, allow_quant_error: bool = False):
+        return self._make_request("weights_checker", {"action": action, "allow_quant_error": allow_quant_error})
 
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         """Reload weights from *model_path* without restarting the engine.
