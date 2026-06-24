@@ -103,12 +103,7 @@ def _execute_train(args: ScriptArgs):
     )
 
     # no KL: the ref-model copy doesn't fit alongside sglang in colocate
-    grpo_args = (
-        "--advantage-estimator grpo "
-        "--entropy-coef 0.00 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
-    )
+    grpo_args = "--advantage-estimator grpo " "--entropy-coef 0.00 " "--eps-clip 0.2 " "--eps-clip-high 0.28 "
 
     optimizer_args = (
         "--optimizer adam "
