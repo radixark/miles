@@ -1,14 +1,17 @@
 # doc-dev: docs/ci/02-docker-build.md
 # Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
 #
-# 1. rocm/sgl-dev:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
+# 1. rocm/sgl-dev:miles-rocm700-mi35x  (gfx950, ROCm 7.0 / MI350 / MI355X)
 #    use default settings
 #
-# 2. rocm/sgl-dev:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
+# 2. rocm/sgl-dev:miles-rocm700-mi30x  (gfx942, ROCm 7.0 / MI300 / MI325)
 #    build-arg:GPU_ARCH=gfx942
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+#
+# 3. rocm/sgl-dev:miles-rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
+ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
