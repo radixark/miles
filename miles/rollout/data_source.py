@@ -83,22 +83,30 @@ class RolloutDataSource(DataSource):
         else:
             self.dataset = None
 
-    def get_samples(self, num_samples):
-        # TODO further improve code
-        if self.dataset is not None:
-            if self.sample_offset + num_samples <= len(self.dataset):
-                prompt_samples = self.dataset.samples[self.sample_offset : self.sample_offset + num_samples]
-                self.sample_offset += num_samples
-            else:
-                prompt_samples = self.dataset.samples[self.sample_offset :]
-                num_samples -= len(prompt_samples)
+    def _fetch_prompt_samples(self, num_samples):
+        """Fetch prompt samples from the dataset, wrapping across epoch boundaries."""
+        if self.dataset is None:
+            return [Sample() for _ in range(num_samples)]
+
+        prompt_samples = []
+        remaining = num_samples
+        while remaining > 0:
+            available = len(self.dataset) - self.sample_offset
+            take = min(remaining, available)
+            prompt_samples.extend(self.dataset.samples[self.sample_offset : self.sample_offset + take])
+            self.sample_offset += take
+            remaining -= take
+
+            if self.sample_offset >= len(self.dataset):
                 self.epoch_id += 1
                 if self.args.rollout_shuffle:
                     self.dataset.shuffle(self.epoch_id)
-                prompt_samples += self.dataset.samples[:num_samples]
-                self.sample_offset = num_samples
-        else:
-            prompt_samples = [Sample() for _ in range(num_samples)]
+                self.sample_offset = 0
+
+        return prompt_samples
+
+    def get_samples(self, num_samples):
+        prompt_samples = self._fetch_prompt_samples(num_samples)
 
         samples = []
         for prompt_sample in prompt_samples:
