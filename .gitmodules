@@ -6,3 +6,11 @@
 	path = examples/experimental/swe-agent/mini-swe-agent
 	url = https://github.com/yueming-yuan/nv-mini-swe-agent
 	branch = miles-swe-agent
+[submodule "third_party/sglang"]
+	path = third_party/sglang
+	url = https://github.com/sgl-project/sglang.git
+	branch = sglang-miles
+[submodule "third_party/Megatron-LM"]
+	path = third_party/Megatron-LM
+	url = https://github.com/radixark/Megatron-LM.git
+	branch = miles-main
