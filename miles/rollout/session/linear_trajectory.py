@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from miles.rollout.session.record_logger import RecordLogger
 from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.session_types import SessionRecord
 from miles.utils.chat_template_utils import assert_messages_append_only_with_allowed_role, message_matches
@@ -248,6 +249,8 @@ class SessionRegistry:
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()
+        log_dir = getattr(args, "session_record_log_dir", None)
+        self.record_logger: RecordLogger | None = RecordLogger(log_dir) if log_dir else None
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
@@ -260,9 +263,15 @@ class SessionRegistry:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
         return session
 
+    def log_record(self, session_id: str, record: SessionRecord) -> None:
+        if self.record_logger is not None:
+            self.record_logger.log_record(session_id, record)
+
     def remove_session(self, session_id: str) -> None:
         if self.sessions.pop(session_id, None) is None:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
+        if self.record_logger is not None:
+            self.record_logger.close_session(session_id)
 
     def compute_session_mismatch(self, session: LinearTrajectory) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template output.
