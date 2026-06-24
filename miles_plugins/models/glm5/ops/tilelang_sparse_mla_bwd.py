@@ -98,6 +98,7 @@ def bwd(
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
+    block_H_override=None,
 ):
     assert is_causal == True, "non-casual is not supported now"
     assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
@@ -122,7 +123,10 @@ def bwd(
 
     H = H_kv
     padded_H = max(tilelang.math.next_power_of_2(H_kv), 16)
-    block_H = min(64, padded_H)
+    # block_H controls the H-axis tile and dominates Q/dO/dQ shared-memory
+    # footprint. Original default min(64, padded_H) targets H100 (228KB LDS);
+    # callers on gfx950 (160KB LDS) pass block_H_override=16 to fit the budget.
+    block_H = block_H_override if block_H_override is not None else min(64, padded_H)
     assert padded_H % block_H == 0
     NH = padded_H // block_H
     BS = block_size
@@ -294,7 +298,27 @@ def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None, is_casual=True, re
 
     # Get kernels
     preprocess_kernel = preprocess(B, S, H, D)
-    bwd_kernel = bwd(B, S, S_kv, H, D, D_tail, topk, kv_group, sm_scale, is_casual)
+    # gfx950 (MI300/MI355) has 160KB LDS per workgroup; the default tile
+    # (block_H=64, num_stages=2) needs ~217KB. Shrink block_H to 16 and
+    # disable double-buffering on ROCm. NV path unchanged.
+    if torch.version.hip is not None:
+        bwd_kernel = bwd(
+            B,
+            S,
+            S_kv,
+            H,
+            D,
+            D_tail,
+            topk,
+            kv_group,
+            sm_scale,
+            is_casual,
+            block_size=32,
+            num_stages=1,
+            block_H_override=16,
+        )
+    else:
+        bwd_kernel = bwd(B, S, S_kv, H, D, D_tail, topk, kv_group, sm_scale, is_casual)
     postprocess_kernel = postprocess(B, S_kv, D, D_tail, kv_group)
 
     if delta is None:
