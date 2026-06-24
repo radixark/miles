@@ -2268,8 +2268,6 @@ def miles_validate_args(args):
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
-    # The weight-update check requires training to actually push weights to the
-    # rollout engines; the debug modes each skip one side of that round trip.
     if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
         args.check_weight_update_equal = True
 
