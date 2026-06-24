@@ -172,17 +172,33 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        if self.args.colocate:
+        if self.args.colocate or getattr(self.args, "megatron_to_hf_mode", "raw") == "bridge":
             update_weight_cls = UpdateWeightFromTensor
         else:
             if self.args.update_weight_transfer_mode == "broadcast":
                 update_weight_cls = UpdateWeightFromDistributed
             else:
                 update_weight_cls = UpdateWeightP2P
+
+        # _enable_weight_backup only fires for colocate / ref / old_actor flows; non-colocate
+        # bridge runs hit UpdateWeightFromTensor without ever calling backup("actor"), leaving
+        # the backuper empty. Read live params directly in that case.
+        def _weights_getter():
+            if self._enable_weight_backup:
+                return self.weights_backuper.get("actor")
+            return dict(
+                named_params_and_buffers(
+                    self.args,
+                    self.model,
+                    convert_to_global_name=getattr(self.args, "megatron_to_hf_mode", "raw") == "raw",
+                    translate_gpu_to_cpu=not self.args.enable_weights_backuper,
+                )
+            )
+
         self.weight_updater = update_weight_cls(
             self.args,
             self.model,
-            weights_getter=lambda: self.weights_backuper.get("actor"),
+            weights_getter=_weights_getter,
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=is_lora_enabled(args),

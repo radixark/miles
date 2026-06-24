@@ -80,6 +80,9 @@ class UpdateWeightFromTensor:
                 self._ipc_gather_src = start_rank
 
         self._model_update_groups = None
+        self.use_distribute = False
+        self.rollout_engines: Sequence[ActorHandle] = []
+        self.distributed_rollout_engines: Sequence[ActorHandle] = []
 
     def connect_rollout_engines(
         self,
@@ -105,12 +108,16 @@ class UpdateWeightFromTensor:
                 offset += c
 
         # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
-        total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+        # When colocate=false, engines live on separate nodes from the actor —
+        # gpu_offsets are relative to the rollout placement group, not globally
+        # unique, so the range check would wrongly classify them as colocated.
         colocate_engine_nums = 0
-        for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
-            if gpu_offset + gpu_count > total_actor_gpus:
-                break
-            colocate_engine_nums += 1
+        if getattr(self.args, "colocate", True):
+            total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+            for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
+                if gpu_offset + gpu_count > total_actor_gpus:
+                    break
+                colocate_engine_nums += 1
 
         self.use_distribute = len(rollout_engines) > colocate_engine_nums
 
@@ -179,6 +186,13 @@ class UpdateWeightFromTensor:
         """
         self.weight_version += 1
 
+        # Bridge / non-colocate runs split engines into self.rollout_engines (colocated)
+        # and self.distributed_rollout_engines; pause / flush / post-process / continue
+        # must reach both.
+        all_engines = list(self.rollout_engines)
+        if self.use_distribute:
+            all_engines += list(self.distributed_rollout_engines)
+
         rank = dist.get_rank()
 
         # LoRA never mutates the base. With either path that retains it on the
@@ -190,15 +204,16 @@ class UpdateWeightFromTensor:
 
         if rank == 0:
             mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            ray.get([engine.pause_generation.remote(mode=mode) for engine in all_engines])
+            if mode != "in_place":
+                ray.get([engine.flush_cache.remote() for engine in all_engines])
             if (
                 not skip_base_sync
                 and self.quantization_config
                 and self.quantization_config["quant_method"] in ["compressed-tensors"]
             ):
                 post_process_weights(
-                    rollout_engines=self.rollout_engines,
+                    rollout_engines=all_engines,
                     restore_weights_before_load=True,
                     post_process_quantization=False,
                 )
@@ -247,11 +262,11 @@ class UpdateWeightFromTensor:
             # transform; skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
                 post_process_weights(
-                    rollout_engines=self.rollout_engines,
+                    rollout_engines=all_engines,
                     restore_weights_before_load=False,
                     post_process_quantization=True,
                 )
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            ray.get([engine.continue_generation.remote() for engine in all_engines])
         dist.barrier(group=get_gloo_group())
 
     def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
