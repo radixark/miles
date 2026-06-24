@@ -80,8 +80,10 @@ export GPUS_PER_NODE="${GPUS_PER_NODE:-8}"
 export BACKEND="${BACKEND:-slime}"               # FUSED DSA (see header)
 export R3="${R3:-off}"                           # drop replay -> no host capturer buffer
 export LORA_RANK="${LORA_RANK:-16}"
-export SEQ="${SEQ:-1024}"                        # fast e2e; real run: SEQ=8192
-export RESP_LEN="${RESP_LEN:-512}"               # fast e2e; real run: RESP_LEN=7168
+export SEQ="${SEQ:-4096}"                        # dapo-math sweet spot (rollout-only raw_reward sweep:
+                                                 #   1024=0.0, 2048=0.125, 4096=0.25, 8192=0.3125 -- diminishing
+                                                 #   returns past 4096 at 2x rollout time). Bump SEQ=8192 for max signal.
+export RESP_LEN="${RESP_LEN:-3584}"              # response budget within seq 4096 (leaves ~512 for the prompt)
 export TASK="${TASK:-dapo-math}"
 export NUM_ROLLOUT="${NUM_ROLLOUT:-50}"
 export HF_CHECKPOINT="${HF_CHECKPOINT:-/cluster-storage/models/${MODEL}}"
