@@ -1,16 +1,6 @@
 #!/bin/bash
-# Single-node (8x H200) RL smoke test for Google Gemma 4 31B-it DENSE.
-# Mirrors scripts/run-gemma-4-26b-a4b-it.sh but for the dense (non-MoE) 31B:
-# parallelism is TP=4 x PP=1 x DP=2 (no expert parallelism), and the MoE-only
-# flags (--num-experts, --moe-*, --sglang-moe-runner-backend, --use-miles-router,
-# --use-rollout-routing-replay) are removed.
-#
-# Requires the radixark/Megatron-Bridge `zhichen/gemma4-dense` branch (dense
-# support: Gemma4VLBridge unblock for hidden_size_per_layer_input==0, the
-# attention_k_eq_v K=V tying fix, and the dense GatedMLP weight mappings).
-#
-# Model: google/gemma-4-31B-it (VLM repo; the AutoBridge resolves it as
-# Gemma4VLModelProvider in dense mode — the LM portion is what RL trains).
+# Single-node (8x H200) RL smoke test for Gemma-4 31B-it DENSE, TP4/DP2.
+# Needs the radixark/Megatron-Bridge gemma4-dense branch.
 
 PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -d ' ')
 for p in $PIDS; do kill -9 "$p" 2>/dev/null; done
@@ -73,9 +63,7 @@ PERF_ARGS=(
 
 GRPO_ARGS=(
    --advantage-estimator grpo
-   # No KL: coef was 0 anyway, and the reference model is a full extra copy of
-   # the dense 31B (~15.5GB/GPU, no expert parallelism to shard it) that pushes
-   # the colocate train footprint past what fits alongside sglang.
+   # no KL: the ref-model copy doesn't fit alongside sglang in colocate
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
@@ -98,20 +86,15 @@ WANDB_ARGS=()
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 4
-   # Dense 31B colocate: sglang's KV pool (mem-fraction) is held for the whole
-   # run, so keep it small (the smoke only needs tiny KV for 256-token responses)
-   # to leave room for the large dense train footprint on the same GPUs.
+   # keep KV pool small to leave room for the dense train footprint
    --sglang-mem-fraction-static 0.5
-   # Gemma 4 has head_dim=512 on global layers, above the FlashAttention
-   # cap of 256. Triton attention backend handles any head_dim.
+   # triton: Gemma-4 global head_dim=512 exceeds FlashAttention's 256 cap
    --sglang-attention-backend triton
    --sglang-disable-custom-all-reduce
    --sglang-disable-cuda-graph
    --sglang-disable-overlap-schedule
    --sglang-disable-radix-cache
-   # Keep both resident (like the 26B) — the torch_memory_saver offload path
-   # crashes during update_weights for this model. Fits because mem-fraction is
-   # low (sglang ~56GB) leaving room for the dense train footprint (~63GB).
+   # keep resident: the offload path crashes during update_weights for this model
    --no-offload-train
    --no-offload-rollout
 )

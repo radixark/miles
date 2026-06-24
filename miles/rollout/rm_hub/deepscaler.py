@@ -2,7 +2,6 @@ from .math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy
 
 
 def _grade_boxed_solution(model_solution, label):
-    """Extract the \\boxed{} answer from ``model_solution`` and grade it against ``label``."""
     model_answer = extract_answer(model_solution)
     if model_answer is None:
         return 0
@@ -48,12 +47,7 @@ def get_deepscaler_rule_based_reward(response, label):
 
 
 def get_gemma_math_reward(response, label):
-    """Boxed-answer math reward for Gemma-4.
-
-    Gemma-4 closes reasoning with a ``<channel|>`` tag (thinking-on) or emits the answer
-    alone (thinking-off). Grade the text after the final ``<channel|>`` if present, else
-    the whole response.
-    """
+    # Gemma-4 closes thinking with <channel|>; grade text after the last one.
     if "<channel|>" in response:
         response = response.split("<channel|>")[-1]
     return _grade_boxed_solution(response, label)

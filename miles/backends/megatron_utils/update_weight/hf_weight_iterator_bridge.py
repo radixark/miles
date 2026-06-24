@@ -147,15 +147,14 @@ def _chunk_atomic_units_by_size(units, chunk_size):
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
     def _handle_one(task):
         if task is None:
-            # Megatron-side param had no HF mapping (e.g. Gemma 4 post_shared_expert_layernorm).
+            # no HF mapping (e.g. Gemma-4 post_shared_expert_layernorm)
             return task
         if task.param_weight is None:
             return task
 
         weight_dict_key = f"vp_stages.{task.vp_stage}.{task.param_name}"
         if weight_dict_key not in new_weight_dict:
-            # Buffer-like params (e.g. Gemma 4 layer_scalar, router.scale, router.per_expert_scale)
-            # are not in the training optimizer state dict and do not need re-syncing.
+            # buffer-like params (Gemma-4 layer_scalar/scale) aren't in optimizer state; keep as-is
             return task
         new_param_weight = new_weight_dict[weight_dict_key]
         new_param_weight = new_param_weight.cuda()

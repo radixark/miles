@@ -1,16 +1,6 @@
 #!/bin/bash
-# Single-node (8x H200) RL smoke test for Google Gemma 4 26B-A4B-it MoE.
-# Mirrors scripts/run-nemotron-3-nano-30b-a3b.sh. Parallelism is TP=4xPP=1xEP=8
-# (TP*DP=8 == ETP*EP=8 so Megatron's expert-parallel grouping is valid).
-#
-# Requires the radixark/Megatron-Bridge `zhichen/gemma4-on-bridge` branch
-# installed (brings in Gemma4Bridge + Gemma4VLBridge, FusedExpertMapping,
-# ABSENT_PROJECTION). Also requires transformers>=5.5.0 (the stock miles
-# image ships 5.3.0; upgrading does not break sglang's import path).
-#
-# Model: google/gemma-4-26B-A4B-it (VLM repo; the AutoBridge resolves it as
-# Gemma4VLModelProvider — the LM portion is what RL trains). Stage the
-# checkpoint under $MODELS_DIR/google/gemma-4-26B-A4B-it.
+# Single-node (8x H200) RL smoke test for Gemma-4 26B-A4B-it MoE, TP8/EP8.
+# Needs the radixark/Megatron-Bridge gemma4 branch and transformers>=5.5.0.
 
 pkill -9 sglang
 sleep 3
@@ -33,11 +23,8 @@ source "${SCRIPT_DIR}/models/gemma-4-26b-a4b-it.sh"
 
 MODELS_DIR=${MODELS_DIR:-/storage/models}
 DATASETS_DIR=${DATASETS_DIR:-/cluster_public/miles_data/datasets}
-# LLM_CKPT is a symlinked view of $MODELS_DIR/google/gemma-4-26B-A4B-it with a
-# rewritten config.json that promotes text_config to top level and sets
-# architectures=["Gemma4ForCausalLM"], so AutoBridge picks the LLM bridge and
-# sglang dispatches to its native Gemma4ForCausalLM model implementation
-# (instead of the generic transformers adapter, which can't drive the model).
+# LLM_CKPT: checkpoint view whose config.json sets architectures=["Gemma4ForCausalLM"]
+# so AutoBridge/sglang take the text-LLM path.
 LLM_CKPT=${LLM_CKPT:-/storage/models/google/gemma-4-26B-A4B-it}
 
 CKPT_ARGS=(
@@ -110,8 +97,7 @@ WANDB_ARGS=()
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 4
    --sglang-mem-fraction-static 0.55
-   # Gemma 4 has head_dim=512 on global layers, above the FlashAttention
-   # cap of 256. Triton attention backend handles any head_dim.
+   # triton: Gemma-4 global head_dim=512 exceeds FlashAttention's 256 cap
    --sglang-attention-backend triton
    --sglang-moe-runner-backend triton
    --sglang-disable-custom-all-reduce

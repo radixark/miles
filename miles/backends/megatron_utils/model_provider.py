@@ -128,9 +128,7 @@ def get_model_provider_func(
             if pg_collection is not None:
                 provider._pg_collection = pg_collection
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
-            # Gemma-4 model.forward returns (logits, loss_mask); the LLM-RL path
-            # only needs logits. Unwrap once here so the generic forward_step / loss
-            # code never has to special-case the tuple (no-op for plain-tensor models).
+            # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward
 
             def _logits_only_forward(*args, **kwargs):
