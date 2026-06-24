@@ -18,6 +18,11 @@ from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
+PREDICTIVE_ROUTING_REPLAY_LOSS_TYPES = ("kl", "kl-post")
+PREDICTIVE_ROUTING_REPLAY_STORAGE_DTYPES = ("fp32", "bf16", "fp16")
+PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES = ("none", "linear_decay", "sqrt_decay", "cosine_decay")
+PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES = ("binary", "linear", "quadratic")
+
 
 def reset_arg(parser, name, **kwargs):
     """
@@ -33,6 +38,164 @@ def reset_arg(parser, name, **kwargs):
             break
     else:
         parser.add_argument(name, **kwargs)
+
+
+def _validate_predictive_routing_replay_args(args):
+    predictive_enabled = bool(getattr(args, "enable_predictive_routing_replay", False))
+    args.enable_bias_predictor = predictive_enabled
+    args.predictive_routing_replay_mode = "R2" if predictive_enabled else None
+
+    if not predictive_enabled:
+        return
+
+    if getattr(args, "train_backend", None) != "megatron":
+        raise AssertionError("predictive routing replay is only supported for the megatron backend.")
+
+    if getattr(args, "use_rollout_routing_replay", False):
+        raise AssertionError(
+            "--enable-predictive-routing-replay and --use-rollout-routing-replay are mutually "
+            "exclusive: PR² already produces its own predicted top-k for replay on the actor side, "
+            "and combining it with rollout-side routing replay would double-replay the routing."
+        )
+
+    if not getattr(args, "use_routing_replay", False):
+        raise AssertionError("--enable-predictive-routing-replay requires --use-routing-replay.")
+
+    if getattr(args, "allgather_cp", False):
+        raise AssertionError(
+            "predictive routing replay phase 1 does not support --allgather-cp because predictive states are "
+            "recorded and replayed in local packed-token order."
+        )
+
+    if args.bias_predictor_loss_type not in PREDICTIVE_ROUTING_REPLAY_LOSS_TYPES:
+        raise AssertionError(
+            f"Unsupported bias predictor loss type: {args.bias_predictor_loss_type}. "
+            f"Expected one of {PREDICTIVE_ROUTING_REPLAY_LOSS_TYPES}."
+        )
+
+    if args.predictive_storage_dtype not in PREDICTIVE_ROUTING_REPLAY_STORAGE_DTYPES:
+        raise AssertionError(
+            f"Unsupported predictive storage dtype: {args.predictive_storage_dtype}. "
+            f"Expected one of {PREDICTIVE_ROUTING_REPLAY_STORAGE_DTYPES}."
+        )
+
+    if args.bias_predictor_lr_mult < 0:
+        raise AssertionError("--bias-predictor-lr-mult must be greater than or equal to 0.")
+
+    if args.predictive_downsample_batch_size is not None and args.predictive_downsample_batch_size <= 0:
+        raise AssertionError("--predictive-downsample-batch-size must be greater than 0 when set.")
+
+    if args.predictive_downsample_max_len_limit is not None and args.predictive_downsample_max_len_limit <= 0:
+        raise AssertionError("--predictive-downsample-max-len-limit must be greater than 0 when set.")
+
+    if args.predictive_max_total_tokens is not None and args.predictive_max_total_tokens <= 0:
+        raise AssertionError("--predictive-max-total-tokens must be greater than 0 when set.")
+
+    if (
+        getattr(args, "predictive_max_hidden_shift_relative_norm", None) is not None
+        and args.predictive_max_hidden_shift_relative_norm <= 0
+    ):
+        raise AssertionError("--predictive-max-hidden-shift-relative-norm must be greater than 0 when set.")
+
+    if args.predictive_hidden_shift_weight_mode not in PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES:
+        raise AssertionError(
+            f"Unsupported predictive hidden-shift weight mode: {args.predictive_hidden_shift_weight_mode}. "
+            f"Expected one of {PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES}."
+        )
+
+    if (
+        getattr(args, "predictive_boundary_loss_max_weight", None) is not None
+        and args.predictive_boundary_loss_max_weight <= 0
+    ):
+        raise AssertionError("--predictive-boundary-loss-max-weight must be greater than 0 when set.")
+
+    if getattr(args, "predictive_boundary_loss_min_margin", 1e-4) <= 0:
+        raise AssertionError("--predictive-boundary-loss-min-margin must be greater than 0.")
+
+    if (
+        getattr(args, "predictive_min_post_topk_margin_for_flip", None) is not None
+        and args.predictive_min_post_topk_margin_for_flip <= 0
+    ):
+        raise AssertionError("--predictive-min-post-topk-margin-for-flip must be greater than 0 when set.")
+
+    if args.predictive_layer_scale_schedule not in PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES:
+        raise AssertionError(
+            f"Unsupported predictive layer scale schedule: {args.predictive_layer_scale_schedule}. "
+            f"Expected one of {PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES}."
+        )
+
+    if args.predictive_layer_scale_min <= 0 or args.predictive_layer_scale_min > 1:
+        raise AssertionError("--predictive-layer-scale-min must be in (0, 1].")
+
+    if args.predictive_max_delta_to_old_ratio is not None and args.predictive_max_delta_to_old_ratio <= 0:
+        raise AssertionError("--predictive-max-delta-to-old-ratio must be greater than 0 when set.")
+
+    if args.predictive_max_delta_to_topk_margin_ratio is not None and args.predictive_max_delta_to_topk_margin_ratio <= 0:
+        raise AssertionError("--predictive-max-delta-to-topk-margin-ratio must be greater than 0 when set.")
+
+    if (
+        args.predictive_max_delta_to_topk_margin_ratio_final is not None
+        and args.predictive_max_delta_to_topk_margin_ratio_final <= 0
+    ):
+        raise AssertionError("--predictive-max-delta-to-topk-margin-ratio-final must be greater than 0 when set.")
+
+    if (
+        args.predictive_topk_margin_ratio_anneal_start_rollout is not None
+        and args.predictive_topk_margin_ratio_anneal_start_rollout < 0
+    ):
+        raise AssertionError("--predictive-topk-margin-ratio-anneal-start-rollout must be greater than or equal to 0.")
+
+    if (
+        args.predictive_topk_margin_ratio_anneal_end_rollout is not None
+        and args.predictive_topk_margin_ratio_anneal_end_rollout < 0
+    ):
+        raise AssertionError("--predictive-topk-margin-ratio-anneal-end-rollout must be greater than or equal to 0.")
+
+    uses_topk_margin_ratio_annealing = (
+        args.predictive_max_delta_to_topk_margin_ratio_final is not None
+        or args.predictive_topk_margin_ratio_anneal_start_rollout is not None
+        or args.predictive_topk_margin_ratio_anneal_end_rollout is not None
+    )
+    if uses_topk_margin_ratio_annealing and args.predictive_max_delta_to_topk_margin_ratio is None:
+        raise AssertionError(
+            "top-k margin-ratio annealing requires --predictive-max-delta-to-topk-margin-ratio to be set."
+        )
+    if args.predictive_max_delta_to_topk_margin_ratio_final is not None:
+        if args.predictive_topk_margin_ratio_anneal_end_rollout is None:
+            raise AssertionError(
+                "--predictive-topk-margin-ratio-anneal-end-rollout is required when "
+                "--predictive-max-delta-to-topk-margin-ratio-final is set."
+            )
+        anneal_start_rollout = (
+            0
+            if args.predictive_topk_margin_ratio_anneal_start_rollout is None
+            else args.predictive_topk_margin_ratio_anneal_start_rollout
+        )
+        if args.predictive_topk_margin_ratio_anneal_end_rollout <= anneal_start_rollout:
+            raise AssertionError(
+                "--predictive-topk-margin-ratio-anneal-end-rollout must be greater than "
+                "--predictive-topk-margin-ratio-anneal-start-rollout."
+            )
+    elif (
+        args.predictive_topk_margin_ratio_anneal_start_rollout is not None
+        or args.predictive_topk_margin_ratio_anneal_end_rollout is not None
+    ):
+        raise AssertionError(
+            "top-k margin-ratio anneal rollout arguments require "
+            "--predictive-max-delta-to-topk-margin-ratio-final."
+        )
+
+
+def _validate_router_logits_args(args):
+    if getattr(args, "router_logits_path", None) == "":
+        args.router_logits_path = None
+    # save-freq == 0 (default) means "disabled even when a path is set" — see
+    # the help text on --router-logits-save-freq. Negative values are still an
+    # error since they have no meaningful interpretation.
+    if getattr(args, "router_logits_save_freq", 0) < 0:
+        raise AssertionError("--router-logits-save-freq must be >= 0 (0 disables saving even with --router-logits-path set).")
+    if getattr(args, "router_logits_max_tokens", None) is not None and args.router_logits_max_tokens <= 0:
+        raise AssertionError("--router-logits-max-tokens must be greater than 0 when set.")
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
@@ -1066,29 +1229,192 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
             )
 
-            parser.add_argument(
+            # ---- Predictive Routing Replay (PR²) — https://arxiv.org/abs/2606.00395
+            # Group so that `--help` renders all PR²-related flags under one
+            # section. See docs/predictive-routing-replay.md for the
+            # algorithm, the stabilization layer, and per-flag semantics.
+            pr2_group = parser.add_argument_group(
+                "Predictive Routing Replay (PR²)",
+                description=(
+                    "Train a small bias-predictor head on the actor so the rollout's "
+                    "top-k routing tracks the trained policy. The §5.1 'Required' "
+                    "flags below enable the algorithm; §5.2 sub-samples the captured "
+                    "tensors; §5.3 turns on Miles's stabilization / boundary-loss / "
+                    "layer-scale enhancements that the paper does not specify."
+                ),
+            )
+            pr2_group.add_argument(
                 "--use-routing-replay",
                 action="store_true",
                 default=False,
                 help="The routing replay technique from https://arxiv.org/abs/2507.18071",
             )
-            parser.add_argument(
+            pr2_group.add_argument(
                 "--use-rollout-routing-replay",
                 action="store_true",
                 default=False,
                 help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
             )
-            parser.add_argument(
-                "--use-indexer-replay",
+            pr2_group.add_argument(
+                "--enable-predictive-routing-replay",
                 action="store_true",
                 default=False,
-                help="Replay indexer topk decisions for layers with indexers.",
+                help="Enable Predictive Routing Replay (PR²): a small bias-predictor head trained alongside the actor lets routing pre-update the rollout selection so the replayed top-k matches the trained policy. Requires --use-routing-replay.",
             )
-            parser.add_argument(
-                "--use-rollout-indexer-replay",
-                action="store_true",
-                default=False,
-                help="Replay indexer topk from rollout during training.",
+            pr2_group.add_argument(
+                "--bias-predictor-loss-type",
+                type=str,
+                default="kl-post",
+                choices=PREDICTIVE_ROUTING_REPLAY_LOSS_TYPES,
+                help="Loss used to train the predictive router bias predictor. 'kl-post' (default) is the paper's main PR² objective: D_KL(softmax(current_logits).detach() || softmax(old_logits + predicted_delta)). 'kl' is a Miles-experimental delta-distribution variant (not in paper).",
+            )
+            pr2_group.add_argument(
+                "--bias-predictor-lr-mult",
+                type=float,
+                default=1000.0,
+                help="Multiplier alpha applied to the bias-predictor parameter group's learning rate: predictor_lr = base_lr * alpha. Paper Appendix E.1 sweeps alpha in {5e1, 1e2, 1e3, 1e4} across models; default 1e3 matches Qwen3 off-{4,8} and OLMoE.",
+            )
+            pr2_group.add_argument(
+                "--predictive-downsample-batch-size",
+                type=int,
+                default=None,
+                help="Sub-sample N sequences per microbatch before caching predictive router tensors. Default unset = keep every sequence.",
+            )
+            pr2_group.add_argument(
+                "--predictive-downsample-max-len-limit",
+                type=int,
+                default=None,
+                help="Truncate each sampled sequence to at most N tokens before caching. Applies after --predictive-downsample-batch-size and before --predictive-max-total-tokens. Default unset = no truncation.",
+            )
+            pr2_group.add_argument(
+                "--predictive-max-total-tokens",
+                type=int,
+                default=None,
+                help="Hard cap on the total number of tokens in one packed predictive microbatch, applied last after batch + length sub-sampling. Default unset = unlimited.",
+            )
+            pr2_group.add_argument(
+                "--predictive-max-hidden-shift-relative-norm",
+                type=float,
+                default=None,
+                help=(
+                    "Optional training-time safety mask for predictive supervision. "
+                    "Cached tokens whose ||h_current-h_old|| / ||h_old|| exceeds this threshold "
+                    "do not contribute to predictor loss."
+                ),
+            )
+            pr2_group.add_argument(
+                "--predictive-hidden-shift-weight-mode",
+                type=str,
+                default="binary",
+                choices=PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES,
+                help=(
+                    "How hidden-shift safety should weight predictive supervision once "
+                    "--predictive-max-hidden-shift-relative-norm is set. "
+                    "`binary` keeps the current hard mask, while `linear`/`quadratic` "
+                    "downweight tokens continuously as they approach the shift threshold."
+                ),
+            )
+            pr2_group.add_argument(
+                "--predictive-boundary-loss-max-weight",
+                type=float,
+                default=None,
+                help=(
+                    "Optional boundary-aware weighting for predictive supervision. "
+                    "Smaller old-router top-k margins receive larger predictor-loss weights, "
+                    "capped by this value."
+                ),
+            )
+            pr2_group.add_argument(
+                "--predictive-boundary-loss-min-margin",
+                type=float,
+                default=1e-4,
+                help="Floor m_min on the top-k boundary margin used in 1/max(margin, m_min) before reweighting the predictive loss. Bigger m_min = softer reweighting. Only takes effect when --predictive-boundary-loss-max-weight is set. Default 1e-4.",
+            )
+            pr2_group.add_argument(
+                "--predictive-min-post-topk-margin-for-flip",
+                type=float,
+                default=None,
+                help=(
+                    "Optional rollout-time selective fallback threshold. "
+                    "If predictive routing changes the top-k expert set but the post-update "
+                    "top-k boundary margin stays below this value, PR² falls back to the old route "
+                    "for that token instead of executing the flip."
+                ),
+            )
+            pr2_group.add_argument(
+                "--predictive-layer-scale-schedule",
+                type=str,
+                default="none",
+                choices=PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES,
+                help="Depth-aware multiplicative scale applied to the predicted delta_logits per layer. 'none' (default) = no decay = paper-faithful. Other choices: linear_decay, sqrt_decay, cosine_decay, which decay from 1.0 at the shallowest layer to --predictive-layer-scale-min at the deepest.",
+            )
+            pr2_group.add_argument(
+                "--predictive-layer-scale-min",
+                type=float,
+                default=1.0,
+                help="Floor value for the depth-aware schedule, applied at the deepest router layer. Must be in (0, 1]. Default 1.0 = no decay (paper-faithful). Has no effect when --predictive-layer-scale-schedule is 'none'.",
+            )
+            pr2_group.add_argument(
+                "--predictive-max-delta-to-old-ratio",
+                type=float,
+                default=None,
+                help="Trust-region cap r_max on mean(|predicted_delta_logits|) / mean(|old_logits|) per layer; when set, the predicted delta is rescaled to satisfy the bound. Default unset = no cap (paper-faithful).",
+            )
+            pr2_group.add_argument(
+                "--predictive-max-delta-to-topk-margin-ratio",
+                type=float,
+                default=None,
+                help=(
+                    "Optional per-token trust-region cap on max(|delta|) relative to the old-router "
+                    "top-k boundary margin. A value of 1.0 keeps max(|delta|) <= boundary_gap / 2; "
+                    "values above 1.0 allow controlled top-k flips."
+                ),
+            )
+            pr2_group.add_argument(
+                "--predictive-max-delta-to-topk-margin-ratio-final",
+                type=float,
+                default=None,
+                help=(
+                    "Optional final top-k margin-ratio cap reached by annealing over rollout id. "
+                    "Use this to start conservatively and later allow larger expert-set changes."
+                ),
+            )
+            pr2_group.add_argument(
+                "--predictive-topk-margin-ratio-anneal-start-rollout",
+                type=int,
+                default=None,
+                help="Rollout id at which the cross-rollout anneal of --predictive-max-delta-to-topk-margin-ratio begins. Defaults to 0 when omitted. Only takes effect when --predictive-max-delta-to-topk-margin-ratio-final is set.",
+            )
+            pr2_group.add_argument(
+                "--predictive-topk-margin-ratio-anneal-end-rollout",
+                type=int,
+                default=None,
+                help="Rollout id where the cap reaches --predictive-max-delta-to-topk-margin-ratio-final. Must be > --predictive-topk-margin-ratio-anneal-start-rollout. Required when --predictive-max-delta-to-topk-margin-ratio-final is set.",
+            )
+            pr2_group.add_argument(
+                "--predictive-storage-dtype",
+                type=str,
+                default="fp32",
+                choices=PREDICTIVE_ROUTING_REPLAY_STORAGE_DTYPES,
+                help="Dtype for the cached router-input + old-logits tensors used by the predictor. Default fp32 (paper-compatible for logits). Paper Table 3 uses bf16 hidden + fp32 logits separately; Miles uses a single dtype for both.",
+            )
+            pr2_group.add_argument(
+                "--router-logits-path",
+                type=str,
+                default=None,
+                help="Directory to save Verl-aligned router logits artifacts. Leave unset to disable. NOTE: even when set, saving stays off until --router-logits-save-freq is also given a positive value, because per-rollout saves add significant I/O overhead.",
+            )
+            pr2_group.add_argument(
+                "--router-logits-save-freq",
+                type=int,
+                default=0,
+                help="Save router logits every N rollout steps when router-logits-path is set. Default 0 disables saving even when router-logits-path is given — explicitly set to a positive integer to opt in (saving every rollout step adds significant per-step I/O overhead).",
+            )
+            pr2_group.add_argument(
+                "--router-logits-max-tokens",
+                type=int,
+                default=None,
+                help="Cap saved router-logit artifacts to the first N tokens per step. Leave unset to save all tokens. Only matters when --router-logits-path is set and --router-logits-save-freq > 0.",
             )
             parser.add_argument(
                 "--use-opsm",
@@ -1897,8 +2223,7 @@ def parse_args(add_custom_arguments=None):
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         args.compress_ratios = None
         if args.hf_checkpoint:
-            hf_config = load_hf_config(args.hf_checkpoint)
-            args.compress_ratios = getattr(hf_config, "compress_ratios", None)
+            hf_config = load_hf_config(args.hf_checkpoint, trust_remote_code=True)
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
@@ -2285,9 +2610,11 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
-        if args.sglang_enforce_piecewise_cuda_graph:
+        # AMD HPC Fund SIF's sglang may not register
+        # --sglang-{enforce,disable}-piecewise-cuda-graph; use getattr fallbacks.
+        if getattr(args, "sglang_enforce_piecewise_cuda_graph", False):
             logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
-        if not args.sglang_disable_piecewise_cuda_graph:
+        if hasattr(args, "sglang_disable_piecewise_cuda_graph") and not args.sglang_disable_piecewise_cuda_graph:
             args.sglang_disable_piecewise_cuda_graph = True
             logger.info(
                 "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
@@ -2356,6 +2683,9 @@ def miles_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
+    _validate_router_logits_args(args)
+    _validate_predictive_routing_replay_args(args)
+
     if args.custom_config_path:
         with open(args.custom_config_path) as f:
             data = yaml.safe_load(f) or {}
@@ -2363,6 +2693,8 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+        _validate_router_logits_args(args)
+        _validate_predictive_routing_replay_args(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
@@ -2446,16 +2778,10 @@ def hf_validate_args(args, hf_config):
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
 
-    model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
-    if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
-        assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
-
-    for hf_config_name, megatron_config_name, compare_fn in [
+    compare_pairs = [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
-        ("intermediate_size", "ffn_hidden_size", equal),
-        ("moe_intermediate_size", "moe_ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",
@@ -2463,7 +2789,21 @@ def hf_validate_args(args, hf_config):
             equal,
         ),
         ("rope_theta", "rotary_base", equal),
-    ]:
+    ]
+
+    has_moe = bool(getattr(hf_config, "num_experts", 0)) and hasattr(hf_config, "moe_intermediate_size")
+    if has_moe:
+        compare_pairs.append(("moe_intermediate_size", "moe_ffn_hidden_size", equal))
+        if hasattr(hf_config, "shared_expert_intermediate_size") and getattr(
+            args, "moe_shared_expert_intermediate_size", None
+        ) is not None:
+            compare_pairs.append(
+                ("shared_expert_intermediate_size", "moe_shared_expert_intermediate_size", equal)
+            )
+    else:
+        compare_pairs.append(("intermediate_size", "ffn_hidden_size", equal))
+
+    for hf_config_name, megatron_config_name, compare_fn in compare_pairs:
         # FIXME: Qwen3.5 transfomers has bug.
         if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
             continue
