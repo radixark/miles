@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,6 +14,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
+    actor_num_gpus_per_node: int | None = None
+    rollout_num_gpus: int | None = None
+    no_colocate: bool = False
     hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     extra_args: str = ""
@@ -22,9 +26,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_fp8: bool = False
     rollout_mxfp8: bool = False
     rollout_int4: bool = False
+    rollout_nvfp4: bool = False
     rollout_attn_fp8: bool = False
     train_fp8: bool = False
     train_mxfp8: bool = False
+    train_nvfp4: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
@@ -32,16 +38,22 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
-        if self.rollout_int4:
-            assert not self.rollout_fp8, "rollout_int4 and rollout_fp8 cannot be enabled at the same time"
-            assert not self.rollout_mxfp8, "rollout_int4 and rollout_mxfp8 cannot be enabled at the same time"
-        if self.rollout_mxfp8:
-            assert not self.rollout_fp8, "rollout_mxfp8 and rollout_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "rollout_mxfp8 only supports Blackwell GPUs"
-        if self.train_mxfp8:
-            assert not self.train_fp8, "train_mxfp8 and train_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "train_mxfp8 only supports Blackwell GPUs"
-            assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8 to be enabled"
+        self.no_colocate = self.no_colocate or self.rollout_nvfp4
+        if self.no_colocate:
+            self.actor_num_gpus_per_node = self.actor_num_gpus_per_node or self.num_gpus_per_node // 2
+            self.rollout_num_gpus = self.rollout_num_gpus or self.num_gpus_per_node - self.actor_num_gpus_per_node
+        else:
+            self.actor_num_gpus_per_node = self.actor_num_gpus_per_node or self.num_gpus_per_node
+            self.rollout_num_gpus = self.rollout_num_gpus or self.num_gpus_per_node
+
+        assert (
+            sum((self.rollout_fp8, self.rollout_mxfp8, self.rollout_int4, self.rollout_nvfp4)) <= 1
+        ), "only one rollout precision mode can be enabled"
+        assert (
+            sum((self.train_fp8, self.train_mxfp8, self.train_nvfp4)) <= 1
+        ), "only one train precision mode can be enabled"
+        if any((self.rollout_mxfp8, self.rollout_nvfp4, self.train_mxfp8, self.train_nvfp4)):
+            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "mxfp8 and nvfp4 only support Blackwell GPUs"
 
 
 def prepare(args: ScriptArgs):
@@ -57,6 +69,25 @@ def prepare(args: ScriptArgs):
         U.exec_command(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
+            f"{args.extra_args} "
+        )
+
+    if args.rollout_nvfp4:
+        nvfp4_env_vars = {
+            "NVTE_USE_FAST_MATH": "0",
+            "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH": "1",
+            "FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH": "1",
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if "NVTE" in key or "FLASHINFER" in key or key == "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"
+            },
+        }
+        nvfp4_env_prefix = " ".join(f"{key}={value}" for key, value in nvfp4_env_vars.items()) + " "
+        U.exec_command(
+            f"{nvfp4_env_prefix}"
+            f"python tools/convert_hf_to_nvfp4.py --model-dir {args.model_dir}/{args.model_name} "
+            f"--save-dir {args.model_dir}/{args.model_name}-NVFP4 "
             f"{args.extra_args} "
         )
 
@@ -90,6 +121,8 @@ def execute(args: ScriptArgs):
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
     elif args.train_mxfp8:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
+    elif args.rollout_nvfp4:
+        hf_checkpoint = f"{args.model_dir}/{args.model_name}-NVFP4"
     elif args.rollout_int4:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-INT4"
     else:
@@ -167,12 +200,16 @@ def execute(args: ScriptArgs):
         # need to comment this when using model with MLA
         "--attention-backend flash "
         f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--colocate "
         "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
+    if args.no_colocate:
+        misc_args += (
+            f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} " f"--rollout-num-gpus {args.rollout_num_gpus} "
+        )
+    else:
+        misc_args += f"--actor-num-gpus-per-node {args.num_gpus_per_node} " "--colocate "
     misc_env_vars = {}
 
     if args.rollout_int4:
@@ -205,6 +242,48 @@ def execute(args: ScriptArgs):
                 misc_env_vars |= {
                     "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
                 }
+    elif args.train_nvfp4:
+        match args.hardware:
+            case "B200" | "B300" | "GB200" | "GB300":
+                misc_args += (
+                    "--transformer-impl transformer_engine " "--bf16 " "--fp4-format e2m1 " "--fp4-recipe nvfp4 "
+                )
+        misc_env_vars |= {
+            "NVTE_NVFP4_DISABLE_2D_QUANTIZATION": "1",
+            "NVTE_NVFP4_DISABLE_RHT": "1",
+            "NVTE_NVFP4_DISABLE_STOCHASTIC_ROUNDING": "1",
+            "NVTE_NVFP4_ROW_SCALED_ACTIVATION": "1",
+            "NVTE_BACKWARD_OVERRIDE": "high_precision",
+            "NVTE_USE_FAST_MATH": "0",
+        }
+        optimizer_args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
+        te_precision_config_text = """
+configs:
+    nvfp4:
+        transformer_engine_config_type: "TEQuantizationParams"
+        training_recipe:
+            fp4_quantization_recipe: "nvfp4"
+    bf16:
+        transformer_engine_config_type: "TEQuantizationParams"
+        training_recipe: {}
+matchers:
+    routed_experts_fc1_nvfp4:
+        type: "glob"
+        enabled: true
+        pattern: "*.mlp.experts.linear_fc1"
+        config: "nvfp4"
+    routed_experts_fc2_nvfp4:
+        type: "glob"
+        enabled: true
+        pattern: "*.mlp.experts.linear_fc2"
+        config: "nvfp4"
+    default_bf16:
+        type: "glob"
+        enabled: true
+        pattern: "*"
+        config: "bf16"
+""".strip()
+        misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
@@ -233,9 +312,12 @@ def execute(args: ScriptArgs):
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
-                f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
                 "--expert-tensor-parallel-size 1 "
             )
+            if args.no_colocate:
+                perf_args += f"--expert-model-parallel-size {args.actor_num_gpus_per_node} "
+            else:
+                perf_args += f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
             sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
             if args.rollout_fp8:
                 sglang_world_size = 2
@@ -266,6 +348,27 @@ def execute(args: ScriptArgs):
                     f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
                 )
+            elif args.rollout_nvfp4:
+                sglang_world_size = 2
+                sglang_decode_max_bs = 256
+                sglang_args += (
+                    f"--rollout-num-gpus-per-engine {sglang_world_size} "
+                    "--sglang-moe-runner-backend flashinfer_trtllm_routed "
+                    f"--sglang-tp-size {sglang_world_size} "
+                    f"--sglang-ep-size {sglang_world_size} "
+                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    "--sglang-kv-cache-dtype bf16 "
+                )
+                misc_env_vars |= {
+                    "SGLANG_FLASHINFER_NVFP4_PER_TOKEN_ACTIVATION": "1",
+                    "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH": "1",
+                    "FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH": "1",
+                }
+                misc_env_vars |= {
+                    key: value
+                    for key, value in os.environ.items()
+                    if "NVTE" in key or "FLASHINFER" in key or key == "TRTLLM_DISABLE_FP4_QUANT_FAST_MATH"
+                }
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
         case _:

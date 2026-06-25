@@ -1750,6 +1750,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-disable-weight-update-checker",
+                action="store_true",
+            )
+            parser.add_argument(
                 "--ci-metric-checker-key",
                 type=str,
                 default=None,
@@ -2275,7 +2279,12 @@ def miles_validate_args(args):
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
-    if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
+    if (
+        args.ci_test
+        and not args.debug_rollout_only
+        and not args.debug_train_only
+        and not args.ci_disable_weight_update_checker
+    ):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
