@@ -56,11 +56,6 @@ class AdapterConfig:
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
-        if bool(self.rm_type) == bool(self.custom_rm_path):
-            raise ValueError("Only one of rm_type or custom_rm_path should be set in AdapterConfig")
-
-
 @dataclass(frozen=True)
 class RegisteredAdapter:
     """Join view of an adapter's static config and current lifetime state.
