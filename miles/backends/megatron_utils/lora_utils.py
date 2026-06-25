@@ -88,9 +88,14 @@ _MLA_HF_TO_MEGATRON = {
 }
 _MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
 
-# SGLang default get_hidden_dim (lora/utils.py) handles fused_qkv_a_proj_with_mqa via q_a / kv_a mapping,
-# but not separate q_b_proj / kv_b_proj yet — omit from rollout adapter config to avoid init crashes.
-_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset({"q_b_proj", "kv_b_proj"})
+# SGLang's get_hidden_dim (sglang lora/utils.py:176-187, sglang-miles-glm-dev branch / PR #28110) now
+# FULLY supports q_b_proj / kv_b_proj (the MLA up-projections): both return real dims and are in the
+# supported target set (lora/utils.py:353-354). So nothing is excluded -- the colocate rollout adapter
+# config declares the SAME modules Megatron trains.
+# (Previously q_b/kv_b were dropped to avoid init crashes when sglang lacked support; that is now stale
+# and was harmful -- dropping them made sglang silently SKIP the shipped q_b/kv_b adapter tensors at
+# mem_pool.py, so the trained MLA up-proj LoRA never reached the rollout once LoRA_B became nonzero.)
+_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 
 
 # ---------------------------------------------------------------------------
