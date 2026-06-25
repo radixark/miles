@@ -313,14 +313,20 @@ def _train(args: ScriptArgs):
 
     grpo_args = "--advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
-    # R3 (rollout routing replay): replay the rollout's MoE top-8 in training so the train-side
-    # selection matches the rollout (on-policy). The DSA indexer replay is added only on the slime
-    # backend, which self-registers the replay stream (the unfused megatron-bridge path has none).
+    # R3 = rollout ROUTING replay ONLY: replay the rollout's MoE top-8 in training so the train-side
+    # expert selection matches the rollout (on-policy parity). Cheap (sglang routed-experts capturer
+    # ~0.5 GB/rank) and is the R3 we want for a faithful RL run.
+    #
+    # We deliberately DO NOT add --use-rollout-indexer-replay (the DSA indexer top-k replay):
+    #   * It is a DEBUG aid -- it only verifies rollout-vs-train indexer top-k parity. The slime
+    #     kernel recomputes the indexer top-k itself, so TRAINING DOES NOT NEED IT.
+    #   * Enabling it makes sglang allocate the IndexerTopkCapturer HOST pinned buffer
+    #     -- shape (max_total_num_tokens, num_layers, index_topk=2048) int32 ~= 78-128 GB/rank,
+    #     x8 ranks/node -- which blew the ~1.78 TB colocate pod cgroup -> RolloutManager host-OOM.
+    # So: R3 on => routing replay only (no indexer replay, no indexer host buffer).
     r3_args = ""
     if args.use_r3:
         r3_args = "--use-rollout-routing-replay "
-        if args.dsa_attention_backend == "slime":
-            r3_args += "--use-rollout-indexer-replay "
 
     optimizer_args = "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
 

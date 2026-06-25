@@ -150,13 +150,13 @@ SGLANG_LORA_BACKEND="${SGLANG_LORA_BACKEND:-triton}"
 # -> cluster-wide scheduler crash. Turn on only when host RAM is known to fit. Trade-off when off:
 # skip_base_sync=False so the trainer re-ships the base each swap (slower, but no host mirror).
 LORA_BASE_CPU_BACKUP="${LORA_BASE_CPU_BACKUP:-off}"
-# R3 = rollout routing replay (+ DSA indexer replay on the slime backend) for rollout<->train
-# on-policy parity. DEFAULT on. Turn OFF (R3=off -> --no-use-r3) to ELIMINATE sglang's host-side
-# replay capturers: indexer-topk (enable_return_indexer_topk, the ~78GB/rank pinned buffer that
-# host-OOM'd the colocate pod) AND routed-experts. With R3 off, --sglang-max-total-tokens can be
-# left at the sglang default (no host buffer to bound) for full rollout throughput; the train side
-# recomputes indexer top-k / MoE routing instead of replaying (off-policy in those dims -- fine for
-# e2e bring-up, but R3=on is wanted for a correctness-faithful RL run).
+# R3 = rollout ROUTING replay (MoE top-8) for rollout<->train on-policy parity. DEFAULT on.
+# run_glm5_lora.py adds ONLY --use-rollout-routing-replay (cheap routed-experts capturer ~0.5GB/rank).
+# It intentionally does NOT add --use-rollout-indexer-replay: the DSA indexer top-k replay is a
+# DEBUG aid (the slime kernel recomputes the top-k, so training doesn't need it), and enabling it
+# makes sglang allocate the IndexerTopkCapturer HOST pinned buffer (~78-128GB/rank x8) that
+# host-OOM'd the colocate pod. So R3 on is safe (no indexer host buffer). R3=off (-> --no-use-r3)
+# drops routing replay too -> fully off-policy; only for a quick mechanics bring-up.
 R3="${R3:-on}"
 if [[ -z "$ROLLOUT_GPUS_PER_ENGINE" ]]; then
   if [[ "$MODEL" == *5layer* ]]; then ROLLOUT_GPUS_PER_ENGINE=2

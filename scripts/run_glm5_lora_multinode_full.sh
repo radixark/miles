@@ -19,19 +19,20 @@
 #       ("Currently context parallelism is not supported by DSAttention") and
 #       expandable_segments is incompatible with torch_memory_saver. The fused
 #       lighting_indexer never materialises that tensor -> no GPU OOM.
-#   * R3=off  -> drops --use-rollout-routing-replay AND (slime) the DSA
-#       --use-rollout-indexer-replay. The indexer replay makes sglang allocate
-#       an IndexerTopkCapturer HOST pinned buffer sized (max_total_num_tokens,
-#       num_layers, index_topk=2048) int32 ~= 78-128 GB/rank * 8 ranks/node ->
-#       blows the ~1.78 TB pod cgroup -> RolloutManager host-OOM (SIGTERM) ->
-#       cluster-wide sglang crash. With R3 off the capturer is never built and
-#       --sglang-max-total-tokens can stay at the sglang default for full
-#       rollout throughput. Trade-off: rollout<->train is off-policy in the
-#       sparse-attn / MoE-routing dims -- fine for e2e bring-up; set R3=on for a
-#       correctness-faithful RL run (then ALSO cap --sglang-max-total-tokens,
-#       e.g. SGLANG_MAX_TOTAL_TOKENS via PARALLEL_EXTRA, so the host buffer fits).
-#   * SEQ=1024 / RESP_LEN=512  -> fast e2e bring-up (short responses). Bump to
-#       SEQ=8192 RESP_LEN=7168 for the real run (fits host once R3=off).
+#   * R3=on (default)  -> adds ONLY --use-rollout-routing-replay (rollout MoE top-8
+#       replayed in training for on-policy parity; cheap sglang routed-experts capturer
+#       ~0.5 GB/rank). It does NOT add --use-rollout-indexer-replay: that DSA indexer
+#       top-k replay is a DEBUG aid (the slime kernel recomputes the top-k, so training
+#       does not need it) and it was the killer -- it makes sglang allocate an
+#       IndexerTopkCapturer HOST pinned buffer (max_total_num_tokens, num_layers, 2048)
+#       int32 ~= 78-128 GB/rank * 8 ranks/node -> blows the ~1.78 TB pod cgroup ->
+#       RolloutManager host-OOM (SIGTERM) -> cluster-wide sglang crash. With indexer
+#       replay gone, --sglang-max-total-tokens can stay at the sglang default for full
+#       rollout throughput. (R3=off drops routing replay too -> fully off-policy; only
+#       for quick mechanics bring-up.)
+#   * SEQ=4096 / RESP_LEN=3584  -> dapo-math reward/throughput sweet spot (rollout-only
+#       raw_reward sweep: 1024=0.0, 2048=0.125, 4096=0.25, 8192=0.3125; >4096 = 2x time
+#       for +0.06). Bump SEQ=8192 RESP_LEN=7168 for max signal.
 #   * EP32 / PP1 / CP1  -> the only validated full-model layout. PP>1 trips the
 #       GLM-5.2 cross-layer-DSA build assert (a PP stage must START on a compute
 #       layer, freq=4 index-share group); CP>1 is unsupported by DSAttention.
@@ -78,7 +79,10 @@ export MODEL="${MODEL:-GLM-5.2}"                 # full 78-layer 744B
 export NODES="${NODES:-8}"
 export GPUS_PER_NODE="${GPUS_PER_NODE:-8}"
 export BACKEND="${BACKEND:-slime}"               # FUSED DSA (see header)
-export R3="${R3:-off}"                           # drop replay -> no host capturer buffer
+export R3="${R3:-on}"                             # R3 ON = rollout ROUTING replay only (on-policy MoE
+                                                  # parity, cheap ~0.5GB/rank). The DSA INDEXER replay is
+                                                  # NOT added (it's debug-only + was the ~78-128GB/rank host
+                                                  # buffer that OOM'd the pod) -- see run_glm5_lora.py r3_args.
 export LORA_RANK="${LORA_RANK:-16}"
 export SEQ="${SEQ:-4096}"                        # dapo-math sweet spot (rollout-only raw_reward sweep:
                                                  #   1024=0.0, 2048=0.125, 4096=0.25, 8192=0.3125 -- diminishing
