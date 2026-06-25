@@ -1,3 +1,5 @@
+"""Convert local Megatron torch_dist checkpoints to Hugging Face safetensors with Ray workers."""
+
 from __future__ import annotations
 
 import argparse
