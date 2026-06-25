@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import os
@@ -34,8 +33,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from miles.backends.megatron_utils import megatron_to_hf as m2hf
 
 DEFAULT_DIRECT_MOE_GROUP_SIZE = 2 * 1024**3
-CHECKSUM_DIRNAME = ".ray-convert-checksums"
-CHECKSUM_READ_BYTES = 64 * 1024**2
 
 
 class UnpicklerWrapper(pickle.Unpickler):
@@ -65,7 +62,6 @@ class Args:
     task_group_bytes: int
     source_key_regex: str | None
     dry_run_plan: bool
-    sha1sum_output: bool
     progress: bool
     progress_interval_seconds: float
 
@@ -114,7 +110,6 @@ class ShardManifest:
     weight_keys: tuple[str, ...]
     bytes: int
     tensors: int
-    checksum_filename: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,7 +152,6 @@ class PlannedShard:
     final_filename: str
     weight_keys: tuple[str, ...]
     bytes: int
-    checksum_filename: str | None
 
 
 class ProgressReporter:
@@ -209,38 +203,6 @@ class ProgressReporter:
         self.progress.set_postfix_str(f"tasks={self.completed_tasks}/{self.total_tasks}", refresh=False)
 
 
-def sha1sum_file(path: str, read_bytes: int = CHECKSUM_READ_BYTES) -> str:
-    digest = hashlib.sha1()
-    buffer = bytearray(read_bytes)
-    view = memoryview(buffer)
-    with open(path, "rb", buffering=0) as f:
-        while True:
-            n = f.readinto(buffer)
-            if not n:
-                break
-            digest.update(view[:n])
-    return digest.hexdigest()
-
-
-def write_shard_checksum(staging_dir: str, shard_filename: str, shard_bytes: int) -> str:
-    checksum_dir = os.path.join(staging_dir, CHECKSUM_DIRNAME)
-    os.makedirs(checksum_dir, exist_ok=True)
-    checksum_filename = os.path.join(CHECKSUM_DIRNAME, f"{shard_filename}.sha1.json")
-    checksum_path = os.path.join(staging_dir, checksum_filename)
-    tmp_path = f"{checksum_path}.tmp-{os.getpid()}"
-    payload = {
-        "filename": shard_filename,
-        "algorithm": "sha1",
-        "sha1": sha1sum_file(os.path.join(staging_dir, shard_filename)),
-        "bytes": os.path.getsize(os.path.join(staging_dir, shard_filename)),
-        "tensor_bytes": shard_bytes,
-    }
-    with open(tmp_path, "w") as f:
-        json.dump(payload, f, sort_keys=True)
-    os.replace(tmp_path, checksum_path)
-    return checksum_filename
-
-
 class WrappedStorageReader(dist_cp.FileSystemReader):
     @override
     def read_metadata(self):
@@ -278,7 +240,7 @@ class ChunkedStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
         super().set_up_planner(state_dict, metadata, is_coordinator)
 
 
-class AccountingStorageReader(WrappedStorageReader):
+class MeteredStorageReader(WrappedStorageReader):
     def __init__(self, path: str):
         super().__init__(path)
         self.read_items = 0
@@ -364,7 +326,7 @@ def load_tensor_chunk(
     metadata: dist_cp.metadata.Metadata,
 ) -> DcpLoadResult:
     state_dict: dict[str, torch.Tensor] = {}
-    storage_reader = AccountingStorageReader(input_dir)
+    storage_reader = MeteredStorageReader(input_dir)
     metadata = prepare_cached_metadata_for_reader(metadata, storage_reader)
     planner = ChunkedStateDictLoadPlanner(keys_to_load)
     planner.set_up_planner(state_dict, metadata, is_coordinator=True)
@@ -616,7 +578,7 @@ def load_moe_block_direct(
     if not isinstance(md, dist_cp.metadata.TensorStorageMetadata):
         raise TypeError(f"{block.source_key} is not tensor metadata")
 
-    storage_reader = AccountingStorageReader(input_dir)
+    storage_reader = MeteredStorageReader(input_dir)
     metadata = prepare_cached_metadata_for_reader(metadata, storage_reader)
     storage_reader.set_up_storage_reader(metadata, is_coordinator=True)
     read_items = create_direct_moe_read_items(block, md)
@@ -889,12 +851,10 @@ def _flush_shard(
     shard_idx: int,
     tensors: dict[str, torch.Tensor],
     current_size: int,
-    sha1sum_output: bool,
 ) -> ShardManifest:
     filename = f"worker-{socket.gethostname()}-task-{task_id:05d}-shard-{shard_idx:05d}.safetensors"
     safetensors.torch.save_file(tensors, os.path.join(staging_dir, filename))
-    checksum_filename = write_shard_checksum(staging_dir, filename, current_size) if sha1sum_output else None
-    return ShardManifest(filename, None, tuple(tensors.keys()), current_size, len(tensors), checksum_filename)
+    return ShardManifest(filename, None, tuple(tensors.keys()), current_size, len(tensors))
 
 
 def append_to_shards(
@@ -906,13 +866,12 @@ def append_to_shards(
     converted_named_tensors: tuple[tuple[str, torch.Tensor], ...] | list[tuple[str, torch.Tensor]],
     max_file_bytes: int,
     shards: list[ShardManifest],
-    sha1sum_output: bool,
 ) -> tuple[int, int, int]:
     total_size = 0
     for converted_name, converted_param in converted_named_tensors:
         tensor_size = converted_param.numel() * converted_param.element_size()
         if tensor_size + current_size > max_file_bytes and current_tensors:
-            shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size, sha1sum_output))
+            shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size))
             shard_idx += 1
             current_tensors.clear()
             current_size = 0
@@ -973,7 +932,6 @@ def write_prepared_tensor_groups(
     quantization_config: dict[str, Any] | None,
     max_file_bytes: int,
     cuda_device_id: int | None,
-    sha1sum_output: bool,
 ) -> tuple[tuple[ShardManifest, ...], int]:
     current_tensors: dict[str, torch.Tensor] = {}
     current_size = 0
@@ -1000,12 +958,11 @@ def write_prepared_tensor_groups(
             converted_named_tensors,
             max_file_bytes,
             shards,
-            sha1sum_output,
         )
         total_size += added_size
 
     if current_tensors:
-        shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size, sha1sum_output))
+        shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size))
     return tuple(shards), total_size
 
 
@@ -1035,7 +992,6 @@ class ConversionWorker:
         model_name: str,
         quantization_config: dict[str, Any] | None,
         max_file_bytes: int,
-        sha1sum_output: bool,
         metadata_ref: Any,
     ) -> None:
         self.actor_id = actor_id
@@ -1047,7 +1003,6 @@ class ConversionWorker:
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.max_file_bytes = max_file_bytes
-        self.sha1sum_output = sha1sum_output
         self.metadata = metadata_ref if isinstance(metadata_ref, dist_cp.metadata.Metadata) else ray.get(metadata_ref)
 
     def convert(self, task: TaskSpec) -> TaskResult:
@@ -1067,7 +1022,6 @@ class ConversionWorker:
             self.quantization_config,
             self.max_file_bytes,
             self.cuda_device_id,
-            self.sha1sum_output,
         )
         return TaskResult(
             task_id=task.task_id,
@@ -1129,7 +1083,6 @@ def collect_ray_results(
     max_file_bytes: int,
     concurrency: int,
     metadata_ref: Any,
-    sha1sum_output: bool,
     progress: bool,
     progress_interval_seconds: float,
 ) -> list[TaskResult]:
@@ -1152,7 +1105,6 @@ def collect_ray_results(
                 model_name,
                 quantization_config,
                 max_file_bytes,
-                sha1sum_output,
                 metadata_ref,
             )
         )
@@ -1205,34 +1157,9 @@ def plan_global_shards(task_results: list[TaskResult]) -> tuple[tuple[PlannedSha
             if key in weight_map:
                 raise ValueError(f"Duplicate HF tensor emitted during finalization: {key}")
             weight_map[key] = final_filename
-        planned_shards.append(
-            PlannedShard(shard.temp_filename, final_filename, shard.weight_keys, shard.bytes, shard.checksum_filename)
-        )
+        planned_shards.append(PlannedShard(shard.temp_filename, final_filename, shard.weight_keys, shard.bytes))
         total_size += shard.bytes
     return tuple(planned_shards), {"metadata": {"total_size": total_size}, "weight_map": weight_map}
-
-
-def merge_checksum_files(staging_dir: str, output_dir: str, planned_shards: tuple[PlannedShard, ...]) -> None:
-    checksums: dict[str, dict[str, Any]] = {}
-    for shard in planned_shards:
-        if shard.checksum_filename is None:
-            raise ValueError(f"Missing checksum file for {shard.temp_filename}")
-        checksum_path = os.path.join(staging_dir, shard.checksum_filename)
-        with open(checksum_path) as f:
-            checksum = json.load(f)
-        if checksum.get("filename") != shard.temp_filename:
-            raise ValueError(f"Checksum filename mismatch in {checksum_path}")
-        checksums[shard.final_filename] = {
-            "sha1": checksum["sha1"],
-            "bytes": checksum["bytes"],
-            "tensor_bytes": shard.bytes,
-        }
-
-    output_path = os.path.join(output_dir, "checksum.json")
-    tmp_path = f"{output_path}.tmp"
-    with open(tmp_path, "w") as f:
-        json.dump({"algorithm": "sha1", "files": checksums}, f, indent=2, sort_keys=True)
-    os.replace(tmp_path, output_path)
 
 
 def finalize_output(
@@ -1240,7 +1167,6 @@ def finalize_output(
     output_dir: str,
     origin_hf_dir: str | None,
     task_results: list[TaskResult],
-    sha1sum_output: bool,
 ) -> None:
     planned_shards, index = plan_global_shards(task_results)
     copy_assets(origin_hf_dir, output_dir)
@@ -1248,8 +1174,6 @@ def finalize_output(
         os.replace(os.path.join(staging_dir, shard.temp_filename), os.path.join(output_dir, shard.final_filename))
     with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as f:
         json.dump(index, f, indent=2)
-    if sha1sum_output:
-        merge_checksum_files(staging_dir, output_dir, planned_shards)
     shutil.rmtree(staging_dir)
 
 
@@ -1328,11 +1252,10 @@ def convert_torch_dist_to_hf_ray(args: Args) -> str:
         args.max_file_bytes,
         concurrency,
         metadata_ref,
-        args.sha1sum_output,
         args.progress,
         args.progress_interval_seconds,
     )
-    finalize_output(staging_dir, args.output_dir, args.origin_hf_dir, task_results, args.sha1sum_output)
+    finalize_output(staging_dir, args.output_dir, args.origin_hf_dir, task_results)
     return args.output_dir
 
 
@@ -1348,7 +1271,6 @@ def parse_args() -> Args:
     parser.add_argument("--task-group-bytes", type=int, default=0)
     parser.add_argument("--source-key-regex", default=None)
     parser.add_argument("--dry-run-plan", action="store_true")
-    parser.add_argument("--sha1sum-output", action="store_true")
     parser.add_argument("--no-progress", dest="progress", action="store_false")
     parser.add_argument("--progress-interval-seconds", type=float, default=5.0)
     parser.set_defaults(progress=True)
@@ -1364,7 +1286,6 @@ def parse_args() -> Args:
         task_group_bytes=ns.task_group_bytes,
         source_key_regex=ns.source_key_regex,
         dry_run_plan=ns.dry_run_plan,
-        sha1sum_output=ns.sha1sum_output,
         progress=ns.progress,
         progress_interval_seconds=ns.progress_interval_seconds,
     )
