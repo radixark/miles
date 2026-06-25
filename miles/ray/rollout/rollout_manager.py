@@ -69,12 +69,15 @@ class RolloutManager:
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
+        self.session_server_supervisor = None
         if self.args.debug_train_only:
             self.servers: dict[str, RolloutServer] = {}
         else:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
-            start_session_server(args)
+            # Multi-process session server returns a supervisor; a dead worker is
+            # surfaced via .check() at rollout entry points (None otherwise).
+            self.session_server_supervisor = start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -104,6 +107,7 @@ class RolloutManager:
     async def generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
+        self._check_session_server()
         self._health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
@@ -123,6 +127,7 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
+        self._check_session_server()
         self._health_monitoring_resume()
 
         if self.use_experimental_refactor:
@@ -268,6 +273,13 @@ class RolloutManager:
         self.train_parallel_config = config
 
     # -------------------------- utils -----------------------------
+
+    def _check_session_server(self) -> None:
+        # A multi-process session-server worker/router death is recorded by the
+        # supervisor's monitor thread (which can't raise into this actor); poll
+        # it here so a dead session server fails the rollout instead of hanging.
+        if self.session_server_supervisor is not None:
+            self.session_server_supervisor.check()
 
     def _health_monitoring_pause(self) -> None:
         for monitor in self._health_monitors:

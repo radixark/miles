@@ -15,6 +15,10 @@ from miles.utils.http_utils import (
 
 logger = logging.getLogger(__name__)
 
+# Keeps multi-process session-server supervisors alive past start_session_server
+# (otherwise GC would fire their atexit/teardown). One per launched server.
+_SESSION_SUPERVISORS = []
+
 
 def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
     """Start sgl router or miles router and return (router_ip, router_port).
@@ -102,6 +106,10 @@ def start_session_server(args):
     if getattr(args, "session_server_instance_id", None) is None:
         args.session_server_instance_id = uuid.uuid4().hex
 
+    workers = getattr(args, "session_server_workers", 1)
+    if workers < 1:
+        raise ValueError(f"--session-server-workers must be >= 1, got {workers}")
+
     ip, port = args.session_server_ip, args.session_server_port
     if not is_port_available(port):
         raise RuntimeError(
@@ -110,6 +118,17 @@ def start_session_server(args):
         )
 
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+
+    if workers > 1:
+        # Multi-process: a supervisor spawns N workers + 1 router and blocks
+        # until all workers are ready, with fail-fast monitoring + no orphans.
+        from miles.rollout.session.session_supervisor import SessionServerSupervisor
+
+        supervisor = SessionServerSupervisor(args, router_url, ip, port)
+        supervisor.start()
+        _SESSION_SUPERVISORS.append(supervisor)  # keep alive past this call
+        logger.info(f"Session server (workers={workers}) launched at {ip}:{port}")
+        return supervisor
 
     from miles.rollout.session.session_server import run_session_server
 
