@@ -99,12 +99,12 @@ from torch.distributed.checkpoint.planner_helpers import create_read_items_for_c
 from torch.distributed.checkpoint.utils import _create_file_view
 from torch.futures import Future
 from tqdm.auto import tqdm
-from transformers import AutoConfig
 from typing_extensions import override
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from miles.backends.megatron_utils import megatron_to_hf as m2hf
+from miles.utils.hf_config import load_hf_config as _load_hf_config
 
 DEFAULT_DIRECT_MOE_GROUP_SIZE = 2 * 1024**3
 
@@ -881,7 +881,7 @@ def summarize_plan(tasks: list[TaskSpec], model_name: str, concurrency: int, out
 def load_hf_config(origin_hf_dir: str | None) -> Any | None:
     if origin_hf_dir is None:
         return None
-    return AutoConfig.from_pretrained(origin_hf_dir, trust_remote_code=True)
+    return _load_hf_config(origin_hf_dir, trust_remote_code=True)
 
 
 def load_quantization_config(hf_config: Any | None) -> dict[str, Any] | None:
