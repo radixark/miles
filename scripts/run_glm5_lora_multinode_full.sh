@@ -91,11 +91,16 @@ export R3="${R3:-on}"                             # R3 ON = rollout ROUTING repl
 # (~372 GB/node) across pause/resume. Host fits now that R3 is routing-only (no indexer host buffer).
 export LORA_BASE_CPU_BACKUP="${LORA_BASE_CPU_BACKUP:-on}"
 export LORA_RANK="${LORA_RANK:-16}"
-export SEQ="${SEQ:-4096}"                        # dapo-math sweet spot (rollout-only raw_reward sweep:
-                                                 #   1024=0.0, 2048=0.125, 4096=0.25, 8192=0.3125 -- diminishing
-                                                 #   returns past 4096 at 2x rollout time). Bump SEQ=8192 for max signal.
-export RESP_LEN="${RESP_LEN:-3584}"              # response budget within seq 4096 (leaves ~512 for the prompt)
-export TASK="${TASK:-dapo-math}"
+export TASK="${TASK:-dapo-math}"                 # dataset: dapo-math | gsm8k
+# SEQ / RESP_LEN default per TASK:
+#   dapo-math -> 4096 / 3584  (rollout-only raw_reward sweep: 1024=0.0, 2048=0.125, 4096=0.25,
+#                8192=0.3125; diminishing past 4096 at 2x rollout time. Bump SEQ=8192 for max signal.)
+#   gsm8k     -> 256 / 256    (short-answer grade-school math; tiny window -> fast smoke. Dense DSA.)
+if [[ "$TASK" == "gsm8k" ]]; then
+  export SEQ="${SEQ:-256}"; export RESP_LEN="${RESP_LEN:-256}"
+else
+  export SEQ="${SEQ:-4096}"; export RESP_LEN="${RESP_LEN:-3584}"
+fi
 # Dynamic sampling (check_reward_nonzero_std filter) DEFAULT OFF here. At the current reward /
 # truncation levels (seq 4096 dapo: raw_reward ~0.25, ~75% truncated -> many groups are all-zero
 # = zero-std), the filter rejects most groups and RESAMPLES indefinitely, so rollout 0 never

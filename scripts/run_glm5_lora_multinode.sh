@@ -113,14 +113,14 @@ TASK="${TASK:-dapo-math}"                       # dataset: dapo-math | gsm8k
 # dapo-math reasoning is LONG; a rollout-only seq sweep (raw_reward) gave 1024=0.0, 2048=0.125,
 # 4096=0.25, 8192=0.3125 -- diminishing returns past 4096 at 2x rollout cost -> 4096 is the
 # validated reward/throughput sweet spot for dapo. Other tasks keep the longer 8192 window.
-if [[ "$TASK" == "dapo-math" ]]; then SEQ="${SEQ:-4096}"; else SEQ="${SEQ:-8192}"; fi  # target seq window (not a native flag)
+if [[ "$TASK" == "dapo-math" ]]; then SEQ="${SEQ:-4096}"; elif [[ "$TASK" == "gsm8k" ]]; then SEQ="${SEQ:-256}"; else SEQ="${SEQ:-8192}"; fi  # target seq window; gsm8k short-answer -> 256 (not a native flag)
 # ----------------------------------------------------------------------------
 
 RAY_PORT="${RAY_PORT:-6379}"
 DASH_PORT="${DASH_PORT:-8265}"
 NUM_ROLLOUT="${NUM_ROLLOUT:-50}"               # == number of train steps
 SAVE_INTERVAL="${SAVE_INTERVAL:-10}"           # keep ~NUM_ROLLOUT/SAVE_INTERVAL adapters
-if [[ "$TASK" == "dapo-math" ]]; then RESP_LEN="${RESP_LEN:-3584}"; else RESP_LEN="${RESP_LEN:-7168}"; fi  # --rollout-max-response-len (within SEQ)
+if [[ "$TASK" == "dapo-math" ]]; then RESP_LEN="${RESP_LEN:-3584}"; elif [[ "$TASK" == "gsm8k" ]]; then RESP_LEN="${RESP_LEN:-256}"; else RESP_LEN="${RESP_LEN:-7168}"; fi  # --rollout-max-response-len (gsm8k -> 256 within SEQ)
 DAPO_DYNAMIC_SAMPLING="${DAPO_DYNAMIC_SAMPLING:-on}"  # on for a REAL model; off for gsm8k/toy smoke
 
 # ----- rollout (sglang) engine size — CRITICAL for the FULL 744B model -----
