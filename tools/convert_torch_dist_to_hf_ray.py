@@ -1,28 +1,72 @@
-"""Convert Megatron torch_dist checkpoints to Hugging Face safetensors with Ray.
+r"""Ray-based Megatron torch_dist to HuggingFace conversion.
 
-Architecture overview:
-    The driver reads torch.distributed.checkpoint metadata, plans bounded source
-    tensor tasks, and schedules those tasks across Ray actors. Each actor loads
-    only the tensors needed for its task, converts them to Hugging Face tensor
-    names, writes temporary safetensors shards, and returns a small manifest to
-    the driver. The driver then assigns deterministic final shard names, copies
-    non-weight Hugging Face assets from --origin-hf-dir, and writes the final
-    model.safetensors.index.json.
+This is a high-throughput converter for large Kimi/DeepSeek-style checkpoints.
+The core idea is to parallelize conversion work using distributed processes on Ray.
+Conversion is an embarrassingly parallel problem, so it exhibits strong scaling with the number of nodes.
 
-    This keeps peak memory bounded by per-task tensor groups instead of loading
-    the full torch_dist checkpoint into one process.
+System flow:
 
-Example:
-    python tools/convert_torch_dist_to_hf_ray.py \\
-      --input-dir /path/to/torch_dist/iter_0000400 \\
-      --origin-hf-dir /path/to/origin_hf_noquant \\
-      --output-dir /path/to/output_hf \\
-      --model-name kimi_k25 \\
-      --concurrency 32 \\
-      --task-group-bytes 2147483648 \\
-      --max-file-bytes 21474836480 \\
-      --progress-interval-seconds 10 \\
-      -f
++-------------------+
+| prepare_runtime   |
+|-------------------|
+| init Ray          |
+| validate output   |
+| stage HF config   |
+| create staging    |
++---------+---------+
+          |
+          v
++------------------------+
+| read_metadata_and_plan |
+|------------------------|
+| read common.pt         |
+| read DCP metadata      |
+| build task plan        |
+| publish metadata ref   |
++-----------+------------+
+            |
+            v
++-------------------------------------------------------------+
+| dispatch_conversion_tasks                                   |
+|-------------------------------------------------------------|
+| create pinned Ray actors                                    |
+| submit/refill tasks up to --concurrency                     |
+|                                                             |
+|  +------------------+   +------------------+   +---------+  |
+|  | actor 0          |   | actor 1          |   | actor N |  |
+|  |------------------|   |------------------|   |---------|  |
+|  | DCP load         |   | DCP load         |   | ...     |  |
+|  | convert to HF    |   | convert to HF    |   | ...     |  |
+|  | optional quant   |   | optional quant   |   | ...     |  |
+|  | write shards     |   | write shards     |   | ...     |  |
+|  | return manifest  |   | return manifest  |   | ...     |  |
+|  +------------------+   +------------------+   +---------+  |
++-----------------------------+-------------------------------+
+                              |
+                              v
++----------------------------+
+| finalize_conversion_output |
+|----------------------------|
+| merge manifests            |
+| assign final shard names   |
+| publish shards/assets      |
+| write final index          |
++----------------------------+
+
+Examples:
+
+INPUT_DIR=s3://periodic-model-artifacts-use14a/alchemy/checkpoints/rl_loop_grpo_math_k26-49k-pbox-sglang-multitask-onnes-synthesis-critique-nojit_32gpu_6cpu_t20260606-010247_slurm1132516/checkpoint/iter_400
+ORIGIN_HF_DIR=s3://periodic-model-artifacts-use01a/post-training/models/huggingface/moonshotai/Kimi-K2.6-fp8-configs-only
+
+# 8-layer smoke test
+SOURCE_KEY_REGEX="^language_model\.decoder\.layers\.([0-7])\."
+python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir /tmp/$USER/$RUN_ID/hf_ray_l0_7 --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --source-key-regex $SOURCE_KEY_REGEX --max-file-bytes 21474836480 --concurrency 16 --progress-interval-seconds 10 -f
+
+# Full conversion on 1 node
+python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir s3://periodic-model-artifacts-use14a/tmp/$USER/kimi-ray/$RUN_ID/ray1_hf --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --max-file-bytes 21474836480 --concurrency 16 --progress-interval-seconds 10 -f
+
+# Full conversion on 4 nodes
+python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir s3://periodic-model-artifacts-use14a/tmp/$USER/kimi-ray/$RUN_ID/ray4_hf --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --max-file-bytes 21474836480 --concurrency 64 --progress-interval-seconds 10 -f
 """
 
 from __future__ import annotations
