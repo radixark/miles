@@ -83,6 +83,13 @@ export R3="${R3:-on}"                             # R3 ON = rollout ROUTING repl
                                                   # parity, cheap ~0.5GB/rank). The DSA INDEXER replay is
                                                   # NOT added (it's debug-only + was the ~78-128GB/rank host
                                                   # buffer that OOM'd the pod) -- see run_glm5_lora.py r3_args.
+# --lora-base-cpu-backup ON is REQUIRED for correct colocate LoRA, not just a perf knob. With it OFF,
+# skip_base_sync=False -> megatron RE-SHIPS the full base to sglang every update_weights, and the bridge
+# export mis-maps the GLM-5.2 slime base -> sglang serves a CORRUPTED base -> rollout!=train policy ->
+# degenerate rollout (reward 0). PROVEN on the 5-layer A/B: train_rollout_kl 1.04 (off) -> 0.0004 (on).
+# ON => skip_base_sync=True, no re-ship, sglang serves its own correctly-loaded base + a host mirror
+# (~372 GB/node) across pause/resume. Host fits now that R3 is routing-only (no indexer host buffer).
+export LORA_BASE_CPU_BACKUP="${LORA_BASE_CPU_BACKUP:-on}"
 export LORA_RANK="${LORA_RANK:-16}"
 export SEQ="${SEQ:-4096}"                        # dapo-math sweet spot (rollout-only raw_reward sweep:
                                                  #   1024=0.0, 2048=0.125, 4096=0.25, 8192=0.3125 -- diminishing
