@@ -136,10 +136,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     dsa_attention_backend: Literal["megatron-bridge", "slime"] = "slime"
 
     # R3 (rollout routing replay, arxiv 2510.11370): during training, replay the rollout's recorded
-    # MoE top-8 so the train-side expert selection matches the rollout (on-policy). Adds
-    # --use-rollout-routing-replay; on the slime backend it ALSO adds --use-rollout-indexer-replay
-    # (the DSA indexer top-k replay), which only the slime backend self-registers -- the unfused
-    # megatron-bridge path has no indexer replay, so it is skipped there.
+    # MoE top-8 so the train-side expert selection matches the rollout (on-policy). Adds ONLY
+    # --use-rollout-routing-replay. The DSA indexer top-k replay (--use-rollout-indexer-replay) is
+    # NOT added: it is a debug-only parity check (the slime kernel recomputes the top-k) and it
+    # triggers sglang's ~78-128 GB/rank IndexerTopkCapturer host buffer that OOM'd the colocate pod.
+    # See _build_train_args r3_args for the full rationale.
     use_r3: bool = True
 
     # performance
