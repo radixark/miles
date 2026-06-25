@@ -55,18 +55,21 @@ System flow:
 
 Examples:
 
-INPUT_DIR=s3://periodic-model-artifacts-use14a/alchemy/checkpoints/rl_loop_grpo_math_k26-49k-pbox-sglang-multitask-onnes-synthesis-critique-nojit_32gpu_6cpu_t20260606-010247_slurm1132516/checkpoint/iter_400
-ORIGIN_HF_DIR=s3://periodic-model-artifacts-use01a/post-training/models/huggingface/moonshotai/Kimi-K2.6-fp8-configs-only
+The converter expects filesystem paths. Stage remote checkpoints and HF assets
+onto local or shared storage before running it.
+
+INPUT_DIR=/mnt/checkpoints/kimi-k26/iter_0000400
+ORIGIN_HF_DIR=/mnt/hf/Kimi-K2.6-fp8-configs-only
 
 # 8-layer smoke test
 SOURCE_KEY_REGEX="^language_model\.decoder\.layers\.([0-7])\."
 python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir /tmp/$USER/$RUN_ID/hf_ray_l0_7 --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --source-key-regex $SOURCE_KEY_REGEX --max-file-bytes 21474836480 --concurrency 16 --progress-interval-seconds 10 -f
 
 # Full conversion on 1 node
-python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir s3://periodic-model-artifacts-use14a/tmp/$USER/kimi-ray/$RUN_ID/ray1_hf --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --max-file-bytes 21474836480 --concurrency 16 --progress-interval-seconds 10 -f
+python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir /mnt/outputs/kimi-ray/$RUN_ID/ray1_hf --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --max-file-bytes 21474836480 --concurrency 16 --progress-interval-seconds 10 -f
 
 # Full conversion on 4 nodes
-python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir s3://periodic-model-artifacts-use14a/tmp/$USER/kimi-ray/$RUN_ID/ray4_hf --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --max-file-bytes 21474836480 --concurrency 64 --progress-interval-seconds 10 -f
+python tools/convert_torch_dist_to_hf_ray.py --input-dir $INPUT_DIR --output-dir /mnt/outputs/kimi-ray/$RUN_ID/ray4_hf --origin-hf-dir $ORIGIN_HF_DIR --model-name kimi_k25 --max-file-bytes 21474836480 --concurrency 64 --progress-interval-seconds 10 -f
 """
 
 from __future__ import annotations
