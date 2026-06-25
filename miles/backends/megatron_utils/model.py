@@ -918,10 +918,8 @@ def train(
     # Run training iterations till done.
     for step_id in range(num_steps_per_rollout):
         predictive_controller = get_predictive_replay_controller()
-        # Publish current rollout/step so the stabilization layer's cross-
-        # rollout anneal (--predictive-topk-margin-ratio-anneal-*) can resolve
-        # its progress; without this, every annealing-related flag silently
-        # no-ops because resolve_predictive_topk_margin_ratio sees rollout_id=None.
+        # Publish the current rollout/step id so any rollout-aware predictive
+        # bookkeeping has the context it needs.
         predictive_controller.set_current_step_context(rollout_id=rollout_id, step_id=step_id)
         resolved_predictive_train_mode = (
             predictive_train_mode
@@ -1060,9 +1058,8 @@ def train(
                     rank=mpu.get_data_parallel_rank(),
                 )
 
-    # Drop rollout/step context now that the loop is done; if the next caller
-    # forgets to set it again we want resolve_predictive_topk_margin_ratio to
-    # see None (= disabled) rather than a stale id from the previous rollout.
+    # Drop rollout/step context now that the loop is done so a later caller that
+    # forgets to set it again sees None rather than a stale id from this rollout.
     get_predictive_replay_controller().clear_current_step_context()
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.

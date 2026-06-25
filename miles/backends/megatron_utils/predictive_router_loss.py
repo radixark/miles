@@ -7,8 +7,6 @@ access. They're called from the training-side compute pass inside
 Public API (re-exported by `predictive_router_replay.py` for backward
 compat):
     * compute_predictive_loss
-    * compute_hidden_shift_relative_norm
-    * build_hidden_shift_loss_weights
     * build_topk_boundary_loss_weights
     * build_synthetic_predictive_loss
 
@@ -62,57 +60,6 @@ def compute_predictive_loss(
         return _weighted_mean(per_token_loss)
 
     raise ValueError(f"Unsupported predictive loss type: {loss_type}")
-
-
-def compute_hidden_shift_relative_norm(
-    *,
-    old_inputs: torch.Tensor,
-    current_inputs: torch.Tensor,
-) -> torch.Tensor:
-    if old_inputs.shape != current_inputs.shape:
-        raise ValueError(f"old_inputs shape {old_inputs.shape} != current_inputs shape {current_inputs.shape}")
-    old_inputs = old_inputs.float()
-    current_inputs = current_inputs.float()
-    delta = current_inputs - old_inputs
-    old_norm = torch.linalg.vector_norm(old_inputs, dim=-1)
-    delta_norm = torch.linalg.vector_norm(delta, dim=-1)
-    return delta_norm / (old_norm + 1e-10)
-
-
-def build_hidden_shift_loss_weights(
-    *,
-    old_inputs: torch.Tensor,
-    current_inputs: torch.Tensor,
-    max_hidden_shift_relative_norm: float | None,
-    weight_mode: str = "binary",
-) -> tuple[torch.Tensor | None, dict[str, float]]:
-    hidden_shift_relative_norm = compute_hidden_shift_relative_norm(
-        old_inputs=old_inputs,
-        current_inputs=current_inputs,
-    )
-    metrics = {
-        "predictive_hidden_shift_relative_norm_mean": float(hidden_shift_relative_norm.mean().item()),
-        "predictive_hidden_shift_relative_norm_max": float(hidden_shift_relative_norm.max().item()),
-    }
-    if max_hidden_shift_relative_norm is None:
-        metrics["predictive_hidden_shift_safe_fraction"] = 1.0
-        metrics["predictive_hidden_shift_weight_mean"] = 1.0
-        return None, metrics
-
-    threshold = float(max_hidden_shift_relative_norm)
-    normalized_headroom = torch.clamp(1.0 - (hidden_shift_relative_norm / threshold), min=0.0, max=1.0)
-    if weight_mode == "binary":
-        weights = (normalized_headroom > 0.0).to(dtype=torch.float32)
-    elif weight_mode == "linear":
-        weights = normalized_headroom.to(dtype=torch.float32)
-    elif weight_mode == "quadratic":
-        weights = normalized_headroom.square().to(dtype=torch.float32)
-    else:
-        raise ValueError(f"Unsupported hidden-shift weight mode: {weight_mode}")
-
-    metrics["predictive_hidden_shift_safe_fraction"] = float((normalized_headroom > 0.0).float().mean().item())
-    metrics["predictive_hidden_shift_weight_mean"] = float(weights.mean().item())
-    return weights, metrics
 
 
 def build_topk_boundary_loss_weights(

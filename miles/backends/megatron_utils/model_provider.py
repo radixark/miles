@@ -73,22 +73,8 @@ def get_model_provider_func(
             lr_mult=getattr(args, "bias_predictor_lr_mult", 1.0),
             layer_scale_schedule=getattr(args, "predictive_layer_scale_schedule", "none"),
             layer_scale_min=getattr(args, "predictive_layer_scale_min", 1.0),
-            max_delta_to_old_ratio=getattr(args, "predictive_max_delta_to_old_ratio", None),
-            max_delta_to_topk_margin_ratio=getattr(args, "predictive_max_delta_to_topk_margin_ratio", None),
-            max_delta_to_topk_margin_ratio_final=getattr(
-                args, "predictive_max_delta_to_topk_margin_ratio_final", None
-            ),
-            topk_margin_ratio_anneal_start_rollout=getattr(
-                args, "predictive_topk_margin_ratio_anneal_start_rollout", None
-            ),
-            topk_margin_ratio_anneal_end_rollout=getattr(
-                args, "predictive_topk_margin_ratio_anneal_end_rollout", None
-            ),
-            max_hidden_shift_relative_norm=getattr(args, "predictive_max_hidden_shift_relative_norm", None),
-            hidden_shift_weight_mode=getattr(args, "predictive_hidden_shift_weight_mode", "binary"),
             boundary_loss_max_weight=getattr(args, "predictive_boundary_loss_max_weight", None),
             boundary_loss_min_margin=getattr(args, "predictive_boundary_loss_min_margin", 1e-4),
-            min_post_topk_margin_for_flip=getattr(args, "predictive_min_post_topk_margin_for_flip", None),
         )
         return model
 

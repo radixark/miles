@@ -34,20 +34,15 @@ from miles.utils.replay_base import routing_replay_manager
 # (actor.py, model.py, update_weight/common.py, every test_predictive_* file)
 # keep working without churn.
 from miles.backends.megatron_utils.predictive_router_loss import (  # noqa: F401
-    build_hidden_shift_loss_weights,
     build_synthetic_predictive_loss,
     build_topk_boundary_loss_weights,
-    compute_hidden_shift_relative_norm,
     compute_predictive_loss,
 )
 from miles.backends.megatron_utils.predictive_router_stabilization import (  # noqa: F401
     PREDICTIVE_LAYER_SCALE_SCHEDULES,
-    apply_predictive_flip_fallback,
     compute_predictive_bias_ratio,
     compute_predictive_layer_scale,
     compute_topk_boundary_margin,
-    compute_topk_set_change_mask,
-    resolve_predictive_topk_margin_ratio,
     stabilize_predictive_delta_logits,
 )
 
@@ -154,16 +149,8 @@ def initialize_predictive_router_modules(
     lr_mult: float,
     layer_scale_schedule: str = "none",
     layer_scale_min: float = 1.0,
-    max_delta_to_old_ratio: float | None = None,
-    max_delta_to_topk_margin_ratio: float | None = None,
-    max_delta_to_topk_margin_ratio_final: float | None = None,
-    topk_margin_ratio_anneal_start_rollout: int | None = None,
-    topk_margin_ratio_anneal_end_rollout: int | None = None,
-    max_hidden_shift_relative_norm: float | None = None,
-    hidden_shift_weight_mode: str = "binary",
     boundary_loss_max_weight: float | None = None,
     boundary_loss_min_margin: float = 1e-4,
-    min_post_topk_margin_for_flip: float | None = None,
 ) -> None:
     from megatron.core.transformer.moe.router import TopKRouter
 
@@ -183,18 +170,8 @@ def initialize_predictive_router_modules(
             submodule.config.bias_predictor_lr_mult = lr_mult
             submodule.config.predictive_layer_scale_schedule = layer_scale_schedule
             submodule.config.predictive_layer_scale_min = layer_scale_min
-            submodule.config.predictive_max_delta_to_old_ratio = max_delta_to_old_ratio
-            submodule.config.predictive_max_delta_to_topk_margin_ratio = max_delta_to_topk_margin_ratio
-            submodule.config.predictive_max_delta_to_topk_margin_ratio_final = max_delta_to_topk_margin_ratio_final
-            submodule.config.predictive_topk_margin_ratio_anneal_start_rollout = (
-                topk_margin_ratio_anneal_start_rollout
-            )
-            submodule.config.predictive_topk_margin_ratio_anneal_end_rollout = topk_margin_ratio_anneal_end_rollout
-            submodule.config.predictive_max_hidden_shift_relative_norm = max_hidden_shift_relative_norm
-            submodule.config.predictive_hidden_shift_weight_mode = hidden_shift_weight_mode
             submodule.config.predictive_boundary_loss_max_weight = boundary_loss_max_weight
             submodule.config.predictive_boundary_loss_min_margin = boundary_loss_min_margin
-            submodule.config.predictive_min_post_topk_margin_for_flip = min_post_topk_margin_for_flip
 
             if not enabled:
                 submodule.predictive_router_replay = None
@@ -313,30 +290,9 @@ def apply_predictive_router_replay_patch() -> None:
                     num_layers=len(predictive_controller.router_states),
                     layer_scale_schedule=getattr(self.config, "predictive_layer_scale_schedule", "none"),
                     layer_scale_min=float(getattr(self.config, "predictive_layer_scale_min", 1.0)),
-                    max_delta_to_old_ratio=getattr(self.config, "predictive_max_delta_to_old_ratio", None),
-                    topk=self.topk,
-                    max_delta_to_topk_margin_ratio=getattr(
-                        self.config, "predictive_max_delta_to_topk_margin_ratio", None
-                    ),
-                    max_delta_to_topk_margin_ratio_final=getattr(
-                        self.config, "predictive_max_delta_to_topk_margin_ratio_final", None
-                    ),
-                    topk_margin_ratio_anneal_start_rollout=getattr(
-                        self.config, "predictive_topk_margin_ratio_anneal_start_rollout", None
-                    ),
-                    topk_margin_ratio_anneal_end_rollout=getattr(
-                        self.config, "predictive_topk_margin_ratio_anneal_end_rollout", None
-                    ),
-                    current_rollout_id=predictive_controller.get_current_rollout_id(),
                 )
-                effective_logits, applied_delta_logits, _, _ = apply_predictive_flip_fallback(
-                    reference_logits=logits.detach(),
-                    adjusted_logits=logits + predicted_delta_logits,
-                    topk=self.topk,
-                    min_post_topk_margin_for_flip=getattr(
-                        self.config, "predictive_min_post_topk_margin_for_flip", None
-                    ),
-                )
+                effective_logits = logits + predicted_delta_logits
+                applied_delta_logits = predicted_delta_logits
                 PredictiveRouterReplayState.record_predictive_bias_stats(
                     predictive_state.layer_idx,
                     applied_delta_logits,
@@ -381,58 +337,16 @@ def apply_predictive_router_replay_patch() -> None:
                     num_layers=len(predictive_controller.router_states),
                     layer_scale_schedule=getattr(self.config, "predictive_layer_scale_schedule", "none"),
                     layer_scale_min=float(getattr(self.config, "predictive_layer_scale_min", 1.0)),
-                    max_delta_to_old_ratio=getattr(self.config, "predictive_max_delta_to_old_ratio", None),
-                    topk=self.topk,
-                    max_delta_to_topk_margin_ratio=getattr(
-                        self.config, "predictive_max_delta_to_topk_margin_ratio", None
-                    ),
-                    max_delta_to_topk_margin_ratio_final=getattr(
-                        self.config, "predictive_max_delta_to_topk_margin_ratio_final", None
-                    ),
-                    topk_margin_ratio_anneal_start_rollout=getattr(
-                        self.config, "predictive_topk_margin_ratio_anneal_start_rollout", None
-                    ),
-                    topk_margin_ratio_anneal_end_rollout=getattr(
-                        self.config, "predictive_topk_margin_ratio_anneal_end_rollout", None
-                    ),
-                    current_rollout_id=predictive_controller.get_current_rollout_id(),
                 )
-                effective_logits, applied_delta_logits, execution_weights, fallback_metrics = (
-                    apply_predictive_flip_fallback(
-                        reference_logits=old_logits.detach(),
-                        adjusted_logits=old_logits + predicted_delta_logits,
-                        topk=self.topk,
-                        min_post_topk_margin_for_flip=getattr(
-                            self.config, "predictive_min_post_topk_margin_for_flip", None
-                        ),
-                    )
-                )
-                hidden_shift_weights, hidden_shift_metrics = build_hidden_shift_loss_weights(
-                    old_inputs=old_inputs.detach(),
-                    current_inputs=current_inputs,
-                    max_hidden_shift_relative_norm=getattr(
-                        self.config, "predictive_max_hidden_shift_relative_norm", None
-                    ),
-                    weight_mode=getattr(self.config, "predictive_hidden_shift_weight_mode", "binary"),
-                )
+                effective_logits = old_logits + predicted_delta_logits
+                applied_delta_logits = predicted_delta_logits
                 boundary_loss_weights, boundary_loss_metrics = build_topk_boundary_loss_weights(
                     old_logits=old_logits.detach(),
                     topk=self.topk,
                     max_boundary_loss_weight=getattr(self.config, "predictive_boundary_loss_max_weight", None),
                     min_boundary_margin=float(getattr(self.config, "predictive_boundary_loss_min_margin", 1e-4)),
                 )
-                sample_weights = hidden_shift_weights
-                if boundary_loss_weights is not None:
-                    sample_weights = (
-                        boundary_loss_weights
-                        if sample_weights is None
-                        else sample_weights.to(boundary_loss_weights.device) * boundary_loss_weights
-                    )
-                sample_weights = (
-                    execution_weights
-                    if sample_weights is None
-                    else sample_weights.to(execution_weights.device) * execution_weights
-                )
+                sample_weights = boundary_loss_weights
                 predictive_loss = compute_predictive_loss(
                     old_logits=old_logits,
                     current_logits=current_logits,
@@ -462,21 +376,7 @@ def apply_predictive_router_replay_patch() -> None:
                     metric_value,
                     current_logits.shape[0],
                 )
-            for metric_name, metric_value in hidden_shift_metrics.items():
-                PredictiveRouterReplayState.record_predictive_scalar_metric(
-                    metric_name,
-                    predictive_state.layer_idx,
-                    metric_value,
-                    current_logits.shape[0],
-                )
             for metric_name, metric_value in boundary_loss_metrics.items():
-                PredictiveRouterReplayState.record_predictive_scalar_metric(
-                    metric_name,
-                    predictive_state.layer_idx,
-                    metric_value,
-                    current_logits.shape[0],
-                )
-            for metric_name, metric_value in fallback_metrics.items():
                 PredictiveRouterReplayState.record_predictive_scalar_metric(
                     metric_name,
                     predictive_state.layer_idx,

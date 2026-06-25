@@ -122,7 +122,6 @@ arguments = importlib.import_module("miles.utils.arguments")
 PREDICTIVE_ROUTING_REPLAY_LOSS_TYPES = arguments.PREDICTIVE_ROUTING_REPLAY_LOSS_TYPES
 PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES = arguments.PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES
 PREDICTIVE_ROUTING_REPLAY_STORAGE_DTYPES = arguments.PREDICTIVE_ROUTING_REPLAY_STORAGE_DTYPES
-PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES = arguments.PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES
 _validate_predictive_routing_replay_args = arguments._validate_predictive_routing_replay_args
 _validate_router_logits_args = arguments._validate_router_logits_args
 get_miles_extra_args_provider = arguments.get_miles_extra_args_provider
@@ -142,18 +141,10 @@ def _make_validation_args(**overrides):
         "predictive_downsample_batch_size": None,
         "predictive_downsample_max_len_limit": None,
         "predictive_max_total_tokens": None,
-        "predictive_max_hidden_shift_relative_norm": None,
-        "predictive_hidden_shift_weight_mode": "binary",
         "predictive_boundary_loss_max_weight": None,
         "predictive_boundary_loss_min_margin": 1e-4,
-        "predictive_min_post_topk_margin_for_flip": None,
         "predictive_layer_scale_schedule": "none",
         "predictive_layer_scale_min": 1.0,
-        "predictive_max_delta_to_old_ratio": None,
-        "predictive_max_delta_to_topk_margin_ratio": None,
-        "predictive_max_delta_to_topk_margin_ratio_final": None,
-        "predictive_topk_margin_ratio_anneal_start_rollout": None,
-        "predictive_topk_margin_ratio_anneal_end_rollout": None,
         "predictive_storage_dtype": "bf16",
         "train_backend": "megatron",
         "use_routing_replay": False,
@@ -181,30 +172,14 @@ def test_predictive_flags_parse():
             "1024",
             "--predictive-max-total-tokens",
             "2048",
-            "--predictive-max-hidden-shift-relative-norm",
-            "0.02",
-            "--predictive-hidden-shift-weight-mode",
-            "quadratic",
             "--predictive-boundary-loss-max-weight",
             "4.0",
             "--predictive-boundary-loss-min-margin",
             "0.001",
-            "--predictive-min-post-topk-margin-for-flip",
-            "0.05",
             "--predictive-layer-scale-schedule",
             "sqrt_decay",
             "--predictive-layer-scale-min",
             "0.5",
-            "--predictive-max-delta-to-old-ratio",
-            "0.02",
-            "--predictive-max-delta-to-topk-margin-ratio",
-            "1.0",
-            "--predictive-max-delta-to-topk-margin-ratio-final",
-            "2.0",
-            "--predictive-topk-margin-ratio-anneal-start-rollout",
-            "80",
-            "--predictive-topk-margin-ratio-anneal-end-rollout",
-            "160",
             "--predictive-storage-dtype",
             "fp16",
         ]
@@ -216,18 +191,10 @@ def test_predictive_flags_parse():
     assert args.predictive_downsample_batch_size == 4
     assert args.predictive_downsample_max_len_limit == 1024
     assert args.predictive_max_total_tokens == 2048
-    assert args.predictive_max_hidden_shift_relative_norm == pytest.approx(0.02)
-    assert args.predictive_hidden_shift_weight_mode == "quadratic"
     assert args.predictive_boundary_loss_max_weight == pytest.approx(4.0)
     assert args.predictive_boundary_loss_min_margin == pytest.approx(0.001)
-    assert args.predictive_min_post_topk_margin_for_flip == pytest.approx(0.05)
     assert args.predictive_layer_scale_schedule == "sqrt_decay"
     assert args.predictive_layer_scale_min == pytest.approx(0.5)
-    assert args.predictive_max_delta_to_old_ratio == pytest.approx(0.02)
-    assert args.predictive_max_delta_to_topk_margin_ratio == pytest.approx(1.0)
-    assert args.predictive_max_delta_to_topk_margin_ratio_final == pytest.approx(2.0)
-    assert args.predictive_topk_margin_ratio_anneal_start_rollout == 80
-    assert args.predictive_topk_margin_ratio_anneal_end_rollout == 160
     assert args.predictive_storage_dtype == "fp16"
 
 
@@ -273,29 +240,7 @@ def test_predictive_layer_scale_schedule_choices_exported():
     assert PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES == ("none", "linear_decay", "sqrt_decay", "cosine_decay")
 
 
-def test_predictive_hidden_shift_weight_mode_choices_exported():
-    assert PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES == ("binary", "linear", "quadratic")
-
-
 def test_predictive_validation_rejects_invalid_stabilizer_args():
-    with pytest.raises(AssertionError, match="predictive-max-hidden-shift-relative-norm"):
-        _validate_predictive_routing_replay_args(
-            _make_validation_args(
-                enable_predictive_routing_replay=True,
-                use_routing_replay=True,
-                predictive_max_hidden_shift_relative_norm=0.0,
-            )
-        )
-
-    with pytest.raises(AssertionError, match="predictive hidden-shift weight mode"):
-        _validate_predictive_routing_replay_args(
-            _make_validation_args(
-                enable_predictive_routing_replay=True,
-                use_routing_replay=True,
-                predictive_hidden_shift_weight_mode="bad-mode",
-            )
-        )
-
     with pytest.raises(AssertionError, match="predictive-layer-scale-min"):
         _validate_predictive_routing_replay_args(
             _make_validation_args(
@@ -305,21 +250,12 @@ def test_predictive_validation_rejects_invalid_stabilizer_args():
             )
         )
 
-    with pytest.raises(AssertionError, match="predictive-max-delta-to-old-ratio"):
+    with pytest.raises(AssertionError, match="predictive-boundary-loss-max-weight"):
         _validate_predictive_routing_replay_args(
             _make_validation_args(
                 enable_predictive_routing_replay=True,
                 use_routing_replay=True,
-                predictive_max_delta_to_old_ratio=0.0,
-            )
-        )
-
-    with pytest.raises(AssertionError, match="predictive-min-post-topk-margin-for-flip"):
-        _validate_predictive_routing_replay_args(
-            _make_validation_args(
-                enable_predictive_routing_replay=True,
-                use_routing_replay=True,
-                predictive_min_post_topk_margin_for_flip=0.0,
+                predictive_boundary_loss_max_weight=0.0,
             )
         )
 
@@ -422,7 +358,6 @@ def test_predictive_validation_rejects_negative_lr_multiplier():
         ("predictive_downsample_batch_size", 0, "predictive-downsample-batch-size"),
         ("predictive_downsample_max_len_limit", 0, "predictive-downsample-max-len-limit"),
         ("predictive_max_total_tokens", 0, "predictive-max-total-tokens"),
-        ("predictive_max_delta_to_topk_margin_ratio", 0, "predictive-max-delta-to-topk-margin-ratio"),
     ],
 )
 def test_predictive_validation_rejects_nonpositive_downsample_values(field_name, field_value, message):
@@ -433,54 +368,6 @@ def test_predictive_validation_rejects_nonpositive_downsample_values(field_name,
     )
 
     with pytest.raises(AssertionError, match=message):
-        _validate_predictive_routing_replay_args(args)
-
-
-def test_predictive_validation_accepts_topk_margin_ratio_above_one():
-    args = _make_validation_args(
-        enable_predictive_routing_replay=True,
-        use_routing_replay=True,
-        predictive_max_delta_to_topk_margin_ratio=1.25,
-    )
-
-    _validate_predictive_routing_replay_args(args)
-
-
-def test_predictive_validation_rejects_incomplete_topk_margin_ratio_annealing():
-    args = _make_validation_args(
-        enable_predictive_routing_replay=True,
-        use_routing_replay=True,
-        predictive_max_delta_to_topk_margin_ratio=1.0,
-        predictive_max_delta_to_topk_margin_ratio_final=2.0,
-    )
-
-    with pytest.raises(AssertionError, match="predictive-topk-margin-ratio-anneal-end-rollout"):
-        _validate_predictive_routing_replay_args(args)
-
-
-def test_predictive_validation_rejects_topk_margin_ratio_anneal_without_final_ratio():
-    args = _make_validation_args(
-        enable_predictive_routing_replay=True,
-        use_routing_replay=True,
-        predictive_max_delta_to_topk_margin_ratio=1.0,
-        predictive_topk_margin_ratio_anneal_end_rollout=160,
-    )
-
-    with pytest.raises(AssertionError, match="top-k margin-ratio anneal rollout arguments"):
-        _validate_predictive_routing_replay_args(args)
-
-
-def test_predictive_validation_rejects_topk_margin_ratio_anneal_end_before_start():
-    args = _make_validation_args(
-        enable_predictive_routing_replay=True,
-        use_routing_replay=True,
-        predictive_max_delta_to_topk_margin_ratio=1.0,
-        predictive_max_delta_to_topk_margin_ratio_final=2.0,
-        predictive_topk_margin_ratio_anneal_start_rollout=100,
-        predictive_topk_margin_ratio_anneal_end_rollout=80,
-    )
-
-    with pytest.raises(AssertionError, match="anneal-end-rollout must be greater"):
         _validate_predictive_routing_replay_args(args)
 
 

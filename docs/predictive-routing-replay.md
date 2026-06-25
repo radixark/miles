@@ -7,8 +7,8 @@ from the paper), and the user-facing configuration parameters.
 Core source:
 
 - `miles/backends/megatron_utils/predictive_router_replay.py` — runtime: `PredictiveReplayController` state machine, patched `TopKRouter.forward`, state registry, public re-exports of the stateless helpers below.
-- `miles/backends/megatron_utils/predictive_router_stabilization.py` — stateless §4.2 helpers: depth-aware layer-scale gate, magnitude clip, top-k margin clip, flip-fallback.
-- `miles/backends/megatron_utils/predictive_router_loss.py` — stateless `compute_predictive_loss` (`kl` / `kl-post`), hidden-shift + boundary sample reweighting, synthetic-loss synchronization.
+- `miles/backends/megatron_utils/predictive_router_stabilization.py` — stateless §4.2 helper: depth-aware layer-scale gate.
+- `miles/backends/megatron_utils/predictive_router_loss.py` — stateless `compute_predictive_loss` (`kl` / `kl-post`), top-k boundary-margin sample reweighting, synthetic-loss synchronization.
 - `miles/backends/megatron_utils/predictive_router_utils.py` — packing/transport of recorded predictive microbatches.
 - `miles/backends/megatron_utils/predictive_train_schedule.py` — train-pass plan (skip → compute per mini-step).
 - `miles/backends/megatron_utils/router_replay_artifacts.py` — on-disk artifact naming/loading.
@@ -78,37 +78,23 @@ Uniform token weighting, stop-grad on the current router's $\rho^{(l)}_t$ as tea
 
 Miles adds a stabilization/safety layer + sample reweighting that the paper does not specify. See §6 for parameter semantics.
 
-**Rollout-side stabilization** (`stabilize_predictive_delta_logits`):
+Miles keeps the stabilization layer deliberately small: a single rollout-side
+gate plus a single training-side reweighting. Both default OFF, so omitting
+them reproduces the paper exactly.
 
-Form $\tilde{b}^{(l)}_t = h^{(l)}_{\mathrm{old},t} W^{(l)}_p$, then apply:
+**Rollout-side stabilization** (`stabilize_predictive_delta_logits`) — **depth-aware layer gating**:
 
-(i) **Depth-aware layer gating**
+Form $\tilde{b}^{(l)}_t = h^{(l)}_{\mathrm{old},t} W^{(l)}_p$, then scale by a depth-dependent gate:
 
-$$\tilde{b}^{(l)}_t \leftarrow \gamma_l \cdot \tilde{b}^{(l)}_t, \quad \gamma_l \in \{\mathrm{none}, \mathrm{linear}_\downarrow, \sqrt{}_\downarrow, \cos_\downarrow\}(l/L)$$
+$$b^{(l)}_t \leftarrow \gamma_l \cdot \tilde{b}^{(l)}_t, \quad \gamma_l \in \{\mathrm{none}, \mathrm{linear}_\downarrow, \sqrt{}_\downarrow, \cos_\downarrow\}(l/L)$$
 
-(ii) **Magnitude clip** (`PREDICTIVE_MAX_DELTA_TO_OLD_RATIO=r_max`)
-
-$$\tilde{b}^{(l)}_t \leftarrow \tilde{b}^{(l)}_t \cdot \min\!\left(1,\ r_{\max} \cdot \overline{|p^{(l)}_{\mathrm{old},t}|}\Big/\overline{|\tilde{b}^{(l)}_t|}\right)$$
-
-(iii) **Top-k boundary-margin clip** (`PREDICTIVE_MAX_DELTA_TO_TOPK_MARGIN_RATIO`, with cross-rollout anneal)
-
-$$b^{(l)}_t \leftarrow \tilde{b}^{(l)}_t \cdot \min\!\left(1,\ \frac{\eta_t \cdot m^{(l)}_t}{2 \max_j |\tilde{b}^{(l)}_{t,j}|}\right)$$
-
-where $m^{(l)}_t = p^{(l)}_{\mathrm{old},t,(k)} - p^{(l)}_{\mathrm{old},t,(k+1)}$ is the top-k boundary margin.
-
-**Flip-fallback** (`apply_predictive_flip_fallback`, gated by `PREDICTIVE_MIN_POST_TOPK_MARGIN_FOR_FLIP=τ`):
-
-When $\hat{\mathcal{I}}^{(l)}_t \neq \mathcal{I}^{(l)}_{\mathrm{old},t}$ and the post-correction margin $\hat{m}^{(l)}_t < \tau$, revert the token to original logits ($b^{(l)}_t \leftarrow 0$) and set its execution weight $w^{\mathrm{exec},(l)}_t = 0$. Confidently predicted tokens keep $w^{\mathrm{exec},(l)}_t = 1$.
+The intuition: predictor error compounds with depth, so later layers' deltas can be damped toward a floor $\gamma_{\min}$ while early layers stay near $\gamma_l = 1$.
 
 **Training loss with sample reweighting**:
 
-$$\mathcal{L}^{\mathrm{Miles}}_{\mathrm{PR}^2} = \sum_{l=1}^L \frac{\sum_t w^{(l)}_t \cdot D_{\mathrm{KL}}\!\bigl(\langle\rho^{(l)}_t\rangle \,\big\|\, \hat{\rho}^{(l)}_t\bigr)}{\sum_t w^{(l)}_t}, \quad w^{(l)}_t = w^{\mathrm{shift},(l)}_t \cdot w^{\mathrm{bdry},(l)}_t \cdot w^{\mathrm{exec},(l)}_t$$
+$$\mathcal{L}^{\mathrm{Miles}}_{\mathrm{PR}^2} = \sum_{l=1}^L \frac{\sum_t w^{(l)}_t \cdot D_{\mathrm{KL}}\!\bigl(\langle\rho^{(l)}_t\rangle \,\big\|\, \hat{\rho}^{(l)}_t\bigr)}{\sum_t w^{(l)}_t}, \quad w^{(l)}_t = w^{\mathrm{bdry},(l)}_t$$
 
-where:
-
-- **Hidden-shift weight** (`PREDICTIVE_MAX_HIDDEN_SHIFT_RELATIVE_NORM=τ_h`, mode `binary`/`linear`/`quadratic`): supervise only on tokens whose router input has drifted from the route-recording snapshot.
-- **Boundary weight** (`PREDICTIVE_BOUNDARY_LOSS_MAX_WEIGHT=w_max`, `PREDICTIVE_BOUNDARY_LOSS_MIN_MARGIN=m_min`): $\min(w_{\max}, 1/\max(m^{(l)}_t, m_{\min}))$.
-- **Execution weight**: from flip-fallback.
+where the **boundary weight** (`PREDICTIVE_BOUNDARY_LOSS_MAX_WEIGHT=w_max`, `PREDICTIVE_BOUNDARY_LOSS_MIN_MARGIN=m_min`) is $\min(w_{\max}, 1/\max(m^{(l)}_t, m_{\min}))$ with $m^{(l)}_t = p^{(l)}_{\mathrm{old},t,(k)} - p^{(l)}_{\mathrm{old},t,(k+1)}$ the top-k boundary margin. This concentrates supervision on the near-boundary tokens whose route the predictor is most likely to get wrong. When $w_{\max}$ is unset, all tokens are weighted equally (paper-faithful).
 
 `compute_predictive_loss` then computes the chosen loss form (`kl` or `kl-post`) over the stabilized $\hat{\rho}$.
 
@@ -150,16 +136,10 @@ not part of the PR² group.
 |---|---|---|
 | `--predictive-layer-scale-schedule` | `none` | `none` / `linear_decay` / `sqrt_decay` / `cosine_decay` — depth-aware gate $\gamma_l$ |
 | `--predictive-layer-scale-min` | `1.0` | Floor for $\gamma_l$ (1.0 = no decay) |
-| `--predictive-max-delta-to-old-ratio` | unset | Magnitude clip $r_{\max}$, e.g. `0.015` |
-| `--predictive-max-delta-to-topk-margin-ratio` | unset | Initial top-k margin cap, e.g. `1.0` |
-| `--predictive-max-delta-to-topk-margin-ratio-final` | unset | Final cap after cross-rollout anneal, e.g. `1.5`–`2.0` |
-| `--predictive-topk-margin-ratio-anneal-start-rollout` | unset | Rollout id at which anneal starts |
-| `--predictive-topk-margin-ratio-anneal-end-rollout` | unset | Rollout id at which anneal ends |
-| `--predictive-min-post-topk-margin-for-flip` | unset | Flip-fallback threshold $\tau$, e.g. `0.05` |
-| `--predictive-max-hidden-shift-relative-norm` | unset | Hidden-shift cutoff $\tau_h$, e.g. `0.02` |
-| `--predictive-hidden-shift-weight-mode` | `binary` | `binary` / `linear` / `quadratic` |
 | `--predictive-boundary-loss-max-weight` | unset | Boundary weight cap $w_{\max}$, e.g. `4.0` |
 | `--predictive-boundary-loss-min-margin` | `1e-4` | Denominator floor $m_{\min}$ |
+
+The two mechanisms are independent: `--predictive-layer-scale-*` shape the rollout-side delta, `--predictive-boundary-loss-*` shape the training-side loss. A common Miles config is `--predictive-layer-scale-schedule sqrt_decay --predictive-layer-scale-min 0.5 --predictive-boundary-loss-max-weight 4.0`.
 
 ### 5.4 Router-logits artifact saving (optional, default OFF)
 
@@ -182,14 +162,12 @@ sidecar `{step}_tp{tp_rank}_pp{pp_rank}_predictive_metrics.json`.
 |---|---|
 | `predictive_loss` | The KL value (`kl` or `kl-post`), after sample reweighting |
 | `predictive_topk_accuracy` | $|\hat{\mathcal{I}} \cap \mathcal{I}_{\mathrm{current}}|/k$ |
-| `predictive_stabilizer_scale` | Net scale applied by §4.2 (i)–(iii) |
-| `predictive_ratio_clip_scale` | Scale from magnitude clip |
-| `predictive_margin_clip_scale_{mean,min}` | Scale from top-k margin clip |
-| `predictive_topk_boundary_margin_mean` | Pre-correction margin |
-| `predictive_post_topk_boundary_margin_{mean,changed_mean}` | Post-correction margins |
-| `predictive_flip_fallback_fraction` | Fraction of tokens reverted by flip-fallback |
-| `predictive_confident_flip_fraction` | Fraction of tokens with predictor-driven flips kept |
-| `predictive_stabilized_bias_to_logits_ratio` | $\overline{\|b\|}/\overline{\|p_{\mathrm{old}}\|}$ after stabilization |
+| `predictive_layer_gate_scale` | Depth gate $\gamma_l$ applied to the predicted delta |
+| `predictive_stabilizer_scale` | Net scale applied by the stabilization layer ($=\gamma_l$ here) |
+| `predictive_raw_bias_to_logits_ratio` | $\overline{\|\tilde b\|}/\overline{\|p_{\mathrm{old}}\|}$ before gating |
+| `predictive_stabilized_bias_to_logits_ratio` | $\overline{\|b\|}/\overline{\|p_{\mathrm{old}}\|}$ after gating |
+| `predictive_boundary_margin_{mean,min}` | Top-k boundary margin of the recorded route |
+| `predictive_boundary_loss_weight_{mean,max,gt1_fraction}` | Stats of the boundary sample weights |
 
 These metrics let you tell whether a Miles enhancement is changing routing
 behavior in the way the corresponding flag intends.
@@ -200,11 +178,11 @@ behavior in the way the corresponding flag intends.
 
 | Aspect | Paper PR² | Miles |
 |---|---|---|
-| Rollout delta handling | Use $hW_p$ as-is | Multi-stage stabilization + flip-fallback |
-| Token-level KL expectation | Uniform $\mathbb{E}_t$ | $\mathbb{E}_t[w_t \cdot D_{\mathrm{KL}}] / \mathbb{E}_t[w_t]$ |
+| Rollout delta handling | Use $hW_p$ as-is | Optional depth-aware layer gate $\gamma_l$ |
+| Token-level KL expectation | Uniform $\mathbb{E}_t$ | $\mathbb{E}_t[w_t \cdot D_{\mathrm{KL}}] / \mathbb{E}_t[w_t]$ with boundary weight $w_t$ |
 | Layer weighting | Sum over $l$ | Sum + depth schedule $\gamma_l$ |
 | Skip $i=1$ predictive loss | Yes (Algorithm 3) | Yes (state-machine controlled) |
 | Loss form | `kl-post` (Appendix G ablates delta-matching) | Both (`kl` / `kl-post`); default `kl-post` |
 | Empty-rank synchronization | Not specified | Synthetic-loss path |
 
-When all Miles enhancements are off (`PREDICTIVE_LAYER_SCALE_SCHEDULE=none`, others unset), Miles reduces to the paper-faithful implementation. The `scripts/run-qwen3-30B-A3B-pr2-paper.sh` example exercises this configuration.
+When both Miles enhancements are off (`--predictive-layer-scale-schedule none`, `--predictive-boundary-loss-max-weight` unset), Miles reduces to the paper-faithful implementation. The `scripts/run-qwen3-30B-A3B-pr2-paper.sh` example exercises this configuration.

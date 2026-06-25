@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 PREDICTIVE_ROUTING_REPLAY_LOSS_TYPES = ("kl", "kl-post")
 PREDICTIVE_ROUTING_REPLAY_STORAGE_DTYPES = ("fp32", "bf16", "fp16")
 PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES = ("none", "linear_decay", "sqrt_decay", "cosine_decay")
-PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES = ("binary", "linear", "quadratic")
 
 
 def reset_arg(parser, name, **kwargs):
@@ -92,18 +91,6 @@ def _validate_predictive_routing_replay_args(args):
         raise AssertionError("--predictive-max-total-tokens must be greater than 0 when set.")
 
     if (
-        getattr(args, "predictive_max_hidden_shift_relative_norm", None) is not None
-        and args.predictive_max_hidden_shift_relative_norm <= 0
-    ):
-        raise AssertionError("--predictive-max-hidden-shift-relative-norm must be greater than 0 when set.")
-
-    if args.predictive_hidden_shift_weight_mode not in PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES:
-        raise AssertionError(
-            f"Unsupported predictive hidden-shift weight mode: {args.predictive_hidden_shift_weight_mode}. "
-            f"Expected one of {PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES}."
-        )
-
-    if (
         getattr(args, "predictive_boundary_loss_max_weight", None) is not None
         and args.predictive_boundary_loss_max_weight <= 0
     ):
@@ -111,12 +98,6 @@ def _validate_predictive_routing_replay_args(args):
 
     if getattr(args, "predictive_boundary_loss_min_margin", 1e-4) <= 0:
         raise AssertionError("--predictive-boundary-loss-min-margin must be greater than 0.")
-
-    if (
-        getattr(args, "predictive_min_post_topk_margin_for_flip", None) is not None
-        and args.predictive_min_post_topk_margin_for_flip <= 0
-    ):
-        raise AssertionError("--predictive-min-post-topk-margin-for-flip must be greater than 0 when set.")
 
     if args.predictive_layer_scale_schedule not in PREDICTIVE_ROUTING_REPLAY_LAYER_SCALE_SCHEDULES:
         raise AssertionError(
@@ -126,64 +107,6 @@ def _validate_predictive_routing_replay_args(args):
 
     if args.predictive_layer_scale_min <= 0 or args.predictive_layer_scale_min > 1:
         raise AssertionError("--predictive-layer-scale-min must be in (0, 1].")
-
-    if args.predictive_max_delta_to_old_ratio is not None and args.predictive_max_delta_to_old_ratio <= 0:
-        raise AssertionError("--predictive-max-delta-to-old-ratio must be greater than 0 when set.")
-
-    if args.predictive_max_delta_to_topk_margin_ratio is not None and args.predictive_max_delta_to_topk_margin_ratio <= 0:
-        raise AssertionError("--predictive-max-delta-to-topk-margin-ratio must be greater than 0 when set.")
-
-    if (
-        args.predictive_max_delta_to_topk_margin_ratio_final is not None
-        and args.predictive_max_delta_to_topk_margin_ratio_final <= 0
-    ):
-        raise AssertionError("--predictive-max-delta-to-topk-margin-ratio-final must be greater than 0 when set.")
-
-    if (
-        args.predictive_topk_margin_ratio_anneal_start_rollout is not None
-        and args.predictive_topk_margin_ratio_anneal_start_rollout < 0
-    ):
-        raise AssertionError("--predictive-topk-margin-ratio-anneal-start-rollout must be greater than or equal to 0.")
-
-    if (
-        args.predictive_topk_margin_ratio_anneal_end_rollout is not None
-        and args.predictive_topk_margin_ratio_anneal_end_rollout < 0
-    ):
-        raise AssertionError("--predictive-topk-margin-ratio-anneal-end-rollout must be greater than or equal to 0.")
-
-    uses_topk_margin_ratio_annealing = (
-        args.predictive_max_delta_to_topk_margin_ratio_final is not None
-        or args.predictive_topk_margin_ratio_anneal_start_rollout is not None
-        or args.predictive_topk_margin_ratio_anneal_end_rollout is not None
-    )
-    if uses_topk_margin_ratio_annealing and args.predictive_max_delta_to_topk_margin_ratio is None:
-        raise AssertionError(
-            "top-k margin-ratio annealing requires --predictive-max-delta-to-topk-margin-ratio to be set."
-        )
-    if args.predictive_max_delta_to_topk_margin_ratio_final is not None:
-        if args.predictive_topk_margin_ratio_anneal_end_rollout is None:
-            raise AssertionError(
-                "--predictive-topk-margin-ratio-anneal-end-rollout is required when "
-                "--predictive-max-delta-to-topk-margin-ratio-final is set."
-            )
-        anneal_start_rollout = (
-            0
-            if args.predictive_topk_margin_ratio_anneal_start_rollout is None
-            else args.predictive_topk_margin_ratio_anneal_start_rollout
-        )
-        if args.predictive_topk_margin_ratio_anneal_end_rollout <= anneal_start_rollout:
-            raise AssertionError(
-                "--predictive-topk-margin-ratio-anneal-end-rollout must be greater than "
-                "--predictive-topk-margin-ratio-anneal-start-rollout."
-            )
-    elif (
-        args.predictive_topk_margin_ratio_anneal_start_rollout is not None
-        or args.predictive_topk_margin_ratio_anneal_end_rollout is not None
-    ):
-        raise AssertionError(
-            "top-k margin-ratio anneal rollout arguments require "
-            "--predictive-max-delta-to-topk-margin-ratio-final."
-        )
 
 
 def _validate_router_logits_args(args):
@@ -1286,28 +1209,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Hard cap on the total number of tokens in one packed predictive microbatch, applied last after batch + length sub-sampling. Default unset = unlimited.",
             )
             pr2_group.add_argument(
-                "--predictive-max-hidden-shift-relative-norm",
-                type=float,
-                default=None,
-                help=(
-                    "Optional training-time safety mask for predictive supervision. "
-                    "Cached tokens whose ||h_current-h_old|| / ||h_old|| exceeds this threshold "
-                    "do not contribute to predictor loss."
-                ),
-            )
-            pr2_group.add_argument(
-                "--predictive-hidden-shift-weight-mode",
-                type=str,
-                default="binary",
-                choices=PREDICTIVE_HIDDEN_SHIFT_WEIGHT_MODES,
-                help=(
-                    "How hidden-shift safety should weight predictive supervision once "
-                    "--predictive-max-hidden-shift-relative-norm is set. "
-                    "`binary` keeps the current hard mask, while `linear`/`quadratic` "
-                    "downweight tokens continuously as they approach the shift threshold."
-                ),
-            )
-            pr2_group.add_argument(
                 "--predictive-boundary-loss-max-weight",
                 type=float,
                 default=None,
@@ -1324,17 +1225,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Floor m_min on the top-k boundary margin used in 1/max(margin, m_min) before reweighting the predictive loss. Bigger m_min = softer reweighting. Only takes effect when --predictive-boundary-loss-max-weight is set. Default 1e-4.",
             )
             pr2_group.add_argument(
-                "--predictive-min-post-topk-margin-for-flip",
-                type=float,
-                default=None,
-                help=(
-                    "Optional rollout-time selective fallback threshold. "
-                    "If predictive routing changes the top-k expert set but the post-update "
-                    "top-k boundary margin stays below this value, PR² falls back to the old route "
-                    "for that token instead of executing the flip."
-                ),
-            )
-            pr2_group.add_argument(
                 "--predictive-layer-scale-schedule",
                 type=str,
                 default="none",
@@ -1346,43 +1236,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=1.0,
                 help="Floor value for the depth-aware schedule, applied at the deepest router layer. Must be in (0, 1]. Default 1.0 = no decay (paper-faithful). Has no effect when --predictive-layer-scale-schedule is 'none'.",
-            )
-            pr2_group.add_argument(
-                "--predictive-max-delta-to-old-ratio",
-                type=float,
-                default=None,
-                help="Trust-region cap r_max on mean(|predicted_delta_logits|) / mean(|old_logits|) per layer; when set, the predicted delta is rescaled to satisfy the bound. Default unset = no cap (paper-faithful).",
-            )
-            pr2_group.add_argument(
-                "--predictive-max-delta-to-topk-margin-ratio",
-                type=float,
-                default=None,
-                help=(
-                    "Optional per-token trust-region cap on max(|delta|) relative to the old-router "
-                    "top-k boundary margin. A value of 1.0 keeps max(|delta|) <= boundary_gap / 2; "
-                    "values above 1.0 allow controlled top-k flips."
-                ),
-            )
-            pr2_group.add_argument(
-                "--predictive-max-delta-to-topk-margin-ratio-final",
-                type=float,
-                default=None,
-                help=(
-                    "Optional final top-k margin-ratio cap reached by annealing over rollout id. "
-                    "Use this to start conservatively and later allow larger expert-set changes."
-                ),
-            )
-            pr2_group.add_argument(
-                "--predictive-topk-margin-ratio-anneal-start-rollout",
-                type=int,
-                default=None,
-                help="Rollout id at which the cross-rollout anneal of --predictive-max-delta-to-topk-margin-ratio begins. Defaults to 0 when omitted. Only takes effect when --predictive-max-delta-to-topk-margin-ratio-final is set.",
-            )
-            pr2_group.add_argument(
-                "--predictive-topk-margin-ratio-anneal-end-rollout",
-                type=int,
-                default=None,
-                help="Rollout id where the cap reaches --predictive-max-delta-to-topk-margin-ratio-final. Must be > --predictive-topk-margin-ratio-anneal-start-rollout. Required when --predictive-max-delta-to-topk-margin-ratio-final is set.",
             )
             pr2_group.add_argument(
                 "--predictive-storage-dtype",

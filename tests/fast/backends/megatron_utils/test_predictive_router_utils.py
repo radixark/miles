@@ -16,7 +16,6 @@ from miles.backends.megatron_utils.predictive_router_replay import (
     compute_predictive_loss,
     disable_predictive_param_groups,
     get_predictive_replay_controller,
-    resolve_predictive_topk_margin_ratio,
     restore_predictive_param_groups,
     stabilize_predictive_delta_logits,
 )
@@ -345,7 +344,7 @@ def test_compute_predictive_layer_scale_schedules_decay_with_depth():
     assert 0.5 < mid_sqrt < mid_linear < 1.0
 
 
-def test_stabilize_predictive_delta_logits_applies_depth_gate_and_ratio_cap():
+def test_stabilize_predictive_delta_logits_applies_depth_gate():
     predicted_delta_logits = torch.full((2, 4), 4.0, dtype=torch.float32)
     reference_logits = torch.full((2, 4), 10.0, dtype=torch.float32)
 
@@ -356,18 +355,16 @@ def test_stabilize_predictive_delta_logits_applies_depth_gate_and_ratio_cap():
         num_layers=48,
         layer_scale_schedule="linear_decay",
         layer_scale_min=0.5,
-        max_delta_to_old_ratio=0.1,
     )
 
-    assert torch.allclose(stabilized_delta_logits, torch.full((2, 4), 1.0, dtype=torch.float32))
+    assert torch.allclose(stabilized_delta_logits, torch.full((2, 4), 2.0, dtype=torch.float32))
     assert metrics["predictive_raw_bias_to_logits_ratio"] == pytest.approx(0.4)
-    assert metrics["predictive_stabilized_bias_to_logits_ratio"] == pytest.approx(0.1)
+    assert metrics["predictive_stabilized_bias_to_logits_ratio"] == pytest.approx(0.2)
     assert metrics["predictive_layer_gate_scale"] == pytest.approx(0.5)
-    assert metrics["predictive_ratio_clip_scale"] == pytest.approx(0.5)
-    assert metrics["predictive_stabilizer_scale"] == pytest.approx(0.25)
+    assert metrics["predictive_stabilizer_scale"] == pytest.approx(0.5)
 
 
-def test_stabilize_predictive_delta_logits_applies_topk_margin_cap_without_flipping_topk():
+def test_stabilize_predictive_delta_logits_is_identity_without_layer_scale():
     reference_logits = torch.tensor([[3.0, 2.0, 0.0, -1.0]], dtype=torch.float32)
     predicted_delta_logits = torch.tensor([[2.0, -2.0, 2.0, -2.0]], dtype=torch.float32)
 
@@ -378,55 +375,11 @@ def test_stabilize_predictive_delta_logits_applies_topk_margin_cap_without_flipp
         num_layers=1,
         layer_scale_schedule="none",
         layer_scale_min=1.0,
-        max_delta_to_old_ratio=None,
-        topk=2,
-        max_delta_to_topk_margin_ratio=0.5,
     )
 
-    assert torch.allclose(stabilized_delta_logits, predicted_delta_logits * 0.25)
-    assert metrics["predictive_margin_clip_scale_mean"] == pytest.approx(0.25)
-    assert metrics["predictive_margin_clip_scale_min"] == pytest.approx(0.25)
-    assert metrics["predictive_topk_boundary_margin_mean"] == pytest.approx(2.0)
-    assert calculate_topk_accuracy(topk=2, logits1=reference_logits, logits2=reference_logits + stabilized_delta_logits) == pytest.approx(1.0)
-
-
-def test_resolve_predictive_topk_margin_ratio_anneals_with_rollout():
-    ratio, progress = resolve_predictive_topk_margin_ratio(
-        base_ratio=1.0,
-        final_ratio=2.0,
-        anneal_start_rollout=80,
-        anneal_end_rollout=160,
-        current_rollout_id=120,
-    )
-
-    assert ratio == pytest.approx(1.5)
-    assert progress == pytest.approx(0.5)
-
-
-def test_stabilize_predictive_delta_logits_reports_effective_annealed_margin_ratio():
-    reference_logits = torch.tensor([[3.0, 2.0, 0.0, -1.0]], dtype=torch.float32)
-    predicted_delta_logits = torch.tensor([[3.0, -3.0, 3.0, -3.0]], dtype=torch.float32)
-
-    stabilized_delta_logits, metrics = stabilize_predictive_delta_logits(
-        predicted_delta_logits=predicted_delta_logits,
-        reference_logits=reference_logits,
-        layer_idx=0,
-        num_layers=1,
-        layer_scale_schedule="none",
-        layer_scale_min=1.0,
-        max_delta_to_old_ratio=None,
-        topk=2,
-        max_delta_to_topk_margin_ratio=1.0,
-        max_delta_to_topk_margin_ratio_final=2.0,
-        topk_margin_ratio_anneal_start_rollout=0,
-        topk_margin_ratio_anneal_end_rollout=10,
-        current_rollout_id=10,
-    )
-
-    assert torch.allclose(stabilized_delta_logits, predicted_delta_logits * (2.0 / 3.0))
-    assert metrics["predictive_effective_topk_margin_ratio"] == pytest.approx(2.0)
-    assert metrics["predictive_topk_margin_ratio_anneal_progress"] == pytest.approx(1.0)
-    assert metrics["predictive_margin_clip_scale_mean"] == pytest.approx(2.0 / 3.0)
+    assert torch.allclose(stabilized_delta_logits, predicted_delta_logits)
+    assert metrics["predictive_layer_gate_scale"] == pytest.approx(1.0)
+    assert metrics["predictive_stabilizer_scale"] == pytest.approx(1.0)
 
 
 def test_ensure_bias_predictor_runtime_placement_preserves_parameter_identity():

@@ -59,16 +59,18 @@ Leaving them unset (the default) keeps every token. See [`predictive-routing-rep
 
 ## 4. Miles stabilization (optional)
 
-Every flag in this section defaults to OFF. When all are off, the runtime collapses to the paper algorithm. See [`predictive-routing-replay.md`](predictive-routing-replay.md) §4.2 for formulas, §5.3 for the full flag list. The summary:
+Both mechanisms in this section default to OFF. When both are off, the runtime collapses to the paper algorithm. See [`predictive-routing-replay.md`](predictive-routing-replay.md) §4.2 for formulas, §5.3 for the full flag list. The summary:
 
-* **Depth-aware layer-scale gating** — shrink the predictor delta on deep layers.
+* **Depth-aware layer-scale gating** (rollout side) — shrink the predictor delta on deep layers.
   ```bash
   --predictive-layer-scale-schedule sqrt_decay
   --predictive-layer-scale-min      0.5
   ```
-* **Magnitude / top-k margin clips** — bound the predictor's perturbation to the base logits, with optional cross-rollout annealing.
-* **Flip-fallback** — revert tokens whose predicted top-k flip lands inside a fragile post-correction margin; their predictor loss is zeroed out.
-* **Sample reweighting** — hidden-shift mask + boundary-margin weighting.
+* **Boundary-margin sample reweighting** (training side) — concentrate the predictor loss on near-boundary tokens.
+  ```bash
+  --predictive-boundary-loss-max-weight 4.0
+  --predictive-boundary-loss-min-margin 1e-3
+  ```
 
 ```bash
 # Example: turn on layer-scale gating + boundary-margin weighting.
@@ -126,7 +128,7 @@ Watch these wandb metrics during training:
 | `train/predictive_loss` | Healthy at 1e-4 magnitude; spikes above 1 mean the predictor is diverging |
 | `predictive_topk_accuracy_*` | Overlap between predicted top-k and current router's top-k; > 0.85 healthy |
 | `predictive_stabilized_bias_to_logits_ratio_*` | Predicted delta vs base logit magnitude; aim for < 0.02 |
-| `predictive_flip_fallback_fraction_*` | Fraction of tokens reverted by flip-fallback; 2–5 % is typical |
+| `predictive_boundary_loss_weight_mean_*` | Mean boundary sample weight; ~1.0 unless `--predictive-boundary-loss-max-weight` is set |
 
 If `train/predictive_loss` stays above 1e-3 and does not come down, try enabling the Miles stabilization layer (recipe C) or reducing `--bias-predictor-lr-mult`.
 
