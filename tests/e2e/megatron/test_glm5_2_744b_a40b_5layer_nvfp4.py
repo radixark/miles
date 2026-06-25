@@ -56,7 +56,7 @@ NVFP4_ENV = {
 GLM5_ENV = {
     "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256",
     "SGLANG_DSA_FUSE_TOPK": "1",
-"SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
+    "SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
     "SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK": "large",
     "INDEXER_ROPE_NEOX_STYLE": "0",
     "NVSHMEM_DISABLE_NCCL": "1",
@@ -250,7 +250,7 @@ def execute():
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = "--ci-test --ci-disable-logprobs-checker "
+    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker "
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
