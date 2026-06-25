@@ -160,7 +160,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # (and thus exercises the cross-layer DSA path) only when the full sequence (prompt + response)
     # EXCEEDS 2048; at shorter seq (the gsm8k default below) the indexer degenerates to DENSE
     # (top-k >= seq -> selects all keys). Use a longer prompt/response (> 2048) to hit sparse indexing.
-    rollout_max_response_len: int = 256
+    rollout_max_response_len: int = 0  # 0 => per-task default (gsm8k 256, dapo-math 4096); see __post_init__
     global_batch_size: int = 16
 
     # DAPO dynamic sampling (only used when task="dapo-math") -- DAPO's signature trick: drop
@@ -188,6 +188,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
             # NB: must be a LOCAL path -- miles sets args.load = hf_checkpoint and asserts it
             # is an existing directory (a HF repo id is not accepted here).
             self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
+        if self.rollout_max_response_len == 0:
+            # per-task default response budget (the .sh wrappers also set this; this keeps a bare
+            # `python run_glm5_lora.py --task ...` correct on its own). NB: no --seq-length /
+            # --rollout-max-context-len is set here -- the total seq window auto-derives from the
+            # model config; only the generation budget is capped:
+            #   gsm8k     -> 256  (short-answer; seq < index_topk 2048 so the DSA indexer is DENSE)
+            #   dapo-math -> 4096 (long-CoT; >2048 seq makes the GLM-5.2 DSA indexer go SPARSE)
+            self.rollout_max_response_len = 4096 if self.task == "dapo-math" else 256
 
     @property
     def megatron_model_type(self) -> str:

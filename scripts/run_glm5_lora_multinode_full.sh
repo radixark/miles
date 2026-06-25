@@ -30,9 +30,9 @@
 #       replay gone, --sglang-max-total-tokens can stay at the sglang default for full
 #       rollout throughput. (R3=off drops routing replay too -> fully off-policy; only
 #       for quick mechanics bring-up.)
-#   * SEQ=4096 / RESP_LEN=3584  -> dapo-math reward/throughput sweet spot (rollout-only
-#       raw_reward sweep: 1024=0.0, 2048=0.125, 4096=0.25, 8192=0.3125; >4096 = 2x time
-#       for +0.06). Bump SEQ=8192 RESP_LEN=7168 for max signal.
+#   * RESP_LEN=4096 (dapo) -> reward/throughput sweet spot (rollout-only raw_reward sweep:
+#       1024=0.0, 2048=0.125, 4096=0.25, 8192=0.3125; >4096 = 2x time for +0.06). SEQ is left
+#       UNSET (window auto-derives from model config); set SEQ=<n> only to cap memory for colocate.
 #   * EP32 / PP1 / CP1  -> the only validated full-model layout. PP>1 trips the
 #       GLM-5.2 cross-layer-DSA build assert (a PP stage must START on a compute
 #       layer, freq=4 index-share group); CP>1 is unsupported by DSAttention.
@@ -62,8 +62,8 @@
 #    export WANDB_API_KEY=...                 # NEVER hardcode the key
 #    HEAD_IP=<ip> bash scripts/run_glm5_lora_multinode_full.sh launch
 #
-#    # real run (long context) instead of fast e2e:
-#    SEQ=8192 RESP_LEN=7168 R3=on \
+#    # longer responses / cap the window for colocate memory:
+#    RESP_LEN=8192 SEQ=10240 R3=on \
 #      HEAD_IP=<ip> bash scripts/run_glm5_lora_multinode_full.sh launch
 # ============================================================================
 set -euo pipefail
@@ -92,14 +92,15 @@ export R3="${R3:-on}"                             # R3 ON = rollout ROUTING repl
 export LORA_BASE_CPU_BACKUP="${LORA_BASE_CPU_BACKUP:-on}"
 export LORA_RANK="${LORA_RANK:-16}"
 export TASK="${TASK:-dapo-math}"                 # dataset: dapo-math | gsm8k
-# SEQ / RESP_LEN default per TASK:
-#   dapo-math -> 4096 / 3584  (rollout-only raw_reward sweep: 1024=0.0, 2048=0.125, 4096=0.25,
-#                8192=0.3125; diminishing past 4096 at 2x rollout time. Bump SEQ=8192 for max signal.)
-#   gsm8k     -> 256 / 256    (short-answer grade-school math; tiny window -> fast smoke. Dense DSA.)
+# RESP_LEN (--rollout-max-response-len) default per TASK. SEQ is left UNSET on purpose, so
+# --seq-length / --rollout-max-context-len are omitted and the total window auto-derives from the
+# model config (set SEQ=<n> in the env only to cap window/memory for colocate).
+#   dapo-math -> 4096  (long-CoT competition math; >2048 seq makes the GLM-5.2 DSA indexer go SPARSE)
+#   gsm8k     -> 256   (short-answer grade-school math; dense DSA -> fast smoke)
 if [[ "$TASK" == "gsm8k" ]]; then
-  export SEQ="${SEQ:-256}"; export RESP_LEN="${RESP_LEN:-256}"
+  export RESP_LEN="${RESP_LEN:-256}"
 else
-  export SEQ="${SEQ:-4096}"; export RESP_LEN="${RESP_LEN:-3584}"
+  export RESP_LEN="${RESP_LEN:-4096}"
 fi
 # Dynamic sampling (check_reward_nonzero_std filter) DEFAULT OFF here. At the current reward /
 # truncation levels (seq 4096 dapo: raw_reward ~0.25, ~75% truncated -> many groups are all-zero
@@ -141,7 +142,7 @@ if [[ "$SKIP_INSTALL" != "1" ]]; then
   ensure_editable_installs
 fi
 
-echo "[full] role=${ROLE} MODEL=${MODEL} NODES=${NODES}x${GPUS_PER_NODE} BACKEND=${BACKEND} R3=${R3} SEQ=${SEQ} RESP_LEN=${RESP_LEN} WANDB=${WANDB}"
+echo "[full] role=${ROLE} MODEL=${MODEL} NODES=${NODES}x${GPUS_PER_NODE} BACKEND=${BACKEND} R3=${R3} SEQ=${SEQ:-<auto>} RESP_LEN=${RESP_LEN} WANDB=${WANDB}"
 echo "[full] PARALLEL_EXTRA=${PARALLEL_EXTRA}"
 
 exec bash "$(dirname "$0")/run_glm5_lora_multinode.sh" "${ROLE}"
