@@ -9,7 +9,7 @@ description: Concepts, launch script walkthrough, customization hooks, and a com
 | [Training Backend](/user-guide/usage) | Megatron-LM as the training backend — parallelism, checkpoints, and hooks. |
 | [Training Script Walkthrough](/user-guide/training-script-walkthrough) | The eight `XXX_ARGS` arrays in a launch script, plus the execution modes (sync/async, colocation, dynamic sampling, partial rollout, BF16+FP8). |
 | [Monitoring & Logging](/user-guide/monitoring) | wandb, structured logs, per-source breakdowns, profiling, router metrics. |
-| [Customization](/user-guide/customization) | The 22 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
+| [Customization](/user-guide/customization) | The 21 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
 | [Rollout Endpoints](/user-guide/rollout-endpoints) | The `/generate` endpoint and the OpenAI chat endpoint for agentic sessions. |
 | [Fully Async Rollout](/user-guide/fully-async) | Queue-backed rollout production, tuning knobs, and when to use `train_async.py`. |
 | [Agentic Chat Templates](/user-guide/agentic-chat-template) | Turning on and verifying TITO so multi-turn agentic rollout stays append-only. |
