@@ -325,9 +325,13 @@ def _train(args: ScriptArgs):
     #     -- shape (max_total_num_tokens, num_layers, index_topk=2048) int32 ~= 78-128 GB/rank,
     #     x8 ranks/node -- which blew the ~1.78 TB colocate pod cgroup -> RolloutManager host-OOM.
     # So: R3 on => routing replay only (no indexer replay, no indexer host buffer).
-    r3_args = ""
+    # --use-rollout-routing-replay now DEFAULTS ON (arguments.py BooleanOptionalAction), so emit it
+    # explicitly on BOTH branches -- the R3 knob must still fully control it: use_r3=False has to
+    # emit --no-use-rollout-routing-replay to actually disable the (now default-on) routing replay.
     if args.use_r3:
         r3_args = "--use-rollout-routing-replay "
+    else:
+        r3_args = "--no-use-rollout-routing-replay "
 
     optimizer_args = "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
 

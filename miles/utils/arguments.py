@@ -1080,9 +1080,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--use-rollout-routing-replay",
-                action="store_true",
-                default=False,
-                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="R3 rollout routing replay (https://arxiv.org/abs/2510.11370): replay the rollout's "
+                "MoE top-8 in training for rollout<->train on-policy parity. DEFAULT ON -- cheap "
+                "(sglang routed-experts capturer ~0.5 GB/rank, no host buffer). Disable with "
+                "--no-use-rollout-routing-replay. NOTE: distinct from the debug-only "
+                "--use-rollout-indexer-replay (stays default-off; it triggers the ~78-128 GB/rank "
+                "IndexerTopkCapturer host buffer that OOMs the colocate pod).",
             )
             parser.add_argument(
                 "--use-indexer-replay",
