@@ -4,13 +4,13 @@ Multi-node benchmark: put on worker node (72), get on head node (70).
 
 Requires:
   - Ray cluster (head on 70, worker on 72)
-  - Mooncake master on 70, MOONCAKE_MASTER=192.168.22.70:50051
+  - Mooncake master on 70, MOONCAKE_MASTER=192.168.122.70:50051
   - Both nodes: /root/miles, /root/sglang-venv
 
 Usage:
   cd /root/miles
-  export MOONCAKE_MASTER=192.168.22.70:50051
-  export MOONCAKE_TE_META_DATA_SERVER="http://192.168.22.70:8080/metadata"
+  export MOONCAKE_MASTER=192.168.122.70:50051
+  export MOONCAKE_TE_META_DATA_SERVER="http://192.168.122.70:8080/metadata"
   export MC_STORE_MEMCPY=true
   export MOONCAKE_PROTOCOL=rdma   # or tcp; rdma requires InfiniBand/RoCE
   /root/sglang-venv/bin/python scripts/benchmark_data_transfer_multinode.py --data-size-mb 100
@@ -71,12 +71,12 @@ def _get_node_ids():
         if not n.get("Alive"):
             continue
         addr = n.get("NodeManagerAddress") or (n.get("raylet", {}) or {}).get("node_manager_address", "")
-        if "192.168.22.70" in str(addr):
+        if "192.168.122.70" in str(addr):
             head_id = n["NodeID"]
-        elif "192.168.22.72" in str(addr):
+        elif "192.168.122.72" in str(addr):
             worker_id = n["NodeID"]
     if not head_id or not worker_id:
-        raise RuntimeError("Need both 192.168.22.70 and 192.168.22.72 in cluster")
+        raise RuntimeError("Need both 192.168.122.70 and 192.168.122.72 in cluster")
     return head_id, worker_id
 
 
@@ -87,16 +87,22 @@ def put_ray(data: dict):
 
 
 @ray.remote
-class MooncakePutActor:
-    """Long-lived Mooncake client on 72 for put. Simulates production rollout worker."""
+class MooncakeDataProtoPutActor:
+    """Long-lived Mooncake DataProto producer on 72."""
 
     def __init__(self):
-        from miles.utils.data_transfer import MooncakeDataTransfer
+        from types import SimpleNamespace
 
-        self.backend = MooncakeDataTransfer(enable_auto_cleanup=False)
+        self.args = SimpleNamespace(
+            transfer_backend="mooncake_dataproto",
+            mooncake_dataproto_store_init_kwargs={"setup_method": "setup"},
+            mooncake_dataproto_hard_pin=True,
+        )
 
-    def put(self, data: dict) -> str:
-        return self.backend.put(data)
+    def put(self, data: dict):
+        from miles.utils.rollout_dataproto import split_rollout_data_by_dp_dataproto
+
+        return split_rollout_data_by_dp_dataproto(self.args, data, 1, [range(len(data["tokens"]))])[0]
 
 
 def resolve_data_size_mb(data_size_mb: float) -> tuple[int, int]:
@@ -133,7 +139,7 @@ def run_multinode_benchmark(
     protocol = os.environ.get("MOONCAKE_PROTOCOL", "tcp")
     mooncake_env = {"MOONCAKE_PROTOCOL": protocol}
     print("\nMulti-node benchmark: put@72 -> get@70")
-    print("  Ray: driver ray.get(ref); Mooncake: driver backend.get(key) direct (no actor return)")
+    print("  Ray: driver ray.get(ref); Mooncake DataProto: driver materializes remote tensor batch")
     print(f"Mooncake protocol: {protocol} (MOONCAKE_PROTOCOL=rdma for RDMA)")
     if use_routing_replay:
         print(f"Routing replay: enabled (num_layers={num_layers}, moe_router_topk={moe_router_topk})")
@@ -174,47 +180,44 @@ def run_multinode_benchmark(
             "get_std": np.std(get_ms_list),
         }
 
-    # --- Mooncake ---
-    # put via actor on 72; get via driver direct (driver on 70, same as Ray)
-    # Driver direct get avoids actor-return overhead, comparable to Ray's ray.get(ref)
+    # --- Mooncake DataProto ---
     runtime_env = {"env_vars": mooncake_env}
-    PutActor = MooncakePutActor.options(scheduling_strategy=put_on_72, runtime_env=runtime_env)
+    PutActor = MooncakeDataProtoPutActor.options(scheduling_strategy=put_on_72, runtime_env=runtime_env)
     put_actor = PutActor.remote()
 
-    from miles.utils.data_transfer import MooncakeDataTransfer
+    from miles.utils.data_transfer import MooncakeDataProtoTransfer
 
-    mc_backend = MooncakeDataTransfer(enable_auto_cleanup=False)
+    mc_backend = MooncakeDataProtoTransfer()
 
     put_ms_list, get_ms_list = [], []
-    # Warmup
     for _ in range(2):
         try:
-            key = ray.get(put_actor.put.remote(data))
-            mc_backend.get(key, auto_cleanup=False)
-            mc_backend.cleanup(key)
+            proto = ray.get(put_actor.put.remote(data))
+            mc_backend.get(proto)
+            mc_backend.cleanup(proto)
         except Exception:
             pass
 
     for i in range(num_rounds):
         t0 = time.perf_counter()
         try:
-            key_ref = put_actor.put.remote(data)
-            key = ray.get(key_ref)
+            proto_ref = put_actor.put.remote(data)
+            proto = ray.get(proto_ref)
             put_ms = (time.perf_counter() - t0) * 1000
             put_ms_list.append(put_ms)
         except Exception as e:
-            print(f"  Mooncake put round {i}: {e}")
+            print(f"  Mooncake DataProto put round {i}: {e}")
             continue
         t0 = time.perf_counter()
         try:
-            mc_backend.get(key, auto_cleanup=False)
-            mc_backend.cleanup(key)
+            mc_backend.get(proto)
+            mc_backend.cleanup(proto)
             get_ms = (time.perf_counter() - t0) * 1000
             get_ms_list.append(get_ms)
         except Exception as e:
-            print(f"  Mooncake get round {i}: {e}")
+            print(f"  Mooncake DataProto get round {i}: {e}")
     if put_ms_list and get_ms_list:
-        results["mooncake"] = {
+        results["mooncake_dataproto"] = {
             "put": np.mean(put_ms_list),
             "put_std": np.std(put_ms_list),
             "get": np.mean(get_ms_list),

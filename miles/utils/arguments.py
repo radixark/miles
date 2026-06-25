@@ -397,12 +397,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--transfer-backend",
                 type=str,
-                choices=["ray", "mooncake"],
+                choices=["ray", "mooncake_dataproto"],
                 default="ray",
                 help=(
                     "Backend for transferring rollout data from rollout workers to training actors. "
-                    "'ray' uses Ray Object Store (default). 'mooncake' uses Mooncake distributed store for disaggregated setups."
+                    "'ray' uses Ray Object Store (default). 'mooncake_dataproto' uses Mooncake DataProto remote tensor batches."
                 ),
+            )
+            parser.add_argument(
+                "--mooncake-dataproto-hard-pin",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="Hard-pin Mooncake rollout tensors to the producer segment for Mooncake DataProto transfer.",
+            )
+            parser.add_argument(
+                "--mooncake-dataproto-store-init-kwargs",
+                type=json.loads,
+                default=None,
+                help="JSON kwargs used to initialize MooncakeDistributedStore for Mooncake DataProto transfer.",
             )
             parser.add_argument(
                 "--rollout-seed",
@@ -577,25 +589,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 nargs="+",
                 help="Address and ports of the external engines.",
-            )
-            parser.add_argument(
-                "--transfer-backend",
-                type=str,
-                choices=["ray", "mooncake_dataproto"],
-                default="ray",
-                help="The backend used to transfer rollout data from rollout workers to training workers.",
-            )
-            parser.add_argument(
-                "--mooncake-dataproto-hard-pin",
-                action=argparse.BooleanOptionalAction,
-                default=True,
-                help="Hard-pin Mooncake rollout tensors to the producer segment for Mooncake DataProto transfer.",
-            )
-            parser.add_argument(
-                "--mooncake-dataproto-store-init-kwargs",
-                type=json.loads,
-                default=None,
-                help="JSON kwargs used to initialize MooncakeDistributedStore for Mooncake DataProto transfer.",
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
