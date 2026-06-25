@@ -102,6 +102,14 @@ def get_model_provider_func(
         provider.calculate_per_token_loss = args.calculate_per_token_loss
         provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
         provider.variable_seq_lengths = args.variable_seq_lengths
+        # Bridge configs skip core_transformer_config_from_args, so activation-recompute settings
+        # never reach the model config (the bridge transformer_block gates checkpointing on
+        # self.config.recompute_granularity, which stayed None). Without this the FULL backward
+        # activation stack is stored (~96GiB at 32k for Qwen3.6-27B) -> OOM. Propagate them so
+        # --recompute-granularity actually engages.
+        provider.recompute_granularity = args.recompute_granularity
+        provider.recompute_method = args.recompute_method
+        provider.recompute_num_layers = args.recompute_num_layers
         if hasattr(args, "moe_token_dispatcher_type"):
             provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
         if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
