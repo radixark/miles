@@ -87,7 +87,7 @@ The launcher groups its flags into the arrays that are passed to `train.py`. The
 - **`GRPO_ARGS`** and **`OPTIMIZER_ARGS`** set the algorithm and CPU-offloaded Adam (§5.2, §5.4).
 - **`SGLANG_ARGS`** configures the colocated rollout engine (§5.3).
 
-The job runs colocated (`--colocate`) across 32 nodes (`--actor-num-nodes 32 --actor-num-gpus-per-node 8`) and uses the miles router (`--use-miles-router`) with `--update-weight-buffer-size $((4*512*1024*1024))`.
+The job runs colocated (`--colocate`) across 32 nodes (`--actor-num-nodes 32 --actor-num-gpus-per-node 8`) with `--update-weight-buffer-size $((4*512*1024*1024))`.
 
 ## 5. Example Recipe Configuration
 
