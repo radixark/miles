@@ -260,10 +260,10 @@ class ServerGroup:
             if engine.is_allocated
         ]
 
-    async def check_weights(self, action: str):
+    async def check_weights(self, action: str, allow_quant_error: bool = False):
         return await asyncio.gather(
             *[
-                engine.actor_handle.check_weights.remote(action=action)
+                engine.actor_handle.check_weights.remote(action=action, allow_quant_error=allow_quant_error)
                 for engine in self.engines
                 if engine.is_allocated
             ]

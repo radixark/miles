@@ -486,8 +486,8 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str):
-        return self._make_request("weights_checker", {"action": action})
+    def check_weights(self, action: str, allow_quant_error: bool = False):
+        return self._make_request("weights_checker", {"action": action, "allow_quant_error": allow_quant_error})
 
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         """Reload weights from *model_path* without restarting the engine.
@@ -555,26 +555,13 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def post_process_weights(
-        self,
-        restore_weights_before_load: bool = False,
-        post_process_quantization: bool = False,
-        post_load_weights: bool = False,
-    ):
-        """
-        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
-        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
-        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
-        """
+    def begin_weight_update(self):
+        """Open a weight-update session on the engine (restores packed weights for loading)."""
+        return self._make_request("begin_weight_update", {})
 
-        return self._make_request(
-            "post_process_weights",
-            {
-                "restore_weights_before_load": restore_weights_before_load,
-                "post_process_quantization": post_process_quantization,
-                "post_load_weights": post_load_weights,
-            },
-        )
+    def end_weight_update(self):
+        """Close the weight-update session (post-load + quant post-process on the full model)."""
+        return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(
