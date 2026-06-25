@@ -1,4 +1,29 @@
-"""Convert local Megatron torch_dist checkpoints to Hugging Face safetensors with Ray workers."""
+"""Convert Megatron torch_dist checkpoints to Hugging Face safetensors with Ray.
+
+Architecture overview:
+    The driver reads torch.distributed.checkpoint metadata, plans bounded source
+    tensor tasks, and schedules those tasks across Ray actors. Each actor loads
+    only the tensors needed for its task, converts them to Hugging Face tensor
+    names, writes temporary safetensors shards, and returns a small manifest to
+    the driver. The driver then assigns deterministic final shard names, copies
+    non-weight Hugging Face assets from --origin-hf-dir, and writes the final
+    model.safetensors.index.json.
+
+    This keeps peak memory bounded by per-task tensor groups instead of loading
+    the full torch_dist checkpoint into one process.
+
+Example:
+    python tools/convert_torch_dist_to_hf_ray.py \\
+      --input-dir /path/to/torch_dist/iter_0000400 \\
+      --origin-hf-dir /path/to/origin_hf_noquant \\
+      --output-dir /path/to/output_hf \\
+      --model-name kimi_k25 \\
+      --concurrency 32 \\
+      --task-group-bytes 2147483648 \\
+      --max-file-bytes 21474836480 \\
+      --progress-interval-seconds 10 \\
+      -f
+"""
 
 from __future__ import annotations
 
