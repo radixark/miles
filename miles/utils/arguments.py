@@ -471,6 +471,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--max-concurrent-agent-tasks",
+                type=int,
+                default=None,
+                help=(
+                    "Cap on the number of in-flight agentic rollout samples dispatched to "
+                    "`--custom-generate-function-path` concurrently. Only takes effect when "
+                    "`--custom-generate-function-path` is set, i.e. agentic training. Useful "
+                    "for throttling traffic to an external agent server. None (default) means "
+                    "no miles-side cap (the SGLang-side semaphore still applies)."
+                ),
+            )
+            parser.add_argument(
                 "--custom-rollout-log-function-path",
                 type=str,
                 default=None,
