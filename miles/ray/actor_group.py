@@ -95,7 +95,7 @@ class RayTrainGroup:
 
         runtime_env = {"env_vars": env_vars}
         remote_kwargs = {"num_gpus": 1, "runtime_env": runtime_env}
-        if getattr(self.args, "use_rdt_weight_sync", False):
+        if self.args.update_weight_transfer_mode == "rdt":
             # RDT/NIXL: update_weights() blocks this actor in ray.get() while it
             # awaits each engine rank's pull_weights, and Ray's tensor-transport
             # threads concurrently serve the NIXL reads of the

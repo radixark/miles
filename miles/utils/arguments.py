@@ -85,17 +85,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--use-rdt-weight-sync",
-                action="store_true",
-                default=False,
-                help=(
-                    "Deprecated alias for --update-weight-transfer-mode rdt. Enables RDT/NIXL "
-                    "weight sync: weights are transferred from trainer to rollout engines via "
-                    "Ray Direct Transport (NIXL RDMA) instead of NCCL broadcast. Requires sglang "
-                    "use_ray=True. No NCCL groups or lock needed — NIXL is point-to-point."
-                ),
-            )
-            parser.add_argument(
                 "--offload",
                 action="store_true",
                 default=False,
@@ -2292,14 +2281,6 @@ def miles_validate_args(args):
 
     if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
         args.check_weight_update_equal = True
-
-    # Keep the transfer mode and the legacy --use-rdt-weight-sync boolean in sync so
-    # both spellings work and the rest of the code can gate on either (single source
-    # of truth = the transfer mode).
-    if args.update_weight_transfer_mode == "rdt":
-        args.use_rdt_weight_sync = True
-    elif getattr(args, "use_rdt_weight_sync", False):
-        args.update_weight_transfer_mode = "rdt"
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode in ("p2p", "rdt"):

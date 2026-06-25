@@ -129,6 +129,9 @@ class SGLangEngine(RayActor):
         base_gpu_id: int | None = None,
         sglang_overrides: dict | None = None,
         num_gpus_per_engine: int | None = None,
+        rdt_pg_name: str | None = None,
+        rdt_pg_id: str | None = None,
+        rdt_pg_bundles: list | None = None,
     ):
         self.args = args
         self.rank = rank
@@ -136,6 +139,14 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
+        # RDT no-double-booking: miles' rollout PG (global ID, namespace-independent)
+        # + this engine's per-GPU bundle indices, forwarded to sglang's RayEngine
+        # via env so it reuses these reserved bundles instead of auto-creating a
+        # second PG. The child mp.Process is a separate Ray job/namespace, so it
+        # must reference the PG by ID, not name.
+        self.rdt_pg_name = rdt_pg_name
+        self.rdt_pg_id = rdt_pg_id
+        self.rdt_pg_bundles = rdt_pg_bundles
         self._scheduler_actors = []
 
     def init(
@@ -224,12 +235,27 @@ class SGLangEngine(RayActor):
         _sanity_check_server_args(actual_server_args, expect_server_args)
 
     def _init_normal(self, server_args_dict):
-        use_rdt = getattr(self.args, "use_rdt_weight_sync", False)
+        use_rdt = self.args.update_weight_transfer_mode == "rdt"
         if use_rdt:
             server_args_dict["use_ray"] = True
             # RDT needs the engine-info bootstrap server for per-rank parallelism
             # config, but not the mooncake/verbs P2P transfer-engine seeding.
             server_args_dict["enable_engine_info_bootstrap"] = True
+            # No-double-booking: hand miles' reserved rollout PG + this engine's
+            # per-GPU bundle indices to sglang's RayEngine via env. The server is
+            # launched in an mp.Process child that loses the PG context, so it
+            # would otherwise auto-create a second PG and double-book the rollout
+            # GPUs. The child inherits os.environ and runs on this engine's node,
+            # so sglang derives the rank-0 / nccl init IP from its own node.
+            if self.rdt_pg_id and self.rdt_pg_bundles:
+                # Global PG ID is the cross-job/namespace-safe handle (the child
+                # is a separate Ray job); keep the name for logging/back-compat.
+                os.environ["MILES_RDT_PG_ID"] = self.rdt_pg_id
+                if self.rdt_pg_name:
+                    os.environ["MILES_RDT_PG_NAME"] = self.rdt_pg_name
+                os.environ["MILES_RDT_PG_BUNDLES"] = ",".join(
+                    str(b) for b in self.rdt_pg_bundles
+                )
         logger.info(
             f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
             f"{' (use_ray=True for RDT)' if use_rdt else ''}"
