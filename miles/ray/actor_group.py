@@ -5,6 +5,8 @@ import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+
 
 
 class RayTrainGroup:

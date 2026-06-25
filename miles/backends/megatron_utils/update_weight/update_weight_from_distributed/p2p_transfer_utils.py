@@ -8,7 +8,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import ray
 import torch
 import torch.distributed as dist
-from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
 from miles.backends.training_utils.parallel import get_parallel_state

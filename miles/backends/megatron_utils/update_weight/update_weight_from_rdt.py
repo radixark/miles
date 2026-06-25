@@ -272,14 +272,14 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)
 
-        # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
-        # because get_model() calls post_load_weights() internally which may invoke
-        # kernels that should only run on the rollout engine after RDMA transfer
-        # (post_process_weights(post_load_weights=True)).
+        # Monkey-patch the loader-level _post_load_weights to no-op BEFORE get_model,
+        # because get_model() calls it internally, which may invoke kernels that
+        # should only run on the rollout engine after the RDMA transfer (the engine
+        # runs them itself when the mixin's end_weight_update() closes the session).
         from sglang.srt.model_loader import loader as model_loader_module
 
-        original_post_load_weights = model_loader_module.post_load_weights
-        model_loader_module.post_load_weights = lambda *args, **kwargs: None
+        original_post_load_weights = model_loader_module._post_load_weights
+        model_loader_module._post_load_weights = lambda *args, **kwargs: None
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
@@ -288,7 +288,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                     device_config=DeviceConfig(device="cuda"),
                 )
         finally:
-            model_loader_module.post_load_weights = original_post_load_weights
+            model_loader_module._post_load_weights = original_post_load_weights
 
         # Also patch the instance method for subsequent load_weights() calls.
         if hasattr(model, "post_load_weights"):
@@ -424,4 +424,4 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                     for engine in self.rollout_engines
                 ]
             )
-        super()._finalize_and_resume_engines(post_load_weights=True)
+        super()._finalize_and_resume_engines()
