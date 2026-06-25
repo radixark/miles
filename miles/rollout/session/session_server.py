@@ -12,10 +12,10 @@ import logging
 import httpx
 import setproctitle
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from starlette.responses import Response
 
+from miles.rollout.session.session_core import ProxyRequest, _proxy_result_to_core_response
 from miles.rollout.session.sessions import setup_session_routes
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 class SessionServer:
     """Lightweight FastAPI server that manages sessions and proxies inference
-    requests through the inference router (sglang or miles)."""
+    requests through the inference router (sglang or miles).
+
+    The request-handling logic lives in the transport-neutral ``SessionCore``
+    (see ``session_core``); this class owns the FastAPI app, the httpx client,
+    and the upstream proxy (``do_proxy``)."""
 
     def __init__(self, args, backend_url: str):
         self.backend_url = backend_url
@@ -42,19 +46,19 @@ class SessionServer:
 
     async def do_proxy(
         self,
-        request: Request,
+        request: ProxyRequest,
         path: str,
         body: bytes | None = None,
         headers: dict | None = None,
     ) -> dict:
+        # ``request`` is a transport-neutral ProxyRequest (method + raw query),
+        # not a fastapi.Request: the core drives the proxy from primitives. The
+        # signature stays (request, path, body=None, headers=None) so tests can
+        # still patch SessionServer.do_proxy and forward through it.
         url = f"{self.backend_url}/{path}"
-        if request.url.query:
-            url = f"{url}?{request.url.query}"
+        if request.query:
+            url = f"{url}?{request.query}"
 
-        if body is None:
-            body = await request.body()
-        if headers is None:
-            headers = dict(request.headers)
         headers = {
             k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding", "host")
         }
@@ -79,21 +83,15 @@ class SessionServer:
         }
 
     def build_proxy_response(self, result: dict) -> Response:
-        content = result["response_body"]
-        status_code = result["status_code"]
-        # Drop wire-level framing headers from upstream so Starlette rebuilds them
-        # from the body we actually send: transfer-encoding is hop-by-hop
-        headers = {
-            k: v
-            for k, v in result["headers"].items()
-            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
-        }
-        content_type = headers.get("content-type", "")
-        try:
-            data = json.loads(content)
-            return JSONResponse(content=data, status_code=status_code, headers=headers)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
+        # Thin Starlette adapter over the core's passthrough builder; kept on
+        # SessionServer because the unit tests call it directly.
+        core_response = _proxy_result_to_core_response(result)
+        return Response(
+            content=core_response.body,
+            status_code=core_response.status_code,
+            headers=core_response.headers,
+            media_type=core_response.media_type,
+        )
 
 
 def run_session_server(args, backend_url: str):
@@ -108,4 +106,7 @@ def run_session_server(args, backend_url: str):
         args.session_server_port,
         backend_url,
     )
+    # Single uvicorn worker on purpose: extra workers would each own a separate
+    # SessionRegistry + asyncio.Lock, so a session_id could land on a process that
+    # doesn't own it. Multi-process needs sticky session ownership and is deferred.
     uvicorn.run(server.app, host=args.session_server_ip, port=args.session_server_port, log_level="info")

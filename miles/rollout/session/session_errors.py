@@ -6,7 +6,9 @@ SessionError (base)
 ├── SessionNotFoundError       → 404  session does not exist
 ├── MessageValidationError     → 400  messages structure/content invalid
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
-└── UpstreamResponseError      → 502  SGLang response invalid or unexpected
+├── UpstreamResponseError      → 502  SGLang response invalid or unexpected
+├── SessionBusyError           → 409  session already has an in-flight chat
+└── SessionInvariantError      → 500  unreachable session-state invariant violated
 """
 
 
@@ -49,3 +51,20 @@ class UpstreamResponseError(SessionError):
     """
 
     status_code: int = 502
+
+
+class SessionBusyError(SessionError):
+    """Raised when the session already has an in-flight chat completion.
+
+    One linear trajectory admits one in-flight chat at a time.
+    """
+
+    status_code: int = 409
+
+
+class SessionInvariantError(SessionError):
+    """Raised when a session-state invariant that should be unreachable under
+    the in-flight gate is violated (defensive; indicates a real bug).
+    """
+
+    status_code: int = 500
