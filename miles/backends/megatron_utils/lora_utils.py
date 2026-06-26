@@ -327,10 +327,14 @@ def create_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
-    # Opt-in to SGLang PR #21466's shared-outer grouped-expert LoRA. Only the
-    # standard ``LoRA`` class supports the flag today.
-    if lora_cls is LoRA and getattr(args, "experts_shared_outer_loras", False):
-        lora_kwargs["experts_shared_outer_loras"] = True
+    # MoE-expert (grouped) LoRA adapter layout, keyed on --experts-shared-outer-loras:
+    #   SET   -> shared-outer LoRA (SGLang PR #21466 contract) + share_expert_adapters=True
+    #   UNSET -> regular per-expert LoRA (share_expert_adapters=False: one adapter per local expert)
+    _shared_outer = bool(getattr(args, "experts_shared_outer_loras", False))
+    lora_kwargs["share_expert_adapters"] = _shared_outer
+    # experts_shared_outer_loras is only supported by the standard ``LoRA`` class today.
+    if lora_cls is LoRA:
+        lora_kwargs["experts_shared_outer_loras"] = _shared_outer
 
     lora = lora_cls(**lora_kwargs)
 

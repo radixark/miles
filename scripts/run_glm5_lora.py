@@ -71,6 +71,8 @@ is validated train-only by replaying a dumped rollout (both toys share the GLM t
 from dataclasses import dataclass
 from typing import Literal
 
+import os
+
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -291,7 +293,13 @@ def _train(args: ScriptArgs):
     # crash (orthogonal to fp8/engine-size/virtual-experts/max-lora-rank). LoRA only attention
     # (q/k/v/o + MLA q_a/kv_a/q_b/kv_b) until the sglang probe is patched.
     _tm = args.target_modules
-    if _is_full:
+    # MoE/MLP LoRA on gate_proj/up_proj/down_proj is KEPT BY DEFAULT now (regular per-expert MoE LoRA;
+    # the bridge layout is selected by --experts-shared-outer-loras via lora_utils.create_lora_instance).
+    # Set KEEP_MOE_LORA=0 to restore the attention-only drop -- needed ONLY when serving via the sglang
+    # colocate rollout, which cannot yet serve MoE-expert LoRA (the dense gate_up "12288 vs 24576"
+    # scheduler crash). Training / train-only / dumped-rollout do not need the drop.
+    _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
+    if _is_full and not _keep_moe_lora:
         _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
     lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
     if _is_full:
