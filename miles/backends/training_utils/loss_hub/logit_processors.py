@@ -135,6 +135,7 @@ def get_log_probs_and_entropy(
     total_lengths: list[int],
     response_lengths: list[int],
     with_entropy: bool = False,
+    entropy_requires_grad: bool = True,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
@@ -142,8 +143,7 @@ def get_log_probs_and_entropy(
 
     For each sample, extracts response-aligned logits and tokens, then computes
     log-probabilities via softmax across the tensor-parallel group. Log-probs
-    are squeezed from `[R, 1]` to `[R]`. Entropy values are always appended
-    (even when `with_entropy=False`), but only included in the result dict
+    are squeezed from `[R, 1]` to `[R]`. Entropy is computed and returned only
     when requested.
 
     Args:
@@ -153,6 +153,8 @@ def get_log_probs_and_entropy(
         total_lengths: Total sequence lengths per sample.
         response_lengths: Response segment lengths per sample.
         with_entropy: If True, include "entropy" key in result.
+        entropy_requires_grad: If False, compute entropy as an observed metric
+            without attaching it to the autograd graph.
         non_loss_data: Unused; kept for API compatibility.
 
     Returns:
@@ -177,13 +179,15 @@ def get_log_probs_and_entropy(
             tokens_chunk,
             parallel_state.tp.group,
             with_entropy=with_entropy,
+            entropy_requires_grad=entropy_requires_grad,
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
             vocab_size=getattr(args, "vocab_size", None),
         )
 
         log_probs_list.append(log_prob.squeeze(-1))
-        entropy_list.append(entropy)
+        if with_entropy:
+            entropy_list.append(entropy)
 
     res = {
         "log_probs": log_probs_list,

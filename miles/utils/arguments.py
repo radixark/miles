@@ -1011,6 +1011,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--observe-training-entropy",
+                action="store_true",
+                default=False,
+                help=(
+                    "Compute training entropy as a logged metric even when --entropy-coef is 0. "
+                    "When the coefficient is 0, the observed entropy is detached and does not affect backward."
+                ),
+            )
+            parser.add_argument(
                 "--get-mismatch-metrics",
                 action="store_true",
                 default=False,

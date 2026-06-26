@@ -29,6 +29,7 @@ def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
         log_probs_chunk_size=-1,
         true_on_policy_mode=False,
         allgather_cp=False,
+        observe_training_entropy=False,
     )
 
 
