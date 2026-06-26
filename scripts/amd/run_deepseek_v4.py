@@ -146,7 +146,7 @@ class ScriptArgs(upstream.ScriptArgs):
     fp8_training: bool = False
     optimizer_offload: bool = True
     skip_saving: bool = True
-    use_fault_tolerance: bool = True
+    use_fault_tolerance: bool = False
     train_deterministic: bool = True
 
     context_length: int | None = None
@@ -771,9 +771,10 @@ def _train(args: ScriptArgs):
                     "--eval-max-response-len 256 "
                 )
 
+    sequence_parallel_arg = "--sequence-parallel " if args.tensor_model_parallel_size > 1 else ""
     perf_args = (
         f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
-        "--sequence-parallel "
+        f"{sequence_parallel_arg}"
         f"--pipeline-model-parallel-size {args.pipeline_model_parallel_size} "
         f"--context-parallel-size {args.context_parallel_size} "
         f"--expert-model-parallel-size {args.expert_model_parallel_size} "
