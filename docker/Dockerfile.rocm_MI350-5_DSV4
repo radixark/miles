@@ -126,12 +126,14 @@ RUN pip install "numpy<2"
 
 # ====================================== Install main package ============================================
 
-# Install Miles with the minimal DSV4 ROCm compatibility patch.
+# Install Miles with the minimal DSV4 ROCm compatibility patches.
 COPY docker/amd_patch/deepseek_v4/miles.patch /tmp/amd_patch/miles.patch
+COPY docker/amd_patch/deepseek_v4/tilelang_sparse_mla_large_heads.patch /tmp/amd_patch/tilelang_sparse_mla_large_heads.patch
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
     git apply --3way /tmp/amd_patch/miles.patch && \
+    git apply --3way /tmp/amd_patch/tilelang_sparse_mla_large_heads.patch && \
     pip install -e . --no-deps
 
 # Verify package availability without triggering GPU arch detection.
