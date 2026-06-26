@@ -845,6 +845,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eval-top-p", type=float, default=None)
             parser.add_argument("--eval-top-k", type=int, default=None)
             parser.add_argument("--eval-max-response-len", type=int, default=None)
+            parser.add_argument(
+                "--eval-concurrency",
+                type=int,
+                default=64,
+                help=(
+                    "Max number of eval generation requests in flight at once. Eval otherwise submits "
+                    "the WHOLE eval set as one burst (bounded only by the large global rollout semaphore "
+                    "= sglang_server_concurrency * num_gpus / gpus_per_engine, e.g. 1024), which floods a "
+                    "dp-attention colocate engine and hangs it (0 GPU util, 0 generated). Windowing the "
+                    "submission like training's rollout keeps in-flight bounded. Lower if eval still hangs."
+                ),
+            )
             parser.add_argument("--eval-max-prompt-len", type=int, default=None)
             parser.add_argument("--eval-min-new-tokens", type=int, default=None)
             parser.add_argument("--eval-max-context-len", type=int, default=None)

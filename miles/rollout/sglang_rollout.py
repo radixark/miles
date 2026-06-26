@@ -550,10 +550,15 @@ async def eval_rollout_single_dataset(
         spaces_between_special_tokens=False,
     )
 
-    tasks = []
-    # do multiple samples for eval prompts
+    # Prepare the eval jobs first (cheap: deep-copied samples + sampling params). Do NOT create all
+    # tasks up front: eval otherwise bursts the ENTIRE eval set into the engines at once (bounded only
+    # by the large global rollout semaphore ~= sglang_server_concurrency * rollout_num_gpus /
+    # rollout_num_gpus_per_engine, e.g. 1024), which floods a dp-attention colocate engine and hangs it
+    # (0 GPU util, nothing generated). Window the submission like generate_rollout_async so at most
+    # `--eval-concurrency` generations are in flight at once.
+    jobs = []
     sample_index = 0
-    for _i, prompt_sample in enumerate(dataset.samples):
+    for prompt_sample in dataset.samples:
         for j in range(dataset_cfg.n_samples_per_eval_prompt):
             # use the same prompt for multiple samples
             sample = copy.deepcopy(prompt_sample)
@@ -565,35 +570,47 @@ async def eval_rollout_single_dataset(
             if getattr(args, "sglang_enable_deterministic_inference", False):
                 sampling_params = base_sampling_params.copy()
                 sampling_params["sampling_seed"] = args.rollout_seed + j
-            tasks.append(
-                asyncio.create_task(
-                    generate_and_rm(
-                        args,
-                        sample,
-                        sampling_params=sampling_params,
-                        evaluation=True,
-                    )
-                )
-            )
+            jobs.append((sample, sampling_params))
+
+    window = max(1, getattr(args, "eval_concurrency", 64) or 64)
+
+    def _make_eval_task(job):
+        eval_sample, eval_sampling_params = job
+        return asyncio.create_task(
+            generate_and_rm(args, eval_sample, sampling_params=eval_sampling_params, evaluation=True)
+        )
 
     data = []
     do_print = True
-    pbar = tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
-    for coro in asyncio.as_completed(tasks):
-        sample = await coro
-        if do_print:
-            logged_sample = sample[0] if isinstance(sample, list) else sample
-            logger.info(
-                "eval_rollout_single_dataset example data: "
-                f"{[str(logged_sample.prompt) + logged_sample.response]} "
-                f"reward={logged_sample.reward}"
-            )
-            do_print = False
-        if isinstance(sample, list):
-            data.extend(sample)
-        else:
-            data.append(sample)
-        pbar.update(1)
+    pbar = tqdm(total=len(jobs), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
+    job_iter = iter(jobs)
+    pending = set()
+    for _ in range(min(window, len(jobs))):
+        nxt = next(job_iter, None)
+        if nxt is None:
+            break
+        pending.add(_make_eval_task(nxt))
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for coro in done:
+            sample = await coro
+            if do_print:
+                logged_sample = sample[0] if isinstance(sample, list) else sample
+                logger.info(
+                    "eval_rollout_single_dataset example data: "
+                    f"{[str(logged_sample.prompt) + logged_sample.response]} "
+                    f"reward={logged_sample.reward}"
+                )
+                do_print = False
+            if isinstance(sample, list):
+                data.extend(sample)
+            else:
+                data.append(sample)
+            pbar.update(1)
+            # top up the window so at most `window` generations are in flight
+            nxt = next(job_iter, None)
+            if nxt is not None:
+                pending.add(_make_eval_task(nxt))
     pbar.close()
 
     data.sort(key=lambda sample: sample.index)
