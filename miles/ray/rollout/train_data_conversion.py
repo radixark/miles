@@ -101,8 +101,12 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
         return f(args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
-    if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
-        # group norm
+    if (
+        args.advantage_estimator in ["grpo", "gspo", "reinforce", "reinforce_plus_plus_baseline"]
+        and args.rewards_normalization
+        and args.n_samples_per_prompt > 1
+    ):
+        # group norm (a group of 1 has no baseline: subtracting its own mean would zero every advantage)
         rewards = torch.tensor(raw_rewards, dtype=torch.float)
         if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
             rewards = rewards.reshape(-1, args.n_samples_per_prompt)
@@ -112,7 +116,7 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
         mean = rewards.mean(dim=-1, keepdim=True)
         rewards = rewards - mean
 
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization:
+        if args.advantage_estimator in ["grpo", "gspo", "reinforce"] and args.grpo_std_normalization:
             std = rewards.std(dim=-1, keepdim=True)
             rewards = rewards / (std + 1e-6)
 
