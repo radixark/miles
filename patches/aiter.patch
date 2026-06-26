@@ -1,0 +1,52 @@
+diff --git a/aiter/fused_moe.py b/aiter/fused_moe.py
+index 55f2a30f8..a424a42f9 100644
+--- a/aiter/fused_moe.py
++++ b/aiter/fused_moe.py
+@@ -367,6 +367,22 @@ def fused_moe_(
+         )
+ 
+ 
++def _transpose_blockscale_a1_scale(a1_scale):
++    # The asm blockscale stage-1 kernels (``fmoe_fp8_blockscale_g1u1`` in
++    # asm_fmoe.cu, ``moe_stage1_g1u1`` in asm_moe_2stage.cu) read the per-1x128
++    # activation scale in a column-major ``[scaleN, token_cnt]`` layout whose
++    # leading dimension is ``token_cnt = hidden_states.shape[0]`` (they derive it
++    # from ``input/out.size(0)``). When the activation is a caller-supplied,
++    # already-FP8 buffer padded to a max capacity (e.g. an EP dispatch buffer
++    # from mori), the valid-token count is smaller than that physical row count.
++    # ``partial_transpose(num_rows=num_local_tokens)`` laid the scale out with
++    # ``num_local_tokens`` as the leading dimension, so every group ``g>0`` was
++    # read at the wrong offset whenever the buffer was padded. Transposing with
++    # the full physical row count keeps the layout consistent with the kernel
++    # regardless of padding.
++    return a1_scale.transpose(0, 1).contiguous()
++
++
+ def fused_moe_1stage(
+     hidden_states,
+     w1,  # [expert(local_expert:EP), inter_dim*2, dim] N,K
+@@ -449,9 +465,7 @@ def fused_moe_1stage(
+             ), "a1_scale must be provided for quantized input for fused_moe"
+             a1 = hidden_states
+             if quant_type == QuantType.per_1x128:
+-                scale_t = torch.empty_like(a1_scale)
+-                aiter.partial_transpose(scale_t, a1_scale, num_rows=num_local_tokens)
+-                a1_scale = scale_t
++                a1_scale = _transpose_blockscale_a1_scale(a1_scale)
+ 
+         token_num = hidden_states.shape[0]
+         E, model_dim, inter_dim = get_inter_dim(w1.shape, w2.shape)
+@@ -1137,6 +1151,13 @@ def fused_moe_2stages(
+             a1_scale is not None or quant_type == QuantType.No
+         ), "a1_scale must be provided for quantized input for fused_moe"
+         a1 = hidden_states
++        if quant_type == QuantType.per_1x128 and metadata.stage1.func is asm_stage1:
++            # Mirror the internal-quant branch above (which passes
++            # transpose_scale=True): asm_stage1 consumes the per-1x128
++            # activation scale in the transposed, token_cnt-strided layout, so a
++            # caller-supplied row-major scale must be transposed here too. This
++            # transpose was previously missing on the caller-quantized-FP8 path.
++            a1_scale = _transpose_blockscale_a1_scale(a1_scale)
+     if quant_type == QuantType.per_1x128 and metadata.stage1.func is asm_stage1:
+         ratio = a1_scale.element_size() // a1.element_size()
+         a2 = torch.empty(

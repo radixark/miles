@@ -1,0 +1,288 @@
+diff --git a/python/sglang/srt/layers/moe/ep_moe/layer.py b/python/sglang/srt/layers/moe/ep_moe/layer.py
+index 1359c8313..6ba98ac17 100644
+--- a/python/sglang/srt/layers/moe/ep_moe/layer.py
++++ b/python/sglang/srt/layers/moe/ep_moe/layer.py
+@@ -62,6 +62,53 @@ elif _is_npu:
+ 
+ logger = logging.getLogger(__name__)
+ 
++import os as _os
++
++_MORI_SELFCHECK = get_bool_env_var("MILES_MORI_SELFCHECK", "False")
++_MORI_COMBINE_PROBE = get_bool_env_var("MILES_MORI_COMBINE_PROBE", "False")
++_mori_dbg_budget = {}
++
++
++def _mori_dbg(tag, layer_id, **tensors):
++    if not _MORI_SELFCHECK or layer_id != 0:
++        return
++    try:
++        if torch.cuda.is_current_stream_capturing():
++            return
++        import torch.distributed as dist
++
++        rank = dist.get_rank() if dist.is_initialized() else 0
++        # skip warmup (all-zero) frames
++        h = tensors.get("inp", None)
++        if h is None:
++            h = tensors.get("fmoe_out", None)
++        if h is not None and float(h.float().abs().max()) == 0.0:
++            return
++        key = (rank, tag)
++        if _mori_dbg_budget.get(key, 0) >= 4:
++            return
++        _mori_dbg_budget[key] = _mori_dbg_budget.get(key, 0) + 1
++        parts = []
++        for name, t in tensors.items():
++            if t is None:
++                parts.append(f"{name}=None")
++                continue
++            if not torch.is_tensor(t):
++                parts.append(f"{name}={t}")
++                continue
++            tf = t.float()
++            nzr = ""
++            if t.dim() == 2 and t.shape[0] > 1:
++                nzr = f" nzrows={int((tf.abs().amax(dim=1) > 0).sum())}/{t.shape[0]}"
++            parts.append(
++                f"{name}[{tuple(t.shape)} {str(t.dtype).replace('torch.','')}] "
++                f"amax={tf.abs().max().item():.3e} amean={tf.abs().mean().item():.3e} "
++                f"nan={int(torch.isnan(tf).sum())}{nzr}"
++            )
++        print(f"[MORI_SELFCHECK r{rank} L{layer_id} {tag}] " + " | ".join(parts), flush=True)
++    except Exception as e:
++        print(f"[MORI_SELFCHECK ERROR] {e}", flush=True)
++
+ 
+ if _is_npu:
+     import torch_npu
+@@ -629,14 +676,64 @@ class MoriEPMoE(DeepEPMoE):
+         )
+ 
+         assert _use_aiter, "Mori need to be used together with aiter as of now"
+-        self.expert_mask = torch.zeros(
+-            (self.num_experts),
++        # NOTE: expert_mask marks which GLOBAL experts are local to this EP rank
++        # (1 = local). aiter.fused_moe masks out every expert whose mask entry is
++        # 0, so an all-zero mask makes the kernel produce all-zero output. The
++        # persistent GPU tensor created here gets its memory clobbered (zeroed)
++        # around CUDA-graph capture, which silently turns every real rollout
++        # forward into a no-op. We therefore (1) remember the valid range and
++        # (2) rebuild the mask from scratch on every run_moe_core call, which is
++        # CUDA-graph safe (the memset+fill kernels are captured and replay with
++        # correct values) and immune to any post-init memory reuse.
++        self._expert_start_idx = self.moe_ep_rank * self.num_local_experts
++        self._expert_end_idx = self._expert_start_idx + self.num_local_experts
++        self.expert_mask = self._build_expert_mask()
++
++        if _MORI_COMBINE_PROBE and layer_id == 0:
++            try:
++                import torch.distributed as dist
++                _r = dist.get_rank() if dist.is_initialized() else -1
++                print(
++                    f"[MORI_MASK_INIT global_rank={_r} layer={layer_id}] "
++                    f"moe_ep_rank={self.moe_ep_rank} moe_ep_size={self.moe_ep_size} "
++                    f"num_experts={self.num_experts} num_local_experts={self.num_local_experts} "
++                    f"mask_size={self.expert_mask.numel()} mask_sum={int(self.expert_mask.sum())} "
++                    f"valid_range=[{self._expert_start_idx}:{self._expert_end_idx}]",
++                    flush=True,
++                )
++            except Exception as _e:
++                print(f"[MORI_MASK_INIT ERROR] {_e}", flush=True)
++
++    def _build_expert_mask(self) -> torch.Tensor:
++        mask = torch.zeros(
++            (self.num_experts,),
+             device=torch.cuda.current_device(),
+             dtype=torch.int32,
+         )
+-        expert_start_idx = self.moe_ep_rank * self.num_local_experts
+-        expert_end_idx = expert_start_idx + self.num_local_experts
+-        self.expert_mask[expert_start_idx:expert_end_idx] = 1
++        mask[self._expert_start_idx : self._expert_end_idx] = 1
++        return mask
++
++    def _diag_stale_mask(self):
++        # One-shot check: report whether the persistent expert_mask got clobbered
++        # (sum != num_local_experts) before we rebuild it. Confirms the root cause.
++        try:
++            if torch.cuda.is_current_stream_capturing():
++                return
++            if getattr(self, "_diag_stale_done", False):
++                return
++            stale = int(self.expert_mask.sum())
++            if stale != self.num_local_experts:
++                self._diag_stale_done = True
++                import torch.distributed as dist
++                rank = dist.get_rank() if dist.is_initialized() else 0
++                print(
++                    f"[MORI_MASK_STALE r{rank}] persistent expert_mask.sum()={stale} "
++                    f"expected={self.num_local_experts} -> mask was clobbered "
++                    f"after init; rebuilding each forward",
++                    flush=True,
++                )
++        except Exception as e:
++            print(f"[MORI_MASK_STALE ERROR] {e}", flush=True)
+ 
+     def forward(
+         self,
+@@ -644,6 +741,7 @@ class MoriEPMoE(DeepEPMoE):
+         topk_output: TopKOutput,
+     ):
+         num_token = hidden_states.shape[0]
++        _mori_dbg("00_in", self.layer_id, inp=hidden_states)
+         dispatch_output = self.dispatcher.dispatch(
+             hidden_states=hidden_states, topk_output=topk_output
+         )
+@@ -651,9 +749,95 @@ class MoriEPMoE(DeepEPMoE):
+         hidden_states = self.dispatcher.combine(
+             combine_input=combine_input,
+         )
++        _mori_dbg(
++            "40_combine_out",
++            self.layer_id,
++            inp=combine_input.hidden_states,
++            comb=hidden_states[:num_token],
++        )
++
++        if _MORI_COMBINE_PROBE and self.layer_id == 0 and num_token > 4:
++            self._mori_combine_probe(combine_input, hidden_states, num_token)
+ 
+         return hidden_states[:num_token]
+ 
++    def _mori_fmoe_dump(self, a1, scale, ids, weights, recv, out, w13, w2,
++                        w13_scale, w2_scale, quant_type):
++        try:
++            if torch.cuda.is_current_stream_capturing():
++                return
++            if getattr(self, "_mori_fmoe_dumped", False):
++                return
++            n = int(out.shape[0])
++            nz = int((out.float().abs().amax(dim=1) > 0).sum())
++            rc = int(recv.flatten()[0]) if torch.is_tensor(recv) else int(recv)
++            a1nz = int((a1.float().abs().amax(dim=1) > 0).sum())
++            # only dump the REAL anomaly: input substantially non-zero (not a
++            # warmup/dummy frame) but fused_moe under-fills its output.
++            if rc <= 8 or a1nz < int(rc * 0.9) or nz >= int(rc * 0.9):
++                return
++            self._mori_fmoe_dumped = True
++            import torch.distributed as dist
++            rank = dist.get_rank() if dist.is_initialized() else 0
++            cap = min(n, max(rc + 16, 1))
++            blob = {
++                "a1": a1[:cap].detach().cpu(),
++                "scale": (scale[:cap].detach().cpu() if torch.is_tensor(scale) else None),
++                "ids": ids[:cap].detach().cpu(),
++                "weights": weights[:cap].detach().cpu(),
++                "recv": rc,
++                "out_nonzero": nz,
++                "out_rowmax": out.detach().float().abs().amax(dim=1).cpu(),
++                "w13": w13.detach().cpu(),
++                "w2": w2.detach().cpu(),
++                "w13_scale": (w13_scale.detach().cpu() if torch.is_tensor(w13_scale) else None),
++                "w2_scale": (w2_scale.detach().cpu() if torch.is_tensor(w2_scale) else None),
++                "expert_mask": self.expert_mask.detach().cpu(),
++                "quant_type": str(quant_type),
++                "num_local_experts": self.num_local_experts,
++            }
++            blob["a1_nonzero"] = a1nz
++            path = f"/tmp/mori_fmoe_fail_r{rank}.pt"
++            torch.save(blob, path)
++            print(f"[MORI_FMOE_DUMP r{rank}] recv={rc} a1_nonzero={a1nz} out_nonzero={nz} saved {path}", flush=True)
++        except Exception as e:
++            print(f"[MORI_FMOE_DUMP ERROR] {e}", flush=True)
++
++    def _mori_combine_probe(self, combine_input, hidden_states, num_token):
++        # NOTE: deliberately NO collective ops here (no extra dispatch/combine),
++        # otherwise ranks with num_token<=4 diverge and the live rollout hangs.
++        try:
++            if torch.cuda.is_current_stream_capturing():
++                return
++            ci = combine_input.hidden_states
++            tids = combine_input.topk_ids
++            fin = float(ci.float().abs().max())
++            if fin == 0.0:
++                return
++            amax0 = float(hidden_states[:num_token].float().abs().max())
++            import torch.distributed as dist
++            rank = dist.get_rank() if dist.is_initialized() else 0
++            print(
++                f"[MORI_PROBE r{rank}] num_token={num_token} fmoe_in_amax={fin:.3e} "
++                f"combine_amax={amax0:.3e}",
++                flush=True,
++            )
++            if amax0 == 0.0 and not getattr(self, "_mori_dumped", False):
++                self._mori_dumped = True
++                path = f"/tmp/mori_combine_fail_r{rank}.pt"
++                torch.save(
++                    {
++                        "topk_ids": tids.detach().cpu(),
++                        "topk_weights": combine_input.topk_weights.detach().cpu(),
++                        "num_token": num_token,
++                        "fmoe_in_rowmax": ci.detach().float().abs().amax(dim=1).cpu(),
++                    },
++                    path,
++                )
++                print(f"[MORI_PROBE r{rank}] dumped failing combine routing to {path}", flush=True)
++        except Exception as e:
++            print(f"[MORI_PROBE ERROR] {e}", flush=True)
++
+     def run_moe_core(
+         self,
+         dispatch_output: DispatchOutput,
+@@ -746,6 +930,15 @@ class MoriEPMoE(DeepEPMoE):
+             if quant_type == QuantType.No:
+                 quant_type = QuantType.per_128x128
+ 
++        # The persistent expert_mask can be silently zeroed by CUDA-graph memory
++        # reuse after init; an all-zero mask makes fused_moe emit all-zero output
++        # for every token. Rebuild it from the (constant) valid range each call so
++        # the kernel always sees the correct local-expert mask. Cheap (128 ints)
++        # and CUDA-graph safe.
++        if _MORI_COMBINE_PROBE and self.layer_id == 0:
++            self._diag_stale_mask()
++        self.expert_mask = self._build_expert_mask()
++
+         # [KK TODO] should to call the apply of quant method to handle fused moe
+         hidden_states = fused_moe(
+             hidden_states=dispatch_a1,
+@@ -767,6 +960,27 @@ class MoriEPMoE(DeepEPMoE):
+             dtype=output_dtype,
+         )
+ 
++        _mori_dbg(
++            "30_fmoe",
++            self.layer_id,
++            disp=dispatch_a1,
++            dscale=dispatch_scale,
++            fmoe_out=hidden_states,
++            recv=(
++                dispatch_recv_token_num.float()
++                if torch.is_tensor(dispatch_recv_token_num)
++                else dispatch_recv_token_num
++            ),
++            qt=str(quant_type),
++        )
++
++        if _MORI_COMBINE_PROBE and self.layer_id == 0:
++            self._mori_fmoe_dump(
++                dispatch_a1, dispatch_scale, dispatch_ids, dispatch_weights,
++                dispatch_recv_token_num, hidden_states, w13_weight, w2_weight,
++                w13_scale, w2_scale, quant_type,
++            )
++
+         from sglang.srt.layers.moe.token_dispatcher import DispatchOutputChecker
+ 
+         combine_input_wrapper = (
+diff --git a/python/sglang/srt/models/qwen3_moe.py b/python/sglang/srt/models/qwen3_moe.py
+index 1d10319a5..df142af8c 100644
+--- a/python/sglang/srt/models/qwen3_moe.py
++++ b/python/sglang/srt/models/qwen3_moe.py
+@@ -295,6 +295,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
+         if (
+             not get_moe_a2a_backend().is_deepep()
+             and not get_moe_a2a_backend().is_ascend_fuseep()
++            and not get_moe_a2a_backend().is_mori()
+         ):
+             return self.forward_normal(
+                 hidden_states, should_allreduce_fusion, use_reduce_scatter

@@ -7,7 +7,6 @@ import logging
 import os
 from typing import Any
 
-from sglang.srt.entrypoints.openai import encoding_dsv32
 from sglang.srt.entrypoints.openai.protocol import Tool
 
 logger = logging.getLogger(__name__)
@@ -79,6 +78,18 @@ def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[s
     return out
 
 
+def _encoding_dsv32():
+    """Import sglang's DeepSeek V3.2 encoder lazily.
+
+    Older sglang builds (e.g. the MI350 image) do not export ``encoding_dsv32``;
+    deferring the import until a DeepSeek V3.2 prompt is actually rendered keeps
+    non-DeepSeek jobs importable on those builds.
+    """
+    from sglang.srt.entrypoints.openai import encoding_dsv32
+
+    return encoding_dsv32
+
+
 def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None = None, **kwargs: Any) -> str:
     """Render *messages* into a DeepSeek V3.2 prompt via sglang ``encode_messages``.
 
@@ -88,4 +99,4 @@ def render_messages(messages: list[dict[str, Any]], *, tools: list[dict] | None 
     encode_config = _build_deepseek_encode_config(kwargs)
     if tools:
         messages = _inject_tools_into_system(messages, tools)
-    return encoding_dsv32.encode_messages(messages, **encode_config)
+    return _encoding_dsv32().encode_messages(messages, **encode_config)
