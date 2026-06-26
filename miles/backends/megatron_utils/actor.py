@@ -36,6 +36,7 @@ from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
+from .multi_lora_utils import is_multi_lora_enabled
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
@@ -120,7 +121,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
+        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role
         )
 
@@ -435,6 +436,51 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(rollout_id, self.args)
 
     @timer
+    def load_pending_adapters(self) -> int:
+        # NOTE: this requires wake_up()
+        if not is_multi_lora_enabled(self.args):
+            return 0
+
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
+        from miles.utils.adapter_config import AdapterState
+
+        pending = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.PENDING))
+        if not pending:
+            return 0
+
+        from miles.backends.megatron_utils.multi_lora_utils import load_pending_adapters
+
+        n = load_pending_adapters(self.args, self.model, self.optimizer)
+        if n > 0:
+            # Re-snapshot: init_adapter_slot + load_adapter mutated the model,
+            # so the noop-backuper's recorded hash is now stale (would assert
+            # on the next weights_getter()). Mirrors the post-train backup
+            # pattern at the end of train().
+            self.weights_backuper.backup("actor")
+
+        return n
+
+    @timer
+    def unload_drained_adapters(self) -> int:
+        # NOTE: this requires wake_up()
+        if not is_multi_lora_enabled(self.args):
+            return 0
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
+        from miles.utils.adapter_config import AdapterState
+
+        drained = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.DRAINED))
+        if not drained:
+            return 0
+
+        from miles.backends.megatron_utils.multi_lora_utils import unload_drained_adapters
+
+        n = unload_drained_adapters(self.args, self.model, self.optimizer)
+        if n > 0:
+            self.weights_backuper.backup("actor")
+
+        return n
+
+    @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only:
             return
@@ -448,7 +494,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
             maybe_finalize_async_save(blocking=True)
 
-        save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
+        if is_multi_lora_enabled(self.args):
+            from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
+            from miles.ray.multi_lora_controller import get_multi_lora_controller
+
+            controller = get_multi_lora_controller()
+            adapters = ray.get(controller.active_adapters.remote())
+            adapter_steps = ray.get(controller.adapter_train_steps.remote())
+            save_multi_lora_checkpoints(self.args, self.model, adapter_steps, adapters)
+        else:
+            save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
 
         if force_sync and self.args.async_save:
             maybe_finalize_async_save(blocking=True)

@@ -1,0 +1,164 @@
+"""Tests for AdapterConfig parsing, validation, and lifecycle state."""
+
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-cpu")
+
+
+from itertools import pairwise
+from pathlib import Path
+
+import pytest
+import yaml
+
+from miles.utils.adapter_config import (
+    ADAPTER_INACTIVE_STATES,
+    ADAPTER_ROLLOUT_STATES,
+    AdapterConfig,
+    AdapterState,
+    parse_adapter_yaml,
+)
+
+
+MINIMAL_YAML = {
+    "rank": 16,
+    "alpha": 32,
+    "data": "/tmp/data.parquet",
+    "label_key": "label",
+    "rm_type": "math",
+}
+
+
+def write_yaml(path: Path, data: dict) -> Path:
+    path.write_text(yaml.safe_dump(data))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# parse_adapter_yaml
+# ---------------------------------------------------------------------------
+
+
+class TestParseAdapterYaml:
+    def test_minimal_happy_path(self, tmp_path):
+        path = write_yaml(tmp_path / "adapter.yaml", MINIMAL_YAML)
+        cfg = parse_adapter_yaml(path)
+        assert cfg.rank == 16
+        assert cfg.alpha == 32
+        assert cfg.data == "/tmp/data.parquet"
+        assert cfg.label_key == "label"
+        assert cfg.rm_type == "math"
+        assert cfg.input_key == "text"
+        assert cfg.metadata_key is None
+        assert cfg.custom_rm_path is None
+        assert cfg.num_epoch is None
+        assert cfg.num_row is None
+
+    def test_optional_fields_passthrough(self, tmp_path):
+        path = write_yaml(
+            tmp_path / "adapter.yaml",
+            {
+                **MINIMAL_YAML,
+                "input_key": "messages",
+                "metadata_key": "meta",
+                "num_epoch": 3,
+                "num_row": 100,
+            },
+        )
+        cfg = parse_adapter_yaml(path)
+        assert cfg.input_key == "messages"
+        assert cfg.metadata_key == "meta"
+        assert cfg.num_epoch == 3
+        assert cfg.num_row == 100
+
+    def test_save_explicit(self, tmp_path):
+        path = write_yaml(tmp_path / "adapter.yaml", {**MINIMAL_YAML, "save": "/some/place"})
+        cfg = parse_adapter_yaml(path)
+        assert Path(cfg.save) == Path("/some/place")
+
+    @pytest.mark.parametrize("save_value", [None, ""])
+    def test_save_omitted_yields_none(self, tmp_path, save_value):
+        """Parser leaves save unset; the controller resolves the default."""
+        raw = MINIMAL_YAML if save_value is None else {**MINIMAL_YAML, "save": save_value}
+        path = write_yaml(tmp_path / "adapter.yaml", raw)
+        cfg = parse_adapter_yaml(path)
+        assert cfg.save is None
+
+    def test_missing_data_raises(self, tmp_path):
+        bad = {k: v for k, v in MINIMAL_YAML.items() if k != "data"}
+        path = write_yaml(tmp_path / "adapter.yaml", bad)
+        with pytest.raises(KeyError):
+            parse_adapter_yaml(path)
+
+    @pytest.mark.parametrize("missing", ["rank", "alpha"])
+    def test_missing_rank_or_alpha_yields_none(self, tmp_path, missing):
+        """Parser passes through None; the controller resolves CLI defaults."""
+        raw = {k: v for k, v in MINIMAL_YAML.items() if k != missing}
+        path = write_yaml(tmp_path / "adapter.yaml", raw)
+        cfg = parse_adapter_yaml(path)
+        assert getattr(cfg, missing) is None
+
+
+# ---------------------------------------------------------------------------
+# AdapterConfig.__post_init__
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterConfigValidation:
+    def make(self, **overrides):
+        defaults = dict(
+            rank=8,
+            alpha=16,
+            data="/d",
+            save="/x",
+            input_key="text",
+            label_key="label",
+            rm_type="math",
+        )
+        return AdapterConfig(**(defaults | overrides))
+
+    def test_rm_type_only_ok(self):
+        self.make(rm_type="math", custom_rm_path=None)
+
+    def test_custom_rm_path_only_ok(self):
+        self.make(rm_type=None, custom_rm_path="rm.py")
+
+    def test_both_set_raises(self):
+        with pytest.raises(ValueError, match="Only one of"):
+            self.make(rm_type="math", custom_rm_path="rm.py")
+
+    def test_neither_set_raises(self):
+        with pytest.raises(ValueError, match="Only one of"):
+            self.make(rm_type=None, custom_rm_path=None)
+
+
+# ---------------------------------------------------------------------------
+# AdapterState
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterState:
+    def test_lifecycle_strictly_increasing(self):
+        """Controller relies on `state < new_state` for forward-only transitions."""
+        order = [
+            AdapterState.PENDING,
+            AdapterState.RUNNING,
+            AdapterState.DRAINING_DATASOURCE,
+            AdapterState.DRAINING_INFLIGHT,
+            AdapterState.DRAINING_TRAINABLE,
+            AdapterState.DRAINED,
+        ]
+        for prev, nxt in pairwise(order):
+            assert prev < nxt
+
+    def test_rollout_states(self):
+        assert ADAPTER_ROLLOUT_STATES == {
+            AdapterState.RUNNING,
+            AdapterState.DRAINING_DATASOURCE,
+        }
+
+    def test_inactive_states(self):
+        assert ADAPTER_INACTIVE_STATES == {
+            AdapterState.PENDING,
+            AdapterState.DRAINED,
+        }

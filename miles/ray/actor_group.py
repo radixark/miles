@@ -137,6 +137,17 @@ class RayTrainGroup:
 
         await self._broadcast("update_weights", info=info)
 
+    async def load_pending_adapters(self) -> int:
+        """Multi-LoRA: model-side install of PENDING adapters on every rank."""
+        results = await self._broadcast("load_pending_adapters")
+        return results[0] if results else 0
+
+    async def unload_drained_adapters(self):
+        """Multi-LoRA: model-side cleanup of DRAINED adapters (save final ckpt,
+        clear slot, zero optimizer)."""
+        results = await self._broadcast("unload_drained_adapters")
+        return results[0] if results else 0
+
     async def onload(self):
         await self._broadcast("wake_up")
 

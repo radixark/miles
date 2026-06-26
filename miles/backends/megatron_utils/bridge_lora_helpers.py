@@ -104,7 +104,12 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
     provider.finalize()
 
-    lora = create_lora_instance(args)
+    if getattr(args, "multi_lora", False):
+        from miles.backends.megatron_utils.multi_lora_utils import create_multi_lora
+
+        lora = create_multi_lora(args)
+    else:
+        lora = create_lora_instance(args)
 
     def apply_lora_hook(model_chunks):
         transformed = lora(model_chunks, training=True)

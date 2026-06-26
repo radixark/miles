@@ -85,6 +85,9 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+    if any(sample.adapter is not None for sample in samples):
+        train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
+
     if samples[0].opd_reverse_kl is not None:
         train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
 
@@ -136,6 +139,12 @@ def split_train_data_by_dp(args, data, dp_size):
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
+    # Multi-LoRA: sort partitions by adapter slot so each microbatch is
+    # contiguous-by-slot (required by the per-adapter token-count math).
+    adapter_slots = data.get("adapter_slots")
+    if adapter_slots is not None:
+        partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
+
     rollout_data_refs = []
 
     for i in range(dp_size):
@@ -158,6 +167,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "teacher_log_probs",
             "opd_reverse_kl",
             "weight_versions",
+            "adapter_slots",
         ]:
             if key not in data:
                 continue
@@ -172,5 +182,7 @@ def split_train_data_by_dp(args, data, dp_size):
             if key not in data:
                 continue
             rollout_data[key] = data[key]
+        if "adapter_slots" in rollout_data:
+            rollout_data["n_adapters"] = args.multi_lora_n_adapters
         rollout_data_refs.append(Box(ray.put(rollout_data)))
     return rollout_data_refs

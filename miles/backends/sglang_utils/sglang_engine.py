@@ -19,6 +19,7 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_enabled,
     lora_base_cpu_backup_enabled,
 )
+from miles.backends.megatron_utils.multi_lora_utils import is_multi_lora_enabled
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
@@ -686,7 +687,12 @@ def _compute_server_args(
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
-    if is_lora_enabled(args):
+    if is_multi_lora_enabled(args):
+        kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+    elif is_lora_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
