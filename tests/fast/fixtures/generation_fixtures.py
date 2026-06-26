@@ -35,7 +35,6 @@ VARIANT_TO_GENERATE_FN_PATH = {
     "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn.generate",
     "multi_turn_multi_samples": "miles.rollout.generate_hub.multi_turn.generate",
     "agentic_tool_call_single_sample": "miles.rollout.generate_hub.agentic_tool_call.generate",
-    "agentic_tool_call_multi_samples": "miles.rollout.generate_hub.agentic_tool_call.generate",
 }
 
 
@@ -66,11 +65,9 @@ def extra_argv_for_variant(
         argv += ["--generate-tool-call-parser", generate_tool_call_parser]
         if variant == "multi_turn_multi_samples":
             argv.append("--generate-multi-samples")
-    elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
+    elif variant == "agentic_tool_call_single_sample":
         argv += ["--custom-agent-function-path", custom_agent_function_path]
         argv += ["--use-session-server", "--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
-        if variant == "agentic_tool_call_multi_samples":
-            argv.append("--generate-multi-samples")
 
     return argv
 

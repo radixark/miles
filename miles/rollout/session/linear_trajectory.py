@@ -43,6 +43,14 @@ class LinearTrajectory:
 
     def append_record(self, record: SessionRecord) -> None:
         self.records.append(record)
+        # An older record's all-token routed_experts/indexer_topk blob is never
+        # read again (merge_samples is last-wins); drop it to keep retained size
+        # O(prefix). Keep the last rollback-depth + 1 so a rolled-back tail keeps its blob.
+        idx = len(self.records) - 1 - (MAX_ASSISTANT_ROLLBACK_STEPS + 1)
+        if idx >= 0:
+            meta_info = self.records[idx].response["choices"][0]["meta_info"]
+            meta_info.pop("routed_experts", None)
+            meta_info.pop("indexer_topk", None)
 
     def prepare_pretokenized(
         self,
@@ -243,6 +251,11 @@ class SessionRegistry:
     """
 
     def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer):
+        # Sessions collapse turns via merge_samples (last-wins), so per-turn
+        # multi-sample output is unsupported here.
+        assert not getattr(
+            args, "generate_multi_samples", False
+        ), "session server (linear_trajectory) requires generate_multi_samples=False"
         self.sessions: dict[str, LinearTrajectory] = {}
         self.args = args
         self.tokenizer = tokenizer

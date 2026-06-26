@@ -15,7 +15,6 @@ _VARIANT_NAMES = [
     "multi_turn_single_sample",
     "multi_turn_multi_samples",
     "agentic_tool_call_single_sample",
-    "agentic_tool_call_multi_samples",
 ]
 
 _BASE_EXTRA_ARGV = [
@@ -60,7 +59,7 @@ def test_rollout(rollout_env, variant, test_type):
 
 
 def _verify_samples(variant: str, samples: list[Any]):
-    is_multi_samples = variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples")
+    is_multi_samples = variant == "multi_turn_multi_samples"
 
     if is_multi_samples:
         if len(samples) > 0 and isinstance(samples[0], list):

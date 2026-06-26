@@ -22,7 +22,7 @@ _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 
 
 def is_agentic_variant(variant: str) -> bool:
-    return variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples")
+    return variant in ("agentic_tool_call_single_sample",)
 
 
 # ------------------------------------ fixtures and consts ----------------------------------------
@@ -38,7 +38,6 @@ TOKENIZER = load_tokenizer(MODEL_NAME, trust_remote_code=True)
         "multi_turn_single_sample",
         "multi_turn_multi_samples",
         "agentic_tool_call_single_sample",
-        "agentic_tool_call_multi_samples",
     ]
 )
 def variant(request):
@@ -645,7 +644,7 @@ class TestRoutedExpertsMultiTurn:
         assert len(sample.tokens) - 1 == second_routed_experts.shape[0]
 
 
-_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"]
+_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample"]
 _AGENT_METADATA = {"reward": 1.0, "exit_status": "Submitted", "eval_report": {"passed": True}}
 
 

@@ -752,3 +752,109 @@ class TestComputeSessionMismatch:
         _, kwargs = mock_tokenize.call_args
         assert kwargs["tools"] == tools
         assert kwargs["add_generation_prompt"] is False
+
+
+# ---------------------------------------------------------------------------
+# routed_experts / indexer_topk blob retention
+# ---------------------------------------------------------------------------
+
+
+def _record_with_blobs(turn: int) -> SessionRecord:
+    """A successful chat-completion record carrying the all-token blobs plus the
+    output-only logprobs, shaped like a real upstream response."""
+    return SessionRecord(
+        timestamp=0.0,
+        method="POST",
+        path="/v1/chat/completions",
+        status_code=200,
+        request={"messages": [], "input_ids": [turn]},
+        response={
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": f"turn{turn}"},
+                    "finish_reason": "stop",
+                    "meta_info": {
+                        "output_token_logprobs": [[-0.1, 100 + turn]],
+                        "completion_tokens": 1,
+                        "routed_experts": f"r3-blob-{turn}",
+                        "indexer_topk": f"idx-blob-{turn}",
+                    },
+                }
+            ]
+        },
+    )
+
+
+def _meta(record: SessionRecord) -> dict:
+    return record.response["choices"][0]["meta_info"]
+
+
+class TestTopkBlobRetention:
+    """LinearTrajectory drops superseded all-token routed_experts/indexer_topk
+    blobs to keep retained record size O(prefix), while never touching the
+    output-only logprobs and keeping the last (rollback-bound + 1) records."""
+
+    def test_keeps_last_two_and_preserves_logprobs(self, registry: SessionRegistry):
+        session = registry.get_session(registry.create_session())
+
+        for turn in range(4):
+            session.append_record(_record_with_blobs(turn))
+
+        # Superseded records (0, 1) lose only the two all-token blobs.
+        for i in (0, 1):
+            assert "routed_experts" not in _meta(session.records[i])
+            assert "indexer_topk" not in _meta(session.records[i])
+            assert "output_token_logprobs" in _meta(session.records[i])
+
+        # The last two records keep everything.
+        for i in (2, 3):
+            assert _meta(session.records[i])["routed_experts"] == f"r3-blob-{i}"
+            assert _meta(session.records[i])["indexer_topk"] == f"idx-blob-{i}"
+            assert "output_token_logprobs" in _meta(session.records[i])
+
+    def test_registry_rejects_generate_multi_samples(self):
+        """linear_trajectory collapses turns via merge_samples, so the session
+        server refuses generate_multi_samples=True up front."""
+        args = SimpleNamespace(generate_multi_samples=True)
+        mock_tito = _MockTITOTokenizer(
+            tokenizer=None, assistant_start_str="<|im_start|>assistant", allowed_append_roles=None
+        )
+        with pytest.raises(AssertionError, match="generate_multi_samples"):
+            SessionRegistry(args, tokenizer=None, tito_tokenizer=mock_tito)
+
+    def test_single_rollback_leaves_surviving_tail_with_blob(self, registry: SessionRegistry):
+        """Keeping the last two records (not one) means a single rollback — which
+        drops the last record and promotes the previous one to the tail — never
+        leaves the surviving tail without its blob, even if the retry never
+        appends. With keep-last-1 the promoted record would already be stripped."""
+        session = registry.get_session(registry.create_session())
+
+        # Turn 1 -> A1
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+        session.append_record(_record_with_blobs(0))
+        # Turn 2 -> A2
+        t2 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        session.prepare_pretokenized(t2, tito_tokenizer=registry.tito_tokenizer)
+        session.update_pretokenized_state(t2, ASSISTANT_MSG_2, [1, 2, 3, 10, 11, 20, 21], [30, 31], max_trim_tokens=0)
+        session.append_record(_record_with_blobs(1))
+        # Turn 3 -> AFINAL (this append strips record 0, keeps records 1 and 2)
+        t3 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, TOOL_MSG_2]
+        session.prepare_pretokenized(t3, tito_tokenizer=registry.tito_tokenizer)
+        session.update_pretokenized_state(
+            t3, ASSISTANT_MSG_FINAL, [1, 2, 3, 10, 11, 20, 21, 30, 31, 40], [50, 51], max_trim_tokens=0
+        )
+        session.append_record(_record_with_blobs(2))
+
+        assert "routed_experts" not in _meta(session.records[0])
+        assert _meta(session.records[1])["routed_experts"] == "r3-blob-1"
+
+        # Rollback to the A2 checkpoint by diverging at TOOL_MSG_2.
+        new_tool = {"role": "tool", "content": '{"temperature": 99}', "tool_call_id": "call_2"}
+        rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, new_tool]
+        session.prepare_pretokenized(rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
+
+        assert len(session.records) == 2
+        # The promoted tail still carries its blob; if the retry never appends,
+        # merge_samples (last-wins) still recovers the correct routed_experts.
+        assert _meta(session.records[-1])["routed_experts"] == "r3-blob-1"
+        assert _meta(session.records[-1])["indexer_topk"] == "idx-blob-1"

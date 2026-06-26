@@ -7,6 +7,8 @@ and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
+import pybase64
 import pytest
 
 from miles.rollout.generate_utils.openai_endpoint_utils import (
@@ -719,3 +721,49 @@ class TestPrefixCacheInfo:
 
         assert samples[0].prefix_cache_info.cached_tokens == 0
         assert samples[0].prefix_cache_info.total_prompt_tokens == 0
+
+
+class TestRoutedExpertsStripContract:
+    """The session server drops superseded all-token routed_experts blobs from
+    older records (keeping only the last few). This must not change the merged
+    training sample, because merge_samples is last-wins and a stripped record
+    decodes to rollout_routed_experts=None, which merge skips."""
+
+    def test_stripping_superseded_records_preserves_merged_r3(self):
+        tok = _mock_tokenizer()
+        args = SimpleNamespace(num_layers=2, moe_router_topk=4)
+        # A 3-turn TITO prefix chain (same layout as test_three_turn_merge_succeeds).
+        layouts = [([1, 2], [10]), ([1, 2, 10, 20], [30]), ([1, 2, 10, 20, 30, 40], [50])]
+
+        def build_records():
+            recs = []
+            for turn, (prompt_ids, output_ids) in enumerate(layouts):
+                record = _make_record(
+                    prompt_token_ids=prompt_ids, output_token_ids=output_ids, output_log_probs=[-0.1 * (turn + 1)]
+                )
+                rows = len(prompt_ids) + len(output_ids) - 1  # all-token: len(sample.tokens) - 1
+                blob = (np.arange(rows * 2 * 4, dtype=np.int32) + turn * 1000).reshape(rows, 2, 4)
+                record.response["choices"][0]["meta_info"]["routed_experts"] = pybase64.b64encode(
+                    blob.tobytes()
+                ).decode("ascii")
+                recs.append(record)
+            return recs
+
+        baseline = merge_samples(
+            compute_samples_from_openai_records(args, _make_input_sample(), build_records(), tok), tok
+        )
+
+        # Simulate the keep-last-2 storage strip in a >=3-turn trajectory: the two
+        # oldest records no longer carry routed_experts.
+        stripped_records = build_records()
+        for i in (0, 1):
+            stripped_records[i].response["choices"][0]["meta_info"].pop("routed_experts", None)
+        stripped = merge_samples(
+            compute_samples_from_openai_records(args, _make_input_sample(), stripped_records, tok), tok
+        )
+
+        assert baseline.rollout_routed_experts is not None
+        # The merged r3 is the last turn's all-token blob, byte-identical with or
+        # without the earlier records' blobs.
+        assert stripped.rollout_routed_experts.shape == (6, 2, 4)
+        np.testing.assert_array_equal(stripped.rollout_routed_experts, baseline.rollout_routed_experts)
