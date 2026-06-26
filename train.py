@@ -7,6 +7,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
+from miles.utils.rollout_dataproto import maybe_cleanup_dataproto_refs
 from miles.utils.tracking_utils import finish_tracking, init_tracking
 
 
@@ -82,13 +83,18 @@ async def train(args):
                 offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
             await rollout_manager.offload.remote(tags=offload_tags)
 
-        if args.use_critic:
-            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))
-            if rollout_id >= args.num_critic_only_steps:
+        train_succeeded = False
+        try:
+            if args.use_critic:
+                critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))
+                if rollout_id >= args.num_critic_only_steps:
+                    await actor_model.train(rollout_id, rollout_data_ref)
+                await critic_task
+            else:
                 await actor_model.train(rollout_id, rollout_data_ref)
-            await critic_task
-        else:
-            await actor_model.train(rollout_id, rollout_data_ref)
+            train_succeeded = True
+        finally:
+            maybe_cleanup_dataproto_refs(args, rollout_data_ref, suppress_errors=not train_succeeded)
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             await save(rollout_id)

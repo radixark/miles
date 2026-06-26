@@ -273,8 +273,11 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
 
 
 def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
+    from miles.utils.data_transfer import get_data_transfer_backend
+
     assert len(rollout_data_ref) == dp_size
-    rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
+    transfer_backend = get_data_transfer_backend(args)
+    rollout_data = transfer_backend.get(rollout_data_ref[dp_rank])
 
     partition = rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]
