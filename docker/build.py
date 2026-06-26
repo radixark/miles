@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
+# doc-dev: docs/ci/02-docker-build.md
 """Build and push Miles Docker images.
 
 Usage:
-    python docker/build.py --variant primary --image-tag dev --push
-    python docker/build.py --variant cu129-arm64 --image-tag latest
-    python docker/build.py --variant primary --image-tag custom --custom-tag v1.0.0
-    python docker/build.py --variant primary --image-tag dev --dry-run
+    python docker/build.py --variant cu13 --image-tag dev --push          # multi-arch (amd64+arm64)
+    python docker/build.py --variant cu13-x86 --image-tag dev --push      # single arch
+    python docker/build.py --variant cu12-x86 --image-tag latest
+    python docker/build.py --variant cu13 --image-tag dev --dry-run
 """
 
 import os
@@ -20,32 +21,53 @@ CACHE_DIR = "/tmp/miles-docker-cache"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VARIANTS = {
-    "primary": {
+    "cu13": {
         "image": "radixark/miles",
+        "platforms": ["linux/amd64", "linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
     },
-    "cu129-arm64": {
+    "cu13-x86": {
         "image": "radixark/miles",
-        "tag_postfix": "-cu129-arm64",
-        "build_args": {
-            "SGLANG_IMAGE_TAG": "v0.5.5.post3-cu129-arm64",
-            "ENABLE_SGLANG_PATCH": "0",
-        },
-    },
-    "cu13-arm64": {
-        "image": "radixark/miles",
-        "tag_postfix": "-cu13-arm64",
-        "build_args": {
-            "SGLANG_IMAGE_TAG": "dev-arm64-cu13-20251122",
-            "ENABLE_CUDA_13": "1",
-            "ENABLE_SGLANG_PATCH": "0",
-        },
-    },
-    "debug": {
-        "image": "radixark/miles-test",
+        "platforms": ["linux/amd64"],
         "tag_postfix": "",
         "build_args": {},
+    },
+    "cu13-aarch64": {
+        "image": "radixark/miles",
+        "platforms": ["linux/arm64"],
+        "tag_postfix": "",
+        "build_args": {},
+    },
+    "cu12-x86": {
+        "image": "radixark/miles",
+        "platforms": ["linux/amd64"],
+        "tag_postfix": "-cu12",
+        "build_args": {
+            "ENABLE_CUDA_13": "0",
+            "SGLANG_IMAGE_TAG": "v0.5.12-cu129",
+            "WHEELS_TAG_X86": "cu129-x86_64-v0.5.12",
+        },
+    },
+    "rocm-mi350": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm720-mi35x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx950",
+            "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
+        },
+    },
+    "rocm-mi300": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm700-mi30x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx942",
+            "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
+        },
     },
 }
 
@@ -61,14 +83,18 @@ def build_and_push(
     variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
 ) -> None:
     config = VARIANTS[variant]
+    # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
+    dockerfile = config.get("dockerfile", dockerfile)
     image = config["image"]
     postfix = config.get("tag_postfix", "")
+    platforms = config.get("platforms")
 
     if image_tag == "latest":
         tags = [f"{image}:latest{postfix}"]
     elif image_tag == "dev":
+        prefix = config.get("tag_prefix", "dev")
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
-        tags = [f"{image}:dev{postfix}", f"{image}:dev{postfix}-{timestamp}"]
+        tags = [f"{image}:{prefix}{postfix}", f"{image}:{prefix}{postfix}-{timestamp}"]
     elif image_tag == "custom":
         if not custom_tag:
             raise typer.BadParameter("--custom-tag is required when --image-tag is custom")
@@ -83,6 +109,9 @@ def build_and_push(
         "-f",
         dockerfile,
     ]
+
+    if platforms:
+        cmd += ["--platform", ",".join(platforms)]
 
     if push:
         cmd += ["--push"]
@@ -110,10 +139,12 @@ def build_and_push(
 
 
 class Variant(str, Enum):
-    primary = "primary"
-    cu129_arm64 = "cu129-arm64"
-    cu13_arm64 = "cu13-arm64"
-    debug = "debug"
+    cu13 = "cu13"
+    cu13_x86 = "cu13-x86"
+    cu13_aarch64 = "cu13-aarch64"
+    cu12_x86 = "cu12-x86"
+    rocm_mi350 = "rocm-mi350"
+    rocm_mi300 = "rocm-mi300"
 
 
 class ImageTag(str, Enum):

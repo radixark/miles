@@ -211,8 +211,10 @@ class RolloutServer:
             handles.extend(g.onload(tags))
         return await asyncio.gather(*handles)
 
-    async def check_weights(self, action: str):
-        return await asyncio.gather(*[g.check_weights(action=action) for g in self.server_groups])
+    async def check_weights(self, action: str, allow_quant_error: bool = False):
+        return await asyncio.gather(
+            *[g.check_weights(action=action, allow_quant_error=allow_quant_error) for g in self.server_groups]
+        )
 
     async def wait_all_engines_alive(self, timeout: float = 600):
         # TODO: 600s default is hardcoded; make it configurable (e.g. via args) once we have a clearer

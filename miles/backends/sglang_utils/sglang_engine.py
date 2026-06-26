@@ -259,7 +259,8 @@ class SGLangEngine(RayActor):
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            e.add_note(f"{response.text=}")
+            if hasattr(e, "add_note"):
+                e.add_note(f"{response.text=}")
             raise
         return response.json()
 
@@ -363,6 +364,41 @@ class SGLangEngine(RayActor):
             payload,
         )
 
+    def load_lora_adapter_from_distributed(
+        self,
+        lora_name: str,
+        config_dict: dict,
+        names: list,
+        dtypes: list,
+        shapes: list,
+        group_name: str,
+        pinned: bool = False,
+        added_tokens_config: dict | None = None,
+    ):
+        """Load a LoRA adapter whose weights are broadcast over ``group_name``.
+
+        Mirrors ``update_weights_from_distributed``: only metadata is sent here;
+        the tensors arrive via NCCL broadcast (src=0), so no CUDA IPC is used and
+        this works across nodes. ``init_weights_update_group`` must have created
+        ``group_name`` already.
+        """
+        payload = {
+            "lora_name": lora_name,
+            "config_dict": config_dict,
+            "names": names,
+            "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
+            "shapes": shapes,
+            "group_name": group_name,
+            "pinned": pinned,
+        }
+        if added_tokens_config is not None:
+            payload["added_tokens_config"] = added_tokens_config
+
+        return self._make_request(
+            "load_lora_adapter_from_distributed",
+            payload,
+        )
+
     def flush_cache(self):
         """Flush the cache of the server."""
         if self.node_rank != 0:
@@ -451,8 +487,8 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str):
-        return self._make_request("weights_checker", {"action": action})
+    def check_weights(self, action: str, allow_quant_error: bool = False):
+        return self._make_request("weights_checker", {"action": action, "allow_quant_error": allow_quant_error})
 
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         """Reload weights from *model_path* without restarting the engine.
@@ -520,26 +556,13 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def post_process_weights(
-        self,
-        restore_weights_before_load: bool = False,
-        post_process_quantization: bool = False,
-        post_load_weights: bool = False,
-    ):
-        """
-        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
-        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
-        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
-        """
+    def begin_weight_update(self):
+        """Open a weight-update session on the engine (restores packed weights for loading)."""
+        return self._make_request("begin_weight_update", {})
 
-        return self._make_request(
-            "post_process_weights",
-            {
-                "restore_weights_before_load": restore_weights_before_load,
-                "post_process_quantization": post_process_quantization,
-                "post_load_weights": post_load_weights,
-            },
-        )
+    def end_weight_update(self):
+        """Close the weight-update session (post-load + quant post-process on the full model)."""
+        return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(

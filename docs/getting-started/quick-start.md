@@ -2,13 +2,10 @@
 title: Quick Start
 description: A working RL training job on Qwen3-4B in under an hour.
 ---
-
-# Quick Start
-
 This page takes you from `docker pull` to a running GRPO training job on Qwen3-4B. It
 assumes an 8-GPU node (H100 / H200 / B-series) and roughly 200 GB of disk.
 
-For other models, see [Models](../models/index.md).
+For other models, see [Models](/models/index).
 
 ## 1. Start the container
 
@@ -54,7 +51,7 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 ```
 
 For larger models, run the converter under `torchrun --nproc-per-node 8` (optionally
-multi-node). See the [Models](../models/index.md) section for per-family conversion
+multi-node). See the [Models](/models/index) section for per-family conversion
 commands.
 
 ## 4. Launch training
@@ -112,12 +109,12 @@ Miles fills in whichever side you leave unset.
 
 ## Next steps
 
-- [Core concepts](../user-guide/concepts.md) — the model behind rollout / actor / reference.
-- [Training script walkthrough](../user-guide/training-script-walkthrough.md) —
+- [Core concepts](/user-guide/concepts) — the model behind rollout / actor / reference.
+- [Training script walkthrough](/user-guide/training-script-walkthrough) —
   an annotated tour through every argument group in a launch script, plus colocation,
   dynamic sampling, partial rollout, and BF16+FP8 inference.
-- [Training backends](../user-guide/usage.md) — Megatron vs FSDP.
-- [Customization](../user-guide/customization.md) — plug in custom rollout / reward.
-- [Models](../models/index.md) — recipes for Qwen3.5, GLM4.5, DeepSeek R1, Kimi K2, and more.
+- [Training backends](/user-guide/usage) — Megatron vs FSDP.
+- [Customization](/user-guide/customization) — plug in custom rollout / reward.
+- [Models](/models/index) — recipes for Qwen3.5, GLM4.5, DeepSeek R1, Kimi K2, and more.
 
-If you hit issues, the [FAQ](../faq.md) covers the common ones.
+If you hit issues, the [FAQ](/faq) covers the common ones.

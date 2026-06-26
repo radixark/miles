@@ -2,9 +2,6 @@
 title: P2P Weight Transfer
 description: Direct rank-to-rank weight sync from actor to rollout via RDMA writes.
 ---
-
-# P2P Weight Transfer
-
 miles supports P2P (point-to-point) weight transfer between training and rollout engines. By using `--update-weight-transfer-mode p2p`, miles enables more efficient weight transfer from training ranks to rollout engine ranks. More details on the design and implementation can be found in [this issue](https://github.com/radixark/miles/issues/755).
 
 ## Usage
@@ -125,7 +122,7 @@ Models marked with ★ are MoE architectures, where P2P benefits are most pronou
 | DeepSeek-V3 ★ | Kimi-K2 | 1T(64B) | `DeepseekV3ForCausalLM` | TP=8, PP=8, CP=4, EP=32, ETP=1, 32 nodes | TP=32, EP=32, 32 nodes | 53,279.1 | 7,227.3 | **−86.4%** |
 
 
-![P2P vs NCCL Broadcast Scaling](../assets/images/p2p_vs_nccl_scaling.png)
+![P2P vs NCCL Broadcast Scaling](/assets/images/p2p_vs_nccl_scaling.png)
 
 \* Kimi-K2 RDMA time includes ~884 ms GPU-side `post_load_weights` requantization on rollout engines.
 
@@ -136,7 +133,6 @@ Models marked with ★ are MoE architectures, where P2P benefits are most pronou
 The P2P weight transfer E2E test validates correctness on a single node using `Qwen3-4B`:
 
 ```python
-# tests/e2e/megatron/test_qwen3_4B_p2p.py
 #
 # Train: 4 GPUs (TP=2, CP=2)
 # Rollout: 4 GPUs (sglang, 2 engines × 2 GPUs each)

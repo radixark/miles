@@ -10,6 +10,7 @@ from tests.ci.ci_utils import run_unittest_files
 HW_MAPPING = {
     "cpu": HWBackend.CPU,
     "cuda": HWBackend.CUDA,
+    "rocm": HWBackend.ROCM,
 }
 
 # PR-side label prefix the workflow attaches to every domain label and passes
@@ -35,6 +36,11 @@ PER_COMMIT_SUITES = {
         "stage-c-8-gpu-h100",
         "stage-c-4-gpu-h200",
         "stage-c-2-gpu-h200",
+    ],
+    HWBackend.ROCM: [
+        "stage-c-8-gpu-mi350",
+        "stage-c-4-gpu-mi350",
+        "stage-c-2-gpu-mi350",
     ],
 }
 

@@ -382,15 +382,16 @@ class TestGetUpdatableEnginesAndLock:
 
 @pytest.mark.asyncio
 class TestCheckWeights:
-    async def test_check_weights_dispatches_across_all_models(
+    async def test_check_weights_targets_only_updatable_model(
         self,
         ray_local_mode,
         placement_group_factory,
         tmp_path,
         patch_low_level,
     ):
-        """``check_weights`` fans out to every engine on every server (both
-        updatable + non-updatable) — relied on by the weight-update workflow."""
+        """``check_weights`` targets only the updatable model. The snapshot/reset/
+        compare round-trip is meaningless for a frozen model (restored from disk,
+        never re-synced via update_weights), so it must be skipped there."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
@@ -399,14 +400,23 @@ class TestCheckWeights:
 
         results = await manager.check_weights(action="pre_update")
 
-        # Nested gather: [server][group][engine]; 2 servers × 1 group × 2 engines.
-        assert len(results) == 2
-        for per_server in results:
-            assert len(per_server) == 1
-            for per_group in per_server:
-                assert len(per_group) == 2
-                for engine_result in per_group:
-                    assert engine_result == {"_mock": True}
+        # Updatable server only: nested gather is [group][engine]; 1 group × 2 engines.
+        assert len(results) == 1
+        for per_group in results:
+            assert len(per_group) == 2
+            for engine_result in per_group:
+                assert engine_result == {"_mock": True}
+
+        # Frozen (non-updatable) servers must not have been touched.
+        for srv in manager.servers.values():
+            if srv.update_weights:
+                continue
+            for group in srv.server_groups:
+                for engine in group.engines:
+                    if not engine.is_allocated:
+                        continue
+                    calls = ray.get(engine.actor_handle.get_calls.remote())
+                    assert not any(c[0] == "check_weights" for c in calls)
 
 
 @pytest.mark.asyncio
