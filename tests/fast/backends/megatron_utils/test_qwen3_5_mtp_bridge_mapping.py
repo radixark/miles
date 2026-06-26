@@ -79,8 +79,11 @@ def install_bridge_stubs():
             return provider
 
         def _weight_to_mcore_format(self, _mcore_weights_name, hf_weights):
-            assert len(hf_weights) == 1
-            return hf_weights[0]
+            if len(hf_weights) == 1:
+                return hf_weights[0]
+            assert len(hf_weights) == 2
+            gate, up = hf_weights
+            return torch.cat([gate, up], dim=0)
 
         def _weight_to_hf_format(self, mcore_weights_name, mcore_weights):
             return [mcore_weights_name], [mcore_weights]
@@ -138,6 +141,48 @@ def test_mtp_moe_expert_mapping_uses_individual_hf_weights():
         "mtp.layers.0.mlp.experts.42.up_proj.weight",
     ]
     assert fc2_names == ["mtp.layers.0.mlp.experts.42.down_proj.weight"]
+
+
+def test_regular_moe_expert_mapping_uses_individual_hf_weights():
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+    bridge.safetensor_io = types.SimpleNamespace(
+        index={"model.language_model.layers.0.mlp.experts.42.gate_proj.weight": "model-00001-of-00001.safetensors"}
+    )
+
+    fc1_names = bridge._weight_name_mapping_mlp("decoder.layers.0.mlp.experts.linear_fc1.weight42")
+    fc2_names = bridge._weight_name_mapping_mlp("decoder.layers.0.mlp.experts.linear_fc2.weight42")
+
+    assert fc1_names == [
+        "model.language_model.layers.0.mlp.experts.42.gate_proj.weight",
+        "model.language_model.layers.0.mlp.experts.42.up_proj.weight",
+    ]
+    assert fc2_names == ["model.language_model.layers.0.mlp.experts.42.down_proj.weight"]
+
+
+def test_regular_moe_expert_mapping_uses_fused_hf_weights_when_index_is_fused():
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+    bridge.safetensor_io = types.SimpleNamespace(
+        index={"model.language_model.layers.0.mlp.experts.gate_up_proj": "model-00001-of-00001.safetensors"}
+    )
+
+    fc1_names = bridge._weight_name_mapping_mlp("decoder.layers.0.mlp.experts.linear_fc1.weight42")
+    fc2_names = bridge._weight_name_mapping_mlp("decoder.layers.0.mlp.experts.linear_fc2.weight42")
+
+    assert fc1_names == ["model.language_model.layers.0.mlp.experts.gate_up_proj"]
+    assert fc2_names == ["model.language_model.layers.0.mlp.experts.down_proj"]
+
+
+def test_regular_moe_expert_loading_merges_individual_gate_and_up_weights():
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+
+    gate = torch.ones(2, 3)
+    up = torch.full((2, 3), 2.0)
+    converted = bridge._weight_to_mcore_format("decoder.layers.0.mlp.experts.linear_fc1.weight42", [gate, up])
+
+    assert torch.equal(converted, torch.cat([gate, up], dim=0))
 
 
 def test_mtp_dense_mlp_mapping_still_uses_dense_hf_weights():
