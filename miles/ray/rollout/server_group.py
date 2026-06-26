@@ -19,6 +19,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
 
 logger = logging.getLogger(__name__)
+_ACTOR_TERMINATE_TIMEOUT_S = 10.0
 
 
 @dataclasses.dataclass
@@ -186,12 +187,26 @@ class ServerGroup:
             engine = self.all_engines[i]
             if engine.is_allocated:
                 logger.info(f"Shutting down and killing engine at index {i}")
+                actor_handle = engine.actor_handle
                 try:
-                    ray.get(engine.actor_handle.shutdown.remote())
-                    ray.kill(engine.actor_handle)
-                    logger.info(f"Successfully killed engine at index {i}")
+                    ray.get(actor_handle.shutdown.remote())
                 except Exception as e:
-                    logger.warning(f"Fail to kill engine at index {i} (e: {e})")
+                    logger.warning(f"Fail to shutdown engine at index {i} (e: {e})")
+                try:
+                    ray.get(
+                        actor_handle.__ray_terminate__.remote(),
+                        timeout=_ACTOR_TERMINATE_TIMEOUT_S,
+                    )
+                    logger.info(f"Successfully terminated engine actor at index {i}")
+                except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
+                    logger.info(f"Engine actor at index {i} is already terminated")
+                except Exception as e:
+                    logger.warning(
+                        "Fail to terminate engine actor at index %s; force killing (e: %s)",
+                        i,
+                        e,
+                    )
+                    ray.kill(actor_handle)
             else:
                 logger.info(f"Engine at index {i} is already None")
             self.all_engines[i].mark_stopped()
