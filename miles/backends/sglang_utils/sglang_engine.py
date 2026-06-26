@@ -129,9 +129,8 @@ class SGLangEngine(RayActor):
         base_gpu_id: int | None = None,
         sglang_overrides: dict | None = None,
         num_gpus_per_engine: int | None = None,
-        rdt_pg_name: str | None = None,
-        rdt_pg_id: str | None = None,
-        rdt_pg_bundles: list | None = None,
+        pg_id: str | None = None,
+        pg_bundles: list | None = None,
     ):
         self.args = args
         self.rank = rank
@@ -144,9 +143,8 @@ class SGLangEngine(RayActor):
         # via env so it reuses these reserved bundles instead of auto-creating a
         # second PG. The child mp.Process is a separate Ray job/namespace, so it
         # must reference the PG by ID, not name.
-        self.rdt_pg_name = rdt_pg_name
-        self.rdt_pg_id = rdt_pg_id
-        self.rdt_pg_bundles = rdt_pg_bundles
+        self.pg_id = pg_id
+        self.pg_bundles = pg_bundles
         self._scheduler_actors = []
 
     def init(
@@ -247,14 +245,12 @@ class SGLangEngine(RayActor):
             # would otherwise auto-create a second PG and double-book the rollout
             # GPUs. The child inherits os.environ and runs on this engine's node,
             # so sglang derives the rank-0 / nccl init IP from its own node.
-            if self.rdt_pg_id and self.rdt_pg_bundles:
+            if self.pg_id and self.pg_bundles:
                 # Global PG ID is the cross-job/namespace-safe handle (the child
-                # is a separate Ray job); keep the name for logging/back-compat.
-                os.environ["MILES_RDT_PG_ID"] = self.rdt_pg_id
-                if self.rdt_pg_name:
-                    os.environ["MILES_RDT_PG_NAME"] = self.rdt_pg_name
+                # is a separate Ray job).
+                os.environ["MILES_RDT_PG_ID"] = self.pg_id
                 os.environ["MILES_RDT_PG_BUNDLES"] = ",".join(
-                    str(b) for b in self.rdt_pg_bundles
+                    str(b) for b in self.pg_bundles
                 )
         logger.info(
             f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
