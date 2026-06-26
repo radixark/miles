@@ -269,9 +269,12 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if name in direct_name_mapping:
             return [direct_name_mapping[name]]
 
-        if "transformer_layer" in name:
+        # Accept both MTP submodule names: mtp_model_layer (new) and transformer_layer (old).
+        for mtp_layer_attr in ("mtp_model_layer", "transformer_layer"):
+            if f".{mtp_layer_attr}." not in name:
+                continue
             proxy_name = name.replace(
-                f"mtp.layers.{mtp_layer_idx}.transformer_layer",
+                f"mtp.layers.{mtp_layer_idx}.{mtp_layer_attr}",
                 f"decoder.layers.{mtp_layer_idx}",
             )
 
