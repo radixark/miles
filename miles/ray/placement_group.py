@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 
 import ray
@@ -12,6 +13,10 @@ from .actor_group import RayTrainGroup
 from .rollout.rollout_manager import RolloutManager
 
 logger = logging.getLogger(__name__)
+
+# Fixed name for the miles placement group so the RDT rollout path can look it up
+# by name from sglang's engine mp.Process (see _create_placement_group).
+MILES_RDT_PG_NAME = "miles_rdt_pg"
 
 
 @ray.remote(num_gpus=1)
@@ -44,7 +49,22 @@ def sort_key(x):
 def _create_placement_group(num_gpus):
     """Create a placement group with the specified number of GPUs."""
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
-    pg = placement_group(bundles, strategy="PACK")
+    # RDT no-double-booking path (opt-in via MILES_RDT_REUSE_PG=1): hand this PG to
+    # sglang's RayEngine across the mp.Process boundary so the rollout
+    # SchedulerActors reuse these reserved bundles instead of auto-creating a
+    # second PG (which double-books the rollout GPUs). That child process connects
+    # to Ray as a SEPARATE job/namespace, so it references the PG by global ID
+    # (PlacementGroupID, namespace-independent) and the PG must be DETACHED to be
+    # schedulable cross-job. Detached + named is harmless for the default path; we
+    # only flip lifetime when the feature is on so other examples are unaffected
+    # (one Ray cluster per training job on Anyscale, so the PG never leaks).
+    _detached = os.environ.get("MILES_RDT_REUSE_PG") == "1"
+    pg = placement_group(
+        bundles,
+        strategy="PACK",
+        name=MILES_RDT_PG_NAME,
+        lifetime="detached" if _detached else None,
+    )
     num_bundles = len(bundles)
 
     ray.get(pg.ready())
@@ -64,7 +84,20 @@ def _create_placement_group(num_gpus):
         ray.kill(actor)
 
     bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
-    sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
+    # Order nodes by descending bundle count before the (ip, gpu) sort. In the
+    # disaggregated multi-node case PACK fills one node and spills the rest
+    # (e.g. 8 trainer + 4 rollout bundles over two 8-GPU nodes -> 8 + 4): the
+    # trainer must take the fully-packed node so the rollout bundles land on
+    # the node that still has free GPUs — sglang's RayEngine auto-creates a
+    # STRICT_PACK placement group for its SchedulerActors on the engine
+    # actor's node, which deadlocks if that node has no unreserved GPUs.
+    # IP-order alone leaves this to chance.
+    node_bundle_counts: dict = {}
+    for _, node_identifier, _ in bundle_infos:
+        node_bundle_counts[node_identifier] = node_bundle_counts.get(node_identifier, 0) + 1
+    sorted_bundle_infos = sorted(
+        bundle_infos, key=lambda info: (-node_bundle_counts[info[1]], *sort_key(info))
+    )
     pg_reordered_bundle_indices = [info[0] for info in sorted_bundle_infos]
     # Map from logical index -> physical GPU ID
     pg_reordered_gpu_ids = [gpu_ids[info[0]][1] for info in sorted_bundle_infos]
@@ -125,12 +158,14 @@ def create_placement_groups(args):
 def allocate_train_group(
     args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool, with_opd_teacher: bool = False
 ):
+    # Colocate time-shares each physical GPU between the trainer and a rollout and nixl requires whole GPU
+    num_gpus_per_actor = 0.4 if args.colocate else 1
     return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
         pg=pg,
-        num_gpus_per_actor=0.4,
+        num_gpus_per_actor=num_gpus_per_actor,
         role=role,
         with_ref=with_ref,
         with_opd_teacher=with_opd_teacher,

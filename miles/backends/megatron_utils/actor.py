@@ -40,7 +40,6 @@ from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
-from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
@@ -172,12 +171,18 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        if self.args.colocate:
+        if self.args.update_weight_transfer_mode == "rdt":
+            from .update_weight.update_weight_from_rdt import UpdateWeightFromRDT
+
+            update_weight_cls = UpdateWeightFromRDT
+        elif self.args.colocate:
             update_weight_cls = UpdateWeightFromTensor
         else:
             if self.args.update_weight_transfer_mode == "broadcast":
                 update_weight_cls = UpdateWeightFromDistributed
             else:
+                from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+
                 update_weight_cls = UpdateWeightP2P
         self.weight_updater = update_weight_cls(
             self.args,
@@ -194,8 +199,6 @@ class MegatronTrainRayActor(TrainRayActor):
         self._switch_model("actor")
         if self.args.offload_train:
             self.sleep()
-
-        self.rollout_engines = None
 
         self.rollout_data_postprocess = None
         if (x := self.args.rollout_data_postprocess_path) is not None:
