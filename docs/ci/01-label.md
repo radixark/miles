@@ -38,7 +38,9 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 `run-ci-image` and `run-ci-all` are the same switch: both add `--match-all-labels` to run every enabled test in the suite, ignoring domain labels. Neither is in `KNOWN_LABELS`.
 
-A manual `workflow_dispatch` run gets `--match-all-labels` too, because it has no PR labels to filter on.
+A manual `workflow_dispatch` run — and the nightly `schedule` run on `main` — gets `--match-all-labels` too, because neither has PR labels to filter on.
+
+The `nightly` label runs a PR as a nightly: `--match-all-labels` plus fast-fail bypass on both levels.
 
 ## Registration and scan scope
 
@@ -62,5 +64,7 @@ The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
 
 - Cross-stage: each GPU stage's check becomes `(needs.stage-a-cpu.result == 'success' || (needs.stage-a-cpu.result == 'failure' && contains(..., 'bypass-fastfail')))`, so GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: each stage adds `--continue-on-error` (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
+
+A nightly run — the `schedule` cron, or a PR carrying the `nightly` label — bypasses fast-fail on both levels: the same cross-stage `if` and per-stage `--continue-on-error` match `github.event_name == 'schedule' || contains(..., 'nightly')`, because a nightly is meant to exercise every test and surface every failure (one datapoint per test), not stop at the first.
 
 Like the meta-labels, `bypass-fastfail` is matched directly in `pr-test.yml` and is not in `KNOWN_LABELS`.
