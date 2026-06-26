@@ -1,10 +1,20 @@
+import logging
+
 import torch
 import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
 
 
 def apply_fsdp_moe_patch():
 
     from transformers.models.qwen3_moe import modeling_qwen3_moe
+
+    # transformers >= 5.6 batches experts (Qwen3MoeExperts/TopKRouter): the legacy graph-forcing patch
+    # below is unnecessary and crashes (self.gate now returns a tuple), so skip it.
+    if hasattr(modeling_qwen3_moe, "Qwen3MoeTopKRouter") or hasattr(modeling_qwen3_moe, "Qwen3MoeExperts"):
+        logger.info("[fsdp] qwen3_moe uses batched experts (transformers>=5.6); skipping legacy MoE patch")
+        return
 
     def _forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -23,7 +33,6 @@ def apply_fsdp_moe_patch():
 
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
-        # Loop over all experts
         for expert_idx in range(self.num_experts):
             expert_layer = self.experts[expert_idx]
             idx, top_x = torch.where(expert_mask[expert_idx])

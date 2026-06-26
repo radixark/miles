@@ -41,7 +41,8 @@ def get_responses(
     qkv_format = args.qkv_format
 
     if not args.true_on_policy_mode:
-        assert logits.dtype == torch.float32, f"{logits.dtype}"
+        # FSDP hands native bf16 here (no full-vocab fp32 buffer); chunks are upcast to fp32 downstream
+        assert logits.dtype in (torch.float32, torch.bfloat16), f"{logits.dtype}"
     assert len(logits.shape) == 3, f"{logits.shape}"
 
     if qkv_format == "thd":
@@ -245,7 +246,8 @@ def get_values(
         max_seq_lens=max_seq_lens,
     ):
         assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
-        value_list.append(logits_chunk.squeeze(-1))
+        # upcast (no-op for fp32) so value-head outputs stay fp32 even when logits arrive bf16
+        value_list.append(logits_chunk.squeeze(-1).float())
 
     res = {
         "values": value_list,

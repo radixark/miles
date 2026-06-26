@@ -884,19 +884,19 @@ def calculate_log_probs_and_entropy(
             logits_chunks = logits.chunk(num_chunks, dim=0)
             log_probs = []
             for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.clone(), tokens_chunk, tp_group)
+                log_prob = compute_log_probs(logits_chunk.to(torch.float32, copy=True), tokens_chunk, tp_group)
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
                 entropys = []
                 for _, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                    entropy = compute_entropy_from_logits(logits_chunk.clone(), tp_group)
+                    entropy = compute_entropy_from_logits(logits_chunk.to(torch.float32, copy=True), tp_group)
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
+            log_prob = compute_log_probs(logits.to(torch.float32, copy=True), tokens, tp_group)
             if with_entropy:
-                entropy = compute_entropy_from_logits(logits.clone(), tp_group)
+                entropy = compute_entropy_from_logits(logits.to(torch.float32, copy=True), tp_group)
     else:
         log_prob = logits.new_zeros((0,))
         if with_entropy:
