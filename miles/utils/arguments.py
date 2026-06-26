@@ -723,6 +723,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--async-rollout-prefetch",
+                action="store_true",
+                default=False,
+                help=(
+                    "Prefetch the next rollout's data generation concurrently with the current train step "
+                    "(double-buffered pipeline). Hides rollout-gen latency behind training. Only valid when the "
+                    "rollout is weight-INDEPENDENT (e.g. SFT data tokenization/packing) -- NOT for RL/online "
+                    "rollout, where generation uses the just-updated weights. Incompatible with --offload-rollout "
+                    "and --use-critic. trunk's train_async.py provides the same overlap but asserts non-colocate, "
+                    "so it cannot serve the colocate SFT path this flag targets."
+                ),
+            )
+            parser.add_argument(
                 "--n-samples-per-prompt", type=int, default=1, help="Number of responses for each prompt in generation"
             )
 
