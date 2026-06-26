@@ -200,10 +200,33 @@ class RolloutServer:
         await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
+        """Pause generation, drain in-flight requests, then release memory.
+
+        Every engine across all groups must acknowledge the pause and the
+        flush before any engine releases memory: a request admitted (or a PD
+        KV transfer in flight) on one engine while another releases memory
+        corrupts the engine.
+        """
+        pause_handles = []
+        for g in self.server_groups:
+            pause_handles.extend(g.pause_generation())
+        await asyncio.gather(*pause_handles)
+
+        flush_handles = []
+        for g in self.server_groups:
+            flush_handles.extend(g.flush_cache())
+        await asyncio.gather(*flush_handles)
+
+        release_handles = []
+        for g in self.server_groups:
+            release_handles.extend(g.offload(tags=tags))
+        return await asyncio.gather(*release_handles)
+
+    async def continue_generation(self):
         handles = []
         for g in self.server_groups:
-            handles.extend(g.offload(tags=tags))
-        return await asyncio.gather(*handles)
+            handles.extend(g.continue_generation())
+        await asyncio.gather(*handles)
 
     async def onload(self, tags: list[str] | None = None):
         handles = []
