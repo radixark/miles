@@ -67,6 +67,18 @@ MAX_RESPONSE_LEN = int(os.environ.get("ROUTER_EQ_MAX_RESPONSE_LEN", "256"))
 _REPO_ROOT = str(Path(__file__).resolve().parents[3])
 
 
+def _is_rocm() -> bool:
+    """True on AMD ROCm/HIP builds (mirrors the torch.version.hip check used
+    elsewhere in miles). ROCm needs extra sglang flags to reach the same
+    deterministic, batch-invariant behavior NVIDIA gets by default."""
+    try:
+        import torch
+
+        return torch.version.hip is not None
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     model_name: str
@@ -169,7 +181,12 @@ def _build_train_args(cfg: ModelConfig, variant: str) -> str:
         f"--rollout-num-gpus-per-engine {cfg.num_gpus} "
         "--sglang-enable-deterministic-inference "
         f"--sglang-mem-fraction-static {cfg.mem_fraction_static} "
+        "--sglang-cuda-graph-max-bs 16 "
     )
+    if _is_rocm():
+        # ROCm-only: aiter is not deterministic-capable, so triton is the only
+        # deterministic attention backend on ROCm.
+        sglang_args += "--sglang-attention-backend triton "
     if cfg.reasoning_parser:
         sglang_args += f"--sglang-reasoning-parser {cfg.reasoning_parser} "
 
@@ -192,15 +209,22 @@ def _run_variant(model_family: str, cfg: ModelConfig, variant: str) -> None:
     dump_path = _variant_dump_path(model_family, variant)
 
     train_args = _build_train_args(cfg, variant)
+    extra_env_vars = {
+        "PYTHONPATH": "/root/Megatron-LM",
+        "MILES_ROUTER_EQ_DUMP_PATH": str(dump_path),
+        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+    }
+    if _is_rocm():
+        # ROCm-only: avoid the non-batch-invariant aiter MoE kernels, and
+        # disable the fused decode-MLA+rope path (not batch-invariant and
+        # incompatible with the triton attention backend).
+        extra_env_vars["SGLANG_USE_AITER"] = "0"
+        extra_env_vars["SGLANG_ROCM_FUSED_DECODE_MLA"] = "0"
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=cfg.num_gpus,
         megatron_model_type=cfg.megatron_model_type,
-        extra_env_vars={
-            "PYTHONPATH": "/root/Megatron-LM",
-            "MILES_ROUTER_EQ_DUMP_PATH": str(dump_path),
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-        },
+        extra_env_vars=extra_env_vars,
     )
 
 
