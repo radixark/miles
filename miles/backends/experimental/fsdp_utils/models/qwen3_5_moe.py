@@ -10,7 +10,7 @@ backward. No-op outside THD packing.
 import functools
 import logging
 
-from ..packing.boundaries import packed_seq_context
+from ..adaptations.packing.boundaries import packed_seq_context
 
 logger = logging.getLogger(__name__)
 

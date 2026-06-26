@@ -11,7 +11,7 @@ import functools
 import logging
 import sys
 
-from ..packing.boundaries import packed_seq_context
+from ..adaptations.packing.boundaries import packed_seq_context
 
 logger = logging.getLogger(__name__)
 
