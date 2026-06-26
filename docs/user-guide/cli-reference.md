@@ -65,7 +65,7 @@ then push up until you OOM.
 
 | Flag | Default | What |
 |---|---|---|
-| `--advantage-estimator` | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` |
+| `--advantage-estimator` | `grpo` | `grpo`, `gspo`, `cispo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline` |
 | `--use-kl-loss` | off | Compute KL against the reference model. |
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 means monitor only). |
 | `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
@@ -224,7 +224,7 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` |
+| `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `cispo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline` |
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 means monitor). |
 | `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
