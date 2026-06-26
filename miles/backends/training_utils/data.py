@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 
 from miles.utils.data import get_minimum_num_micro_batch_size
+from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -415,9 +416,16 @@ def get_data_iterator(
         num_microbatches = []
         for i in range(num_steps_per_rollout):
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
-            num_microbatches.append(
-                get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
-            )
+            step_samples = samples[start:end]
+            max_tokens_per_microbatch = args.max_tokens_per_gpu * cp_size
+            if args.balance_by_flops:
+                num_step_microbatches = max(
+                    1,
+                    (sum(step_samples) + max_tokens_per_microbatch - 1) // max_tokens_per_microbatch,
+                )
+                num_microbatches.append(min(len(step_samples), num_step_microbatches))
+            else:
+                num_microbatches.append(get_minimum_num_micro_batch_size(step_samples, max_tokens_per_microbatch))
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
         dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=dp_group)
@@ -438,7 +446,14 @@ def get_data_iterator(
         for i, num_mbs in enumerate(num_microbatches):
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
             samples = rollout_data["total_lengths"][start:end]
-            partitions = get_seqlen_balanced_partitions(samples, num_mbs, equal_size=False)
+            if args.balance_by_flops:
+                if num_mbs >= len(samples):
+                    partitions = [[idx] for idx in range(len(samples))]
+                else:
+                    workloads = [calculate_fwd_flops([sample], args) for sample in samples]
+                    partitions = get_seqlen_balanced_partitions(workloads, num_mbs, equal_size=False)
+            else:
+                partitions = get_seqlen_balanced_partitions(samples, num_mbs, equal_size=False)
             for j in range(num_mbs):
                 for k in range(len(partitions[j])):
                     partitions[j][k] += start
