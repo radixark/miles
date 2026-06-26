@@ -23,11 +23,9 @@ from miles.utils.replay_base import routing_replay_manager
 logger = logging.getLogger(__name__)
 
 
-# TransformerConfig knobs that come from CLI args and that bridge model providers do NOT set
-# themselves (so they must be re-injected onto a bridge-built provider, which skips
-# core_transformer_config_from_args). See the bridge branch of get_model_provider_func for the
-# full rationale and what is deliberately excluded. Add new training-infra flags here, not as
-# one-off scattered assignments, so the silent-default class stays closed.
+# Args-owned knobs to re-inject onto a bridge-built provider, which skips
+# core_transformer_config_from_args. NOT a blind args->provider copy -- architecture, dtype, and
+# provider-set fields stay HF-checkpoint-authoritative; overriding them would silently corrupt the model.
 _BRIDGE_RUNTIME_OVERRIDE_FIELDS = (
     # parallelism / sharding
     "tensor_model_parallel_size",
@@ -130,17 +128,7 @@ def get_model_provider_func(
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
-        # Bridge mode builds the model ARCHITECTURE from the HF config and skips Megatron's
-        # core_transformer_config_from_args, so CLI args never reach the provider config on their
-        # own. Re-inject the training/parallelism/memory/numerics knobs that come from args and that
-        # the provider does not set itself; otherwise they silently keep TransformerConfig defaults
-        # (e.g. recompute_granularity=None -> activation checkpointing never runs -> OOM at long ctx).
-        # This allow-list (_BRIDGE_RUNTIME_OVERRIDE_FIELDS) deliberately EXCLUDES:
-        #   - architecture fields (hidden_size/num_layers/...; the bridge sets these from HF);
-        #   - dtype (bf16/params_dtype; the bridge derives these from the checkpoint torch_dtype);
-        #   - provider-deliberate fields (apply_rope_fusion=False for mRoPE, fusion flags,
-        #     add_bias_linear, ...) the per-model provider sets on purpose -- overriding those would
-        #     reintroduce silent correctness bugs.
+        # Otherwise these knobs silently keep their TransformerConfig defaults.
         for _field in _BRIDGE_RUNTIME_OVERRIDE_FIELDS:
             if hasattr(args, _field) and hasattr(provider, _field):
                 setattr(provider, _field, getattr(args, _field))
