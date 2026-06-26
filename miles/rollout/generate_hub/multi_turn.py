@@ -56,7 +56,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if args.generate_multi_samples:
             sample = deepcopy(input.sample)
 
-        output = await post(url, payload)
+        # /generate is non-idempotent: a retry after the request reached the
+        # server would re-issue generation. Only pre-send errors are retried.
+        output = await post(url, payload, idempotent=False)
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
 
         if args.generate_multi_samples:

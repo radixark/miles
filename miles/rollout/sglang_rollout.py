@@ -197,7 +197,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
         headers = {"X-SMG-Routing-Key": sample.session_id}
 
-    output = await post(url, payload, headers=headers)
+    # /generate is non-idempotent: a retry after the request reached the server
+    # would re-issue generation. Only pre-send connection errors are retried.
+    output = await post(url, payload, headers=headers, idempotent=False)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
