@@ -94,6 +94,7 @@ RUN rm -rf /root/Megatron-LM && \
     pip install -e .
 
 RUN cd /sgl-workspace/sglang && \
+    git reset --hard && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
