@@ -162,6 +162,13 @@ LORA_BASE_CPU_BACKUP="${LORA_BASE_CPU_BACKUP:-off}"
 # host-OOM'd the colocate pod. So R3 on is safe (no indexer host buffer). R3=off (-> --no-use-r3)
 # drops routing replay too -> fully off-policy; only for a quick mechanics bring-up.
 R3="${R3:-on}"
+# ----- MoE-expert LoRA (gate/up/down on the 256 experts) — DEFAULT ON -----
+# KEEP_MOE_LORA=1 (default) keeps gate_proj/up_proj/down_proj in the LoRA target-modules, so the MoE
+# expert layers (>= first_k_dense_replace, i.e. layer 3+) get LoRA — not just attention. It also
+# turns on BOTH MoE-expert-LoRA flags in run_glm5_lora.py (two independent knobs, each must be on):
+# --experts-shared-outer-loras (train-side layout) + --sglang-lora-use-virtual-experts (serve-side path).
+# KEEP_MOE_LORA=0 -> attention-only LoRA (q/k/v/o + MLA q_a/kv_a/q_b/kv_b), the previous bring-up default.
+KEEP_MOE_LORA="${KEEP_MOE_LORA:-1}"
 if [[ -z "$ROLLOUT_GPUS_PER_ENGINE" ]]; then
   if [[ "$MODEL" == *5layer* ]]; then ROLLOUT_GPUS_PER_ENGINE=2
   elif [[ "$FP8_ROLLOUT" == "on" ]]; then ROLLOUT_GPUS_PER_ENGINE=8   # fp8: 744B fits 1 node/engine
@@ -348,6 +355,9 @@ case "$ROLE" in
     export RAY_ADDRESS="http://${HEAD_IP}:${DASH_PORT}"      # job-submit endpoint (dashboard)
     export MILES_RAY_SUBMIT_NO_WAIT=1                        # detached submit (survives WS drops)
     export MILES_RAY_SUBMISSION_ID="${JOB_ID}"
+    # MoE-expert LoRA master switch, read by run_glm5_lora.py via os.environ (driver-side, at command
+    # build); export so the `python scripts/run_glm5_lora.py train` child inherits the default (ON).
+    export KEEP_MOE_LORA
 
     # NOTE: --num-gpus-per-node appears BOTH as a script flag (drives TP=EP via
     # _get_parallel_config + --actor-num-gpus-per-node) AND inside --extra-args.

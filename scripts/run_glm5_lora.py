@@ -301,13 +301,24 @@ def _train(args: ScriptArgs):
     _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
     if _is_full and not _keep_moe_lora:
         _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
+    # MoE-expert LoRA needs TWO INDEPENDENT flags, each controlling its own thing -- not a symmetric
+    # pair, but both must be ON for serving to work. Enabled whenever the MoE expert projections
+    # (gate_proj/up_proj/down_proj) are LoRA targets (KEEP_MOE_LORA=1, the default):
+    #   --experts-shared-outer-loras      (TRAIN side: adapter laid out shared-outer -- gate_up lora_A
+    #       / down lora_B shared across experts, expert_dim=1; arguments.py also auto-sets the serve-
+    #       side --sglang-experts-shared-outer-loras so sglang knows the layout -- SGLang PR #21466).
+    #   --sglang-lora-use-virtual-experts (SERVE side: sglang serves the expert LoRA via the
+    #       virtual-experts path).
+    # Turn on only one and serving breaks (e.g. expert gate_up LoRA-B dim 768 vs 24576 = 32x ep ->
+    # "scheduler died during init"), so both go on together here. KEEP_MOE_LORA=0 turns both off
+    # (attention-only LoRA: q/k/v/o + MLA q_a/kv_a/q_b/kv_b), the previous bring-up default.
     lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
+    if _keep_moe_lora:
+        lora_args += "--experts-shared-outer-loras "
     if _is_full:
-        # NOTE: --sglang-lora-use-virtual-experts is DROPPED — it requires --experts-shared-outer-loras
-        # (matched pair; without it the MoE expert gate_up LoRA-B dim mismatches sglang, 768 vs 24576
-        # = 32x ep -> "scheduler died during init"). User opted to drop BOTH. The MoE expert LoRA then
-        # rides the default (non-virtual-experts) sglang path; at rollout 0 the expert-LoRA delta is
-        # zero anyway (B=0), so this isolates the rollout config (dp-attention+nsa+INDEXER_ROPE_NEOX_STYLE=0).
+        # NOTE: when KEEP_MOE_LORA=1 (default) both MoE-expert-LoRA flags are on -- lora_args got the
+        # train-side --experts-shared-outer-loras above and sglang_args gets the serve-side
+        # --sglang-lora-use-virtual-experts below. KEEP_MOE_LORA=0 -> attention-only, neither emitted.
         # NOTE: --lora-base-cpu-backup is intentionally NOT added here (opt-in only). It keeps a
         # HOST-RAM mirror of the base weights on the sglang side (enable_weights_cpu_backup) so they
         # survive torch_memory_saver.pause() without re-ship; but at full 744B scale on the slime
@@ -406,6 +417,9 @@ def _train(args: ScriptArgs):
         _decode = "flashmla_kv" if args.fp8_rollout else "flashmla_sparse"
         _cg = 256 if args.fp8_rollout else 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if args.fp8_rollout else ""
+        # MoE-expert-LoRA serve-side flag (the virtual-experts path); goes on together with the
+        # train-side --experts-shared-outer-loras above. Empty unless KEEP_MOE_LORA=1.
+        _ve = "--sglang-lora-use-virtual-experts " if _keep_moe_lora else ""
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
             f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
@@ -414,7 +428,7 @@ def _train(args: ScriptArgs):
             f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
             f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
             f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
-            "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
+            f"--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion {_ve}"
             # NOTE: --sglang-reasoning-parser/--sglang-tool-call-parser intentionally REMOVED
             # (per directive; the PR #1376 GLM-5.2 recipe does not set them).
             # sglang must size the LoRA buffers to the real rank. Without --max-lora-rank,
