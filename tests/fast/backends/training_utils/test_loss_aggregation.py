@@ -98,6 +98,8 @@ def miles(monkeypatch):
         yield SimpleNamespace(
             arguments=arguments,
             convert_samples_to_train_data=train_data_conversion.convert_samples_to_train_data,
+            split_train_data_by_dp=train_data_conversion.split_train_data_by_dp,
+            train_data_conversion=train_data_conversion,
             cp_utils=cp_utils,
             log_utils=log_utils,
             loss=loss,
@@ -244,6 +246,19 @@ def test_cp_zigzag_rank_sum_matches_single_rank(miles, monkeypatch, constant_div
         total = total + build()(x_local)
 
     torch.testing.assert_close(total, ref)
+
+
+@pytest.mark.parametrize("constant_divisor", [0.0, -1.0])
+def test_constant_reducer_rejects_nonpositive_divisor(miles, monkeypatch, constant_divisor):
+    monkeypatch.setattr(miles.cp_utils, "get_parallel_state", lambda: _parallel_state(miles, cp_size=1))
+
+    with pytest.raises(ValueError, match="constant_divisor"):
+        miles.get_sum_of_sample_mean(
+            TOTAL_LENGTHS,
+            RESPONSE_LENGTHS,
+            LOSS_MASKS,
+            constant_divisor=constant_divisor,
+        )
 
 
 def _args(**overrides):
@@ -435,6 +450,159 @@ def test_token_mean_log_aggregation_keeps_metric_sample_mean(miles, monkeypatch)
     torch.testing.assert_close(torch.tensor(loss_dict["ppo_kl"]), torch.tensor(2.75))
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"entropy_coef": 0.01, "use_kl_loss": False, "kl_loss_coef": 0.0},
+        {"entropy_coef": 0.0, "use_kl_loss": True, "kl_loss_coef": 0.1},
+    ],
+)
+def test_token_mean_rejects_mixed_policy_loss_normalizers(miles, overrides):
+    args = _args(loss_aggregation="token_mean", calculate_per_token_loss=True)
+    args.loss_type = "policy_loss"
+    args.entropy_coef = overrides["entropy_coef"]
+    args.use_kl_loss = overrides["use_kl_loss"]
+    args.kl_loss_coef = overrides["kl_loss_coef"]
+
+    with pytest.raises(ValueError, match="auxiliary policy-loss terms are sample-normalized"):
+        miles.loss._validate_loss_aggregation_contract(args)
+
+
+def test_token_mean_allows_auxiliary_metrics_without_loss_contribution(miles):
+    args = _args(loss_aggregation="token_mean", calculate_per_token_loss=True)
+    args.loss_type = "policy_loss"
+    args.entropy_coef = 0.0
+    args.use_kl_loss = True
+    args.kl_loss_coef = 0.0
+
+    miles.loss._validate_loss_aggregation_contract(args)
+
+
+def test_build_train_log_dict_carries_per_metric_normalizers(miles):
+    log_dict = miles.loss._build_train_log_dict(
+        {
+            "loss": torch.tensor(12.0),
+            "pg_loss": torch.tensor(15.0),
+            "ppo_kl": torch.tensor(5.5),
+        },
+        num_samples=2,
+        num_tokens=torch.tensor(5.0),
+        device=torch.device("cpu"),
+        calculate_per_token_loss=True,
+    )
+
+    assert log_dict["keys"] == ["loss", "pg_loss", "ppo_kl"]
+    torch.testing.assert_close(log_dict["values"], torch.tensor([12.0, 15.0, 5.5]))
+    torch.testing.assert_close(log_dict["normalizers"], torch.tensor([5.0, 5.0, 2.0]))
+
+
+def test_non_policy_per_token_loss_uses_token_reducer(miles, monkeypatch):
+    state = _parallel_state(miles, cp_size=1)
+    monkeypatch.setattr(miles.cp_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(miles.loss, "get_parallel_state", lambda: state)
+
+    args = _args(loss_aggregation="token_mean", calculate_per_token_loss=True)
+    args.loss_type = "sft_loss"
+    args.global_batch_size = 2
+    args.use_dynamic_global_batch_size = False
+    args.recompute_loss_function = False
+    args.true_on_policy_mode = False
+
+    batch = {
+        "loss_masks": [torch.ones(2), torch.ones(3)],
+        "total_lengths": [2, 3],
+        "response_lengths": [2, 3],
+    }
+
+    def fake_loss_function(args, batch, logits, sum_of_sample_mean):
+        token_values = torch.arange(1.0, 6.0, device=logits.device)
+        loss = sum_of_sample_mean(token_values)
+        return loss, {"loss": loss.detach()}
+
+    monkeypatch.setattr(miles.loss, "get_loss_function", lambda args: fake_loss_function)
+
+    loss, normalizer, log_dict = miles.loss.loss_function(args, batch, 1, torch.ones((), requires_grad=True))
+
+    torch.testing.assert_close(loss, torch.tensor(15.0))
+    torch.testing.assert_close(normalizer, torch.tensor(5.0))
+    torch.testing.assert_close(log_dict["values"], torch.tensor([15.0]))
+    torch.testing.assert_close(log_dict["normalizers"], torch.tensor([5.0]))
+
+
+def test_aggregate_train_losses_rejects_mixed_normalizer_contracts(miles, monkeypatch):
+    state = _parallel_state(miles, cp_size=1)
+    monkeypatch.setattr(miles.log_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(miles.log_utils.dist, "all_reduce", lambda *args, **kwargs: None)
+
+    with pytest.raises(ValueError, match="mix"):
+        miles.log_utils.aggregate_train_losses(
+            [
+                {
+                    "keys": ["pg_loss"],
+                    "values": torch.tensor([10.0]),
+                    "normalizers": torch.tensor([5.0]),
+                },
+                {
+                    "keys": ["pg_loss"],
+                    "values": torch.tensor([2.0, 6.0]),
+                },
+            ]
+        )
+
+
+def test_aggregate_train_losses_rejects_key_order_mismatch(miles, monkeypatch):
+    state = _parallel_state(miles, cp_size=1)
+    monkeypatch.setattr(miles.log_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(miles.log_utils.dist, "all_reduce", lambda *args, **kwargs: None)
+
+    with pytest.raises(ValueError, match="same keys"):
+        miles.log_utils.aggregate_train_losses(
+            [
+                {
+                    "keys": ["pg_loss", "ppo_kl"],
+                    "values": torch.tensor([10.0, 5.0]),
+                    "normalizers": torch.tensor([5.0, 2.0]),
+                },
+                {
+                    "keys": ["ppo_kl", "pg_loss"],
+                    "values": torch.tensor([5.0, 10.0]),
+                    "normalizers": torch.tensor([2.0, 5.0]),
+                },
+            ]
+        )
+
+
+def test_aggregate_train_losses_rejects_bad_legacy_value_count(miles, monkeypatch):
+    state = _parallel_state(miles, cp_size=1)
+    monkeypatch.setattr(miles.log_utils, "get_parallel_state", lambda: state)
+
+    with pytest.raises(ValueError, match="Expected 2 values"):
+        miles.log_utils.aggregate_train_losses(
+            [
+                {
+                    "keys": ["pg_loss"],
+                    "values": torch.tensor([10.0]),
+                },
+            ]
+        )
+
+
+def test_aggregate_train_losses_rejects_bad_normalizer_count(miles, monkeypatch):
+    state = _parallel_state(miles, cp_size=1)
+    monkeypatch.setattr(miles.log_utils, "get_parallel_state", lambda: state)
+
+    with pytest.raises(ValueError, match="Expected 2 normalizers"):
+        miles.log_utils.aggregate_train_losses(
+            [
+                {
+                    "keys": ["pg_loss", "ppo_kl"],
+                    "values": torch.tensor([10.0, 5.0]),
+                    "normalizers": torch.tensor([5.0]),
+                },
+            ]
+        )
+
+
 def _validate_args(**overrides):
     base = dict(
         loss_aggregation="sample_mean",
@@ -518,6 +686,98 @@ def test_miles_validate_args_checks_prompt_mean_after_deriving_global_batch_size
         miles.arguments.miles_validate_args(args)
 
 
+def test_miles_validate_args_rechecks_loss_aggregation_after_custom_config(miles, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "loss_aggregation: prompt_mean",
+                "rollout_batch_size: 3",
+                "n_samples_per_prompt: 2",
+                "num_steps_per_rollout: 2",
+            ]
+        )
+    )
+    parser = argparse.ArgumentParser()
+    miles.arguments.get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--rollout-batch-size",
+            "4",
+            "--n-samples-per-prompt",
+            "2",
+            "--num-steps-per-rollout",
+            "2",
+            "--num-rollout",
+            "1",
+            "--custom-config-path",
+            str(config_path),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="multiple of n_samples_per_prompt"):
+        miles.arguments.miles_validate_args(args)
+
+
+def test_miles_validate_args_rejects_conflicting_custom_config_global_batch_size(miles, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "rollout_batch_size: 3",
+                "n_samples_per_prompt: 2",
+                "num_steps_per_rollout: 2",
+                "global_batch_size: 4",
+            ]
+        )
+    )
+    parser = argparse.ArgumentParser()
+    miles.arguments.get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--rollout-batch-size",
+            "4",
+            "--n-samples-per-prompt",
+            "2",
+            "--num-steps-per-rollout",
+            "2",
+            "--num-rollout",
+            "1",
+            "--custom-config-path",
+            str(config_path),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="global_batch_size 4 is not equal"):
+        miles.arguments.miles_validate_args(args)
+
+
+def test_miles_validate_args_reconciles_token_mean_from_custom_config(miles, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("loss_aggregation: token_mean\n")
+    parser = argparse.ArgumentParser()
+    miles.arguments.get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--rollout-batch-size",
+            "4",
+            "--n-samples-per-prompt",
+            "2",
+            "--num-steps-per-rollout",
+            "2",
+            "--num-rollout",
+            "1",
+            "--custom-config-path",
+            str(config_path),
+        ]
+    )
+
+    miles.arguments.miles_validate_args(args)
+
+    assert args.loss_aggregation == "token_mean"
+    assert args.calculate_per_token_loss is True
+
+
 def test_validate_prompt_mean_accepts_multiple_global_batch_size(miles):
     args = _validate_args(loss_aggregation="prompt_mean", global_batch_size=6, n_samples_per_prompt=2)
     miles.arguments._validate_loss_aggregation_args(args)
@@ -541,6 +801,7 @@ def _make_sample(miles, group_index, index, response_length, loss_mask):
 def _convert_args(**overrides):
     base = dict(
         advantage_estimator="grpo",
+        balance_data=False,
         rewards_normalization=False,
         reward_key=None,
         use_dynamic_global_batch_size=False,
@@ -575,6 +836,45 @@ def test_convert_samples_computes_step_level_prompt_group_denoms(miles):
 
     assert train_data["prompt_group_indices"] == [0, 0, 1, 1]
     assert train_data["prompt_mask_sums"] == [5, 5, 5, 5]
+
+
+def test_split_train_data_by_dp_keeps_prompt_groups_whole(miles, monkeypatch):
+    monkeypatch.setattr(miles.train_data_conversion.ray, "put", lambda value: value)
+    samples = [
+        _make_sample(miles, 0, 0, 3, [1, 1, 0]),
+        _make_sample(miles, 0, 1, 3, [1, 1, 1]),
+        _make_sample(miles, 1, 2, 4, [1, 0, 0, 0]),
+        _make_sample(miles, 1, 3, 4, [1, 1, 1, 1]),
+    ]
+    args = _convert_args()
+    train_data = _convert(miles, samples, args)
+
+    refs = miles.split_train_data_by_dp(args, train_data, dp_size=2)
+    parts = [ref.inner for ref in refs]
+
+    assert parts[0]["partition"] == [0, 1]
+    assert parts[1]["partition"] == [2, 3]
+    assert parts[0]["prompt_group_indices"] == [0, 0]
+    assert parts[1]["prompt_group_indices"] == [1, 1]
+    assert parts[0]["prompt_mask_sums"] == [5, 5]
+    assert parts[1]["prompt_mask_sums"] == [5, 5]
+
+
+def test_split_train_data_by_dp_rejects_undistributable_prompt_groups(miles, monkeypatch):
+    monkeypatch.setattr(miles.train_data_conversion.ray, "put", lambda value: value)
+    samples = [
+        _make_sample(miles, 0, 0, 2, [1, 1]),
+        _make_sample(miles, 0, 1, 2, [1, 1]),
+        _make_sample(miles, 1, 2, 2, [1, 1]),
+        _make_sample(miles, 1, 3, 2, [1, 1]),
+        _make_sample(miles, 2, 4, 2, [1, 1]),
+        _make_sample(miles, 2, 5, 2, [1, 1]),
+    ]
+    args = _convert_args()
+    train_data = _convert(miles, samples, args)
+
+    with pytest.raises(ValueError, match="divisible by dp_size"):
+        miles.split_train_data_by_dp(args, train_data, dp_size=2)
 
 
 def test_convert_samples_prompt_mean_rejects_none_group_index(miles):

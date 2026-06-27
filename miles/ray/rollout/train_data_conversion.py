@@ -132,6 +132,48 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
     return raw_rewards, raw_rewards
 
 
+def _prompt_group_partitions(
+    prompt_group_indices: list[int],
+    total_lengths: list[int],
+    dp_size: int,
+    *,
+    balance_data: bool,
+) -> list[list[int]]:
+    if len(prompt_group_indices) != len(total_lengths):
+        raise ValueError(
+            "--loss-aggregation prompt_mean requires one prompt_group_indices entry per sample "
+            f"(got {len(prompt_group_indices)} for {len(total_lengths)} samples)."
+        )
+
+    group_to_indices: dict[int, list[int]] = {}
+    group_order: list[int] = []
+    for sample_index, group_index in enumerate(prompt_group_indices):
+        group_key = int(group_index.item()) if isinstance(group_index, torch.Tensor) else int(group_index)
+        if group_key not in group_to_indices:
+            group_to_indices[group_key] = []
+            group_order.append(group_key)
+        group_to_indices[group_key].append(sample_index)
+
+    if len(group_order) % dp_size != 0:
+        raise ValueError(
+            "--loss-aggregation prompt_mean requires the number of prompt groups in a train step "
+            f"to be divisible by dp_size (got {len(group_order)} prompt groups, dp_size={dp_size})."
+        )
+
+    if balance_data:
+        group_lengths = [
+            sum(total_lengths[index] for index in group_to_indices[group_key]) for group_key in group_order
+        ]
+        group_partitions = get_seqlen_balanced_partitions(group_lengths, dp_size, equal_size=True)
+    else:
+        group_partitions = [range(i, len(group_order), dp_size) for i in range(dp_size)]
+
+    return [
+        [sample_index for group_index in partition for sample_index in group_to_indices[group_order[group_index]]]
+        for partition in group_partitions
+    ]
+
+
 def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
     rollout_data = {}
@@ -142,7 +184,14 @@ def split_train_data_by_dp(args, data, dp_size):
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
-    if args.balance_data:
+    if getattr(args, "loss_aggregation", "sample_mean") == "prompt_mean" and "prompt_group_indices" in data:
+        partitions = _prompt_group_partitions(
+            data["prompt_group_indices"],
+            total_lengths,
+            dp_size,
+            balance_data=args.balance_data,
+        )
+    elif args.balance_data:
         partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]

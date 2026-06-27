@@ -105,6 +105,8 @@ def get_sum_of_sample_mean(
             "constant_divisor (loss-aggregation=constant) and calculate_per_token_loss "
             "(loss-aggregation=token_mean) are mutually exclusive aggregation modes."
         )
+    if constant_divisor is not None and constant_divisor <= 0:
+        raise ValueError("constant_divisor (loss-aggregation=constant) must be positive.")
     if sample_denoms is None and constant_divisor is None and not calculate_per_token_loss:
         sample_denoms = [loss_mask.sum() for loss_mask in loss_masks]
 

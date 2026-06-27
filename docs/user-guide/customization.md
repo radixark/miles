@@ -220,7 +220,7 @@ with `--calculate-per-token-loss` is rejected at startup (per-token loss would
 renormalize by the token count and undo that mode's denominator).
 
 `--loss-aggregation-divisor L` is required (validated `> 0` at startup) only for
-`constant`; it is ignored for the other modes.
+`constant`; every other mode rejects a configured divisor at startup.
 
 Every mode shares the same outer structure: each step's pg_loss sum is divided by
 `global_batch_size` (the standard step average). The per-mode denominator above is
@@ -235,6 +235,10 @@ mean contributes once, and the final scalar is the mean over prompt groups. It
 requires `global_batch_size` to be a multiple of `n_samples_per_prompt`, so a
 contiguous train step keeps each prompt group whole instead of normalizing
 against a partially-present group total.
+Prompt groups also stay whole when splitting train data across data-parallel
+ranks; if the number of prompt groups in a train step is not divisible by the
+data-parallel size, partitioning fails before training instead of creating a
+partial prompt group on a rank.
 
 For custom train-data converters, `prompt_mean` should mirror the built-in
 converter and emit both `prompt_mask_sums` and `prompt_group_indices`.

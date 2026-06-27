@@ -2078,6 +2078,20 @@ def _validate_loss_aggregation_args(args):
         )
 
 
+def _derive_global_batch_size_from_rollout(args, *, require_existing_match: bool = True) -> None:
+    if args.num_steps_per_rollout is None:
+        return
+    global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout
+    if require_existing_match and args.global_batch_size is not None:
+        if args.global_batch_size != global_batch_size:
+            raise ValueError(
+                f"global_batch_size {args.global_batch_size} is not equal to "
+                f"rollout_batch_size {args.rollout_batch_size} * n_samples_per_prompt {args.n_samples_per_prompt} "
+                f"// num_steps_per_rollout {args.num_steps_per_rollout}"
+            )
+    args.global_batch_size = global_batch_size
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -2393,15 +2407,7 @@ def miles_validate_args(args):
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
 
-    if args.num_steps_per_rollout is not None:
-        global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout
-        if args.global_batch_size is not None:
-            assert args.global_batch_size == global_batch_size, (
-                f"global_batch_size {args.global_batch_size} is not equal to "
-                f"rollout_batch_size {args.rollout_batch_size} * n_samples_per_prompt {args.n_samples_per_prompt} "
-                f"// num_steps_per_rollout {args.num_steps_per_rollout}"
-            )
-        args.global_batch_size = global_batch_size
+    _derive_global_batch_size_from_rollout(args)
 
     _validate_loss_aggregation_args(args)
 
@@ -2444,6 +2450,8 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+        _derive_global_batch_size_from_rollout(args, require_existing_match="global_batch_size" in data)
+        _validate_loss_aggregation_args(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

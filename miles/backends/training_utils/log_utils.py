@@ -388,10 +388,20 @@ def aggregate_train_losses(
         return {}
 
     keys = losses_reduced[0]["keys"]
+    has_normalizers = "normalizers" in losses_reduced[0]
 
     values = None
     normalizers = None
     for log_dict in losses_reduced:
+        if log_dict["keys"] != keys:
+            raise ValueError(
+                "All train loss log_dict entries must have the same keys in the same order; "
+                f"got {log_dict['keys']} after {keys}."
+            )
+        if ("normalizers" in log_dict) != has_normalizers:
+            raise ValueError(
+                "Cannot aggregate a mix of train loss log_dict entries with and without explicit normalizers."
+            )
         if values is None:
             values = log_dict["values"].clone()
         else:
@@ -403,10 +413,13 @@ def aggregate_train_losses(
                 normalizers += log_dict["normalizers"]
 
     if normalizers is None:
-        assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
+        if len(keys) + 1 != values.numel():
+            raise ValueError(f"Expected {len(keys) + 1} values, got {values.numel()}")
     else:
-        assert len(keys) == values.numel(), f"Expected {len(keys)} values, got {values.numel()}"
-        assert len(keys) == normalizers.numel(), f"Expected {len(keys)} normalizers, got {normalizers.numel()}"
+        if len(keys) != values.numel():
+            raise ValueError(f"Expected {len(keys)} values, got {values.numel()}")
+        if len(keys) != normalizers.numel():
+            raise ValueError(f"Expected {len(keys)} normalizers, got {normalizers.numel()}")
 
     dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp.group)
     if normalizers is not None:
@@ -416,12 +429,12 @@ def aggregate_train_losses(
     values = values.tolist()
     if normalizers is not None:
         normalizers = normalizers.tolist()
-        for key, value, normalizer in zip(keys, values, normalizers, strict=False):
+        for key, value, normalizer in zip(keys, values, normalizers, strict=True):
             loss_reduced[key] = value * parallel_state.cp.size / normalizer
         return loss_reduced
 
     num_samples_or_tokens = values[0]
-    for key, value in zip(keys, values[1:], strict=False):
+    for key, value in zip(keys, values[1:], strict=True):
         loss_reduced[key] = value * parallel_state.cp.size / num_samples_or_tokens
 
     return loss_reduced
