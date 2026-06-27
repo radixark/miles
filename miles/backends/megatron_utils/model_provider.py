@@ -23,41 +23,73 @@ from miles.utils.replay_base import routing_replay_manager
 logger = logging.getLogger(__name__)
 
 
-# Args-owned knobs to re-inject onto a bridge-built provider, which skips
-# core_transformer_config_from_args. NOT a blind args->provider copy -- architecture, dtype, and
-# provider-set fields stay HF-checkpoint-authoritative; overriding them would silently corrupt the model.
-_BRIDGE_RUNTIME_OVERRIDE_FIELDS = (
+def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
+    """Re-inject args-owned runtime config onto a bridge-built provider.
+
+    Bridge mode builds the model from the HF checkpoint and skips
+    core_transformer_config_from_args, so CLI args never reach the provider. We
+    hand-pick fields here instead of blind-copying every arg: on this path the
+    provider is authoritative for what the HF checkpoint defines, and
+    architecture / dtype / provider-deliberate fields sit at mismatched defaults
+    in args. Overriding those would silently corrupt the model -- the bridge
+    weight mapping warns and continues, it does not raise -- so only the
+    training/parallelism/memory/numerics knobs that args legitimately owns are
+    propagated. Add new training-infra flags here, not as scattered assignments.
+    """
     # parallelism / sharding
-    "tensor_model_parallel_size",
-    "pipeline_model_parallel_size",
-    "expert_model_parallel_size",
-    "expert_tensor_parallel_size",
-    "sequence_parallel",
-    "context_parallel_size",
+    provider.tensor_model_parallel_size = args.tensor_model_parallel_size
+    provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
+    provider.expert_model_parallel_size = args.expert_model_parallel_size
+    provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
+    provider.sequence_parallel = args.sequence_parallel
+    provider.context_parallel_size = args.context_parallel_size
+
     # loss / sequence handling
-    "calculate_per_token_loss",  # CP>1 VL models assert this
-    "variable_seq_lengths",
+    provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
+    provider.variable_seq_lengths = args.variable_seq_lengths
+
     # numerics (training infra, not model-defining)
-    "attention_softmax_in_fp32",
-    "fp32_residual_connection",
-    "deterministic_mode",
+    provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
+    provider.fp32_residual_connection = args.fp32_residual_connection
+    provider.deterministic_mode = args.deterministic_mode
+
     # activation recompute (silently dropped before -> no checkpointing -> OOM at long context)
-    "recompute_granularity",
-    "recompute_method",
-    "recompute_num_layers",
-    "recompute_modules",
+    provider.recompute_granularity = args.recompute_granularity
+    provider.recompute_method = args.recompute_method
+    provider.recompute_num_layers = args.recompute_num_layers
+    provider.recompute_modules = args.recompute_modules
+
     # activation / memory offload
-    "cpu_offloading",
-    "cpu_offloading_num_layers",
-    "distribute_saved_activations",
+    provider.cpu_offloading_num_layers = args.cpu_offloading_num_layers
+    provider.distribute_saved_activations = args.distribute_saved_activations
+    # cpu_offloading is derived, set only when cpu_offloading_num_layers>0; guard its presence.
+    if hasattr(args, "cpu_offloading"):
+        provider.cpu_offloading = args.cpu_offloading
+
     # communication overlap
-    "tp_comm_overlap",
+    provider.tp_comm_overlap = args.tp_comm_overlap
+
     # fp8
-    "fp8",
-    "fp8_recipe",
+    provider.fp8 = args.fp8
+    provider.fp8_recipe = args.fp8_recipe
+
     # attention kernel selection
-    "attention_backend",
-)
+    provider.attention_backend = args.attention_backend
+
+    # MoE token dispatcher (same-name, always present)
+    provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
+
+    # arg name != provider field; arg default None, so propagate only when the user set it
+    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
+    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+
+    # MoE training knobs: override only when explicitly set, else keep the provider's value
+    if getattr(args, "moe_router_bias_update_rate", None) is not None:
+        provider.moe_router_bias_update_rate = args.moe_router_bias_update_rate
+    if getattr(args, "moe_aux_loss_coeff", None) is not None:
+        provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -128,21 +160,7 @@ def get_model_provider_func(
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
-        # Otherwise these knobs silently keep their TransformerConfig defaults.
-        for _field in _BRIDGE_RUNTIME_OVERRIDE_FIELDS:
-            if hasattr(args, _field) and hasattr(provider, _field):
-                setattr(provider, _field, getattr(args, _field))
-        # Translated arg name / only-when-explicitly-set fields (kept out of the blind loop).
-        if hasattr(args, "moe_token_dispatcher_type"):
-            provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
-        if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
-            provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-        if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
-            provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
-        if getattr(args, "moe_router_bias_update_rate", None) is not None:
-            provider.moe_router_bias_update_rate = args.moe_router_bias_update_rate
-        if getattr(args, "moe_aux_loss_coeff", None) is not None:
-            provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
+        _apply_bridge_runtime_config(provider, args)
         provider.finalize()
 
         def wrapped_bridge_provider(
