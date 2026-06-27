@@ -301,6 +301,40 @@ def _train(args: ScriptArgs):
     _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
     if _is_full and not _keep_moe_lora:
         _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
+    # MOE_LORA_LAYERS: restrict the MoE-EXPERT LoRA (MLP gate/up/down -> linear_fc1/linear_fc2) to a
+    # SUBSET of layers, to cut the actor_train backward-activation / optimizer memory of the many-layer
+    # expert grouped-GEMM (attention LoRA stays on ALL layers). Empty (default) = every layer (current
+    # behavior). Accepts ranges and/or comma lists, e.g. "58-77" or "60,65,70". Mechanism: emit
+    # Megatron-Bridge ModuleMatcher wildcard patterns "*.layers.<N>.*.linear_fc1/linear_fc2" for ONLY
+    # the selected layers and drop the bare gate/up/down (which match every layer). miles passes
+    # "*"-patterns through unchanged (convert_target_modules_to_megatron); the bare attention names
+    # (q/k/v/o + MLA q_a/kv_a/q_b/kv_b) still map to all-layer attention LoRA.
+    _moe_lora_layers = os.environ.get("MOE_LORA_LAYERS", "").strip()
+    if _keep_moe_lora and _moe_lora_layers:
+        def _parse_layers(spec):
+            out = []
+            for part in spec.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "-" in part:
+                    a, b = part.split("-", 1)
+                    out.extend(range(int(a), int(b) + 1))
+                else:
+                    out.append(int(part))
+            return sorted(set(out))
+
+        _layers = _parse_layers(_moe_lora_layers)
+        _attn_only = [m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj")]
+        _moe_patterns = []
+        for _n in _layers:
+            _moe_patterns.append(f"*.layers.{_n}.*.linear_fc1")
+            _moe_patterns.append(f"*.layers.{_n}.*.linear_fc2")
+        _tm = ",".join(_attn_only + _moe_patterns)
+        print(
+            f"[run_glm5_lora] MOE_LORA_LAYERS={_moe_lora_layers} -> MoE-expert LoRA on layers {_layers} "
+            f"only (attention LoRA still on all layers); target-modules: {_tm}"
+        )
     # MoE-expert LoRA needs TWO INDEPENDENT flags, each controlling its own thing -- not a symmetric
     # pair, but both must be ON for serving to work. Enabled whenever the MoE expert projections
     # (gate_proj/up_proj/down_proj) are LoRA targets (KEEP_MOE_LORA=1, the default):

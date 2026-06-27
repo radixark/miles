@@ -169,6 +169,15 @@ R3="${R3:-on}"
 # --experts-shared-outer-loras (train-side layout) + --sglang-lora-use-virtual-experts (serve-side path).
 # KEEP_MOE_LORA=0 -> attention-only LoRA (q/k/v/o + MLA q_a/kv_a/q_b/kv_b), the previous bring-up default.
 KEEP_MOE_LORA="${KEEP_MOE_LORA:-1}"
+# MOE_LORA_LAYERS: restrict the MoE-EXPERT LoRA to a subset of layers (attention LoRA stays on ALL
+# layers) to cut actor_train backward-activation / optimizer memory of the many-layer expert
+# grouped-GEMM. Empty = every MoE layer. Accepts ranges/commas, e.g. "58-77". Read by run_glm5_lora.py.
+# Full GLM-5.2 (78 layers) defaults to the last 20 layers (58-77); toy / others default to all layers.
+if [[ "$MODEL" == "GLM-5.2" ]]; then
+  MOE_LORA_LAYERS="${MOE_LORA_LAYERS:-58-77}"
+else
+  MOE_LORA_LAYERS="${MOE_LORA_LAYERS:-}"
+fi
 if [[ -z "$ROLLOUT_GPUS_PER_ENGINE" ]]; then
   if [[ "$MODEL" == *5layer* ]]; then ROLLOUT_GPUS_PER_ENGINE=2
   elif [[ "$FP8_ROLLOUT" == "on" ]]; then ROLLOUT_GPUS_PER_ENGINE=8   # fp8: 744B fits 1 node/engine
@@ -357,7 +366,7 @@ case "$ROLE" in
     export MILES_RAY_SUBMISSION_ID="${JOB_ID}"
     # MoE-expert LoRA master switch, read by run_glm5_lora.py via os.environ (driver-side, at command
     # build); export so the `python scripts/run_glm5_lora.py train` child inherits the default (ON).
-    export KEEP_MOE_LORA
+    export KEEP_MOE_LORA MOE_LORA_LAYERS
 
     # NOTE: --num-gpus-per-node appears BOTH as a script flag (drives TP=EP via
     # _get_parallel_config + --actor-num-gpus-per-node) AND inside --extra-args.
