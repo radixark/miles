@@ -96,10 +96,20 @@ def get_sum_of_sample_mean(
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    sample_denoms: list[torch.Tensor] | None = None,
+    constant_divisor: float | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
-    """
-    Calculate correct sample mean for CP
-    """
+    """Build a CP-aware reducer for masked token losses."""
+    if constant_divisor is not None and calculate_per_token_loss:
+        raise ValueError(
+            "constant_divisor (loss-aggregation=constant) and calculate_per_token_loss "
+            "(loss-aggregation=token_mean) are mutually exclusive aggregation modes."
+        )
+    if constant_divisor is not None and constant_divisor <= 0:
+        raise ValueError("constant_divisor (loss-aggregation=constant) must be positive.")
+    if sample_denoms is None and constant_divisor is None and not calculate_per_token_loss:
+        sample_denoms = [loss_mask.sum() for loss_mask in loss_masks]
+
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
     if cp_size == 1:
@@ -107,8 +117,10 @@ def get_sum_of_sample_mean(
         def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             return sum(
                 [
-                    (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
-                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=True)
+                    (x_i * loss_mask_i).sum() / torch.clamp_min(denom, 1)
+                    for x_i, loss_mask_i, denom in zip(
+                        x.split(response_lengths, dim=0), loss_masks, sample_denoms, strict=True
+                    )
                 ]
             )
 
@@ -135,9 +147,9 @@ def get_sum_of_sample_mean(
         def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             return sum(
                 [
-                    (x_i * chunked_loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-                    for x_i, chunked_loss_mask, loss_mask in zip(
-                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, loss_masks, strict=True
+                    (x_i * chunked_loss_mask).sum() / torch.clamp_min(denom, 1)
+                    for x_i, chunked_loss_mask, denom in zip(
+                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, sample_denoms, strict=True
                     )
                 ]
             )
@@ -151,6 +163,13 @@ def get_sum_of_sample_mean(
                     )
                 ]
             )
+
+    if constant_divisor is not None:
+
+        def sum_of_constant(x: torch.Tensor) -> torch.Tensor:
+            return sum_of_token(x) / constant_divisor
+
+        return sum_of_constant
 
     return sum_of_sample_mean if not calculate_per_token_loss else sum_of_token
 

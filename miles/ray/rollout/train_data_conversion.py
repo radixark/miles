@@ -55,6 +55,17 @@ def convert_samples_to_train_data(
         loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
 
+    if getattr(args, "loss_aggregation", "sample_mean") == "prompt_mean":
+        group_mask_totals: dict[int, int] = {}
+        prompt_group_indices: list[int] = []
+        for sample, loss_mask in zip(samples, loss_masks, strict=True):
+            if sample.group_index is None:
+                raise ValueError("--loss-aggregation prompt_mean requires every Sample.group_index to be set.")
+            prompt_group_indices.append(sample.group_index)
+            group_mask_totals[sample.group_index] = group_mask_totals.get(sample.group_index, 0) + sum(loss_mask)
+        train_data["prompt_group_indices"] = prompt_group_indices
+        train_data["prompt_mask_sums"] = [group_mask_totals[group_index] for group_index in prompt_group_indices]
+
     # overwriting the raw reward
     if samples[0].metadata and "raw_reward" in samples[0].metadata:
         train_data["raw_reward"] = [sample.metadata["raw_reward"] for sample in samples]
@@ -121,6 +132,48 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
     return raw_rewards, raw_rewards
 
 
+def _prompt_group_partitions(
+    prompt_group_indices: list[int],
+    total_lengths: list[int],
+    dp_size: int,
+    *,
+    balance_data: bool,
+) -> list[list[int]]:
+    if len(prompt_group_indices) != len(total_lengths):
+        raise ValueError(
+            "--loss-aggregation prompt_mean requires one prompt_group_indices entry per sample "
+            f"(got {len(prompt_group_indices)} for {len(total_lengths)} samples)."
+        )
+
+    group_to_indices: dict[int, list[int]] = {}
+    group_order: list[int] = []
+    for sample_index, group_index in enumerate(prompt_group_indices):
+        group_key = int(group_index.item()) if isinstance(group_index, torch.Tensor) else int(group_index)
+        if group_key not in group_to_indices:
+            group_to_indices[group_key] = []
+            group_order.append(group_key)
+        group_to_indices[group_key].append(sample_index)
+
+    if len(group_order) % dp_size != 0:
+        raise ValueError(
+            "--loss-aggregation prompt_mean requires the number of prompt groups in a train step "
+            f"to be divisible by dp_size (got {len(group_order)} prompt groups, dp_size={dp_size})."
+        )
+
+    if balance_data:
+        group_lengths = [
+            sum(total_lengths[index] for index in group_to_indices[group_key]) for group_key in group_order
+        ]
+        group_partitions = get_seqlen_balanced_partitions(group_lengths, dp_size, equal_size=True)
+    else:
+        group_partitions = [range(i, len(group_order), dp_size) for i in range(dp_size)]
+
+    return [
+        [sample_index for group_index in partition for sample_index in group_to_indices[group_order[group_index]]]
+        for partition in group_partitions
+    ]
+
+
 def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
     rollout_data = {}
@@ -131,7 +184,14 @@ def split_train_data_by_dp(args, data, dp_size):
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
-    if args.balance_data:
+    if getattr(args, "loss_aggregation", "sample_mean") == "prompt_mean" and "prompt_group_indices" in data:
+        partitions = _prompt_group_partitions(
+            data["prompt_group_indices"],
+            total_lengths,
+            dp_size,
+            balance_data=args.balance_data,
+        )
+    elif args.balance_data:
         partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
@@ -158,6 +218,8 @@ def split_train_data_by_dp(args, data, dp_size):
             "teacher_log_probs",
             "opd_reverse_kl",
             "weight_versions",
+            "prompt_group_indices",
+            "prompt_mask_sums",
         ]:
             if key not in data:
                 continue

@@ -12,6 +12,69 @@ from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantage
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
+TOKEN_NORMALIZED_TRAIN_KEYS = frozenset({"loss", "pg_loss", "ess_ratio", "value_loss"})
+
+
+def _as_scalar_tensor(value, *, device: torch.device) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value.to(device=device).reshape(())
+    return torch.tensor(value, device=device)
+
+
+def _build_train_log_dict(
+    log: dict[str, torch.Tensor],
+    *,
+    num_samples: int,
+    num_tokens: torch.Tensor,
+    device: torch.device,
+    calculate_per_token_loss: bool,
+) -> dict[str, list[str] | torch.Tensor]:
+    keys = list(log.keys())
+    values = torch.stack([_as_scalar_tensor(value, device=device) for value in log.values()])
+    if not calculate_per_token_loss:
+        return {
+            "keys": keys,
+            "values": torch.cat([torch.tensor([num_samples], device=device), values]),
+        }
+
+    normalizers = torch.stack(
+        [
+            (
+                num_tokens.to(device=device).reshape(())
+                if key in TOKEN_NORMALIZED_TRAIN_KEYS
+                else torch.tensor(num_samples, device=device)
+            )
+            for key in keys
+        ]
+    )
+    return {
+        "keys": keys,
+        "values": values,
+        "normalizers": normalizers,
+    }
+
+
+def _validate_loss_aggregation_contract(args: Namespace) -> None:
+    if getattr(args, "loss_type", None) != "policy_loss":
+        return
+    mode = getattr(args, "loss_aggregation", None)
+    token_mean = mode == "token_mean" or (mode is None and getattr(args, "calculate_per_token_loss", False))
+    if not token_mean:
+        return
+
+    mixed_terms = []
+    if getattr(args, "entropy_coef", 0) != 0:
+        mixed_terms.append("--entropy-coef")
+    if getattr(args, "use_kl_loss", False) and getattr(args, "kl_loss_coef", 0) != 0:
+        mixed_terms.append("--kl-loss-coef")
+    if mixed_terms:
+        raise ValueError(
+            "--loss-aggregation token_mean cannot be combined with "
+            f"{', '.join(mixed_terms)} because the policy-gradient term is token-normalized "
+            "while auxiliary policy-loss terms are sample-normalized. Use sample_mean, "
+            "set the auxiliary coefficient to 0, or add explicit per-term loss normalizers."
+        )
+
 
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
@@ -122,14 +185,21 @@ def loss_function(
     parallel_state = get_parallel_state()
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
     num_samples = len(batch["response_lengths"])
+    _validate_loss_aggregation_contract(args)
 
+    # Policy loss selects pg_loss aggregation separately; this shared reducer is
+    # for metrics and auxiliary terms. Non-policy losses use the legacy reducer
+    # axis directly.
+    reducer_per_token_loss = (
+        args.calculate_per_token_loss and getattr(args, "loss_type", "policy_loss") != "policy_loss"
+    )
     sum_of_sample_mean = get_sum_of_sample_mean(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
-        args.qkv_format,
-        batch.get("max_seq_lens", None),
+        calculate_per_token_loss=reducer_per_token_loss,
+        qkv_format=args.qkv_format,
+        max_seq_lens=batch.get("max_seq_lens", None),
     )
 
     func = get_loss_function(args)
@@ -166,17 +236,20 @@ def loss_function(
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
 
+    log_dict = _build_train_log_dict(
+        log,
+        num_samples=num_samples,
+        num_tokens=num_tokens,
+        device=logits.device,
+        calculate_per_token_loss=args.calculate_per_token_loss,
+    )
+
     return (
         loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
-        {
-            "keys": list(log.keys()),
-            "values": torch.tensor(
-                [
-                    num_samples if not args.calculate_per_token_loss else num_tokens,
-                ]
-                + list(log.values()),
-                device=logits.device,
-            ),
-        },
+        (
+            num_tokens.to(device=logits.device)
+            if args.calculate_per_token_loss
+            else torch.tensor(1, device=logits.device)
+        ),
+        log_dict,
     )
