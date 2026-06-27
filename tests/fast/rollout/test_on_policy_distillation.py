@@ -1,10 +1,11 @@
+import asyncio
 import math
 from argparse import Namespace
 
 import pytest
 from tests.ci.ci_register import register_cpu_ci
 
-from miles.rollout.on_policy_distillation import _compute_topk_reverse_kl
+from miles.rollout.on_policy_distillation import _compute_topk_reverse_kl, reward_func
 from miles.utils.types import Sample
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu")
@@ -100,3 +101,22 @@ def test_topk_xor_uses_symmetric_difference_without_normalization():
     expected_1 = math.log(0.3 / 0.6) + math.log(0.1 / 0.2)
 
     assert reverse_kl.tolist() == pytest.approx([expected_0, expected_1])
+
+
+def test_reward_func_scores_teacher_at_rollout_temperature(monkeypatch):
+    calls = []
+
+    async def fake_post_json(url, payload):
+        calls.append((url, payload))
+        return {"meta_info": {"input_token_logprobs": [None, [0.0, 12]]}}
+
+    monkeypatch.setattr("miles.rollout.on_policy_distillation._post_json", fake_post_json)
+    args = Namespace(
+        rm_url="http://teacher/generate",
+        rollout_temperature=0.8,
+        opd_log_prob_top_k=0,
+    )
+
+    asyncio.run(reward_func(args, Sample(tokens=[10, 11, 12], response_length=1)))
+
+    assert calls[0][1]["sampling_params"]["temperature"] == 0.8
