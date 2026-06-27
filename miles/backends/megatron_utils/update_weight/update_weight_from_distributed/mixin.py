@@ -267,7 +267,10 @@ class DistBucketedWeightUpdateMixin:
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            if mode not in ("in_place"):
+            # retract already frees the in-flight requests' KV (they sit in the waiting
+            # queue), so a prefix-cache flush is unneeded; skipping it also avoids SGLang's
+            # /flush_cache HTTP 400 ("pending requests") which times out under a paused engine.
+            if mode not in ("in_place", "retract"):
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
             begin_weight_update(self.rollout_engines)
