@@ -78,12 +78,24 @@ _MLA_HF_TO_MEGATRON = {
     "kv_a_proj_with_mqa": "linear_kv_down_proj",
     "q_b_proj": "linear_q_up_proj",
     "kv_b_proj": "linear_kv_up_proj",
+    # DSA indexer (GLM-5.1 / DeepSeek-V3.2): HF/SGLang leaf names wq_b/wk/weights_proj
+    # vs Megatron-Bridge names linear_wq_b/linear_wk/linear_weights_proj. Same HF<->Megatron
+    # mismatch handling as MLA above, so one --target-modules name resolves to the Megatron
+    # name for training and back to the HF name for SGLang rollout.
+    "wq_b": "linear_wq_b",
+    "wk": "linear_wk",
+    "weights_proj": "linear_weights_proj",
 }
 _MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
 
-# SGLang default get_hidden_dim (lora/utils.py) handles fused_qkv_a_proj_with_mqa via q_a / kv_a mapping,
-# but not separate q_b_proj / kv_b_proj yet — omit from rollout adapter config to avoid init crashes.
-_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset({"q_b_proj", "kv_b_proj"})
+# SGLang's get_hidden_dim (sglang lora/utils.py:176-187, sglang-miles-glm-dev branch / PR #28110) now
+# FULLY supports q_b_proj / kv_b_proj (the MLA up-projections): both return real dims and are in the
+# supported target set (lora/utils.py:353-354). So nothing is excluded -- the colocate rollout adapter
+# config declares the SAME modules Megatron trains.
+# (Previously q_b/kv_b were dropped to avoid init crashes when sglang lacked support; that is now stale
+# and was harmful -- dropping them made sglang silently SKIP the shipped q_b/kv_b adapter tensors at
+# mem_pool.py, so the trained MLA up-proj LoRA never reached the rollout once LoRA_B became nonzero.)
+_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -315,10 +327,14 @@ def create_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
-    # Opt-in to SGLang PR #21466's shared-outer grouped-expert LoRA. Only the
-    # standard ``LoRA`` class supports the flag today.
-    if lora_cls is LoRA and getattr(args, "experts_shared_outer_loras", False):
-        lora_kwargs["experts_shared_outer_loras"] = True
+    # MoE-expert (grouped) LoRA adapter layout, keyed on --experts-shared-outer-loras:
+    #   SET   -> shared-outer LoRA (SGLang PR #21466 contract) + share_expert_adapters=True
+    #   UNSET -> regular per-expert LoRA (share_expert_adapters=False: one adapter per local expert)
+    _shared_outer = bool(getattr(args, "experts_shared_outer_loras", False))
+    lora_kwargs["share_expert_adapters"] = _shared_outer
+    # experts_shared_outer_loras is only supported by the standard ``LoRA`` class today.
+    if lora_cls is LoRA:
+        lora_kwargs["experts_shared_outer_loras"] = _shared_outer
 
     lora = lora_cls(**lora_kwargs)
 

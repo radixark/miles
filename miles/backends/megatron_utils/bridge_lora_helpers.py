@@ -102,6 +102,12 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    # GLM DSA kernel backend: the Megatron-Bridge GLM-5 provider bakes the "megatron-bridge"
+    # default; override from the miles arg so LoRA training honors --dsa-attention-backend
+    # (e.g. "slime" -> fused SparseMLA on thd input). hasattr-guarded so non-DSA providers are
+    # untouched; both backends set the SAME field so the unfused default is fully preserved.
+    if hasattr(provider, "dsa_attention_backend"):
+        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron-bridge")
     provider.finalize()
 
     lora = create_lora_instance(args)
@@ -128,5 +134,33 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if args.offload_train:
         patch_param_grad_buffer_for_colocate_mode_lora()
 
+    # The GLM-5 / GLM-5.1 "dsa" experimental-attention-variant spec is registered by the
+    # Megatron-Bridge GLM-5 bridge itself (glm5_bridge.py sets
+    # provider.transformer_layer_spec = _build_glm5_dsa_block_spec), so the model builds
+    # via the bridge without a caller-side monkey-patch of megatron-core here.
     model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
+    # The dsa_attention_backend set on `provider` above is not guaranteed to reach the per-module
+    # configs the attention modules read at forward time (the GLM-5 spec may bake the backend at
+    # spec-build time, and provide() can hand modules a config object distinct from `provider`).
+    # Force the configured backend onto every module config -- the SAME value for both backends, so
+    # the unfused (megatron-bridge) default is fully preserved -- and explicitly onto the dispatching
+    # SlimeMLASelfAttention.config, so SlimeMLASelfAttention.forward does not fall back to the unfused
+    # path on a thd input ("not enough values to unpack (expected 4, got 3)").
+    _backend = getattr(provider, "dsa_attention_backend", None)
+    if _backend is not None:
+        _n = _slime = 0
+        for _chunk in _ensure_model_list(model):
+            for _m in _chunk.modules():
+                _cfg = getattr(_m, "config", None)
+                if _cfg is not None and hasattr(_cfg, "dsa_attention_backend"):
+                    _cfg.dsa_attention_backend = _backend
+                    _n += 1
+                if _m.__class__.__name__ == "SlimeMLASelfAttention" and getattr(_m, "config", None) is not None:
+                    _slime += 1
+                    _m.config.dsa_attention_backend = _backend
+        print(
+            f"[dsa-fix:lora] backend={_backend!r}; forced on {_n} module configs; "
+            f"{_slime} SlimeMLASelfAttention modules",
+            flush=True,
+        )
     return model

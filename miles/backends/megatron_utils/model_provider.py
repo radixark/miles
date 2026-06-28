@@ -112,6 +112,11 @@ def get_model_provider_func(
             provider.moe_router_bias_update_rate = args.moe_router_bias_update_rate
         if getattr(args, "moe_aux_loss_coeff", None) is not None:
             provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
+        # GLM DSA kernel backend: GLM5Bridge.provider_bridge sets the "megatron-bridge" default, so
+        # override it from the miles arg here. hasattr-guarded so only DSA providers carry the field;
+        # non-DSA models are untouched.
+        if hasattr(provider, "dsa_attention_backend"):
+            provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron-bridge")
         provider.finalize()
 
         def wrapped_bridge_provider(

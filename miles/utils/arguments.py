@@ -221,6 +221,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
             parser.add_argument(
+                "--dsa-attention-backend",
+                choices=["megatron-bridge", "slime"],
+                default="slime",
+                help=(
+                    "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
+                    "'slime' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer) for "
+                    "rollout<->train numerical parity; 'megatron-bridge' uses the portable unfused megatron-core "
+                    "kernels. 'slime' requires --qkv-format thd and the optional tilelang dep, and is "
+                    "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
+                    "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
+                ),
+            )
+            parser.add_argument(
                 "--extra-high-precision-layers-hf",
                 type=str,
                 nargs="*",
@@ -1074,9 +1087,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--use-rollout-routing-replay",
-                action="store_true",
-                default=False,
-                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="R3 rollout routing replay (https://arxiv.org/abs/2510.11370): replay the rollout's "
+                "MoE top-8 in training for rollout<->train on-policy parity. DEFAULT ON -- cheap "
+                "(sglang routed-experts capturer ~0.5 GB/rank, no host buffer). Disable with "
+                "--no-use-rollout-routing-replay. NOTE: distinct from the debug-only "
+                "--use-rollout-indexer-replay (stays default-off; it triggers the ~78-128 GB/rank "
+                "IndexerTopkCapturer host buffer that OOMs the colocate pod).",
             )
             parser.add_argument(
                 "--use-indexer-replay",
@@ -2177,7 +2195,14 @@ def miles_validate_args(args):
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            modules = [
+                # dense attention + MLP
+                "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
+                # MLA (DeepSeek / GLM MLA attention)
+                "q_a_proj", "kv_a_proj_with_mqa", "q_b_proj", "kv_b_proj",
+                # DSA indexer (GLM-5.1 / DeepSeek-V3.2)
+                "wq_b", "wk", "weights_proj",
+            ]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
         else:

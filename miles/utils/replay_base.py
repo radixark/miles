@@ -194,10 +194,39 @@ class BaseReplayManager:
         if mismatch_count == 0:
             return
 
+        # Diagnostic (MILES_R3_DIAG): is a mismatch a benign near-tie (the recompute & replay pick
+        # different but ~equally-scored experts -> same MoE output -> matching logprobs) or a real
+        # divergence (replay picked genuinely lower-scored experts)? Per mismatched token, compare,
+        # under the TRAINING router's own scores: the gap between the last-selected (rank topk) and
+        # first-dropped (rank topk+1) expert (≈0 => ill-conditioned near-tie), and the mean score of
+        # the REPLAYED experts vs the recompute's own top-k (ratio≈1 => benign; <<1 => real).
+        if os.environ.get("MILES_R3_DIAG"):
+            sf = scores.view(-1, scores.shape[-1]).float()
+            mm = is_mismatch.nonzero(as_tuple=False).squeeze(1)
+            if mm.numel() > 0:
+                smm = sf[mm]
+                srt, _ = smm.sort(dim=-1, descending=True)
+                k = min(topk, srt.shape[1] - 1)
+                top1, rk, rk1 = srt[:, 0], srt[:, k - 1], srt[:, k]
+                r2k = srt[:, min(2 * k - 1, srt.shape[1] - 1)]
+                rep = replay_flat[mm]
+                repv = rep != -1
+                rep_sc = smm.gather(1, rep.clamp(min=0).long())
+                rep_mean = rep_sc[repv].mean().item() if repv.any() else float("nan")
+                orig_top_mean = srt[:, :k].mean().item()
+                ratio = rep_mean / orig_top_mean if orig_top_mean else float("nan")
+                print(
+                    f"[r3-diag] rank{_get_rank()} stage={self.stage} mismatch={mm.numel()}/{orig_flat.shape[0]} "
+                    f"topk={topk} | score top1={top1.mean():.4f} rank{k}={rk.mean():.4f} rank{k + 1}={rk1.mean():.4f} "
+                    f"rank{2 * k}={r2k.mean():.4f} | gap(rank{k}-rank{k + 1})={(rk - rk1).mean():.5f} | "
+                    f"orig_top{k}_score={orig_top_mean:.4f} replay_experts_score={rep_mean:.4f} ratio={ratio:.4f}",
+                    flush=True,
+                )
+
         threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_max_mismatch_fraction))
         mismatch_threshold = threshold * orig_flat.shape[0]
         mismatch_indices = is_mismatch.nonzero(as_tuple=False).squeeze(1)
-        for idx in mismatch_indices:
+        for idx in mismatch_indices[:5]:
             i = idx.item()
             lines = []
             for j in range(max(0, i - 3), min(len(orig_flat), i + 4)):
