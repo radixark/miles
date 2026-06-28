@@ -169,13 +169,21 @@ R3="${R3:-on}"
 # --experts-shared-outer-loras (train-side layout) + --sglang-lora-use-virtual-experts (serve-side path).
 # KEEP_MOE_LORA=0 -> attention-only LoRA (q/k/v/o + MLA q_a/kv_a/q_b/kv_b), the previous bring-up default.
 KEEP_MOE_LORA="${KEEP_MOE_LORA:-1}"
+# [DEBUG-DISABLED 2026-06-28] MOE_LORA_LAYERS subset-restriction is COMMENTED OUT (suspected bug
+# source). The knob is no longer defined or exported, and run_glm5_lora.py's subset-rewrite is also
+# commented out -> MoE-expert LoRA always covers ALL MoE layers. To re-enable, un-comment the line
+# below AND re-add MOE_LORA_LAYERS to the `export` line in the launch role, AND restore the
+# run_glm5_lora.py block.
 # MOE_LORA_LAYERS: restrict the MoE-EXPERT LoRA to a subset of layers (attention LoRA stays on ALL
 # layers). Accepts ranges/commas, e.g. "58-77". Read by run_glm5_lora.py.
-# DEFAULT = empty = ALL MoE layers, for BOTH the 5-layer toy AND the full GLM-5.2 (78L). Set
-# MOE_LORA_LAYERS explicitly (e.g. "58-77") to RESTRICT — useful to cut actor_train backward-
-# activation / optimizer memory of the many-layer expert grouped-GEMM at full scale (all 75 MoE
-# layers of expert LoRA can OOM the actor train step; rollout-only is unaffected).
-MOE_LORA_LAYERS="${MOE_LORA_LAYERS:-}"
+# MOE_LORA_LAYERS="${MOE_LORA_LAYERS:-}"
+# CPU Adam (optimizer state -> host RAM) for the ACTOR train step. DEFAULT ON (=1). Read by
+# run_glm5_lora.py, which appends the canonical triple --optimizer-cpu-offload +
+# --overlap-cpu-optimizer-d2h-h2d + --use-precision-aware-optimizer (same as the full-FT
+# run_glm5_744b_a40b.py / deepseek / qwen3 recipes; requires --use-distributed-optimizer, already on).
+# NOTE: under LoRA only the small adapter params carry optimizer state, so the GPU-mem win is modest.
+# Set OPTIMIZER_CPU_OFFLOAD=0 to keep Adam on GPU (e.g. for the 5-layer toy, or to A/B the mem delta).
+OPTIMIZER_CPU_OFFLOAD="${OPTIMIZER_CPU_OFFLOAD:-1}"
 if [[ -z "$ROLLOUT_GPUS_PER_ENGINE" ]]; then
   if [[ "$MODEL" == *5layer* ]]; then ROLLOUT_GPUS_PER_ENGINE=2
   elif [[ "$FP8_ROLLOUT" == "on" ]]; then ROLLOUT_GPUS_PER_ENGINE=8   # fp8: 744B fits 1 node/engine
@@ -364,7 +372,8 @@ case "$ROLE" in
     export MILES_RAY_SUBMISSION_ID="${JOB_ID}"
     # MoE-expert LoRA master switch, read by run_glm5_lora.py via os.environ (driver-side, at command
     # build); export so the `python scripts/run_glm5_lora.py train` child inherits the default (ON).
-    export KEEP_MOE_LORA MOE_LORA_LAYERS
+    # MOE_LORA_LAYERS intentionally NOT exported (subset feature disabled for debugging — see knob above).
+    export KEEP_MOE_LORA OPTIMIZER_CPU_OFFLOAD
 
     # NOTE: --num-gpus-per-node appears BOTH as a script flag (drives TP=EP via
     # _get_parallel_config + --actor-num-gpus-per-node) AND inside --extra-args.

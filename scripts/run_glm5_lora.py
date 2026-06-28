@@ -309,32 +309,45 @@ def _train(args: ScriptArgs):
     # the selected layers and drop the bare gate/up/down (which match every layer). miles passes
     # "*"-patterns through unchanged (convert_target_modules_to_megatron); the bare attention names
     # (q/k/v/o + MLA q_a/kv_a/q_b/kv_b) still map to all-layer attention LoRA.
+    # ─────────────────────────────────────────────────────────────────────────────
+    # [DEBUG-DISABLED 2026-06-28] MOE_LORA_LAYERS subset-rewrite COMMENTED OUT to rule
+    # it out as the source of a suspected bug. While disabled, MoE-expert LoRA always
+    # targets ALL MoE layers via the plain module names (gate_proj/up_proj/down_proj);
+    # the "*.layers.<N>.*.linear_fc1/linear_fc2" wildcard patterns are NEVER emitted.
+    # The env var is still read ONLY to warn if it is set (so it isn't silently ignored).
+    # To re-enable: delete the warning shim and un-comment the block below.
+    # ─────────────────────────────────────────────────────────────────────────────
     _moe_lora_layers = os.environ.get("MOE_LORA_LAYERS", "").strip()
-    if _keep_moe_lora and _moe_lora_layers:
-        def _parse_layers(spec):
-            out = []
-            for part in spec.split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                if "-" in part:
-                    a, b = part.split("-", 1)
-                    out.extend(range(int(a), int(b) + 1))
-                else:
-                    out.append(int(part))
-            return sorted(set(out))
-
-        _layers = _parse_layers(_moe_lora_layers)
-        _attn_only = [m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj")]
-        _moe_patterns = []
-        for _n in _layers:
-            _moe_patterns.append(f"*.layers.{_n}.*.linear_fc1")
-            _moe_patterns.append(f"*.layers.{_n}.*.linear_fc2")
-        _tm = ",".join(_attn_only + _moe_patterns)
+    if _moe_lora_layers:
         print(
-            f"[run_glm5_lora] MOE_LORA_LAYERS={_moe_lora_layers} -> MoE-expert LoRA on layers {_layers} "
-            f"only (attention LoRA still on all layers); target-modules: {_tm}"
+            f"[run_glm5_lora] WARNING: MOE_LORA_LAYERS={_moe_lora_layers} is SET but the subset-rewrite "
+            "feature is DISABLED (commented out for debugging) -> MoE-expert LoRA stays on ALL layers."
         )
+    # if _keep_moe_lora and _moe_lora_layers:
+    #     def _parse_layers(spec):
+    #         out = []
+    #         for part in spec.split(","):
+    #             part = part.strip()
+    #             if not part:
+    #                 continue
+    #             if "-" in part:
+    #                 a, b = part.split("-", 1)
+    #                 out.extend(range(int(a), int(b) + 1))
+    #             else:
+    #                 out.append(int(part))
+    #         return sorted(set(out))
+    #
+    #     _layers = _parse_layers(_moe_lora_layers)
+    #     _attn_only = [m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj")]
+    #     _moe_patterns = []
+    #     for _n in _layers:
+    #         _moe_patterns.append(f"*.layers.{_n}.*.linear_fc1")
+    #         _moe_patterns.append(f"*.layers.{_n}.*.linear_fc2")
+    #     _tm = ",".join(_attn_only + _moe_patterns)
+    #     print(
+    #         f"[run_glm5_lora] MOE_LORA_LAYERS={_moe_lora_layers} -> MoE-expert LoRA on layers {_layers} "
+    #         f"only (attention LoRA still on all layers); target-modules: {_tm}"
+    #     )
     # MoE-expert LoRA needs TWO INDEPENDENT flags, each controlling its own thing -- not a symmetric
     # pair, but both must be ON for serving to work. Enabled whenever the MoE expert projections
     # (gate_proj/up_proj/down_proj) are LoRA targets (KEEP_MOE_LORA=1, the default):
@@ -434,6 +447,14 @@ def _train(args: ScriptArgs):
         r3_args = "--no-use-rollout-routing-replay "
 
     optimizer_args = "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
+    # CPU Adam — offload the optimizer state to host RAM. DEFAULT ON (set OPTIMIZER_CPU_OFFLOAD=0 to
+    # disable, e.g. for the 5-layer toy). The three flags MUST go together (offload + D2H/H2D overlap +
+    # precision-aware optimizer), matching the full-FT recipe run_glm5_744b_a40b.py and the deepseek/
+    # qwen3 siblings. Requires --use-distributed-optimizer (already on via _get_parallel_config).
+    # NOTE: under LoRA only the small adapter params carry optimizer state, so the GPU-mem saving is
+    # modest; kept on for parity with the full-FT recipe and easy full-FT reuse.
+    if os.environ.get("OPTIMIZER_CPU_OFFLOAD", "1") != "0":
+        optimizer_args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
 
     perf_args = _get_parallel_config(args)
 
