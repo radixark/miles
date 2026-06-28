@@ -182,6 +182,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # rollout engine
     rollout_num_gpus_per_engine: int = 2  # rollout tp=2
     sglang_mem_fraction_static: float = 0.5
+    # sglang LoRA kernel backend (triton|csgmv|ascend|torch_native). sglang's OWN default is csgmv,
+    # but csgmv has crashed the GLM-5.2 DSA MoE-LoRA rollout (gate_up slice miscount under
+    # dp-attention -> "scheduler died") and is less robust; triton is the kernel the multinode .sh
+    # wrappers already pin. Default it to triton HERE so every entrypoint that flows through this
+    # launcher inherits it -- a bare `python run_glm5_lora.py`, run_glm5_lora_multinode_full_model.sh,
+    # and the CI smoke tests previously fell back to csgmv (only run_glm5_lora_multinode.sh forced
+    # triton via --extra-args). Emitted as --sglang-lora-backend; override per-run with
+    # --sglang-lora-backend csgmv (or, via the .sh wrappers, SGLANG_LORA_BACKEND=...).
+    sglang_lora_backend: str = "triton"
     # fp8 rollout: serve sglang from a pre-converted _fp8 ckpt (tools/convert_hf_to_fp8.py). fp8
     # halves rollout weight mem so the 744B model fits engine=8 (1 node); megatron TRAIN stays bf16
     # (it dequantizes the fp8 HF base via the bridge). Point --hf-checkpoint at the _fp8 dir.
@@ -490,9 +499,12 @@ def _train(args: ScriptArgs):
             # _get_lora_n_slices (= A_buffer.shape[-2] // lora_rank) miscounts the gate_up slices
             # under dp-attention -> partition-prefix(24576) != B-out(768) "scheduler died" crash.
             f"--sglang-max-lora-rank {args.lora_rank} "
+            # LoRA kernel backend (default triton; see sglang_lora_backend field). csgmv is fragile
+            # on the GLM-5.2 DSA MoE-LoRA dp-attention path; triton is the robust default.
+            f"--sglang-lora-backend {args.sglang_lora_backend} "
         )
     else:
-        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
+        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 
