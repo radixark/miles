@@ -239,6 +239,7 @@ def setup_session_routes(app, backend, args):
                     response=response,
                 )
                 session.append_record(record)
+                registry.log_record(session_id, record)
             # --- lock released here ---
 
             return backend.build_proxy_response(result)
