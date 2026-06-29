@@ -5,9 +5,9 @@ Two cases differ in `enable_mtp_training` and `use_r3`:
 - mtp0: MTP training off + R3 off. Whether the MTP layer is checked is a weight-check
   *selector* concern, not a skip-list one.
 
-Qwen3.5 is a VLM whose vision tower is never updated by text RL, so its `visual.*`
-weights always mismatch the post-update equality check and are excluded suite-wide via
---check-weight-update-skip-list.
+miles has no VLM/vision implementation on the training side, so Qwen3.5's `visual.*`
+weights are never synced and must be excluded from the weight-equality check; each case
+passes `check_weight_update_skip_list=("visual",)`.
 
 Topology follows scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py (cp2/ep8 on 8 GPUs).
 Spec (EAGLE) and spec-v2 (mamba scheduler) are on for the whole suite; R3 is per-case.
@@ -42,8 +42,9 @@ class CaseConfig:
     # Weight-check selector: "all" (target + draft) or "target" (target model only; use
     # when MTP training is off so the un-synced draft is not checked).
     check_weight_update_selector: str = "all"
-    # Extra rollout weight-name substrings to exclude from the equality check, on top of
-    # the suite-wide vision skip. Usually empty (MTP exclusion is the selector's job).
+    # Rollout weight-name substrings to exclude from the equality check (substring match;
+    # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
+    # implementation on the training side, so those weights are never synced.
     check_weight_update_skip_list: tuple = ()
 
 
@@ -151,10 +152,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     ci_args = "--ci-test "
     ci_args += f"--check-weight-update-selector {case.check_weight_update_selector} "
-    # Qwen3.5 is a VLM; the vision tower is never updated by text RL, so always exclude
-    # its weights from the equality check. Cases may add more substrings on top.
-    skip_list = ("visual",) + tuple(case.check_weight_update_skip_list)
-    ci_args += "--check-weight-update-skip-list " + " ".join(skip_list) + " "
+    if case.check_weight_update_skip_list:
+        ci_args += "--check-weight-update-skip-list " + " ".join(case.check_weight_update_skip_list) + " "
 
     misc_args = (
         "--attention-dropout 0.0 "

@@ -1,8 +1,8 @@
 """Qwen3.5-35B-A3B: 1 MTP layer + speculative-v2 + R3.
 
-MTP training is on with one draft layer, so the rollout MTP/draft weights are
-synced from training. The only excluded weights are the suite-wide vision skip
-(Qwen3.5 is a VLM whose vision tower is never updated by text RL).
+MTP training is on with one draft layer, so the rollout MTP/draft weights are synced
+from training (selector "all" checks both target and draft). Vision weights are still
+excluded: miles has no VLM/vision implementation on the training side.
 """
 
 import os
@@ -22,6 +22,9 @@ CASE = CaseConfig(
     sglang_ep_size=8,
     enable_mtp_training=True,
     use_r3=True,
+    # miles has no VLM/vision implementation on the training side, so vision weights are
+    # never synced; exclude them from the weight-equality check.
+    check_weight_update_skip_list=("visual",),
 )
 
 
