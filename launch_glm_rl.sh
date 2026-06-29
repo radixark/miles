@@ -86,8 +86,15 @@ MODEL_ARGS=(
 )
 TRAIN_ARGS=(
   --hf-checkpoint "$HF_CHECKPOINT" --megatron-to-hf-mode bridge --dsa-attention-backend "$BACKEND"
-  --lora-rank 16 --lora-alpha 32 --lora-dropout 0.0
-  --target-modules q_proj,k_proj,v_proj,o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj
+  --lora-rank 4 --lora-alpha 8 --lora-dropout 0.0
+  # LoRA targets = attention (q/k/v/o + MLA q_a/kv_a/q_b/kv_b) + MoE experts (gate/up/down, which the
+  # bridge maps to Megatron linear_fc1/linear_fc2). MoE-expert LoRA needs BOTH flags below ON together
+  # or the sglang rollout crashes ("scheduler died": expert gate_up LoRA-B dim vs base mismatch under
+  # EP=32 / dp-attention):
+  #   --experts-shared-outer-loras       (TRAIN side; arguments.py auto-mirrors --sglang-experts-shared-outer-loras)
+  #   --sglang-lora-use-virtual-experts  (SERVE side; in the sglang block below) -- NOT auto-set, added explicitly.
+  --target-modules q_proj,k_proj,v_proj,o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj,gate_proj,up_proj,down_proj
+  --experts-shared-outer-loras
   --no-gradient-accumulation-fusion
   --rm-type math --prompt-data "$DATA_DIR/gsm8k/train.parquet" --input-key messages --label-key label
   --apply-chat-template --rollout-shuffle
@@ -108,7 +115,7 @@ TRAIN_ARGS=(
   --sglang-page-size 64 --sglang-cuda-graph-max-bs 64 --sglang-max-running-requests 512
   --sglang-chunked-prefill-size 65536 --sglang-watchdog-timeout 3600
   --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion
-  --sglang-max-lora-rank 16 --sglang-lora-backend triton
+  --sglang-max-lora-rank 16 --sglang-lora-backend triton --sglang-lora-use-virtual-experts
   --lora-base-cpu-backup
   # colocate / multi-node.
   --attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32
