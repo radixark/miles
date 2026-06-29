@@ -24,17 +24,17 @@ logger = logging.getLogger(__name__)
 
 
 def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
-    """Re-inject args-owned runtime config onto a bridge-built provider.
+    """Copy the runtime config from args onto a bridge-built provider.
 
     Bridge mode builds the model from the HF checkpoint and skips
-    core_transformer_config_from_args, so CLI args never reach the provider. We
-    hand-pick fields here instead of blind-copying every arg: on this path the
-    provider is authoritative for what the HF checkpoint defines, and
-    architecture / dtype / provider-deliberate fields sit at mismatched defaults
-    in args. Overriding those would silently corrupt the model -- the bridge
-    weight mapping warns and continues, it does not raise -- so only the
-    training/parallelism/memory/numerics knobs that args legitimately owns are
-    propagated. Add new training-infra flags here, not as scattered assignments.
+    core_transformer_config_from_args, so command-line args never reach the
+    provider. We copy only some fields, not all of args: the provider already
+    holds the right values from the HF checkpoint, while args only has default
+    values for model shape, dtype, and fields the provider set on purpose.
+    Copying those would quietly break the model -- the bridge only logs a
+    warning and keeps going, it does not fail. So we copy just the training,
+    parallelism, memory, and numerics settings that really come from args. Put
+    new training flags here, not spread across the code.
     """
     # parallelism / sharding
     provider.tensor_model_parallel_size = args.tensor_model_parallel_size
