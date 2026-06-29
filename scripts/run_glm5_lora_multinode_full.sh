@@ -111,9 +111,6 @@ fi
 # once rewards are dense enough (longer seq / a partially-trained policy) that zero-std groups are rare.
 export DAPO_DYNAMIC_SAMPLING="${DAPO_DYNAMIC_SAMPLING:-off}"
 export NUM_ROLLOUT="${NUM_ROLLOUT:-50}"
-# periodic held-out eval (gsm8k -> test split; dapo-math -> AIME-2024 if {DATA_DIR}/aime-2024 present).
-export EVAL="${EVAL:-on}"
-export EVAL_INTERVAL="${EVAL_INTERVAL:-5}"
 export HF_CHECKPOINT="${HF_CHECKPOINT:-/cluster-storage/models/${MODEL}}"
 # TP8 x DP8 / PP1 / CP1 / EP32 -- the only validated full-model layout.
 export PARALLEL_EXTRA="${PARALLEL_EXTRA:---pipeline-model-parallel-size 1 --context-parallel-size 1 --expert-model-parallel-size 32}"

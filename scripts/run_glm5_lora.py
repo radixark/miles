@@ -197,14 +197,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_rollout: bool = False
 
     enable_wandb: bool = True
-
-    # eval: periodic held-out evaluation every eval_interval rollout steps (mirrors run_deepseek_v4.py).
-    #   gsm8k     -> the held-out gsm8k test split ({data_dir}/gsm8k/test.parquet, ships with train).
-    #   dapo-math -> AIME-2024 ({data_dir}/aime-2024/aime-2024.jsonl) -- the canonical math-RL eval;
-    #                NOT bundled with dapo-math-17k, so drop it in (or set enable_eval=False) for dapo.
-    enable_eval: bool = True
-    eval_interval: int = 5
-
     # pass any extra miles/megatron/sglang args through, e.g. --extra-args '--lora-base-cpu-backup'
     extra_args: str = ""
 
@@ -413,27 +405,6 @@ def _train(args: ScriptArgs):
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
 
-    # ---- periodic held-out eval (same shape as run_deepseek_v4.py; toggle with enable_eval) ----
-    # eval_input_key / eval_label_key default to None in miles, so set them explicitly per task.
-    eval_args = ""
-    if args.enable_eval:
-        eval_args = f"--eval-interval {args.eval_interval} --eval-top-p 0.7 "
-        match args.task:
-            case "gsm8k":  # held-out gsm8k test split (ships next to train.parquet)
-                eval_args += (
-                    f"--eval-prompt-data gsm8k {args.data_dir}/gsm8k/test.parquet "
-                    "--eval-input-key messages --eval-label-key label "
-                    "--n-samples-per-eval-prompt 1 "
-                    f"--eval-max-response-len {args.rollout_max_response_len} "
-                )
-            case "dapo-math":  # canonical math-RL eval = AIME-2024; supply {data_dir}/aime-2024/aime-2024.jsonl
-                eval_args += (
-                    f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
-                    "--eval-input-key prompt --eval-label-key label "
-                    "--n-samples-per-eval-prompt 8 "
-                    "--eval-max-response-len 4096 "
-                )
-
     grpo_args = "--advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
     # R3 = rollout ROUTING replay ONLY: replay the rollout's MoE top-8 in training so the train-side
@@ -517,7 +488,7 @@ def _train(args: ScriptArgs):
     # wrappers may also pass these via --extra-args; argparse takes the last occurrence (env wins).
     seq_args = f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
 
-    train_args = f"{ckpt_args} {lora_args} {rollout_args} {eval_args} {seq_args} {optimizer_args} {grpo_args} {r3_args} {wandb_args} {perf_args} {sglang_args} {save_args} {misc_args} {args.extra_args} "
+    train_args = f"{ckpt_args} {lora_args} {rollout_args} {seq_args} {optimizer_args} {grpo_args} {r3_args} {wandb_args} {perf_args} {sglang_args} {save_args} {misc_args} {args.extra_args} "
 
     U.execute_train(
         train_args=train_args,

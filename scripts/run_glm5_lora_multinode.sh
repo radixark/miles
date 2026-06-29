@@ -124,8 +124,6 @@ NUM_ROLLOUT="${NUM_ROLLOUT:-50}"               # == number of train steps
 SAVE_INTERVAL="${SAVE_INTERVAL:-10}"           # keep ~NUM_ROLLOUT/SAVE_INTERVAL adapters
 if [[ "$TASK" == "dapo-math" ]]; then RESP_LEN="${RESP_LEN:-4096}"; elif [[ "$TASK" == "gsm8k" ]]; then RESP_LEN="${RESP_LEN:-512}"; else RESP_LEN="${RESP_LEN:-7168}"; fi  # --rollout-max-response-len: dapo long-CoT 4096 (>2048 -> DSA indexer SPARSE), gsm8k short-answer 512
 DAPO_DYNAMIC_SAMPLING="${DAPO_DYNAMIC_SAMPLING:-on}"  # on for a REAL model; off for gsm8k/toy smoke
-EVAL="${EVAL:-on}"                             # periodic held-out eval (gsm8k->test split; dapo->AIME-2024 if present)
-EVAL_INTERVAL="${EVAL_INTERVAL:-5}"            # eval every N rollout steps (only used when EVAL=on)
 
 # ----- rollout (sglang) engine size — CRITICAL for the FULL 744B model -----
 #   744B bf16 ~1488GB. An sglang rollout engine must span enough GPUs to HOLD the
@@ -384,8 +382,6 @@ case "$ROLE" in
       --lora-rank "${LORA_RANK}" \
       $( [[ "$FP8_ROLLOUT" == "on" ]] && echo --fp8-rollout ) \
       $( [[ "$R3" == "off" ]] && echo --no-use-r3 ) \
-      $( [[ "$EVAL" == "off" ]] && echo --no-enable-eval ) \
-      --eval-interval "${EVAL_INTERVAL}" \
       --num-gpus-per-node "${GPUS_PER_NODE}" \
       --num-rollout "${NUM_ROLLOUT}" \
       --data-dir "${DATA_DIR}" \
