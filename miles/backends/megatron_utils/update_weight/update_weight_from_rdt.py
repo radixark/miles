@@ -126,6 +126,17 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
 
+        # Initialize LoRA state via the mixin contract (the shared update_weights
+        # guards base-sync on self.is_lora). RDT is full-param sync, so is_lora is
+        # False and the guard short-circuits; this just registers the attribute.
+        self._init_lora(
+            args=args,
+            model=model,
+            model_name=model_name,
+            quantization_config=quantization_config,
+            is_lora=is_lora,
+        )
+
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._group_name = "miles-rdt"
@@ -272,14 +283,16 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)
 
-        # Monkey-patch the loader-level _post_load_weights to no-op BEFORE get_model,
+        # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
         # because get_model() calls it internally, which may invoke kernels that
         # should only run on the rollout engine after the RDMA transfer (the engine
         # runs them itself when the mixin's end_weight_update() closes the session).
+        # sglang #28001 exposes this module function publicly (was _post_load_weights);
+        # callers use a bare name so patching the module attr intercepts them.
         from sglang.srt.model_loader import loader as model_loader_module
 
-        original_post_load_weights = model_loader_module._post_load_weights
-        model_loader_module._post_load_weights = lambda *args, **kwargs: None
+        original_post_load_weights = model_loader_module.post_load_weights
+        model_loader_module.post_load_weights = lambda *args, **kwargs: None
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
@@ -288,7 +301,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                     device_config=DeviceConfig(device="cuda"),
                 )
         finally:
-            model_loader_module._post_load_weights = original_post_load_weights
+            model_loader_module.post_load_weights = original_post_load_weights
 
         # Also patch the instance method for subsequent load_weights() calls.
         if hasattr(model, "post_load_weights"):

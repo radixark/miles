@@ -2478,7 +2478,12 @@ def hf_validate_args(args, hf_config):
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",
-            "norm_epsilon" if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1" else "layernorm_epsilon",
+            # The norm-eps arg dest differs across Megatron versions (norm_epsilon
+            # vs layernorm_epsilon). Auto-detect the one the parser actually
+            # defined instead of inferring from DEPRECATED_MEGATRON_COMPATIBLE,
+            # which also gates checkpoint format and can disagree (the radixark
+            # fork wants pre_mcore_014 saves yet exposes layernorm_epsilon).
+            "norm_epsilon" if hasattr(args, "norm_epsilon") else "layernorm_epsilon",
             equal,
         ),
         ("rope_theta", "rotary_base", equal),
