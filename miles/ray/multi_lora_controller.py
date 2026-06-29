@@ -8,6 +8,7 @@ from pathlib import Path
 import ray
 
 from miles.utils.adapter_config import AdapterConfig, AdapterState, RegisteredAdapter, parse_adapter_yaml
+from miles.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ def get_multi_lora_controller():
 
 class MultiLoRAControllerImpl:
     def __init__(self, args):
+        configure_logger()
+
         self.args = args
         self.max_adapters = args.multi_lora_n_adapters
         self.max_rank = args.lora_rank
