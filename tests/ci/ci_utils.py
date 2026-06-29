@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -9,6 +10,62 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from tests.ci.ci_register import CIRegistry
+
+# Env var the training process reads to find the per-attempt record directory; kept
+# in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
+CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
+# Env var carrying the harness-assigned attempt id into the training process.
+CI_GATE_ATTEMPT_ID_ENV = "MILES_CI_GATE_ATTEMPT_ID"
+
+
+def _ci_gate_base_dir() -> str | None:
+    """Base directory under which per-attempt record subdirs are created.
+
+    Returns None when the CI history gate is not configured, in which case no env
+    is injected and the merge is skipped.
+    """
+    base = os.environ.get(CI_GATE_RECORD_DIR_ENV)
+    return base or None
+
+
+def _sanitize_for_path(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+def _attempt_record_dir(base_dir: str, filename: str, attempt: int) -> str:
+    """Per-test, per-attempt subdir. Distinct attempts never share a directory, so
+    attempt 2 cannot read or clobber attempt 1's per-process records."""
+    return os.path.join(base_dir, _sanitize_for_path(filename), f"attempt-{attempt}")
+
+
+def _merge_attempt_records(attempt_dir: str, merged_path: str) -> None:
+    """Merge every per-process NDJSON file under ``attempt_dir`` into one record.
+
+    Each per-process file holds lines of ``{"metric": key, "series": [[step, value], ...]}``.
+    The same metric key may appear across processes (driver + actors); concatenate
+    their series and sort by step so the merged per-run record is coherent.
+    """
+    if not os.path.isdir(attempt_dir):
+        return
+    merged: dict[str, list[list]] = {}
+    for fname in sorted(os.listdir(attempt_dir)):
+        if not fname.endswith(".ndjson"):
+            continue
+        with open(os.path.join(attempt_dir, fname), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                merged.setdefault(rec["metric"], []).extend(rec["series"])
+
+    for points in merged.values():
+        points.sort(key=lambda p: (p[0] is None, p[0]))
+
+    with open(merged_path, "w", encoding="utf-8") as f:
+        for metric, points in merged.items():
+            f.write(json.dumps({"metric": metric, "series": points}) + "\n")
+
 
 # Configure logger to output to stdout
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -200,12 +257,22 @@ def run_unittest_files(
         process = None
         output_lines = []
 
-        def run_one_file(filename, capture_output=False, _i=i, _estimated_time=estimated_time):
+        def run_one_file(filename, capture_output=False, record_dir=None, _i=i, _estimated_time=estimated_time):
             nonlocal process, output_lines
 
             full_path = os.path.join(os.getcwd(), filename)
             logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
             file_tic = time.perf_counter()
+
+            child_env = None
+            if record_dir is not None:
+                # Point the training process (driver + Ray actors, which inherit this
+                # env) at this attempt's own record dir, and tag it with the attempt
+                # id so per-process records land in an attempt-isolated directory.
+                os.makedirs(record_dir, exist_ok=True)
+                child_env = os.environ.copy()
+                child_env[CI_GATE_RECORD_DIR_ENV] = record_dir
+                child_env[CI_GATE_ATTEMPT_ID_ENV] = os.path.basename(record_dir)
 
             if capture_output:
                 # Capture output for retry decision
@@ -216,6 +283,7 @@ def run_unittest_files(
                     text=True,
                     errors="ignore",
                     start_new_session=True,
+                    env=child_env,
                 )
                 output_lines = []
                 for line in process.stdout:
@@ -228,6 +296,7 @@ def run_unittest_files(
                     stdout=None,
                     stderr=None,
                     start_new_session=True,
+                    env=child_env,
                 )
                 process.wait()
 
@@ -255,12 +324,17 @@ def run_unittest_files(
             attempt_timeout_after: float | None = None
             attempt_elapsed: float = 0.0
 
+            gate_base_dir = _ci_gate_base_dir()
+            attempt_record_dir = (
+                _attempt_record_dir(gate_base_dir, filename, current_attempt) if gate_base_dir is not None else None
+            )
+
             try:
                 try:
                     ret_code = run_with_timeout(
                         run_one_file,
                         args=(filename,),
-                        kwargs={"capture_output": enable_retry},
+                        kwargs={"capture_output": enable_retry, "record_dir": attempt_record_dir},
                         timeout=effective_timeout,
                     )
                     attempt_elapsed = time.perf_counter() - attempt_tic
@@ -325,6 +399,12 @@ def run_unittest_files(
                         timeout_after=attempt_timeout_after,
                         retry_of=(current_attempt - 1) if current_attempt >= 2 else None,
                     )
+                # The process group has finished (waited or killed) by now, so the
+                # per-process NDJSON records are complete. Merge them into one
+                # per-run record for this attempt.
+                if attempt_record_dir is not None:
+                    merged_path = f"{attempt_record_dir}.merged.ndjson"
+                    _merge_attempt_records(attempt_record_dir, merged_path)
 
         if not file_passed:
             success = False

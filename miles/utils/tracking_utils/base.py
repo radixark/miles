@@ -129,6 +129,12 @@ BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
     "prometheus": (PrometheusBackend, "use_prometheus"),
 }
 
+# Registered after BACKEND_REGISTRY exists so ci_history's top-level import of
+# TrackingBackend from this module resolves cleanly.
+from .ci_history import CiHistoryBackend  # noqa: E402
+
+BACKEND_REGISTRY["ci_history"] = (CiHistoryBackend, "use_ci_history")
+
 
 class TrackingManager:
     # Initializes and logs to every enabled backend; used internally by ``tracking_utils``.

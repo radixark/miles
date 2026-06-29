@@ -1,9 +1,19 @@
 import logging
 
 from .base import TrackingManager
+from .ci_history import RECORD_DIR_ENV, TARGET_METRIC_KEYS, CiHistoryBackend
 
 logger = logging.getLogger(__name__)
 _manager = TrackingManager()
+
+__all__ = [
+    "CiHistoryBackend",
+    "RECORD_DIR_ENV",
+    "TARGET_METRIC_KEYS",
+    "finish_tracking",
+    "init_tracking",
+    "log",
+]
 
 
 def init_tracking(args, primary: bool = True, **kwargs):

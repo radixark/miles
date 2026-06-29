@@ -1401,6 +1401,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        # ci history
+        def add_ci_history_arguments(parser):
+            parser.add_argument(
+                "--use-ci-history",
+                action="store_true",
+                default=False,
+                help="Capture target training/rollout metrics into a per-process local "
+                "record (NDJSON under $MILES_CI_GATE_RECORD_DIR) for the CI metric-history "
+                "gate. Off by default; no record is written and behavior is unchanged.",
+            )
+            return parser
+
         # debug
         def add_debug_arguments(parser):
             parser.add_argument(
@@ -1859,6 +1871,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_prometheus_arguments(parser)
+        parser = add_ci_history_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
