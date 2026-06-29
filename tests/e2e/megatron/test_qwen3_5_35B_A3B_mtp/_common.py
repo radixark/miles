@@ -140,8 +140,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--sglang-mamba-scheduler-strategy extra_buffer "
     )
     if case.use_r3:
-        # NOTE: scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py marks R3 as "not compatible
-        # with spec v2"; the mtp1 case deliberately exercises the combination.
         sglang_args += "--use-rollout-routing-replay "
 
     # When MTP training is off the rollout still runs EAGLE spec from the checkpoint
