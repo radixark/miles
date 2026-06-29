@@ -113,7 +113,7 @@ TRAIN_ARGS=(
   --no-gradient-accumulation-fusion
   --rm-type math --prompt-data "$DATA_DIR/gsm8k/train.parquet" --input-key messages --label-key label
   --apply-chat-template --rollout-shuffle
-  --num-rollout 20 --rollout-batch-size 4 --n-samples-per-prompt 16 --rollout-max-response-len 256
+  --num-rollout 10000 --rollout-batch-size 4 --n-samples-per-prompt 16 --rollout-max-response-len 256
   --rollout-temperature 1.0 --global-batch-size 64
   --advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00
   --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --use-rollout-routing-replay
