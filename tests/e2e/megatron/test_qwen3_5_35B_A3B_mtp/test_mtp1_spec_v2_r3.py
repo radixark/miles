@@ -1,0 +1,32 @@
+"""Qwen3.5-35B-A3B: 1 MTP layer + speculative-v2 + R3.
+
+MTP training is on with one draft layer, so the rollout MTP/draft weights are
+synced from training. The only excluded weights are the suite-wide vision skip
+(Qwen3.5 is a VLM whose vision tower is never updated by text RL).
+"""
+
+import os
+
+from tests.ci.ci_register import register_cuda_ci
+from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, execute, prepare
+
+register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["megatron", "qwen35"])
+
+CASE = CaseConfig(
+    num_gpus_per_node=8,
+    cp_size=2,
+    pp_size=1,
+    tp_size=2,
+    ep_size=8,
+    rollout_num_gpus_per_engine=8,
+    sglang_ep_size=8,
+    enable_mtp_training=True,
+    use_r3=True,
+)
+
+
+if __name__ == "__main__":
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
+    prepare(CASE)
+    execute(CASE, wandb_file=__file__)
