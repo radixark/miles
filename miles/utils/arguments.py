@@ -1533,6 +1533,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
             parser.add_argument(
+                "--check-weight-update-selector",
+                type=str,
+                default="all",
+                help="Which weights the post-update equality check covers. Only 'all' is "
+                "currently supported.",
+            )
+            parser.add_argument(
+                "--check-weight-update-skip-list",
+                type=str,
+                nargs="*",
+                default=None,
+                help="Weight-name substrings to exclude from the post-update equality check; "
+                "their mismatches are downgraded to non-fatal info (e.g. MTP/draft layer names "
+                "that are absent on the training side).",
+            )
+            parser.add_argument(
                 "--check-weight-update-allow-quant-error",
                 action="store_true",
                 help="When comparing weights after update, allow quantized tensors to differ "
