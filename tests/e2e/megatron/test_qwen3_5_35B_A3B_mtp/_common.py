@@ -39,8 +39,11 @@ class CaseConfig:
     # Whether to enable R3 routing replay (--use-rollout-routing-replay).
     use_r3: bool
     max_tokens_per_gpu: int = 8192
+    # Weight-check selector: "all" (target + draft) or "target" (target model only; use
+    # when MTP training is off so the un-synced draft is not checked).
+    check_weight_update_selector: str = "all"
     # Extra rollout weight-name substrings to exclude from the equality check, on top of
-    # the suite-wide vision skip. Usually empty (MTP exclusion is a selector concern).
+    # the suite-wide vision skip. Usually empty (MTP exclusion is the selector's job).
     check_weight_update_skip_list: tuple = ()
 
 
@@ -147,6 +150,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
     ci_args = "--ci-test "
+    ci_args += f"--check-weight-update-selector {case.check_weight_update_selector} "
     # Qwen3.5 is a VLM; the vision tower is never updated by text RL, so always exclude
     # its weights from the equality check. Cases may add more substrings on top.
     skip_list = ("visual",) + tuple(case.check_weight_update_skip_list)

@@ -1536,8 +1536,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--check-weight-update-selector",
                 type=str,
                 default="all",
-                help="Which weights the post-update equality check covers. Only 'all' is "
-                "currently supported.",
+                help="Which model the post-update equality check covers: 'all' (target + "
+                "draft/MTP) or 'target' (target model only; skips the draft, e.g. when MTP "
+                "training is off).",
             )
             parser.add_argument(
                 "--check-weight-update-skip-list",

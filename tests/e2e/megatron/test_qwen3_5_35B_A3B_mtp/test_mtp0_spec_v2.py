@@ -1,15 +1,12 @@
 """Qwen3.5-35B-A3B: 0 MTP layers + speculative-v2 (no R3).
 
 MTP training is OFF and R3 is off. The rollout still runs EAGLE spec from the
-checkpoint draft, whose MTP weights are never synced from training. Whether that
-draft is checked is governed by the weight-check selector, not the skip list.
+checkpoint draft, whose MTP weights are never synced from training, so this case
+sets the weight-check selector to "target": only the target (main) model is
+checked, skipping the draft.
 
 The suite-wide vision skip (--check-weight-update-skip-list visual, applied in
 _common) covers Qwen3.5's vision tower, which text RL never updates.
-
-TODO(selector): MTP-weight exclusion for this 0-layer case should be driven by
---check-weight-update-selector once it gains an MTP-excluding mode; the selector
-currently only supports "all".
 """
 
 import os
@@ -29,6 +26,7 @@ CASE = CaseConfig(
     sglang_ep_size=8,
     enable_mtp_training=False,
     use_r3=False,
+    check_weight_update_selector="target",
 )
 
 
