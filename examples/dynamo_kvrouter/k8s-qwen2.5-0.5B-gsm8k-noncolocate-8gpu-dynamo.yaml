@@ -1,0 +1,163 @@
+# Non-colocate 8-GPU pod, Dynamo KV router + dynamo.sglang workers.
+#
+# Layout (8 GPU):
+#   - 4 GPU: Megatron actor, train TP=2 DP=2 (Qwen2.5-0.5B has 14 attention
+#     heads, not a multiple of 4, so we run TP=2 and Megatron infers DP=2).
+#   - 4 GPU: 2 × DynamoEngine TP=2 (rollout). Each engine pins to its own
+#     GPU pair via CUDA_VISIBLE_DEVICES (set by dynamo_engine._build_env).
+#
+# Paired with k8s-qwen2.5-0.5B-gsm8k-noncolocate-8gpu-baseline.yaml; the two
+# yamls are identical except for the backend flags and the wandb group.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: miles-kvrouter-noncolo-dynamo
+  labels: {app: miles-kvrouter-noncolo-dynamo}
+spec:
+  # One-shot run, no restarts — when training finishes, the pod stays in
+  # Completed state so logs + wandb stay readable. backoffLimit: 0 means
+  # if it crashes, don't retry either (we want to see the failure).
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels: {app: miles-kvrouter-noncolo-dynamo}
+    spec:
+      restartPolicy: Never
+      imagePullSecrets: [{name: nvcr-imagepullsecret}]
+      tolerations:
+        - {key: nvidia.com/gpu, operator: Equal, value: "true", effect: NoSchedule}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      initContainers:
+        - name: fetch-model-and-data
+          image: nvcr.io/nvidian/dynamo-dev/dynamo-andy:miles-kvrouter
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -f /models/Qwen2.5-0.5B-Instruct/config.json ]; then
+                pip install --no-cache-dir huggingface_hub hf_transfer
+                HF_HUB_ENABLE_HF_TRANSFER=1 python3 -c "
+              from huggingface_hub import snapshot_download
+              snapshot_download('Qwen/Qwen2.5-0.5B-Instruct', local_dir='/models/Qwen2.5-0.5B-Instruct')
+              "
+              fi
+              if [ ! -f /models/gsm8k/train.parquet ]; then
+                pip install --no-cache-dir datasets
+                python3 -c "
+              import os, re
+              from datasets import load_dataset
+              os.makedirs('/models/gsm8k', exist_ok=True)
+              SYS = 'You are a careful math assistant. Solve the problem step by step, then output \"#### <answer>\" on its own line.'
+              ans_re = re.compile(r'####\s*([\-0-9.,]+)')
+              def reshape(ex):
+                  return {
+                      'messages': [
+                          {'role': 'system', 'content': SYS},
+                          {'role': 'user',   'content': ex['question']},
+                      ],
+                      'label': (ans_re.search(ex['answer']).group(1).replace(',', '') if ans_re.search(ex['answer']) else ex['answer']).strip(),
+                  }
+              for split in ('train', 'test'):
+                  ds = load_dataset('openai/gsm8k', 'main', split=split)
+                  ds.map(reshape, remove_columns=ds.column_names).to_parquet(f'/models/gsm8k/{split}.parquet')
+              "
+              fi
+          volumeMounts:
+            - {name: model-cache, mountPath: /models}
+      containers:
+        - name: train
+          image: nvcr.io/nvidian/dynamo-dev/dynamo-andy:miles-kvrouter
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -ex
+              cd /root/miles
+              ln -sfn /models/Qwen2.5-0.5B-Instruct /root/Qwen2.5-0.5B-Instruct
+              ln -sfn /models/gsm8k /root/gsm8k
+
+              source scripts/models/qwen2.5-0.5B.sh
+              CKPT_ARGS=(--hf-checkpoint /root/Qwen2.5-0.5B-Instruct/ --megatron-to-hf-mode bridge)
+              ROLLOUT_ARGS=(
+                --prompt-data /root/gsm8k/train.parquet
+                --input-key messages --label-key label --apply-chat-template
+                --rollout-shuffle --rm-type math
+                --num-rollout 468 --rollout-batch-size 16 --n-samples-per-prompt 32
+                --rollout-max-response-len 1024 --rollout-temperature 1
+                --global-batch-size 256
+              )
+              PERF_ARGS=(
+                --tensor-model-parallel-size 2 --sequence-parallel
+                --pipeline-model-parallel-size 1 --context-parallel-size 1
+                --use-dynamic-batch-size --max-tokens-per-gpu 9216
+              )
+              GRPO_ARGS=(--advantage-estimator grpo --kl-coef 0.00 --entropy-coef 0.00
+                         --eps-clip 0.2 --eps-clip-high 0.28)
+              OPT_ARGS=(--optimizer adam --lr 1e-6 --lr-decay-style constant
+                        --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98)
+              SGLANG_MEM_FRAC=${SGLANG_MEM_FRAC:-0.7}
+              SGLANG_ARGS=(
+                --rollout-num-gpus 4
+                --rollout-num-gpus-per-engine 2
+                --sglang-mem-fraction-static "$SGLANG_MEM_FRAC"
+                --sglang-attention-backend flashinfer
+              )
+              MISC_ARGS=(--attention-dropout 0.0 --hidden-dropout 0.0
+                         --accumulate-allreduce-grads-in-fp32
+                         --attention-softmax-in-fp32 --attention-backend flash)
+
+              BACKEND_ARGS=(
+                --rollout-backend dynamo
+                --dynamo-router-mode kv
+                --dynamo-page-size 64
+                --dynamo-discovery-backend etcd
+              )
+              echo "=== Dynamo KV router, non-colocate 4+4 ==="
+              WANDB_ARGS=(--use-wandb --wandb-project miles-kv-router
+                          --wandb-group dynamo-cleanup-si50-noncolocate-8gpu)
+
+              MY_IP=$(hostname -I | awk '{print $1}')
+              ray start --head --node-ip-address "$MY_IP" \
+                --num-gpus 8 --disable-usage-stats
+              sleep 3
+
+              ray job submit --address="http://127.0.0.1:8265" \
+                --runtime-env-json='{
+                  "env_vars": {
+                    "PYTHONPATH": "/root/Megatron-LM:/workspace/dynamo-src",
+                    "CUDA_DEVICE_MAX_CONNECTIONS": "1"
+                  }
+                }' \
+                -- python3 train.py \
+                --actor-num-nodes 1 \
+                --actor-num-gpus-per-node 4 \
+                --calculate-per-token-loss \
+                "${MODEL_ARGS[@]}" \
+                "${CKPT_ARGS[@]}" "${ROLLOUT_ARGS[@]}" "${OPT_ARGS[@]}" \
+                "${GRPO_ARGS[@]}" "${PERF_ARGS[@]}" "${SGLANG_ARGS[@]}" \
+                "${MISC_ARGS[@]}" "${BACKEND_ARGS[@]}" "${WANDB_ARGS[@]}"
+          env:
+            - {name: NCCL_DEBUG, value: "WARN"}
+            # Throttle SGLang scheduler to emit ~1 chunk per 50
+            # generated tokens (matches SGLang DEFAULT_FORCE_STREAM_
+            # INTERVAL). Eliminates per-token meta_info O(N²) serial-
+            # ization overhead that hits Dynamo when the client sends
+            # stream=false (the frontend folds streamed chunks anyway).
+            # Read by miles/backends/dynamo_utils/dynamo_engine.py
+            # which forwards as --stream-interval to dynamo.sglang.
+            - {name: DYN_SGLANG_STREAM_INTERVAL, value: "50"}
+            - {name: WANDB_API_KEY, valueFrom: {secretKeyRef: {name: wandb-credentials, key: api-key, optional: true}}}
+          resources:
+            limits: {nvidia.com/gpu: "8", memory: "384Gi"}
+            requests: {nvidia.com/gpu: "8", memory: "256Gi", cpu: "32"}
+          volumeMounts:
+            - {name: model-cache, mountPath: /models}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - {name: model-cache, persistentVolumeClaim: {claimName: model-cache-block}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 32Gi}}

@@ -246,6 +246,20 @@ class DynamoEngine(RayActor):
                 continue
             argv += [f"--{k.replace('_', '-')}", str(v)]
 
+        # Forward SGLang's --stream-interval if requested via env. By default
+        # Dynamo asks SGLang to stream tokens one-by-one (stream_interval=1)
+        # even when the client sent stream=false (the frontend folds the
+        # stream into a unary response). For RL rollouts that costs ~13%
+        # wall-clock on 0.5B + GSM8K — every chunk re-emits the cumulative
+        # meta_info (output_token_logprobs, etc.), which is O(N²) over the
+        # generated sequence. Setting DYN_SGLANG_STREAM_INTERVAL=50 (matches
+        # SGLang's own DEFAULT_FORCE_STREAM_INTERVAL) throttles the chunk
+        # emission and recovers nearly all of the gap, while still letting
+        # partial-rollout / streaming consumers see intermediate tokens.
+        sgl_stream_interval = os.environ.get("DYN_SGLANG_STREAM_INTERVAL")
+        if sgl_stream_interval:
+            argv += ["--stream-interval", sgl_stream_interval]
+
         return argv
 
     def _build_env(self, server_args: dict) -> dict:
