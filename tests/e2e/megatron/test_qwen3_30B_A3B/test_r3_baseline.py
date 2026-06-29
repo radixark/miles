@@ -14,6 +14,9 @@ CASE = CaseConfig(
     num_gpus_per_node=4,
     cp_size=2,
     pp_size=1,
+    tp_size=2,
+    ep_size=4,
+    rollout_num_gpus_per_engine=4,
 )
 
 
