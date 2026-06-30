@@ -28,11 +28,16 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert x == y, f"{field} mismatch: a.{field}={x}, b.{field}={y}"
         return x
 
+    needs_sampling_masks = a.rollout_sampling_masks is not None or b.rollout_sampling_masks is not None
+
     def _fill_defaults(sample: Sample):
         if sample.loss_mask is None:
             sample.loss_mask = [1] * sample.response_length
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = [0.0] * sample.response_length
+        if needs_sampling_masks and sample.rollout_sampling_masks is None:
+            response_tokens = sample.tokens[-sample.response_length :] if sample.response_length else []
+            sample.rollout_sampling_masks = [[token_id] for token_id in response_tokens]
 
     def _merge_optional_per_token(field):
         # Optional OPD per-token lists (teacher_log_probs, opd_reverse_kl): merge like
@@ -118,6 +123,13 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
+            rollout_sampling_masks=(
+                a.rollout_sampling_masks
+                + [[token_id] for token_id in obs_tokens]
+                + b.rollout_sampling_masks
+            )
+            if needs_sampling_masks
+            else None,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
             rollout_routed_experts=b.rollout_routed_experts,

@@ -40,6 +40,7 @@ class GenerateState:
             temperature=args.rollout_temperature,
             top_p=args.rollout_top_p,
             top_k=args.rollout_top_k,
+            min_p=getattr(args, "rollout_min_p", 0.0),
             max_new_tokens=args.rollout_max_response_len,
         )
 
@@ -155,8 +156,9 @@ def compute_sampling_params(
     top_p,
     top_k,
     max_new_tokens,
+    min_p: float | None = None,
 ):
-    return dict(
+    sampling_params = dict(
         temperature=temperature,
         top_p=top_p,
         top_k=top_k,
@@ -167,6 +169,9 @@ def compute_sampling_params(
         no_stop_trim=True,
         spaces_between_special_tokens=False,
     )
+    if min_p is not None:
+        sampling_params["min_p"] = min_p
+    return sampling_params
 
 
 class InferenceRolloutFn:
