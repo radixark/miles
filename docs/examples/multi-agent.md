@@ -2,9 +2,6 @@
 title: Multi-Agent Co-Evolution
 description: Two specialized agents train together and improve each other.
 ---
-
-# Multi-Agent Co-Evolution
-
 **What you'll learn:** how to wire up an asynchronous multi-agent system in Miles, where
 two (or more) specialized agents take alternating turns and the joint outcome drives a
 single shared reward.
@@ -22,9 +19,9 @@ you can hack on it without pulling in MrlX's full dependency tree.
 
 ## Prerequisites
 
-* You've completed the [Qwen3-30B-A3B](../models/qwen/qwen3-moe.md) recipe (the
+* You've completed the [Qwen3-30B-A3B](/models/qwen/qwen3-moe) recipe (the
   example uses that model).
-* Familiar with [Customization](../user-guide/customization.md).
+* Familiar with [Customization](/user-guide/customization).
 
 ## Files
 
@@ -185,7 +182,7 @@ verifier becomes verbose. Tighten its system prompt or reduce its `max_tokens`.
 
 Replace `call_role` with a VLM-aware caller that includes images in messages. Miles
 supports VLM multi-turn natively — same pattern, just `multimodal_train_inputs` in the
-sample dict (see [Customization #13](../user-guide/customization.md#training)).
+sample dict (see [Customization #13](/user-guide/customization#training)).
 
 ### True asymmetric agents
 

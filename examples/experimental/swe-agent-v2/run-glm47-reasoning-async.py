@@ -327,7 +327,7 @@ def execute(args: ScriptArgs):
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}:{miles_root}",
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "NCCL_NVLS_ENABLE": "0",
-        "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "true",
         **sglang_extra_env_vars,
     }
 

@@ -261,8 +261,12 @@ class RolloutManager:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    async def check_weights(self, action: str):
-        return await asyncio.gather(*[srv.check_weights(action=action) for srv in self.servers.values()])
+    async def check_weights(self, action: str, allow_quant_error: bool = False):
+        # Only the updatable model is re-synced; a frozen model would always mismatch.
+        srv = self._get_updatable_server()
+        if srv is None:
+            return []
+        return await srv.check_weights(action=action, allow_quant_error=allow_quant_error)
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config

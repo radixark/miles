@@ -10,6 +10,8 @@ import time
 
 import httpx
 
+from miles.utils.logging_utils import configure_logger
+
 logger = logging.getLogger(__name__)
 
 MILES_HOST_IP_ENV = "MILES_HOST_IP"
@@ -138,6 +140,8 @@ def _wrap_ipv6(host):
 
 
 def run_router(args):
+    # Spawned as a fresh interpreter, so it inherits no logging config.
+    configure_logger()
     try:
         from sglang_router.launch_router import launch_router
 

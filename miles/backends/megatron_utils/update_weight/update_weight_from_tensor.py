@@ -21,7 +21,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import _check_weight_sync_results, post_process_weights
+from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -201,16 +201,8 @@ class UpdateWeightFromTensor:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            if (
-                not skip_base_sync
-                and self.quantization_config
-                and self.quantization_config["quant_method"] in ["compressed-tensors"]
-            ):
-                post_process_weights(
-                    rollout_engines=self.rollout_engines,
-                    restore_weights_before_load=True,
-                    post_process_quantization=False,
-                )
+            if not skip_base_sync:
+                begin_weight_update(self.rollout_engines)
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
@@ -263,14 +255,9 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         if rank == 0:
-            # process_weights_after_loading is a one-shot bf16 → int4/Marlin
-            # transform; skip when no fresh base bytes landed (skip_base_sync).
+            # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
-                post_process_weights(
-                    rollout_engines=self.rollout_engines,
-                    restore_weights_before_load=False,
-                    post_process_quantization=True,
-                )
+                end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
@@ -294,6 +281,7 @@ class UpdateWeightFromTensor:
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             logger.info("[multi_lora_sync] Flushing cache")
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            begin_weight_update(self.rollout_engines)
         logger.info("[multi_lora_sync] Barrier after pause/flush")
         dist.barrier(group=get_gloo_group())
 
@@ -355,11 +343,7 @@ class UpdateWeightFromTensor:
 
         if rank == 0:
             logger.info("[multi_lora_sync] Post-processing weights")
-            post_process_weights(
-                rollout_engines=self.rollout_engines,
-                restore_weights_before_load=False,
-                post_process_quantization=True,
-            )
+            end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 

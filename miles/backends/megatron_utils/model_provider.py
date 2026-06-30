@@ -98,6 +98,8 @@ def get_model_provider_func(
         provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
         provider.sequence_parallel = args.sequence_parallel
         provider.context_parallel_size = args.context_parallel_size
+        # CP>1 VL models assert this; bridge configs skip core_transformer_config_from_args.
+        provider.calculate_per_token_loss = args.calculate_per_token_loss
         provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
         provider.variable_seq_lengths = args.variable_seq_lengths
         if hasattr(args, "moe_token_dispatcher_type"):
@@ -125,7 +127,16 @@ def get_model_provider_func(
             # caller's pg_collection here, those code paths hit AttributeError.
             if pg_collection is not None:
                 provider._pg_collection = pg_collection
-            return provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            # Gemma-4 forward returns (logits, loss_mask); keep logits only.
+            _bridge_forward = model.forward
+
+            def _logits_only_forward(*args, **kwargs):
+                out = _bridge_forward(*args, **kwargs)
+                return out[0] if isinstance(out, tuple) else out
+
+            model.forward = _logits_only_forward
+            return model
 
         return wrapped_bridge_provider
 

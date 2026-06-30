@@ -1,0 +1,322 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Miles",
+  "theme": "mint",
+  "logo": {
+    "light": "/assets/images/miles_logo_light.png",
+    "dark": "/assets/images/miles_logo_dark.png",
+    "href": "/",
+    "width": 130
+  },
+  "favicon": "/assets/images/miles_square.png",
+  "seo": {
+    "metatags": {
+      "canonical": "https://miles.radixark.com/docs",
+      "og:site_name": "Miles Documentation"
+    }
+  },
+  "colors": {
+    "primary": "#d55816",
+    "light": "#e8722a",
+    "dark": "#b84a12"
+  },
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/radixark/miles"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Contact",
+      "href": "mailto:miles@radixark.ai"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Welcome",
+        "groups": [
+          {
+            "group": "Welcome",
+            "root": "index",
+            "pages": [
+              "getting-started/index",
+              "getting-started/installation",
+              "getting-started/quick-start"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Models",
+        "groups": [
+          {
+            "group": "Models",
+            "root": "models/index",
+            "pages": [
+              {
+                "group": "DeepSeek",
+                "root": "models/deepseek/index",
+                "pages": [
+                  {
+                    "group": "DeepSeek-V4",
+                    "pages": [
+                      "models/deepseek/deepseek-v4-flash",
+                      "models/deepseek/deepseek-v4-pro"
+                    ],
+                    "expanded": false
+                  },
+                  "models/deepseek/deepseek"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Qwen",
+                "root": "models/qwen/index",
+                "pages": [
+                  {
+                    "group": "Qwen3.6",
+                    "pages": [
+                      "models/qwen/qwen3-6",
+                      "models/qwen/qwen3-6-moe"
+                    ],
+                    "expanded": false
+                  },
+                  {
+                    "group": "Qwen3.5",
+                    "pages": [
+                      "models/qwen/qwen3-5",
+                      "models/qwen/qwen3-5-moe"
+                    ],
+                    "expanded": false
+                  },
+                  "models/qwen/qwen3-next",
+                  {
+                    "group": "Qwen3",
+                    "pages": [
+                      "models/qwen/qwen3",
+                      "models/qwen/qwen3-moe"
+                    ],
+                    "expanded": false
+                  }
+                ],
+                "expanded": false
+              },
+              {
+                "group": "GLM",
+                "root": "models/glm/index",
+                "pages": [
+                  "models/glm/glm5",
+                  "models/glm/glm4-7-flash",
+                  "models/glm/glm4-5",
+                  "models/glm/glm4"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Kimi",
+                "root": "models/kimi/index",
+                "pages": [
+                  "models/kimi/kimi-k2.5",
+                  "models/kimi/kimi-k2",
+                  "models/kimi/moonlight"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Nemotron",
+                "root": "models/nemotron/index",
+                "pages": [
+                  {
+                    "group": "Nemotron-3-Nano",
+                    "pages": [
+                      "models/nemotron/nemotron-3-nano",
+                      "models/nemotron/nemotron-3-nano-moe"
+                    ],
+                    "expanded": false
+                  },
+                  "models/nemotron/nemotron-3-super"
+                ],
+                "expanded": false
+              },
+              "models/mimo/mimo",
+              "models/gpt-oss/gpt-oss"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "User Guide",
+        "groups": [
+          {
+            "group": "User Guide",
+            "root": "user-guide/index",
+            "pages": [
+              "user-guide/concepts",
+              "user-guide/argument-groups",
+              "user-guide/usage",
+              "user-guide/training-script-walkthrough",
+              "user-guide/monitoring",
+              "user-guide/customization",
+              "user-guide/rollout-endpoints",
+              "user-guide/fully-async",
+              "user-guide/agentic-chat-template",
+              "user-guide/cli-reference"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Advanced Features",
+        "groups": [
+          {
+            "group": "Advanced Features",
+            "root": "advanced/index",
+            "pages": [
+              {
+                "group": "Performance",
+                "pages": [
+                  "advanced/fp8-low-precision",
+                  "advanced/int4-qat",
+                  "advanced/speculative-decoding",
+                  "advanced/lora"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Scale & Reliability",
+                "pages": [
+                  "advanced/fault-tolerance",
+                  "advanced/pd-disaggregation",
+                  "advanced/p2p-weight-transfer"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "MoE & Routing",
+                "pages": [
+                  "advanced/miles-router"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Backends",
+                "pages": [
+                  "advanced/architecture-support"
+                ],
+                "expanded": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Examples",
+            "root": "examples/index",
+            "pages": [
+              "examples/fully-async",
+              "examples/search-r1",
+              "examples/retool",
+              "examples/multi-agent",
+              "examples/reproducibility",
+              "examples/openhermes-sft"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Developer Guide",
+            "root": "developer/index",
+            "pages": [
+              "developer/contributor-guide",
+              "developer/debug",
+              "developer/migration",
+              "developer/architecture",
+              "developer/experimental-features"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Platforms",
+        "groups": [
+          {
+            "group": "Platforms",
+            "root": "platforms/index",
+            "pages": [
+              "platforms/nvidia",
+              "platforms/amd"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Resources",
+            "pages": [
+              "faq",
+              "blog/index"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "background": {
+    "dark": "#0c0b0a",
+    "light": "#faf7f4"
+  },
+  "url": "https://www.radixark.com",
+  "contextual": {
+    "options": [
+      {
+        "title": "Raise a docs issue",
+        "description": "Flag a wording, formatting, or accuracy issue on this page.",
+        "icon": "github",
+        "href": "https://github.com/radixark/miles/issues/new"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/radixark/miles"
+    },
+    "links": [
+      {
+        "header": "Contribute",
+        "items": [
+          {
+            "label": "Raise a docs issue",
+            "href": "https://github.com/radixark/miles/issues/new"
+          },
+          {
+            "label": "Source on GitHub",
+            "href": "https://github.com/radixark/miles"
+          }
+        ]
+      }
+    ]
+  },
+  "font": {
+    "headings": {
+      "family": "Hanken Grotesk",
+      "weight": 600,
+      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+    },
+    "body": {
+      "family": "Inter",
+      "weight": 400,
+      "url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap"
+    }
+  }
+}

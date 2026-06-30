@@ -2,9 +2,6 @@
 title: CLI Reference
 description: Every command-line flag Miles accepts, grouped by subsystem.
 ---
-
-# CLI Reference
-
 Miles is configured through command-line flags passed to `train.py` or
 `train_async.py`. The Megatron flags (such as `--num-layers`, `--rotary-base`,
 `--recompute-granularity`) are inherited via Megatron's argument parser; Miles adds
@@ -30,7 +27,7 @@ This page has two passes.
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 
-See [Training Script Walkthrough: Colocation](training-script-walkthrough.md#colocation-share-gpus-or-dont)
+See [Training Script Walkthrough: Colocation](/user-guide/training-script-walkthrough#colocation-share-gpus-or-dont)
 for what `--colocate` flips on under the hood.
 
 ### Batch sizing
@@ -265,7 +262,7 @@ Sections mirror the launch-script argument groups.
 | `--rm-type` | enum | – | Built-in reward: `math`, `dapo`, `deepscaler`, `f1`, `gpqa`, `ifbench`, `remote_rm`, `random`. |
 | `--rm-url` | str | – | Endpoint when `--rm-type remote_rm`. |
 | `--group-rm` | flag | off | Batched reward computation. |
-| `--custom-rm-path` | str | – | Custom reward function (see [Customization](customization.md)). |
+| `--custom-rm-path` | str | – | Custom reward function (see [Customization](/user-guide/customization)). |
 | `--dynamic-sampling-filter-path` | str | – | Group filter (DAPO-style). |
 | `--buffer-filter-path` | str | – | Buffer dequeue filter. |
 | `--rollout-sample-filter-path` | str | – | Per-sample filter. |
@@ -349,5 +346,5 @@ Common `--sglang-*` flags:
 
 ### Customization
 
-See [Customization](customization.md) for the full catalogue of `--*-path` flags
-that replace or extend Miles's behaviour.
+See [Customization](/user-guide/customization) for the full catalog of `--*-path` flags
+that replace or extend Miles's behavior.
