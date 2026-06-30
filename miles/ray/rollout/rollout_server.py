@@ -211,7 +211,9 @@ class RolloutServer:
             handles.extend(g.onload(tags))
         return await asyncio.gather(*handles)
 
-    async def check_weights(self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list=None):
+    async def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
         return await asyncio.gather(
             *[
                 g.check_weights(

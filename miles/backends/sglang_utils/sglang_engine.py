@@ -486,7 +486,9 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list=None):
+    def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
         payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
         if skip_list is not None:
             # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.

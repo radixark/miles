@@ -46,7 +46,7 @@ class CaseConfig:
     # Rollout weight-name substrings to exclude from the equality check (substring match;
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
-    check_weight_update_skip_list: tuple = ()
+    check_weight_update_skip_list: tuple[str, ...] = ()
 
 
 def prepare(case: CaseConfig) -> None:
@@ -62,7 +62,7 @@ def prepare(case: CaseConfig) -> None:
 
 
 def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
-    enable_eval = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
+    enable_eval = os.environ.get("MILES_TEST_ENABLE_EVAL", "0").lower() in ("1", "true", "yes")
 
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
