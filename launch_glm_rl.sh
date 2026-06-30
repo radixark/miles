@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 #  launch_glm_rl.sh — one-command multi-node GLM-5.2 (744B) attention-only LoRA RL,
-#  wired to the miles_dev rx-devbox flow (devbox_config.sh / rx devbox run --rank N).
+#  wired to the miles_lora rx-devbox flow (devbox_config.sh / rx devbox run --rank N).
 #
 #  One-line launch of the whole multi-node training from your local box (the one with rx):
 #     RX_GPU_COUNT=64 RX_DEVBOX_NAME=miles-exp WANDB_API_KEY=xxx bash launch_glm_rl.sh
@@ -20,10 +20,10 @@ set -euo pipefail
 ROLE="${1:-all}"
 ulimit -n "${ULIMIT_NOFILE:-$(ulimit -Hn)}" 2>/dev/null || true
 
-# Reuse the miles_dev devbox config (sourced on the local box; skipped on pods where it is absent).
+# Reuse the miles_lora devbox config (sourced on the local box; skipped on pods where it is absent).
 DEVBOX_CONFIG="${DEVBOX_CONFIG:-}"
 if [ -z "$DEVBOX_CONFIG" ]; then
-  for c in "$HOME/Downloads/miles_dev/devbox_config.sh" \
+  for c in "$HOME/Downloads/miles_lora/devbox_config.sh" \
            "${MILES_DEV_ROOT:-}/devbox_config.sh"; do
     [ -n "$c" ] && [ -f "$c" ] && { DEVBOX_CONFIG="$c"; break; }
   done
@@ -113,7 +113,7 @@ TRAIN_ARGS=(
   --no-gradient-accumulation-fusion
   --rm-type math --prompt-data "$DATA_DIR/gsm8k/train.parquet" --input-key messages --label-key label
   --apply-chat-template --rollout-shuffle
-  --num-rollout 10000 --rollout-batch-size 4 --n-samples-per-prompt 16 --rollout-max-response-len 256
+  --num-rollout 10000 --rollout-batch-size 8 --n-samples-per-prompt 16 --rollout-max-response-len 256
   --rollout-temperature 1.0 --global-batch-size 64
   --advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00
   --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --use-rollout-routing-replay
@@ -141,7 +141,7 @@ TRAIN_ARGS=(
 )
 
 # ════════════════════════════════════════════════════════════════════════════
-#  LOWER HALF — orchestration (aligned with the miles_dev rx-devbox flow)
+#  LOWER HALF — orchestration (aligned with the miles_lora rx-devbox flow)
 # ════════════════════════════════════════════════════════════════════════════
 _detect_head_ip() {
   local ip node
@@ -214,7 +214,7 @@ case "$ROLE" in
 
     echo "[all] DONE. monitor:"
     echo "  rx devbox run $RX_DEVBOX_NAME --rank 0 -- bash -lc \"RAY_ADDRESS=http://$HEAD_IP:$DASH_PORT ray job logs $JOB_ID --follow\""
-    echo "[all] abort: bash $SCRIPT_NAME stop   |  fully release nodes: ~/Downloads/miles_dev/4_release_kill.sh"
+    echo "[all] abort: bash $SCRIPT_NAME stop   |  fully release nodes: ~/Downloads/miles_lora/4_release_kill.sh"
     ;;
 
   head)
@@ -255,7 +255,7 @@ JSON
       rx devbox run "$RX_DEVBOX_NAME" --rank "$r" -- bash -lc \
         'ray stop --force 2>/dev/null || true; pkill -9 -f sglang||true; pkill -9 -f "ray::"||true; pkill -9 -f train.py||true; true' || true
     done
-    echo "[stop] aborted; nodes kept. To fully release nodes use ~/Downloads/miles_dev/4_release_kill.sh"
+    echo "[stop] aborted; nodes kept. To fully release nodes use ~/Downloads/miles_lora/4_release_kill.sh"
     ;;
 
   *) echo "usage: $0 {all|head|worker|launch|stop}" >&2; exit 2 ;;
