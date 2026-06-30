@@ -128,7 +128,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
-        "--sglang-mem-fraction-static 0.7 "
+        # 0.6 (not 0.7): colocate leaves ~11GB of resident training memory on each GPU, so
+        # sglang at 0.7 OOMs in the rollout MoE forward; 0.6 leaves headroom for both.
+        "--sglang-mem-fraction-static 0.6 "
         f"--sglang-ep-size {case.sglang_ep_size} "
         "--sglang-max-running-requests 512 "
         # EAGLE speculative decoding (MTP draft)
