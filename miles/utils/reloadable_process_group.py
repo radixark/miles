@@ -127,7 +127,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         self.group = group
         self.group_info = {
             "ranks": ranks,
-            "args": tuple(group_args),
+            "args": tuple(group_args or ()),
             "kwargs": dict(group_kwargs or {}),
         }
         pid = os.getpid()
@@ -164,6 +164,8 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in reloadable_groups:
             if reloadable_group.group is not None:
                 continue
+            if old_new_group is None:
+                raise RuntimeError(f"monkey_patch_torch_dist has not been called for pid {pid}")
             group = old_new_group(
                 *reloadable_group.group_info["args"],
                 **reloadable_group.group_info["kwargs"],
