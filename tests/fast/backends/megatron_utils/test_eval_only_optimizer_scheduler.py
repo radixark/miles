@@ -3,6 +3,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 
 class _RecordingScheduler:
     def __init__(self, optimizer, **kwargs):
@@ -21,6 +23,7 @@ def _register(monkeypatch, name, **attrs):
 def _load_model_module(monkeypatch):
     stub = object
 
+    _register(monkeypatch, "torch", no_grad=lambda: (lambda func: func))
     _register(monkeypatch, "megatron")
     _register(monkeypatch, "megatron.core", mpu=types.ModuleType("megatron.core.mpu"))
     _register(monkeypatch, "megatron.core.mpu")
@@ -128,3 +131,11 @@ def test_train_iters_clamp_is_noop_for_normal_training(monkeypatch):
     model.get_optimizer_param_scheduler(args, optimizer=object())
 
     assert args.train_iters == 16
+
+
+def test_positive_rollout_with_zero_train_iters_is_invalid(monkeypatch):
+    model = _load_model_module(monkeypatch)
+    args = _make_args(num_rollout=1, rollout_batch_size=1, n_samples_per_prompt=1, global_batch_size=16)
+
+    with pytest.raises(ValueError, match="total samples .* must be at least global_batch_size"):
+        model.get_optimizer_param_scheduler(args, optimizer=object())
