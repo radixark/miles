@@ -23,7 +23,7 @@ def sparse_mqa_fwd(
     topk,
     sm_scale=None,
     block_I=64,
-    num_stages=2,
+    num_stages=1,
     threads=256,
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"dim must be power of 2, got {dim}"
@@ -53,13 +53,14 @@ def sparse_mqa_fwd(
     NI = tilelang.cdiv(topk, block_I)
     D = dim
 
-    if heads > 64:
-        assert heads % 64 == 0, "heads should be a multiple of 64"
-        REPLICATE_H = heads // 64
+    HEAD_BLOCK = 32  # head tile per CTA (was 64); halves Q/O/S shared mem to fit AMD 160KB LDS
+    if heads > HEAD_BLOCK:
+        assert heads % HEAD_BLOCK == 0, f"heads should be a multiple of {HEAD_BLOCK}"
+        REPLICATE_H = heads // HEAD_BLOCK
     else:
         REPLICATE_H = 1
 
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
+    H_per_block = padded_H if REPLICATE_H == 1 else HEAD_BLOCK
 
     @T.prim_func
     def main(
@@ -93,7 +94,7 @@ def sparse_mqa_fwd(
             b_i = by
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
 
-            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64
+            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * HEAD_BLOCK
             H1 = H0 + H_per_block
 
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
@@ -149,7 +150,7 @@ def sparse_mqa_fwd(
     return main
 
 
-def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I=64, num_stages=2, threads=256):
+def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I=64, num_stages=1, threads=256):
     """Forward interface for V4 sparse MQA attention.
 
     Args:

@@ -53,8 +53,6 @@ _RCCL_TUNING_DEFAULTS = {
     "NCCL_IB_RETRY_CNT": "7",
     "NCCL_IB_QPS_PER_CONNECTION": "2",
     "NCCL_IB_SPLIT_DATA_ON_QPS": "0",
-    "NCCL_MIN_NCHANNELS": "32",
-    "NCCL_MAX_NCHANNELS": "32",
     "NCCL_ALGO": "Ring",
     "NCCL_PXN_DISABLE": "0",
     "NCCL_NET_GDR_LEVEL": "2",
@@ -744,14 +742,14 @@ def _train(args: ScriptArgs):
     eval_enabled = args.mode != "debug_minimal" and args.enable_eval
     eval_args = ""
     if eval_enabled:
-        eval_args = "--eval-interval 20 --eval-top-p 0.7 "
+        eval_args = "--eval-interval 20 --eval-top-p 0.7 --eval-function-path miles.rollout.sglang_rollout.generate_rollout "
 
     match args.task:
         case "dapo_aime":
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                """--apply-chat-template-kwargs '{"thinking_mode":"thinking","reasoning_effort":"max"}' """
+                """--apply-chat-template-kwargs '{"thinking_mode":"thinking","reasoning_effort":"high"}' """
             )
             if eval_enabled:
                 eval_args += (
