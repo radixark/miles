@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import yaml
@@ -17,6 +18,18 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
+
+
+_LOSS_MASK_BUILTINS = {"qwen", "qwen3", "distill_qwen"}
+
+
+def _loss_mask_type(value: str) -> str:
+    """Validate --loss-mask-type values."""
+    if value in _LOSS_MASK_BUILTINS or re.fullmatch(r"[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)+", value):
+        return value
+    raise argparse.ArgumentTypeError(
+        f"invalid loss_mask_type: {value!r}. Must be one of {sorted(_LOSS_MASK_BUILTINS)} or a dotted module path."
+    )
 
 
 def reset_arg(parser, name, **kwargs):
@@ -1639,10 +1652,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--loss-mask-type",
-                type=str,
+                type=_loss_mask_type,
                 default="qwen",
-                choices=["qwen", "qwen3", "distill_qwen"],
-                help="Loss mask type",
+                help="Loss mask type. Built-in: qwen, qwen3, distill_qwen. "
+                "Custom: dotted module path (e.g. my_project.loss_masks.custom).",
             )
             parser.add_argument(
                 "--data-pad-size-multiplier",

@@ -141,3 +141,22 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+@pytest.mark.parametrize("loss_mask_type", ["qwen", "qwen3", "distill_qwen", "my_project.loss_masks.custom"])
+def test_loss_mask_type_accepts_builtins_and_module_paths(loss_mask_type: str) -> None:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--loss-mask-type", loss_mask_type] + REQUIRED_ARGS)
+
+    assert args.loss_mask_type == loss_mask_type
+
+
+@pytest.mark.parametrize("loss_mask_type", ["custom_mask", ".foo", "foo.", "...", "foo..bar", "foo-bar.mask"])
+def test_loss_mask_type_rejects_invalid_values(loss_mask_type: str) -> None:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--loss-mask-type", loss_mask_type] + REQUIRED_ARGS)
