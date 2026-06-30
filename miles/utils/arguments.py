@@ -1544,23 +1544,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
             parser.add_argument(
-                "--check-lora-weight-update-equal",
-                action=argparse.BooleanOptionalAction,
-                default=None,
-                help=(
-                    "LoRA-only weight-sync check. After the first LoRA sync, query the "
-                    "rollout engine's `lora_checksum` action (LoRA-only; skips the "
-                    "base-model hash that CUDA-IMAs on some GLM tensors via "
-                    "gpu_tensor_hash) and verify the rollout actually holds served LoRA "
-                    "(lora_gpu:: buffers present, i.e. not serving the BASE model). Use "
-                    "this on GLM e2e instead of --check-weight-update-equal, whose "
-                    "snapshot/compare/checksum path hits the base-hash IMA. "
-                    "DEFAULT: ON whenever LoRA is enabled (lora_rank>0); pass "
-                    "--no-check-lora-weight-update-equal to disable. Degrades gracefully "
-                    "(skips) against an sglang build without the lora_checksum action."
-                ),
-            )
-            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
@@ -2221,12 +2204,6 @@ def miles_validate_args(args):
             modules = [m for m in modules if m not in exclude_set]
 
         args.target_modules = modules
-
-        # LoRA is enabled -> default the LoRA-only weight-sync check ON (unless the
-        # user explicitly passed --no-check-lora-weight-update-equal). It is the
-        # LoRA-safe replacement for --check-weight-update-equal on GLM e2e.
-        if args.check_lora_weight_update_equal is None:
-            args.check_lora_weight_update_equal = True
 
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).

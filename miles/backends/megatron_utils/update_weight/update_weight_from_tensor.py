@@ -69,9 +69,6 @@ class UpdateWeightFromTensor:
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
             self._lora_base_synced = False
-            # One-shot guard for --check-lora-weight-update-equal (run once after the
-            # first LoRA sync, on the IPC-src rank).
-            self._lora_checked = False
 
         # Create IPC gather groups within megatron.
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
@@ -243,27 +240,6 @@ class UpdateWeightFromTensor:
             if not self._lora_base_synced:
                 self._lora_base_synced = True
 
-            # --check-lora-weight-update-equal: one-shot LoRA-only sync check. Routed
-            # through the rollout engine's `lora_checksum` action (skips the base-model
-            # hash that IMAs on GLM). All ranks all-reduce the verdict so the raise is
-            # collective (a single failing src rank must not skip the barrier below and
-            # deadlock the others).
-            if (
-                getattr(self.args, "check_lora_weight_update_equal", False)
-                and not self._lora_checked
-            ):
-                self._lora_checked = True
-                ok = self._verify_lora_served()
-                flag = torch.tensor([0 if ok else 1], dtype=torch.int32)
-                dist.all_reduce(flag, group=get_gloo_group())
-                if flag.item() > 0:
-                    raise RuntimeError(
-                        "[check_lora_weight_update_equal] rollout LoRA verification FAILED: "
-                        "the rollout engine reports no served-GPU LoRA (lora_gpu:: empty) after "
-                        "the weight sync -- it is likely serving the BASE model, not the trained "
-                        "LoRA. See the [check_lora_weight_update_equal] / [lora_checksum] logs."
-                    )
-
         dist.barrier(group=get_gloo_group())
 
         if rank == 0:
@@ -277,62 +253,6 @@ class UpdateWeightFromTensor:
                 )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
-
-    def _verify_lora_served(self) -> bool:
-        """LoRA-only sync check for --check-lora-weight-update-equal.
-
-        Queries the colocated rollout engine's ``lora_checksum`` action -- LoRA-only,
-        so it skips the base-model hash that gpu_tensor_hash CUDA-IMAs on for some GLM
-        base tensors -- and verifies the rollout actually holds served LoRA (at least
-        one ``lora_gpu::`` buffer present), i.e. it is NOT silently serving the base
-        model. Returns True on non-src ranks (``self._ipc_engine is None``); the
-        IPC-src rank performs the query and the caller's all-reduce makes the verdict
-        collective. A query/parse error logs a warning and returns True so a transient
-        checker hiccup never aborts training.
-        """
-        if self._ipc_engine is None:
-            return True
-        try:
-            res = ray.get(
-                self._ipc_engine.check_weights.remote(action="lora_checksum")
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[check_lora_weight_update_equal] lora_checksum query failed: %s; skipping",
-                e,
-            )
-            return True
-
-        counts = {"cpu": 0, "gpu": 0}
-
-        def _walk(obj):
-            if isinstance(obj, Mapping):
-                cs = obj.get("checksums")
-                if isinstance(cs, Mapping):
-                    for k in cs:
-                        if k.startswith("lora_gpu::"):
-                            counts["gpu"] += 1
-                        elif k.startswith("lora_cpu::"):
-                            counts["cpu"] += 1
-                for v in obj.values():
-                    _walk(v)
-            elif isinstance(obj, (list, tuple)):
-                for v in obj:
-                    _walk(v)
-
-        _walk(res)
-        logger.info(
-            "[check_lora_weight_update_equal] rollout lora_checksum: cpu=%d gpu(served)=%d",
-            counts["cpu"],
-            counts["gpu"],
-        )
-        if counts["gpu"] == 0:
-            logger.error(
-                "[check_lora_weight_update_equal] FAIL: rollout reports 0 served-GPU "
-                "LoRA buffers -> serving BASE / LoRA not applied."
-            )
-            return False
-        return True
 
     def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
