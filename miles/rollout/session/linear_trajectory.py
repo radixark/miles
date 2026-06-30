@@ -249,8 +249,19 @@ class SessionRegistry:
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()
 
-    def create_session(self) -> str:
-        session_id = uuid.uuid4().hex
+    def create_session(self, session_id: str | None = None) -> str:
+        """Create a session; mint a fresh uuid4-hex id when none is given.
+
+        A caller-supplied id comes from the multi-process router, which mints the
+        id and routes by it, so the owning worker must create under that exact id.
+        Reject a collision so a duplicate CREATE surfaces loudly instead of
+        silently clobbering a live session. The id's shape is deliberately not
+        validated: supplied ids always come from the router (uuid4 hex).
+        """
+        if session_id is None:
+            session_id = uuid.uuid4().hex
+        elif session_id in self.sessions:
+            raise ValueError(f"session_id already exists: {session_id}")
         self.sessions[session_id] = LinearTrajectory()
         return session_id
 

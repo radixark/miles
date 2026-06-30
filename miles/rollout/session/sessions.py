@@ -7,13 +7,9 @@ Thin layer: converts each HTTP request to primitive inputs, calls
 import logging
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
 
-from miles.rollout.session.core import SessionCore
+from miles.rollout.session.core import build_session_core, error_response
 from miles.rollout.session.errors import SessionError
-from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.utils.chat_template_utils import get_tito_tokenizer
-from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -24,25 +20,11 @@ def setup_session_routes(app, backend, args):
         logger.info("[session] Skipping session routes (hf_checkpoint not set).")
         return
 
-    session_server_instance_id = getattr(args, "session_server_instance_id", None)
-
-    tokenizer = load_tokenizer(
-        hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
-    )
-
-    tito_tokenizer = get_tito_tokenizer(
-        tokenizer,
-        tokenizer_type=getattr(args, "tito_model", "default"),
-        chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
-        allowed_append_roles=getattr(args, "tito_allowed_append_roles", None),
-    )
-
-    registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
-    core = SessionCore(backend, registry, args, session_server_instance_id)
+    core = build_session_core(backend, args)
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
-        return JSONResponse(status_code=exc.status_code, content={"error": str(exc)})
+        return error_response(exc)
 
     @app.get("/health")
     async def health():
