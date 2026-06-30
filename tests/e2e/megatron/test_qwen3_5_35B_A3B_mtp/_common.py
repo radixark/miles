@@ -38,7 +38,9 @@ class CaseConfig:
     enable_mtp_training: bool
     # Whether to enable R3 routing replay (--use-rollout-routing-replay).
     use_r3: bool
-    max_tokens_per_gpu: int = 8192
+    # 4096 (not 8192): at 8192 the GatedDeltaNet linear-attn backward OOMs the 80GB H100
+    # (sglang is fully offloaded during training, so this is pure train-side working memory).
+    max_tokens_per_gpu: int = 4096
     # Weight-check selector: "all" (target + draft) or "target" (target model only; use
     # when MTP training is off so the un-synced draft is not checked).
     check_weight_update_selector: str = "all"
