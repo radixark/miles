@@ -17,10 +17,11 @@ from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, exec
 register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["megatron", "qwen35"])
 
 CASE = CaseConfig(
+    # tp4/cp2/ep8: TP=4 shards the GatedDeltaNet backward enough to fit 8x80GB.
     num_gpus_per_node=8,
     cp_size=2,
     pp_size=1,
-    tp_size=2,
+    tp_size=4,
     ep_size=8,
     rollout_num_gpus_per_engine=8,
     sglang_ep_size=8,

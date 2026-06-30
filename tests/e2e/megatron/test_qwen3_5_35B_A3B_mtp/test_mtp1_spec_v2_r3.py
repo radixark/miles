@@ -13,11 +13,13 @@ from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, exec
 register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["megatron", "qwen35"])
 
 CASE = CaseConfig(
+    # pp2/tp4/ep4/cp1: CP=1 avoids the memory-heavy GatedDeltaNet CP backward kernel,
+    # PP=2 halves the resident layers; together they fit the MTP-training run on 8x80GB.
     num_gpus_per_node=8,
-    cp_size=2,
-    pp_size=1,
-    tp_size=2,
-    ep_size=8,
+    cp_size=1,
+    pp_size=2,
+    tp_size=4,
+    ep_size=4,
     rollout_num_gpus_per_engine=8,
     sglang_ep_size=8,
     enable_mtp_training=True,

@@ -24,7 +24,8 @@ MODEL_TYPE = "qwen3.5-35B-A3B"
 
 @dataclass
 class CaseConfig:
-    # Topology / GPU counts — explicit (fixed at the cp2_ep8 shape for this suite).
+    # Topology / GPU counts — explicit per case (each test file picks a shape that fits
+    # the Qwen3.5 GatedDeltaNet backward on 8x80GB; see each file's CASE).
     num_gpus_per_node: int
     cp_size: int
     pp_size: int
@@ -38,9 +39,7 @@ class CaseConfig:
     enable_mtp_training: bool
     # Whether to enable R3 routing replay (--use-rollout-routing-replay).
     use_r3: bool
-    # 4096 (not 8192): at 8192 the GatedDeltaNet linear-attn backward OOMs the 80GB H100
-    # (sglang is fully offloaded during training, so this is pure train-side working memory).
-    max_tokens_per_gpu: int = 4096
+    max_tokens_per_gpu: int = 8192
     # Weight-check selector: "all" (target + draft) or "target" (target model only; use
     # when MTP training is off so the un-synced draft is not checked).
     check_weight_update_selector: str = "all"
