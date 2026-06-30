@@ -25,6 +25,7 @@ class Sample:
     loss_mask: list[int] | None = None
     weight_versions: list[str] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
+    rollout_sampling_masks: list[list[int] | None] | None = None
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     )
@@ -171,6 +172,11 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.rollout_sampling_masks is not None:
+            assert len(self.rollout_sampling_masks) == self.response_length, (
+                f"rollout_sampling_masks length ({len(self.rollout_sampling_masks)}) "
+                f"!= response_length ({self.response_length})"
+            )
         if self.teacher_log_probs is not None:
             assert (
                 len(self.teacher_log_probs) == self.response_length
@@ -199,6 +205,8 @@ class Sample:
         self.response_length -= n
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
+        if self.rollout_sampling_masks is not None:
+            self.rollout_sampling_masks = self.rollout_sampling_masks[:-n]
         if self.teacher_log_probs is not None:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.opd_reverse_kl is not None:
@@ -228,6 +236,7 @@ class Sample:
         self.loss_mask = None
         self.weight_versions = []
         self.rollout_log_probs = None
+        self.rollout_sampling_masks = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
@@ -280,7 +289,15 @@ class ParamInfo:
 # A dict-based batch produced along the rollout -> training path
 # In Megatron backend, several fields are converted to torch.Tensor lists on GPU
 # before being consumed by data iterators (see megatron_utils.actor._get_rollout_data).
-RolloutBatch = dict[str, list[torch.Tensor] | list[int] | list[float] | list[str]]
+RolloutBatch = dict[
+    str,
+    list[torch.Tensor]
+    | list[int]
+    | list[float]
+    | list[str]
+    | list[list[int] | None]
+    | list[list[list[int] | None]],
+]
 
 
 @dataclass

@@ -67,6 +67,9 @@ def convert_samples_to_train_data(
     if samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 
+    if samples[0].rollout_sampling_masks is not None:
+        train_data["rollout_sampling_masks"] = [sample.rollout_sampling_masks for sample in samples]
+
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
 
@@ -152,6 +155,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "round_number",
             "sample_indices",
             "rollout_log_probs",
+            "rollout_sampling_masks",
             "rollout_routed_experts",
             "rollout_indexer_topk",
             "prompt",

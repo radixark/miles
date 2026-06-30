@@ -295,6 +295,145 @@ def compute_log_probs(
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
 
 
+def _masked_log_probs_and_entropy_inner(
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    masks: list[list[int] | None],
+    *,
+    process_group: dist.ProcessGroup | None,
+    with_entropy: bool,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Compute logprobs after restricting each row to its saved sampling mask.
+
+    `masks` must already be aligned 1:1 with `tokens` and `logits`. For each
+    row this computes ``log p(token | mask) = logit[token] - logsumexp(logits[mask])``
+    over the rollout sampler's saved support. Logits for token ids outside the
+    mask do not affect the denominator, so they get no gradient from this
+    computation. Non-loss response positions are normalized before this
+    function to singleton masks, which yields logprob 0 and zero gradient.
+    """
+    if logits.size(0) == 0:
+        entropy = logits.new_zeros((0,)) if with_entropy else None
+        return logits.new_zeros((0,)), entropy
+
+    if len(masks) != logits.size(0):
+        raise ValueError(f"Sampling-mask chunk length {len(masks)} != logits chunk length {logits.size(0)}")
+    if any(mask is None or len(mask) == 0 for mask in masks):
+        raise ValueError("Every generated token must have a non-empty sampling mask when keep_sampling_mask is enabled")
+
+    if process_group is None:
+        tp_size = 1
+        tp_rank = 0
+    else:
+        tp_size = dist.get_world_size(process_group)
+        tp_rank = dist.get_rank(process_group)
+
+    local_vocab_size = logits.size(-1)
+    vocab_start = tp_rank * local_vocab_size
+    vocab_end = vocab_start + local_vocab_size
+
+    max_mask_len = max(len(mask) for mask in masks if mask is not None)
+    mask_ids = torch.zeros((len(masks), max_mask_len), dtype=torch.long, device=logits.device)
+    valid = torch.zeros((len(masks), max_mask_len), dtype=torch.bool, device=logits.device)
+    sampled_in_mask = []
+    for row, (mask, token) in enumerate(zip(masks, tokens.tolist(), strict=True)):
+        assert mask is not None
+        sampled_in_mask.append(int(token) in mask)
+        ids = torch.tensor(mask, dtype=torch.long, device=logits.device)
+        mask_ids[row, : ids.numel()] = ids
+        valid[row, : ids.numel()] = True
+    if not all(sampled_in_mask):
+        bad_index = sampled_in_mask.index(False)
+        raise ValueError(f"Sampled token {int(tokens[bad_index])} is not in its saved sampling mask")
+
+    local_valid = valid & (mask_ids >= vocab_start) & (mask_ids < vocab_end)
+    local_offsets = (mask_ids - vocab_start).clamp(min=0, max=max(local_vocab_size - 1, 0))
+    local_mask_logits = logits.gather(dim=-1, index=local_offsets)
+    neg_inf = torch.finfo(logits.dtype).min
+    local_mask_logits = local_mask_logits.masked_fill(~local_valid, neg_inf)
+
+    local_max = local_mask_logits.max(dim=-1).values.detach()
+    if tp_size > 1:
+        global_max = local_max.clone()
+        dist.all_reduce(global_max, op=dist.ReduceOp.MAX, group=process_group)
+    else:
+        global_max = local_max
+
+    shifted = (local_mask_logits - global_max.unsqueeze(-1)).masked_fill(~local_valid, neg_inf)
+    local_exp = shifted.exp().masked_fill(~local_valid, 0.0)
+    local_sum = local_exp.sum(dim=-1)
+    if tp_size > 1:
+        global_sum = dist.nn.all_reduce(local_sum, group=process_group)
+    else:
+        global_sum = local_sum
+
+    token_local = (tokens >= vocab_start) & (tokens < vocab_end)
+    token_offsets = (tokens - vocab_start).clamp(min=0, max=max(local_vocab_size - 1, 0))
+    local_selected = logits.gather(dim=-1, index=token_offsets.unsqueeze(-1)).squeeze(-1)
+    local_selected = torch.where(token_local, local_selected, torch.zeros_like(local_selected))
+    if tp_size > 1:
+        selected = dist.nn.all_reduce(local_selected, group=process_group)
+    else:
+        selected = local_selected
+
+    log_den = global_max + global_sum.clamp_min(torch.finfo(global_sum.dtype).tiny).log()
+    log_probs = selected - log_den
+
+    entropy = None
+    if with_entropy:
+        local_weighted_logits = (local_exp * local_mask_logits.masked_fill(~local_valid, 0.0)).sum(dim=-1)
+        if tp_size > 1:
+            weighted_logits = dist.nn.all_reduce(local_weighted_logits, group=process_group)
+        else:
+            weighted_logits = local_weighted_logits
+        entropy = log_den - weighted_logits / global_sum.clamp_min(torch.finfo(global_sum.dtype).tiny)
+
+    return log_probs, entropy
+
+
+def calculate_masked_log_probs_and_entropy(
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    masks: list[list[int] | None],
+    process_group: dist.ProcessGroup | None,
+    *,
+    with_entropy: bool = False,
+    chunk_size: int = -1,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if logits.size(0) == 0:
+        entropy = logits.new_zeros((0,)) if with_entropy else None
+        return logits.new_zeros((0,)), entropy
+
+    logits = logits.contiguous()
+    if chunk_size <= 0 or logits.size(0) <= chunk_size:
+        return _masked_log_probs_and_entropy_inner(
+            logits,
+            tokens,
+            masks,
+            process_group=process_group,
+            with_entropy=with_entropy,
+        )
+
+    log_probs = []
+    entropies = []
+    for start in range(0, logits.size(0), chunk_size):
+        end = start + chunk_size
+        log_prob, entropy = _masked_log_probs_and_entropy_inner(
+            logits[start:end],
+            tokens[start:end],
+            masks[start:end],
+            process_group=process_group,
+            with_entropy=with_entropy,
+        )
+        log_probs.append(log_prob)
+        if with_entropy:
+            assert entropy is not None
+            entropies.append(entropy)
+
+    entropy = torch.cat(entropies, dim=0) if with_entropy else None
+    return torch.cat(log_probs, dim=0), entropy
+
+
 def _prepare_true_on_policy_full_logits(
     logits_or_shards: torch.Tensor | list[torch.Tensor] | tuple[torch.Tensor, ...],
     *,

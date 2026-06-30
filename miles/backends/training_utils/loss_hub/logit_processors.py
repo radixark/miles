@@ -4,7 +4,10 @@ from collections.abc import Iterator
 import torch
 
 from miles.backends.training_utils.cp_utils import allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
-from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.loss_hub.math_utils import (
+    calculate_log_probs_and_entropy,
+    calculate_masked_log_probs_and_entropy,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
@@ -127,6 +130,78 @@ def get_responses(
         yield logits_chunk, tokens_chunk
 
 
+def get_response_sampling_masks(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    sampling_masks: list[list[list[int] | None]] | None,
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None = None,
+) -> Iterator[list[list[int] | None]]:
+    """Yield saved sampling masks aligned with the local response tokens.
+
+    `get_responses` may return only the context-parallel slice owned by this
+    rank, so the full-response Python mask lists must be sliced the same way.
+    """
+    if sampling_masks is None:
+        raise ValueError("keep_sampling_mask is enabled but rollout_sampling_masks is missing from the batch")
+
+    qkv_format = args.qkv_format
+    if qkv_format == "thd":
+        assert logits.size(0) == 1, f"{logits.shape}"
+        local_token_count = logits.size(1)
+    else:
+        local_token_count = logits.view(-1, logits.size(-1)).size(0)
+
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
+    cp_rank = parallel_state.cp.rank
+    seq_start = 0
+    for i, (masks, total_length, response_length) in enumerate(
+        zip(sampling_masks, total_lengths, response_lengths, strict=False)
+    ):
+        if masks is None:
+            raise ValueError(f"Sample {i} is missing rollout_sampling_masks")
+        if len(masks) != response_length:
+            raise ValueError(
+                f"Sample {i} rollout_sampling_masks length {len(masks)} != response_length {response_length}"
+            )
+
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        prompt_length = total_length - response_length
+
+        if cp_size == 1:
+            masks_chunk = masks
+        elif args.allgather_cp:
+            chunk_start = cp_rank * local_token_count
+            chunk_end = chunk_start + local_token_count
+
+            resp_token_start = seq_start + prompt_length
+            resp_token_end = seq_start + total_length
+            logit_global_start = resp_token_start - 1
+            logit_global_end = resp_token_end - 1
+
+            s = max(logit_global_start, chunk_start)
+            e = min(logit_global_end, chunk_end)
+            if e <= s:
+                masks_chunk = []
+            else:
+                mask_start = s - logit_global_start
+                mask_end = e - logit_global_start
+                masks_chunk = masks[mask_start:mask_end]
+        else:
+            _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
+                total_length, response_length, qkv_format, max_seq_len
+            )
+            masks_0 = masks[tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length]
+            masks_1 = masks[tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length]
+            masks_chunk = masks_0 + masks_1
+
+        seq_start += total_length
+        yield masks_chunk
+
+
 def get_log_probs_and_entropy(
     logits: torch.Tensor,
     *,
@@ -134,6 +209,7 @@ def get_log_probs_and_entropy(
     unconcat_tokens: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
+    sampling_masks: list[list[list[int] | None]] | None = None,
     with_entropy: bool = False,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
@@ -164,25 +240,55 @@ def get_log_probs_and_entropy(
     parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
-    for logits_chunk, tokens_chunk in get_responses(
+    response_iter = get_responses(
         logits,
         args=args,
         unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-    ):
-        log_prob, entropy = calculate_log_probs_and_entropy(
-            logits_chunk,
-            tokens_chunk,
-            parallel_state.tp.group,
-            with_entropy=with_entropy,
-            chunk_size=args.log_probs_chunk_size,
-            true_on_policy=args.true_on_policy_mode,
-            vocab_size=getattr(args, "vocab_size", None),
+    )
+    use_sampling_masks = getattr(args, "keep_sampling_mask", False)
+    if use_sampling_masks:
+        mask_iter = get_response_sampling_masks(
+            logits,
+            args=args,
+            sampling_masks=sampling_masks,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
         )
+    else:
+        mask_iter = None
 
-        log_probs_list.append(log_prob.squeeze(-1))
+    for idx, (logits_chunk, tokens_chunk) in enumerate(response_iter):
+        if not use_sampling_masks:
+            log_prob, entropy = calculate_log_probs_and_entropy(
+                logits_chunk,
+                tokens_chunk,
+                parallel_state.tp.group,
+                with_entropy=with_entropy,
+                chunk_size=args.log_probs_chunk_size,
+                true_on_policy=args.true_on_policy_mode,
+                vocab_size=getattr(args, "vocab_size", None),
+            )
+        else:
+            assert mask_iter is not None
+            masks_chunk = next(mask_iter)
+            if len(masks_chunk) != tokens_chunk.size(0):
+                raise ValueError(
+                    f"Sample {idx} mask chunk length {len(masks_chunk)} != token chunk length {tokens_chunk.size(0)}"
+                )
+            log_prob, entropy = calculate_masked_log_probs_and_entropy(
+                logits_chunk,
+                tokens_chunk,
+                masks_chunk,
+                parallel_state.tp.group,
+                with_entropy=with_entropy,
+                chunk_size=args.log_probs_chunk_size,
+            )
+
+        log_probs_list.append(log_prob.reshape(-1))
         entropy_list.append(entropy)
 
     res = {
@@ -212,6 +318,7 @@ def get_values(
     unconcat_tokens: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
+    sampling_masks: list[list[list[int] | None]] | None = None,
     with_entropy: bool = False,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,

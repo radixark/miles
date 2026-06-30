@@ -31,7 +31,11 @@ from miles.utils.processing_utils import (
 )
 from miles.utils.types import Sample
 
-from .generate_utils.generate_endpoint_utils import get_indexer_topk_from_response
+from .generate_utils.generate_endpoint_utils import (
+    extract_response_sampling_masks,
+    extract_response_tokens_and_log_probs,
+    get_indexer_topk_from_response,
+)
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
@@ -79,6 +83,7 @@ class GenerateState(metaclass=SingletonMeta):
             temperature=args.rollout_temperature,
             top_p=args.rollout_top_p,
             top_k=args.rollout_top_k,
+            min_p=getattr(args, "rollout_min_p", 0.0),
             max_new_tokens=args.rollout_max_response_len,
             stop=args.rollout_stop,
             stop_token_ids=args.rollout_stop_token_ids,
@@ -179,6 +184,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         payload["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
+    if getattr(args, "keep_sampling_mask", False):
+        payload["return_sampling_mask"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
@@ -204,11 +211,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             sample.metadata.setdefault("opd_student_top_logprobs", [])
             sample.metadata["opd_student_top_logprobs"].extend(output_top_logprobs)
 
-    if "output_token_logprobs" in output["meta_info"]:
-        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-    else:
-        new_response_tokens, new_response_log_probs = [], []
+    meta_info = output["meta_info"]
+    new_response_tokens, new_response_log_probs = extract_response_tokens_and_log_probs(args, meta_info)
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
@@ -223,20 +227,25 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if sample.rollout_log_probs is None:
         sample.rollout_log_probs = []
     sample.rollout_log_probs += new_response_log_probs
+    new_sampling_masks = extract_response_sampling_masks(args, meta_info, len(new_response_tokens))
+    if new_sampling_masks is not None:
+        if sample.rollout_sampling_masks is None:
+            sample.rollout_sampling_masks = []
+        sample.rollout_sampling_masks += new_sampling_masks
 
-    if "routed_experts" in output["meta_info"]:
+    if "routed_experts" in meta_info:
         sample.rollout_routed_experts = np.frombuffer(
-            pybase64.b64decode(output["meta_info"]["routed_experts"].encode("ascii")),
+            pybase64.b64decode(meta_info["routed_experts"].encode("ascii")),
             dtype=np.int32,
         ).reshape(
             len(sample.tokens) - 1,
             args.num_layers,
             args.moe_router_topk,
         )
-    if "indexer_topk" in output["meta_info"]:
+    if "indexer_topk" in meta_info:
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
-    sample.update_from_meta_info(args, output["meta_info"])
+    sample.update_from_meta_info(args, meta_info)
 
     return sample
 

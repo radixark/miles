@@ -331,6 +331,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
             )
             parser.add_argument(
+                "--rollout-min-p",
+                type=float,
+                default=0.0,
+                help="min-p sampling threshold for the inference engine during rollout. 0.0 disables.",
+            )
+            parser.add_argument(
+                "--keep-sampling-mask",
+                action="store_true",
+                default=False,
+                help=(
+                    "Ask SGLang to return the sparse top-k/top-p/min-p sampling support for each generated token "
+                    "and train against the same truncated distribution in Megatron."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-max-context-len",
                 type=int,
                 default=None,
@@ -2211,6 +2226,23 @@ def miles_validate_args(args):
 
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
+
+    if getattr(args, "keep_sampling_mask", False):
+        assert getattr(args, "train_backend", None) != "fsdp", (
+            "--keep-sampling-mask is not supported with --train-backend fsdp; "
+            "the sampling-mask training path is only wired for the Megatron backend."
+        )
+        assert not getattr(args, "recompute_logprobs_via_prefill", False), (
+            "--keep-sampling-mask requires --recompute-logprobs-via-prefill to be off because "
+            "SGLang prefill logprobs are full-vocab logprobs, not sampling-mask-renormalized logprobs."
+        )
+        top_k = getattr(args, "rollout_top_k", -1)
+        min_p = getattr(args, "rollout_min_p", 0.0)
+        if args.rollout_top_p >= 1.0 and (top_k is None or top_k <= 0) and min_p <= 0.0:
+            raise ValueError(
+                "--keep-sampling-mask requires a truncating rollout sampler "
+                "(for example --rollout-top-p 0.99)."
+            )
 
     if args.get_mismatch_metrics:
         assert (

@@ -28,6 +28,93 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
+def _normalize_keep_sampling_masks_for_loss(
+    *,
+    token_ids: list[int],
+    loss_mask: list[int],
+    response_length: int,
+    log_probs: list[float],
+    masks: list[list[int] | None],
+    sample_index: int,
+) -> tuple[list[float], list[list[int]]]:
+    """Validate response-aligned sampling masks and neutralize non-loss tokens.
+
+    Tokens excluded from loss are replaced with singleton masks/logprob 0 so
+    downstream masked-logprob code can process every response position.
+    """
+    if len(masks) != response_length:
+        raise ValueError(
+            f"Sample {sample_index} rollout_sampling_masks length {len(masks)} != response_length {response_length}"
+        )
+    if len(log_probs) != response_length:
+        raise ValueError(
+            f"Sample {sample_index} rollout_log_probs length {len(log_probs)} != response_length {response_length}"
+        )
+
+    if len(loss_mask) == response_length:
+        response_loss_mask = loss_mask
+    elif len(loss_mask) >= response_length:
+        response_loss_mask = loss_mask[-response_length:] if response_length else []
+    else:
+        raise ValueError(
+            f"Sample {sample_index} loss_mask length {len(loss_mask)} is shorter than response_length {response_length}"
+        )
+
+    response_tokens = token_ids[-response_length:] if response_length else []
+    normalized_masks: list[list[int]] = []
+    normalized_log_probs = [float(x) for x in log_probs]
+    for token_index, (token_id, mask_value, loss_value) in enumerate(
+        zip(response_tokens, masks, response_loss_mask, strict=True)
+    ):
+        token_id = int(token_id)
+        if not int(loss_value):
+            normalized_masks.append([token_id])
+            normalized_log_probs[token_index] = 0.0
+            continue
+
+        if mask_value is None or len(mask_value) == 0:
+            raise ValueError(f"Sample {sample_index} token {token_index} with loss_mask=1 has no sampling mask")
+        mask = [int(mask_token) for mask_token in mask_value]
+        if token_id not in mask:
+            raise ValueError(f"Sample {sample_index} token {token_index} id {token_id} is not in its sampling mask")
+        normalized_masks.append(mask)
+
+    return normalized_log_probs, normalized_masks
+
+
+def _normalize_rollout_sampling_masks_for_loss(args: Namespace, rollout_data: RolloutBatch) -> None:
+    """Apply keep-sampling-mask normalization to each sample in a rollout batch."""
+    if not getattr(args, "keep_sampling_mask", False):
+        return
+    if "rollout_sampling_masks" not in rollout_data:
+        raise ValueError("keep_sampling_mask is enabled but rollout_sampling_masks is missing from rollout_data")
+    if "rollout_log_probs" not in rollout_data:
+        raise ValueError("keep_sampling_mask is enabled but rollout_log_probs is missing from rollout_data")
+
+    for i, (token_ids, loss_mask, masks, log_probs, response_length) in enumerate(
+        zip(
+            rollout_data["tokens"],
+            rollout_data["loss_masks"],
+            rollout_data["rollout_sampling_masks"],
+            rollout_data["rollout_log_probs"],
+            rollout_data["response_lengths"],
+            strict=True,
+        )
+    ):
+        if masks is None:
+            raise ValueError(f"Sample {i} is missing rollout_sampling_masks")
+        log_probs, masks = _normalize_keep_sampling_masks_for_loss(
+            token_ids=list(token_ids),
+            loss_mask=list(loss_mask),
+            response_length=int(response_length),
+            log_probs=list(log_probs),
+            masks=masks,
+            sample_index=i,
+        )
+        rollout_data["rollout_log_probs"][i] = log_probs
+        rollout_data["rollout_sampling_masks"][i] = masks
+
+
 def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -38,6 +125,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         parallel_state.intra_dp.rank,
         parallel_state.intra_dp.size,
     )
+    _normalize_rollout_sampling_masks_for_loss(args, rollout_data)
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
         torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]

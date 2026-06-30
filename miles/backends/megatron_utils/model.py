@@ -264,6 +264,7 @@ def forward_only(
                 "multimodal_train_inputs",
                 "total_lengths",
                 "response_lengths",
+                "rollout_sampling_masks",
                 "max_seq_lens",
             ],
             args.data_pad_size_multiplier,
@@ -292,6 +293,7 @@ def forward_only(
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
+            sampling_masks=batch.get("rollout_sampling_masks"),
             max_seq_lens=batch.get("max_seq_lens", None),
         )
 
@@ -415,6 +417,7 @@ def train_one_step(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "rollout_sampling_masks",
                 "max_seq_lens",
                 "opd_reverse_kl",
             ],
