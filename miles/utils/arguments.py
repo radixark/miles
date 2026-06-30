@@ -187,9 +187,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Also train the M3 vision tower (default frozen: only projector + LM "
-                    "train). Unfreezes the HF-native vision tower; its replicated grads are "
-                    "all-reduced across the model-parallel group so the copies stay in sync."
+                    "Unfreeze the M3 vision tower (default frozen). WIP / NOT YET CORRECT: "
+                    "the native vision tower + projector are replicated and are NOT in "
+                    "Megatron's grad buffer / distributed optimizer, and there is no TP grad "
+                    "all-reduce for them, so this flag does not (yet) update them consistently. "
+                    "See the plugin README 'Known limitations' before using."
                 ),
             )
             parser.add_argument(

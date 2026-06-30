@@ -108,6 +108,10 @@ class MSASelfAttention(SelfAttention):
             tp_comm_buffer_name="index_k_proj",
             **idx_kwargs,
         )
+        # index_k_proj is replicated (parallel_mode="duplicated"), same as
+        # index_q_proj above -> mark it _skip_gather too so weight-sync / checkpoint
+        # don't attempt a TP all-gather on a non-sharded param.
+        self.index_k_proj.weight._skip_gather = True
         # per-head RMSNorm over index_dim on the query, and a single norm on the key
         self.index_q_norm = build_module(
             submodules.index_q_norm,

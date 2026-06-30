@@ -144,11 +144,11 @@ def block_topk(
     device = index_q.device
     out = torch.full((N, topk_blocks), -1, dtype=torch.int32, device=device)
 
-    # GLM-5's fwd kernel expects a per-head weight; MSA has none, so we feed
-    # ones and reduce over heads with amax ourselves (matching HF semantics).
-    fwd = tl_indexer_fwd_impl(heads=H, index_dim=d)
-    weights = torch.ones(N, H, device=device, dtype=torch.float32) * scale
-
+    # NOTE (honest status): the tilelang fwd kernel is imported above ONLY as an
+    # availability gate — it is NOT actually wired into the per-chunk logit math
+    # below, which still runs the pure-torch reduction (_chunk_logits_maxheads). So
+    # this path is functionally the chunked torch reference, not a kernel fast path.
+    # Wiring tl_indexer_fwd_impl in (and dropping this gate) is a TODO.
     for s in range(cu_seqlens.numel() - 1):
         lo, hi = int(cu_seqlens[s]), int(cu_seqlens[s + 1])
         n = hi - lo
@@ -159,9 +159,6 @@ def block_topk(
         nb = (n + block_size - 1) // block_size
         block_scores = torch.full((n, nb), float("-inf"), device=device)
 
-        ks = torch.zeros(n, dtype=torch.int32, device=device)         # k-range start
-        ke = torch.arange(1, n + 1, dtype=torch.int32, device=device)  # causal end
-        scratch = torch.empty(min(chunk_q, n), n, device=device, dtype=torch.float32)
         for c in range(0, n, chunk_q):
             ce = min(c + chunk_q, n)
             cs = ce - c

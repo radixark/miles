@@ -29,6 +29,13 @@ _P = "language_model.model"
 
 
 def convert_minimax_m3_to_hf(args, name, param):
+    # Be robust to VL-wrapped param names. The MiniMaxM3VLModel saves its LM with
+    # BARE keys (sharded_state_dict delegates to language_model), so normally these
+    # are already "module.module.decoder.*"; but if a checkpoint ever carries the
+    # composite "language_model." level, strip it so the mappings below still hit
+    # (instead of a cryptic "Unknown parameter name"). Vision/projector params are
+    # not produced by this converter (LM-only export) and would still raise below.
+    name = name.replace("module.module.language_model.", "module.module.")
     if name == "module.module.embedding.word_embeddings.weight":
         return [(f"{_P}.embed_tokens.weight", param)]
     if name == "module.module.output_layer.weight":

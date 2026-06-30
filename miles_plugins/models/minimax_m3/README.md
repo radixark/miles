@@ -46,10 +46,11 @@ Per query token `i` on a sparse layer:
    (≤ 16·128 = 2048 keys), causally masked inside each block.
 
 Files:
-- `ops/msa_indexer.py` — steps 1–5. `block_topk` reuses GLM-5's tuned tilelang
-  `tilelang_indexer_fwd` to materialise token logits chunk-by-chunk (bounded
-  memory at 1M ctx), then block-pool + top-k. `block_topk_reference` is the
-  pure-torch oracle.
+- `ops/msa_indexer.py` — steps 1–5. `block_topk` computes token logits
+  chunk-by-chunk (bounded memory at 1M ctx), then block-pool + top-k.
+  **Status:** it currently runs the pure-torch reduction; GLM-5's tilelang
+  `tilelang_indexer_fwd` is imported only as an availability gate and is **not yet
+  wired in** (TODO). `block_topk_reference` is the unchunked pure-torch oracle.
 - `ops/block_sparse_attn.py` — block-sparse GQA over the selected blocks.
   `BlockSparseGQA` is the autograd hook (same call shape as GLM-5's `SparseMLA`).
 - `minimax_m3.py` — `MSASelfAttention` (GQA + indexer) and `get_minimax_m3_spec`
@@ -154,3 +155,37 @@ o = block_sparse_attention_reference(q, k, v, blk, cu, block_size=128)
 assert o.shape == (N, 64, 128)
 print("ok")
 ```
+
+## Known limitations (from code review 2026-06; honest status)
+
+The text path (MSA spec, bridges, HF converters) is exercised and the HF↔Megatron
+conversions are bit-exact. The **VL/vision path is NOT yet correct for real vision
+flow** — prior "e2e VLM" SFT runs trained the LM on image-placeholder *tokens* with
+the vision tower loaded but never exercised (see below). Open items:
+
+1. **VL merge is not sequence-parallel-correct.** Under `--sequence-parallel`
+   (every VL launch script sets it) the LM embedding returns sequence-scattered
+   `[t/TP, b, h]`, but `merge_vision_into_text` builds a full-length mask. With real
+   `pixel_values` this now raises a clear error (added guard); the correct fix is to
+   gather the embedding to full length, merge, then re-scatter before the decoder.
+   Until then, run vision without SP (small models) or implement the gather/scatter.
+2. **Vision/projector are not actually trained.** They are native HF modules,
+   replicated, and are NOT placed in Megatron's grad buffer / distributed optimizer,
+   so they receive no optimizer update (verified via `M3_VL_PROBE`: weight norms are
+   constant across steps). `--minimax-m3-train-vision` therefore does not (yet) work;
+   there is also no TP grad all-reduce for these replicated params.
+3. **Checkpoint save drops vision/projector.** `sharded_state_dict` delegates only to
+   the LM, so any trained projector/tower is not saved; `merge_m3_vision_into_hf.py`
+   re-attaches the *original* (untrained) vision weights. Fine while (2) holds (nothing
+   trains), but must be fixed alongside (2)/(1) for a real trained-VL checkpoint.
+4. **Indexer is frozen.** It is detached (no LM grad) and the KL-distillation loss
+   described above is NOT implemented in this plugin — index_* params get no gradient.
+   Correct for SFT on released weights; do not expect indexer adaptation.
+5. **`sparse_init_block` is a count, not an index.** The force-keep loop is
+   `range(min(init_blocks, nb))` with default `init_blocks=0`, so with the released
+   config value the attention-sink block is not force-kept. Harmless for ≤16-block
+   smoke seqs (all blocks selected); verify against the HF MSA reference + the real
+   config value before long-context training.
+6. **`_load_vision_only` is lenient** (`strict=False`, warn-only on missing keys):
+   a bad checkpoint→module rename yields a partially random-init tower with only a
+   warning. Consider failing hard once the rename is GPU-validated.

@@ -65,6 +65,18 @@ def merge_vision_into_text(
     # work in [b, t, h] for masked_scatter, then transpose back
     e = text_embeds.transpose(0, 1).contiguous()  # [b, t, h]
     mask = (input_ids == image_token_index) | (input_ids == video_token_index)  # [b, t]
+    # KNOWN BUG (not SP-correct yet): under --sequence-parallel the LM embedding
+    # returns sequence-scattered [t/TP, b, h], so e's seq dim (t/TP) won't match the
+    # full-length mask (t). Fail loudly here instead of a cryptic masked_scatter error.
+    # Real fix: gather text_embeds to full length, merge, then re-scatter the result
+    # before the decoder. See plugin README "Known limitations".
+    if e.shape[1] != mask.shape[1]:
+        raise RuntimeError(
+            f"merge_vision_into_text: text-embed seq-len {e.shape[1]} != input_ids "
+            f"seq-len {mask.shape[1]}. This is the unfixed sequence-parallel case "
+            f"(embedding scatters to [t/TP,b,h]); the VL vision path is not SP-correct "
+            f"yet. Run without --sequence-parallel, or implement gather/merge/scatter."
+        )
     n_slots = int(mask.sum().item())
     if n_slots != vision_embeds.shape[0]:
         raise ValueError(
