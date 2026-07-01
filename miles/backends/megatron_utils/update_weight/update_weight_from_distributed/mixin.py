@@ -260,22 +260,24 @@ class DistBucketedWeightUpdateMixin:
                 "(no lora_A/lora_B names found). Check weight iterator."
             )
 
-        if self._lora_loaded:
-            ray.get(
-                [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
-            )
-        self._update_lora_weight_implementation(accumulated_named_tensors)
+        # Load once, then refresh in place -- never unload (see _update_multi_lora_weights).
+        self._update_lora_weight_implementation(
+            accumulated_named_tensors,
+            override_existing=self._lora_loaded,
+        )
         self._lora_loaded = True
 
     def _update_multi_lora_weights(self) -> None:
-        """Sync every controller-tracked adapter to the rollout engines.
+        """Refresh every controller-tracked adapter on the rollout engines in place.
 
-        NCCL analogue of the colocated ``_send_multi_lora_params``: query the
-        controller, push each RUNNING adapter (refreshing in place once it has
-        been loaded), and unload DRAINED ones. The controller returns the same
-        snapshot on every rank, so all ranks walk the adapters in the same order
-        and the per-adapter TP collectives in ``_send_one_multi_lora_adapter``
-        line up; only the source rank issues the engine RPCs / broadcasts.
+        The rollout engines hold a fixed pool of LoRA slots (the page table): each
+        adapter is loaded once (``override_existing=False``) and thereafter only
+        updated in place (``override_existing=True``). Adapters are never unloaded,
+        so there is no drain/``wait_for_unload`` and the LoRA usage-counter leak
+        cannot hang the update. The controller returns the same snapshot on every
+        rank, so all ranks walk the adapters in the same order and the per-adapter
+        TP collectives in ``_send_one_multi_lora_adapter`` line up; only the
+        source rank issues the engine RPCs / broadcasts.
         """
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
@@ -283,24 +285,21 @@ class DistBucketedWeightUpdateMixin:
         adapters = ray.get(get_multi_lora_controller().active_adapters.remote())
         for name, adapter in adapters.items():
             if adapter.state == AdapterState.RUNNING:
-                self._send_one_multi_lora_adapter(adapter, lora_loaded=name in self._multi_lora_loaded)
+                # First send loads the adapter (allocates an sglang slot); every
+                # later send overwrites that slot in place.
+                self._send_one_multi_lora_adapter(
+                    adapter, override_existing=name in self._multi_lora_loaded
+                )
                 self._multi_lora_loaded.add(name)
-            elif adapter.state == AdapterState.DRAINED and name in self._multi_lora_loaded:
-                if self._is_lora_source:
-                    try:
-                        ray.get([engine.unload_lora_adapter.remote(lora_name=name) for engine in self.rollout_engines])
-                    except Exception:
-                        logger.warning("Failed to unload drained adapter %r from rollout engines", name, exc_info=True)
-                self._multi_lora_loaded.discard(name)
 
-    def _send_one_multi_lora_adapter(self, adapter, lora_loaded: bool) -> None:
+    def _send_one_multi_lora_adapter(self, adapter, override_existing: bool) -> None:
         """Export and transmit one adapter's weights.
 
         Every rank exposes the adapter's slot and iterates the bridge (the export
         runs TP all-gather internally, so all ranks must participate); only the
-        source rank validates, unloads the previous copy when ``lora_loaded`` is
-        set, and transmits via ``_update_lora_weight_implementation`` with this
-        adapter's name and config.
+        source rank validates and transmits via ``_update_lora_weight_implementation``
+        with this adapter's name and config. ``override_existing`` selects an
+        in-place overwrite of an already-loaded adapter (no unload/register).
         """
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
@@ -329,13 +328,11 @@ class DistBucketedWeightUpdateMixin:
                 "Megatron-Bridge or SGLang version is incompatible."
             )
 
-        if lora_loaded:
-            ray.get([engine.unload_lora_adapter.remote(lora_name=adapter.name) for engine in self.rollout_engines])
-
         self._update_lora_weight_implementation(
             accumulated_named_tensors,
             lora_name=adapter.name,
             lora_config=lora_config,
+            override_existing=override_existing,
         )
 
     def _pause_and_prepare_engines(self) -> None:

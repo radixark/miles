@@ -31,6 +31,7 @@ _RECORDING_METHODS: dict[str, Any] = {
     "destroy_weights_update_group": None,
     "update_weights_from_distributed": None,
     "load_lora_adapter_from_tensors": None,
+    "load_lora_adapter_from_distributed": None,
     "unload_lora_adapter": None,
     "start_profile": None,
     "stop_profile": None,
