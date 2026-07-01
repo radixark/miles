@@ -149,6 +149,24 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
 
+# ====================================== Install sgl-model-gateway ============================================
+ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
+ARG SGL_ROUTER_BRANCH=main
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    export PATH="/root/.cargo/bin:${PATH}"; \
+    git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+    cd /build/sgl-model-gateway/bindings/python && \
+    ulimit -n 65536 && \
+    maturin build --release --features vendored-openssl --out /build/gateway_wheels && \
+    cd /build/sgl-model-gateway && \
+    cargo build --release --bin sgl-model-gateway --features vendored-openssl && \
+    cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
+    chmod +x /usr/local/bin/sgl-model-gateway && \
+    pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl && \
+    rm -rf /build/sgl-model-gateway /build/gateway_wheels
+
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
