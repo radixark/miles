@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# doc-first-principle: docs/ci/02-docker-build.md
+# doc-dev: docs/ci/02-docker-build.md
 """Build and push Miles Docker images.
 
 Usage:

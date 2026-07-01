@@ -1,5 +1,5 @@
-# doc-first-principle: docs/ci/00-stage.md
-# doc-first-principle: docs/ci/01-label.md
+# doc-dev: docs/ci/00-stage.md
+# doc-dev: docs/ci/01-label.md
 name: PR Test
 
 on:

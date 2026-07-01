@@ -1,4 +1,4 @@
-# doc-first-principle: docs/ci/02-docker-build.md
+# doc-dev: docs/ci/02-docker-build.md
 # Build via docker/build.py (single source of truth for build-args, platforms,
 # and tags) — see docs/ci/02-docker-build.md. Examples:
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
