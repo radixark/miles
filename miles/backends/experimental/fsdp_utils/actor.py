@@ -88,10 +88,12 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
-        # HF-compat patches before construction
+        # HF-compat patches + config-lifetime packing, before construction
         from .adaptations.class_patches import apply_class_patches
+        from .adaptations.packing import apply_packing
 
         apply_class_patches(self.hf_config, self.args)
+        apply_packing(None, self.hf_config, "config")
 
         self._enable_true_on_policy_optimizations(args)
 
@@ -103,6 +105,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 trust_remote_code=True,
                 attn_implementation=self.args.attn_implementation,
             )
+
+        # post-load packing patches needing the instantiated model (NemotronH); no-op otherwise
+        apply_packing(model, self.hf_config, "post_load")
 
         model.train()
 
