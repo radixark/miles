@@ -304,7 +304,8 @@ class FSDPTrainRayActor(TrainRayActor):
                         )
 
                         model_args = self._get_model_inputs_args(batch)
-                        logits = active_model(**model_args).logits.float()
+                        # keep logits in native bf16 (chunks upcast to fp32 downstream); avoids ~5GB full-vocab fp32 tensor
+                        logits = active_model(**model_args).logits
 
                         result = get_log_probs_and_entropy(
                             logits=logits,
@@ -462,7 +463,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def _train_step(self, batch, step_id, num_microbatches):
         model_args = self._get_model_inputs_args(batch)
-        logits = self.model(**model_args).logits.float()
+        # bf16 logits (see log_probs phase); per-response chunks upcast to fp32 in the loss path
+        logits = self.model(**model_args).logits
 
         loss, normalizer, log_dict = loss_function(
             args=self.args,

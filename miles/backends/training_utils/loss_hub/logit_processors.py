@@ -41,7 +41,8 @@ def get_responses(
     qkv_format = args.qkv_format
 
     if not args.true_on_policy_mode:
-        assert logits.dtype == torch.float32, f"{logits.dtype}"
+        # FSDP hands native bf16 here (no full-vocab fp32 buffer); chunks are upcast to fp32 downstream
+        assert logits.dtype in (torch.float32, torch.bfloat16), f"{logits.dtype}"
     assert len(logits.shape) == 3, f"{logits.shape}"
 
     if qkv_format == "thd":
@@ -51,8 +52,13 @@ def get_responses(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
+    defer_temperature_to_chunks = False
     if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
-        logits = logits.div(args.rollout_temperature)
+        if args.true_on_policy_mode or logits.dtype == torch.float32:
+            logits = logits.div(args.rollout_temperature)
+        else:
+            # bf16 logits: dividing before the fp32 upcast rounds the quotient back to bf16; defer to the chunk
+            defer_temperature_to_chunks = True
     if args.true_on_policy_mode:
         if getattr(args, "bf16", False):
             logits = logits.to(torch.bfloat16)
@@ -124,6 +130,8 @@ def get_responses(
 
         seq_start += total_length
 
+        if defer_temperature_to_chunks:
+            logits_chunk = logits_chunk.to(torch.float32).div(args.rollout_temperature)
         yield logits_chunk, tokens_chunk
 
 
@@ -245,7 +253,8 @@ def get_values(
         max_seq_lens=max_seq_lens,
     ):
         assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
-        value_list.append(logits_chunk.squeeze(-1))
+        # upcast (no-op for fp32) so value-head outputs stay fp32 even when logits arrive bf16
+        value_list.append(logits_chunk.squeeze(-1).float())
 
     res = {
         "values": value_list,
