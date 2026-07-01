@@ -1,8 +1,59 @@
 """HuggingFace-version compatibility patches for the experimental FSDP backend."""
 
+import inspect
 import logging
+import textwrap
 
 logger = logging.getLogger(__name__)
+
+
+def apply_flash_attn_saux_guard() -> bool:
+    """Guard s_aux against None in transformers 5.6.0 flash_attention_forward (crashes sink-less models). Returns True if patched."""
+    try:
+        import transformers.integrations.flash_attention as fa
+    except Exception:  # pragma: no cover
+        return False
+    try:
+        src = inspect.getsource(fa.flash_attention_forward)
+    except (OSError, TypeError):
+        return False
+
+    BUG = "s_aux=s_aux.to(query.dtype)"
+    if "if s_aux is not None" in src or BUG not in src:
+        return False  # already guarded, or an unrecognized layout
+
+    new_src = textwrap.dedent(src).replace(BUG, "s_aux=(s_aux.to(query.dtype) if s_aux is not None else None)")
+    ns = vars(fa)
+    try:
+        exec(compile(new_src, fa.__file__, "exec"), ns)  # noqa: S102 - controlled recompile
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[fsdp class_patches] s_aux guard compile failed: {e}")
+        return False
+    patched = ns["flash_attention_forward"]
+    patched._saux_guarded = True
+    fa.flash_attention_forward = patched
+
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS as A
+
+        for key in list(A.valid_keys()):
+            try:
+                cur = A[key]
+            except Exception:
+                continue
+            if getattr(cur, "__name__", None) == "flash_attention_forward":
+                try:
+                    A[key] = patched
+                except Exception:
+                    try:
+                        A.register(key, patched, exist_ok=True)
+                    except Exception:
+                        pass
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[fsdp class_patches] s_aux guard re-register skipped: {e}")
+
+    logger.info("[fsdp class_patches] applied flash-attention s_aux None-guard")
+    return True
 
 
 class ModelPatchHook:
@@ -29,6 +80,7 @@ def _has_config(hf_config) -> bool:
     return hf_config is not None
 
 
+register_model_patch(ModelPatchHook("flash_attn_saux_guard", _always, lambda cfg, args: apply_flash_attn_saux_guard()))
 # Per-arch model patches register in their spec (adaptations/specs/); this module keeps only generic ones.
 
 
