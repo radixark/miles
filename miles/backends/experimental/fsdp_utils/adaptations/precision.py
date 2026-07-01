@@ -26,3 +26,11 @@ def resolve_precision_policy(hf_config, args) -> PrecisionPolicy:
     model_type = str(getattr(hf_config, "model_type", "") or "").lower()
     keep_fp32_master = any(t in model_type for t in _FP32_MASTER_TYPES)
     return PrecisionPolicy(param_dtype=param_dtype, reduce_dtype=torch.float32, keep_fp32_master=keep_fp32_master)
+
+
+def apply_fp32_master(model):
+    """Convert model to an fp32 master in place, recording each param's on-disk dtype first (before the cast)."""
+    orig_dtypes = {name: p.dtype for name, p in model.state_dict().items()}
+    model = model.to(torch.float32)
+    model._fsdp_sync_orig_dtypes = orig_dtypes
+    return model
