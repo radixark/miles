@@ -80,7 +80,25 @@ def _has_config(hf_config) -> bool:
     return hf_config is not None
 
 
+def _has_attention_sink(hf_config) -> bool:
+    return hf_config is not None and getattr(hf_config, "model_type", "") == "gpt_oss"
+
+
+def require_flash_for_attention_sink(hf_config, args) -> None:
+    """Sink models (gpt-oss) only get the sink applied on the flash path; force flash to match SGLang's fa3."""
+    if args is None:
+        return
+    impl = getattr(args, "attn_implementation", None)
+    if impl and not str(impl).startswith("flash"):
+        logger.warning(
+            "[fsdp class_patches] attention-sink model needs flash attention to match the SGLang rollout; "
+            f"overriding attn_implementation {impl!r} -> flash_attention_3 (eager/sdpa drop the sink)."
+        )
+        args.attn_implementation = "flash_attention_3"
+
+
 register_model_patch(ModelPatchHook("flash_attn_saux_guard", _always, lambda cfg, args: apply_flash_attn_saux_guard()))
+register_model_patch(ModelPatchHook("attn_sink_requires_flash", _has_attention_sink, require_flash_for_attention_sink))
 # Per-arch model patches register in their spec (adaptations/specs/); this module keeps only generic ones.
 
 
