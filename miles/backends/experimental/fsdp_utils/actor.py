@@ -106,6 +106,13 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
+        # precision policy: MixedPrecisionPolicy dtypes + optional fp32 master (glm4_moe_lite)
+        from .adaptations.precision import apply_fp32_master, resolve_precision_policy
+
+        precision = resolve_precision_policy(self.hf_config, self.args)
+        if precision.keep_fp32_master:
+            model = apply_fp32_master(model)
+
         # post-load packing patches needing the instantiated model (NemotronH); no-op otherwise
         apply_packing(model, self.hf_config, "post_load")
 
@@ -114,7 +121,12 @@ class FSDPTrainRayActor(TrainRayActor):
         full_state = model.state_dict()
 
         model = apply_fsdp2(
-            model, mesh=get_parallel_state().dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args
+            model,
+            mesh=get_parallel_state().dp_mesh,
+            cpu_offload=self.fsdp_cpu_offload,
+            args=self.args,
+            param_dtype=precision.param_dtype,
+            reduce_dtype=precision.reduce_dtype,
         )
 
         model = self._fsdp2_load_full_state_dict(
@@ -592,7 +604,7 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
+def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
     """Apply FSDP2 (fully_shard) to the model; ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py"""
     from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, fully_shard
 
@@ -608,8 +620,10 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         or (isinstance(module, torch.nn.Embedding) and not model.config.tie_word_embeddings)
     ]
 
-    param_dtype = torch.float16 if args.fp16 else torch.bfloat16
-    reduce_dtype = torch.float32
+    if param_dtype is None:
+        param_dtype = torch.float16 if args.fp16 else torch.bfloat16
+    if reduce_dtype is None:
+        reduce_dtype = torch.float32
 
     logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
 
