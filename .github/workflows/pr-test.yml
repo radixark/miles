@@ -1,8 +1,14 @@
+# doc-dev: docs/ci/00-stage.md
+# doc-dev: docs/ci/01-label.md
 name: PR Test
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
+  schedule:
+    # Nightly full CI on main: a scheduled run is treated like workflow_dispatch
+    # (every stage, --match-all-labels). 15:00 UTC = 08:00 PDT / 07:00 PST (cron is UTC, no DST).
+    - cron: '0 15 * * *'
   workflow_dispatch:
     inputs:
       infinite_run:
@@ -48,7 +54,7 @@ concurrency:
 
 jobs:
   resolve-ci-image:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    if: (github.event_name == 'workflow_dispatch') || ((github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) || (github.event.pull_request)
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -78,7 +84,7 @@ jobs:
   # occupying GPU-fleet runner slots.
   stage-a-cpu:
     needs: [resolve-ci-image]
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    if: (github.event_name == 'workflow_dispatch') || ((github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) || (github.event.pull_request)
     strategy:
       fail-fast: false
       matrix:
@@ -90,23 +96,22 @@ jobs:
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--match-all-labels' || '' }}
+        ${{ (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--continue-on-error' || '' }}
     secrets: inherit
 
-  # Stage B: CPU-only bucket (currently empty; reserved for future CPU tests
-  # that don't fit stage-a-cpu's fast budget). Always runs on PR. Empty result
-  # exits 0 in run_suite.py (see tests/ci/run_suite.py L149-L151).
+  # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
+  # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    if: (github.event_name == 'workflow_dispatch') || ((github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--match-all-labels' || '' }}
+        ${{ (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-b-2-gpu-h200:
@@ -115,8 +120,8 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       (needs.stage-a-cpu.result == 'success' ||
-        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+        (needs.stage-a-cpu.result == 'failure' && (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))))) &&
+      ((github.event_name == 'workflow_dispatch') || ((github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "2gpu"]'
@@ -124,8 +129,8 @@ jobs:
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--match-all-labels' || '' }}
+        ${{ (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-c-8-gpu-h100:
@@ -134,8 +139,8 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       (needs.stage-a-cpu.result == 'success' ||
-        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+        (needs.stage-a-cpu.result == 'failure' && (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))))) &&
+      ((github.event_name == 'workflow_dispatch') || ((github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) || (github.event.pull_request))
     strategy:
       fail-fast: false
       matrix:
@@ -148,8 +153,8 @@ jobs:
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--match-all-labels' || '' }}
+        ${{ (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-c-4-gpu-h200:
@@ -158,8 +163,8 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       (needs.stage-a-cpu.result == 'success' ||
-        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+        (needs.stage-a-cpu.result == 'failure' && (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))))) &&
+      ((github.event_name == 'workflow_dispatch') || ((github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) || (github.event.pull_request))
     strategy:
       fail-fast: false
       matrix:
@@ -172,8 +177,8 @@ jobs:
         python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--match-all-labels' || '' }}
+        ${{ (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--continue-on-error' || '' }}
     secrets: inherit
 
   stage-c-2-gpu-h200:
@@ -182,8 +187,8 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       (needs.stage-a-cpu.result == 'success' ||
-        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+        (needs.stage-a-cpu.result == 'failure' && (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))))) &&
+      ((github.event_name == 'workflow_dispatch') || ((github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) || (github.event.pull_request))
     strategy:
       fail-fast: false
       matrix:
@@ -196,6 +201,6 @@ jobs:
         python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--match-all-labels' || '' }}
+        ${{ (contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') || (github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'nightly'))) && '--continue-on-error' || '' }}
     secrets: inherit

@@ -56,6 +56,19 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
+_DSV4_TE_PRECISION_CONFIG = """
+configs:
+  bf16:
+    transformer_engine_config_type: "TEQuantizationParams"
+    training_recipe: {}
+matchers:
+  dsa_indexer_weights_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.indexer.linear_weights_proj"
+    config: "bf16"
+""".strip()
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -462,29 +475,28 @@ def _train(args: ScriptArgs):
         sglang_tp_size = 32
         sglang_dp_size = 32
         sglang_ep_size = 32
-        sglang_a2a_backend = "deepep"
     else:
-        sglang_world_size = args.num_gpus_per_node
-        sglang_tp_size = sglang_world_size
-        sglang_dp_size = sglang_world_size
-        sglang_ep_size = sglang_world_size
-        sglang_a2a_backend = None
+        sglang_world_size = 4
+        sglang_tp_size = 4
+        sglang_dp_size = 1
+        sglang_ep_size = 4
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         f"--sglang-tp-size {sglang_tp_size} "
         f"--sglang-dp-size {sglang_dp_size} "
-        "--sglang-enable-dp-attention "
-        "--sglang-attention-backend compressed "
-        "--sglang-page-size 256 "
-        "--sglang-max-running-requests 64 "
-        "--sglang-chunked-prefill-size 8192 "
-        "--sglang-server-concurrency 1024 "
+        f"--sglang-ep-size {sglang_ep_size} "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
-    if sglang_a2a_backend:
-        sglang_args += f"--sglang-moe-a2a-backend {sglang_a2a_backend} " "--sglang-cuda-graph-max-bs 8 "
+    if args.model_name == "DeepSeek-V4-Pro-FP8":
+        sglang_args += (
+            "--sglang-enable-dp-attention "
+            "--sglang-cuda-graph-max-bs 8 "
+            "--sglang-moe-runner-backend deep_gemm "
+            "--sglang-moe-a2a-backend deepep "
+            "--sglang-deepep-mode low_latency "
+        )
     if args.enable_mtp:
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
@@ -492,7 +504,6 @@ def _train(args: ScriptArgs):
             "--sglang-speculative-eagle-topk 1 "
             "--sglang-speculative-num-draft-tokens 4 "
         )
-    sglang_args += f"--sglang-ep-size {sglang_ep_size} "
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
@@ -565,6 +576,10 @@ def _train(args: ScriptArgs):
         # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
         fp32_scales = "0" if _is_blackwell(args) else "1"
         misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
+        # Keep the DSA indexer weights_proj (a TELinear) in BF16 on the trainer: blockwise
+        # fp8 on weights_proj is numerically unstable, so override it back to BF16 via TE.
+        if "--te-precision-config-file" not in args.extra_args:
+            misc_args += f"--te-precision-config-file " f"{U.save_to_temp_file(_DSV4_TE_PRECISION_CONFIG, 'yaml')} "
 
     train_args = (
         f"{ckpt_args} "

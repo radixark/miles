@@ -62,6 +62,11 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.is_gemma4 = False
     serving.tool_call_parser = None
     serving.reasoning_parser = None
+    # sglang v0.5.13 probes whether the tokenizer auto-adds special tokens
+    # (encode("") non-empty) to decide add_special_tokens at the chat-template
+    # encode site. __init__ always sets this; mirror it here so _process_messages
+    # takes the real production path instead of hitting AttributeError.
+    serving._tokenizer_auto_adds_specials = len(tokenizer.encode("")) > 0
     return serving
 
 

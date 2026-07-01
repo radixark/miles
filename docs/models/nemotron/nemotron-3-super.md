@@ -112,12 +112,11 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
    # Replay the exact rollout routing during training forward so
    # train logprobs match rollout logprobs (needed for sigmoid-routed MoE).
-   --use-miles-router
    --use-rollout-routing-replay
 )
 ```
 
-`--use-miles-router --use-rollout-routing-replay` keeps train and rollout
+The `--use-rollout-routing-replay` flag keeps train and rollout
 logprobs aligned for the sigmoid-routed MoE — the same routing-replay rule that
 Nano-MoE uses.
 

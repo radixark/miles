@@ -105,8 +105,7 @@ class ServerGroup:
                     # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
                     # to enable this isolation.
                     "SGLANG_DG_CACHE_DIR": f"/tmp/sglang_deep_gemm/{self.worker_type}_rank_{global_rank}",
-                    "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+                    "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
                     "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
                     "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
                         "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"
@@ -261,10 +260,14 @@ class ServerGroup:
             if engine.is_allocated
         ]
 
-    async def check_weights(self, action: str):
+    async def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
         return await asyncio.gather(
             *[
-                engine.actor_handle.check_weights.remote(action=action)
+                engine.actor_handle.check_weights.remote(
+                    action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+                )
                 for engine in self.engines
                 if engine.is_allocated
             ]
