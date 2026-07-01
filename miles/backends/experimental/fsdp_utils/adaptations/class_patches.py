@@ -56,6 +56,23 @@ def apply_flash_attn_saux_guard() -> bool:
     return True
 
 
+def check_train_infer_consistency(hf_config) -> None:
+    """Warn when an arch's training forward diverges structurally from the rollout (e.g. DeepSeek DSA)."""
+    model_type = str(getattr(hf_config, "model_type", "") or "")
+    is_dsa = (
+        "deepseek_v3" in model_type
+        or bool(getattr(hf_config, "index_topk", None))
+        or getattr(hf_config, "attn_module_list_cfg", None) is not None
+    )
+    if is_dsa:
+        logger.warning(
+            "[fsdp class_patches] DeepSeek sparse-attention (DSA) detected (model_type=%s): the HF "
+            "training forward has no indexer, so it is dropped and train attention is DENSE while "
+            "the rollout is SPARSE. RL on DSA via FSDP is not currently consistent.",
+            model_type,
+        )
+
+
 def check_fp8_checkpoint(hf_config) -> None:
     """Fail fast on native-fp8 checkpoints (the actor has no inline dequant)."""
     qc = getattr(hf_config, "quantization_config", None)
@@ -116,6 +133,9 @@ def require_flash_for_attention_sink(hf_config, args) -> None:
 register_model_patch(ModelPatchHook("flash_attn_saux_guard", _always, lambda cfg, args: apply_flash_attn_saux_guard()))
 register_model_patch(ModelPatchHook("attn_sink_requires_flash", _has_attention_sink, require_flash_for_attention_sink))
 register_model_patch(ModelPatchHook("fp8_checkpoint_guard", _has_config, lambda cfg, args: check_fp8_checkpoint(cfg)))
+register_model_patch(
+    ModelPatchHook("dsa_train_infer_warn", _has_config, lambda cfg, args: check_train_infer_consistency(cfg))
+)
 # Per-arch model patches register in their spec (adaptations/specs/); this module keeps only generic ones.
 
 
