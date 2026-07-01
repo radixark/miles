@@ -142,6 +142,25 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
+    payload = _build_generate_payload(args, state, sample, sampling_params)
+    if payload is None:
+        return sample
+
+    # Use session_id for consistent hashing routing if router uses consistent_hashing policy
+    headers = None
+    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
+        headers = {"X-SMG-Routing-Key": sample.session_id}
+
+    output = await post(url, payload, headers=headers)
+    return _apply_generate_output(args, sample, output)
+
+
+def _build_generate_payload(
+    args: Namespace,
+    state: GenerateState,
+    sample: Sample,
+    sampling_params: dict[str, Any],
+) -> dict[str, Any] | None:
     if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
         processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
@@ -152,6 +171,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     else:
         prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
 
+    sampling_params = sampling_params.copy()
     if len(sample.response) > 0:
         sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
 
@@ -160,7 +180,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     ), f"max_new_tokens: {sampling_params['max_new_tokens']} should not be less than 0"
     if sampling_params["max_new_tokens"] == 0:
         sample.status = Sample.Status.TRUNCATED
-        return sample
+        return None
 
     # Prepare payload for sglang server
     payload = {
@@ -192,12 +212,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
 
-    # Use session_id for consistent hashing routing if router uses consistent_hashing policy
-    headers = None
-    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
-        headers = {"X-SMG-Routing-Key": sample.session_id}
+    return payload
 
-    output = await post(url, payload, headers=headers)
+
+def _apply_generate_output(args: Namespace, sample: Sample, output: dict[str, Any]) -> Sample:
+    opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
+    opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
@@ -239,6 +259,57 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     sample.update_from_meta_info(args, output["meta_info"])
 
     return sample
+
+
+def _can_batch_generate_group(args: Namespace, group: list[Sample]) -> bool:
+    if getattr(args, "custom_generate_function_path", None) is not None:
+        return False
+    if getattr(args, "sglang_enable_deterministic_inference", False):
+        return False
+    if getattr(args, "sglang_router_policy", None) == "consistent_hashing":
+        return False
+    return not any(
+        len(sample.response) > 0 or (sample.multimodal_inputs and sample.multimodal_inputs.get("images"))
+        for sample in group
+    )
+
+
+async def generate_batch(
+    args: Namespace,
+    samples: list[Sample],
+    sampling_params: dict[str, Any],
+) -> list[Sample]:
+    state = GenerateState(args)
+    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+
+    payloads = []
+    samples_to_update = []
+    for sample in samples:
+        assert (
+            sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
+        ), f"Sample status is {sample.status}"
+        payload = _build_generate_payload(args, state, sample, sampling_params)
+        if payload is None:
+            continue
+        payloads.append(payload)
+        samples_to_update.append(sample)
+
+    if not payloads:
+        return samples
+
+    batch_payload = payloads[0].copy()
+    batch_payload["input_ids"] = [payload["input_ids"] for payload in payloads]
+    outputs = await post(url, batch_payload)
+    if not isinstance(outputs, list):
+        raise ValueError(f"SGLang batch generate returned {type(outputs).__name__}, expected list")
+    if len(outputs) != len(samples_to_update):
+        raise ValueError(
+            f"SGLang batch generate output count mismatch: expected {len(samples_to_update)}, got {len(outputs)}"
+        )
+
+    for sample, output in zip(samples_to_update, outputs, strict=True):
+        _apply_generate_output(args, sample, output)
+    return samples
 
 
 async def generate_and_rm(
@@ -319,17 +390,28 @@ async def generate_and_rm_group(
             if sample.session_id is None:
                 sample.session_id = str(uuid.uuid4())
 
-    tasks = []
-    for idx, sample in enumerate(group):
-        current_sampling_params = sampling_params.copy()
-        if getattr(args, "sglang_enable_deterministic_inference", False):
-            seed = state.group_sampling_seeds[idx]
-            current_sampling_params["sampling_seed"] = seed
-        tasks.append(
-            asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
-        )
+    if _can_batch_generate_group(args, group):
+        async with state.semaphore:
+            if state.aborted:
+                return group
+            group = await generate_batch(args, group, sampling_params)
+        if not args.group_rm:
+            samples_need_reward = [sample for sample in group if sample.reward is None]
+            rewards = await asyncio.gather(*[async_rm(args, sample) for sample in samples_need_reward])
+            for sample, reward in zip(samples_need_reward, rewards, strict=False):
+                sample.reward = reward
+    else:
+        tasks = []
+        for idx, sample in enumerate(group):
+            current_sampling_params = sampling_params.copy()
+            if getattr(args, "sglang_enable_deterministic_inference", False):
+                seed = state.group_sampling_seeds[idx]
+                current_sampling_params["sampling_seed"] = seed
+            tasks.append(
+                asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
+            )
 
-    group = await asyncio.gather(*tasks)
+        group = await asyncio.gather(*tasks)
 
     # for the rm that need the whole group, we will do the rm here
     if not state.aborted and args.group_rm:
