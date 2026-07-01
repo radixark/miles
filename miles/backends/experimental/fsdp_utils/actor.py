@@ -97,24 +97,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._enable_true_on_policy_optimizations(args)
 
-        init_context = self._get_init_weight_context_manager()
-
-        with init_context():
-            model = self.get_model_cls().from_pretrained(
-                self.args.hf_checkpoint,
-                trust_remote_code=True,
-                attn_implementation=self.args.attn_implementation,
-            )
-
-        # precision policy: MixedPrecisionPolicy dtypes + optional fp32 master (glm4_moe_lite)
-        from .adaptations.precision import apply_fp32_master, resolve_precision_policy
-
-        precision = resolve_precision_policy(self.hf_config, self.args)
-        if precision.keep_fp32_master:
-            model = apply_fp32_master(model)
-
-        # post-load packing patches needing the instantiated model (NemotronH); no-op otherwise
-        apply_packing(model, self.hf_config, "post_load")
+        model, precision = self._load_model_with_adaptations(self.args.hf_checkpoint)
 
         model.train()
 
@@ -529,6 +512,36 @@ class FSDPTrainRayActor(TrainRayActor):
 
         clear_memory()
 
+    def _load_model_with_adaptations(self, ckpt_path: str):
+        """from_pretrained + the post-load adaptation pipeline; shared by the actor and ref models."""
+        from .adaptations.packing import apply_packing
+        from .adaptations.post_load_fixups import apply_post_load_fixups
+        from .adaptations.precision import apply_fp32_master, resolve_precision_policy
+
+        init_context = self._get_init_weight_context_manager()
+
+        with init_context():
+            model = self.get_model_cls().from_pretrained(
+                ckpt_path,
+                trust_remote_code=True,
+                attn_implementation=self.args.attn_implementation,
+            )
+
+        # precision policy: MixedPrecisionPolicy dtypes + optional fp32 master (glm4_moe_lite, nemotron_h)
+        precision = resolve_precision_policy(self.hf_config, self.args)
+        if precision.keep_fp32_master:
+            model = apply_fp32_master(model)
+
+        # re-assert checkpoint over any param from_pretrained clobbered post-load (arch-gated, else no-op)
+        fixed = apply_post_load_fixups(model, self.hf_config, ckpt_path)
+
+        # post-load packing patches needing the instantiated model (NemotronH); no-op otherwise
+        packed = apply_packing(model, self.hf_config, "post_load")
+
+        if dist.get_rank() == 0:
+            logger.info(f"[fsdp adaptations] {ckpt_path}: post_load_fixups={fixed} packing={packed}")
+        return model, precision
+
     def _create_ref_model(self, ref_load_path: str | None):
         """Create a separate FSDP2 ref model (always CPUOffloadPolicy); raises if ref_load_path is None or not a dir."""
         if ref_load_path is None:
@@ -537,19 +550,19 @@ class FSDPTrainRayActor(TrainRayActor):
         if os.path.isdir(ref_load_path):
             logger.info(f"[Rank {dist.get_rank()}] Creating separate ref model from {ref_load_path}")
 
-            init_context = self._get_init_weight_context_manager()
-
-            with init_context():
-                ref_model = self.get_model_cls().from_pretrained(
-                    ref_load_path,
-                    trust_remote_code=True,
-                    attn_implementation=self.args.attn_implementation,
-                )
+            ref_model, precision = self._load_model_with_adaptations(ref_load_path)
 
             full_state = ref_model.state_dict()
 
             # always CPUOffloadPolicy for reference; faster than model.cpu()
-            ref_model = apply_fsdp2(ref_model, mesh=get_parallel_state().dp_mesh, cpu_offload=True, args=self.args)
+            ref_model = apply_fsdp2(
+                ref_model,
+                mesh=get_parallel_state().dp_mesh,
+                cpu_offload=True,
+                args=self.args,
+                param_dtype=precision.param_dtype,
+                reduce_dtype=precision.reduce_dtype,
+            )
             ref_model = self._fsdp2_load_full_state_dict(
                 ref_model, full_state, get_parallel_state().dp_mesh, cpu_offload=True
             )
