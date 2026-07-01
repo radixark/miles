@@ -46,3 +46,25 @@ def test_split_down_proj():
         d = out[f"model.layers.5.mlp.experts.{e}.down_proj.weight"]
         assert d.shape == (H, inter)
         torch.testing.assert_close(d, full[e])
+
+
+def test_packed_seq_context_boundaries():
+    # The shared boundary derivation (formerly duplicated verbatim in nemotron_h.py + qwen3_5_moe.py).
+    from miles.backends.experimental.fsdp_utils.adaptations.packing.boundaries import packed_seq_context
+
+    # single document / non-packed / wrong shape -> None (packing is a no-op)
+    assert packed_seq_context(None) is None
+    assert packed_seq_context(torch.arange(8).view(1, 8)) is None  # one doc, never resets to 0
+    assert packed_seq_context(torch.arange(8)) is None  # not [1, T]
+    assert packed_seq_context(torch.zeros(2, 4, dtype=torch.long)) is None  # batch > 1
+
+    # three packed docs of length 3, 2, 4 -> position_ids reset to 0 at each start
+    pos = torch.tensor([[0, 1, 2, 0, 1, 0, 1, 2, 3]])
+    ctx = packed_seq_context(pos)
+    assert ctx is not None
+    assert ctx.cu_seqlens.tolist() == [0, 3, 5, 9]
+    assert ctx.cu_seqlens.dtype == torch.int32
+    assert ctx.seq_idx.tolist() == [[0, 0, 0, 1, 1, 2, 2, 2, 2]]
+    assert ctx.seq_idx.dtype == torch.int32
+    assert ctx.seq_idx.shape == (1, 9)
+    assert ctx.max_seqlen == 4
