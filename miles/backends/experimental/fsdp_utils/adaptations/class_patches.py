@@ -56,6 +56,22 @@ def apply_flash_attn_saux_guard() -> bool:
     return True
 
 
+def check_fp8_checkpoint(hf_config) -> None:
+    """Fail fast on native-fp8 checkpoints (the actor has no inline dequant)."""
+    qc = getattr(hf_config, "quantization_config", None)
+    if not qc:
+        return
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    if str(method or "").lower() == "fp8":
+        raise ValueError(
+            "FSDP backend cannot train from an fp8-quantized checkpoint "
+            "(quantization_config.quant_method='fp8'). Convert to bf16 first:\n"
+            "  python tools/fp8_cast_bf16.py --input-fp8-hf-path <src> --output-bf16-hf-path <dst>\n"
+            "then copy config/tokenizer (dropping quantization_config) into <dst> and point "
+            "--hf-checkpoint at it."
+        )
+
+
 class ModelPatchHook:
     """A config-time patch: an applies_to(hf_config) predicate + an apply(hf_config, args) action."""
 
@@ -99,6 +115,7 @@ def require_flash_for_attention_sink(hf_config, args) -> None:
 
 register_model_patch(ModelPatchHook("flash_attn_saux_guard", _always, lambda cfg, args: apply_flash_attn_saux_guard()))
 register_model_patch(ModelPatchHook("attn_sink_requires_flash", _has_attention_sink, require_flash_for_attention_sink))
+register_model_patch(ModelPatchHook("fp8_checkpoint_guard", _has_config, lambda cfg, args: check_fp8_checkpoint(cfg)))
 # Per-arch model patches register in their spec (adaptations/specs/); this module keeps only generic ones.
 
 
