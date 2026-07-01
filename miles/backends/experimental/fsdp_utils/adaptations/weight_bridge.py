@@ -25,3 +25,23 @@ def get_param_transform(name: str, param, model_type: str):
         if transform.matches(name, param):
             return transform.expand
     return None
+
+
+def _qwen3_moe_matches(name: str, param) -> bool:
+    return getattr(param, "dim", lambda: 0)() == 3 and (
+        name.endswith(".experts.gate_up_proj") or name.endswith(".experts.down_proj")
+    )
+
+
+def _qwen3_moe_expand(name: str, full: torch.Tensor) -> Iterable[tuple[str, torch.Tensor]]:
+    """Split batched experts gate_up_proj [E,2I,H] / down_proj [E,H,I] into per-expert SGLang names."""
+    prefix = name.rsplit(".", 1)[0]  # ...mlp.experts
+    num_experts = full.shape[0]
+    if name.endswith(".gate_up_proj"):
+        half = full.shape[1] // 2  # fused rows are [gate | up]
+        for i in range(num_experts):
+            yield f"{prefix}.{i}.gate_proj.weight", full[i, :half, :].contiguous()
+            yield f"{prefix}.{i}.up_proj.weight", full[i, half:, :].contiguous()
+    else:  # .down_proj
+        for i in range(num_experts):
+            yield f"{prefix}.{i}.down_proj.weight", full[i].contiguous()
