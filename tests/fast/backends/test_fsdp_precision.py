@@ -1,8 +1,25 @@
 """Unit tests for the FSDP precision policy (CPU-only)."""
 
+from types import SimpleNamespace
+
 import torch
 
-from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master
+from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
+
+
+def test_resolve_precision_policy_gating_and_dtypes():
+    dense = SimpleNamespace(model_type="qwen3")
+    bf16_args = SimpleNamespace(fp16=False)
+
+    # fp32 master only for glm4_moe_lite; reduce is always fp32; param follows args.fp16
+    assert resolve_precision_policy(SimpleNamespace(model_type="glm4_moe_lite"), bf16_args).keep_fp32_master
+    p = resolve_precision_policy(dense, bf16_args)
+    assert not p.keep_fp32_master
+    assert p.param_dtype == torch.bfloat16 and p.reduce_dtype == torch.float32
+    assert resolve_precision_policy(dense, SimpleNamespace(fp16=True)).param_dtype == torch.float16
+    # nemotron_h keeps an fp32 master (mixed-dtype mamba checkpoint); qwen3_moe must not
+    assert resolve_precision_policy(SimpleNamespace(model_type="nemotron_h"), bf16_args).keep_fp32_master
+    assert not resolve_precision_policy(SimpleNamespace(model_type="qwen3_moe"), bf16_args).keep_fp32_master
 
 
 def test_apply_fp32_master_records_on_disk_dtypes_before_cast():
