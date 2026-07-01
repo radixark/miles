@@ -39,18 +39,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# PR labels are passed through to run_suite.py as raw `run-ci-<X>` strings via
-# `--labels`. run_suite.py strips the `run-ci-` prefix internally and ignores
-# any label that does not start with `run-ci-` (see tests/ci/run_suite.py
-# `strip_run_ci_prefix`). For `workflow_dispatch`, no PR labels exist, so the
-# `--labels` list collapses to empty; `--match-all-labels` is then added
-# unconditionally to bypass the labels predicate inside run_suite.py and run
-# every enabled test in the suite.
+# Label flow into run_suite.py:
+# - PR labels are passed through to run_suite.py as raw `run-ci-<X>` strings via `--labels`.
+# - run_suite.py strips the `run-ci-` prefix internally and ignores any label that does not
+#   start with `run-ci-` (see tests/ci/run_suite.py `strip_run_ci_prefix`).
+# - For `workflow_dispatch`, no PR labels exist, so the `--labels` list collapses to empty;
+#   `--match-all-labels` is then added unconditionally to bypass the labels predicate inside
+#   run_suite.py and run every enabled test in the suite.
 #
-# The `bypass-fastfail` PR label opts a PR out of fast-fail on two levels: GPU
-# stages run even when stage-a-cpu fails (cross-stage), and every stage passes
-# `--continue-on-error` so one failing test no longer stops the rest of its
-# suite (within-stage). One CI run then surfaces every failure.
+# The `bypass-fastfail` PR label opts a PR out of fast-fail on two levels:
+# - cross-stage: GPU stages run even when stage-a-cpu fails.
+# - within-stage: every stage passes `--continue-on-error` so one failing test no longer
+#   stops the rest of its suite.
+# One CI run then surfaces every failure.
 
 jobs:
   resolve-ci-image:
