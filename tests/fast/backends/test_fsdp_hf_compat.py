@@ -48,6 +48,18 @@ def test_split_down_proj():
         torch.testing.assert_close(d, full[e])
 
 
+def test_qwen3_moe_patch_noops_on_batched_structure():
+    # On transformers>=5.6 the patch must not replace the forward (batched experts).
+    from transformers.models.qwen3_moe import modeling_qwen3_moe
+
+    from miles.backends.experimental.fsdp_utils.models.qwen3_moe_hf import apply_fsdp_moe_patch
+
+    original_forward = modeling_qwen3_moe.Qwen3MoeSparseMoeBlock.forward
+    apply_fsdp_moe_patch()  # must not raise
+    if hasattr(modeling_qwen3_moe, "Qwen3MoeExperts") or hasattr(modeling_qwen3_moe, "Qwen3MoeTopKRouter"):
+        assert modeling_qwen3_moe.Qwen3MoeSparseMoeBlock.forward is original_forward
+
+
 def test_is_mamba_hybrid_gating():
     # The clobber-reload only runs for Mamba/SSM-hybrid archs (NemotronH _init_weights
     # re-inits dt_bias + out_proj post-load); it must be a no-op gate for everything else.
