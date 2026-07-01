@@ -48,6 +48,23 @@ def test_split_down_proj():
         torch.testing.assert_close(d, full[e])
 
 
+def test_is_mamba_hybrid_gating():
+    # The clobber-reload only runs for Mamba/SSM-hybrid archs (NemotronH _init_weights
+    # re-inits dt_bias + out_proj post-load); it must be a no-op gate for everything else.
+    from types import SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import _is_mamba_hybrid
+
+    assert _is_mamba_hybrid(SimpleNamespace(model_type="nemotron_h"))
+    assert _is_mamba_hybrid(SimpleNamespace(model_type="mamba2"))
+    # detected via layer_types even when model_type doesn't say "mamba"
+    assert _is_mamba_hybrid(SimpleNamespace(model_type="hybrid", layer_types=["mamba", "attention"]))
+    # dense / non-mamba archs must NOT trigger the reload
+    assert not _is_mamba_hybrid(SimpleNamespace(model_type="qwen3"))
+    assert not _is_mamba_hybrid(SimpleNamespace(model_type="qwen3_moe"))
+    assert not _is_mamba_hybrid(SimpleNamespace(model_type="llama", layer_types=["attention"]))
+
+
 def test_packed_seq_context_boundaries():
     # The shared boundary derivation (formerly duplicated verbatim in nemotron_h.py + qwen3_5_moe.py).
     from miles.backends.experimental.fsdp_utils.adaptations.packing.boundaries import packed_seq_context
