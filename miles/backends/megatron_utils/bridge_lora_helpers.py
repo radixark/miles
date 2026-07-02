@@ -102,12 +102,12 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
-    # GLM DSA kernel backend: the Megatron-Bridge GLM-5 provider bakes the "megatron-bridge"
+    # GLM DSA kernel backend: the Megatron-Bridge GLM-5 provider bakes the "megatron-bridge-native"
     # default; override from the miles arg so LoRA training honors --dsa-attention-backend
-    # (e.g. "slime" -> fused SparseMLA on thd input). hasattr-guarded so non-DSA providers are
+    # (e.g. "glm-native" -> fused SparseMLA on thd input). hasattr-guarded so non-DSA providers are
     # untouched; both backends set the SAME field so the unfused default is fully preserved.
     if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron-bridge")
+        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron-bridge-native")
     provider.finalize()
 
     lora = create_lora_instance(args)

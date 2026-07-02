@@ -25,27 +25,27 @@ Modeled on ``scripts/run_deepseek_v4.py`` (typer app + ScriptArgs(ExecuteTrainCo
 
 DSA kernel backend (``--dsa-attention-backend``; bridge path only). Orthogonal to model version
 and to LoRA -- BOTH backends run GLM-5.1 *and* GLM-5.2, full or LoRA:
-  * ``slime`` (default): the vendored fused TileLang kernels (SparseMLA + lighting_indexer),
+  * ``glm-native`` (default): the vendored fused TileLang kernels (SparseMLA + lighting_indexer),
     matching slime's rollout kernels for rollout<->train numerical parity (incl. R3 indexer
     replay). Needs the optional ``tilelang`` dep and the ``thd`` (packed) layout.
     Training/forward-only (no KV cache): it cannot serve generation -- the rollout is always
     served by sglang.
-  * ``megatron-bridge``: the portable unfused megatron-core DSA kernels (DSAttention /
+  * ``megatron-bridge-native``: the portable unfused megatron-core DSA kernels (DSAttention /
     CrossLayerDSAttention). No extra deps. Uses the ``bshd`` query layout.
   This launcher selects the matching ``--qkv-format`` automatically from the backend (see
-  ``_get_parallel_config``); just pass ``--dsa-attention-backend megatron-bridge`` or leave the
-  default. See the Megatron-Bridge ``models/glm_moe_dsa/__init__.py`` docstring for the full
+  ``_get_parallel_config``); just pass ``--dsa-attention-backend megatron-bridge-native`` or leave the
+  default. See the Megatron-Bridge ``models/glm5/__init__.py`` docstring for the full
   backend matrix.
 
 Two DSA specifics:
   * ``--target-modules`` excludes the 3 DSA indexer modules (wq_b/wk/weights_proj) by default --
-    the indexer stays a frozen base capability; this run does not train it. On the slime backend the
-    indexer adapter gets no gradient anyway (a genuine no-op); on the megatron-bridge backend it
+    the indexer stays a frozen base capability; this run does not train it. On the glm-native backend the
+    indexer adapter gets no gradient anyway (a genuine no-op); on the megatron-bridge-native backend it
     would get a tiny aux-loss gradient (~1e-5), so excluding it there is a deliberate choice.
   * ``--micro-batch-size 1`` (no ``--use-dynamic-batch-size``): both backends pin a static
     micro-batch. The query layout follows the backend -- ``bshd`` (megatron-core's DSA
     core-attention needs a 4D query; the default ``thd`` packing yields a 3D query and raises "not
-    enough values to unpack") for ``megatron-bridge``, ``thd`` (packed) for ``slime``.
+    enough values to unpack") for ``megatron-bridge-native``, ``thd`` (packed) for ``glm-native``.
 
 Supported model variants (HF checkpoint must be the native config,
 model_type=glm_moe_dsa / GlmMoeDsaForCausalLM):
@@ -54,11 +54,11 @@ model_type=glm_moe_dsa / GlmMoeDsaForCausalLM):
 
 Usage (run ON the devbox; miles editable-installed under /personal):
   python scripts/run_glm5_2_744b_a40b_lora.py prepare    --model-name GLM-5.2_5layer   # download model + task dataset (default gsm8k)
-  # default (slime / fused TileLang) backend:
+  # default (glm-native / fused TileLang) backend:
   python scripts/run_glm5_2_744b_a40b_lora.py full-train --model-name GLM-5.2_5layer --num-gpus-per-node 4
-  # unfused megatron-bridge backend:
+  # unfused megatron-bridge-native backend:
   python scripts/run_glm5_2_744b_a40b_lora.py full-train --model-name GLM-5.2_5layer \\
-      --dsa-attention-backend megatron-bridge --num-gpus-per-node 4
+      --dsa-attention-backend megatron-bridge-native --num-gpus-per-node 4
   # DAPO-Math example (zhuzilin/dapo-math-17k, long-CoT competition math -- use a longer response len):
   python scripts/run_glm5_2_744b_a40b_lora.py prepare --model-name GLM-5.2_5layer --task dapo-math
   python scripts/run_glm5_2_744b_a40b_lora.py train   --model-name GLM-5.2_5layer --task dapo-math \\
@@ -131,17 +131,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # DSA sparse-MLA kernel backend (bridge path only). Orthogonal to model version & LoRA: BOTH
     # backends support GLM-5.1 AND GLM-5.2, full or LoRA.
-    #   "slime" (default):  vendored fused TileLang SparseMLA + lighting_indexer; thd layout; needs
+    #   "glm-native" (default):  vendored fused TileLang SparseMLA + lighting_indexer; thd layout; needs
     #                       tilelang; matches slime's rollout kernels for rollout<->train parity
     #                       (incl. R3 indexer replay); training/forward-only (no KV cache).
-    #   "megatron-bridge":  portable unfused megatron-core DSA kernels; bshd layout; no extra deps.
+    #   "megatron-bridge-native":  portable unfused megatron-core DSA kernels; bshd layout; no extra deps.
     # The matching --qkv-format is chosen from this automatically (see _get_parallel_config).
-    dsa_attention_backend: Literal["megatron-bridge", "slime"] = "slime"
+    dsa_attention_backend: Literal["megatron-bridge-native", "glm-native"] = "glm-native"
 
     # R3 (rollout routing replay, arxiv 2510.11370): during training, replay the rollout's recorded
     # MoE top-8 so the train-side expert selection matches the rollout (on-policy). Adds ONLY
     # --use-rollout-routing-replay. The DSA indexer top-k replay (--use-rollout-indexer-replay) is
-    # NOT added: it is a debug-only parity check (the slime kernel recomputes the top-k) and it
+    # NOT added: it is a debug-only parity check (the glm-native kernel recomputes the top-k) and it
     # triggers sglang's ~78-128 GB/rank IndexerTopkCapturer host buffer that OOM'd the colocate pod.
     # See _train r3_args for the full rationale.
     use_r3: bool = True
@@ -158,8 +158,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # (enable_weights_cpu_backup) the base mis-maps across the torch_memory_saver pause/resume and
     # the rollout serves a corrupted base+LoRA -> train<->rollout abs_diff ~1.46 / KL ~1.0 instead
     # of ~0.01 / ~1e-4 (measured on GLM-5.2_5layer; exp_weight harness A/B). Default ON. Opt out
-    # (--no-lora-base-cpu-backup) ONLY for full-744B on the slime train backend when host RAM is
-    # tight: the ~372 GB/node mirror + slime init can push the pod past its cgroup memory.max
+    # (--no-lora-base-cpu-backup) ONLY for full-744B on the glm-native train backend when host RAM is
+    # tight: the ~372 GB/node mirror + glm-native-backend init can push the pod past its cgroup memory.max
     # (host OOM -> RolloutManager SIGTERM); trade-off when OFF is the trainer re-ships the base
     # per swap AND the on-policy guarantee is lost.
     lora_base_cpu_backup: bool = True
@@ -243,20 +243,20 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     The DSA kernel backend dictates the query layout; both forbid --use-dynamic-batch-size, hence
     --micro-batch-size 1:
-      * megatron-bridge (unfused megatron-core DSA core-attention): needs bshd (4D query); the
+      * megatron-bridge-native (unfused megatron-core DSA core-attention): needs bshd (4D query); the
         default thd packing yields a 3D query and raises "not enough values to unpack".
-      * slime (fused TileLang SparseMLA + lighting_indexer): needs thd (packed) -- the fused
+      * glm-native (fused TileLang SparseMLA + lighting_indexer): needs thd (packed) -- the fused
         kernels index by cu_seqlens and use a [t, heads, dim] layout; bshd has no cu_seqlens.
     """
     ngpu = args.num_gpus_per_node
     # Canonical GLM-5 layout TP=EP=ngpu + sequence-parallel, CP=1 here (the full-scale recipe adds
-    # context-parallel + --allgather-cp). BOTH backends run with sequence-parallel: the slime fused
-    # thd indexer / SparseMLA path is SP/CP-aware in the bridge port -- slime_mla.py reconciles
+    # context-parallel + --allgather-cp). BOTH backends run with sequence-parallel: the glm-native fused
+    # thd indexer / SparseMLA path is SP/CP-aware in the bridge port -- glm_native_mla.py reconciles
     # index_q/index_k/head_weights via SP(+CP) all-gather and cu_seqlens (starts/ends) via CP-scatter,
     # mirroring native slime glm5.py, so the fused kernel sees matching token dims under SP. The only
-    # per-backend difference is the query layout: thd (packed, cu_seqlens-indexed) for slime, bshd
+    # per-backend difference is the query layout: thd (packed, cu_seqlens-indexed) for glm-native, bshd
     # for the unfused megatron-core core-attention.
-    qkv_format = "thd" if args.dsa_attention_backend == "slime" else "bshd"
+    qkv_format = "thd" if args.dsa_attention_backend == "glm-native" else "bshd"
     return (
         f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
         f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "
@@ -386,7 +386,7 @@ def _train(args: ScriptArgs):
         # --sglang-lora-use-virtual-experts below. KEEP_MOE_LORA=0 -> attention-only, neither emitted.
         lora_args += "--no-gradient-accumulation-fusion "
     # --lora-base-cpu-backup: default ON (see the ScriptArgs field comment — OFF silently breaks
-    # on-policy with abs_diff ~1.46 / KL ~1.0; opt out only for full-744B + slime when host RAM
+    # on-policy with abs_diff ~1.46 / KL ~1.0; opt out only for full-744B + glm-native when host RAM
     # cannot take the ~372 GB/node mirror).
     if args.lora_base_cpu_backup:
         lora_args += "--lora-base-cpu-backup "
@@ -426,7 +426,7 @@ def _train(args: ScriptArgs):
     # ~0.5 GB/rank) and is the R3 we want for a faithful RL run.
     #
     # We deliberately DO NOT add --use-rollout-indexer-replay (the DSA indexer top-k replay):
-    #   * It is a DEBUG aid -- it only verifies rollout-vs-train indexer top-k parity. The slime
+    #   * It is a DEBUG aid -- it only verifies rollout-vs-train indexer top-k parity. The glm-native
     #     kernel recomputes the indexer top-k itself, so TRAINING DOES NOT NEED IT.
     #   * Enabling it makes sglang allocate the IndexerTopkCapturer HOST pinned buffer
     #     -- shape (max_total_num_tokens, num_layers, index_topk=2048) int32 ~= 78-128 GB/rank,

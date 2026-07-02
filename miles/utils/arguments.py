@@ -222,13 +222,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--dsa-attention-backend",
-                choices=["megatron-bridge", "slime"],
-                default="slime",
+                choices=["megatron-bridge-native", "glm-native"],
+                default="glm-native",
                 help=(
                     "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'slime' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer) for "
-                    "rollout<->train numerical parity; 'megatron-bridge' uses the portable unfused megatron-core "
-                    "kernels. 'slime' requires --qkv-format thd and the optional tilelang dep, and is "
+                    "'glm-native' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
+                    "rollout<->train numerical parity; 'megatron-bridge-native' uses the portable unfused megatron-core "
+                    "kernels. 'glm-native' requires --qkv-format thd and the optional tilelang dep, and is "
                     "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
                     "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
                 ),

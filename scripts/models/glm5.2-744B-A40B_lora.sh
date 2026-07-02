@@ -75,7 +75,7 @@ MODEL_ARGS=(
 # would be silently overridden anyway (last-occurrence-wins) and (b) boolean flags set
 # here could NOT be turned back off by the runner's knobs (e.g. KEEP_MOE_LORA=0 must be
 # able to drop --experts-shared-outer-loras). For reference, the runner emits:
-#   * bridge + DSA backend:  --megatron-to-hf-mode bridge --dsa-attention-backend {slime|megatron-bridge}
+#   * bridge + DSA backend:  --megatron-to-hf-mode bridge --dsa-attention-backend {glm-native|megatron-bridge-native}
 #                            (+ the matching --qkv-format thd|bshd and --micro-batch-size 1)
 #   * adapter shape:         --lora-rank 16 --lora-alpha 32 --lora-dropout 0.0
 #                            --target-modules "q,k,v,o + MLA q_a/kv_a/q_b/kv_b + gate/up/down"
