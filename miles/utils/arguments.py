@@ -1088,11 +1088,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--use-rollout-routing-replay",
                 action=argparse.BooleanOptionalAction,
-                default=True,
+                default=False,
                 help="R3 rollout routing replay (https://arxiv.org/abs/2510.11370): replay the rollout's "
-                "MoE top-8 in training for rollout<->train on-policy parity. DEFAULT ON -- cheap "
-                "(sglang routed-experts capturer ~0.5 GB/rank, no host buffer). Disable with "
-                "--no-use-rollout-routing-replay. NOTE: distinct from the debug-only "
+                "MoE top-8 in training for rollout<->train on-policy parity. Cheap (sglang routed-experts "
+                "capturer ~0.5 GB/rank, no host buffer) and recommended for MoE RL -- the GLM-5 launchers "
+                "pass it explicitly. DEFAULT OFF: it is MoE-only (a dense/non-MoE rollout emits no "
+                "routed_experts, so enabling it raises 'rollout_routed_experts is required' at step 0) and "
+                "R3 replay modules are only registered for models that opt in, so a default-on would "
+                "silently change training numerics / crash for non-GLM-MoE and dense runs. Enable with "
+                "--use-rollout-routing-replay. NOTE: distinct from the debug-only "
                 "--use-rollout-indexer-replay (stays default-off; it triggers the ~78-128 GB/rank "
                 "IndexerTopkCapturer host buffer that OOMs the colocate pod).",
             )
@@ -2213,13 +2217,17 @@ def miles_validate_args(args):
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":
+            # "all-linear" = dense attention/MLP + MLA up/down projections. The DSA indexer
+            # (wq_b / wk / weights_proj) is deliberately EXCLUDED here: it is a no-op on the fused
+            # (slime) backend (the fused lighting_indexer emits only discrete top-k, no gradient),
+            # auto-adding it makes SGLang serving crash on DeepSeek-V4 (get_dsa_index_n_heads is
+            # DSA-only) and it is the target class that host-OOMs the indexer replay capturer. Add
+            # wq_b,wk,weights_proj explicitly via a comma-list when you actually want indexer LoRA.
             modules = [
                 # dense attention + MLP
                 "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
                 # MLA (DeepSeek / GLM MLA attention)
                 "q_a_proj", "kv_a_proj_with_mqa", "q_b_proj", "kv_b_proj",
-                # DSA indexer (GLM-5.1 / DeepSeek-V3.2)
-                "wq_b", "wk", "weights_proj",
             ]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
@@ -2235,6 +2243,10 @@ def miles_validate_args(args):
             modules = [m for m in modules if m not in exclude_set]
 
         args.target_modules = modules
+        # LoRA target set changed meaningfully across versions (all-linear now also covers the MLA
+        # up/down projections). Log the resolved set so a silently-different adapter shape / trained
+        # module set on an existing recipe is visible rather than silent.
+        logger.info(f"LoRA target modules resolved to: {modules}")
 
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).

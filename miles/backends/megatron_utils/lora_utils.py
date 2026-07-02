@@ -330,6 +330,11 @@ def create_lora_instance(args: Namespace):
     # MoE-expert (grouped) LoRA adapter layout, keyed on --experts-shared-outer-loras:
     #   SET   -> shared-outer LoRA (SGLang PR #21466 contract) + share_expert_adapters=True
     #   UNSET -> regular per-expert LoRA (share_expert_adapters=False: one adapter per local expert)
+    # NOTE: this OVERRIDES the LoRA/CanonicalLoRA dataclass default (share_expert_adapters=True).
+    # Earlier miles never passed the kwarg, so a grouped-expert MoE model with expert targets and no
+    # --experts-shared-outer-loras used the shared layout; it now defaults to per-expert. That changes
+    # the trained adapter shape / optimizer-state / checkpoint compatibility, so we log it loudly below
+    # (rather than flip the layout silently). Pass --experts-shared-outer-loras to keep the shared layout.
     _shared_outer = bool(getattr(args, "experts_shared_outer_loras", False))
     lora_kwargs["share_expert_adapters"] = _shared_outer
     # experts_shared_outer_loras is only supported by the standard ``LoRA`` class today.
@@ -337,6 +342,20 @@ def create_lora_instance(args: Namespace):
         lora_kwargs["experts_shared_outer_loras"] = _shared_outer
 
     lora = lora_cls(**lora_kwargs)
+
+    # Surface the MoE-expert LoRA layout whenever expert projections are targeted -- it is a
+    # behavior/checkpoint-affecting choice and used to be implicit (shared).
+    _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
+    if any(any(leaf in str(tm) for leaf in _expert_leaves) for tm in (target_modules or [])):
+        logger.warning(
+            "MoE-expert LoRA layout: %s (share_expert_adapters=%s). "
+            "This is set from --experts-shared-outer-loras (%s); the default is per-expert, which "
+            "differs from the earlier implicit shared layout -- checkpoints across the two are not "
+            "interchangeable.",
+            "shared-outer" if _shared_outer else "per-expert",
+            _shared_outer,
+            "on" if _shared_outer else "off",
+        )
 
     logger.info(
         f"Created {lora_cls.__name__}: rank={args.lora_rank}, alpha={args.lora_alpha}, "
