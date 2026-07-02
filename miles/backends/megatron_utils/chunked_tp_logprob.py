@@ -17,15 +17,6 @@ def should_enable_chunked_tp_logprob(args: Namespace, role: str) -> bool:
 def validate_chunked_tp_logprob_config(args: Namespace) -> None:
     if args.true_on_policy_mode:
         raise ValueError("--use-chunked-tp-logprob-loss does not support --true-on-policy-mode yet.")
-    if args.qkv_format != "bshd":
-        raise ValueError(
-            f"--use-chunked-tp-logprob-loss currently supports only --qkv-format bshd. Got: {args.qkv_format}"
-        )
-    if args.context_parallel_size != 1:
-        raise ValueError(
-            "--use-chunked-tp-logprob-loss currently supports only --context-parallel-size 1. "
-            f"Got: {args.context_parallel_size}"
-        )
     if args.allgather_cp:
         raise ValueError("--use-chunked-tp-logprob-loss does not support --allgather-cp yet.")
     if args.chunked_tp_logprob_seq_chunk_size <= 0:

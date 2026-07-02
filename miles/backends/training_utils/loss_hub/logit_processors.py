@@ -127,34 +127,101 @@ def get_responses(
         yield logits_chunk, tokens_chunk
 
 
-def build_shifted_tokens_bshd(
+def build_shifted_tokens(
     num_tokens: int,
     device: torch.device,
     unconcat_tokens: list[torch.Tensor],
     total_lengths: list[int],
-    max_seq_lens: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None,
+    args: Namespace,
 ) -> torch.Tensor:
+    """Target token for the log-prob at each local hidden-state position.
+
+    Mirrors the position layout of ``get_responses`` so the chunked path shifts
+    tokens the same way the non-chunked path slices logits: bshd pads each sample
+    to ``max_seq_len``, thd packs contiguously, and cp>1 uses the zigzag two-chunk
+    layout. Positions outside a response stay 0 and are dropped by
+    ``extract_per_sample``.
+    """
+    cp_size = get_parallel_state().cp.size
     full_tokens = torch.zeros(num_tokens, dtype=torch.long, device=device)
-    for i, (tokens, total_length) in enumerate(zip(unconcat_tokens, total_lengths, strict=False)):
-        seq_start = max_seq_lens[i] * i
-        full_tokens[seq_start : seq_start + total_length - 1] = tokens[1:total_length]
+    if cp_size == 1:
+        seq_start = 0
+        for i, (tokens, total_length) in enumerate(zip(unconcat_tokens, total_lengths, strict=False)):
+            base = max_seq_lens[i] * i if args.qkv_format == "bshd" else seq_start
+            full_tokens[base : base + total_length - 1] = tokens[1:total_length]
+            seq_start += total_length
+        return full_tokens
+
+    end = 0
+    for i, (tokens, total_length, response_length) in enumerate(
+        zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
+    ):
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
+            total_length, response_length, args.qkv_format, max_seq_len
+        )
+        l0 = (end + logits_offset[0][0] - chunks_offset[0][0], end + logits_offset[0][1] - chunks_offset[0][0])
+        l1 = (
+            end + chunk_size + logits_offset[1][0] - chunks_offset[1][0],
+            end + chunk_size + logits_offset[1][1] - chunks_offset[1][0],
+        )
+        full_tokens[l0[0] : l0[1]] = tokens[tokens_offset[0][0] : tokens_offset[0][1]]
+        full_tokens[l1[0] : l1[1]] = tokens[tokens_offset[1][0] : tokens_offset[1][1]]
+        end += 2 * chunk_size
     return full_tokens
 
 
-def extract_per_sample_bshd(
+def extract_per_sample(
     log_prob_full: torch.Tensor,
     entropy_full: torch.Tensor | None,
     total_lengths: list[int],
     response_lengths: list[int],
-    max_seq_lens: list[int],
+    max_seq_lens: list[int] | None,
+    args: Namespace,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor | None]]:
-    log_probs_list = []
-    entropy_list = []
+    """Slice each sample's response log-probs out of the flat per-token tensor.
+
+    Uses the same position layout as ``build_shifted_tokens`` / ``get_responses``.
+    """
+    cp_size = get_parallel_state().cp.size
+    log_probs_list: list[torch.Tensor] = []
+    entropy_list: list[torch.Tensor | None] = []
+
+    def take(a, b):
+        entropy_list.append(entropy_full[a:b] if entropy_full is not None else None)
+        return log_prob_full[a:b]
+
+    if cp_size == 1:
+        seq_start = 0
+        for i, (total_length, response_length) in enumerate(zip(total_lengths, response_lengths, strict=False)):
+            end = (max_seq_lens[i] * i if args.qkv_format == "bshd" else seq_start) + total_length
+            start = end - response_length
+            log_probs_list.append(take(start - 1, end - 1))
+            seq_start += total_length
+        return log_probs_list, entropy_list
+
+    end = 0
     for i, (total_length, response_length) in enumerate(zip(total_lengths, response_lengths, strict=False)):
-        end = max_seq_lens[i] * i + total_length
-        start = end - response_length
-        log_probs_list.append(log_prob_full[start - 1 : end - 1])
-        entropy_list.append(entropy_full[start - 1 : end - 1] if entropy_full is not None else None)
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
+            total_length, response_length, args.qkv_format, max_seq_len
+        )
+        lp0 = log_prob_full[end + logits_offset[0][0] - chunks_offset[0][0] : end + logits_offset[0][1] - chunks_offset[0][0]]
+        lp1 = log_prob_full[
+            end + chunk_size + logits_offset[1][0] - chunks_offset[1][0] : end + chunk_size + logits_offset[1][1] - chunks_offset[1][0]
+        ]
+        log_probs_list.append(torch.cat([lp0, lp1], dim=0))
+        if entropy_full is not None:
+            e0 = entropy_full[end + logits_offset[0][0] - chunks_offset[0][0] : end + logits_offset[0][1] - chunks_offset[0][0]]
+            e1 = entropy_full[
+                end + chunk_size + logits_offset[1][0] - chunks_offset[1][0] : end + chunk_size + logits_offset[1][1] - chunks_offset[1][0]
+            ]
+            entropy_list.append(torch.cat([e0, e1], dim=0))
+        else:
+            entropy_list.append(None)
+        end += 2 * chunk_size
     return log_probs_list, entropy_list
 
 
@@ -177,8 +244,8 @@ def get_log_probs_and_entropy_from_hidden_states(
     seq_chunk_size = args.chunked_tp_logprob_seq_chunk_size
     rollout_temperature = getattr(args, "rollout_temperature", 1.0)
 
-    full_tokens = build_shifted_tokens_bshd(
-        num_tokens, hidden_states.device, unconcat_tokens, total_lengths, max_seq_lens
+    full_tokens = build_shifted_tokens(
+        num_tokens, hidden_states.device, unconcat_tokens, total_lengths, response_lengths, max_seq_lens, args
     )
 
     log_prob_chunks = []
@@ -205,8 +272,8 @@ def get_log_probs_and_entropy_from_hidden_states(
     log_prob_full = torch.cat(log_prob_chunks, dim=0)
     entropy_full = torch.cat(entropy_chunks, dim=0) if with_entropy else None
 
-    log_probs_list, entropy_list = extract_per_sample_bshd(
-        log_prob_full, entropy_full, total_lengths, response_lengths, max_seq_lens
+    log_probs_list, entropy_list = extract_per_sample(
+        log_prob_full, entropy_full, total_lengths, response_lengths, max_seq_lens, args
     )
     res = {"log_probs": log_probs_list}
     if with_entropy:
