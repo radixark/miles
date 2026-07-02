@@ -2234,9 +2234,18 @@ def miles_validate_args(args):
             # wq_b,wk,weights_proj explicitly via a comma-list when you actually want indexer LoRA.
             modules = [
                 # dense attention + MLP
-                "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
                 # MLA (DeepSeek / GLM MLA attention)
-                "q_a_proj", "kv_a_proj_with_mqa", "q_b_proj", "kv_b_proj",
+                "q_a_proj",
+                "kv_a_proj_with_mqa",
+                "q_b_proj",
+                "kv_b_proj",
             ]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]

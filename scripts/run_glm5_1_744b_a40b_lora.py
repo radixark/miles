@@ -72,10 +72,9 @@ Usage (run ON the devbox; miles editable-installed under /personal):
       --extra-args "--dump-details /personal/dump51"
 """
 
+import os
 from dataclasses import dataclass
 from typing import Literal
-
-import os
 
 import typer
 
@@ -98,7 +97,9 @@ _MEGATRON_MODEL_TYPE = {
 
 # Explicit LoRA targets: standard attn + MLA + MLP/MoE, EXCLUDING the DSA indexer
 # (wq_b/wk/weights_proj). Set --target-modules all-linear to also cover the indexer.
-_DEFAULT_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+_DEFAULT_TARGET_MODULES = (
+    "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+)
 
 
 @dataclass
@@ -275,7 +276,9 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _train(args: ScriptArgs):
-    print(f"[run] GLM-5.1 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}")
+    print(
+        f"[run] GLM-5.1 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
+    )
     load_save_path = f"{args.save_dir}/{args.run_id}"
 
     ckpt_args = (
@@ -434,7 +437,9 @@ def _train(args: ScriptArgs):
     else:
         r3_args = "--no-use-rollout-routing-replay "
 
-    optimizer_args = "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
+    optimizer_args = (
+        "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
+    )
     # CPU Adam — offload the optimizer state to host RAM. DEFAULT ON (set OPTIMIZER_CPU_OFFLOAD=0 to
     # disable, e.g. for the pruned toy). The three flags MUST go together (offload + D2H/H2D overlap +
     # precision-aware optimizer), matching the full-FT recipe run_glm5_744b_a40b.py and the deepseek/
@@ -494,7 +499,9 @@ def _train(args: ScriptArgs):
     # seq window (training --seq-length + rollout --rollout-max-context-len). Omitted when seq_window
     # == 0 so megatron falls back to its default 4096 window (fine for the short gsm8k case). The .sh
     # wrappers may also pass these via --extra-args; argparse takes the last occurrence (env wins).
-    seq_args = f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
+    seq_args = (
+        f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
+    )
 
     train_args = f"{ckpt_args} {lora_args} {rollout_args} {seq_args} {optimizer_args} {grpo_args} {r3_args} {wandb_args} {perf_args} {sglang_args} {save_args} {misc_args} {args.extra_args} "
 
