@@ -83,6 +83,11 @@ class NanScanner:
         self._step += 1
         return self._step
 
+    @property
+    def current_step(self) -> int:
+        """The step counter printed as step= on each line."""
+        return self._step
+
     def scan(self, name: str, value, *, quiet: bool = False, fatal: bool = False) -> bool:
         """Scan `value` for NaN/Inf and print per-tensor stats; return whether any was found.
 

@@ -19,7 +19,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_policy_loss,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.debug_utils.nan_scan import nan_scanner
+from miles.utils.debug_utils.nan_scan_probes import scan_policy_loss_pre_sanitize
 from miles.utils.misc import load_function
 from miles.utils.types import RolloutBatch
 
@@ -166,11 +166,7 @@ def policy_loss_function(
     local_loss_masks = torch.cat(local_loss_mask_list, dim=0).to(device=ppo_kl.device)
     active_tokens = local_loss_masks.bool()
 
-    nan_scanner.scan("pre_sanitize/ppo_kl_active", lambda: ppo_kl.detach()[active_tokens])
-    nan_scanner.scan("pre_sanitize/advantages_active", lambda: advantages.detach()[active_tokens])
-    nan_scanner.scan("pre_sanitize/train_log_probs", log_probs)
-    nan_scanner.scan_grad("dL_dlogits", logits)
-    nan_scanner.scan_grad("dL_dlogprob", log_probs)
+    scan_policy_loss_pre_sanitize(ppo_kl, advantages, active_tokens, log_probs, logits)
     ppo_kl = torch.where(
         active_tokens,
         torch.nan_to_num(ppo_kl, nan=0.0, posinf=0.0, neginf=0.0),
