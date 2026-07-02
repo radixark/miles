@@ -73,6 +73,16 @@ class ScriptArgs(U.ExecuteTrainConfig):
     openenv_env_url: str = os.environ.get("OPENENV_ENV_URL", "http://localhost:8003")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     openenv_max_turns: int = int(os.environ.get("OPENENV_MAX_TURNS", "30"))
+    # When set, the adapter ignores --openenv-env-url and instead provisions a
+    # pool of Daytona sandboxes from this snapshot, rotating episodes across them.
+    openenv_daytona_snapshot: str = os.environ.get("OPENENV_DAYTONA_SNAPSHOT", "")
+    openenv_daytona_pool_size: int = int(os.environ.get("OPENENV_DAYTONA_POOL_SIZE", "8"))
+    openenv_daytona_port: int = int(os.environ.get("OPENENV_DAYTONA_PORT", "8000"))
+    daytona_api_key: str = os.environ.get("DAYTONA_API_KEY", "")
+    # When set, miles dumps full per-episode agent trajectories (tokens, logprobs,
+    # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
+    # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
+    dump_details: str = os.environ.get("OPENENV_DUMP_DETAILS", "")
     # Optional host rewrite for the policy URL (only needed if the in-process
     # agent cannot reach the session server at its raw base_url host).
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
@@ -213,6 +223,8 @@ def execute(args: ScriptArgs):
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
+    dump_args = f"--dump-details {args.dump_details} " if args.dump_details else ""
+
     wandb_args = ""
     if args.wandb_key:
         wandb_args = (
@@ -244,6 +256,7 @@ def execute(args: ScriptArgs):
         f"{agent_args}"
         f"{misc_args}"
         f"{debug_args}"
+        f"{dump_args}"
     )
 
     miles_root = U.repo_base_dir
@@ -260,6 +273,12 @@ def execute(args: ScriptArgs):
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
     if args.router_external_host:
         extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+    if args.openenv_daytona_snapshot:
+        assert args.daytona_api_key, "DAYTONA_API_KEY required when openenv_daytona_snapshot is set"
+        extra_env_vars["OPENENV_DAYTONA_SNAPSHOT"] = args.openenv_daytona_snapshot
+        extra_env_vars["OPENENV_DAYTONA_POOL_SIZE"] = str(args.openenv_daytona_pool_size)
+        extra_env_vars["OPENENV_DAYTONA_PORT"] = str(args.openenv_daytona_port)
+        extra_env_vars["DAYTONA_API_KEY"] = args.daytona_api_key
 
     U.execute_train(
         train_args=train_args,
