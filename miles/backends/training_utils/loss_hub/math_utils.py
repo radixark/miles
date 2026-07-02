@@ -954,12 +954,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     entropy = None
     if with_entropy:
         entropy_log_probs = log_probs_full if entropy_requires_grad else log_probs_full.detach()
-        if entropy_requires_grad:
-            probs = entropy_log_probs.exp()
-            entropy = -(probs * entropy_log_probs).sum(dim=-1)
-        else:
-            with torch.no_grad():
-                probs = entropy_log_probs.exp()
-                entropy = -(probs * entropy_log_probs).sum(dim=-1)
+        probs = entropy_log_probs.exp()
+        entropy = -(probs * entropy_log_probs).sum(dim=-1)
 
     return log_prob, entropy
