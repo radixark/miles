@@ -4,9 +4,10 @@
 - Knows nothing about HTTP servers or routing; the FastAPI adapter (``sessions.py`` + ``server.py``) reads each request and calls these methods.
 - One ``SessionCore`` owns exactly one ``SessionRegistry`` (the per-session TITO/trajectory state) and one proxy ``backend``.
 - Operations: ``health``, ``create_session``, ``get_session``, ``delete_session``, ``chat_completions``, and a generic ``proxy``.
+- Client-facing chat responses are rendered by ``_chat_client_response``, which strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) copy-on-write; the stored ``SessionRecord`` keeps the full upstream response, which is what ``GET /sessions/{id}`` serves to the training data path.
 - Correctness-critical path: ``chat_completions`` — the per-session lock is held for request prep and state update but never during the proxy call; the ``closing`` re-checks and the ``num_assistant`` mismatch check gate concurrent DELETE/chat.
 
-Structural extraction of the previous single-process route handlers; the observable behavior (status codes, parsed response content, error shapes, recorded trajectory) is unchanged.
+Structural extraction of the previous single-process route handlers with one deliberate contract change: chat responses no longer carry the R3 replay payloads (they are replay-only inputs, consumed from the records). All other observable behavior (status codes, error shapes, recorded trajectory) is unchanged.
 """
 
 import json
@@ -45,6 +46,44 @@ class ProxyRequest:
 def _render_json(payload) -> bytes:
     """Encode like Starlette's JSONResponse (compact, non-ASCII preserved)."""
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+
+_CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
+
+
+def _strip_replay_payloads(response: dict) -> dict:
+    """Copy-on-write removal of the R3 replay payloads from a parsed chat response.
+
+    The client-facing chat response omits ``routed_experts`` / ``indexer_topk``;
+    the session record keeps the full response (served by ``GET /sessions``).
+    Only the dicts on the path to ``meta_info`` are copied, so the recorded
+    response object is never mutated.
+    """
+    stripped_choices = []
+    for choice in response.get("choices", []):
+        meta = choice.get("meta_info")
+        if isinstance(meta, dict) and any(k in meta for k in _CLIENT_STRIPPED_META_KEYS):
+            meta = {k: v for k, v in meta.items() if k not in _CLIENT_STRIPPED_META_KEYS}
+            choice = {**choice, "meta_info": meta}
+        stripped_choices.append(choice)
+    return {**response, "choices": stripped_choices}
+
+
+def _chat_client_response(result: dict, response: dict) -> Response:
+    """Render the client-facing 200 chat response from the parsed upstream response.
+
+    Same rendering contract as :func:`proxy_result_to_response` (compact JSON,
+    upstream framing headers dropped), but built from the already-parsed
+    ``response`` with the R3 replay payloads stripped — the client never needs
+    them, and every relaying hop would otherwise pay for the multi-MiB blobs.
+    """
+    headers = {k: v for k, v in result["headers"].items() if k.lower() not in _DROP_RESPONSE_HEADERS}
+    return Response(
+        content=_render_json(_strip_replay_payloads(response)),
+        status_code=result["status_code"],
+        headers=headers,
+        media_type=JSON_MEDIA_TYPE,
+    )
 
 
 def proxy_result_to_response(result: dict) -> Response:
@@ -210,7 +249,7 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
-                return proxy_result_to_response(result)
+                return _chat_client_response(result, response)
 
             if session.num_assistant != expected_num_assistant:
                 logger.warning(
@@ -218,7 +257,7 @@ class SessionCore:
                     f"(expected num_assistant={expected_num_assistant}, "
                     f"got {session.num_assistant}), skipping state update"
                 )
-                return proxy_result_to_response(result)
+                return _chat_client_response(result, response)
 
             session.update_pretokenized_state(
                 request_messages,
@@ -239,7 +278,7 @@ class SessionCore:
             session.append_record(record)
         # --- lock released ---
 
-        return proxy_result_to_response(result)
+        return _chat_client_response(result, response)
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
