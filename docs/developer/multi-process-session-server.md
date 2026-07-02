@@ -11,7 +11,7 @@ This is the demands-and-targets spec for the opt-in multi-process session server
 
 Multi-turn agent rollouts must not be bottlenecked by the session server. Under R3 (`routed_experts` / `indexer_topk`) every chat turn returns a 100+ MiB body, and its `json.loads` + validation is pure-Python, GIL-bound work — a single process serializes every session's parse on one event loop, and threads add no parse throughput under the GIL. What we want is session throughput that scales with CPU cores; the only lever is more interpreters. So: shard sessions across worker processes, one GIL each. The process layout is the same at every worker count: a supervisor spawns N workers behind one thin router.
 
-Measured at the production shape (32 sessions × 50 turns, final-turn body ≈ 134 MiB): 16 workers give **7.2–7.6×** wall-time/throughput over single-process, with the workers pegged (~94% CPU, the intended bottleneck) and the router at ~5% (`tests/benchmark/bench_session_server_overhead.py`, landing separately).
+Measured at the production shape (32 sessions × 50 turns, final-turn body ≈ 134 MiB): 16 workers give **7.2–7.6×** wall-time/throughput over single-process, with the workers pegged (~94% CPU, the intended bottleneck) and the router at ~5% (`tests/manual/session/bench_session_server_overhead.py`).
 
 If the session server is the bottleneck in a run (`miles-session-worker` processes pegged while the inference backend idles), raise `--session-server-workers`: each worker is its own interpreter, so the GIL-bound per-turn work — tokenization, response deserialization/validation — scales with CPU cores.
 
