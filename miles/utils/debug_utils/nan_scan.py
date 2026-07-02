@@ -1,33 +1,25 @@
-"""Inline NaN/Inf scanning for debugging numerical issues.
+"""NaN/Inf scanning for numerical debugging.
 
-`NanScanner` prints one-line finiteness stats for a tensor, a list/dict of
-tensors, or an `nn.Module` (params + grads), and reports whether any non-finite
-value was found. Complementary to the Dumper (offline dump & cross-run
-comparison): the scanner answers "where does the first non-finite value appear
-in THIS run" — no files, no second run.
-
-All scanning is gated on MILES_NAN_SCAN=1; when disabled every call is a no-op
-(a one-time notice per process says how to enable). Call sites therefore need
-no guard of their own. Use the module-level `nan_scanner` instance (mirroring
-`dumper`) so state like step counters and dedup is shared across call sites:
+Gated on MILES_NAN_SCAN=1 (the --debug-nan-scan train arg); when disabled every
+call is a no-op, so call sites need no guards. Shared state (step tag, grad-hook
+dedup) lives on the module-level `nan_scanner` instance, mirroring `dumper`:
 
     from miles.utils.debug_utils.nan_scan import nan_scanner
 
-    nan_scanner.scan("logits", logits)              # print stats when enabled
+    nan_scanner.scan("logits", logits)              # one stats line: nan/inf counts, max_abs
     nan_scanner.scan("logits", logits, grad=True)   # also scan its gradient in backward
-    nan_scanner.scan("batch", batch, quiet=True)    # print only on violation
-    nan_scanner.scan("actor", model, fatal=True)    # params + grads; raise on violation
-    nan_scanner.scan_grad("dL_dlogits", logits)     # gradient only
-    nan_scanner.step()                              # bump the step= tag printed on each line
+    nan_scanner.scan("batch", batch)                # dict/list of tensors; also nn.Module
+    nan_scanner.scan("diff", lambda: a - b)         # callable: evaluated only when enabled
+    nan_scanner.scan("x", x, quiet=True)            # print only on violation
+    nan_scanner.step()                              # bump the step= tag (per microbatch)
 
-If constructing the value itself is expensive, pass a callable so it is only
-evaluated when scanning is enabled:
+Output, with a ***NONFINITE*** suffix on violations:
 
-    nan_scanner.scan("logprob_diff", lambda: [a.float() - b.float() for a, b in pairs])
+    [NAN_SCAN] rank=62 step=3 logits: shape=(5120, 1, 19360) nan=0 inf=0 max_abs=28.5
 
-Use `nan_scanner.enabled()` to gate compound debug blocks (e.g. building a
-metrics dict for a custom print). When enabled, every call synchronizes the
-GPU (host-side reduction).
+Unlike the Dumper (offline dumps, cross-run comparison), this answers "where is
+the first non-finite value in THIS run" inline, with no files and no second
+run. Every enabled call synchronizes the GPU.
 """
 
 import os
@@ -76,33 +68,24 @@ class NanScanner:
         return os.environ.get(self._env_var) == "1"
 
     def step(self) -> int:
-        """Increment and return the step counter printed as step= on each line.
-
-        Call once per microbatch / iteration at a natural boundary (e.g. loss
-        function entry), analogous to `dumper.step()`.
-        """
+        """Bump the step= tag printed on each line; call once per microbatch, like `dumper.step()`."""
         self._step += 1
         return self._step
 
     def scan(self, name: str, value, *, grad: bool = False, quiet: bool = False, fatal: bool = False) -> bool:
-        """Scan `value` for NaN/Inf and print per-tensor stats; return whether any was found.
-
-        No-op (returns False) unless the gating env var is set.
+        """Scan `value` for NaN/Inf, print stats, and return whether any was found.
 
         Args:
-            name: Label printed with the stats.
-            value: Tensor, nn.Module (scans params and main_grad/grad), or a nested
-                Mapping/Sequence of these. A flat sequence of tensors is aggregated into
-                one line, with per-element lines for offenders only. None is a no-op.
-                A callable is invoked to produce the value only when scanning is enabled,
-                so expensive value construction costs nothing when disabled.
-            grad: Also scan the gradient of `value` when backward reaches it (requires
-                `value` to be a Tensor). One `scan(..., grad=True)` on a boundary tensor
-                like logits triages where a NaN was born: the value line firing means
-                forward, the .grad line means the loss side of backward, silence on both
-                while the optimizer still sees non-finite grads means the model backward.
-            quiet: Print only when non-finite values are found.
-            fatal: Raise RuntimeError if non-finite values are found.
+            name: Label for the printed lines.
+            value: Tensor, nested list/dict of tensors (aggregated, offenders listed
+                individually), nn.Module (params + main_grad/grad), or a callable
+                evaluated only when scanning is enabled. None is a no-op.
+            grad: Also scan the gradient when backward reaches `value` (Tensor only).
+                On a boundary tensor like logits this triages a NaN's origin: value
+                line fires -> forward; .grad line fires -> loss side of backward;
+                neither, yet grads still blow up -> inside the model backward.
+            quiet: Print only on violations.
+            fatal: Raise RuntimeError on violations.
         """
         if not self.enabled():
             self._notice_disabled_once()
@@ -119,15 +102,10 @@ class NanScanner:
         return found
 
     def scan_grad(self, name: str, tensor: Tensor, *, once: bool = True, quiet: bool = True) -> None:
-        """Register a backward hook that scans the gradient of `tensor` when it arrives.
+        """Scan the gradient of `tensor` when backward reaches it (reported as "<name>.grad").
 
-        No-op unless the gating env var is set.
-
-        Args:
-            name: Label for the printed stats (reported as "<name>.grad").
-            tensor: Tensor to watch; no-op unless it requires grad.
-            once: Report at most one violation per name to avoid per-microbatch spam.
-            quiet: Print only when the gradient is non-finite.
+        No-op unless `tensor` requires grad. `once` reports at most one violation
+        per name to avoid per-microbatch spam.
         """
         if not self.enabled():
             self._notice_disabled_once()
