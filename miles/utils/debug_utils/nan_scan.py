@@ -14,10 +14,10 @@ no guard of their own. Use the module-level `nan_scanner` instance (mirroring
     from miles.utils.debug_utils.nan_scan import nan_scanner
 
     nan_scanner.scan("logits", logits)              # print stats when enabled
+    nan_scanner.scan("logits", logits, grad=True)   # also scan its gradient in backward
     nan_scanner.scan("batch", batch, quiet=True)    # print only on violation
     nan_scanner.scan("actor", model, fatal=True)    # params + grads; raise on violation
-    nan_scanner.scan_grad("dL_dlogits", logits)     # scan the gradient during backward
-    nan_scanner.watch("logits", logits)             # sentinel: value now + grad in backward
+    nan_scanner.scan_grad("dL_dlogits", logits)     # gradient only
     nan_scanner.step()                              # bump the step= tag printed on each line
 
 If constructing the value itself is expensive, pass a callable so it is only
@@ -89,7 +89,7 @@ class NanScanner:
         """The step counter printed as step= on each line."""
         return self._step
 
-    def scan(self, name: str, value, *, quiet: bool = False, fatal: bool = False) -> bool:
+    def scan(self, name: str, value, *, grad: bool = False, quiet: bool = False, fatal: bool = False) -> bool:
         """Scan `value` for NaN/Inf and print per-tensor stats; return whether any was found.
 
         No-op (returns False) unless the gating env var is set.
@@ -101,30 +101,26 @@ class NanScanner:
                 one line, with per-element lines for offenders only. None is a no-op.
                 A callable is invoked to produce the value only when scanning is enabled,
                 so expensive value construction costs nothing when disabled.
+            grad: Also scan the gradient of `value` when backward reaches it (requires
+                `value` to be a Tensor). One `scan(..., grad=True)` on a boundary tensor
+                like logits triages where a NaN was born: the value line firing means
+                forward, the .grad line means the loss side of backward, silence on both
+                while the optimizer still sees non-finite grads means the model backward.
             quiet: Print only when non-finite values are found.
             fatal: Raise RuntimeError if non-finite values are found.
         """
         if not self.enabled():
             self._notice_disabled_once()
             return False
+        if grad and not isinstance(value, Tensor):
+            raise TypeError(f"scan({name!r}, grad=True) requires a Tensor, got {type(value).__name__}")
         if callable(value) and not isinstance(value, (Tensor, nn.Module)):
             value = value()
         found = self._scan(name, value, quiet)
         if found and fatal:
             raise RuntimeError(f"nan_scanner.scan({name!r}) found non-finite values, see [NAN_SCAN] lines above")
-        return found
-
-    def watch(self, name: str, tensor: Tensor, *, quiet: bool = True) -> bool:
-        """Sentinel for a key tensor: scan its value now and its gradient in backward.
-
-        A single watch point triages where a NaN was born: the value line firing
-        means it arrived in forward; the .grad line firing means it was created on
-        the loss side of backward; silence on both while the optimizer still sees
-        non-finite grads places it inside the model backward. Quiet by default so
-        a healthy run prints nothing. Returns whether the value was non-finite.
-        """
-        found = self.scan(name, tensor, quiet=quiet)
-        self.scan_grad(name, tensor, quiet=quiet)
+        if grad:
+            self.scan_grad(name, value, quiet=quiet)
         return found
 
     def scan_grad(self, name: str, tensor: Tensor, *, once: bool = True, quiet: bool = True) -> None:

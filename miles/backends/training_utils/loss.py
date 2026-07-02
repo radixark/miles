@@ -120,7 +120,7 @@ def loss_function(
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
-    nan_scanner.watch("logits", logits)
+    nan_scanner.scan("logits", logits, grad=True)
 
     parallel_state = get_parallel_state()
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])

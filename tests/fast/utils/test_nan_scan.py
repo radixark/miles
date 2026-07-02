@@ -97,26 +97,28 @@ def test_step_counter_in_output(monkeypatch, capsys):
     assert "step=2 x:" in capsys.readouterr().out
 
 
-def test_watch_triages_forward_vs_backward(monkeypatch, capsys):
+def test_scan_grad_true_triages_forward_vs_backward(monkeypatch, capsys):
     scanner = _enabled_scanner(monkeypatch)
-
-    # healthy: watch is silent in both directions
-    t = torch.ones(3, requires_grad=True)
-    y = t * 2
-    assert scanner.watch("y", y) is False
-    (y * y).sum().backward()
-    assert capsys.readouterr().out == ""
 
     # forward-born NaN: the value line fires
     bad = torch.tensor([1.0, float("nan")])
-    assert scanner.watch("fwd", bad) is True
+    assert scanner.scan("fwd", bad, grad=True) is True
     assert "fwd: shape=(2,)" in capsys.readouterr().out
 
-    # backward-born NaN: only the .grad line fires
+    # backward-born NaN: the value line is clean, the .grad line fires
     t = torch.ones(3, requires_grad=True)
     y = t * torch.tensor([1.0, float("nan"), 1.0])
     z = torch.nan_to_num(y)  # forward value at z is clean
-    assert scanner.watch("bwd", z) is False
+    assert scanner.scan("bwd", z, grad=True) is False
     (z * y).sum().backward()  # dL/dz = y contains NaN
     out = capsys.readouterr().out
-    assert "bwd.grad:" in out and "bwd: shape" not in out
+    assert "bwd: shape=(3,) nan=0" in out
+    assert "bwd.grad:" in out and "***NONFINITE***" in out
+
+    # grad=True on a non-Tensor is a hook that would silently never fire; reject it
+    try:
+        scanner.scan("lst", [torch.ones(2)], grad=True)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("grad=True must require a Tensor")
