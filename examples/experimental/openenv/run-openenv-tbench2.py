@@ -73,6 +73,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     openenv_env_url: str = os.environ.get("OPENENV_ENV_URL", "http://localhost:8003")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     openenv_max_turns: int = int(os.environ.get("OPENENV_MAX_TURNS", "30"))
+    # Hard wall-clock cap (seconds) per episode. An episode that does not return
+    # within the limit is terminated and scored reward 0, bounding long-trajectory
+    # stragglers that would otherwise stall the whole rollout batch.
+    openenv_max_rollout_time_seconds: int = int(
+        os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600")
+    )
     # When set, the adapter ignores --openenv-env-url and instead provisions a
     # pool of Daytona sandboxes from this snapshot, rotating episodes across them.
     openenv_daytona_snapshot: str = os.environ.get("OPENENV_DAYTONA_SNAPSHOT", "")
@@ -267,6 +273,7 @@ def execute(args: ScriptArgs):
         "OPENENV_ENV_TYPE": "tbench2",
         "OPENENV_ENV_URL": args.openenv_env_url,
         "OPENENV_MAX_TURNS": str(args.openenv_max_turns),
+        "OPENENV_MAX_ROLLOUT_TIME_SECONDS": str(args.openenv_max_rollout_time_seconds),
         "AGENT_MODEL_NAME": args.agent_model_name,
     }
     if args.miles_host_ip:

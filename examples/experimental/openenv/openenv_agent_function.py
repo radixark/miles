@@ -24,6 +24,10 @@ Env vars:
   OPENENV_MAX_TURNS  multi-turn cap (default: 30)
   OPENENV_MESSAGE_TIMEOUT_S  per-message WS recv timeout (default: 600; docker-mode
                      reset/exec/pytest routinely exceed the client default of 60)
+  OPENENV_MAX_ROLLOUT_TIME_SECONDS  hard wall-clock cap for one episode (default:
+                     3600). An episode that does not return within the limit is
+                     terminated and scored reward 0 (bounds long-trajectory
+                     stragglers that would otherwise stall the whole rollout batch).
   AGENT_MODEL_NAME   model name sent to the policy (default: "model")
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
 
@@ -71,6 +75,14 @@ _OBS_CHAR_CAP = 4000
 # Per-message WS recv timeout. Docker-mode tbench2 reset (container create),
 # exec, and evaluate (pytest) each routinely exceed the EnvClient default of 60s.
 _MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "600"))
+
+# Hard wall-clock cap for one episode. The per-message timeout above bounds a
+# single env op, and OPENENV_MAX_TURNS bounds the turn count, but neither bounds
+# total episode time: a long agentic trajectory can loop for turns * (long
+# generation) and stall the whole rollout batch (a step finishes only when the
+# slowest of all concurrent episodes returns). An episode exceeding this cap is
+# terminated (its coroutine cancelled) and scored reward 0.
+_MAX_ROLLOUT_TIME_S = float(os.getenv("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
 
 
 def _is_retryable_env_error(e: BaseException) -> bool:
@@ -479,9 +491,27 @@ async def run(
     runner = _multi_turn if spec.multi_turn else _single_turn
 
     try:
-        reward, agent_metrics = await runner(
-            spec, classes, env_url, policy, model_name, messages, request_kwargs, metadata
+        # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
+        # wait_for cancels the coroutine, so any in-flight policy call / env.step
+        # is interrupted and the pooled sandbox slot is released by _with_env's
+        # finally block during cancellation cleanup.
+        reward, agent_metrics = await asyncio.wait_for(
+            runner(
+                spec, classes, env_url, policy, model_name, messages, request_kwargs, metadata
+            ),
+            timeout=_MAX_ROLLOUT_TIME_S,
         )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"OpenEnv {env_type} episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; "
+            "terminating with reward 0"
+        )
+        return {
+            "reward": 0.0,
+            "exit_status": "timeout",
+            "eval_report": {},
+            "agent_metrics": {"timed_out": 1},
+        }
     except Exception as e:
         logger.error(f"OpenEnv {env_type} episode failed: {e}", exc_info=True)
         return None
