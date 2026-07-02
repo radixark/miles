@@ -17,6 +17,7 @@ no guard of their own. Use the module-level `nan_scanner` instance (mirroring
     nan_scanner.scan("batch", batch, quiet=True)    # print only on violation
     nan_scanner.scan("actor", model, fatal=True)    # params + grads; raise on violation
     nan_scanner.scan_grad("dL_dlogits", logits)     # scan the gradient during backward
+    nan_scanner.watch("logits", logits)             # sentinel: value now + grad in backward
     nan_scanner.step()                              # bump the step= tag printed on each line
 
 If constructing the value itself is expensive, pass a callable so it is only
@@ -111,6 +112,19 @@ class NanScanner:
         found = self._scan(name, value, quiet)
         if found and fatal:
             raise RuntimeError(f"nan_scanner.scan({name!r}) found non-finite values, see [NAN_SCAN] lines above")
+        return found
+
+    def watch(self, name: str, tensor: Tensor, *, quiet: bool = True) -> bool:
+        """Sentinel for a key tensor: scan its value now and its gradient in backward.
+
+        A single watch point triages where a NaN was born: the value line firing
+        means it arrived in forward; the .grad line firing means it was created on
+        the loss side of backward; silence on both while the optimizer still sees
+        non-finite grads places it inside the model backward. Quiet by default so
+        a healthy run prints nothing. Returns whether the value was non-finite.
+        """
+        found = self.scan(name, tensor, quiet=quiet)
+        self.scan_grad(name, tensor, quiet=quiet)
         return found
 
     def scan_grad(self, name: str, tensor: Tensor, *, once: bool = True, quiet: bool = True) -> None:

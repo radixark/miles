@@ -97,24 +97,26 @@ def test_step_counter_in_output(monkeypatch, capsys):
     assert "step=2 x:" in capsys.readouterr().out
 
 
-def test_loss_probes(monkeypatch, capsys):
-    from miles.utils.debug_utils import nan_scan_probes
+def test_watch_triages_forward_vs_backward(monkeypatch, capsys):
+    scanner = _enabled_scanner(monkeypatch)
 
-    monkeypatch.setenv("MILES_NAN_SCAN", "1")
-    batch = {
-        "log_probs": [torch.zeros(4), torch.tensor([0.0, float("nan"), 0.0])],
-        "rollout_log_probs": [torch.zeros(4), torch.zeros(3)],
-        "advantages": [torch.ones(4), torch.ones(3)],
-    }
-    logits = torch.randn(1, 7, 16)
-    nan_scan_probes.scan_loss_inputs(batch, logits)
-    nan_scan_probes.scan_loss_outputs(torch.tensor(1.5), {"pg_loss": torch.tensor(1.5)})
+    # healthy: watch is silent in both directions
+    t = torch.ones(3, requires_grad=True)
+    y = t * 2
+    assert scanner.watch("y", y) is False
+    (y * y).sum().backward()
+    assert capsys.readouterr().out == ""
+
+    # forward-born NaN: the value line fires
+    bad = torch.tensor([1.0, float("nan")])
+    assert scanner.watch("fwd", bad) is True
+    assert "fwd: shape=(2,)" in capsys.readouterr().out
+
+    # backward-born NaN: only the .grad line fires
+    t = torch.ones(3, requires_grad=True)
+    y = t * torch.tensor([1.0, float("nan"), 1.0])
+    z = torch.nan_to_num(y)  # forward value at z is clean
+    assert scanner.watch("bwd", z) is False
+    (z * y).sum().backward()  # dL/dz = y contains NaN
     out = capsys.readouterr().out
-    assert "loss_in/logits:" in out
-    assert "loss_in/log_probs" in out and "***NONFINITE***" in out
-    assert "loss_in/old_minus_rollout_logprob" in out
-    assert "loss_out/loss:" in out and "loss_out/metrics" in out
-
-    monkeypatch.delenv("MILES_NAN_SCAN")
-    nan_scan_probes.scan_loss_inputs(batch, logits)  # must be a silent no-op
-    assert "loss_in" not in capsys.readouterr().out
+    assert "bwd.grad:" in out and "bwd: shape" not in out

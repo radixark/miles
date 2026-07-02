@@ -1462,6 +1462,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=("Dump all details of training for post-hoc analysis and visualization."),
             )
             parser.add_argument(
+                "--debug-nan-scan",
+                action="store_true",
+                default=False,
+                help="Enable NanScanner (sets MILES_NAN_SCAN=1 in training actors): the logits "
+                "sentinel in loss_function and any nan_scanner call sites report NaN/Inf stats. "
+                "See miles/utils/debug_utils/nan_scan.py.",
+            )
+            parser.add_argument(
                 "--dumper-enable",
                 action="store_true",
                 default=False,

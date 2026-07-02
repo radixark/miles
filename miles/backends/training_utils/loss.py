@@ -10,7 +10,7 @@ from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.debug_utils.nan_scan_probes import scan_loss_inputs, scan_loss_outputs
+from miles.utils.debug_utils.nan_scan import nan_scanner
 from miles.utils.types import RolloutBatch
 
 
@@ -120,7 +120,7 @@ def loss_function(
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
-    scan_loss_inputs(batch, logits)
+    nan_scanner.watch("logits", logits)
 
     parallel_state = get_parallel_state()
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
@@ -147,8 +147,6 @@ def loss_function(
         )
     else:
         loss, log = func(args, batch, logits, sum_of_sample_mean)
-
-    scan_loss_outputs(loss, log)
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
     if parallel_state.cp.size > 1 and args.allgather_cp:
