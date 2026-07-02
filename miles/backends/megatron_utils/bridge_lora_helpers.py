@@ -143,24 +143,24 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     # configs the attention modules read at forward time (the GLM-5 spec may bake the backend at
     # spec-build time, and provide() can hand modules a config object distinct from `provider`).
     # Force the configured backend onto every module config -- the SAME value for both backends, so
-    # the unfused (megatron-bridge) default is fully preserved -- and explicitly onto the dispatching
-    # SlimeMLASelfAttention.config, so SlimeMLASelfAttention.forward does not fall back to the unfused
-    # path on a thd input ("not enough values to unpack (expected 4, got 3)").
+    # the megatron-bridge-native default is fully preserved -- and explicitly onto the dispatching
+    # GlmNativeMLASelfAttention.config, so GlmNativeMLASelfAttention.forward does not fall back to the
+    # unfused path on a thd input ("not enough values to unpack (expected 4, got 3)").
     _backend = getattr(provider, "dsa_attention_backend", None)
     if _backend is not None:
-        _n = _slime = 0
+        _n = _mla = 0
         for _chunk in _ensure_model_list(model):
             for _m in _chunk.modules():
                 _cfg = getattr(_m, "config", None)
                 if _cfg is not None and hasattr(_cfg, "dsa_attention_backend"):
                     _cfg.dsa_attention_backend = _backend
                     _n += 1
-                if _m.__class__.__name__ == "SlimeMLASelfAttention" and getattr(_m, "config", None) is not None:
-                    _slime += 1
+                if _m.__class__.__name__ == "GlmNativeMLASelfAttention" and getattr(_m, "config", None) is not None:
+                    _mla += 1
                     _m.config.dsa_attention_backend = _backend
         print(
             f"[dsa-fix:lora] backend={_backend!r}; forced on {_n} module configs; "
-            f"{_slime} SlimeMLASelfAttention modules",
+            f"{_mla} GlmNativeMLASelfAttention modules",
             flush=True,
         )
     return model
