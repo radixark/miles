@@ -1875,8 +1875,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--loss-mask-type",
                 type=str,
                 default="qwen",
-                choices=["qwen", "qwen3", "distill_qwen"],
-                help="Loss mask type",
+                help=(
+                    "Loss mask strategy. A registered name (e.g., qwen, qwen3, distill_qwen) "
+                    "or a fully-qualified LossMaskStrategy subclass path (e.g., my_module.MyStrategy)."
+                ),
             )
             parser.add_argument(
                 "--data-pad-size-multiplier",

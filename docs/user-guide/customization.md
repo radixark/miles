@@ -13,6 +13,7 @@ and the default it replaces.
 | **Rollout** | `--rollout-function-path` | The whole rollout loop |
 | | `--custom-generate-function-path` | A single sample's generation |
 | | `--data-source-path` | How prompts are loaded |
+| | `--loss-mask-type` | How chat prompts become token IDs and loss masks |
 | | `--eval-function-path` | The eval rollout |
 | **Reward** | `--custom-rm-path` | Reward computation |
 | | `--custom-reward-post-process-path` | Reward normalization |
@@ -82,6 +83,56 @@ class CustomDataSource(DataSource):
 
 Same signature as `--rollout-function-path`. Defaults to whatever rollout function is
 configured.
+
+### `--loss-mask-type`
+
+Select or override the strategy that converts chat-formatted prompts into token IDs
+and a 0/1 loss mask. Built-in registered names are `qwen`, `qwen3`, and
+`distill_qwen` (auto-detected when `qwen` tokenizers contain `<｜Assistant｜>`).
+
+The value can be either a registered strategy name or a fully-qualified
+`LossMaskStrategy` subclass path.
+
+Implement a custom strategy by subclassing `LossMaskStrategy`:
+
+```python
+from miles.utils.mask_utils import LossMaskStrategy
+
+class MyCustomLossMask(LossMaskStrategy):
+    def get_loss_mask(
+        self, messages: list[dict], tools: list[dict] | None = None
+    ) -> tuple[list[int], list[int]]:
+        # token_ids and loss_mask must have the same length
+        token_ids = []
+        loss_mask = []
+        ...
+        return token_ids, loss_mask
+```
+
+Use it directly by class path:
+
+```bash
+--loss-mask-type my_package.my_module.MyCustomLossMask
+```
+
+Or register it under a short name so callers do not need the full path:
+
+```python
+from miles.utils.mask_utils import register_loss_mask
+
+@register_loss_mask("my_custom")
+class MyCustomLossMask(LossMaskStrategy):
+    ...
+```
+
+Import the module before the strategy is resolved (e.g., in the same process that
+launches training) and then use the short name:
+
+```bash
+python -c "import my_package.my_module" && python train.py --loss-mask-type my_custom
+```
+
+**Default:** `qwen`.
 
 ---
 
