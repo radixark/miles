@@ -59,8 +59,8 @@ def test_module_scan(monkeypatch, capsys):
     module.weight.grad = torch.full_like(module.weight, float("nan"))
     assert scanner.scan("mod", module) is True
     out = capsys.readouterr().out
-    assert "mod.weight.grad:" in out
-    assert "nonfinite_params_or_grads=1" in out
+    assert "mod.weight.grad:" in out and "***NONFINITE***" in out
+    assert "mod: tensors=3" in out and "nan=16" in out  # weight, bias, weight.grad
 
 
 def test_lazy_callable_evaluated_when_enabled(monkeypatch):

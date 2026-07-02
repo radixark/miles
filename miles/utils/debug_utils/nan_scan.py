@@ -84,11 +84,6 @@ class NanScanner:
         self._step += 1
         return self._step
 
-    @property
-    def current_step(self) -> int:
-        """The step counter printed as step= on each line."""
-        return self._step
-
     def scan(self, name: str, value, *, grad: bool = False, quiet: bool = False, fatal: bool = False) -> bool:
         """Scan `value` for NaN/Inf and print per-tensor stats; return whether any was found.
 
@@ -157,82 +152,63 @@ class NanScanner:
     def _prefix(self, name: str) -> str:
         return f"[NAN_SCAN] rank={_rank()} step={self._step} {name}"
 
-    def _emit(self, name: str, shape, nan: int, inf: int, max_abs: float | None, *, quiet: bool) -> bool:
-        found = bool(nan or inf)
-        if found or not quiet:
-            flag = " ***NONFINITE***" if found else ""
-            print(
-                f"{self._prefix(name)}: shape={tuple(shape)} nan={nan} inf={inf} max_abs={_fmt(max_abs)}{flag}",
-                flush=True,
-            )
-        return found
-
     def _scan_tensor(self, name: str, t: Tensor, quiet: bool) -> bool:
         if t.device.type == "meta":
             print(f"{self._prefix(name)}: skipped (meta tensor)", flush=True)
             return False
         nan, inf, max_abs = _tensor_counts(t)
-        return self._emit(name, t.shape, nan, inf, max_abs, quiet=quiet)
+        found = bool(nan or inf)
+        if found or not quiet:
+            flag = " ***NONFINITE***" if found else ""
+            print(
+                f"{self._prefix(name)}: shape={tuple(t.shape)} nan={nan} inf={inf} max_abs={_fmt(max_abs)}{flag}",
+                flush=True,
+            )
+        return found
 
-    def _scan_tensor_seq(self, name: str, seq: Sequence[Tensor], quiet: bool) -> bool:
-        total_nan = total_inf = total_numel = 0
+    def _scan_leaves(self, name: str, leaves, quiet: bool) -> bool:
+        """Aggregate scan over (label, tensor) pairs: one summary line, capped offender lines."""
+        n = total_nan = total_inf = total_numel = 0
         max_abs: float | None = None
         offenders: list[str] = []
-        for i, t in enumerate(seq):
-            nan, inf, elem_max = _tensor_counts(t)
+        for label, t in leaves:
+            n += 1
+            nan, inf, leaf_max = _tensor_counts(t)
             total_nan += nan
             total_inf += inf
             total_numel += t.numel()
-            if elem_max is not None:
-                max_abs = elem_max if max_abs is None else max(max_abs, elem_max)
+            if leaf_max is not None:
+                max_abs = leaf_max if max_abs is None else max(max_abs, leaf_max)
             if nan or inf:
                 offenders.append(
-                    f"{self._prefix(name)}[{i}]: shape={tuple(t.shape)}"
-                    f" nan={nan} inf={inf} max_abs={_fmt(elem_max)} ***NONFINITE***"
+                    f"{self._prefix(name)}{label}: shape={tuple(t.shape)}"
+                    f" nan={nan} inf={inf} max_abs={_fmt(leaf_max)} ***NONFINITE***"
                 )
-        found = bool(total_nan or total_inf)
+        found = bool(offenders)
         if found or not quiet:
             flag = " ***NONFINITE***" if found else ""
             print(
-                f"{self._prefix(name)}: tensors={len(seq)} numel={total_numel}"
+                f"{self._prefix(name)}: tensors={n} numel={total_numel}"
                 f" nan={total_nan} inf={total_inf} max_abs={_fmt(max_abs)}{flag}",
                 flush=True,
             )
-        self._emit_offenders(name, offenders, "non-finite elements")
-        return found
-
-    def _scan_module(self, name: str, module: nn.Module, quiet: bool) -> bool:
-        n_params = n_bad = 0
-        offenders: list[str] = []
-        for param_name, param in module.named_parameters():
-            n_params += 1
-            main_grad = getattr(param, "main_grad", None)
-            grad = main_grad if main_grad is not None else param.grad
-            for suffix, t in (("", param), (".grad", grad)):
-                if t is None:
-                    continue
-                nan, inf, max_abs = _tensor_counts(t)
-                if nan or inf:
-                    n_bad += 1
-                    offenders.append(
-                        f"{self._prefix(name)}.{param_name}{suffix}: shape={tuple(t.shape)}"
-                        f" nan={nan} inf={inf} max_abs={_fmt(max_abs)} ***NONFINITE***"
-                    )
-        self._emit_offenders(name, offenders, "non-finite params/grads")
-        found = n_bad > 0
-        if found or not quiet:
-            flag = " ***NONFINITE***" if found else ""
+        for line in offenders[:_MAX_OFFENDER_LINES]:
+            print(line, flush=True)
+        if len(offenders) > _MAX_OFFENDER_LINES:
             print(
-                f"{self._prefix(name)}: module params={n_params} nonfinite_params_or_grads={n_bad}{flag}",
+                f"{self._prefix(name)}: ... and {len(offenders) - _MAX_OFFENDER_LINES} more non-finite tensors",
                 flush=True,
             )
         return found
 
-    def _emit_offenders(self, name: str, offenders: list[str], what: str) -> None:
-        for line in offenders[:_MAX_OFFENDER_LINES]:
-            print(line, flush=True)
-        if len(offenders) > _MAX_OFFENDER_LINES:
-            print(f"{self._prefix(name)}: ... and {len(offenders) - _MAX_OFFENDER_LINES} more {what}", flush=True)
+    @staticmethod
+    def _module_leaves(module: nn.Module):
+        for param_name, param in module.named_parameters():
+            yield f".{param_name}", param
+            main_grad = getattr(param, "main_grad", None)
+            grad = main_grad if main_grad is not None else param.grad
+            if grad is not None:
+                yield f".{param_name}.grad", grad
 
     def _scan(self, name: str, value, quiet: bool) -> bool:
         if value is None:
@@ -240,7 +216,7 @@ class NanScanner:
         if isinstance(value, Tensor):
             return self._scan_tensor(name, value, quiet)
         if isinstance(value, nn.Module):
-            return self._scan_module(name, value, quiet)
+            return self._scan_leaves(name, self._module_leaves(value), quiet)
         if isinstance(value, Mapping):
             found = False
             for key, item in value.items():
@@ -248,7 +224,7 @@ class NanScanner:
             return found
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
             if len(value) > 0 and all(isinstance(item, Tensor) for item in value):
-                return self._scan_tensor_seq(name, value, quiet)
+                return self._scan_leaves(name, ((f"[{i}]", t) for i, t in enumerate(value)), quiet)
             found = False
             for i, item in enumerate(value):
                 found |= self._scan(f"{name}[{i}]", item, quiet)
