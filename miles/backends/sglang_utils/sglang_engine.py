@@ -374,7 +374,7 @@ class SGLangEngine(RayActor):
         group_name: str,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
-        override_existing: bool = False,
+        upsert: bool = False,
     ):
         """Load a LoRA adapter whose weights are broadcast over ``group_name``.
 
@@ -383,7 +383,7 @@ class SGLangEngine(RayActor):
         this works across nodes. ``init_weights_update_group`` must have created
         ``group_name`` already.
 
-        When ``override_existing`` is set, the adapter named ``lora_name`` must
+        When ``upsert`` is set, the adapter named ``lora_name`` must
         already be loaded on the engines; its weights are overwritten in place
         (no unload, no register, no wait_for_unload). This is the in-place update
         path for the fixed multi-LoRA pool.
@@ -396,7 +396,7 @@ class SGLangEngine(RayActor):
             "shapes": shapes,
             "group_name": group_name,
             "pinned": pinned,
-            "override_existing": override_existing,
+            "upsert": upsert,
         }
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config

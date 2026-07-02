@@ -263,7 +263,7 @@ class DistBucketedWeightUpdateMixin:
         # Load once, then refresh in place -- never unload (see _update_multi_lora_weights).
         self._update_lora_weight_implementation(
             accumulated_named_tensors,
-            override_existing=self._lora_loaded,
+            upsert=self._lora_loaded,
         )
         self._lora_loaded = True
 
@@ -271,8 +271,8 @@ class DistBucketedWeightUpdateMixin:
         """Refresh every controller-tracked adapter on the rollout engines in place.
 
         The rollout engines hold a fixed pool of LoRA slots (the page table): each
-        adapter is loaded once (``override_existing=False``) and thereafter only
-        updated in place (``override_existing=True``). Adapters are never unloaded,
+        adapter is loaded once (``upsert=False``) and thereafter only
+        updated in place (``upsert=True``). Adapters are never unloaded,
         so there is no drain/``wait_for_unload`` and the LoRA usage-counter leak
         cannot hang the update. The controller returns the same snapshot on every
         rank, so all ranks walk the adapters in the same order and the per-adapter
@@ -288,17 +288,17 @@ class DistBucketedWeightUpdateMixin:
                 # First send loads the adapter (allocates an sglang slot); every
                 # later send overwrites that slot in place.
                 self._send_one_multi_lora_adapter(
-                    adapter, override_existing=name in self._multi_lora_loaded
+                    adapter, upsert=name in self._multi_lora_loaded
                 )
                 self._multi_lora_loaded.add(name)
 
-    def _send_one_multi_lora_adapter(self, adapter, override_existing: bool) -> None:
+    def _send_one_multi_lora_adapter(self, adapter, upsert: bool) -> None:
         """Export and transmit one adapter's weights.
 
         Every rank exposes the adapter's slot and iterates the bridge (the export
         runs TP all-gather internally, so all ranks must participate); only the
         source rank validates and transmits via ``_update_lora_weight_implementation``
-        with this adapter's name and config. ``override_existing`` selects an
+        with this adapter's name and config. ``upsert`` selects an
         in-place overwrite of an already-loaded adapter (no unload/register).
         """
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
@@ -332,7 +332,7 @@ class DistBucketedWeightUpdateMixin:
             accumulated_named_tensors,
             lora_name=adapter.name,
             lora_config=lora_config,
-            override_existing=override_existing,
+            upsert=upsert,
         )
 
     def _pause_and_prepare_engines(self) -> None:

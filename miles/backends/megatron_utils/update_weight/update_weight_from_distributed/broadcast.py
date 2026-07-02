@@ -117,7 +117,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         *,
         lora_name: str = LORA_ADAPTER_NAME,
         lora_config: dict | None = None,
-        override_existing: bool = False,
+        upsert: bool = False,
     ) -> None:
         """Send adapter metadata over Ray, then broadcast the tensors (src=0).
 
@@ -129,7 +129,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
 
         ``lora_name`` / ``lora_config`` default to the single-adapter values; the
         multi-LoRA path passes the per-adapter name and config (carrying that
-        adapter's own ``r`` / ``lora_alpha``). ``override_existing`` switches the
+        adapter's own ``r`` / ``lora_alpha``). ``upsert`` switches the
         engine RPC to an in-place weight overwrite of an already-loaded adapter
         (no unload/register); this is the update path for the fixed multi-LoRA
         pool, where every adapter is loaded once and then refreshed in place.
@@ -148,7 +148,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 dtypes=dtypes,
                 shapes=shapes,
                 group_name=self._group_name,
-                override_existing=override_existing,
+                upsert=upsert,
             )
             for engine in self.rollout_engines
         ]
