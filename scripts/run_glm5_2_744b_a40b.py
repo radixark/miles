@@ -264,13 +264,11 @@ def _execute_train(args: ScriptArgs):
             "--expert-tensor-parallel-size 1 "
         )
     elif args.num_nodes >= 16:  # GB300 64-GPU config
-        # TP=8 * PP=4 * DP=2 = 64 GPUs (16 GB300 nodes); EP=16 (= tp*dp, so the
-        # expert-DP group is 1: expert optimizer states are NOT dp-sharded, but
-        # EP16 halves per-rank expert params vs EP8, which is what makes fp32
-        # main+m/v fit on GPU: max stage 20 MoE layers -> 2P+4P+12P_e+6P_d ~= 228GB.
-        # DSA cross-layer index sharing needs every pipeline stage to START on a
-        # computing layer (computing = 1,2,3 then 3+4k). first=18, last=20 leaves
-        # 2 middle stages of 20; starts land on layers 1,19,39,59 -- all computing.
+        # TP=8 * PP=4 * DP=2 = 64 GPUs; EP=16 halves per-rank expert params vs
+        # EP8, which is what fits the fp32 optimizer states on 276GB GPUs.
+        # DSA cross-layer index sharing needs every pipeline stage to start on a
+        # computing layer (1,2,3 then 3+4k): first=18/last=20 puts the stage
+        # starts on layers 1,19,39,59.
         perf_args = (
             "--tensor-model-parallel-size 8 "
             "--sequence-parallel "
@@ -291,8 +289,7 @@ def _execute_train(args: ScriptArgs):
         "--recompute-num-layers 1 "
         # ------------
         "--use-dynamic-batch-size "
-        # 6144 (not 8192): from step 2 on, fwd/bwd activations must fit in the
-        # ~14GB left after fp32 main+m/v are resident (PP4/EP16 -> 228GB steady).
+        # 6144: activations must fit next to the resident fp32 m/v from step 2 on.
         f"--max-tokens-per-gpu {2048 if _is_pruned(args) else 6144} "
         "--data-pad-size-multiplier 1024 "
         "--log-probs-chunk-size 16384 "
