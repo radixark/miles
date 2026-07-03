@@ -1827,6 +1827,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Port of the standalone session server. Auto-allocated if not set.",
             )
             parser.add_argument(
+                "--session-server-workers",
+                type=int,
+                default=1,
+                help="Number of session-server worker processes. 1 (default) = single-process, "
+                "no router/IPC. >1 shards sessions across worker processes behind a thin router.",
+            )
+            parser.add_argument(
                 "--tito-model",
                 type=str,
                 default="default",

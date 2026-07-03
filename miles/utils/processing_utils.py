@@ -72,7 +72,7 @@ def _make_cache_key(name_or_path: str, chat_template_path: str | None, kwargs: d
 
 def load_tokenizer(name_or_path: str, chat_template_path: str | None = None, **kwargs) -> PreTrainedTokenizerBase:
     # Cache keyed by (name, chat_template_path, kwargs) — the fast suite creates
-    # hundreds of SessionServer / MockSGLangServer fixtures and each previously
+    # hundreds of session-server / MockSGLangServer fixtures and each previously
     # triggered a fresh AutoTokenizer.from_pretrained, tripping HF Hub rate limits.
     cache_key = _make_cache_key(name_or_path, chat_template_path, kwargs)
     if cache_key is not None and cache_key in _TOKENIZER_CACHE:

@@ -6,7 +6,6 @@ import uuid
 
 from sglang_router.launch_router import RouterArgs
 
-from miles.rollout.session.server import run_session_server
 from miles.router.router import run_router as run_miles_router
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available
 from miles.utils.http_utils import run_router as run_sglang_router
@@ -78,11 +77,12 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
 
 
 def start_session_server(args):
-    """Start a standalone session server when ``--use-session-server`` is set.
+    """Start the session server when ``--use-session-server`` is set.
 
-    The session server runs as a separate process with its own port and proxies
-    inference requests directly to SGLang worker engines.  It is always started
-    as a standalone process regardless of whether ``--use-miles-router`` is active.
+    One topology for every worker count: a supervisor spawns N session workers
+    plus a thin client-facing router on ``session_server_port`` (workers=1 is
+    simply N=1). It is always started regardless of whether ``--use-miles-router``
+    is active. Returns the supervisor so the rollout path can ``check()`` it.
     """
     if not getattr(args, "use_session_server", False):
         return
@@ -107,9 +107,10 @@ def start_session_server(args):
 
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
-    # spawn (not fork): see start_router for rationale.
-    process = multiprocessing.get_context("spawn").Process(target=run_session_server, args=(args, router_url))
-    process.daemon = True
-    process.start()
-    wait_for_server_ready(ip, port, process, timeout=30)
-    logger.info(f"Session server launched at {ip}:{port}")
+    from miles.rollout.session.supervisor import SessionServerSupervisor
+
+    supervisor = SessionServerSupervisor(args, router_url, ip, port)
+    supervisor.start()
+    workers = int(getattr(args, "session_server_workers", 1))
+    logger.info(f"Session server launched at {ip}:{port} ({workers} workers + router)")
+    return supervisor

@@ -69,12 +69,13 @@ class RolloutManager:
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
+        self._session_supervisor = None
         if self.args.debug_train_only:
             self.servers: dict[str, RolloutServer] = {}
         else:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
-            start_session_server(args)
+            self._session_supervisor = start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -101,10 +102,19 @@ class RolloutManager:
 
     # -------------------------- data generation -----------------------------
 
+    def _check_session_server(self):
+        # Surface a dead multi-process session-server worker as a hard error on the rollout
+        # path, instead of letting requests to its hash shard hang/503 forever. No-op for
+        # the single-process server (supervisor is None). Must be called from BOTH
+        # generate() and eval(): dropping either leaves that phase able to hang silently.
+        if self._session_supervisor is not None:
+            self._session_supervisor.check()
+
     async def generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
         self._health_monitoring_resume()
+        self._check_session_server()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
@@ -124,6 +134,7 @@ class RolloutManager:
             # if debug train only, we don't generate evaluation data
             return
         self._health_monitoring_resume()
+        self._check_session_server()
 
         if self.use_experimental_refactor:
             result = await asyncio.to_thread(
