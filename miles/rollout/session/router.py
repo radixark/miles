@@ -17,6 +17,8 @@ import asyncio
 import json
 import uuid
 
+import setproctitle
+import uvicorn
 from fastapi import FastAPI, Request
 from starlette.responses import Response
 
@@ -31,6 +33,8 @@ from miles.rollout.session.ipc import (
     IpcError,
     decode_envelope,
     encode_request,
+    open_unix_channel,
+    set_pdeathsig,
 )
 from miles.rollout.session.sharding import worker_index_for_session
 
@@ -155,3 +159,20 @@ def build_router_app(channels: list, session_server_instance_id=None) -> FastAPI
         return await router.dispatch(router.channel_for(session_id), payload)
 
     return app
+
+
+async def _serve_router(args, router_ends: list, ip: str, port: int) -> None:
+    channels = [await open_unix_channel(sock) for sock in router_ends]
+    app = build_router_app(channels, getattr(args, "session_server_instance_id", None))
+    await uvicorn.Server(uvicorn.Config(app, host=ip, port=port, log_level="info")).serve()
+
+
+def run_router(args, router_ends: list, ip: str, port: int) -> None:
+    """``multiprocessing.Process`` target: serve the router app over the worker sockets.
+
+    Imports nothing from core/worker, so the router process never loads
+    the tokenizer/transformers stack — it only moves bytes between clients and workers.
+    """
+    setproctitle.setproctitle("miles-session-router")
+    set_pdeathsig()
+    asyncio.run(_serve_router(args, router_ends, ip, port))

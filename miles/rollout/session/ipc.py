@@ -19,12 +19,31 @@ Deliberately minimal — no round-robin scheduling across requests, no configura
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import logging
+import signal
 import struct
+import sys
 from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
+
+
+def set_pdeathsig() -> None:
+    """Ask the kernel to SIGKILL this process if its parent dies (Linux only).
+
+    Shared by the worker and router child entry points; lives here (stdlib-only)
+    so the router process can call it without importing the worker/core stack.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    except Exception:
+        logger.warning("Failed to set PR_SET_PDEATHSIG; child may outlive a crashed parent")
+
 
 _LEN = struct.Struct(">Q")  # frame length / envelope meta_len prefix (u64)
 _HDR = struct.Struct(">QB")  # request_id (u64) + type (u8)

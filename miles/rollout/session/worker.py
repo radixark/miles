@@ -13,11 +13,8 @@ The worker trusts the router's stable-hash routing and does not re-derive owners
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import json
 import logging
-import signal
-import sys
 
 import httpx
 import setproctitle
@@ -35,6 +32,7 @@ from miles.rollout.session.ipc import (
     decode_envelope,
     encode_envelope,
     open_unix_channel,
+    set_pdeathsig,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,17 +123,6 @@ class SessionWorker:
         raise ValueError(f"unknown op: {op!r}")
 
 
-def _set_pdeathsig() -> None:
-    """Ask the kernel to SIGKILL this worker if the parent (supervisor) dies (Linux)."""
-    if sys.platform != "linux":
-        return
-    try:
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        libc.prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
-    except Exception:
-        logger.warning("Failed to set PR_SET_PDEATHSIG; worker may outlive a crashed parent")
-
-
 async def _serve(args, backend_url: str, sock) -> None:
     backend = ProxyBackend(backend_url, timeout=getattr(args, "miles_router_timeout", 600.0))
     worker = SessionWorker(build_session_core(backend, args))
@@ -150,5 +137,5 @@ async def _serve(args, backend_url: str, sock) -> None:
 def run_worker(args, backend_url: str, sock, worker_index: int) -> None:
     """``multiprocessing.Process`` target: serve one session shard over ``sock``."""
     setproctitle.setproctitle(f"miles-session-worker-{worker_index}")
-    _set_pdeathsig()
+    set_pdeathsig()
     asyncio.run(_serve(args, backend_url, sock))
