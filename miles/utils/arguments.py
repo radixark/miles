@@ -2367,18 +2367,10 @@ def miles_validate_args(args):
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
     if args.restore_weights_from_fp32_main:
-        # The cast path only rebuilds trainable low-precision weights of the "actor"
-        # tag; every consumer of other backup tags or of a differently-sourced main
-        # param must be excluded loudly.
-        assert args.colocate and args.offload_train, (
-            "--restore-weights-from-fp32-main only makes sense for colocate runs "
-            "(it replaces the weight backup across the rollout pause)"
-        )
-        assert args.enable_weights_backuper, (
-            "--restore-weights-from-fp32-main replaces the backuper's actor tag; "
-            "--disable-weights-backuper (TMS param-buffer backup) is redundant with it"
-        )
-        assert not args.keep_old_actor, "--restore-weights-from-fp32-main does not support --keep-old-actor"
+        assert args.colocate and args.offload_train
+        assert args.use_distributed_optimizer
+        assert args.enable_weights_backuper
+        assert not args.keep_old_actor
         assert (
             args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
         ), "--restore-weights-from-fp32-main does not support ref/teacher model tags"
