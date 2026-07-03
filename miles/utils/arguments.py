@@ -881,6 +881,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The model will be saved to `save_hf.format(rollout_id)`. "
                 ),
             )
+            parser.add_argument(
+                "--save-trigger-sentinel",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a sentinel file for externally-triggered checkpoint saving. If the file "
+                    "exists at an iteration's save point, a checkpoint is saved and the file is removed."
+                ),
+            )
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
@@ -2198,6 +2207,9 @@ def miles_validate_args(args):
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
+
+    if args.save_trigger_sentinel is not None:
+        assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
 
     # Parse LoRA target modules
     if args.lora_rank > 0:
