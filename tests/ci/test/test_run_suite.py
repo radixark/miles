@@ -150,7 +150,7 @@ class TestDiscoverCiFiles:
     def test_only_test_prefixed_files_under_known_roots(self, monkeypatch):
         # discover_ci_files globs repo-relative; anchor cwd to the repo root
         # so it scans the real tree regardless of where pytest is invoked.
-        repo_root = Path(__file__).resolve().parents[2]
+        repo_root = Path(__file__).resolve().parents[3]
         monkeypatch.chdir(repo_root)
         files = discover_ci_files()
 
@@ -162,7 +162,7 @@ class TestDiscoverCiFiles:
         assert not any(Path(f).name in ("conftest.py", "__init__.py") for f in files)
         assert not any(Path(f).name.startswith("_") for f in files)
         # representative files across the roots are discovered
-        assert "tests/ci/test_ci_register.py" in files
+        assert "tests/ci/test/test_ci_register.py" in files
         assert "tests/fast-gpu/test_semaphore.py" in files
         assert "tests/e2e/short/test_dumper.py" in files  # re-enabled, no carve-out
 

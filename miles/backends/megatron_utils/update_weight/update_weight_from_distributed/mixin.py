@@ -15,10 +15,11 @@ from ...lora_utils import LORA_ADAPTER_NAME, _is_adapter_param_name, build_lora_
 from ...megatron_to_hf import convert_to_hf
 from ..common import (
     all_gather_param,
+    begin_weight_update,
     collect_named_tensors_for_weight_transfer,
+    end_weight_update,
     get_atomic_update_groups,
     get_named_value_update_units,
-    post_process_weights,
 )
 from ..hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -262,33 +263,19 @@ class DistBucketedWeightUpdateMixin:
         self._lora_loaded = True
 
     def _pause_and_prepare_engines(self) -> None:
-        """Pause rollout engines, flush cache, and run pre-process if needed."""
+        """Pause rollout engines, flush cache, and open the weight-update session."""
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             if mode not in ("in_place"):
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
-            # int4/fp4 pre_process
-            if self.quantization_config and self.quantization_config["quant_method"] in ["compressed-tensors"]:
-                post_process_weights(
-                    rollout_engines=self.rollout_engines,
-                    restore_weights_before_load=True,
-                    post_process_quantization=False,
-                )
+            begin_weight_update(self.rollout_engines)
 
-    def _finalize_and_resume_engines(self, post_load_weights: bool = False) -> None:
-        """Run post-process if needed and resume rollout engines."""
+    def _finalize_and_resume_engines(self) -> None:
+        """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
-            # post_process_quantization is related to the process_weights_after_loading
-            # in the sglang rollout side, which should always be invoked after weight
-            # updating.
-            post_process_weights(
-                rollout_engines=self.rollout_engines,
-                restore_weights_before_load=False,
-                post_process_quantization=True,
-                post_load_weights=post_load_weights,
-            )
+            end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
 
     @torch.no_grad()

@@ -28,7 +28,7 @@ Miles runs on NVIDIA H/B-series and AMD MI300X with the same launch scripts. Eac
 | FP8 GEMM | ✅  | - | ✅  |
 | INT4 W4A16 QAT | ✅ | ✅ | ⚠️ |
 | Speculative decoding | ✅ | ✅ | ✅ |
-| Miles Router (R3) | ✅ | ✅ | ✅ |
+| Rollout Routing Replay (R3) | ✅ | ✅ | ✅ |
 | P2P weight transfer (RDMA) | ✅ IB / RoCEv2 | ✅ | ✅ Infinity Fabric |
 | Megatron CP | ✅ | ✅ | ✅ |
 | Deterministic inference | ✅ | ✅ | ⚠️ |

@@ -241,7 +241,6 @@ def execute(args: ScriptArgs, *, wandb_file: str = __file__):
                 )
                 misc_args += (
                     "--use-rollout-routing-replay "
-                    "--use-miles-router "
                     "--sglang-disable-shared-experts-fusion "
                     f"--extra-high-precision-layers-hf {MXFP8_HIGH_PRECISION_LAYERS_HF} "
                     f"--extra-high-precision-layers-megatron {MXFP8_HIGH_PRECISION_LAYERS_MEGATRON} "

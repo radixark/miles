@@ -2,7 +2,6 @@
 # and https://github.com/OpenRLHF/OpenRLHF/blob/10c733694ed9fbb78a0a2ff6a05efc7401584d46/openrlhf/trainer/ppo_utils/experience_maker.py
 
 from argparse import Namespace
-from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -11,6 +10,22 @@ import torch.nn.functional as F
 
 from miles.backends.training_utils.cp_utils import slice_loss_masks_for_local_cp
 from miles.backends.training_utils.parallel import get_parallel_state
+
+_LOG_RATIO_EXP_CLAMP = 20.0
+
+
+def _safe_clamp_log_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
+    log_ratio = torch.nan_to_num(
+        log_ratio.float(),
+        nan=0.0,
+        posinf=_LOG_RATIO_EXP_CLAMP,
+        neginf=-_LOG_RATIO_EXP_CLAMP,
+    )
+    return torch.clamp(log_ratio, min=-_LOG_RATIO_EXP_CLAMP, max=_LOG_RATIO_EXP_CLAMP)
+
+
+def _safe_exp_neg_ppo_kl(ppo_kl: torch.Tensor) -> torch.Tensor:
+    return _safe_clamp_log_ratio(-ppo_kl).exp()
 
 
 def compute_ess_ratio_contribution(
@@ -39,7 +54,7 @@ def compute_ess_ratio_contribution(
         max_seq_lens,
     )
     local_lengths = [mask.size(0) for mask in local_masks]
-    is_weights_per_sample = (-ppo_kl.detach().float()).exp().split(local_lengths, dim=0)
+    is_weights_per_sample = _safe_exp_neg_ppo_kl(ppo_kl.detach()).split(local_lengths, dim=0)
 
     partial_sums = torch.zeros(len(loss_masks), 2, device=ppo_kl.device, dtype=torch.float32)
     for i, (weights, mask) in enumerate(zip(is_weights_per_sample, local_masks, strict=False)):
@@ -144,6 +159,8 @@ def compute_approx_kl(
         # http://joschu.net/blog/kl-approx.html
         # Besides non negative, it is also unbiased and have lower variance.
         log_ratio = -log_ratio
+        if kl_loss_type == "low_var_kl":
+            log_ratio = _safe_clamp_log_ratio(log_ratio)
         kl = log_ratio.exp() - 1 - log_ratio
     else:
         raise ValueError(f"Unknown kl_loss_type: {kl_loss_type}")
@@ -237,7 +254,7 @@ def compute_policy_loss(
     eps_clip_high: float,
     eps_clip_c: float | None = None,
 ):
-    ratio = (-ppo_kl).exp()
+    ratio = _safe_exp_neg_ppo_kl(ppo_kl)
     pg_losses1 = -ratio * advantages
     pg_losses2 = -ratio.clamp(1 - eps_clip, 1 + eps_clip_high) * advantages
     clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
@@ -860,6 +877,7 @@ def calculate_log_probs_and_entropy(
     tokens,
     tp_group,
     with_entropy: bool = False,
+    entropy_requires_grad: bool = True,
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
@@ -871,6 +889,7 @@ def calculate_log_probs_and_entropy(
             tokens,
             tp_group,
             with_entropy=with_entropy,
+            entropy_requires_grad=entropy_requires_grad,
             vocab_size=vocab_size,
         )
 
@@ -879,7 +898,13 @@ def calculate_log_probs_and_entropy(
     # Without the clone, the backward will trigger inplace edit error.
     # It seems that the function with tp will modify the logits inplace.
     entropy = None
-    entropy_ctx = nullcontext() if need_entropy_grad else torch.no_grad()
+
+    def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
+        if entropy_requires_grad and need_entropy_grad:
+            return compute_entropy_from_logits(logits_chunk.clone(), tp_group)
+        with torch.no_grad():
+            return compute_entropy_from_logits(logits_chunk.detach().clone(), tp_group)
+
     if logits.size(0) != 0:
         if chunk_size > 0:
             num_chunks = (logits.size(0) - 1) // chunk_size + 1
@@ -891,19 +916,15 @@ def calculate_log_probs_and_entropy(
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
-                with entropy_ctx:
-                    entropys = []
-                    for logits_chunk in logits_chunks:
-                        entropy_input = logits_chunk.clone() if need_entropy_grad else logits_chunk
-                        entropy = compute_entropy_from_logits(entropy_input, tp_group)
-                        entropys.append(entropy)
-                    entropy = torch.cat(entropys, dim=0)
+                entropys = []
+                for _, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
+                    entropy = compute_entropy(logits_chunk)
+                    entropys.append(entropy)
+                entropy = torch.cat(entropys, dim=0)
         else:
             log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
             if with_entropy:
-                with entropy_ctx:
-                    entropy_input = logits.clone() if need_entropy_grad else logits
-                    entropy = compute_entropy_from_logits(entropy_input, tp_group)
+                entropy = compute_entropy(logits)
     else:
         log_prob = logits.new_zeros((0,))
         if with_entropy:
@@ -917,6 +938,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     tokens: torch.Tensor,
     tp_group: dist.ProcessGroup | None,
     with_entropy: bool = False,
+    entropy_requires_grad: bool = True,
     vocab_size: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
@@ -927,6 +949,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         tokens: Target tokens of shape ``[R]``.
         tp_group: Tensor-parallel process group for vocab gather.
         with_entropy: If True, also compute entropy.
+        entropy_requires_grad: If False, compute entropy as an observed metric
+            without attaching it to the autograd graph.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
 
@@ -948,7 +972,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     entropy = None
     if with_entropy:
-        probs = log_probs_full.exp()
-        entropy = -(probs * log_probs_full).sum(dim=-1)
+        entropy_log_probs = log_probs_full if entropy_requires_grad else log_probs_full.detach()
+        probs = entropy_log_probs.exp()
+        entropy = -(probs * entropy_log_probs).sum(dim=-1)
 
     return log_prob, entropy

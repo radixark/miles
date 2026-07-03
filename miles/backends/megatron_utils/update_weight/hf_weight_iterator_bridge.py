@@ -146,14 +146,16 @@ def _chunk_atomic_units_by_size(units, chunk_size):
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
     def _handle_one(task):
+        if task is None:
+            # no HF mapping (e.g. Gemma-4 post_shared_expert_layernorm)
+            return task
         if task.param_weight is None:
             return task
 
         weight_dict_key = f"vp_stages.{task.vp_stage}.{task.param_name}"
-        assert (
-            weight_dict_key in new_weight_dict
-        ), f"{weight_dict_key=} not in new_weight_dict ({task.vp_stage=}, {task.param_name=}, {list(new_weight_dict)=})"
-
+        if weight_dict_key not in new_weight_dict:
+            # buffer-like params (Gemma-4 layer_scalar/scale) aren't in optimizer state; keep as-is
+            return task
         new_param_weight = new_weight_dict[weight_dict_key]
         new_param_weight = new_param_weight.cuda()
         return dataclasses.replace(task, param_weight=new_param_weight)
