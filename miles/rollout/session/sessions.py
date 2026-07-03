@@ -6,14 +6,9 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from miles.rollout.session.errors import SessionError, SessionNotFoundError, TokenizationError, UpstreamResponseError
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.session_errors import (
-    SessionError,
-    SessionNotFoundError,
-    TokenizationError,
-    UpstreamResponseError,
-)
-from miles.rollout.session.session_types import GetSessionResponse, SessionRecord
+from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 

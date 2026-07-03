@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from miles.rollout.session.session_server import SessionServer
+from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
