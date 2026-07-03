@@ -1096,18 +1096,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--use-rollout-routing-replay",
-                action=argparse.BooleanOptionalAction,
+                action="store_true",
                 default=False,
-                help="R3 rollout routing replay (https://arxiv.org/abs/2510.11370): replay the rollout's "
-                "MoE top-8 in training for rollout<->train on-policy parity. Cheap (sglang routed-experts "
-                "capturer ~0.5 GB/rank, no host buffer) and recommended for MoE RL -- the GLM-5 launchers "
-                "pass it explicitly. DEFAULT OFF: it is MoE-only (a dense/non-MoE rollout emits no "
-                "routed_experts, so enabling it raises 'rollout_routed_experts is required' at step 0) and "
-                "R3 replay modules are only registered for models that opt in, so a default-on would "
-                "silently change training numerics / crash for non-GLM-MoE and dense runs. Enable with "
-                "--use-rollout-routing-replay. NOTE: distinct from the debug-only "
-                "--use-rollout-indexer-replay (stays default-off; it triggers the ~78-128 GB/rank "
-                "IndexerTopkCapturer host buffer that OOMs the colocate pod).",
+                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370 (R3): "
+                "replay the rollout's MoE routing in training. MoE-only; the GLM-5 launchers pass it "
+                "explicitly.",
             )
             parser.add_argument(
                 "--use-indexer-replay",
