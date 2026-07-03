@@ -2374,20 +2374,12 @@ def miles_validate_args(args):
         assert (
             args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
         ), "--restore-weights-from-fp32-main does not support ref/teacher model tags"
-        assert not args.use_precision_aware_optimizer, (
-            "--restore-weights-from-fp32-main requires the fp32-main-param path; "
-            "precision-aware optimizers keep main params inside the inner optimizer "
-            "and _copy_main_params_to_model_params is a no-op there"
-        )
-        assert not args.overlap_param_gather, (
-            "--restore-weights-from-fp32-main calls DDP.start_param_sync outside the "
-            "training step; with --overlap-param-gather the param-gather state machine "
-            "(dispatch flags, forward pre-hooks) is not designed for that call site"
-        )
-        assert args.use_distributed_optimizer, (
-            "--restore-weights-from-fp32-main rebuilds weights via the distributed "
-            "optimizer's fp32 main shards + param all-gather"
-        )
+        assert (
+            not args.use_precision_aware_optimizer
+        ), "precision-aware optimizers keep main params internally; _copy_main_params_to_model_params is a no-op"
+        assert (
+            not args.overlap_param_gather
+        ), "restore calls DDP.start_param_sync outside the training step, which overlap-param-gather does not support"
         # The param buffer must carry its own TMS tag and no CPU backup: it stays
         # resident through update_weights and is dropped right afterwards.
         args.disable_param_buffers_cpu_backup = True
