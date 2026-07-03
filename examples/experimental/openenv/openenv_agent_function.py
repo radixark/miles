@@ -443,15 +443,27 @@ async def _multi_turn(
         eval_result = await env.step(action_cls(action_type="evaluate"))
         reward = float(getattr(eval_result, "reward", 0.0) or 0.0)
 
-        # rm-hack: the tbench2 env server runs in local mode and leaves a per-task
-        # run dir under /tmp/tbench2_env_runs/<task>.<uuid> after every episode,
-        # which fills the sandbox overlay disk and trips ENOSPC. One episode holds
-        # the sandbox at a time, so it is safe to purge them here.
+        # rm-hack: the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
+        # leaves a per-episode trial dir under that path after every episode, which
+        # fills the sandbox overlay disk and trips ENOSPC. One episode holds the
+        # sandbox at a time, so it is safe to purge them here.
+        #
+        # BUT the same dir also holds repo_cache/ (TB2_CACHE_DIR defaults to
+        # output_dir/repo_cache) -- the shared terminal-bench-2 checkout that
+        # reset() clones once and every later episode reads its task from
+        # (repo_cache/terminal-bench-2-main/<task>). A blanket `rm -rf .../*` wiped
+        # repo_cache too, so on a pooled/reused sandbox every episode after the first
+        # either re-cloned the whole repo (huge) or raced into "Task path not found",
+        # collapsing effective concurrency and exploding step time. Preserve
+        # repo_cache; delete only the ephemeral per-trial dirs beside it.
         try:
             await env.step(
                 action_cls(
                     action_type="exec",
-                    command="rm -rf /tmp/tbench2_env_runs/* 2>/dev/null || true",
+                    command=(
+                        "find /tmp/tbench2_env_runs -mindepth 1 -maxdepth 1 "
+                        "! -name repo_cache -exec rm -rf {} + 2>/dev/null || true"
+                    ),
                 )
             )
         except Exception:
