@@ -118,6 +118,9 @@ class EvalDatasetConfig:
     # per-dataset custom generate function (e.g., for tool calling)
     custom_generate_function_path: str | None = None
 
+    # per-dataset custom reward function (overrides the global --custom-rm-path)
+    custom_rm_path: str | None = None
+
     metadata_overrides: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
