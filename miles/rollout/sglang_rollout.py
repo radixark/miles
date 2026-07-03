@@ -269,7 +269,9 @@ def _can_batch_generate_group(args: Namespace, group: list[Sample]) -> bool:
     if getattr(args, "sglang_router_policy", None) == "consistent_hashing":
         return False
     return not any(
-        len(sample.response) > 0 or (sample.multimodal_inputs and sample.multimodal_inputs.get("images"))
+        len(sample.response) > 0
+        or getattr(sample, "generate_function_path", None) is not None
+        or (sample.multimodal_inputs and sample.multimodal_inputs.get("images"))
         for sample in group
     )
 
@@ -393,8 +395,11 @@ async def generate_and_rm_group(
     if _can_batch_generate_group(args, group):
         async with state.semaphore:
             if state.aborted:
+                for sample in group:
+                    sample.status = Sample.Status.ABORTED
                 return group
-            group = await generate_batch(args, group, sampling_params)
+            with state.dp_rank_context():
+                group = await generate_batch(args, group, sampling_params)
         if not args.group_rm:
             samples_need_reward = [sample for sample in group if sample.reward is None]
             rewards = await asyncio.gather(*[async_rm(args, sample) for sample in samples_need_reward])
