@@ -1,11 +1,9 @@
 """OpenEnv Terminal-Bench-2 (tbench2) learning launcher (GLM-4.7-Flash).
 
-Same shape as ``run-openenv-coding.py`` but drives the OpenEnv tbench2 env via the
-generic ``openenv_agent_function.run`` with ``OPENENV_ENV_TYPE=tbench2``. Unlike
-the single-step coding/echo envs, tbench2 is *multi-turn*: the adapter runs an
-agentic loop (reset(task_id) -> {policy emits a shell command -> step(exec) ->
-feed output back} -> evaluate) and the reward is the binary pytest result
-(1.0 all tests pass, else 0.0).
+Drives the OpenEnv tbench2 env via ``openenv_agent_function.run``. tbench2 is
+*multi-turn*: the adapter runs an agentic loop (reset(task_id) -> {policy emits a
+shell command -> step(exec) -> feed output back} -> evaluate) and the reward is
+the binary pytest result (1.0 all tests pass, else 0.0).
 
 Prereqs:
     # 1. Install the env client where the rollout runs (pulls camel-ai; isolate
@@ -270,7 +268,6 @@ def execute(args: ScriptArgs):
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-        "OPENENV_ENV_TYPE": "tbench2",
         "OPENENV_ENV_URL": args.openenv_env_url,
         "OPENENV_MAX_TURNS": str(args.openenv_max_turns),
         "OPENENV_MAX_ROLLOUT_TIME_SECONDS": str(args.openenv_max_rollout_time_seconds),

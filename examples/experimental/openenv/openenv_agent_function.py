@@ -1,26 +1,17 @@
-"""Generic OpenEnv <-> miles adapter: one agent function for every OpenEnv env.
+"""OpenEnv Terminal-Bench-2 <-> miles adapter.
 
 miles selects the policy and calls ``run`` once per episode via
-``--custom-agent-function-path openenv_agent_function.run``. Which OpenEnv
-environment that episode drives is chosen by ``OPENENV_ENV_TYPE``
-(echo | coding | tbench2 | swe), so the same file serves all tasks -- only the
-prompt-data and the env server differ. There is no per-task (or per-env) agent
-function to write: new single-turn envs are one entry in ``_ENV_SPECS``.
+``--custom-agent-function-path openenv_agent_function.run``. The episode drives
+the OpenEnv tbench2 env through an agentic loop (reset -> {policy -> exec} ->
+evaluate).
 
 The policy is always reached at ``base_url/v1`` through miles' session server,
 so token ids + logprobs + loss masks are captured natively (no re-tokenization)
-on every turn, including each turn of a multi-turn env.
-
-Per-env behavior lives in ``_ENV_SPECS``:
-  * ``loader``      -- lazy import of the env client + action class,
-  * ``default_url`` -- env server URL when OPENENV_ENV_URL is unset,
-  * ``multi_turn``  -- single ``step`` (echo/coding) vs an agentic loop (tbench2/swe),
-  * ``build_action``-- (single-turn only) policy text -> env action.
+on every turn of the multi-turn episode.
 
 Env vars:
-  OPENENV_ENV_TYPE   echo | coding | tbench2 | swe   (required)
-  OPENENV_ENV_URL    base_url of the env server (default: per-env). Ignored when
-                     OPENENV_DAYTONA_SNAPSHOT is set.
+  OPENENV_ENV_URL    base_url of the env server (default: http://localhost:8003).
+                     Ignored when OPENENV_DAYTONA_SNAPSHOT is set.
   OPENENV_MAX_TURNS  multi-turn cap (default: 30)
   OPENENV_MESSAGE_TIMEOUT_S  per-message WS recv timeout (default: 600; docker-mode
                      reset/exec/pytest routinely exceed the client default of 60)
@@ -130,55 +121,14 @@ def _obs_field(result: Any, name: str) -> str:
     return str(getattr(obs, name, "") or "")
 
 
-# ---- per-env loaders (lazy so the file imports without every env client) ----
-
-
-def _load_echo() -> dict[str, Any]:
-    from echo_env import CallToolAction, EchoEnv
-
-    return {"env": EchoEnv, "action": CallToolAction}
-
-
-def _load_coding() -> dict[str, Any]:
-    from coding_env import CodeAction, CodingEnv
-
-    return {"env": CodingEnv, "action": CodeAction}
-
-
+# Lazy import so the file loads without the env client present at import time.
 def _load_tbench2() -> dict[str, Any]:
     from tbench2_env import Tbench2Action, Tbench2Env
 
     return {"env": Tbench2Env, "action": Tbench2Action}
 
 
-def _load_swe() -> dict[str, Any]:
-    from swe_env import SweAction, SweEnv
-
-    return {"env": SweEnv, "action": SweAction}
-
-
-def _echo_action(classes: dict[str, Any], text: str) -> Any:
-    return classes["action"](tool_name="echo_message", arguments={"message": text})
-
-
-def _coding_action(classes: dict[str, Any], text: str) -> Any:
-    return classes["action"](code=_strip_fence(text))
-
-
-@dataclass
-class EnvSpec:
-    loader: Callable[[], dict[str, Any]]
-    default_url: str
-    multi_turn: bool
-    build_action: Callable[[dict[str, Any], str], Any] | None = None
-
-
-_ENV_SPECS: dict[str, EnvSpec] = {
-    "echo": EnvSpec(_load_echo, "https://openenv-echo-env.hf.space", False, _echo_action),
-    "coding": EnvSpec(_load_coding, "http://localhost:8002", False, _coding_action),
-    "tbench2": EnvSpec(_load_tbench2, "http://localhost:8003", True),
-    "swe": EnvSpec(_load_swe, "http://localhost:8004", True),
-}
+_DEFAULT_ENV_URL = "http://localhost:8003"
 
 
 # ---- Daytona sandbox pool (per-process singleton) ---------------------------
@@ -350,34 +300,7 @@ async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> A
             raise
 
 
-async def _single_turn(
-    spec: EnvSpec,
-    classes: dict[str, Any],
-    env_url: str,
-    policy: AsyncOpenAI,
-    model_name: str,
-    messages: list[dict[str, str]],
-    request_kwargs: dict[str, Any],
-    metadata: dict[str, Any],
-) -> tuple[float, dict[str, int]]:
-    """One policy call -> one env step -> reward off the step result (echo, coding)."""
-    completion = await policy.chat.completions.create(
-        model=model_name, messages=messages, extra_body=request_kwargs
-    )
-    text = completion.choices[0].message.content or ""
-    action = spec.build_action(classes, text)
-
-    async def body(env: Any) -> float:
-        await env.reset()
-        result = await env.step(action)
-        return float(getattr(result, "reward", 0.0) or 0.0)
-
-    reward = await _with_env(classes["env"], env_url, body)
-    return reward, {"turns": 1, "tool_calls": 1}
-
-
 async def _multi_turn(
-    spec: EnvSpec,
     classes: dict[str, Any],
     env_url: str,
     policy: AsyncOpenAI,
@@ -482,25 +405,17 @@ async def run(
     metadata: dict[str, Any] | None = None,
     **kwargs,
 ) -> dict[str, Any] | None:
-    """Run one OpenEnv episode (env chosen by OPENENV_ENV_TYPE) via the trained policy."""
+    """Run one OpenEnv tbench2 episode via the trained policy."""
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
 
-    env_type = os.getenv("OPENENV_ENV_TYPE", "").strip().lower()
-    spec = _ENV_SPECS.get(env_type)
-    if spec is None:
-        raise ValueError(
-            f"OPENENV_ENV_TYPE must be one of {sorted(_ENV_SPECS)}; got {env_type!r}"
-        )
-
-    classes = spec.loader()
+    classes = _load_tbench2()
     session_url = _resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
-    env_url = os.getenv("OPENENV_ENV_URL", spec.default_url)
+    env_url = os.getenv("OPENENV_ENV_URL", _DEFAULT_ENV_URL)
 
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")
     messages = _extract_messages(prompt)
-    runner = _multi_turn if spec.multi_turn else _single_turn
 
     try:
         # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
@@ -508,14 +423,14 @@ async def run(
         # is interrupted and the pooled sandbox slot is released by _with_env's
         # finally block during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
-            runner(
-                spec, classes, env_url, policy, model_name, messages, request_kwargs, metadata
+            _multi_turn(
+                classes, env_url, policy, model_name, messages, request_kwargs, metadata
             ),
             timeout=_MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
         logger.warning(
-            f"OpenEnv {env_type} episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; "
+            f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; "
             "terminating with reward 0"
         )
         return {
@@ -525,7 +440,7 @@ async def run(
             "agent_metrics": {"timed_out": 1},
         }
     except Exception as e:
-        logger.error(f"OpenEnv {env_type} episode failed: {e}", exc_info=True)
+        logger.error(f"OpenEnv tbench2 episode failed: {e}", exc_info=True)
         return None
 
     return {

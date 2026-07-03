@@ -4,8 +4,8 @@ Unlike the coding/echo examples, the *tasks* are not hand-written: they are the
 Terminal-Bench-2 suite shipped in the laude-institute/terminal-bench-2 repo. The
 env serves the per-task instruction at reset(), so each prompt-data row only
 needs the system prompt (how the agent should behave) plus the ``task_id`` in
-metadata. ``openenv_agent_function`` (OPENENV_ENV_TYPE=tbench2) drives the
-multi-turn loop and reads metadata["task_id"].
+metadata. ``openenv_agent_function`` drives the multi-turn loop and reads
+metadata["task_id"].
 
 task_ids are the top-level task directory names in the TB2 repo checkout
 (e.g. "chess-best-move"); a valid task dir contains a ``task.toml``.
