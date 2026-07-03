@@ -151,10 +151,15 @@ def _convert_to_fp8(args: ScriptArgs):
     """Convert HF checkpoint to FP8 (block quantization). Megatron still uses bf16."""
     src = f"{args.model_dir}/{args.model_name}"
     dst = f"{args.model_dir}/{args.model_name}_fp8"
+    sentinel = Path(dst) / "model.safetensors.index.json"
+    if sentinel.exists():
+        print(f"_convert_to_fp8 skip {dst} since {sentinel} exists")
+        return
     U.exec_command(
         f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {src} --save-dir {dst} "
-        f"--strategy block --block-size 128 128"
+        f"--strategy block --block-size 128 128 "
+        f"--max-workers 16"
     )
 
 
@@ -180,11 +185,14 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         num_gpus_per_node = 1
         multinode = False
     else:
+        # GB300: PP=8 * EP=8 = 64 GPUs (16 nodes) to fit the rack (torch_dist is
+        # parallelism-agnostic on load). first=14/last=16 keeps DSA PP-stage starts
+        # on computing layers (same layout as training).
         extra_args += (
-            "--pipeline-model-parallel-size 4 "
-            "--expert-model-parallel-size 32 "
-            "--decoder-first-pipeline-num-layers 18 "
-            "--decoder-last-pipeline-num-layers 20 "
+            "--pipeline-model-parallel-size 8 "
+            "--expert-model-parallel-size 8 "
+            "--decoder-first-pipeline-num-layers 14 "
+            "--decoder-last-pipeline-num-layers 16 "
         )
 
     U.convert_checkpoint(
@@ -255,20 +263,22 @@ def _execute_train(args: ScriptArgs):
             f"--expert-model-parallel-size {args.num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
-    elif args.num_nodes >= 16:  # slime's setting for the full model
-        # TP=4 * PP=8 * CP=8 = 256 GPUs (32 nodes) for one training group; EP=32.
+    elif args.num_nodes >= 16:  # GB300 64-GPU config
+        # TP=8 * PP=4 * DP=2 = 64 GPUs (16 GB300 nodes); EP=16 (= tp*dp, so the
+        # expert-DP group is 1: expert optimizer states are NOT dp-sharded, but
+        # EP16 halves per-rank expert params vs EP8, which is what makes fp32
+        # main+m/v fit on GPU: max stage 20 MoE layers -> 2P+4P+12P_e+6P_d ~= 228GB.
         # DSA cross-layer index sharing needs every pipeline stage to START on a
-        # computing layer (index_topk_freq=4, index_skip_topk_offset=3 -> computing
-        # layers 1,2,3,7,11,...,75). first=14, last=16 leaves 6 middle stages of 8;
-        # stage starts land on global layers 1,15,23,31,39,47,55,63 -- all computing.
+        # computing layer (computing = 1,2,3 then 3+4k). first=18, last=20 leaves
+        # 2 middle stages of 20; starts land on layers 1,19,39,59 -- all computing.
         perf_args = (
-            "--tensor-model-parallel-size 4 "
+            "--tensor-model-parallel-size 8 "
             "--sequence-parallel "
-            "--pipeline-model-parallel-size 8 "
-            "--decoder-first-pipeline-num-layers 14 "
-            "--decoder-last-pipeline-num-layers 16 "
-            "--context-parallel-size 8 "
-            "--expert-model-parallel-size 32 "
+            "--pipeline-model-parallel-size 4 "
+            "--decoder-first-pipeline-num-layers 18 "
+            "--decoder-last-pipeline-num-layers 20 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 16 "
             "--expert-tensor-parallel-size 1 "
         )
     else:
@@ -281,7 +291,9 @@ def _execute_train(args: ScriptArgs):
         "--recompute-num-layers 1 "
         # ------------
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {2048 if _is_pruned(args) else 8192} "
+        # 6144 (not 8192): from step 2 on, fwd/bwd activations must fit in the
+        # ~14GB left after fp32 main+m/v are resident (PP4/EP16 -> 228GB steady).
+        f"--max-tokens-per-gpu {2048 if _is_pruned(args) else 6144} "
         "--data-pad-size-multiplier 1024 "
         "--log-probs-chunk-size 16384 "
     )
@@ -321,7 +333,9 @@ def _execute_train(args: ScriptArgs):
             sglang_world_size = 64
     else:
         sglang_decode_max_bs = 256
-        sglang_world_size = min(8, args.num_gpus_per_node)
+        # 8-GPU (2-node) rollout engine: halves the fp8 model to ~114GB/GPU so it
+        # coexists with the colocated Megatron weights + weight-sync bucket.
+        sglang_world_size = 8
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "

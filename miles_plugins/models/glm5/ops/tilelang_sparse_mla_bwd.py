@@ -78,7 +78,10 @@ def postprocess(
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
+        # Aggressive smem merge miscompiles this kernel on sm103 (buffers alias
+        # while live -> NaN dQ/dKV; Hopper unaffected). Merge is only needed for
+        # smem capacity at block_H>=64 (TP<=2), which GLM-5 recipes never use.
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
     },
 )
 def bwd(
