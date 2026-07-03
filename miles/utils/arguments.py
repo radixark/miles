@@ -215,6 +215,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--restore-weights-from-fp32-main",
+                action="store_true",
+                help=(
+                    "Colocate only: drop the pinned CPU weight copy. update_weights reads live GPU "
+                    "weights (param buffer stays resident until then), and wake_up rebuilds them from "
+                    "the distributed optimizer's fp32 main params, bit-identical to the step-end cast."
+                ),
+            )
+            parser.add_argument(
+                "--restore-weights-from-fp32-main-check-cycles",
+                type=int,
+                default=2,
+                help=(
+                    "Verify the first N restore cycles of --restore-weights-from-fp32-main with "
+                    "per-tensor SHA256 recorded at backup time. 0 disables; large values verify "
+                    "every cycle (CI)."
+                ),
+            )
+            parser.add_argument(
                 "--megatron-to-hf-mode",
                 choices=["raw", "bridge"],
                 default="raw",
@@ -2346,6 +2365,40 @@ def miles_validate_args(args):
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+
+    if args.restore_weights_from_fp32_main:
+        # The cast path only rebuilds trainable low-precision weights of the "actor"
+        # tag; every consumer of other backup tags or of a differently-sourced main
+        # param must be excluded loudly.
+        assert args.colocate and args.offload_train, (
+            "--restore-weights-from-fp32-main only makes sense for colocate runs "
+            "(it replaces the weight backup across the rollout pause)"
+        )
+        assert args.enable_weights_backuper, (
+            "--restore-weights-from-fp32-main replaces the backuper's actor tag; "
+            "--disable-weights-backuper (TMS param-buffer backup) is redundant with it"
+        )
+        assert not args.keep_old_actor, "--restore-weights-from-fp32-main does not support --keep-old-actor"
+        assert (
+            args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
+        ), "--restore-weights-from-fp32-main does not support ref/teacher model tags"
+        assert not args.use_precision_aware_optimizer, (
+            "--restore-weights-from-fp32-main requires the fp32-main-param path; "
+            "precision-aware optimizers keep main params inside the inner optimizer "
+            "and _copy_main_params_to_model_params is a no-op there"
+        )
+        assert not args.overlap_param_gather, (
+            "--restore-weights-from-fp32-main calls DDP.start_param_sync outside the "
+            "training step; with --overlap-param-gather the param-gather state machine "
+            "(dispatch flags, forward pre-hooks) is not designed for that call site"
+        )
+        assert args.use_distributed_optimizer, (
+            "--restore-weights-from-fp32-main rebuilds weights via the distributed "
+            "optimizer's fp32 main shards + param all-gather"
+        )
+        # The param buffer must carry its own TMS tag and no CPU backup: it stays
+        # resident through update_weights and is dropped right afterwards.
+        args.disable_param_buffers_cpu_backup = True
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path

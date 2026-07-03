@@ -26,7 +26,7 @@ from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
-from ...utils.tensor_backper import TensorBackuper
+from ...utils.tensor_backper import MainCastContext, TensorBackuper
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
@@ -38,7 +38,7 @@ from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
-from .update_weight.common import named_params_and_buffers
+from .update_weight.common import named_params_and_buffers, named_restore_extras
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
@@ -142,6 +142,24 @@ class MegatronTrainRayActor(TrainRayActor):
 
         start_rollout_id = loaded_rollout_id + 1
 
+        main_cast_ctx = None
+        if args.restore_weights_from_fp32_main:
+            assert not is_lora_enabled(args), "--restore-weights-from-fp32-main does not support LoRA"
+            extras = list(named_restore_extras(self.model))
+            extras_bytes = sum(t.numel() * t.element_size() for _, t in extras)
+            logger.info(
+                f"restore-weights-from-fp32-main: {len(extras)} extra tensors "
+                f"({extras_bytes / 2**20:.1f} MiB) kept in pinned backup: "
+                f"{[name for name, _ in extras[:20]]}"
+            )
+            self._assert_restore_coverage(extras)
+            main_cast_ctx = MainCastContext(
+                optimizer=self.optimizer,
+                model_chunks=self.model,
+                extras_getter=lambda: named_restore_extras(self.model),
+                check_num_cycles=args.restore_weights_from_fp32_main_check_cycles,
+            )
+
         self.weights_backuper = TensorBackuper.create(
             source_getter=lambda: named_params_and_buffers(
                 self.args,
@@ -150,6 +168,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 translate_gpu_to_cpu=not self.args.enable_weights_backuper,
             ),
             single_tag=None if args.enable_weights_backuper else "actor",
+            main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
         if self._enable_weight_backup:
@@ -215,8 +234,13 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before offload model")
         destroy_process_groups()
 
-        tag = "default" if is_lora_enabled(self.args) else None
-        torch_memory_saver.pause(tag=tag)
+        if self.args.restore_weights_from_fp32_main:
+            # Params stay resident for update_weights; dropped there, rebuilt at wake_up.
+            torch_memory_saver.pause(tag="grad_buffer")
+            torch_memory_saver.pause(tag="default")
+        else:
+            tag = "default" if is_lora_enabled(self.args) else None
+            torch_memory_saver.pause(tag=tag)
 
         print_memory("after offload model")
 
@@ -234,6 +258,24 @@ class MegatronTrainRayActor(TrainRayActor):
         clear_memory()
         reload_process_groups()
         print_memory("after wake_up model")
+
+    def _assert_restore_coverage(self, extras: list[tuple[str, torch.Tensor]]) -> None:
+        """A param outside the DDP buffers (restored via cast + all-gather) and
+        the extras backup would silently come back as garbage. Optimizer-side
+        structures only cover this rank's owned shard under DP>1."""
+        restorable = {id(t) for _, t in extras}
+        for model_module in self.model:
+            for buffer in model_module.buffers + model_module.expert_parallel_buffers:
+                restorable.update(id(p) for p in buffer.params)
+        uncovered = []
+        for model_module in self.model:
+            for name, param in model_module.named_parameters():
+                if id(param) not in restorable:
+                    uncovered.append(name)
+        assert not uncovered, (
+            f"--restore-weights-from-fp32-main cannot restore {len(uncovered)} params "
+            f"(not in the DDP param buffers nor in the extras backup): {uncovered[:10]}"
+        )
 
     @property
     def _enable_weight_backup(self) -> bool:
@@ -490,6 +532,8 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
                 logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
+            if self.args.restore_weights_from_fp32_main:
+                torch_memory_saver.pause(tag="param_buffer")
             if self.args.offload_train:
                 destroy_process_groups()
             return
@@ -518,6 +562,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
+        if self.args.restore_weights_from_fp32_main:
+            torch_memory_saver.pause(tag="param_buffer")
         if self.args.offload_train:
             destroy_process_groups()
 
