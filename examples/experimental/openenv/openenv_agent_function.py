@@ -34,6 +34,7 @@ import logging
 import os
 import random
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -308,7 +309,7 @@ async def _multi_turn(
     messages: list[dict[str, str]],
     request_kwargs: dict[str, Any],
     metadata: dict[str, Any],
-) -> tuple[float, dict[str, int]]:
+) -> tuple[float, dict[str, Any]]:
     """Agentic loop: reset(task) -> {policy -> exec -> feed output back} -> evaluate (tbench2).
 
     The policy emits one shell command per turn (a ```bash block or the bare
@@ -320,8 +321,16 @@ async def _multi_turn(
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
 
-    async def body(env: Any) -> tuple[float, int]:
+    async def body(env: Any) -> tuple[float, int, list[float], list[float], float, float]:
+        # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
+        # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
+        # eval_time bracket the one-off reset() and the final evaluate() env steps.
+        gen_times: list[float] = []
+        tool_times: list[float] = []
+
+        t0 = time.monotonic()
         reset_result = await (env.reset(task_id=task_id) if task_id else env.reset())
+        reset_time = time.monotonic() - t0
         instruction = _obs_field(reset_result, "instruction")
         convo = list(messages)
         if instruction:
@@ -330,9 +339,11 @@ async def _multi_turn(
         turns = 0
         while turns < max_turns:
             turns += 1
+            t0 = time.monotonic()
             completion = await policy.chat.completions.create(
                 model=model_name, messages=convo, extra_body=request_kwargs
             )
+            gen_times.append(time.monotonic() - t0)
             message = completion.choices[0].message
             reply = message.content or ""
             # Echo the assistant turn back verbatim. The session server stores the
@@ -349,7 +360,9 @@ async def _multi_turn(
             if not command or command.upper().startswith("TASK_COMPLETE"):
                 break
 
+            t0 = time.monotonic()
             step_result = await env.step(action_cls(action_type="exec", command=command))
+            tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
             # Feed the command output back as a user turn, not a tool turn. GLM
             # emits native tool_calls that we must echo verbatim (above) for the
@@ -363,7 +376,9 @@ async def _multi_turn(
             content = output[:_OBS_CHAR_CAP] or "(no output)"
             convo.append({"role": "user", "content": content})
 
+        t0 = time.monotonic()
         eval_result = await env.step(action_cls(action_type="evaluate"))
+        eval_time = time.monotonic() - t0
         reward = float(getattr(eval_result, "reward", 0.0) or 0.0)
 
         # rm-hack: the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
@@ -392,10 +407,26 @@ async def _multi_turn(
         except Exception:
             pass
 
-        return reward, turns
+        return reward, turns, gen_times, tool_times, reset_time, eval_time
 
-    reward, turns = await _with_env(classes["env"], env_url, body)
-    return reward, {"turns": turns, "tool_calls": turns}
+    reward, turns, gen_times, tool_times, reset_time, eval_time = await _with_env(
+        classes["env"], env_url, body
+    )
+    total_gen_time = sum(gen_times)
+    # non_generation_time = everything the rollout spent outside policy generation:
+    # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
+    # Sample.non_generation_time so miles' throughput accounting subtracts env time.
+    total_tool_time = sum(tool_times) + reset_time + eval_time
+    return reward, {
+        "turns": turns,
+        "tool_calls": len(tool_times),
+        "gen_times": gen_times,
+        "tool_times": tool_times,
+        "reset_time": reset_time,
+        "eval_time": eval_time,
+        "total_gen_time": total_gen_time,
+        "total_tool_time": total_tool_time,
+    }
 
 
 async def run(
