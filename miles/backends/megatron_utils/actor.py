@@ -20,6 +20,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
+from miles.utils.http_utils import _wrap_ipv6
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -679,7 +680,7 @@ class MegatronTrainRayActor(TrainRayActor):
         world_size = 2
         self._actor_critic_groups = init_process_group(
             backend="nccl",
-            init_method=f"tcp://{master_address}:{master_port}",
+            init_method=f"tcp://{_wrap_ipv6(master_address)}:{master_port}",
             world_size=world_size,
             rank=0 if self.role == "actor" else 1,
             group_name=group_name,
