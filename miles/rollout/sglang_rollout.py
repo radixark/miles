@@ -306,7 +306,11 @@ async def generate_and_rm(
 
 
 async def generate_and_rm_group(
-    args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
+    args: Namespace,
+    group: list[Sample],
+    sampling_params: dict[str, Any],
+    evaluation: bool = False,
+    sample_done_callback: Callable[[], None] | None = None,
 ) -> list[Sample]:
     state = GenerateState(args)
 
@@ -325,9 +329,10 @@ async def generate_and_rm_group(
         if getattr(args, "sglang_enable_deterministic_inference", False):
             seed = state.group_sampling_seeds[idx]
             current_sampling_params["sampling_seed"] = seed
-        tasks.append(
-            asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
-        )
+        task = asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
+        if sample_done_callback is not None:
+            task.add_done_callback(lambda _task: sample_done_callback())
+        tasks.append(task)
 
     group = await asyncio.gather(*tasks)
 

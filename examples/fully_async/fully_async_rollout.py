@@ -96,6 +96,54 @@ class AsyncRolloutWorker:
         active_tasks = set()
         max_concurrent_tasks = self.args.rollout_batch_size
         group_id_counter = 0
+        sample_completion_backfill = getattr(self.args, "rollout_sample_completion_backfill", False)
+        samples_per_group = max(1, int(getattr(self.args, "n_samples_per_prompt", 1) or 1))
+        completed_sample_credits = 0
+        sample_backfill_initialized = False
+
+        if sample_completion_backfill:
+            print(
+                "Sample-completion backfill enabled: "
+                f"initial_groups={max_concurrent_tasks}, samples_per_group={samples_per_group}"
+            )
+
+        def on_sample_done():
+            nonlocal completed_sample_credits
+            completed_sample_credits += 1
+
+        def submit_one_group() -> bool:
+            nonlocal group_id_counter
+            samples = self.data_buffer.get_samples(1)
+
+            for group in samples:
+                group_id = group_id_counter
+                group_id_counter += 1
+
+                generate_kwargs = dict(
+                    args=self.args,
+                    group=group,
+                    sampling_params=self.state.sampling_params.copy(),
+                    evaluation=False,
+                )
+                if sample_completion_backfill:
+                    generate_kwargs["sample_done_callback"] = on_sample_done
+
+                # Create new async task
+                task = asyncio.create_task(generate_and_rm_group(**generate_kwargs))
+
+                # Add completion callback
+                def make_callback(gid):
+                    def task_done_callback(done_task):
+                        result = done_task.result()
+                        self.output_queue.put((gid, result))
+
+                    return task_done_callback
+
+                task.add_done_callback(make_callback(group_id))
+                active_tasks.add(task)
+                return True
+
+            return False
 
         while self.running:
             try:
@@ -109,35 +157,29 @@ class AsyncRolloutWorker:
                             print(f"Task failed with exception: {e}")
                     active_tasks -= done_tasks
 
-                # If active task count hasn't reached limit, try to get new data and start tasks
-                while len(active_tasks) < max_concurrent_tasks and self.running:
-                    samples = self.data_buffer.get_samples(1)
+                if sample_completion_backfill:
+                    if not sample_backfill_initialized:
+                        while len(active_tasks) < max_concurrent_tasks and self.running:
+                            if not submit_one_group():
+                                break
+                        sample_backfill_initialized = len(active_tasks) >= max_concurrent_tasks
 
-                    for group in samples:
-                        group_id = group_id_counter
-                        group_id_counter += 1
+                    while (
+                        sample_backfill_initialized
+                        and completed_sample_credits >= samples_per_group
+                        and self.running
+                    ):
+                        if not submit_one_group():
+                            break
+                        completed_sample_credits -= samples_per_group
 
-                        # Create new async task
-                        task = asyncio.create_task(
-                            generate_and_rm_group(
-                                self.args,
-                                group,
-                                sampling_params=self.state.sampling_params.copy(),
-                                evaluation=False,
-                            )
-                        )
-
-                        # Add completion callback
-                        def make_callback(gid):
-                            def task_done_callback(done_task):
-                                result = done_task.result()
-                                self.output_queue.put((gid, result))
-
-                            return task_done_callback
-
-                        task.add_done_callback(make_callback(group_id))
-                        active_tasks.add(task)
-                        break
+                    if not active_tasks and self.running:
+                        submit_one_group()
+                else:
+                    # If active task count hasn't reached limit, try to get new data and start tasks.
+                    while len(active_tasks) < max_concurrent_tasks and self.running:
+                        if not submit_one_group():
+                            break
 
                 # Brief sleep to avoid busy waiting
                 await asyncio.sleep(1)
