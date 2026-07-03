@@ -116,7 +116,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     # (env/tool steps), surface it on Sample.non_generation_time so throughput
     # accounting subtracts it. Must be equal across all turn-samples: merge_samples
     # collapses them with _merge_equal_value, which asserts the values match.
-    ngt = (agent_metadata or {}).get("total_tool_time")
+    ngt = ((agent_metadata or {}).get("agent_metrics") or {}).get("total_tool_time")
     if ngt is not None:
         for s in samples:
             s.non_generation_time = ngt
