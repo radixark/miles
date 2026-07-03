@@ -32,7 +32,9 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 
 ## What each stage does
 
-**Image resolution (`resolve-ci-image`).** Before the GPU stages, a small `ubuntu-latest` job resolves the container image: it reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. Every GPU stage uses this as its `container_image`. Distinct from this, the **`run-ci-image` label** (alongside `run-ci-all`, and any `workflow_dispatch`) makes each stage add `--match-all-labels`, running the full suite regardless of per-test labels — this is how you validate a PR that bumps the image.
+**Image resolution (`resolve-ci-image`).** Before the GPU stages, a small `ubuntu-latest` job resolves the container image: it reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. Every GPU stage uses this as its `container_image`. Distinct from this, the **`run-ci-image` label** (alongside `run-ci-all`, any `workflow_dispatch`, and the nightly `schedule` run on `main`) makes each stage add `--match-all-labels`, running the full suite regardless of per-test labels — this is how you validate a PR that bumps the image.
+
+A **nightly** run is the full suite with fast-fail off, triggered either by the nightly `schedule` cron on `main` or by a PR carrying the `nightly` label. Concretely it adds `--match-all-labels` and turns off fast-fail like the `bypass-fastfail` label.
 
 **Dependencies / gating.** The job graph is `resolve-ci-image` → `stage-a-cpu` → all GPU stages (in parallel). GPU stages require `resolve-ci-image` to succeed; by default they also require `stage-a-cpu` to succeed, so a CPU-test failure short-circuits the expensive GPU fleet. The `bypass-fastfail` PR label relaxes only the `stage-a-cpu` failure gate and passes `--continue-on-error` to each stage; it does not bypass `resolve-ci-image`. `stage-b-cpu` has no dependency and runs alongside `stage-a-cpu`, outside the GPU gating path.
 

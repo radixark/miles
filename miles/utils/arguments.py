@@ -1011,6 +1011,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--observe-training-entropy",
+                action="store_true",
+                default=False,
+                help=(
+                    "Compute training entropy as a logged metric even when --entropy-coef is 0. "
+                    "When the coefficient is 0, the observed entropy is detached and does not affect backward."
+                ),
+            )
+            parser.add_argument(
                 "--get-mismatch-metrics",
                 action="store_true",
                 default=False,
@@ -1330,7 +1339,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Log statistics of the category of reward, such as why the reward function considers it as failed. "
-                    "Specify the key in the reward dict using this argument.",
+                    "Specify the key in the reward dict using this argument."
                 ),
             )
             parser.add_argument(
@@ -1532,6 +1541,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--check-weight-update-selector",
+                type=str,
+                default="all",
+                choices=["all", "target", "draft"],
+                help="Which model the post-update equality check covers: 'all' (target + "
+                "draft/MTP), 'target' (target model only; skips the draft, e.g. when MTP "
+                "training is off), or 'draft' (draft/MTP worker only).",
+            )
+            parser.add_argument(
+                "--check-weight-update-skip-list",
+                type=str,
+                nargs="*",
+                default=None,
+                help="Weight-name substrings to exclude from the post-update equality check; "
+                "their mismatches are downgraded to non-fatal info (e.g. MTP/draft layer names "
+                "that are absent on the training side).",
+            )
             parser.add_argument(
                 "--check-weight-update-allow-quant-error",
                 action="store_true",
