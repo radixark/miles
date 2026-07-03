@@ -8,15 +8,14 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
+from miles.utils.test_utils.inloop_session_server import InloopSessionServer
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
-from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
 @pytest.fixture(scope="class")
 def router_env():
-    """Create a standalone SessionServer with session routes and a mock backend."""
+    """Create an in-loop session server (router app + one worker shard) with a mock backend."""
 
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
@@ -52,16 +51,12 @@ def router_env():
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
             )
-            server_obj = SessionServer(args, backend_url=backend.url)
-
             port = find_available_port(31000)
-            server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
+            server = InloopSessionServer(args, backend.url, host="127.0.0.1", port=port)
             server.start()
 
-            url = f"http://127.0.0.1:{port}"
-
             try:
-                yield SimpleNamespace(url=url, backend=backend)
+                yield SimpleNamespace(url=server.url, backend=backend)
             finally:
                 server.stop()
 

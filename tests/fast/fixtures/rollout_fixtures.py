@@ -14,11 +14,11 @@ import pytest
 import requests
 
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
-from miles.rollout.session.server import SessionServer
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
+from miles.utils.test_utils.inloop_session_server import InloopSessionServer
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -100,7 +100,7 @@ DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 @contextmanager
 def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornThreadServer]:
-    """Start a SessionServer for agentic variants that need TITO session tracking."""
+    """Start an in-loop session server for agentic variants that need TITO session tracking."""
     from types import SimpleNamespace
 
     session_args = SimpleNamespace(
@@ -111,9 +111,8 @@ def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornT
         tito_allowed_append_roles=getattr(args, "tito_allowed_append_roles", ["tool"]),
         use_rollout_routing_replay=getattr(args, "use_rollout_routing_replay", False),
     )
-    session_server = SessionServer(session_args, backend_url=backend_url)
     port = find_available_port(31000)
-    server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
+    server = InloopSessionServer(session_args, backend_url, host="127.0.0.1", port=port)
     try:
         server.start()
         args.session_server_ip = "127.0.0.1"

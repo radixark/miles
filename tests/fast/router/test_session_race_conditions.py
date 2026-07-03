@@ -27,10 +27,9 @@ from unittest.mock import patch
 
 import requests
 
-from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
+from miles.utils.test_utils.inloop_session_server import InloopSessionServer
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
-from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 HF_CHECKPOINT = "Qwen/Qwen3-0.6B"
 
@@ -66,15 +65,12 @@ def _router_env(process_fn, *, latency: float = 0.0):
                 trajectory_manager="linear_trajectory",
                 tito_allowed_append_roles=["tool", "system"],
             )
-            server_obj = SessionServer(args, backend_url=backend.url)
-
             port = find_available_port(31000)
-            server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
+            server = InloopSessionServer(args, backend.url, host="127.0.0.1", port=port)
             server.start()
-            url = f"http://127.0.0.1:{port}"
 
             try:
-                yield SimpleNamespace(url=url, backend=backend, server=server)
+                yield SimpleNamespace(url=server.url, backend=backend, server=server)
             finally:
                 server.stop()
 

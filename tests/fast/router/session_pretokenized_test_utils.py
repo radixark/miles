@@ -8,10 +8,10 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import MismatchType, apply_chat_template, get_tito_tokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.processing_utils import load_tokenizer
+from miles.utils.test_utils.inloop_session_server import InloopSessionServer
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
@@ -53,14 +53,12 @@ def make_router_env(
         tito_allowed_append_roles=allowed_append_roles,
         use_rollout_routing_replay=False,
     )
-    session_server = SessionServer(args, backend_url=backend.url)
-
     port = find_available_port(31000)
-    server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
+    server = InloopSessionServer(args, backend.url, host="127.0.0.1", port=port)
     server.start()
 
     return SimpleNamespace(
-        url=f"http://127.0.0.1:{port}",
+        url=server.url,
         backend=backend,
         server=server,
     )

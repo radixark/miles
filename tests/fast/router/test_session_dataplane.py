@@ -3,10 +3,10 @@
 Wires the router to N `SessionWorker` shards (each its own `SessionRegistry`)
 over real `socket.socketpair` IPC channels in one event loop, and drives the
 router app via httpx ASGITransport. This exercises hash routing, IPC framing,
-worker dispatch, TITO state per shard, and equivalence with the single-process
-server — without OS-process spawning (that lifecycle is the supervisor's job,
-covered separately). Workers as in-loop IPC handlers still use distinct
-registries, so cross-shard routing is genuinely tested.
+worker dispatch, TITO state per shard, and workers=N == workers=1 equivalence
+(the same topology with one shard) — without OS-process spawning (that lifecycle
+is the supervisor's job, covered separately). Workers as in-loop IPC handlers
+still use distinct registries, so cross-shard routing is genuinely tested.
 """
 
 import json
@@ -22,7 +22,6 @@ from miles.rollout.session.core import SessionCore
 from miles.rollout.session.ipc import open_unix_channel
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.router import build_router_app
-from miles.rollout.session.server import SessionServer
 from miles.rollout.session.sharding import worker_index_for_session
 from miles.rollout.session.worker import ProxyBackend, SessionWorker
 from miles.utils.chat_template_utils import get_tito_tokenizer
@@ -76,35 +75,42 @@ async def env():
                 chat_template_kwargs={"enable_thinking": False},
                 allowed_append_roles=["tool"],
             )
-            backends, worker_channels, router_channels = [], [], []
-            for _ in range(N_WORKERS):
-                a, b = socket.socketpair()
-                be = ProxyBackend(backend.url, timeout=30)
-                backends.append(be)
-                core = SessionCore(
-                    be, SessionRegistry(args, tokenizer, tito_tokenizer=tito), args, args.session_server_instance_id
-                )
-                worker = SessionWorker(core)
-                worker_channels.append(await open_unix_channel(b, request_handler=worker.handle))
-                router_channels.append(await open_unix_channel(a))
+            backends, channels = [], []
 
-            app = build_router_app(router_channels, args.session_server_instance_id)
+            async def make_shard_channels(n: int) -> list:
+                shard_channels = []
+                for _ in range(n):
+                    a, b = socket.socketpair()
+                    be = ProxyBackend(backend.url, timeout=30)
+                    backends.append(be)
+                    core = SessionCore(
+                        be,
+                        SessionRegistry(args, tokenizer, tito_tokenizer=tito),
+                        args,
+                        args.session_server_instance_id,
+                    )
+                    worker = SessionWorker(core)
+                    channels.append(await open_unix_channel(b, request_handler=worker.handle))
+                    shard_channels.append(await open_unix_channel(a))
+                    channels.append(shard_channels[-1])
+                return shard_channels
+
+            app = build_router_app(await make_shard_channels(N_WORKERS), args.session_server_instance_id)
             client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://router")
 
-            # Single-process server for equivalence comparison (same mock backend).
-            sp = SessionServer(args, backend_url=backend.url)
-            sp_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=sp.app), base_url="http://sp")
+            # workers=1 (same topology, one shard) for equivalence comparison.
+            sp_app = build_router_app(await make_shard_channels(1), args.session_server_instance_id)
+            sp_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=sp_app), base_url="http://sp")
 
             try:
                 yield SimpleNamespace(client=client, sp_client=sp_client, n=N_WORKERS)
             finally:
                 await client.aclose()
                 await sp_client.aclose()
-                for ch in worker_channels + router_channels:
+                for ch in channels:
                     await ch.aclose()
                 for be in backends:
                     await be.aclose()
-                await sp.client.aclose()
 
 
 async def test_health_ok(env):
@@ -177,24 +183,18 @@ async def test_equivalence_with_single_process(env):
     assert rd.content == sd.content == b""
 
 
-async def test_transport_error_502_equivalence():
-    """A dead backend maps to the same 502 in workers=N (ProxyBackend) and workers=1
-    (SessionServer.do_proxy) — pins the two do_proxy implementations against drift."""
+async def test_transport_error_maps_to_502():
+    """A dead backend maps to a 502 proxy result with the error shape clients rely on."""
     from miles.rollout.session.core import ProxyRequest
     from miles.utils.http_utils import find_available_port
 
     dead = f"http://127.0.0.1:{find_available_port(42000)}"  # nothing listening → connection refused
-    args = _make_args()
     pb = ProxyBackend(dead, timeout=2)
-    sp = SessionServer(args, backend_url=dead)
     try:
         req = ProxyRequest(method="POST", query="")
         r_pb = await pb.do_proxy(req, "v1/chat/completions", body=b"{}", headers={})
-        r_sp = await sp.do_proxy(req, "v1/chat/completions", body=b"{}", headers={})
-        assert r_pb["status_code"] == r_sp["status_code"] == 502
-        assert r_pb["headers"] == r_sp["headers"]
+        assert r_pb["status_code"] == 502
+        assert r_pb["headers"] == {"content-type": "application/json"}
         assert json.loads(r_pb["response_body"])["error"].startswith("backend transport error")
-        assert json.loads(r_sp["response_body"])["error"].startswith("backend transport error")
     finally:
         await pb.aclose()
-        await sp.client.aclose()

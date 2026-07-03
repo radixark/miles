@@ -14,13 +14,12 @@ import pytest
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
-from miles.rollout.session.server import SessionServer
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
 from miles.utils.test_utils import mock_tools
+from miles.utils.test_utils.inloop_session_server import InloopSessionServer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
-from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
@@ -239,9 +238,7 @@ def with_session_server(
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         session_server_instance_id=uuid.uuid4().hex,
     )
-    session_server = SessionServer(args, backend_url=backend_url)
-
-    server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
+    server = InloopSessionServer(args, backend_url, host="127.0.0.1", port=port)
     server.start()
 
     try:
@@ -287,13 +284,13 @@ def generation_env(request, variant):
             **other_args_kwargs,
         )
 
-        # Agentic variants need a SessionServer for TITO session tracking;
+        # Agentic variants need a session server for TITO session tracking;
         # non-agentic variants talk directly to the mock sglang server.
         cm = with_session_server(mock_server.url, args, port=server_port) if is_agentic else _noop_port(server_port)
 
         with cm:
             if is_agentic:
-                # Point session server address to the SessionServer we just started
+                # Point session server address to the server we just started
                 args.session_server_ip = "127.0.0.1"
                 args.session_server_port = server_port
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
