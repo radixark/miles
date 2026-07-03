@@ -287,9 +287,9 @@ async def generate_batch(
     payloads = []
     samples_to_update = []
     for sample in samples:
-        assert (
-            sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
-        ), f"Sample status is {sample.status}"
+        if sample.status in {Sample.Status.COMPLETED, Sample.Status.TRUNCATED}:
+            continue
+        assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"Sample status is {sample.status}"
         payload = _build_generate_payload(args, state, sample, sampling_params)
         if payload is None:
             continue
