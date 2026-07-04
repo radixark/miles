@@ -2,6 +2,7 @@
 # This is a unified version supporting both local search and Google search, with optional log probability collection
 
 import asyncio
+import os
 import re
 
 from qa_em_format import compute_score_em
@@ -13,26 +14,26 @@ from miles.utils.types import Sample
 # Configuration for Search-R1
 SEARCH_R1_CONFIGS = {
     # ============== General Configuration ==============
-    "max_turns": 2,
-    "topk": 3,
-    "search_concurrency": 256,
+    "max_turns": int(os.getenv("SEARCH_R1_MAX_TURNS", "2")),
+    "topk": int(os.getenv("SEARCH_R1_TOPK", "3")),
+    "search_concurrency": int(os.getenv("SEARCH_R1_SEARCH_CONCURRENCY", "256")),
     # ============== Search Backend Selection ==============
-    "search_backend": "local",  # Options: "local" or "google"
+    "search_backend": os.getenv("SEARCH_R1_BACKEND", "local"),  # Options: "local" or "google"
     # ============== Local Search Configuration ==============
     # (Only used when search_backend="local")
     "local": {
-        "search_url": "http://127.0.0.1:8000/retrieve",  # URL of your local retrieval server
-        "proxy": None,  # Set to your proxy if needed
+        "search_url": os.getenv("SEARCH_R1_LOCAL_URL", "http://127.0.0.1:8000/retrieve"),
+        "proxy": os.getenv("SEARCH_R1_LOCAL_PROXY") or None,
     },
     # ============== Google Search Configuration ==============
     # (Only used when search_backend="google")
     "google": {
-        "api_key": "your_api_key_here",  # Replace with your actual API key
+        "api_key": os.getenv("SERPER_API_KEY", "your_api_key_here"),
         "snippet_only": True,  # Set to True to only return snippets
-        "proxy": None,  # Set to your proxy if needed
+        "proxy": os.getenv("SEARCH_R1_GOOGLE_PROXY") or None,
     },
     # ============== Log Probability Collection ==============
-    "return_logprob": True,  # Set to True to collect log probabilities for TIS metrics
+    "return_logprob": os.getenv("SEARCH_R1_RETURN_LOGPROB", "true").lower() in ("1", "true", "yes"),
     # ============== Reward Model Configuration ==============
     "format_score": 0.2,
 }
