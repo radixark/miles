@@ -1,4 +1,7 @@
+import atexit
+import glob
 import logging
+import os
 import random
 import socket
 from argparse import Namespace
@@ -49,6 +52,35 @@ if TYPE_CHECKING:
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _setup_disk_offload_reclaim(disk_dir: str) -> None:
+    """Reclaim train disk-offload files for --offload-train-target=disk.
+
+    torch_memory_saver unlinks each backup file when its allocation is freed on a
+    graceful teardown, but a SIGKILL'd run can leave stale files behind. So on
+    startup we wipe any leftover ``tms_*.bin`` from previous runs (bounded,
+    node-local /scratch), and register an atexit hook to remove this process's
+    own files on a clean exit.
+    """
+    if not disk_dir:
+        return
+    os.makedirs(disk_dir, exist_ok=True)
+    for f in glob.glob(os.path.join(disk_dir, "tms_*.bin")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    def _reclaim(pid: int = os.getpid(), d: str = disk_dir) -> None:
+        for f in glob.glob(os.path.join(d, f"tms_{pid}_*.bin")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    atexit.register(_reclaim)
+    logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -106,6 +138,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 # --train-memory-margin-bytes can tune this
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
+            if args.offload_train_target == "disk":
+                _setup_disk_offload_reclaim(args.offload_train_disk_dir)
 
         if self.args.debug_rollout_only:
             return 0

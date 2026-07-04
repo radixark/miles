@@ -76,7 +76,15 @@ class RayTrainGroup:
 
             env_vars["LD_PRELOAD"] = dynlib_path
             env_vars["TMS_INIT_ENABLE"] = "1"
-            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
+            if self.args.offload_train_target == "disk":
+                # Spill the offloaded training actor to node-local disk instead of
+                # a pinned CPU copy, for the case where even CPU RAM cannot hold it.
+                env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "0"
+                env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
+                env_vars["TMS_DISK_BACKUP_DIR"] = self.args.offload_train_disk_dir
+                env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(self.args.offload_train_disk_chunk_mb)
+            else:
+                env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
         backend = self.args.train_backend
         if backend == "megatron":

@@ -118,6 +118,38 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Example: --offload-rollout-level kv_cache weight"
                 ),
             )
+            parser.add_argument(
+                "--offload-train-target",
+                type=str,
+                choices=["cpu", "disk"],
+                default="cpu",
+                help=(
+                    "Where the training actor is backed up while offloaded during rollout "
+                    "(only used with --offload-train on the megatron backend). "
+                    "'cpu' (default) keeps a pinned host copy; 'disk' streams it to node-local "
+                    "NVMe (--offload-train-disk-dir) for the case where even CPU RAM cannot hold it."
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-disk-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Node-local directory for train disk-offload files when "
+                    "--offload-train-target=disk. Should be fast local NVMe (e.g. /scratch). "
+                    "Files are per-process and overwritten in place every step (bounded size); "
+                    "defaults to $SCRATCH/miles_train_offload."
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-disk-chunk-mb",
+                type=int,
+                default=256,
+                help=(
+                    "Chunk size (MiB) for streaming the training actor GPU<->disk in disk-offload "
+                    "mode. Bounds the pinned host staging buffer regardless of the total offloaded size."
+                ),
+            )
 
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
@@ -2346,6 +2378,23 @@ def miles_validate_args(args):
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+
+    if args.offload_train_target == "disk":
+        assert args.offload_train, "--offload-train-target=disk requires --offload-train"
+        assert (
+            args.train_backend == "megatron"
+        ), "--offload-train-target=disk is only supported on the megatron backend"
+        assert args.enable_weights_backuper, (
+            "--offload-train-target=disk requires the weights backuper (do not pass "
+            "--disable-weights-backuper): disk-offloaded weights are read from GPU after resume, "
+            "not from a CPU backup."
+        )
+        if args.offload_train_disk_dir is None:
+            args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), "miles_train_offload")
+        logger.info(
+            f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
+            f"chunk={args.offload_train_disk_chunk_mb}MB"
+        )
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
