@@ -123,6 +123,11 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
     cd Megatron-LM && \
     pip install -e .
 
+# Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
+# orthogonalization; not on PyPI (only a dependency-confusion stub), so install from the
+# git source Megatron-LM itself pins in pyproject.toml.
+RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1.0"
+
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
