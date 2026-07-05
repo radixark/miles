@@ -21,7 +21,16 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         num_rollout=1,
         enable_wandb=False,
-        extra_args=("--ci-test --ci-disable-logprobs-checker --disable-weights-backuper "),
+        # The weight-update checker (auto-on under --ci-test) must skip the engine-side stacked
+        # params that a frozen-base LoRA run cannot re-ship: sglang stacks q_a+kv_a into
+        # fused_qkv_a_proj_with_mqa at load, and the DSA indexer weights likewise have no 1:1
+        # trainer export. They keep their (correct) checkpoint values; everything else is verified.
+        extra_args=(
+            "--ci-test "
+            "--ci-disable-logprobs-checker "
+            "--disable-weights-backuper "
+            "--check-weight-update-skip-list fused_qkv_a_proj_with_mqa indexer. "
+        ),
     )
 
 

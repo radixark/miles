@@ -2352,17 +2352,7 @@ def miles_validate_args(args):
     )
 
     if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
-        from miles.backends.megatron_utils.lora_utils import is_lora_enabled
-
         args.check_weight_update_equal = True
-        if is_lora_enabled(args):
-            # The engine-side stacked/fused params (fused_qkv_a_proj_with_mqa, DSA indexer)
-            # have no 1:1 trainer export under frozen-base LoRA, so the checker's reset+compare
-            # must skip them; they keep their checkpoint values, as a frozen base serves.
-            _lora_ci_skip = ["fused_qkv_a_proj_with_mqa", "indexer."]
-            args.check_weight_update_skip_list = (args.check_weight_update_skip_list or []) + [
-                m for m in _lora_ci_skip if m not in (args.check_weight_update_skip_list or [])
-            ]
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":
