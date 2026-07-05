@@ -66,6 +66,38 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             "self_attn.q_proj.weight",
             "self_attn.v_proj.weight",
         ]
+    } | {
+        # Direct SSM params for Megatron-core GatedDeltaNet (combined in_proj, no
+        # linear_attn wrapper). conv1d/out_proj/dt_bias/A_log map 1:1 to HF linear_attn.*.
+        f"self_attention.{weight_name}": [
+            "model.language_model.layers.{layer_number}.linear_attn." + weight_name
+        ]
+        for weight_name in [
+            "dt_bias",
+            "A_log",
+            "conv1d.weight",
+            "out_proj.weight",
+        ]
+    } | {
+        # Megatron-core GatedDeltaNet fuses q/k/v/z/beta/alpha into one in_proj.weight.
+        # HF keeps them split → map the combined Megatron param to the 4 HF tensors,
+        # in the order [qkv, z, beta(b), alpha(a)] (see _weight_to_mcore_format / _split_in_proj).
+        "self_attention.in_proj.weight": [
+            "model.language_model.layers.{layer_number}.linear_attn.in_proj_qkv.weight",
+            "model.language_model.layers.{layer_number}.linear_attn.in_proj_z.weight",
+            "model.language_model.layers.{layer_number}.linear_attn.in_proj_b.weight",
+            "model.language_model.layers.{layer_number}.linear_attn.in_proj_a.weight",
+        ],
+    } | {
+        # out_norm in Megatron → norm in HF
+        "self_attention.out_norm.weight": [
+            "model.language_model.layers.{layer_number}.linear_attn.norm.weight"
+        ],
+    } | {
+        # Fused input layernorm from GatedDeltaNet's ColumnParallelLinearWithNorm.
+        "self_attention.in_proj.layer_norm_weight": [
+            "model.language_model.layers.{layer_number}.input_layernorm.weight"
+        ],
     }
 
     _MLP_MAPPING = {
@@ -292,9 +324,25 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
 
         raise NotImplementedError(f"Unsupported MTP parameter name: {name}")
 
+    def _gdn_split_sizes(self):
+        """Section sizes of the Megatron-core GatedDeltaNet combined in_proj output,
+        in order [qkv, z, beta, alpha]. qkv = q(qk_dim) | k(qk_dim) | v(v_dim)."""
+        tc = self._get_text_config()
+        qk_dim = tc.linear_num_key_heads * tc.linear_key_head_dim
+        v_dim = tc.linear_num_value_heads * tc.linear_value_head_dim
+        num_v_heads = tc.linear_num_value_heads
+        return [qk_dim * 2 + v_dim, v_dim, num_v_heads, num_v_heads]
+
     def _weight_to_mcore_format(
         self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
     ) -> tuple[list[str], list[torch.Tensor]]:
+        # Megatron-core GatedDeltaNet: concat the 4 split HF projections into the
+        # combined in_proj.weight, order [qkv, z, beta, alpha]. Must mirror the split
+        # in _weight_to_hf_format and the runtime split in gated_delta_net.py.
+        if mcore_weights_name.endswith("self_attention.in_proj.weight"):
+            assert len(hf_weights) == 4, f"expected [qkv,z,b,a], got {len(hf_weights)}"
+            return torch.cat(hf_weights, dim=0).contiguous()
+
         if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
             assert len(hf_weights) == 1
             # Keep A_log in fp32 before TP scatter; this avoids precision loss
@@ -348,6 +396,14 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
     ) -> tuple[list[str], list[torch.Tensor]]:
+        # Megatron-core GatedDeltaNet: split the combined in_proj.weight back into the
+        # 4 HF projections [in_proj_qkv, in_proj_z, in_proj_b, in_proj_a]. Inverse of
+        # _weight_to_mcore_format; used for the live actor->rollout (sglang) weight sync.
+        if mcore_weights_name.endswith("self_attention.in_proj.weight"):
+            hf_names = self._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+            assert len(hf_names) == 4, f"expected 4 HF names, got {hf_names}"
+            qkv, z, b, a = mcore_weights.split(self._gdn_split_sizes(), dim=0)
+            return hf_names, [qkv, z, b, a]
         return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
 
     def _build_config(self):

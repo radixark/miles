@@ -304,8 +304,12 @@ class DistBucketedWeightUpdateMixin:
         with timer("update_weights_implementation"):
             # Base weight sync model:
             #   full-param RL: base weights change every step -> always sync.
-            #   LoRA RL: base is frozen -> only sync once, on the first iteration.
-            if not (self.is_lora and self._lora_base_synced):
+            #   LoRA RL: base is frozen AND SGLang already holds the identical base from
+            #     its native startup load, so skip the base sync entirely. The custom
+            #     convert_to_hf base path (convert_qwen3_5_to_hf) corrupts GDN/MoE weights
+            #     for this model; SGLang's native base is correct, so only the adapter
+            #     needs syncing. (Matches the colocate path's skip_base_sync behavior.)
+            if not self.is_lora:
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
                 self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
