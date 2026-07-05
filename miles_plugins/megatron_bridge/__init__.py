@@ -69,29 +69,20 @@ except Exception as _e:  # best-effort; Qwen3-VL may be unavailable in some envs
 
 
 def _gdn_nan_probe(module, hidden_states, out):
-    """FIX + light probe for the GDN packed-sequence backward NaN.
+    """FIX for the GDN packed-sequence backward NaN.
 
     Under qkv_format=thd the packed buffer is padded and the padding is the last cu_seqlens segment,
     so the per-segment GDN backward runs over PADDING tokens whose degenerate backward yields NaN
-    gradients (forward stays finite — confirmed: a GDN layer's grad-IN NaN with finite forward+out).
-    Those positions are loss-masked, so their gradient *should* be zero — therefore sanitizing the
-    layer's input-gradient with nan_to_num restores the correct value (NaN/±inf → 0) and stops the
-    NaN from reaching the trainable LoRA adapters. nan_to_num is a no-op on healthy grads."""
+    gradients (forward stays finite). Those positions are loss-masked, so their gradient *should* be
+    zero — sanitizing the layer's input-gradient with nan_to_num restores that (NaN/±inf → 0) and
+    stops the NaN reaching the trainable LoRA adapters.
+
+    Registered directly as the grad hook: nan_to_num is an async, element-wise op that is a no-op on
+    healthy grads, so there is NO isfinite()/.all() → NO GPU↔CPU sync on the fwd/bwd hot path."""
     import torch
 
-    ln = getattr(module, "layer_number", getattr(module, "layer_idx", "?"))
-    try:
-        if isinstance(out, torch.Tensor) and not bool(torch.isfinite(out).all()):
-            logger.warning("[GDN-PROBE] FWD-OUT NON-FINITE at GDN layer=%s", ln)
-        if isinstance(hidden_states, torch.Tensor) and hidden_states.requires_grad:
-            def _sanitize_grad(g, ln=ln):
-                if not bool(torch.isfinite(g).all()):
-                    logger.warning("[GDN-FIX] sanitized non-finite grad-IN at GDN layer=%s", ln)
-                    return torch.nan_to_num(g)
-                return g  # healthy → unchanged
-            hidden_states.register_hook(_sanitize_grad)
-    except Exception:
-        pass
+    if isinstance(hidden_states, torch.Tensor) and hidden_states.requires_grad:
+        hidden_states.register_hook(torch.nan_to_num)
 
 
 def _install_gdn_packed_seq_patch() -> None:
