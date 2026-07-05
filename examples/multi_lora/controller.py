@@ -16,14 +16,12 @@ This module factors the testable logic into a plain class; the Ray + HTTP
 wrapper is added on top.
 """
 
-import asyncio
 import json
-from typing import Optional
+import uuid
+from typing import Any, Optional
 
 import aiohttp
 from aiohttp import web
-
-import uuid
 
 __all__ = [
     "MultiLoRAControllerLogic",
@@ -49,37 +47,50 @@ def parse_adapter(rid: str) -> str:
 
 
 class MultiLoRAControllerLogic:
-    """Adapter registry + in-flight rid tracking, no I/O. Testable directly."""
+    """Adapter registry + in-flight rid tracking, no I/O. Testable directly.
+
+    The controller is the source of truth for the active-adapter set. The data
+    source reads it to decide what to generate for, and calls ``deregister`` when an
+    adapter reaches its num_row; the trainer reads it to decide what to train.
+    Both reconcile to it. No step tracking, no drain, no rollout id.
+    """
 
     def __init__(self) -> None:
-        self._active: dict[str, int] = {}  # adapter name -> slot
-        self._in_flight: dict[str, str] = {}  # rid -> adapter name
+        self.active_slots: dict[str, int] = {}  # adapter name -> slot
+        self.configs: dict[str, Any] = {}  # adapter name -> opaque AdapterConfig
+        self.in_flight: dict[str, str] = {}  # rid -> adapter name
 
-    def register(self, name: str, slot: int) -> None:
-        self._active[name] = slot
+    def register(self, name: str, slot: int, config: Any = None) -> None:
+        self.active_slots[name] = slot
+        self.configs[name] = config
 
-    def retire(self, name: str) -> None:
-        self._active.pop(name, None)
+    def deregister(self, name: str) -> None:
+        self.active_slots.pop(name, None)
+        self.configs.pop(name, None)
 
     def active(self) -> dict[str, int]:
-        return dict(self._active)
+        return dict(self.active_slots)
+
+    def active_adapters(self) -> dict[str, dict]:
+        """name -> {'slot', 'config'} for readers (data source, trainer)."""
+        return {name: {"slot": slot, "config": self.configs[name]} for name, slot in self.active_slots.items()}
 
     def on_forward(self, rid: str) -> bool:
         """Decide whether to forward a request. Returns True iff the adapter is
         active (and records it as in-flight). False => block, return dummy."""
         name = parse_adapter(rid)
-        if name not in self._active:
+        if name not in self.active_slots:
             return False
-        self._in_flight[rid] = name
+        self.in_flight[rid] = name
         return True
 
     def on_response(self, rid: str) -> bool:
         """Decide whether to dummy a completed response. Returns True iff the
         adapter this request was sent for is no longer active."""
-        name = self._in_flight.pop(rid, None)
+        name = self.in_flight.pop(rid, None)
         if name is None:
             return True  # unknown rid (e.g. blocked, or already retired) -> dummy
-        return name not in self._active
+        return name not in self.active_slots
 
 
 def dummy_response_body(rid: str) -> dict:
@@ -113,50 +124,50 @@ class MultiLoRAHTTPServer:
         self.upstream_url = upstream_url.rstrip("/")
         self.host = host
         self.port = port
-        self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
-        self._client: Optional[aiohttp.ClientSession] = None
+        self.runner: Optional[web.AppRunner] = None
+        self.site: Optional[web.TCPSite] = None
+        self.client: Optional[aiohttp.ClientSession] = None
 
     @property
     def actual_port(self) -> int:
-        return self._site._server.sockets[0].getsockname()[1] if self._site else self.port
+        return self.site._server.sockets[0].getsockname()[1] if self.site else self.port
 
     async def start(self) -> None:
         app = web.Application()
-        app.router.add_post("/register_adapter", self._register)
-        app.router.add_post("/retire_adapter", self._retire)
-        app.router.add_get("/active_adapters", self._active)
-        app.router.add_resource("/{tail:.*}").add_route("*", self._proxy)
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        self._site = web.TCPSite(self._runner, self.host, self.port)
-        await self._site.start()
-        self._client = aiohttp.ClientSession()
+        app.router.add_post("/register_adapter", self.register_handler)
+        app.router.add_post("/deregister_adapter", self.deregister_handler)
+        app.router.add_get("/active_adapters", self.active_handler)
+        app.router.add_resource("/{tail:.*}").add_route("*", self.proxy_handler)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, self.host, self.port)
+        await self.site.start()
+        self.client = aiohttp.ClientSession()
 
     async def stop(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
-        if self._runner is not None:
-            await self._runner.cleanup()
-            self._runner = None
+        if self.client is not None:
+            await self.client.close()
+            self.client = None
+        if self.runner is not None:
+            await self.runner.cleanup()
+            self.runner = None
 
-    async def _register(self, request: web.Request) -> web.Response:
+    async def register_handler(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self.logic.register(body["name"], body["slot"])
+        self.logic.register(body["name"], body["slot"], body.get("config"))
         return web.json_response({"ok": True, "active": self.logic.active()})
 
-    async def _retire(self, request: web.Request) -> web.Response:
+    async def deregister_handler(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self.logic.retire(body["name"])
+        self.logic.deregister(body["name"])
         return web.json_response({"ok": True, "active": self.logic.active()})
 
-    async def _active(self, request: web.Request) -> web.Response:
+    async def active_handler(self, request: web.Request) -> web.Response:
         return web.json_response(self.logic.active())
 
-    async def _proxy(self, request: web.Request) -> web.Response:
+    async def proxy_handler(self, request: web.Request) -> web.Response:
         body = await request.read()
-        rid = self._extract_rid(body)
+        rid = extract_rid(body)
 
         if rid is not None and not self.logic.on_forward(rid):
             return web.json_response(dummy_response_body(rid), status=200)
@@ -164,8 +175,8 @@ class MultiLoRAHTTPServer:
         url = f"{self.upstream_url}/{request.match_info['tail']}"
         headers = {k: v for k, v in request.headers.items()
                    if k.lower() not in ("content-length", "transfer-encoding", "host")}
-        assert self._client is not None
-        async with self._client.request(request.method, url, data=body, headers=headers) as upstream:
+        assert self.client is not None
+        async with self.client.request(request.method, url, data=body, headers=headers) as upstream:
             content = await upstream.read()
             if rid is not None and self.logic.on_response(rid):
                 return web.json_response(dummy_response_body(rid), status=200)
@@ -173,14 +184,14 @@ class MultiLoRAHTTPServer:
                            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")}
             return web.Response(body=content, status=upstream.status, headers=out_headers)
 
-    @staticmethod
-    def _extract_rid(body: bytes) -> Optional[str]:
-        if not body:
-            return None
-        try:
-            obj = json.loads(body)
-        except (ValueError, UnicodeDecodeError):
-            return None
-        if isinstance(obj, dict):
-            return obj.get("rid")
+
+def extract_rid(body: bytes) -> Optional[str]:
+    if not body:
         return None
+    try:
+        obj = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if isinstance(obj, dict):
+        return obj.get("rid")
+    return None
