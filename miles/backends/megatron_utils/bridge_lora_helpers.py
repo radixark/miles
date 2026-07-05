@@ -102,10 +102,10 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
-    # GLM DSA kernel backend: override the provider's "megatron-bridge-native" default from the
+    # GLM DSA kernel backend: override the provider's "megatron" default from the
     # miles arg. hasattr-guarded so non-DSA providers are untouched.
     if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron-bridge-native")
+        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
     provider.finalize()
 
     lora = create_lora_instance(args)
@@ -137,7 +137,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
     # provide() can hand modules a config object distinct from `provider`, so the backend set
     # above may not reach the configs the attention modules read at forward time. Force it onto
-    # every module config, and explicitly onto GlmNativeMLASelfAttention.config so its forward
+    # every module config, and explicitly onto TileLangMLASelfAttention.config so its forward
     # does not fall back to the unfused path on a thd input.
     _backend = getattr(provider, "dsa_attention_backend", None)
     if _backend is not None:
@@ -148,12 +148,12 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
                 if _cfg is not None and hasattr(_cfg, "dsa_attention_backend"):
                     _cfg.dsa_attention_backend = _backend
                     _n += 1
-                if _m.__class__.__name__ == "GlmNativeMLASelfAttention" and getattr(_m, "config", None) is not None:
+                if _m.__class__.__name__ == "TileLangMLASelfAttention" and getattr(_m, "config", None) is not None:
                     _mla += 1
                     _m.config.dsa_attention_backend = _backend
         print(
             f"[dsa-fix:lora] backend={_backend!r}; forced on {_n} module configs; "
-            f"{_mla} GlmNativeMLASelfAttention modules",
+            f"{_mla} TileLangMLASelfAttention modules",
             flush=True,
         )
     return model

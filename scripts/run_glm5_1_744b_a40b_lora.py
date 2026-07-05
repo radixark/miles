@@ -8,15 +8,15 @@ layer carries its own indexer); the registries are identical to the GLM-5.2 ones
 is inert under bridge LoRA. GLM-5.2 lives in ``scripts/run_glm5_2_744b_a40b_lora.py``.
 
 DSA kernel backend (``--dsa-attention-backend``; orthogonal to model version and to LoRA):
-  * ``glm-native`` (default): vendored fused TileLang kernels, thd (packed) layout, needs
+  * ``tilelang`` (default): vendored fused TileLang kernels, thd (packed) layout, needs
     the optional ``tilelang`` dep; matches slime's rollout kernels for rollout<->train
     numerical parity. Training/forward-only -- the rollout is always served by sglang.
-  * ``megatron-bridge-native``: portable unfused megatron-core DSA kernels, bshd layout,
+  * ``megatron``: portable unfused megatron-core DSA kernels, bshd layout,
     no extra deps.
 The matching ``--qkv-format`` is selected automatically (see ``_get_parallel_config``).
 
 ``--target-modules`` excludes the 3 DSA indexer modules (wq_b/wk/weights_proj) by default:
-on glm-native the indexer adapter gets no gradient at all; on megatron-bridge-native it
+on tilelang the indexer adapter gets no gradient at all; on megatron it
 would only get a tiny aux-loss gradient (~1e-5).
 
 Supported model variants (HF checkpoint must be the native config,
@@ -28,7 +28,7 @@ Usage:
   python scripts/run_glm5_1_744b_a40b_lora.py prepare    --model-name GLM-5.1-6layer
   python scripts/run_glm5_1_744b_a40b_lora.py full-train --model-name GLM-5.1-6layer --num-gpus-per-node 4
   python scripts/run_glm5_1_744b_a40b_lora.py full-train --model-name GLM-5.1-6layer \\
-      --dsa-attention-backend megatron-bridge-native --num-gpus-per-node 4
+      --dsa-attention-backend megatron --num-gpus-per-node 4
   python scripts/run_glm5_1_744b_a40b_lora.py prepare --model-name GLM-5.1-6layer --task dapo-math
   python scripts/run_glm5_1_744b_a40b_lora.py train   --model-name GLM-5.1-6layer --task dapo-math \\
       --rollout-max-response-len 4096 --num-gpus-per-node 4
@@ -78,7 +78,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     # DSA sparse-MLA kernel backend; the matching --qkv-format is chosen automatically.
-    dsa_attention_backend: Literal["megatron-bridge-native", "glm-native"] = "glm-native"
+    dsa_attention_backend: Literal["megatron", "tilelang"] = "tilelang"
 
     # R3 rollout routing replay (arxiv 2510.11370); adds only --use-rollout-routing-replay.
     use_r3: bool = True
@@ -141,12 +141,12 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     """Single-node MoE layout: TP = EP = num_gpus_per_node, DP1 (mirrors run_glm5_744b_a40b).
 
     The DSA kernel backend dictates the query layout; both forbid --use-dynamic-batch-size,
-    hence --micro-batch-size 1: megatron-bridge-native needs bshd (the unfused megatron-core
-    DSA core-attention takes a 4D query), glm-native needs thd (the fused kernels index by
+    hence --micro-batch-size 1: megatron needs bshd (the unfused megatron-core
+    DSA core-attention takes a 4D query), tilelang needs thd (the fused kernels index by
     cu_seqlens).
     """
     ngpu = args.num_gpus_per_node
-    qkv_format = "thd" if args.dsa_attention_backend == "glm-native" else "bshd"
+    qkv_format = "thd" if args.dsa_attention_backend == "tilelang" else "bshd"
     return (
         f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
         f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "

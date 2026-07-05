@@ -91,11 +91,11 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if getattr(args, "moe_aux_loss_coeff", None) is not None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
-    # GLM DSA kernel backend: GLM5Bridge.provider_bridge sets the "megatron-bridge-native" default,
+    # GLM DSA kernel backend: GLM5Bridge.provider_bridge sets the "megatron" default,
     # so override it from the miles arg here. hasattr-guarded so only DSA providers carry the field;
     # non-DSA models are untouched.
     if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron-bridge-native")
+        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82

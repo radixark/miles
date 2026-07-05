@@ -222,13 +222,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--dsa-attention-backend",
-                choices=["megatron-bridge-native", "glm-native"],
-                default="glm-native",
+                choices=["megatron", "tilelang"],
+                default="tilelang",
                 help=(
                     "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'glm-native' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
-                    "rollout<->train numerical parity; 'megatron-bridge-native' uses the portable unfused megatron-core "
-                    "kernels. 'glm-native' requires --qkv-format thd and the optional tilelang dep, and is "
+                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
+                    "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
+                    "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
                     "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
                     "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
                 ),
@@ -2221,7 +2221,7 @@ def miles_validate_args(args):
         if args.target_modules == "all-linear":
             # "all-linear" = dense attention/MLP + (on MLA models only) the MLA up/down
             # projections. The DSA indexer (wq_b/wk/weights_proj) is deliberately excluded --
-            # no gradient on glm-native, and auto-adding it breaks SGLang serving on non-DSA
+            # no gradient on tilelang, and auto-adding it breaks SGLang serving on non-DSA
             # models; add it explicitly via a comma-list when wanted.
             modules = [
                 # dense attention + MLP
