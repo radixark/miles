@@ -84,9 +84,6 @@ class DistBucketedWeightUpdateMixin:
             )
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
-            # Names of adapters currently resident on the rollout engines; only
-            # used by the multi-LoRA path, harmlessly empty otherwise.
-            self._multi_lora_loaded: set[str] = set()
             self._hf_weight_iterator = HfWeightIteratorBase.create(
                 args=args,
                 model=model,
@@ -270,27 +267,23 @@ class DistBucketedWeightUpdateMixin:
     def _update_multi_lora_weights(self) -> None:
         """Refresh every controller-tracked adapter on the rollout engines in place.
 
-        The rollout engines hold a fixed pool of LoRA slots (the page table): each
-        adapter is loaded once (``upsert=False``) and thereafter only
-        updated in place (``upsert=True``). Adapters are never unloaded,
-        so there is no drain/``wait_for_unload`` and the LoRA usage-counter leak
-        cannot hang the update. The controller returns the same snapshot on every
-        rank, so all ranks walk the adapters in the same order and the per-adapter
-        TP collectives in ``_send_one_multi_lora_adapter`` line up; only the
-        source rank issues the engine RPCs / broadcasts.
+        Every send uses ``upsert=True``: SGLang registers the adapter on its
+        first send and overwrites it in place on every later send. Adapters are
+        never unloaded, so there is no drain/``wait_for_unload`` and the LoRA
+        usage-counter leak cannot hang the update. The controller returns the
+        same snapshot on every rank, so all ranks walk the adapters in the same
+        order and the per-adapter TP collectives in ``_send_one_multi_lora_adapter``
+        line up; only the source rank issues the engine RPCs / broadcasts.
         """
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
         adapters = ray.get(get_multi_lora_controller().active_adapters.remote())
-        for name, adapter in adapters.items():
+        for adapter in adapters.values():
             if adapter.state == AdapterState.RUNNING:
-                # First send loads the adapter (allocates an sglang slot); every
-                # later send overwrites that slot in place.
-                self._send_one_multi_lora_adapter(
-                    adapter, upsert=name in self._multi_lora_loaded
-                )
-                self._multi_lora_loaded.add(name)
+                # Always upsert: SGLang registers the adapter on first send and
+                # overwrites it in place on every later send.
+                self._send_one_multi_lora_adapter(adapter, upsert=True)
 
     def _send_one_multi_lora_adapter(self, adapter, upsert: bool) -> None:
         """Export and transmit one adapter's weights.
@@ -330,7 +323,7 @@ class DistBucketedWeightUpdateMixin:
 
         self._update_lora_weight_implementation(
             accumulated_named_tensors,
-            lora_name=adapter.name,
+            lora_name=f"__miles_slot_{adapter.slot}",
             lora_config=lora_config,
             upsert=upsert,
         )

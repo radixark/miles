@@ -76,8 +76,6 @@ class UpdateWeightFromTensor:
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
             self._lora_base_synced = False
-        if self.is_multi_lora:
-            self._multi_lora_loaded: set[str] = set()
 
         # Create IPC gather groups within megatron.
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
@@ -261,92 +259,6 @@ class UpdateWeightFromTensor:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    @torch.no_grad()
-    def update_multi_lora_weights(
-        self, adapter_configs: dict[str, dict], active_slots: set[int] | None = None
-    ) -> None:
-        """Sync multiple LoRA adapters. Pause/resume once, loop export+send per adapter."""
-        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot, hide_adapters
-
-        from miles.backends.megatron_utils.multi_lora_utils import slice_lora_to_rank
-
-        self.weight_version += 1
-
-        rank = dist.get_rank()
-        logger.info(f"[multi_lora_sync] Starting. rank={rank}, adapters={list(adapter_configs.keys())}")
-
-        if rank == 0:
-            mode = self.args.pause_generation_mode
-            logger.info("[multi_lora_sync] Pausing generation")
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            logger.info("[multi_lora_sync] Flushing cache")
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            begin_weight_update(self.rollout_engines)
-        logger.info("[multi_lora_sync] Barrier after pause/flush")
-        dist.barrier(group=get_gloo_group())
-
-        megatron_local_weights = self.weights_getter()
-        with hide_adapters(self.model):
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
-                megatron_local_weights, weight_type="base"
-            ):
-                refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
-                results = ray.get(refs)
-                _check_weight_sync_results(results, is_lora=False)
-                del long_lived_tensors
-
-        for adapter_name, cfg in adapter_configs.items():
-            idx = cfg["slot"]
-            adapter_rank = cfg.get("rank", self.args.lora_rank)
-            if active_slots is not None and idx not in active_slots:
-                logger.info(f"[multi_lora_sync] Skipping {adapter_name} (slot {idx})")
-                continue
-
-            lora_config = build_lora_sync_config(self.args)
-            lora_config["r"] = adapter_rank
-            lora_config["lora_alpha"] = cfg.get("alpha", self.args.lora_alpha)
-
-            logger.info(f"[multi_lora_sync] Exposing adapter {adapter_name} (slot {idx}, rank {adapter_rank})")
-            with expose_adapter_slot(self.model, idx):
-                megatron_local_weights = self.weights_getter()
-                for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
-                    megatron_local_weights, weight_type="lora"
-                ):
-                    weight_tensors = [
-                        (n, slice_lora_to_rank(n, t, adapter_rank))
-                        for n, t in hf_named_tensors
-                        if is_lora_weight_name(n)
-                    ]
-                    if not weight_tensors:
-                        continue
-                    kwargs = dict(
-                        hf_named_tensors=weight_tensors,
-                        ipc_engine=self._ipc_engine,
-                        ipc_gather_src=self._ipc_gather_src,
-                        ipc_gather_group=self._ipc_gather_group,
-                        lora_config=lora_config,
-                        lora_name=adapter_name,
-                        lora_loaded=adapter_name in self._multi_lora_loaded,
-                    )
-                    refs, long_lived_tensors = _send_to_colocated_engine(**kwargs)
-                    if refs:
-                        logger.info(f"[multi_lora_sync] Waiting for send to complete for {adapter_name}")
-                        results = ray.get(refs)
-                        _check_weight_sync_results(results, is_lora=True)
-                    del long_lived_tensors
-
-            self._multi_lora_loaded.add(adapter_name)
-            logger.info(f"[multi_lora_sync] Done with {adapter_name}")
-
-        logger.info("[multi_lora_sync] Barrier after all adapters")
-        dist.barrier(group=get_gloo_group())
-
-        if rank == 0:
-            logger.info("[multi_lora_sync] Post-processing weights")
-            end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
-        dist.barrier(group=get_gloo_group())
-
     def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=hf_named_tensors,
@@ -395,33 +307,26 @@ class UpdateWeightFromTensor:
         every ipc_engine call here is safe.
 
         Per adapter:
-        - RUNNING: push weights. ``lora_loaded=False`` on first push for an
-          adapter (creates SGLang slot), ``True`` on subsequent pushes
-          (unload + reload SGLang refresh).
-        - DRAINED: unload from SGLang and forget. Model-side cleanup is
-          handled separately by ``unload_drained_adapters``.
+        - RUNNING: push weights with ``upsert=True`` -- SGLang registers the
+          adapter on first push and overwrites it in place on every later push
+          (no unload/register). Adapters are never unloaded, so there is no
+          drain/``wait_for_unload`` hang.
+        - DRAINED: no SGLang action. Model-side cleanup is handled separately
+          by ``unload_drained_adapters`` (Megatron slot + optimizer state); the
+          SGLang slot is retained for reuse by the next adapter.
         """
         from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
         adapters = ray.get(get_multi_lora_controller().active_adapters.remote())
-        for name, adapter in adapters.items():
+        for adapter in adapters.values():
             if adapter.state == AdapterState.RUNNING:
-                lora_loaded = name in self._multi_lora_loaded
-                self.send_one_multi_lora_adapter(adapter, lora_loaded=lora_loaded)
-                self._multi_lora_loaded.add(name)
-            elif adapter.state == AdapterState.DRAINED and name in self._multi_lora_loaded:
-                if dist.get_rank() == self._ipc_gather_src:
-                    try:
-                        ray.get(self._ipc_engine.unload_lora_adapter.remote(lora_name=name))
-                    except Exception:
-                        pass
-                self._multi_lora_loaded.discard(name)
+                self.send_one_multi_lora_adapter(adapter, upsert=True)
 
-    def send_one_multi_lora_adapter(self, adapter, lora_loaded: bool) -> None:
-        """Push one adapter's weights to SGLang. ``lora_loaded=False`` on the
-        first push (creates the SGLang slot using ``lora_config``);
-        ``lora_loaded=True`` on subsequent per-cycle refreshes."""
+    def send_one_multi_lora_adapter(self, adapter, upsert: bool) -> None:
+        """Push one adapter's weights to SGLang. ``upsert=True``: SGLang
+        registers the adapter on first push and overwrites it in place on every
+        later push (no unload/register)."""
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
         from miles.backends.megatron_utils.multi_lora_utils import slice_lora_to_rank
@@ -448,8 +353,9 @@ class UpdateWeightFromTensor:
                     ipc_gather_src=self._ipc_gather_src,
                     ipc_gather_group=self._ipc_gather_group,
                     lora_config=lora_config,
-                    lora_name=adapter.name,
-                    lora_loaded=lora_loaded,
+                    lora_name=f"__miles_slot_{adapter.slot}",
+                    lora_loaded=False,
+                    upsert=upsert,
                 )
                 if refs:
                     _check_weight_sync_results(ray.get(refs), is_lora=True)
@@ -466,6 +372,7 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    upsert: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -523,6 +430,7 @@ def _send_to_colocated_engine(
                         per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
                     ],
                     load_format="flattened_bucket",
+                    upsert=upsert,
                 )
             )
 

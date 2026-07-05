@@ -346,14 +346,22 @@ class SGLangEngine(RayActor):
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N.
+
+        When ``upsert`` is set, the adapter named ``lora_name`` must already be
+        loaded and is overwritten in place (no unload/register); used by the
+        multi-LoRA in-place update path.
+        """
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
             "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
+        if upsert:
+            payload["upsert"] = True
         if load_format is not None:
             payload["load_format"] = load_format
         if added_tokens_config is not None:

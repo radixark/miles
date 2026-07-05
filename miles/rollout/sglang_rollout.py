@@ -214,7 +214,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         payload["top_logprobs_num"] = opd_top_k
 
     if sample.adapter is not None:
-        payload["lora_path"] = sample.adapter.name
+        payload["lora_path"] = f"__miles_slot_{sample.adapter.slot}"
     elif is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
