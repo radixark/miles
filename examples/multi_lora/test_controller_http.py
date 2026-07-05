@@ -60,7 +60,7 @@ async def test_forward_active_returns_upstream():
 
 
 @pytest.mark.asyncio
-async def test_retire_mid_flight_dummies():
+async def test_deregister_mid_flight_dummies():
     upstream_runner, upstream_url = await _start_mock_upstream(delay=0.2)
     logic = MultiLoRAControllerLogic()
     srv = MultiLoRAHTTPServer(logic, upstream_url)
@@ -73,7 +73,7 @@ async def test_retire_mid_flight_dummies():
                 _post(s, f"http://127.0.0.1:{srv.actual_port}/generate", {"rid": rid, "text": "hi"})
             )
             await asyncio.sleep(0.05)  # let it be forwarded/in-flight
-            await s.post(f"http://127.0.0.1:{srv.actual_port}/retire_adapter", json={"name": "A"})
+            await s.post(f"http://127.0.0.1:{srv.actual_port}/deregister_adapter", json={"name": "A"})
             status, body = await task
             assert _is_dummy(body)
             assert body["text"] == ""
