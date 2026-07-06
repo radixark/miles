@@ -2286,6 +2286,12 @@ def miles_validate_args(args):
                 "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",
             )
+            # Serving MoE-expert LoRA requires sglang's virtual-experts path; without it the
+            # engine crashes at init with a LoRA-B dim mismatch. Auto-enable so a bare train.py
+            # invocation with expert targets cannot hit that.
+            if not getattr(args, "sglang_lora_use_virtual_experts", False):
+                args.sglang_lora_use_virtual_experts = True
+                logger.warning("--sglang-lora-use-virtual-experts auto-enabled (MoE-expert LoRA targets present).")
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
