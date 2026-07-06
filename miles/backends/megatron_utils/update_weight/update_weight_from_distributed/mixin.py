@@ -275,7 +275,7 @@ class DistBucketedWeightUpdateMixin:
         order and the per-adapter TP collectives in ``_send_one_multi_lora_adapter``
         line up; only the source rank issues the engine RPCs / broadcasts.
         """
-        from miles.ray.multi_lora import get_multi_lora_controller
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
         adapters = ray.get(get_multi_lora_controller().active_adapters.remote())

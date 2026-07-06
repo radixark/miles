@@ -451,7 +451,7 @@ class MegatronTrainRayActor(TrainRayActor):
             cleanup_adapters as _cleanup_adapters,
             load_adapters as _load_adapters,
         )
-        from miles.ray.multi_lora import get_multi_lora_controller
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
 
         active = ray.get(get_multi_lora_controller().active_adapters.remote())
         loaded_names = set(self.loaded_adapters)
@@ -484,7 +484,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if is_multi_lora_enabled(self.args):
             from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
-            from miles.ray.multi_lora import get_multi_lora_controller
+            from miles.ray.multi_lora_controller import get_multi_lora_controller
 
             controller = get_multi_lora_controller()
             adapters = ray.get(controller.active_adapters.remote())

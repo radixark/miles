@@ -10,8 +10,8 @@ import torch
 class AdapterRef:
     """Per-sample handle identifying which LoRA adapter this sample is bound to.
 
-    Set by ``MultiLoRADataSource`` and consumed at training (slot routing) and
-    inference (per-request lora_path) sites. ``None`` means no adapter.
+    Set by the multi-LoRA data source and consumed at training (slot routing)
+    and inference (per-request lora_path) sites. ``None`` means no adapter.
     """
 
     name: str

@@ -315,7 +315,7 @@ class UpdateWeightFromTensor:
           state) is handled by the trainer's reconcile; the SGLang slot is retained
           for reuse by the next adapter.
         """
-        from miles.ray.multi_lora import get_multi_lora_controller
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
         adapters = ray.get(get_multi_lora_controller().active_adapters.remote())

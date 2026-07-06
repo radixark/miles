@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.ray.multi_lora import get_multi_lora_controller
+from miles.ray.multi_lora_controller import get_multi_lora_controller
 from miles.utils.adapter_config import RegisteredAdapter
 
 logger = logging.getLogger(__name__)
