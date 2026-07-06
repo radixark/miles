@@ -99,6 +99,8 @@ class RolloutManager:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
             monitor.stop()
+        if self._session_supervisor is not None:
+            self._session_supervisor.shutdown()
 
     # -------------------------- data generation -----------------------------
 
