@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
     """Start sgl router or miles router and return (router_ip, router_port).
 
-    If ``args.sglang_router_ip`` is already set and ``force_new`` is False,
+    If `args.sglang_router_ip` is already set and `force_new` is False,
     skip launching and return the existing values.
     """
     if not force_new and args.sglang_router_ip is not None:
@@ -78,12 +78,12 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
 
 
 def start_session_server(args):
-    """Start the session server when ``--use-session-server`` is set.
+    """Start the session server when `--use-session-server` is set.
 
     One topology for every worker count: a supervisor spawns N session workers
-    plus a thin client-facing router on ``session_server_port`` (workers=1 is
-    simply N=1). It is always started regardless of whether ``--use-miles-router``
-    is active. Returns the supervisor so the rollout path can ``check()`` it.
+    plus a thin client-facing router on `session_server_port` (workers=1 is
+    simply N=1). It is always started regardless of whether `--use-miles-router`
+    is active. Returns the supervisor so the rollout path can `check()` it.
     """
     if not getattr(args, "use_session_server", False):
         return

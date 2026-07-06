@@ -1,11 +1,11 @@
 # doc-dev: docs/developer/multi-process-session-server.md
-"""Logic layer of the session server: ``SessionCore``.
+"""Logic layer of the session server: `SessionCore`.
 
-HTTP-agnostic: the session worker (``worker.py``) decodes each request off IPC into plain values (session id, method, headers, body) and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``; ``build_session_core`` and ``error_response`` are the single source for core construction and the client error shape.
+HTTP-agnostic: the session worker (`worker.py`) decodes each request off IPC into plain values (session id, method, headers, body) and calls these methods. Owns one `SessionRegistry` (per-session TITO/trajectory state) and one proxy `backend`; `build_session_core` and `error_response` are the single source for core construction and the client error shape.
 
-- ``create_session(session_id=None)``: the router generates the id and passes it so the owning worker creates the trajectory under it; with None the registry generates one itself (tests that call the core directly).
-- ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
-- ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
+- `create_session(session_id=None)`: the router generates the id and passes it so the owning worker creates the trajectory under it; with None the registry generates one itself (tests that call the core directly).
+- `chat_completions` strips the R3 replay payloads (`routed_experts` / `indexer_topk`) from the client reply copy-on-write; the `SessionRecord` keeps the full response for the training path (`GET /sessions/{id}`).
+- `chat_completions` holds the per-session lock for prep and state update but not across the proxy call; `closing` re-checks and the `num_assistant` check gate concurrent DELETE/chat.
 """
 
 import json
@@ -114,7 +114,7 @@ def proxy_result_to_response(result: dict) -> Response:
 
 
 class SessionCore:
-    """HTTP session operations over one ``SessionRegistry``."""
+    """HTTP session operations over one `SessionRegistry`."""
 
     def __init__(self, backend, registry: SessionRegistry, args, session_server_instance_id=None):
         self.backend = backend
@@ -171,12 +171,12 @@ class SessionCore:
 
         Three phases around the per-session lock: (1) under the lock, parse the
         body, inject the TITO-required request fields, and prepare pretokenized
-        ``input_ids`` from the accumulated trajectory; (2) release the lock and
+        `input_ids` from the accumulated trajectory; (2) release the lock and
         proxy to the backend — the slow LLM call runs unlocked so DELETE/other
         ops are not blocked if the agent disconnects; (3) re-acquire the lock,
         validate the response, and update the trajectory checkpoint + append the
-        record. ``closing`` is re-checked at each lock entry and, together with
-        the ``num_assistant`` mismatch check in phase 3, forms the concurrency
+        record. `closing` is re-checked at each lock entry and, together with
+        the `num_assistant` mismatch check in phase 3, forms the concurrency
         gate that drops a state update whose session was deleted or advanced
         during the unlocked proxy.
         """
