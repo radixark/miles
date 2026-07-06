@@ -99,7 +99,7 @@ DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
 @contextmanager
-def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornThreadServer]:
+def _with_session_server(args: Namespace, backend_url: str) -> Iterator[InloopSessionServer]:
     """Start an in-loop session server for agentic variants that need TITO session tracking."""
     from types import SimpleNamespace
 

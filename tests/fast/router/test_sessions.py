@@ -53,9 +53,8 @@ def router_env():
             )
             port = find_available_port(31000)
             server = InloopSessionServer(args, backend.url, host="127.0.0.1", port=port)
-            server.start()
-
             try:
+                server.start()
                 yield SimpleNamespace(url=server.url, backend=backend)
             finally:
                 server.stop()
