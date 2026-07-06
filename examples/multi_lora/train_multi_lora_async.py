@@ -73,6 +73,7 @@ async def main(args):
             if getattr(args, "multi_lora_disable_service_mode", False):
                 logger.info("No active adapters; exiting.")
                 break
+            logger.info("No active adapters; sleeping for 5s...")
             await asyncio.sleep(getattr(args, "multi_lora_idle_poll_s", 5.0))
             continue
 

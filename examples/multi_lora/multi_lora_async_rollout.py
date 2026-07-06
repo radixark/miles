@@ -70,18 +70,18 @@ class AsyncMultiLoRAWorker:
     global_worker = None
     worker_lock = threading.Lock()
 
-    def __init__(self, args, data_source, generate_fn: GenerateFn, concurrency: int = 10) -> None:
+    def __init__(self, args, data_source, generate_fn: GenerateFn, concurrency: int = None) -> None:
         self.args = args
         self.data_source = data_source
         self.generate_fn = generate_fn
-        self.concurrency = concurrency
+        self.concurrency = concurrency or args.rollout_batch_size
         self.running = True
         self.output_queue: queue.Queue = queue.Queue(maxsize=1000)
         self.worker_thread: threading.Thread | None = None
         self.state = GenerateState(args)
 
     @classmethod
-    def get_or_create(cls, args, data_source, generate_fn: GenerateFn, concurrency: int = 10):
+    def get_or_create(cls, args, data_source, generate_fn: GenerateFn, concurrency: int = None):
         with cls.worker_lock:
             if cls.global_worker is None or not cls.global_worker.worker_thread.is_alive():
                 cls.global_worker = cls(args, data_source, generate_fn, concurrency)
@@ -119,9 +119,8 @@ class AsyncMultiLoRAWorker:
                         break
                     group = samples[0]
                     active.add(asyncio.create_task(self.process_and_enqueue(group)))
-                    break
 
-                await asyncio.sleep(1)
+                await asyncio.sleep(0)
         finally:
             if active:
                 await asyncio.wait(active)
@@ -164,12 +163,21 @@ async def generate_rollout_multi_lora_async(
 
     worker = AsyncMultiLoRAWorker.get_or_create(args, data_source, generate_fn)
 
+    # Read the active adapter set once — groups for deregistered adapters (still
+    # in the queue from before the deregister) are stale and must not be trained
+    # (their Megatron slot may have been cleaned up by reconcile). Discard them.
+    from miles.ray.multi_lora_controller import get_multi_lora_controller
+    active_names = set(ray.get(get_multi_lora_controller().active_adapters.remote()).keys())
+
     data: list[list[Sample]] = []
     start_time = time.time()
     last_progress = start_time
     while len(data) < target_data_size:
         made_progress = False
         for group in worker.drain_completed():
+            adapter_name = group[0].adapter.name if group and group[0].adapter else None
+            if adapter_name not in active_names:
+                continue
             f = call_dynamic_filter(dynamic_filter, args, group)
             if not f.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=f.reason)
