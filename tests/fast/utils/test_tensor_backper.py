@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -60,12 +62,13 @@ class _Setup:
         self.shards = shards or {name: slice(None) for name in self.mains}
         self.extras = {f"extra{i}": torch.randn(4, generator=generator) for i in range(num_extras)}
         owned = {name: main[self.shards[name]] for name, main in self.mains.items()}
-        self.optimizer = _FakeOptimizer(owned, self.staging, self.shards)
+        self.optimizer = SimpleNamespace(chained_optimizers=[_FakeOptimizer(owned, self.staging, self.shards)])
         self.model_chunk = _FakeModelChunk(self.params, self.staging)
         ctx = MainCastContext(
             optimizer=self.optimizer,
             model_chunks=[self.model_chunk],
             extras_getter=lambda: iter(self.extras.items()),
+            rematerializable_ids={id(t) for t in self.params.values()},
             check=check,
         )
         self.backuper = TensorBackuper.create(
@@ -113,7 +116,7 @@ def test_chained_optimizer_casts_every_inner_optimizer():
     setup = _Setup()
     names = list(setup.mains)
     inner = [_FakeOptimizer({n: setup.mains[n]}, setup.staging, setup.shards) for n in names]
-    setup.backuper._ctx.optimizer = type("FakeChained", (), {"chained_optimizers": inner})()
+    setup.backuper._ctx.optimizer = SimpleNamespace(chained_optimizers=inner)
     expected = {name: param.clone() for name, param in setup.params.items()}
     setup.backuper.backup("actor")
     setup.corrupt_live_tensors()
@@ -172,6 +175,14 @@ def test_check_detects_tensor_set_change():
     setup.staging["p_new"] = torch.zeros(4, dtype=torch.bfloat16)
     with pytest.raises(AssertionError, match="changed the tensor set"):
         setup.backuper.restore("actor")
+
+
+def test_get_rejects_unknown_tensor_in_source():
+    setup = _Setup()
+    setup.backuper.backup("actor")
+    setup.params["stray_buffer"] = torch.zeros(4, dtype=torch.bfloat16)
+    with pytest.raises(AssertionError, match="stray_buffer"):
+        setup.backuper.get("actor")
 
 
 def test_rejects_non_actor_tag():

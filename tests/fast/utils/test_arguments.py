@@ -161,6 +161,9 @@ class TestValidateRematerializeParamFromMasterWeight:
             opd_teacher_load=None,
             use_precision_aware_optimizer=False,
             overlap_param_gather=False,
+            compute_advantages_and_returns=True,
+            use_critic=False,
+            debug_train_only=False,
             disable_param_buffers_cpu_backup=False,
         )
         for key, value in overrides.items():
@@ -190,6 +193,9 @@ class TestValidateRematerializeParamFromMasterWeight:
             {"opd_teacher_load": "/path/to/teacher"},
             {"use_precision_aware_optimizer": True},
             {"overlap_param_gather": True},
+            {"compute_advantages_and_returns": False},
+            {"use_critic": True},
+            {"debug_train_only": True},
         ],
     )
     def test_rejects_unsupported_config(self, overrides):

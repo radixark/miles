@@ -219,8 +219,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 help=(
                     "Colocate only: drop the pinned CPU weight copy. update_weights reads live GPU "
-                    "weights (param buffer stays resident until then), and wake_up rematerializes them "
-                    "from the optimizer's fp32 master weights, bit-identical to the step-end cast."
+                    "weights (param buffer stays resident until then), and the next train step "
+                    "rematerializes them from the optimizer's fp32 master weights, bit-identical "
+                    "to the step-end cast."
                 ),
             )
             parser.add_argument(
@@ -2065,6 +2066,11 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         not args.overlap_param_gather
     ), "restore calls DDP.start_param_sync outside the training step, which overlap-param-gather does not support"
+    assert (
+        args.compute_advantages_and_returns
+    ), "the per-cycle restore runs in the compute_advantages_and_returns block; without it training would silently run on dropped weights"
+    assert not args.use_critic, "the critic actor never runs update_weights, so its param buffer is never paused"
+    assert not args.debug_train_only, "--debug-train-only skips update_weights, so the param buffer is never paused"
     args.disable_param_buffers_cpu_backup = True
 
 

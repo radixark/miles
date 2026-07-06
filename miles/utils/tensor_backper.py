@@ -13,6 +13,7 @@ class MainCastContext:
     optimizer: object
     model_chunks: list
     extras_getter: _SourceGetter
+    rematerializable_ids: set
     check: bool
 
 
@@ -123,8 +124,7 @@ class _TensorBackuperMainCast(TensorBackuper):
     @torch.no_grad()
     def restore(self, tag: str) -> None:
         assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
-        optimizers = getattr(self._ctx.optimizer, "chained_optimizers", [self._ctx.optimizer])
-        for optimizer in optimizers:
+        for optimizer in self._ctx.optimizer.chained_optimizers:
             optimizer._copy_main_params_to_model_params()
         for model_chunk in self._ctx.model_chunks:
             model_chunk.start_param_sync(force_sync=True)
@@ -138,9 +138,16 @@ class _TensorBackuperMainCast(TensorBackuper):
         assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
         # update_weights runs while non-param TMS regions are paused: extras must
         # be read from their pinned backup, params are live GPU tensors.
-        return {
-            name: self._extras_backup_by_id.get(id(tensor), tensor.detach()) for name, tensor in self._source_getter()
-        }
+        out = {}
+        for name, tensor in self._source_getter():
+            backup = self._extras_backup_by_id.get(id(tensor))
+            if backup is None:
+                assert (
+                    id(tensor) in self._ctx.rematerializable_ids
+                ), f"{name} is neither in the DDP param buffers nor in the extras backup"
+                backup = tensor.detach()
+            out[name] = backup
+        return out
 
     def _compute_hashes(self) -> dict[str, str]:
         from miles.backends.megatron_utils.ci_utils import _hash_tensor_sha256

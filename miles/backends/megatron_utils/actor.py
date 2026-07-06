@@ -152,11 +152,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 f"({extras_bytes / 2**20:.1f} MiB) kept in pinned backup: "
                 f"{[name for name, _ in extras[:20]]}"
             )
-            self._assert_restore_coverage(extras)
+            rematerializable_ids = self._assert_restore_coverage(extras)
             main_cast_ctx = MainCastContext(
                 optimizer=self.optimizer,
                 model_chunks=self.model,
                 extras_getter=lambda: named_restore_extras(self.model),
+                rematerializable_ids=rematerializable_ids,
                 check=args.check_rematerialize_param_from_master_weight,
             )
 
@@ -259,7 +260,7 @@ class MegatronTrainRayActor(TrainRayActor):
         reload_process_groups()
         print_memory("after wake_up model")
 
-    def _assert_restore_coverage(self, extras: list[tuple[str, torch.Tensor]]) -> None:
+    def _assert_restore_coverage(self, extras: list[tuple[str, torch.Tensor]]) -> set:
         """A param outside the DDP buffers (restored via cast + all-gather) and
         the extras backup would silently come back as garbage. Optimizer-side
         structures only cover this rank's owned shard under DP>1."""
@@ -276,6 +277,7 @@ class MegatronTrainRayActor(TrainRayActor):
             f"--rematerialize-param-from-master-weight cannot restore {len(uncovered)} params "
             f"(not in the DDP param buffers nor in the extras backup): {uncovered[:10]}"
         )
+        return restorable
 
     @property
     def _enable_weight_backup(self) -> bool:
