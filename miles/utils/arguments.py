@@ -2321,13 +2321,16 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
-        if args.sglang_enforce_piecewise_cuda_graph:
-            logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
-        if not args.sglang_disable_piecewise_cuda_graph:
-            args.sglang_disable_piecewise_cuda_graph = True
+        if args.sglang_cuda_graph_backend_prefill is None:
+            args.sglang_cuda_graph_backend_prefill = "disabled"
             logger.info(
-                "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
-                "Use --sglang-enforce-piecewise-cuda-graph to override."
+                "Colocate mode: defaulting --sglang-cuda-graph-backend-prefill=disabled to avoid NVLS OOM. "
+                "Set --sglang-cuda-graph-backend-prefill explicitly to override."
+            )
+        elif args.sglang_cuda_graph_backend_prefill != "disabled":
+            logger.warning(
+                f"Warning: colocate mode with --sglang-cuda-graph-backend-prefill="
+                f"{args.sglang_cuda_graph_backend_prefill} may trigger NVLS OOM."
             )
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             logger.info(
