@@ -2049,6 +2049,27 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+def _validate_rematerialize_param_from_master_weight(args):
+    if not args.rematerialize_param_from_master_weight:
+        return
+    assert args.colocate and args.offload_train
+    assert args.use_distributed_optimizer
+    assert args.enable_weights_backuper
+    assert not args.keep_old_actor
+    assert (
+        args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
+    ), "--rematerialize-param-from-master-weight does not support ref/teacher model tags"
+    assert (
+        not args.use_precision_aware_optimizer
+    ), "precision-aware optimizers keep main params internally; _copy_main_params_to_model_params is a no-op"
+    assert (
+        not args.overlap_param_gather
+    ), "restore calls DDP.start_param_sync outside the training step, which overlap-param-gather does not support"
+    # The param buffer must carry its own TMS tag and no CPU backup: it stays
+    # resident through update_weights and is dropped right afterwards.
+    args.disable_param_buffers_cpu_backup = True
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -2361,23 +2382,7 @@ def miles_validate_args(args):
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
-    if args.rematerialize_param_from_master_weight:
-        assert args.colocate and args.offload_train
-        assert args.use_distributed_optimizer
-        assert args.enable_weights_backuper
-        assert not args.keep_old_actor
-        assert (
-            args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
-        ), "--rematerialize-param-from-master-weight does not support ref/teacher model tags"
-        assert (
-            not args.use_precision_aware_optimizer
-        ), "precision-aware optimizers keep main params internally; _copy_main_params_to_model_params is a no-op"
-        assert (
-            not args.overlap_param_gather
-        ), "restore calls DDP.start_param_sync outside the training step, which overlap-param-gather does not support"
-        # The param buffer must carry its own TMS tag and no CPU backup: it stays
-        # resident through update_weights and is dropped right afterwards.
-        args.disable_param_buffers_cpu_backup = True
+    _validate_rematerialize_param_from_master_weight(args)
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
