@@ -1,15 +1,16 @@
-# 1. radixark/miles:dev  (x86_64, CUDA 13) — default
-#    use default settings
+# doc-dev: docs/ci/02-docker-build.md
+# Build via docker/build.py (single source of truth for build-args, platforms,
+# and tags) — see docs/ci/02-docker-build.md. Examples:
+#       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
+#       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
+#       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
+#       python docker/build.py --variant cu12-x86 --image-tag dev --push   # radixark/miles:dev-cu12 (CUDA 12.9)
 #
-# 2. radixark/miles:dev-cu13-arm64  (aarch64, CUDA 13 / GB200 & GB300)
-#    build-arg:WHEELS_TAG=cu130-aarch64-v0.5.12 \
-#
-# 3. radixark/miles:dev-cu129-x86  (x86_64, CUDA 12.9) — legacy fallback
-#    build-arg:ENABLE_CUDA_13=0 \
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.12-cu129 \
-#    build-arg:WHEELS_TAG=cu129-x86_64-v0.5.12 \
+# A multi-arch build runs the recipe once per platform; it installs the wheels
+# release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
+# WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.12
+ARG SGLANG_IMAGE_TAG=v0.5.13
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -23,7 +24,11 @@ ARG MEGATRON_BRANCH=miles-main
 ARG ENABLE_CUDA_13=1
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
-ARG WHEELS_TAG=cu130-x86_64-v0.5.12
+# Two complete wheels release tags (the wheels repo's own names). The build picks
+# one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
+ARG TARGETARCH
+ARG WHEELS_TAG_X86=cu130-x86_64-v0.5.12
+ARG WHEELS_TAG_ARM64=cu130-aarch64-v0.5.12
 
 # ======================================== Setup =============================================
 
@@ -48,7 +53,13 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
 COPY wheel[s]/ /tmp/wheels/
 
-RUN mkdir -p /tmp/wheels && \
+RUN case "${TARGETARCH}" in \
+      amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
+      arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    echo "Fetching wheels release ${WHEELS_TAG}" && \
+    mkdir -p /tmp/wheels && \
     curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
 [subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
@@ -74,6 +85,8 @@ RUN pip install flash-linear-attention==0.4.2
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
 RUN pip install --no-deps tile_kernels==1.0.0
+# FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
+RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
 RUN pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
@@ -111,7 +124,6 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
     pip install -e .
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
-# RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps

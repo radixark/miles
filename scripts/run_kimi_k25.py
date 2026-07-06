@@ -15,8 +15,8 @@ whose Megatron MODEL_ARGS we reuse (`scripts/models/kimi-k2-thinking.sh`).
 Args:
   --model-name: Model variant.
       Kimi-K2.5         Full 61-layer model (requires many nodes; default 32)
-      Kimi-K2.5-4layer  4-layer pruned model (single-node CI / smoke test)
-  --num-nodes: Number of training nodes. 1 -> single-node 4-layer minimal test.
+      Kimi-K2.5-2layer  2-layer pruned model (single-node CI / smoke test)
+  --num-nodes: Number of training nodes. 1 -> single-node 2-layer minimal test.
   --num-gpus-per-node: GPUs per node (default: 8).
   --mode: "normal" or "debug_minimal" (short responses for quick testing).
   --enable-eval: Run AIME evaluation every 20 steps.
@@ -24,8 +24,8 @@ Args:
 
 =====================
 
-Single-node minimal test (4-layer):
-  python scripts/run_kimi_k25.py full-train --model-name Kimi-K2.5-4layer --num-nodes 1
+Single-node minimal test (2-layer):
+  python scripts/run_kimi_k25.py full-train --model-name Kimi-K2.5-2layer --num-nodes 1
 
 Full model (e.g. 32 nodes):
   1. Start a Ray cluster on all nodes.
@@ -69,9 +69,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.model_name == "Kimi-K2.5":
             self.model_org = "moonshotai"
             self.megatron_model_type = "kimi-k2-thinking"
-        elif self.model_name == "Kimi-K2.5-4layer":
+        elif self.model_name == "Kimi-K2.5-2layer":
             self.model_org = "CharyZeng"
-            self.megatron_model_type = "kimi-k25_4layer"
+            self.megatron_model_type = "kimi-k25_2layer"
         else:
             raise NotImplementedError(f"{self.model_name} is not supported")
 
@@ -139,7 +139,7 @@ def _execute_train(args: ScriptArgs):
             "--eval-top-p 1 "
         )
 
-    if args.num_nodes == 1:  # single-node 4-layer minimal test
+    if args.num_nodes == 1:  # single-node 2-layer minimal test
         perf_args = (
             "--tensor-model-parallel-size 8 "
             "--sequence-parallel "
@@ -209,7 +209,6 @@ def _execute_train(args: ScriptArgs):
         "--attention-backend flash "
         "--no-check-for-nan-in-loss-and-grad "
         "--colocate "
-        "--use-miles-router "
         f"--update-weight-buffer-size {4 * 512 * 1024 * 1024} "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "

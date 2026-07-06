@@ -128,9 +128,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._model_registered = True
 
     def _finalize_and_resume_engines(self):
-        # The `update_weight_version` here is necessary because the engine was not aware that the write has happened
-        # After p2p transfering, some models (like the ones with Deepseek-arch) of rollout side should invoke
-        # `post_load_weights` to re-generate the params which are not registered as `model.named_parameters()`
         if dist.get_rank() == 0:
             ray.get(
                 [
@@ -138,7 +135,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                     for engine in self.rollout_engines
                 ]
             )
-        super()._finalize_and_resume_engines(post_load_weights=True)
+        super()._finalize_and_resume_engines()
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
@@ -283,11 +280,11 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         # because get_model() calls post_load_weights() internally (loader.py:1310)
         # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
         # This is safe because the rollout engine runs post_load_weights on its own GPU
-        # after RDMA transfer via post_process_weights(post_load_weights=True).
+        # after RDMA transfer, at end_weight_update.
         from sglang.srt.model_loader import loader as model_loader_module
 
-        original_post_load_weights = model_loader_module.post_load_weights
-        model_loader_module.post_load_weights = lambda *args, **kwargs: None
+        original_post_load_weights = model_loader_module._post_load_weights
+        model_loader_module._post_load_weights = lambda *args, **kwargs: None
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
@@ -296,7 +293,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                     device_config=DeviceConfig(device="cpu"),
                 )
         finally:
-            model_loader_module.post_load_weights = original_post_load_weights
+            model_loader_module._post_load_weights = original_post_load_weights
 
         # Also patch the instance method for subsequent load_weights() calls
         # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).

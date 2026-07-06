@@ -5,8 +5,10 @@ import torch
 from megatron.core.transformer import TransformerConfig
 
 
-@lru_cache(2)
-def precompute_freqs_cis(dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow) -> torch.Tensor:
+@lru_cache(maxsize=32)
+def precompute_freqs_cis(
+    dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow, device=None
+) -> torch.Tensor:
     """Precompute the complex rotary frequencies for RoPE, with optional YaRN smoothing.
 
     When ``original_seq_len > 0``, applies YaRN factor rescaling interpolated
@@ -38,7 +40,8 @@ def precompute_freqs_cis(dim, seqlen, original_seq_len, base, factor, beta_fast,
     t = torch.arange(seqlen)
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-    return freqs_cis
+    # Cache on `device` so repeated lengths are GPU cache hits; values bit-identical to CPU build.
+    return freqs_cis.to(device) if device is not None else freqs_cis
 
 
 def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False) -> torch.Tensor:
@@ -62,10 +65,9 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = F
 
 
 def wrapped_precompute_freqs_cis(
-    config: TransformerConfig, rope_head_dim: int, base: float, yarn_disabled: bool = False
+    config: TransformerConfig, rope_head_dim: int, base: float, yarn_disabled: bool, max_seq_len: int, device
 ):
-    max_seq_len = 65536
-
+    # max_seq_len = global length (cp_size * seqlen_local); table rebuilt per call, lru-cached.
     # yarn_disabled=True → original_seq_len=0, which makes precompute_freqs_cis skip the YaRN
     # correction-range interpolation. Used by 0415 for pure-window (compress_ratio==0) layers.
     original_seq_len = 0 if yarn_disabled else config.original_max_position_embeddings
@@ -92,4 +94,4 @@ def wrapped_precompute_freqs_cis(
         beta_slow=1,
     )
 
-    return precompute_freqs_cis(**inputs)
+    return precompute_freqs_cis(**inputs, device=device)

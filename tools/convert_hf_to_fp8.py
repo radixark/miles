@@ -137,6 +137,10 @@ def process_file(input_path, output_path, filename, strategy, block_size, result
             and "lm_head" not in key
             and "eh_proj" not in key
             and "weights_proj" not in key
+            and "head." not in key
+            and "wo_a" not in key
+            and "ffn.gate." not in key
+            and "compressor." not in key
             and "vision_tower" not in key
             and "mm_projector" not in key
         ):

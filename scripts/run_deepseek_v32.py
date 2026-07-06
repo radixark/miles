@@ -337,7 +337,7 @@ def _execute_train(args: ScriptArgs):
                 sglang_decode_max_bs = 256
                 sglang_args += (
                     f"--rollout-num-gpus-per-engine {sglang_world_size} "
-                    "--sglang-fp8-gemm-backend flashinfer_cutlass "
+                    "--sglang-fp8-gemm-backend flashinfer_trtllm "
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "

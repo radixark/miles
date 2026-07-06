@@ -14,8 +14,9 @@ class CaseConfig:
     num_gpus_per_node: int
     cp_size: int
     pp_size: int
-    tp_size: int = None
-    ep_size: int = None
+    tp_size: int
+    ep_size: int
+    rollout_num_gpus_per_engine: int
     sglang_ep_size: int = None
     sglang_dp_size: int = None
     sglang_enable_dp_attention: bool = False
@@ -27,36 +28,22 @@ class CaseConfig:
     max_tokens_per_gpu: int = 8192
     colocate: bool = True
     rollout_num_gpus: int = None
-    rollout_num_gpus_per_engine: int = None
     update_weight_transfer_mode: str = None
 
     def __post_init__(self):
+        # Validation only — topology values are passed explicitly, not inferred.
         if self.num_gpus_per_node % (self.cp_size * self.pp_size) != 0:
             raise ValueError(
                 "num_gpus_per_node must be divisible by cp_size * pp_size: "
                 f"{self.num_gpus_per_node=} {self.cp_size=} {self.pp_size=}"
             )
-        if self.tp_size is None:
-            self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
-        if self.ep_size is None:
-            self.ep_size = self.num_gpus_per_node // self.pp_size
-        # Align with arguments.py: colocated rollout reuses the actor GPU pool, so
-        # rollout_num_gpus resolves to num_gpus_per_node; disaggregated rollout keeps
-        # its own standalone rollout_num_gpus.
-        if self.colocate:
-            self.rollout_num_gpus = self.num_gpus_per_node
-        elif self.rollout_num_gpus is None:
+        if not self.colocate and self.rollout_num_gpus is None:
             raise ValueError("rollout_num_gpus must be set when colocate is False")
-        # EP spans the whole rollout pool so MoE experts shard across it, while
-        # attention stays DP within each engine (rollout_num_gpus_per_engine).
-        if self.rollout_num_gpus_per_engine is None:
-            self.rollout_num_gpus_per_engine = 1 if self.use_int4_rollout else self.rollout_num_gpus
-        if self.sglang_ep_size is None and self.use_deepep:
-            self.sglang_ep_size = self.rollout_num_gpus
-        if self.rollout_num_gpus % self.rollout_num_gpus_per_engine != 0:
+        rollout_pool = self.num_gpus_per_node if self.colocate else self.rollout_num_gpus
+        if rollout_pool % self.rollout_num_gpus_per_engine != 0:
             raise ValueError(
-                "rollout_num_gpus must be divisible by rollout_num_gpus_per_engine: "
-                f"{self.rollout_num_gpus=} {self.rollout_num_gpus_per_engine=}"
+                "rollout pool must be divisible by rollout_num_gpus_per_engine: "
+                f"{rollout_pool=} {self.rollout_num_gpus_per_engine=}"
             )
         if self.update_weight_transfer_mode is not None:
             assert self.update_weight_transfer_mode == "broadcast"
@@ -192,6 +179,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         sglang_args += "--sglang-enable-dp-attention "
 
     ci_args = "--ci-test "
+    if case.use_fp8_rollout or case.use_int4_rollout:
+        ci_args += "--check-weight-update-allow-quant-error "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -208,7 +197,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
 
     if case.update_weight_transfer_mode is not None:
-        misc_args += "--check-weight-update-equal "
         misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
 
     if case.use_bridge:

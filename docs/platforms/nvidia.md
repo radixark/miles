@@ -65,6 +65,11 @@ NVTE_FUSED_ATTN=1            # default, but verify
 TORCHINDUCTOR_CACHE_DIR=/data/.inductor
 ```
 
+miles sets `NVSHMEM_DISABLE_NCCL=1` on rollout and training actors automatically. DeepEP
+initializes NVSHMEM, whose built-in NCCL path opens a second NCCL communicator that collides
+with miles' own NCCL and hangs during SGLang CUDA-graph replay. Export `NVSHMEM_DISABLE_NCCL=0`
+to opt out.
+
 ## NVLink + IB topology
 
 For 8× GPUs per node:

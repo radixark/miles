@@ -88,7 +88,6 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
-        "--check-weight-update-equal "
         "--update-weight-transfer-mode p2p "
     )
 

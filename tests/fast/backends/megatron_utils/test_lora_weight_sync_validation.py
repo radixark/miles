@@ -178,11 +178,14 @@ class TestSendHfParamsEmptyLoraDetection:
 class TestUpdateWeightsZeroChunks:
     """When the weight iterator yields nothing for LoRA, raise instead of silently succeeding."""
 
+    @patch("miles.backends.megatron_utils.update_weight.common.ray")
     @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
     @patch(f"{_UW_MODULE}.ray")
     @patch(f"{_UW_MODULE}.dist")
     @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_raises_on_zero_lora_chunks(self, mock_iter_base, mock_dist, mock_ray, mock_gloo):
+    def test_raises_on_zero_lora_chunks(self, mock_iter_base, mock_dist, mock_ray, mock_gloo, mock_common_ray):
+        from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
         mock_dist.get_world_size.return_value = 1
         mock_dist.get_rank.return_value = 0
         mock_dist.new_group.return_value = MagicMock()
