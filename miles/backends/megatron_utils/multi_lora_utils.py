@@ -240,7 +240,7 @@ def save_multi_lora_checkpoints(
 
 
 def _register_adapter(adapter: RegisteredAdapter, model) -> None:
-    """Install one PENDING adapter on this rank's local model shard."""
+    """Install one adapter on this rank's local model shard."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
     from miles.backends.megatron_utils.initialize import is_megatron_main_rank
@@ -272,7 +272,7 @@ def _register_adapter(adapter: RegisteredAdapter, model) -> None:
 
 
 def _deregister_adapter(adapter: RegisteredAdapter, args, model, optimizer) -> None:
-    """Model-side cleanup for one DRAINED adapter."""
+    """Model-side cleanup for one adapter."""
     from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
 
     name = adapter.name
@@ -298,7 +298,7 @@ def _deregister_adapter(adapter: RegisteredAdapter, args, model, optimizer) -> N
 def load_adapters(args, model, optimizer, adapters) -> int:
     """Load a caller-provided list of adapters into Megatron slots (no controller
     state machine). Each adapter is a ``RegisteredAdapter`` (name, config, slot).
-    The new controller has no PENDING state, so callers drive this explicitly."""
+    Callers drive this explicitly (no state machine), so callers drive this explicitly."""
     from miles.utils.distributed_utils import get_gloo_group
 
     if dist.is_initialized():

@@ -17,7 +17,7 @@ from typing import Any, Optional
 import aiohttp
 from aiohttp import web
 
-from miles.utils.adapter_config import AdapterState, RegisteredAdapter
+from miles.utils.adapter_config import RegisteredAdapter
 
 __all__ = [
     "MultiLoRAControllerLogic",
@@ -73,12 +73,14 @@ class MultiLoRAControllerLogic:
 
     def active_adapters(self) -> dict[str, RegisteredAdapter]:
         return {
-            name: RegisteredAdapter(name, self.configs[name], slot, AdapterState.RUNNING)
+            name: RegisteredAdapter(name, self.configs[name], slot)
             for name, slot in self.slots.items()
         }
 
     def active(self) -> dict[str, int]:
         return dict(self.slots)
+
+
 
     def on_forward(self, rid: str) -> bool:
         name = parse_adapter(rid)

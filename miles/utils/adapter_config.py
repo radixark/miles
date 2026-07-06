@@ -1,37 +1,15 @@
-"""Adapter config parsing and lifecycle state for multi-LoRA training.
+"""Adapter config parsing for multi-LoRA training.
 
 ``AdapterConfig`` carries only static, YAML-sourced configuration; the
-mutable lifetime fields (slot, state) are owned by
-``MultiLoRAController`` and exposed through ``RegisteredAdapter`` views.
+mutable slot is owned by the controller and exposed through ``RegisteredAdapter``
+views.
 """
 
 from dataclasses import dataclass, field
-from enum import IntEnum, auto
 from pathlib import Path
 from typing import Any
 
 import yaml
-
-
-class AdapterState(IntEnum):
-    """PENDING → RUNNING → DRAINING → DRAINED → REMOVED."""
-
-    PENDING = auto()  # registered, awaiting install
-    RUNNING = auto()  # installed on the model, emitting samples, eligible for training
-    DRAINING_DATASOURCE = auto()  # data source will emit samples for at most one last train iteration
-    DRAINING_INFLIGHT = auto()  # data source blocked, waiting for all in-flight requests to be drained
-    DRAINING_TRAINABLE = auto()  # inflight samples complete, waiting for all trainable to be drained
-    DRAINED = auto()  # all in-flight work trained; ready for cleanup
-    REMOVED = auto()  # cross-system cleanup done; tombstone for external pollers
-
-
-# Adapter in this state can generate samples during rollout
-ADAPTER_ROLLOUT_STATES = {
-    AdapterState.RUNNING,
-    AdapterState.DRAINING_DATASOURCE,
-}
-# Adapters in this state should not be trained on or have any generated samples
-ADAPTER_INACTIVE_STATES = {AdapterState.PENDING, AdapterState.DRAINED}
 
 
 @dataclass(frozen=True)
@@ -58,16 +36,15 @@ class AdapterConfig:
 
 @dataclass(frozen=True)
 class RegisteredAdapter:
-    """Join view of an adapter's static config and current lifetime state.
+    """Join view of an adapter's static config and current slot.
 
-    Returned by ``MultiLoRAController.active_adapters``. The controller is the
+    Returned by the controller's ``active_adapters``. The controller is the
     source of truth; this view is a read-only snapshot.
     """
 
     name: str
     config: AdapterConfig
     slot: int
-    state: AdapterState
 
 
 def parse_adapter_yaml(path: Path) -> AdapterConfig:
