@@ -3,10 +3,10 @@
 
 - Runs in the rollout process and is the only way the session server runs; ``--session-server-workers=1`` (the default) is simply N=1, not a separate chassis.
 - ``start()`` spawns (``"spawn"`` context) N workers + 1 router, one ``socket.socketpair`` per worker, then closes every socket end the parent holds — so a child death is observable as EOF on the surviving peer.
-- Readiness: waits until the router's ``/health`` reports all workers healthy, raising early if a child dies during startup (e.g. while loading its tokenizer) or the deadline elapses.
+- Readiness: waits until the router's ``/health`` reports all workers healthy, raising early if a child dies during startup (e.g. while loading its tokenizer) or the deadline elapses; a failed ``start()`` tears down whatever it already spawned.
 - A monitor thread records the first child death and tears the whole group down (fail-fast).
 - ``check()``, called on the rollout path, re-raises that recorded failure so a dead worker fails the rollout loudly instead of hanging requests routed to its shard.
-- ``shutdown()`` is idempotent — SIGTERM, a short grace period, then SIGKILL — and is also registered via ``atexit``, so no orphan processes survive.
+- ``shutdown()`` is idempotent and thread-safe (a concurrent caller blocks until teardown completes) — SIGTERM, a short grace period, then SIGKILL — and is also registered via ``atexit``, so no orphan processes survive.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ class SessionServerSupervisor:
         self._router = None
         self._failure: str | None = None
         self._shutdown_done = False
+        self._shutdown_lock = threading.Lock()
         self._monitor: threading.Thread | None = None
 
     def start(self) -> None:
@@ -57,23 +58,26 @@ class SessionServerSupervisor:
             worker_ends.append(worker_end)
             router_ends.append(router_end)
 
-        workers = []
-        for i in range(self.n_worker):
-            p = self._ctx.Process(
-                target=run_worker, args=(self.args, self.backend_url, worker_ends[i], i), daemon=False
-            )
-            p.start()
-            workers.append(p)
-        router = self._ctx.Process(target=run_router, args=(self.args, router_ends, self.ip, self.port), daemon=False)
-        router.start()
-
-        # Parent closes every socket end so a child death is observable as EOF on its peer.
-        for s in worker_ends + router_ends:
-            s.close()
-
-        self._procs = workers + [router]
-        self._router = router
+        # Each child lands in _procs before anything else can fail, so the except
+        # path below reaps every process a partially failed start() has spawned.
         try:
+            for i in range(self.n_worker):
+                p = self._ctx.Process(
+                    target=run_worker, args=(self.args, self.backend_url, worker_ends[i], i), daemon=False
+                )
+                p.start()
+                self._procs.append(p)
+            router = self._ctx.Process(
+                target=run_router, args=(self.args, router_ends, self.ip, self.port), daemon=False
+            )
+            router.start()
+            self._procs.append(router)
+            self._router = router
+
+            # Parent closes every socket end so a child death is observable as EOF on its peer.
+            for s in worker_ends + router_ends:
+                s.close()
+
             self._await_ready()
         except Exception:
             self.shutdown()
@@ -109,6 +113,10 @@ class SessionServerSupervisor:
         while not self._shutdown_done:
             for p in self._procs:
                 if not p.is_alive():
+                    # shutdown() flips _shutdown_done before terminate(), so a death seen
+                    # while the flag is still False cannot be shutdown-caused.
+                    if self._shutdown_done:
+                        return
                     self._failure = f"session server child pid={p.pid} died (exitcode={p.exitcode})"
                     logger.error("%s; tearing down session server", self._failure)
                     self.shutdown()
@@ -121,18 +129,21 @@ class SessionServerSupervisor:
             raise RuntimeError(f"session server failed: {self._failure}")
 
     def shutdown(self) -> None:
-        if self._shutdown_done:
-            return
-        self._shutdown_done = True
-        for p in self._procs:
-            if p.is_alive():
-                p.terminate()
-        deadline = time.monotonic() + _TERM_GRACE
-        for p in self._procs:
-            p.join(timeout=max(0.0, deadline - time.monotonic()))
-        for p in self._procs:
-            if p.is_alive():
-                try:
-                    os.kill(p.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+        # The lock makes a concurrent caller block until teardown completes instead of
+        # returning while children are still being reaped.
+        with self._shutdown_lock:
+            if self._shutdown_done:
+                return
+            self._shutdown_done = True
+            for p in self._procs:
+                if p.is_alive():
+                    p.terminate()
+            deadline = time.monotonic() + _TERM_GRACE
+            for p in self._procs:
+                p.join(timeout=max(0.0, deadline - time.monotonic()))
+            for p in self._procs:
+                if p.is_alive():
+                    try:
+                        os.kill(p.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
