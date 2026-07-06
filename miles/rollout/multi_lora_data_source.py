@@ -88,9 +88,7 @@ class MultiLoRADataSource(DataSource):
         for name, adapter in adapters.items():
             self.configs[name] = adapter.config
 
-    def _create_adapter_source(
-        self, name: str, config: AdapterConfig, steps: dict[str, int]
-    ) -> RolloutDataSource:
+    def _create_adapter_source(self, name: str, config: AdapterConfig, steps: dict[str, int]) -> RolloutDataSource:
         adapter_args = copy.copy(self.args)
 
         # Data
