@@ -199,8 +199,9 @@ def _train(args: ScriptArgs):
             f"[run_glm5_1_744b_a40b_lora] WARNING: MOE_LORA_LAYERS={_moe_lora_layers} is SET but the subset-rewrite "
             "feature is DISABLED (commented out for debugging) -> MoE-expert LoRA stays on ALL layers."
         )
-    # MoE-expert LoRA needs --experts-shared-outer-loras (train side) and
-    # --sglang-lora-use-virtual-experts (serve side) together; only one on -> engine-init crash.
+    # MoE-expert LoRA layout: per-expert by default; --experts-shared-outer-loras opts into
+    # shared-outer (this recipe's default). Serving always uses sglang's virtual-experts path
+    # (--sglang-lora-use-virtual-experts defaults ON in miles arguments).
     lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
     if _keep_moe_lora and args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
@@ -257,7 +258,6 @@ def _train(args: ScriptArgs):
         _decode = "flashmla_kv" if args.fp8_rollout else "flashmla_sparse"
         _cg = 256 if args.fp8_rollout else 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if args.fp8_rollout else ""
-        _ve = "--sglang-lora-use-virtual-experts " if _keep_moe_lora else ""
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
             f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
@@ -266,7 +266,7 @@ def _train(args: ScriptArgs):
             f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
             f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
             f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
-            f"--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion {_ve}"
+            "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
             f"--sglang-max-lora-rank {args.lora_rank} "
             f"--sglang-lora-backend {args.sglang_lora_backend} "

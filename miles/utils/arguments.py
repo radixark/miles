@@ -1904,6 +1904,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        # miles default: virtual-experts MoE-LoRA serving ON (sglang's own default is False).
+        # Required whenever expert projections are LoRA targets (engine-init LoRA-B dim
+        # mismatch otherwise) and inert without MoE-expert LoRA, so defaulting it on is safe.
+        parser.set_defaults(sglang_lora_use_virtual_experts=True)
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
@@ -2286,12 +2290,6 @@ def miles_validate_args(args):
                 "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",
             )
-            # Serving MoE-expert LoRA requires sglang's virtual-experts path; without it the
-            # engine crashes at init with a LoRA-B dim mismatch. Auto-enable so a bare train.py
-            # invocation with expert targets cannot hit that.
-            if not getattr(args, "sglang_lora_use_virtual_experts", False):
-                args.sglang_lora_use_virtual_experts = True
-                logger.warning("--sglang-lora-use-virtual-experts auto-enabled (MoE-expert LoRA targets present).")
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
