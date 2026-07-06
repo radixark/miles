@@ -300,7 +300,7 @@ The multi-turn session server for agentic TITO rollouts — see [Agentic chat te
 | `--use-session-server` | flag | off | Start the session server for TITO multi-turn sessions. Requires `--hf-checkpoint`. |
 | `--session-server-ip` | str | – | Defaults to `--sglang-router-ip`. |
 | `--session-server-port` | int | – | Auto-allocated if unset. |
-| `--session-server-workers` | int | `8` | Sessions are sharded across worker processes behind a thin router; each worker is its own interpreter, so GIL-bound tokenization and response deserialization scale with CPU cores. Raise it if the session server is the bottleneck; lower it to trim memory (each worker loads its own tokenizer). |
+| `--session-server-workers` | int | `8` | Sessions are sharded across worker processes behind a thin router; each worker is its own interpreter, so GIL-bound tokenization and response deserialization scale with CPU cores. Raise it if the session server is the bottleneck. |
 | `--tito-model` | str | `default` | TITO tokenizer family for pretokenized prefix reuse; see the model table in [Agentic chat template](/user-guide/agentic-chat-template). |
 | `--tito-allowed-append-roles` | list | `tool` | Roles allowed to be appended after the pretokenized assistant prefix: `tool`, `user`, `system`. |
 
