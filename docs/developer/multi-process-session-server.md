@@ -13,6 +13,8 @@ Multi-turn agent rollouts must not be bottlenecked by the session server. Under 
 
 Measured at the production shape (32 sessions × 50 turns, final-turn body ≈ 134 MiB): 16 workers give **7.2–7.6×** wall-time/throughput over single-process, with the workers pegged (~94% CPU, the intended bottleneck) and the router at ~5% (`tests/benchmark/bench_session_server_overhead.py`, landing separately).
 
+If the session server is the bottleneck in a run (`miles-session-worker` processes pegged while the inference backend idles), raise `--session-server-workers`: each worker is its own interpreter, so the GIL-bound per-turn work — tokenization, response deserialization/validation — scales with CPU cores.
+
 ## Functional requirements
 
 - **One chassis.** There is no separate single-process server: `--session-server-workers=1` runs the same supervisor topology with one worker. A second chassis would duplicate the route surface and the proxy stack and need permanent equivalence tests to keep the two from drifting.
