@@ -793,6 +793,11 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             allowed_roles=frozenset({"tool"}),
             template=None,
         ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"drop_thinking": False},
+        ),
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
