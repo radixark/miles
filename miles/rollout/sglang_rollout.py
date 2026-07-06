@@ -446,7 +446,6 @@ async def generate_rollout_async(
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
                 state.remaining_batch_size -= 1
-
                 continue
 
             # add the samples to the data
