@@ -289,8 +289,7 @@ def _execute_train(args: ScriptArgs):
         "--recompute-num-layers 1 "
         # ------------
         "--use-dynamic-batch-size "
-        # 6144: activations must fit next to the resident fp32 m/v from step 2 on.
-        f"--max-tokens-per-gpu {2048 if _is_pruned(args) else 6144} "
+        f"--max-tokens-per-gpu {2048 if _is_pruned(args) else 8192} "
         "--data-pad-size-multiplier 1024 "
         "--log-probs-chunk-size 16384 "
     )
@@ -330,8 +329,6 @@ def _execute_train(args: ScriptArgs):
             sglang_world_size = 64
     else:
         sglang_decode_max_bs = 256
-        # 8-GPU (2-node) rollout engine: halves the fp8 model to ~114GB/GPU so it
-        # coexists with the colocated Megatron weights + weight-sync bucket.
         sglang_world_size = 8
 
     sglang_args = (
