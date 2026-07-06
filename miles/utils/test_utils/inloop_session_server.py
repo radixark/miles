@@ -1,7 +1,7 @@
 """In-thread session server for tests: the production router app over in-loop workers.
 
-Serves the SAME client-facing app production runs (``build_router_app``) on a real
-port, but wires the N ``SessionWorker`` shards as in-loop IPC handlers on the server
+Serves the SAME client-facing app production runs (`build_router_app`) on a real
+port, but wires the N `SessionWorker` shards as in-loop IPC handlers on the server
 thread's event loop instead of spawning OS processes — real socketpair framing and
 worker dispatch, none of the spawn cost. Process lifecycle (spawn, readiness,
 fail-fast, teardown) is the supervisor's job and is covered by its own tests.
@@ -21,7 +21,7 @@ from miles.rollout.session.worker import ProxyBackend, SessionWorker
 
 
 class InloopSessionServer:
-    """Router app + ``n_workers`` in-loop worker shards, served from one thread."""
+    """Router app + `n_workers` in-loop worker shards, served from one thread."""
 
     def __init__(self, args, backend_url: str, host: str, port: int, n_workers: int = 1):
         self.args = args
