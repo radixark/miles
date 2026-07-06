@@ -16,7 +16,12 @@ from dataclasses import dataclass
 
 from starlette.responses import Response
 
-from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
+from miles.rollout.session.errors import (
+    MessageValidationError,
+    SessionNotFoundError,
+    TokenizationError,
+    UpstreamResponseError,
+)
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 
@@ -130,7 +135,10 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body = json.loads(body) if body else {}
+            try:
+                request_body = json.loads(body) if body else {}
+            except json.JSONDecodeError as e:
+                raise MessageValidationError(f"invalid JSON body: {e}") from e
 
             # TITO token tracking needs Miles-owned input_ids plus SGLang output
             # metadata: logprobs=True populates meta_info.output_token_logprobs and

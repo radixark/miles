@@ -138,3 +138,15 @@ class TestSessionProxy:
         record = records[0]
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
+
+    def test_chat_malformed_json_body_returns_400(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+
+        resp = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+            timeout=10.0,
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"].startswith("invalid JSON body:")
