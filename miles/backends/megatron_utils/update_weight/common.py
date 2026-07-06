@@ -260,6 +260,7 @@ def named_params_and_buffers(
     return ans
 
 
+# TODO: move those utils to separate files in refactor
 def named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
     """Tensors not rematerializable from fp32 master weights: expert_bias buffers and
     fp32-dtype params (their optimizer "main" is a view of the param itself)."""
