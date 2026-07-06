@@ -98,3 +98,46 @@ index 51e9ae673..d69decc 100644
          x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
          res_bf16 = (residual if residual.dtype == torch.bfloat16 else residual.bfloat16()).contiguous()
          out = mhc_post(x_bf16, res_bf16, post, comb)
+diff --git a/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_bwd.py b/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_bwd.py
+index 4d148a3..a84f0f2 100644
+--- a/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_bwd.py
++++ b/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_bwd.py
+@@ -118,10 +118,11 @@ def bwd(
+     padded_H = max(tilelang.math.next_power_of_2(H), 16)
+-    block_H = min(64, padded_H)
++    is_rocm = getattr(torch.version, "hip", None) is not None
++    rocm_large_head = is_rocm and padded_H >= 64
++    max_block_H = 32 if rocm_large_head else 64
++    block_H = min(max_block_H, padded_H)
+     assert padded_H % block_H == 0
+     NH = padded_H // block_H
+     BS = block_size
+     NS = tilelang.cdiv(topk, block_size)
+-
+-    split_store = 2
+-
++    split_store = 4 if rocm_large_head else 2
+     @T.prim_func
+     def sparse_mqa_bwd_kernel(
+diff --git a/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_fwd.py b/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_fwd.py
+index dabf52a..73766a6 100644
+--- a/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_fwd.py
++++ b/miles_plugins/models/deepseek_v4/ops/kernel/tilelang_sparse_mla_fwd.py
+@@ -73,6 +73,4 @@ def sparse_mqa_fwd(
+         with T.Kernel(seq_len * REPLICATE_H, batch, threads=threads) as (bx, by):
+             Q_shared = T.alloc_shared([H_per_block, D], dtype)
+             KV_shared = T.alloc_shared([BI, D], dtype)
+-            O_shared = T.alloc_shared([H_per_block, D], dtype)
+-            Lse_shared = T.alloc_shared([H_per_block], accum_dtype)
+             mask = T.alloc_fragment([BI], "bool")
+@@ -96,2 +94,2 @@ def sparse_mqa_fwd(
+-            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64
++            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * H_per_block
+             H1 = H0 + H_per_block
+@@ -170,3 +168,5 @@ def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I
+     _, _, topk = topk_idxs.shape
+-
++    is_rocm = getattr(torch.version, "hip", None) is not None
++    if is_rocm and heads >= 64 and num_stages > 1:
++        num_stages = 1
+     # Pad topk to next multiple of block_I (kernel requires divisibility)

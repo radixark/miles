@@ -116,13 +116,13 @@ def bwd(
     attn_sink_shape = [H]
 
     padded_H = max(tilelang.math.next_power_of_2(H), 16)
-    block_H = min(32, padded_H)  # was 64; halve head tile to fit AMD 160KB LDS at TP=1
+    block_H = min(64, padded_H)
     assert padded_H % block_H == 0
     NH = padded_H // block_H
     BS = block_size
     NS = tilelang.cdiv(topk, block_size)
 
-    split_store = 4  # was 2; smaller dKV staging buffer to fit AMD 160KB LDS
+    split_store = 2
 
     @T.prim_func
     def sparse_mqa_bwd_kernel(

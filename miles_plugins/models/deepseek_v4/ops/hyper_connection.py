@@ -32,20 +32,6 @@ from torch import Tensor
 _HC_POST_MULT_VALUE = 2.0
 
 
-class _ContiguousGrad(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x: Tensor) -> Tensor:
-        return x
-
-    @staticmethod
-    def backward(ctx, grad_output: Tensor) -> Tensor:
-        return grad_output.contiguous()
-
-
-def _contiguous_grad(x: Tensor) -> Tensor:
-    return _ContiguousGrad.apply(x)
-
-
 class HCHeadParams(MegatronModule):
     def __init__(self, config: TransformerConfig):
         super().__init__(config)
@@ -138,13 +124,6 @@ class DeepSeekV4HyperConnectionUtil:
         ``post``/``comb`` in fp32.
         """
         dtype = x.dtype
-        if getattr(torch.version, "hip", None):
-            post_expanded = post if post.dim() == x.dim() + 1 else post.unsqueeze(-1)
-            comb = _contiguous_grad(comb)
-            term1 = post_expanded * x.unsqueeze(-2)
-            term2 = torch.matmul(comb.transpose(-1, -2), residual.to(comb.dtype))
-            return (term1 + term2).to(dtype)
-
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
         res_bf16 = (residual if residual.dtype == torch.bfloat16 else residual.bfloat16()).contiguous()
         out = mhc_post(x_bf16, res_bf16, post, comb)
