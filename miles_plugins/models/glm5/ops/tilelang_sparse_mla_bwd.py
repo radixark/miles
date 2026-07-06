@@ -78,10 +78,10 @@ def postprocess(
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        # Aggressive smem merge miscompiles this kernel on sm103 (buffers alias
-        # while live -> NaN dQ/dKV; Hopper unaffected). Merge is only needed for
-        # smem capacity at block_H>=64 (TP<=2), which GLM-5 recipes never use.
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
+        # Aggressive smem merge miscompiles this kernel on Blackwell (buffers
+        # alias while live -> NaN dQ/dKV; Hopper unaffected). Disabling it costs
+        # ~2% on this kernel in the ablation study.
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: torch.cuda.get_device_capability()[0] < 10,
     },
 )
 def bwd(
