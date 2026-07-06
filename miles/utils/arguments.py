@@ -2065,8 +2065,6 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         not args.overlap_param_gather
     ), "restore calls DDP.start_param_sync outside the training step, which overlap-param-gather does not support"
-    # The param buffer must carry its own TMS tag and no CPU backup: it stays
-    # resident through update_weights and is dropped right afterwards.
     args.disable_param_buffers_cpu_backup = True
 
 
