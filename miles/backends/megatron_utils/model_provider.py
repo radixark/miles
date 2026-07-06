@@ -91,9 +91,6 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if getattr(args, "moe_aux_loss_coeff", None) is not None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
-    # GLM DSA kernel backend: GLM5Bridge.provider_bridge sets the "megatron" default,
-    # so override it from the miles arg here. hasattr-guarded so only DSA providers carry the field;
-    # non-DSA models are untouched.
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
 
