@@ -135,11 +135,9 @@ def add_sglang_arguments(parser):
 
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
-    args.sglang_dp_size = args.sglang_data_parallel_size
-    args.sglang_pp_size = args.sglang_pipeline_parallel_size
-    args.sglang_ep_size = args.sglang_expert_parallel_size
-    if hasattr(args, "sglang_attention_context_parallel_size"):
-        args.sglang_attn_cp_size = args.sglang_attention_context_parallel_size
+    # sglang v0.5.14 renamed the ServerArgs fields to dp_size/pp_size/ep_size/
+    # attn_cp_size (the old long names remain as CLI aliases), so the prefixed
+    # argparse dests are sglang_dp_size etc. directly — no re-mapping needed.
 
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
