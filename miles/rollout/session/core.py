@@ -1,9 +1,9 @@
 # doc-dev: docs/developer/multi-process-session-server.md
 """Logic layer of the session server: ``SessionCore``.
 
-HTTP-agnostic: the session worker (``worker.py``) decodes each request's primitives off IPC and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``; ``build_session_core`` and ``error_response`` are the single source for core construction and the client error shape.
+HTTP-agnostic: the session worker (``worker.py``) decodes each request off IPC into plain values (session id, method, headers, body) and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``; ``build_session_core`` and ``error_response`` are the single source for core construction and the client error shape.
 
-- ``create_session(session_id=None)``: the router mints the id and passes it so the owning worker creates the trajectory under it; passing None lets the registry mint (core-level callers and tests).
+- ``create_session(session_id=None)``: the router generates the id and passes it so the owning worker creates the trajectory under it; with None the registry generates one itself (tests that call the core directly).
 - ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 """
@@ -96,7 +96,7 @@ def _chat_client_response(result: dict, response: dict) -> Response:
 def proxy_result_to_response(result: dict) -> Response:
     """Build the client response from a proxy result.
 
-    Mirrors the pre-extraction single-process response rendering: re-emit JSON
+    Mirrors the original single-process server's response rendering: re-emit JSON
     bodies as compact JSON (application/json), pass non-JSON bodies through
     unchanged, and drop wire-level framing headers from upstream.
     """
@@ -129,8 +129,8 @@ class SessionCore:
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     async def create_session(self, session_id: str | None = None) -> Response:
-        # None in single-process (the registry mints); the multi-process router
-        # mints the id (to route by it) and passes it so the owning worker creates under it.
+        # The router generates the id (to route by it) and passes it so the owning
+        # worker creates under it; None makes the registry generate one (direct-core tests).
         session_id = self.registry.create_session(session_id)
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 

@@ -27,7 +27,7 @@ If the session server is the bottleneck in a run (`miles-session-worker` process
 
 ## Required decomposition
 
-- **`SessionCore` (`core.py`) — the logic.** Request primitives in, session mutation + upstream proxy, Starlette `Response` out; knows nothing about processes, sockets, IPC, or HTTP servers; reused unchanged by both chassis.
+- **`SessionCore` (`core.py`) — the logic.** Plain request values in, session mutation + upstream proxy, Starlette `Response` out; knows nothing about processes, sockets, IPC, or HTTP servers.
 - **worker (`worker.py`) — one process, one shard.** Exactly one `SessionCore` plus its own httpx proxy backend; speaks IPC only: decode a request, call the core, serialize the `Response` back.
 - **router (`router.py`) — the single client-facing HTTP listener.** Hash-routes each request to the owning worker and forwards the reply back unchanged, without ever parsing it; imports neither core nor worker, so the router process stays tokenizer-free.
 - **supervisor (`supervisor.py`) — process lifecycle.** Spawns N workers + 1 router, waits for readiness, monitors and fail-fasts on any child death, tears the group down without orphans.
@@ -70,7 +70,7 @@ Sessions are sticky-by-hash, so the chat path only ever carries a single turn's 
 
 ## Behavior parity
 
-The server must match the pre-extraction single-process server's observable behavior, with exactly two known deltas (introduced by the `SessionCore` extraction and inherent to multi-process, where the worker receives already-read bytes over IPC):
+The server must match the observable behavior of the original single-process server (before the `SessionCore` extraction), with exactly two known deltas (introduced by the extraction and inherent to multi-process, where the worker receives already-read bytes over IPC):
 
 - **Body-read timing / lock scope.** The route reads the body before entering `SessionCore.chat_completions` instead of inside `session.lock`; JSON parsing, TITO mutation, and record writes remain under the lock, proxying remains outside it. Consequences: a chat to a missing/closing session consumes the full body before the error returns, and a DELETE-vs-chat race during upload more likely rejects the chat (the outcome was already non-deterministic; the race-condition tests pass).
 - **Per-request debug logging removed** (the `debug_request_logger` middleware and two DELETE-path `debug` lines). Logging-only; no contract impact.
