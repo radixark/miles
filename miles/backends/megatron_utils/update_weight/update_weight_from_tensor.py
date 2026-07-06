@@ -311,11 +311,11 @@ class UpdateWeightFromTensor:
           adapter on first push and overwrites it in place on every later push
           (no unload/register). Adapters are never unloaded, so there is no
           drain/``wait_for_unload`` hang.
-        - DRAINED: no SGLang action. Model-side cleanup is handled separately
-          by ``unload_drained_adapters`` (Megatron slot + optimizer state); the
-          SGLang slot is retained for reuse by the next adapter.
+        - DRAINED: no SGLang action. Model-side cleanup (Megatron slot + optimizer
+          state) is handled by the trainer's reconcile; the SGLang slot is retained
+          for reuse by the next adapter.
         """
-        from miles.ray.multi_lora_controller import get_multi_lora_controller
+        from miles.ray.multi_lora import get_multi_lora_controller
         from miles.utils.adapter_config import AdapterState
 
         adapters = ray.get(get_multi_lora_controller().active_adapters.remote())
