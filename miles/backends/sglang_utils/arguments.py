@@ -135,9 +135,6 @@ def add_sglang_arguments(parser):
 
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
-    # sglang v0.5.14 renamed the ServerArgs fields to dp_size/pp_size/ep_size/
-    # attn_cp_size (the old long names remain as CLI aliases), so the prefixed
-    # argparse dests are sglang_dp_size etc. directly — no re-mapping needed.
 
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
