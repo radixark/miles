@@ -6,7 +6,7 @@ import uuid
 
 from sglang_router.launch_router import RouterArgs
 
-from miles.rollout.session.session_server import run_session_server
+from miles.rollout.session.server import run_session_server
 from miles.router.router import run_router as run_miles_router
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available
 from miles.utils.http_utils import run_router as run_sglang_router
