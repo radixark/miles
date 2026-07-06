@@ -876,9 +876,4 @@ def initialize_model_and_optimizer(
     if opt_param_scheduler is not None:
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    if multi_lora:
-        from .multi_lora_utils import load_pending_adapters
-
-        load_pending_adapters(args, model, optimizer)
-
     return model, optimizer, opt_param_scheduler, iteration

@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.ray.multi_lora_controller import get_multi_lora_controller
+from miles.ray.multi_lora import get_multi_lora_controller
 from miles.utils.adapter_config import RegisteredAdapter
 
 logger = logging.getLogger(__name__)
@@ -249,9 +249,6 @@ def _register_adapter(adapter: RegisteredAdapter, model) -> None:
     ckpt_root = config.save / "checkpoints"
     ckpt, step = find_latest_checkpoint(ckpt_root)
 
-    if is_megatron_main_rank():
-        ray.get(get_multi_lora_controller().set_train_step.remote(name, step))
-
     if ckpt is None:
         logger.info(f"{log_prefix} no checkpoint under {ckpt_root}, starting from random init")
     else:
@@ -275,11 +272,9 @@ def _deregister_adapter(adapter: RegisteredAdapter, args, model, optimizer) -> N
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
 
-    train_steps = ray.get(get_multi_lora_controller().adapter_train_steps.remote())
-    step = train_steps[name]
-
-    # Save the checkpoint
-    save_multi_lora_checkpoints(args, model, {name: step}, {name: adapter})
+    # Save the final checkpoint (no per-adapter step tracking — use 0 as the
+    # iteration tag; the ckpt captures the adapter's final trained state).
+    save_multi_lora_checkpoints(args, model, {name: 0}, {name: adapter})
     logger.info(f"{log_prefix} saved final checkpoint")
 
     # Clear out the multilora slot in the multilora layer in the Megatron model
@@ -293,46 +288,42 @@ def _deregister_adapter(adapter: RegisteredAdapter, args, model, optimizer) -> N
     logger.info(f"{log_prefix} cleared optimizer state for slot {slot}")
 
 
-def load_pending_adapters(args, model, optimizer) -> int:
-    from miles.backends.megatron_utils.initialize import is_megatron_main_rank
-    from miles.utils.adapter_config import AdapterState
+def load_adapters(args, model, optimizer, adapters) -> int:
+    """Load a caller-provided list of adapters into Megatron slots (no controller
+    state machine). Each adapter is a ``RegisteredAdapter`` (name, config, slot).
+    The new controller has no PENDING state, so callers drive this explicitly."""
     from miles.utils.distributed_utils import get_gloo_group
 
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
-    pending = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.PENDING))
-    if not pending:
+    if not adapters:
         return 0
-
-    for adapter in pending.values():
+    for adapter in adapters:
         _register_adapter(adapter, model)
-
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
-
-    if is_megatron_main_rank():
-        for name in pending:
-            ray.get(get_multi_lora_controller().update_adapter_state.remote(name, AdapterState.RUNNING))
     optimizer.reload_model_params()
-    return len(pending)
+    return len(adapters)
 
 
-def unload_drained_adapters(args, model, optimizer) -> int:
-    """DRAINED adapters model-side cleanup."""
+def cleanup_adapters(args, model, optimizer, adapters) -> int:
+    """Save checkpoint + clear Megatron slot for a caller-provided list of
+    adapters, then free their held slots on the controller (``free_slot``). The
+    slot was held by ``deregister_adapter`` (called by the data source at
+    num_row); this frees it for reuse after the ckpt is saved. Called by the
+    trainer's reconcile for adapters no longer active."""
     from miles.backends.megatron_utils.initialize import is_megatron_main_rank
-    from miles.utils.adapter_config import AdapterState
     from miles.utils.distributed_utils import get_gloo_group
 
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
-    drained = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.DRAINED))
-    if not drained:
+    if not adapters:
         return 0
-    for adapter in drained.values():
+    for adapter in adapters:
         _deregister_adapter(adapter, args, model, optimizer)
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
     if is_megatron_main_rank():
-        for name in drained:
-            ray.get(get_multi_lora_controller().mark_removed.remote(name))
-    return len(drained)
+        for adapter in adapters:
+            ray.get(get_multi_lora_controller().free_slot.remote(adapter.name))
+    return len(adapters)

@@ -189,6 +189,10 @@ class MegatronTrainRayActor(TrainRayActor):
             is_lora=is_lora_enabled(args),
         )
 
+        # Multi-LoRA: adapters currently loaded into Megatron slots on this rank,
+        # tracked so update_weights can reconcile (load new / cleanup gone).
+        self.loaded_adapters: dict[str, object] = {}
+
         # empty cache after initialization
         clear_memory()
 
@@ -436,49 +440,33 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(rollout_id, self.args)
 
     @timer
-    def load_pending_adapters(self) -> int:
-        # NOTE: this requires wake_up()
+    def reconcile_adapters(self) -> None:
+        """Reconcile loaded adapters with the controller's active set: load any
+        new, cleanup any gone (save ckpt + clear Megatron slot). Called by the
+        trainer after train / before update_weights. No-op when multi-LoRA is
+        disabled."""
         if not is_multi_lora_enabled(self.args):
-            return 0
+            return
+        from miles.backends.megatron_utils.multi_lora_utils import (
+            cleanup_adapters as _cleanup_adapters,
+            load_adapters as _load_adapters,
+        )
+        from miles.ray.multi_lora import get_multi_lora_controller
 
-        from miles.ray.multi_lora_controller import get_multi_lora_controller
-        from miles.utils.adapter_config import AdapterState
-
-        pending = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.PENDING))
-        if not pending:
-            return 0
-
-        from miles.backends.megatron_utils.multi_lora_utils import load_pending_adapters
-
-        n = load_pending_adapters(self.args, self.model, self.optimizer)
-        if n > 0:
-            # Re-snapshot: init_adapter_slot + load_adapter mutated the model,
-            # so the noop-backuper's recorded hash is now stale (would assert
-            # on the next weights_getter()). Mirrors the post-train backup
-            # pattern at the end of train().
+        active = ray.get(get_multi_lora_controller().active_adapters.remote())
+        loaded_names = set(self.loaded_adapters)
+        new = [active[n] for n in active if n not in loaded_names]
+        gone = [self.loaded_adapters[n] for n in loaded_names if n not in active]
+        if new:
+            _load_adapters(self.args, self.model, self.optimizer, new)
+            for a in new:
+                self.loaded_adapters[a.name] = a
             self.weights_backuper.backup("actor")
-
-        return n
-
-    @timer
-    def unload_drained_adapters(self) -> int:
-        # NOTE: this requires wake_up()
-        if not is_multi_lora_enabled(self.args):
-            return 0
-        from miles.ray.multi_lora_controller import get_multi_lora_controller
-        from miles.utils.adapter_config import AdapterState
-
-        drained = ray.get(get_multi_lora_controller().active_adapters.remote(AdapterState.DRAINED))
-        if not drained:
-            return 0
-
-        from miles.backends.megatron_utils.multi_lora_utils import unload_drained_adapters
-
-        n = unload_drained_adapters(self.args, self.model, self.optimizer)
-        if n > 0:
+        if gone:
+            _cleanup_adapters(self.args, self.model, self.optimizer, gone)
+            for a in gone:
+                self.loaded_adapters.pop(a.name, None)
             self.weights_backuper.backup("actor")
-
-        return n
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
@@ -496,11 +484,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if is_multi_lora_enabled(self.args):
             from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
-            from miles.ray.multi_lora_controller import get_multi_lora_controller
+            from miles.ray.multi_lora import get_multi_lora_controller
 
             controller = get_multi_lora_controller()
             adapters = ray.get(controller.active_adapters.remote())
-            adapter_steps = ray.get(controller.adapter_train_steps.remote())
+            adapter_steps = {name: rollout_id for name in adapters}
             save_multi_lora_checkpoints(self.args, self.model, adapter_steps, adapters)
         else:
             save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
