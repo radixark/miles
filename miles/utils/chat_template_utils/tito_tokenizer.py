@@ -780,9 +780,14 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
     routes any V4 tokenizer to the ``chat_template_utils.deepseek_v4`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
-    with what the runtime serves.  Only the ``{tool}`` surface is registered, so
-    the base ``_split_appended_segments`` (contiguous tool runs) covers it
-    without a custom override.
+    with what the runtime serves.  The ``{tool}`` surface rides the base
+    ``_split_appended_segments`` without a custom override.
+
+    Only the ``{tool}`` surface is registered: training appends only tool
+    results (user → assistant → tool → assistant → …).  A ``{user}`` surface
+    would also force chat mode — in thinking mode the encoder rewrites the
+    previous assistant turn once it becomes history (``<think>`` is dropped /
+    closed), so append-only prefix identity only holds without thinking.
     """
 
     reasoning_parser = "deepseek-v4"
