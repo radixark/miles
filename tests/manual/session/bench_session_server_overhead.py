@@ -17,6 +17,9 @@ Run it directly:
 Add ``--incremental-r3`` to mock a backend that returns only the new per-turn
 ``routed_experts`` payload instead of the full accumulated sequence payload;
 add ``--get-records`` to also exercise the full-records GET (read path).
+With ``--allowed-append-roles tool`` (no ``user``), turns after the first append
+tool responses to assistant tool calls instead of user messages, matching
+tool-only TITO surfaces such as DeepSeek V4.
 """
 
 from __future__ import annotations
@@ -43,6 +46,18 @@ from typing import Any
 DEFAULT_HF_CHECKPOINT = "Qwen/Qwen3-0.6B"
 DEFAULT_TITO_MODEL = "qwen3"
 DEFAULT_ALLOWED_APPEND_ROLES = ["user"]
+
+# Tool-append turns declare this in every request: some encoders (DeepSeek V4)
+# render assistant history differently when no tools are declared, which breaks
+# the TITO incremental diff's prefix stability server-side.
+BENCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "bench_tool",
+        "description": "Synthetic benchmark tool",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -131,13 +146,18 @@ def _make_r3_blob(raw_bytes: int) -> str:
 
 
 def _completion_token_ids(
-    tito_tokenizer, tokenizer, messages: list[dict[str, Any]], assistant_message: dict[str, Any]
+    tito_tokenizer,
+    tokenizer,
+    messages: list[dict[str, Any]],
+    assistant_message: dict[str, Any],
+    tools: list[dict[str, Any]] | None,
 ):
-    prompt_text = tito_tokenizer.render_messages(messages, add_generation_prompt=True, tokenize=False)
+    prompt_text = tito_tokenizer.render_messages(messages, add_generation_prompt=True, tokenize=False, tools=tools)
     full_text = tito_tokenizer.render_messages(
         messages + [assistant_message],
         add_generation_prompt=False,
         tokenize=False,
+        tools=tools,
     )
     if not full_text.startswith(prompt_text):
         raise RuntimeError("assistant response does not extend the rendered prompt")
@@ -181,26 +201,49 @@ def _build_turn_specs(
     output_tokens: int,
     r3_scale: int,
     incremental_r3: bool,
+    tool_appends: bool,
 ):
     token_id = _find_repeatable_token_id(tokenizer)
     history: list[dict[str, Any]] = []
     specs: list[TurnSpec] = []
     previous_full_sequence_r3_token_count = 0
 
-    for _turn_idx in range(turns):
+    for turn_idx in range(turns):
         input_text, input_content_ids = _make_text_with_token_count(tokenizer, token_id, input_tokens)
         output_text, output_content_ids = _make_text_with_token_count(tokenizer, token_id, output_tokens)
 
-        user_message = {"role": "user", "content": input_text}
-        assistant_message = {"role": "assistant", "content": output_text}
-        request_messages = [dict(message) for message in history] + [user_message]
+        if tool_appends and history:
+            input_message: dict[str, Any] = {
+                "role": "tool",
+                "content": input_text,
+                "tool_call_id": f"call_bench_{turn_idx - 1:05d}",
+                "name": "bench_tool",
+            }
+        else:
+            input_message = {"role": "user", "content": input_text}
+        assistant_message: dict[str, Any] = {"role": "assistant", "content": output_text}
+        if tool_appends:
+            # The appended tool turn must answer a prior assistant tool_call,
+            # or templates have no call boundary to render the tool turn against.
+            assistant_message["tool_calls"] = [
+                {
+                    "id": f"call_bench_{turn_idx:05d}",
+                    "type": "function",
+                    "function": {"name": "bench_tool", "arguments": {}},
+                }
+            ]
+        request_messages = [dict(message) for message in history] + [input_message]
+        tools = [BENCH_TOOL] if tool_appends else None
 
         prompt_token_ids = tito_tokenizer.render_messages(
             request_messages,
             add_generation_prompt=True,
             tokenize=True,
+            tools=tools,
         )
-        completion_token_ids = _completion_token_ids(tito_tokenizer, tokenizer, request_messages, assistant_message)
+        completion_token_ids = _completion_token_ids(
+            tito_tokenizer, tokenizer, request_messages, assistant_message, tools
+        )
 
         full_sequence_r3_token_count = max(0, len(prompt_token_ids) + len(completion_token_ids) - 1)
         if incremental_r3:
@@ -215,7 +258,10 @@ def _build_turn_specs(
         r3_raw_bytes = r3_token_count * r3_scale
         r3_blob = _make_r3_blob(r3_raw_bytes)
 
-        request_body = json.dumps({"messages": request_messages}, separators=(",", ":")).encode()
+        payload: dict[str, Any] = {"messages": request_messages}
+        if tools is not None:
+            payload["tools"] = tools
+        request_body = json.dumps(payload, separators=(",", ":")).encode()
         response_body = _build_response_body(assistant_message, completion_token_ids, r3_blob)
         specs.append(
             TurnSpec(
@@ -514,6 +560,7 @@ def run_http_bench(args) -> dict[str, Any]:
         output_tokens=args.output_tokens,
         r3_scale=args.r3_scale,
         incremental_r3=args.incremental_r3,
+        tool_appends="user" not in args.allowed_append_roles,
     )
     response_bodies = [spec.response_body for spec in specs]
 
@@ -728,7 +775,8 @@ def main() -> None:
         "--allowed-append-roles",
         nargs="+",
         default=DEFAULT_ALLOWED_APPEND_ROLES,
-        help="roles allowed after the pretokenized prefix",
+        help="roles allowed after the pretokenized prefix; without 'user' the bench appends "
+        "tool responses to assistant tool calls instead of user turns (tool-only TITO surfaces)",
     )
     parser.add_argument("--chat-template-path", default=None, help="explicit chat template path")
     parser.add_argument("--json-out", default=None, help="persist the run as a JSON artifact")
