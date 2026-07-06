@@ -85,14 +85,13 @@ class _TensorBackuperNormal(TensorBackuper):
         torch.cuda.synchronize()
 
 
-_CHECK_NUM_CYCLES = 2
-
-
 class _TensorBackuperMainCast(TensorBackuper):
     """Rematerialize weights from the optimizer's fp32 master weights (same cast +
     param all-gather as the step end, so bit-identical) instead of a pinned CPU copy;
     only `extras_getter` tensors keep a small pinned backup. With `check`, the first
-    `_CHECK_NUM_CYCLES` restores are SHA256-verified against backup time."""
+    `_check_num_cycles` restores are SHA256-verified against backup time."""
+
+    _check_num_cycles = 2
 
     def __init__(self, source_getter, ctx: MainCastContext):
         super().__init__(source_getter=source_getter)
@@ -116,7 +115,7 @@ class _TensorBackuperMainCast(TensorBackuper):
             self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
         torch.cuda.synchronize()
         self._backup_count += 1
-        if self._ctx.check and self._backup_count <= _CHECK_NUM_CYCLES:
+        if self._ctx.check and self._backup_count <= self._check_num_cycles:
             self._expected_hashes = self._compute_hashes()
         else:
             self._expected_hashes = None
