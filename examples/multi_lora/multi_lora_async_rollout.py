@@ -204,7 +204,7 @@ async def generate_rollout_multi_lora_async(
         sampling_params=state.sampling_params,
     )
 
-    return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect()), aborted_samples
+    return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect())
 
 
 def generate_rollout_multi_lora(args, rollout_id: int, data_source, evaluation: bool = False):
