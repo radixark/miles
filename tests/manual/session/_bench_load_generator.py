@@ -1,18 +1,18 @@
 """Multi-process load generator for the session-server HTTP benchmark.
 
-Lives beside ``bench_session_server_overhead`` so it is importable by qualified
-module name in spawn children (``sys.path[0]`` is the script dir, inherited by
-the spawn bootstrap) — the same mechanism ``_mock_r3_backend`` relies on.
+Lives beside `bench_session_server_overhead` so it is importable by qualified
+module name in spawn children (`sys.path[0]` is the script dir, inherited by
+the spawn bootstrap) — the same mechanism `_mock_r3_backend` relies on.
 
 Why a separate, multi-process driver
 ------------------------------------
 A single asyncio event loop + one httpx client cannot cleanly drive ~1000
 concurrent sessions over loopback: it cycles the ephemeral-port range and resets
 pooled connections under its own scheduling pressure, surfacing as
-``httpx.ReadError`` on a chat POST — which is NOT retried (chat mutates session
+`httpx.ReadError` on a chat POST — which is NOT retried (chat mutates session
 state) — and aborting the whole run, even though the server stays healthy
 (every answered request is 200, no worker death, no OOM). Sharding the sessions
-across ``--bench-driver-procs`` OS processes (each its own loop + client) keeps
+across `--bench-driver-procs` OS processes (each its own loop + client) keeps
 per-loop connection volume low and mirrors the real rollout, where many workers
 drive sessions rather than one process.
 
@@ -87,10 +87,10 @@ async def drive_one_session(
     """create -> N x chat (-> GET records) -> delete for one session, robustly.
 
     Never raises: returns a per-session status dict (completed turns + classified
-    error counts). Records per-chat reply latency in ``samples['reply_latency_ms']``
-    and, when ``get_records``, the GET latency in ``samples['get_records_ms']``.
+    error counts). Records per-chat reply latency in `samples['reply_latency_ms']`
+    and, when `get_records`, the GET latency in `samples['get_records_ms']`.
     A chat transport reset / non-2xx ends that session (its state is unknown / a
-    server error is real) but does not abort the generator. ``tool_interval`` is
+    server error is real) but does not abort the generator. `tool_interval` is
     the idle a session waits after each chat (except the last) before its next
     turn (simulated tool/env step).
     """
@@ -162,7 +162,7 @@ def _empty_agg() -> dict[str, Any]:
 
 
 async def lg_drive_all(base_url, request_bodies, num_sessions, get_records, tool_interval):
-    """Drive ``num_sessions`` sessions concurrently in ONE event loop/client.
+    """Drive `num_sessions` sessions concurrently in ONE event loop/client.
 
     Returns (samples, agg). Used directly for the single-process path and as the
     body of each spawned load generator.
@@ -203,8 +203,8 @@ async def lg_drive_all(base_url, request_bodies, num_sessions, get_records, tool
 
 
 def load_generator_entry(base_url, request_bodies, num_sessions, get_records, tool_interval, result_queue) -> None:
-    """spawn ``Process`` target: drive a shard of sessions, put (samples, agg) on
-    ``result_queue``. Drives no tokenizer — it only replays pre-built request
+    """spawn `Process` target: drive a shard of sessions, put (samples, agg) on
+    `result_queue`. Drives no tokenizer — it only replays pre-built request
     bodies — so generator startup is cheap."""
     try:
         import setproctitle

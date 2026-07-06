@@ -1,10 +1,10 @@
 """HTTP end-to-end benchmark for Session Server per-turn overhead.
 
-Stands up the real session server (``SessionServerSupervisor`` — the one
+Stands up the real session server (`SessionServerSupervisor` — the one
 production topology, workers=1 is simply N=1), points it
 at a mock R3 backend that replays pre-built synthetic response bytes, and
-drives ``sessions`` concurrent sessions x ``turns`` sequential chat turns over
-loopback HTTP. The server does its real work — request/response ``json.loads``,
+drives `sessions` concurrent sessions x `turns` sequential chat turns over
+loopback HTTP. The server does its real work — request/response `json.loads`,
 validate, TITO tokenization, record store — while the mock backend removes
 model generation from the measurement. Reports per-chat reply latency,
 throughput, and peak server-group RSS.
@@ -14,10 +14,10 @@ Run it directly:
   python tests/manual/session/bench_session_server_overhead.py \
       --sessions 32 --turns 50 --r3-scale 1000 --session-server-workers 16
 
-Add ``--incremental-r3`` to mock a backend that returns only the new per-turn
-``routed_experts`` payload instead of the full accumulated sequence payload;
-add ``--get-records`` to also exercise the full-records GET (read path).
-With ``--allowed-append-roles tool`` (no ``user``), turns after the first append
+Add `--incremental-r3` to mock a backend that returns only the new per-turn
+`routed_experts` payload instead of the full accumulated sequence payload;
+add `--get-records` to also exercise the full-records GET (read path).
+With `--allowed-append-roles tool` (no `user`), turns after the first append
 tool responses to assistant tool calls instead of user messages, matching
 tool-only TITO surfaces such as DeepSeek V4.
 """
@@ -304,10 +304,10 @@ def _write_json(result: dict[str, Any], path: str) -> None:
 # Drive the REAL deployed session server over HTTP.
 #
 # Stands up the actual server the rollout path runs (single-process
-# ``run_session_server`` for OLD / multi-process supervisor for NEW), points it
+# `run_session_server` for OLD / multi-process supervisor for NEW), points it
 # at a mock backend that returns pre-built large-R3 response bytes, and drives
-# the production-shaped workload over loopback HTTP: ``sessions`` concurrent
-# sessions, each doing ``turns`` sequential chat turns. So the server does the
+# the production-shaped workload over loopback HTTP: `sessions` concurrent
+# sessions, each doing `turns` sequential chat turns. So the server does the
 # real json.loads / validate / record work end to end — OLD pays it on one
 # event loop under one GIL; NEW spreads it across N worker processes (N GILs)
 # behind a thin router. We measure per-request reply latency and aggregate,
@@ -326,8 +326,8 @@ def _build_server_args(
 ) -> SimpleNamespace:
     """A Miles-args namespace carrying exactly what the session server reads.
 
-    ``use_rollout_routing_replay=True`` makes the server inject
-    ``return_routed_experts=True`` upstream and exercise the R3-strip path, i.e.
+    `use_rollout_routing_replay=True` makes the server inject
+    `return_routed_experts=True` upstream and exercise the R3-strip path, i.e.
     the production-shaped large-R3 scenario the overhead doc is about.
     """
     return SimpleNamespace(
@@ -350,16 +350,16 @@ def _build_server_args(
 def _start_backend(
     response_bodies: list[bytes], ip: str, inference_interval: float = 0.0, procs: int = 1
 ) -> tuple[list[multiprocessing.process.BaseProcess], str]:
-    """Spawn the mock R3 backend as ``procs`` processes; return (procs, base_url).
+    """Spawn the mock R3 backend as `procs` processes; return (procs, base_url).
 
-    All shards bind the same port via SO_REUSEPORT (see ``run_mock_r3_backend``)
+    All shards bind the same port via SO_REUSEPORT (see `run_mock_r3_backend`)
     so the workers keep a single backend URL while the kernel spreads their
     connections across shards — the mock's stateless turn mapping makes
     any-request-to-any-shard safe. Each shard holds its own copy of
-    ``response_bodies``. ``inference_interval`` (seconds) is the simulated
+    `response_bodies`. `inference_interval` (seconds) is the simulated
     generation delay the mock waits before returning each chat response.
     """
-    # ``_mock_r3_backend`` lives beside this script; ``sys.path[0]`` is this
+    # `_mock_r3_backend` lives beside this script; `sys.path[0]` is this
     # script's dir, which the spawn child inherits, so a top-level import resolves
     # in both parent and child without a tests/manual/session package.
     from _mock_r3_backend import run_mock_r3_backend
@@ -387,7 +387,7 @@ def _start_backend(
 
 
 def _proc_tree_rss_bytes(root_pids: list[int]) -> int:
-    """Summed RSS of each pid in ``root_pids`` and all its descendants.
+    """Summed RSS of each pid in `root_pids` and all its descendants.
 
     For OLD this is the single server process tree; for NEW it is the router
     and worker process trees. The bench driver process is deliberately excluded
@@ -463,11 +463,11 @@ def _drive_workload(
 ):
     """Drive the HTTP workload; return (samples, agg, wall_s).
 
-    ``driver_procs == 1`` runs all sessions in this process's event loop.
-    ``driver_procs > 1`` shards the sessions across that many spawned load
+    `driver_procs == 1` runs all sessions in this process's event loop.
+    `driver_procs > 1` shards the sessions across that many spawned load
     generators (each its own event loop + httpx client) so a single loop's
     connection-churn ceiling does not cap the achievable session count — see
-    ``_bench_load_generator``. The generators run NO tokenizer (they replay
+    `_bench_load_generator`. The generators run NO tokenizer (they replay
     pre-built request bodies), so they are cheap to spawn and are deliberately
     excluded from the server RSS measurement.
     """
