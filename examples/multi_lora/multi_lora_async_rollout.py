@@ -8,7 +8,7 @@ producer + drain-a-batch) but for multi-LoRA:
     pointed at the controller), which blocks retired adapters and returns a
     normal-shaped abort response for in-flight-retired stragglers,
   - recycles aborted/dummied groups back to the data source,
-  - reuses ``generate_rollout_async``'s postprocess (dynamic filter, hooks,
+  - reuses ``generate_rollout_async``'s postprocess (dynamic filter,
     sample filter, logprob recompute).
 
 The per-group logic is factored into ``process_group`` (testable without a
@@ -24,7 +24,6 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-import ray
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
@@ -154,7 +153,6 @@ async def generate_rollout_multi_lora_async(
     assert args.rollout_global_dataset
 
     state = GenerateState(args)
-    await state.hooks.on_generate_rollout_start(rollout_id)
 
     dynamic_filter = (
         load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path else None
@@ -168,7 +166,7 @@ async def generate_rollout_multi_lora_async(
     # in the queue from before the deregister) are stale and must not be trained
     # (their Megatron slot may have been cleaned up by reconcile). Discard them.
     from miles.ray.multi_lora_controller import get_multi_lora_controller
-    active_names = set(ray.get(get_multi_lora_controller().active_adapters.remote()).keys())
+    active_names = set((await get_multi_lora_controller().active_adapters.remote()).keys())
 
     data: list[list[Sample]] = []
     start_time = time.time()
@@ -185,7 +183,6 @@ async def generate_rollout_multi_lora_async(
                 continue
             if len(data) < target_data_size:
                 data.append(group)
-                await state.hooks.on_group_selected(group)
                 made_progress = True
 
         if made_progress:
@@ -197,11 +194,7 @@ async def generate_rollout_multi_lora_async(
         if len(data) < target_data_size:
             await asyncio.sleep(0.01)
 
-    aborted_samples = []
-
     data = sorted(data, key=lambda g: g[0].index)
-    await state.hooks.on_generate_rollout_complete(rollout_id, data, aborted_samples)
-    state.reset()
 
     if (x := args.rollout_sample_filter_path) is not None:
         load_function(x)(args, data)

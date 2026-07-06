@@ -22,7 +22,7 @@ from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
-from miles.utils.misc import SingletonMeta, load_class, load_function
+from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.processing_utils import (
     call_processor,
     encode_image_for_rollout_engine,
@@ -57,40 +57,6 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate")
         ip, port = routers[model_name]
         return f"http://{ip}:{port}{endpoint}"
     return f"http://{args.sglang_router_ip}:{args.sglang_router_port}{endpoint}"
-
-
-class GenerateStateHooks:
-    """Lifecycle hooks for the generation process.
-
-    Inject a custom subclass with ``--custom-generate-state-hooks-path``. The
-    instance holds a back-reference to the owning :class:`GenerateState`, so a
-    hook may read or mutate core state (e.g. ``state.pendings``,
-    ``state.remaining_batch_size``, ``state.args``).
-    """
-
-    def __init__(self, state: "GenerateState") -> None:
-        self.state = state
-
-    # Runs (sync) inside submit_generate_tasks; e.g. attach done-callbacks.
-    def on_group_submit(self, group: list[Sample], task) -> None: ...
-
-    # Runs when a group is added to the batch selected for this rollout id.
-    async def on_group_selected(self, group: list[Sample] | list[list[Sample]]) -> None: ...
-
-    # Runs at the start of generate_rollout_async.
-    async def on_generate_rollout_start(self, rollout_id: int) -> None: ...
-
-    # Runs at the end of generate_rollout_async, before sample filtering.
-    async def on_generate_rollout_complete(
-        self,
-        rollout_id: int,
-        completed_samples: list[list[Sample]] | list[list[list[Sample]]],
-        aborted_samples: list[list[Sample]],
-    ) -> None: ...
-
-    # Reset hook state. Deliberately NOT invoked by GenerateState.reset()
-    # (per-rollout) so cross-rollout hook state survives.
-    def reset(self) -> None: ...
 
 
 class GenerateState(metaclass=SingletonMeta):
@@ -131,12 +97,6 @@ class GenerateState(metaclass=SingletonMeta):
 
         self.reset()
 
-        hooks_path = getattr(args, "custom_generate_state_hooks_path", None)
-        hooks_cls = load_class(hooks_path) if hooks_path else GenerateStateHooks
-        if not issubclass(hooks_cls, GenerateStateHooks):
-            raise TypeError(f"{hooks_cls} is not a subclass of {GenerateStateHooks}")
-        self.hooks = hooks_cls(self)
-
     @contextmanager
     def dp_rank_context(self):
         candidates = [i for i, count in enumerate(self.dp_counts) if count == min(self.dp_counts)]
@@ -156,18 +116,17 @@ class GenerateState(metaclass=SingletonMeta):
 
     def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
         for group in samples:
-            task = asyncio.create_task(
-                # submit a group of samples as a single task.
-                generate_and_rm_group(
-                    self.args,
-                    group,
-                    sampling_params=self.sampling_params.copy(),
-                    evaluation=False,
+            self.pendings.add(
+                asyncio.create_task(
+                    # submit a group of samples as a single task.
+                    generate_and_rm_group(
+                        self.args,
+                        group,
+                        sampling_params=self.sampling_params.copy(),
+                        evaluation=False,
+                    )
                 )
             )
-            self.hooks.on_group_submit(group, task)
-            self.pendings.add(task)
-
         self.remaining_batch_size += len(samples)
 
 
@@ -449,9 +408,6 @@ async def generate_rollout_async(
 
     state = GenerateState(args)
 
-    # Run generate rollout start lifecycle hook
-    await state.hooks.on_generate_rollout_start(rollout_id)
-
     # instantiate data filters
     dynamic_filter = (
         load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path is not None else None
@@ -497,7 +453,6 @@ async def generate_rollout_async(
             # NOTE: here we have not stored all the unused samples back to the data buffer.
             if len(data) < target_data_size:
                 data.append(group)
-                await state.hooks.on_group_selected(group)
                 pbar.update(args.n_samples_per_prompt)
 
     pbar.close()
@@ -514,10 +469,6 @@ async def generate_rollout_async(
     all_samples = sorted(
         all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
     )
-
-    # run generate rollout completion lifecycle hook
-    # Note: this is called before sample filtering to allow the hook to see all samples
-    await state.hooks.on_generate_rollout_complete(rollout_id, data, aborted_samples)
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
