@@ -52,13 +52,6 @@ _CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
 
 
 def _strip_replay_payloads(response: dict) -> dict:
-    """Copy-on-write removal of the R3 replay payloads from a parsed chat response.
-
-    The client-facing chat response omits ``routed_experts`` / ``indexer_topk``;
-    the session record keeps the full response (served by ``GET /sessions``).
-    Only the dicts on the path to ``meta_info`` are copied, so the recorded
-    response object is never mutated.
-    """
     stripped_choices = []
     for choice in response.get("choices", []):
         meta = choice.get("meta_info")
@@ -70,13 +63,6 @@ def _strip_replay_payloads(response: dict) -> dict:
 
 
 def _chat_client_response(result: dict, response: dict) -> Response:
-    """Render the client-facing 200 chat response from the parsed upstream response.
-
-    Same rendering contract as :func:`proxy_result_to_response` (compact JSON,
-    upstream framing headers dropped), but built from the already-parsed
-    ``response`` with the R3 replay payloads stripped — the client never needs
-    them, and every relaying hop would otherwise pay for the multi-MiB blobs.
-    """
     headers = {k: v for k, v in result["headers"].items() if k.lower() not in _DROP_RESPONSE_HEADERS}
     return Response(
         content=_render_json(_strip_replay_payloads(response)),
