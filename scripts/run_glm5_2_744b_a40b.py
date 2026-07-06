@@ -263,7 +263,7 @@ def _execute_train(args: ScriptArgs):
             f"--expert-model-parallel-size {args.num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
-    elif args.num_nodes >= 16:  # GB300 64-GPU config
+    elif args.num_nodes >= 16 and args.num_gpus_per_node == 4:  # GB300 64-GPU config
         # TP=8 * PP=4 * DP=2 = 64 GPUs; EP=16 halves per-rank expert params vs
         # EP8, which is what fits the fp32 optimizer states on 276GB GPUs.
         # DSA cross-layer index sharing needs every pipeline stage to start on a
@@ -277,6 +277,22 @@ def _execute_train(args: ScriptArgs):
             "--decoder-last-pipeline-num-layers 20 "
             "--context-parallel-size 1 "
             "--expert-model-parallel-size 16 "
+            "--expert-tensor-parallel-size 1 "
+        )
+    elif args.num_nodes >= 16:  # slime's setting for the full model
+        # TP=4 * PP=8 * CP=8 = 256 GPUs (32 nodes) for one training group; EP=32.
+        # DSA cross-layer index sharing needs every pipeline stage to START on a
+        # computing layer (index_topk_freq=4, index_skip_topk_offset=3 -> computing
+        # layers 1,2,3,7,11,...,75). first=14, last=16 leaves 6 middle stages of 8;
+        # stage starts land on global layers 1,15,23,31,39,47,55,63 -- all computing.
+        perf_args = (
+            "--tensor-model-parallel-size 4 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 8 "
+            "--decoder-first-pipeline-num-layers 14 "
+            "--decoder-last-pipeline-num-layers 16 "
+            "--context-parallel-size 8 "
+            "--expert-model-parallel-size 32 "
             "--expert-tensor-parallel-size 1 "
         )
     else:
