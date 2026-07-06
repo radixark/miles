@@ -162,7 +162,6 @@ class TestValidateRematerializeParamFromMasterWeight:
             use_precision_aware_optimizer=False,
             overlap_param_gather=False,
             compute_advantages_and_returns=True,
-            use_critic=False,
             debug_train_only=False,
             disable_param_buffers_cpu_backup=False,
         )
@@ -174,6 +173,12 @@ class TestValidateRematerializeParamFromMasterWeight:
         args = self._make_args()
         _validate_rematerialize_param_from_master_weight(args)
         assert args.disable_param_buffers_cpu_backup is True
+
+    def test_debug_train_only_silently_disables(self):
+        args = self._make_args(debug_train_only=True, colocate=False)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.rematerialize_param_from_master_weight is False
+        assert args.disable_param_buffers_cpu_backup is False
 
     def test_noop_when_disabled(self):
         args = self._make_args(rematerialize_param_from_master_weight=False, colocate=False)
@@ -194,8 +199,6 @@ class TestValidateRematerializeParamFromMasterWeight:
             {"use_precision_aware_optimizer": True},
             {"overlap_param_gather": True},
             {"compute_advantages_and_returns": False},
-            {"use_critic": True},
-            {"debug_train_only": True},
         ],
     )
     def test_rejects_unsupported_config(self, overrides):
