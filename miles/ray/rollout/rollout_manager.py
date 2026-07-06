@@ -103,10 +103,6 @@ class RolloutManager:
     # -------------------------- data generation -----------------------------
 
     def _check_session_server(self):
-        # Surface a dead multi-process session-server worker as a hard error on the rollout
-        # path, instead of letting requests to its hash shard hang/503 forever. No-op for
-        # the single-process server (supervisor is None). Must be called from BOTH
-        # generate() and eval(): dropping either leaves that phase able to hang silently.
         if self._session_supervisor is not None:
             self._session_supervisor.check()
 
