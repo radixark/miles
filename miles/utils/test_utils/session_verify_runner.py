@@ -1,23 +1,23 @@
-"""Boot a real ``miles`` rollout pipeline + run the multi-role TITO driver.
+"""Boot a real `miles` rollout pipeline + run the multi-role TITO driver.
 
 Used by both consumers:
 
-- pytest e2e: ``tests/e2e/sglang/test_session_server_multi_role/`` (one test
+- pytest e2e: `tests/e2e/sglang/test_session_server_multi_role/` (one test
   file per model family)
-- CLI: ``scripts/tools/verify_session_tito_tokenizer.py``
+- CLI: `scripts/tools/verify_session_tito_tokenizer.py`
 
-Both forms run the same ``execute_train(--debug-rollout-only)`` path: full miles
-pipeline (sglang + miles-router with session support) is launched, ``train`` is
-skipped, and the rollout drives ``session_verify_agent.run_agent`` against the
+Both forms run the same `execute_train(--debug-rollout-only)` path: full miles
+pipeline (sglang + miles-router with session support) is launched, `train` is
+skipped, and the rollout drives `session_verify_agent.run_agent` against the
 session server.
 
-Args flow through miles' canonical ``parse_args`` Namespace.
+Args flow through miles' canonical `parse_args` Namespace.
 
 # Backend choice
 
-``execute_train`` asserts ``("--train-backend fsdp" in train_args) == (megatron_model_type is None)``,
-so the ``fsdp`` + ``None`` pair is the only consistent way to skip megatron init
-in ``--debug-rollout-only`` mode.  We use that.
+`execute_train` asserts `("--train-backend fsdp" in train_args) == (megatron_model_type is None)`,
+so the `fsdp` + `None` pair is the only consistent way to skip megatron init
+in `--debug-rollout-only` mode.  We use that.
 """
 
 from __future__ import annotations
@@ -75,10 +75,10 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
 
 
 def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    """``add_custom_arguments`` hook for ``miles.utils.arguments.parse_args``.
+    """`add_custom_arguments` hook for `miles.utils.arguments.parse_args`.
 
-    Adds the wrapper-only ``--assistant-text-threshold`` knob (a post-process
-    gate on the per-sample metrics JSONL, NOT in ``train_args``) and applies
+    Adds the wrapper-only `--assistant-text-threshold` knob (a post-process
+    gate on the per-sample metrics JSONL, NOT in `train_args`) and applies
     session-verify invariants as parser defaults — user CLI still overrides
     these via the canonical miles flags.
     """
@@ -92,7 +92,7 @@ def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentP
             "is known to roundtrip imperfectly (e.g. nemotron_3 keeps a "
             "trailing newline in reasoning_content) — hard mismatches still "
             "gate.  Post-process gate on per-sample JSONL metrics; not "
-            "forwarded to ``train_args``."
+            "forwarded to `train_args`."
         ),
     )
     parser.set_defaults(**SESSION_VERIFY_INVARIANT_ARGS)
@@ -110,7 +110,7 @@ def _ensure_model_downloaded(hf_checkpoint: str) -> str:
     """Return a local model path, downloading HF repos when needed.
 
     Lets callers pass either a HuggingFace repo id (downloaded under
-    ``/root/models/<short-name>``) or an existing local checkpoint path
+    `/root/models/<short-name>`) or an existing local checkpoint path
     (returned as-is, no download).
     """
     if os.path.exists(hf_checkpoint):
@@ -129,11 +129,11 @@ def _clear_proxy_env() -> None:
 
 
 def namespace_to_train_args(ns: argparse.Namespace) -> str:
-    """Serialize a fully-shaped Namespace into the ``train_args`` string.
+    """Serialize a fully-shaped Namespace into the `train_args` string.
 
-    Reads miles-canonical field names off ``ns``; emits the exact flag set
-    ``execute_train`` re-parses downstream.  ``actor_num_nodes`` is written
-    explicitly from ``ns.actor_num_nodes`` (NOT defaulted at the serializer
+    Reads miles-canonical field names off `ns`; emits the exact flag set
+    `execute_train` re-parses downstream.  `actor_num_nodes` is written
+    explicitly from `ns.actor_num_nodes` (NOT defaulted at the serializer
     level) so the runner stays pinned to whatever the caller's Namespace
     declared, regardless of any drift in miles' upstream default.
     """
@@ -180,30 +180,30 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
 
 
 def run_session_verify(args: argparse.Namespace) -> None:
-    """Boot ``miles`` rollout pipeline and run the multi-role driver.
+    """Boot `miles` rollout pipeline and run the multi-role driver.
 
-    Returns nothing on success; raises ``AssertionError`` on TITO mismatch
+    Returns nothing on success; raises `AssertionError` on TITO mismatch
     (HTTP 500 from server-side prefix check) or coverage shortfall (raised by
-    ``session_verify_agent.generate``).
+    `session_verify_agent.generate`).
 
-    ``args`` MUST be a fully-shaped Namespace carrying miles-canonical field
-    names plus the session-verify-specific fields (``session_verify_cycles``,
-    ``tool_call_failure_mode``, ``assistant_text_threshold``).  Build it via
-    ``parse_args(add_custom_arguments=session_verify_extras)`` for the CLI
-    path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
-    ``argparse.Namespace(...)`` for tests.
+    `args` MUST be a fully-shaped Namespace carrying miles-canonical field
+    names plus the session-verify-specific fields (`session_verify_cycles`,
+    `tool_call_failure_mode`, `assistant_text_threshold`).  Build it via
+    `parse_args(add_custom_arguments=session_verify_extras)` for the CLI
+    path or by spreading `SESSION_VERIFY_INVARIANT_ARGS` into
+    `argparse.Namespace(...)` for tests.
 
-    Mutates ``args`` in three places before composing train_args:
-    - ``args.sglang_reasoning_parser`` / ``args.sglang_tool_call_parser`` are
+    Mutates `args` in three places before composing train_args:
+    - `args.sglang_reasoning_parser` / `args.sglang_tool_call_parser` are
       resolved against the TITO subclass's bound values via
-      ``resolve_reasoning_and_tool_call_parser`` — caller-passed values that
-      disagree with the bound values raise ``ValueError`` here, before any
+      `resolve_reasoning_and_tool_call_parser` — caller-passed values that
+      disagree with the bound values raise `ValueError` here, before any
       GPU work starts.
-    - ``args.hf_checkpoint`` is replaced with the local download path so the
+    - `args.hf_checkpoint` is replaced with the local download path so the
       composed train_args points at the downloaded model, not the HF id.
-    - ``args.tito_allowed_append_roles`` is normalized (lowercase, dedup,
-      ensure ``'tool'`` is in) to match the schedule contract in
-      ``session_verify_agent._SUPPORTED_ROLE_SURFACES``.
+    - `args.tito_allowed_append_roles` is normalized (lowercase, dedup,
+      ensure `'tool'` is in) to match the schedule contract in
+      `session_verify_agent._SUPPORTED_ROLE_SURFACES`.
     """
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
@@ -255,8 +255,8 @@ def assert_session_verify_metrics(metrics_path: str, *, assistant_text_threshold
     per-sample in the agent wrapper and would have already raised by now.
     Here we only cross-check the soft assistant_text rate against the
     caller-provided threshold (per-model: some upstream sglang reasoning
-    parsers — notably ``nemotron_3`` — leave a trailing ``\\n`` in
-    ``reasoning_content`` that breaks the canonical roundtrip until the
+    parsers — notably `nemotron_3` — leave a trailing `\\n` in
+    `reasoning_content` that breaks the canonical roundtrip until the
     parser is patched, so those families ride at threshold=1.0).
     """
     samples_with_mismatch = 0

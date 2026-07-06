@@ -1,14 +1,14 @@
 # doc-dev: docs/developer/multi-process-session-server.md
 """Thin client-facing router for the multi-process session server.
 
-- The sole HTTP listener: a FastAPI app over N ``IpcChannel``s, one per worker.
-- Routes every op of a session through ``SessionRouter.channel_for`` — a stable hash of ``session_id`` (``worker_index_for_session``) — so create/get/chat/delete land on the same worker.
+- The sole HTTP listener: a FastAPI app over N `IpcChannel`s, one per worker.
+- Routes every op of a session through `SessionRouter.channel_for` — a stable hash of `session_id` (`worker_index_for_session`) — so create/get/chat/delete land on the same worker.
 - Relays the worker's response bytes back verbatim; it never parses a body.
-- ``POST /sessions`` mints the id first (uuid4 hex) so it can route by it, then dispatches the create to the owning worker.
-- Error mapping in ``dispatch``: channel down → 503, worker handler raised → 502, malformed reply envelope → uncaught 500 (a worker protocol violation).
-- ``GET /health`` pings every worker and reports 503 unless all reply healthy within the timeout.
+- `POST /sessions` mints the id first (uuid4 hex) so it can route by it, then dispatches the create to the owning worker.
+- Error mapping in `dispatch`: channel down → 503, worker handler raised → 502, malformed reply envelope → uncaught 500 (a worker protocol violation).
+- `GET /health` pings every worker and reports 503 unless all reply healthy within the timeout.
 
-Imports neither ``core`` nor ``worker``, so the router process never loads the tokenizer/transformers stack — it only moves bytes.
+Imports neither `core` nor `worker`, so the router process never loads the tokenizer/transformers stack — it only moves bytes.
 """
 
 from __future__ import annotations
@@ -49,10 +49,10 @@ def _err(status_code: int, message: str) -> Response:
 def _reply_to_response(reply: bytes) -> Response:
     """Relay a worker REPLY envelope as an HTTP Response verbatim.
 
-    ``meta`` must carry ``status`` + ``headers`` (worker contract); ``body`` is
+    `meta` must carry `status` + `headers` (worker contract); `body` is
     passed through unparsed, and a missing key raises KeyError (= worker protocol
-    violation, deliberately a 500). ``headers`` already carries content-type, so
-    no ``media_type`` is passed — that would duplicate content-length/-type.
+    violation, deliberately a 500). `headers` already carries content-type, so
+    no `media_type` is passed — that would duplicate content-length/-type.
     """
     meta, body = decode_envelope(reply)
     return Response(content=body, status_code=meta["status"], headers=meta["headers"])
@@ -69,7 +69,7 @@ class SessionRouter:
         self.instance_id = session_server_instance_id
 
     def channel_for(self, session_id: str):
-        """The sole routing point: the worker channel owning ``session_id``.
+        """The sole routing point: the worker channel owning `session_id`.
 
         Every op for a session must resolve here so create/get/chat/delete land
         on one worker; divergent hashing would silently mis-route.
@@ -77,7 +77,7 @@ class SessionRouter:
         return self.channels[worker_index_for_session(session_id, self.n_worker)]
 
     async def dispatch(self, channel, payload: bytes) -> Response:
-        """Send one request to ``channel`` and map the outcome to a Response.
+        """Send one request to `channel` and map the outcome to a Response.
 
         Channel down (IpcChannelClosed) → 503; worker handler raised (IpcError)
         → 502; a malformed reply envelope is not caught → 500. No per-request
@@ -168,7 +168,7 @@ async def _serve_router(args, router_ends: list, ip: str, port: int) -> None:
 
 
 def run_router(args, router_ends: list, ip: str, port: int) -> None:
-    """``multiprocessing.Process`` target: serve the router app over the worker sockets.
+    """`multiprocessing.Process` target: serve the router app over the worker sockets.
 
     Imports nothing from core/worker, so the router process never loads
     the tokenizer/transformers stack — it only moves bytes between clients and workers.

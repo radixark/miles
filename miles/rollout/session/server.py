@@ -1,9 +1,9 @@
 """Standalone session-server process: HTTP chassis + upstream proxy transport.
 
-- ``SessionServer`` is a FastAPI app plus one shared httpx client; ``do_proxy`` forwards a request to the inference router (sglang or miles) — which does the load balancing to worker engines — and returns the raw result, or a 502 JSON error on transport failure.
-- Session/TITO logic lives in ``core.SessionCore``; ``setup_session_routes`` (``sessions.py``) wires the HTTP routes to it.
+- `SessionServer` is a FastAPI app plus one shared httpx client; `do_proxy` forwards a request to the inference router (sglang or miles) — which does the load balancing to worker engines — and returns the raw result, or a 502 JSON error on transport failure.
+- Session/TITO logic lives in `core.SessionCore`; `setup_session_routes` (`sessions.py`) wires the HTTP routes to it.
 - Standalone (own process, own event loop) so sessions also work with the SGLang Rust Router or any other backend, decoupled from the Miles Router.
-- ``run_session_server`` is the subprocess entry point: fresh interpreter, so it configures logging and the process title itself, then serves uvicorn.
+- `run_session_server` is the subprocess entry point: fresh interpreter, so it configures logging and the process title itself, then serves uvicorn.
 """
 
 import json

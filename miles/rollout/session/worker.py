@@ -1,11 +1,11 @@
 # doc-dev: docs/developer/multi-process-session-server.md
 """Headless session worker process — owns one shard of the multi-process data plane.
 
-- Owns one shard's session state: its own ``SessionCore`` (registry + tokenizer) plus its own httpx ``ProxyBackend``.
-- Speaks IPC, not HTTP: ``SessionWorker.handle`` decodes a request envelope, drives the matching ``SessionCore`` op, and encodes the returned Starlette ``Response`` (status + headers + body bytes) back.
-- A ``SessionError`` from the core becomes the same ``error_response`` the single-process FastAPI handler produces, so the workers=N and workers=1 error paths stay byte-identical.
-- ``ProxyBackend.do_proxy`` filters the same request headers as ``SessionServer.do_proxy`` (exercised by the equivalence tests) and turns a transport failure into a 502 result.
-- ``run_worker`` is the ``multiprocessing.Process`` target: names the process, arms PR_SET_PDEATHSIG, then serves the socket until the channel closes.
+- Owns one shard's session state: its own `SessionCore` (registry + tokenizer) plus its own httpx `ProxyBackend`.
+- Speaks IPC, not HTTP: `SessionWorker.handle` decodes a request envelope, drives the matching `SessionCore` op, and encodes the returned Starlette `Response` (status + headers + body bytes) back.
+- A `SessionError` from the core becomes the same `error_response` the single-process FastAPI handler produces, so the workers=N and workers=1 error paths stay byte-identical.
+- `ProxyBackend.do_proxy` filters the same request headers as `SessionServer.do_proxy` (exercised by the equivalence tests) and turns a transport failure into a 502 result.
+- `run_worker` is the `multiprocessing.Process` target: names the process, arms PR_SET_PDEATHSIG, then serves the socket until the channel closes.
 
 The worker trusts the router's stable-hash routing and does not re-derive ownership.
 """
@@ -135,7 +135,7 @@ async def _serve(args, backend_url: str, sock) -> None:
 
 
 def run_worker(args, backend_url: str, sock, worker_index: int) -> None:
-    """``multiprocessing.Process`` target: serve one session shard over ``sock``."""
+    """`multiprocessing.Process` target: serve one session shard over `sock`."""
     setproctitle.setproctitle(f"miles-session-worker-{worker_index}")
     set_pdeathsig()
     asyncio.run(_serve(args, backend_url, sock))

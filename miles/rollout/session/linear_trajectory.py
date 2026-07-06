@@ -26,7 +26,7 @@ class LinearTrajectory:
     but the agent may retry from an earlier point (e.g. re-running a tool call),
     in which case the session is rolled back at most one assistant step.
 
-    Concurrency contract: all mutating methods must be called under ``self.lock``.
+    Concurrency contract: all mutating methods must be called under `self.lock`.
     """
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
@@ -59,7 +59,7 @@ class LinearTrajectory:
         most one assistant step on agent retries) and reuses the stored
         token_ids as the pretokenized prefix.
 
-        Must be called under ``self.lock``.
+        Must be called under `self.lock`.
         """
         if not self.token_ids:
             return tito_tokenizer.render_messages(
@@ -97,10 +97,10 @@ class LinearTrajectory:
     ) -> None:
         """Store raw token IDs after a successful response.
 
-        Appends ``prompt_token_ids + completion_token_ids`` as a new checkpoint.
+        Appends `prompt_token_ids + completion_token_ids` as a new checkpoint.
         Validates that the previously stored token_ids are a prefix of the new
-        checkpoint (tolerating up to ``max_trim_tokens`` trailing differences).
-        Must be called under ``self.lock``.
+        checkpoint (tolerating up to `max_trim_tokens` trailing differences).
+        Must be called under `self.lock`.
         """
         all_token_ids = prompt_token_ids + completion_token_ids
 
@@ -145,13 +145,13 @@ class LinearTrajectory:
         to the last assistant checkpoint within the matching prefix.
 
         Only a single-step rollback is allowed (controlled by
-        ``MAX_ASSISTANT_ROLLBACK_STEPS``).  Discarding exactly one assistant
+        `MAX_ASSISTANT_ROLLBACK_STEPS`).  Discarding exactly one assistant
         message means the agent is retrying from the preceding checkpoint —
         the request shares the stored prefix up to that assistant and then
         continues with whatever the agent chooses (same or different tool
         result, additional messages, etc.).  Any request that would need to
         discard more than one assistant (i.e. jump back across multiple
-        turns) is rejected with ``MessageValidationError`` and no state is
+        turns) is rejected with `MessageValidationError` and no state is
         modified.
 
         Example — agent retries after the first tool call::
@@ -176,7 +176,7 @@ class LinearTrajectory:
         No rollback occurs when:
         - The stored history is empty.
         - *request_messages* is a strict extension of stored messages
-          (``match_len >= len(stored)``).
+          (`match_len >= len(stored)`).
         """
         stored = self.messages
         if not stored or not self.trajectory_token_ids:

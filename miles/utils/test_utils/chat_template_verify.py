@@ -6,8 +6,8 @@ all messages (with generation prompt).  This is required by sglang's
 pretokenized prefix mechanism for agentic workflows.
 
 Core functions are used by both the CLI script
-(``scripts/tools/verify_chat_template.py``) and the test suite
-(``tests/fast/utils/chat_template_utils/test_pretokenized_chat.py``).
+(`scripts/tools/verify_chat_template.py`) and the test suite
+(`tests/fast/utils/chat_template_utils/test_pretokenized_chat.py`).
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def simulate_pretokenized_path(
     2. Render ALL messages (with generation prompt) -> full_text
     3. Verify prefix_text is a prefix of full_text
 
-    Raises ``ValueError`` on prefix mismatch.
+    Raises `ValueError` on prefix mismatch.
     """
     prefix_text = apply_chat_template_from_str(
         chat_template,
@@ -111,7 +111,7 @@ def verify_append_only(
 ) -> VerifyResult:
     """Check that the template satisfies the append-only invariant.
 
-    Returns a ``VerifyResult`` instead of raising, making it suitable for
+    Returns a `VerifyResult` instead of raising, making it suitable for
     batch verification in CLI scripts.
     """
     try:
@@ -136,13 +136,13 @@ def verify_append_only(
 #
 # Trajectories expose two class attributes used for verify-layer filtering:
 #
-#   * ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear after
-#     the first assistant message.  Drives ``--tito-allowed-append-roles``.
-#   * ``IS_THINKING: bool`` — any assistant carries ``reasoning_content``.
-#     Drives ``--thinking`` and whether ``enable_thinking`` kwarg is passed.
+#   * `APPEND_ROLES: frozenset[str]` — non-assistant roles that appear after
+#     the first assistant message.  Drives `--tito-allowed-append-roles`.
+#   * `IS_THINKING: bool` — any assistant carries `reasoning_content`.
+#     Drives `--thinking` and whether `enable_thinking` kwarg is passed.
 #
 # Both are declared on the trajectory class (mock_trajectories.py), alongside
-# ``TOOLS`` / ``PRETOKENIZE_POSITIONS`` / ``MESSAGES``.  This file only lists
+# `TOOLS` / `PRETOKENIZE_POSITIONS` / `MESSAGES`.  This file only lists
 # which trajectories to exercise and expands them into concrete cases.
 
 import re  # noqa: E402
@@ -173,7 +173,7 @@ def _short_name(cls: type) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
-# Trajectories exercised by ``run_all_checks`` / the CLI.  Must be a subset of
+# Trajectories exercised by `run_all_checks` / the CLI.  Must be a subset of
 # the classes defined in mock_trajectories.py.  Callers (CLI, tests) pick the
 # applicable subset via :func:`select_cases` based on each template's supported
 # append roles and thinking mode; there is no global "exclude" list here.
@@ -238,11 +238,11 @@ def select_cases(
 ) -> list[CaseSpec]:
     """Select trajectory cases by append-role surface and (optionally) thinking flag.
 
-    A case is included iff ``case.append_roles`` is a subset of
-    *allowed_append_roles*, and (when *is_thinking* is not ``None``)
-    ``case.is_thinking`` matches.
+    A case is included iff `case.append_roles` is a subset of
+    *allowed_append_roles*, and (when *is_thinking* is not `None`)
+    `case.is_thinking` matches.
 
-    The caller is responsible for including ``"tool"`` in *allowed_append_roles*
+    The caller is responsible for including `"tool"` in *allowed_append_roles*
     when the session is tool-capable; this function does not silently union it.
     """
     allowed = frozenset(allowed_append_roles)
@@ -257,14 +257,14 @@ def select_cases(
 
 
 def enable_thinking_variants(thinking: str) -> list[dict]:
-    """Return the list of ``enable_thinking`` kwarg variants to apply per case.
+    """Return the list of `enable_thinking` kwarg variants to apply per case.
 
-    * ``"off"`` → ``[{}]`` (no ``enable_thinking`` kwarg).
-    * ``"on"``  → ``[{"enable_thinking": True}]``.
-    * ``"both"`` → ``[{"enable_thinking": True}, {"enable_thinking": False}]``.
+    * `"off"` → `[{}]` (no `enable_thinking` kwarg).
+    * `"on"`  → `[{"enable_thinking": True}]`.
+    * `"both"` → `[{"enable_thinking": True}, {"enable_thinking": False}]`.
 
     Both CLI (:func:`run_all_checks`) and pytest parametrize callers use this
-    to avoid drifting in how the ``enable_thinking`` knob is exercised.
+    to avoid drifting in how the `enable_thinking` knob is exercised.
     """
     if thinking == "off":
         return [{}]
@@ -276,14 +276,14 @@ def enable_thinking_variants(thinking: str) -> list[dict]:
 
 
 def format_case_id(case: CaseSpec, kwargs: dict) -> str:
-    """Human-readable label for a ``(case, template_kwargs)`` tuple.
+    """Human-readable label for a `(case, template_kwargs)` tuple.
 
-    Used for both CLI ``VerifyResult.case_name`` and pytest test ids so the
+    Used for both CLI `VerifyResult.case_name` and pytest test ids so the
     same tuple is identified the same way in both surfaces.  Format:
 
-    * empty kwargs → ``case.case_name``.
-    * otherwise → ``<case.case_name>-<k1>_on/off-<k2>=val`` (keys sorted;
-      bool values emit ``key_on`` / ``key_off``; other values ``key=val``).
+    * empty kwargs → `case.case_name`.
+    * otherwise → `<case.case_name>-<k1>_on/off-<k2>=val` (keys sorted;
+      bool values emit `key_on` / `key_off`; other values `key=val`).
     """
     if not kwargs:
         return case.case_name
@@ -298,10 +298,10 @@ def format_case_id(case: CaseSpec, kwargs: dict) -> str:
 
 @dataclass
 class CoverageReport:
-    """Coverage of cases across ``(is_thinking, append_roles \\ {tool})``.
+    """Coverage of cases across `(is_thinking, append_roles \\ {tool})`.
 
-    ``covered`` maps each combination to the case names that fall in it;
-    ``missing`` lists combinations with no case.  ``tool`` is excluded from
+    `covered` maps each combination to the case names that fall in it;
+    `missing` lists combinations with no case.  `tool` is excluded from
     the role axis because it is implicitly always allowed.
     """
 
@@ -314,10 +314,10 @@ def check_coverage(
     *,
     role_universe: set[str] | None = None,
 ) -> CoverageReport:
-    """Enumerate ``thinking × append-role-subset`` combinations and report gaps.
+    """Enumerate `thinking × append-role-subset` combinations and report gaps.
 
     Used as a sanity check that every meaningful combination of
-    ``--tito-allowed-append-roles`` and ``--thinking`` is backed by at least
+    `--tito-allowed-append-roles` and `--thinking` is backed by at least
     one trajectory — otherwise certain CLI settings would be no-ops.
     """
     if cases is None:
@@ -355,20 +355,20 @@ def run_all_checks(
 ) -> list[VerifyResult]:
     """Run verification cases filtered by *allowed_append_roles* and *thinking*.
 
-    ``allowed_append_roles`` is the role surface the session may append after
-    an assistant turn; defaults to ``{"tool"}`` for the agentic baseline.
-    Trajectories whose ``append_roles`` are not a subset are skipped.  Caller
-    must include ``"tool"`` explicitly when relevant — there is no implicit
+    `allowed_append_roles` is the role surface the session may append after
+    an assistant turn; defaults to `{"tool"}` for the agentic baseline.
+    Trajectories whose `append_roles` are not a subset are skipped.  Caller
+    must include `"tool"` explicitly when relevant — there is no implicit
     union.
 
-    ``thinking`` selects which ``enable_thinking`` variants are exercised —
-    see :func:`enable_thinking_variants`.  When ``"both"``, **every** selected
-    trajectory (thinking or not) is rerun with ``enable_thinking=True`` and
-    ``enable_thinking=False``, so templates that branch on the flag are
+    `thinking` selects which `enable_thinking` variants are exercised —
+    see :func:`enable_thinking_variants`.  When `"both"`, **every** selected
+    trajectory (thinking or not) is rerun with `enable_thinking=True` and
+    `enable_thinking=False`, so templates that branch on the flag are
     validated against non-reasoning input too.
 
-    ``extra_template_kwargs`` is merged into every invocation — use it to
-    thread template-specific kwargs (e.g. GLM's ``clear_thinking=False``)
+    `extra_template_kwargs` is merged into every invocation — use it to
+    thread template-specific kwargs (e.g. GLM's `clear_thinking=False`)
     through the CLI.
     """
     if allowed_append_roles is None:
@@ -405,13 +405,13 @@ def run_all_checks(
 #
 # The string-based primitive above asserts text-prefix at the chat-template
 # layer.  This is necessary but not sufficient for production correctness —
-# production runs ``get_tito_tokenizer(...)`` and exercises ``merge_tokens``
+# production runs `get_tito_tokenizer(...)` and exercises `merge_tokens`
 # (model-specific token-level boundary patches) plus
-# ``tokenize_additional_non_assistant`` (renders appended segments under a
-# synthetic ``[_DUMMY_SYSTEM, ...]`` context, not the real history).
+# `tokenize_additional_non_assistant` (renders appended segments under a
+# synthetic `[_DUMMY_SYSTEM, ...]` context, not the real history).
 #
 # The primitive below mirrors the production path: it instantiates the actual
-# TITO subclass + HF tokenizer, runs ``merge_tokens`` against the encoded
+# TITO subclass + HF tokenizer, runs `merge_tokens` against the encoded
 # prefix, decodes, and asserts text equality with the canonical full render.
 
 
@@ -426,10 +426,10 @@ def verify_append_only_via_tito_instance(
 ) -> VerifyResult:
     """Decode-roundtrip verify with a pre-built TITO instance.
 
-    Asserts ``decode(tito.merge_tokens(prefix_msgs, full_msgs, encode(prefix_text)))
-    == full_text`` where ``prefix_text`` and ``full_text`` come from running the
-    chat template through ``tokenizer`` with the same kwargs ``tito`` was built
-    with.  The test-only path (e.g. ``BuggyQwen3TITOTokenizer``) uses this
+    Asserts `decode(tito.merge_tokens(prefix_msgs, full_msgs, encode(prefix_text)))
+    == full_text` where `prefix_text` and `full_text` come from running the
+    chat template through `tokenizer` with the same kwargs `tito` was built
+    with.  The test-only path (e.g. `BuggyQwen3TITOTokenizer`) uses this
     instance form directly; production-shape callers go through
     :func:`verify_append_only_via_tito`.
     """
@@ -468,12 +468,12 @@ def verify_append_only_via_tito_instance(
         )
 
         prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
-        # Simulate production's model-stop: in production, ``pretokenized_token_ids``
+        # Simulate production's model-stop: in production, `pretokenized_token_ids`
         # ends where the model actually stopped — typically before the trailing
-        # tokens the chat template would otherwise emit (Qwen's ``\n`` after
-        # ``<|im_end|>``, GLM's ambiguous ``<|user|>``/``<|observation|>`` boundary).
-        # The TITO subclass declares those as ``trailing_token_ids``.  Trim them
-        # here so ``merge_tokens``'s boundary patches see the prefix in its
+        # tokens the chat template would otherwise emit (Qwen's `\n` after
+        # `<|im_end|>`, GLM's ambiguous `<|user|>`/`<|observation|>` boundary).
+        # The TITO subclass declares those as `trailing_token_ids`.  Trim them
+        # here so `merge_tokens`'s boundary patches see the prefix in its
         # production shape so the verifier sees the same prefix the
         # subclass merge_tokens / trailing trim path operates on.
         trailing = tito.trailing_token_ids
@@ -518,9 +518,9 @@ def verify_append_only_via_tito(
 ) -> VerifyResult:
     """Decode-roundtrip verify, building TITO from the registered family.
 
-    Matches the production wiring at ``miles/rollout/session/sessions.py:35`` —
-    the same ``get_tito_tokenizer`` factory call, with ``chat_template_kwargs``
-    threaded through so ``merge_tokens`` and the dummy-context segment renders
+    Matches the production wiring at `miles/rollout/session/sessions.py:35` —
+    the same `get_tito_tokenizer` factory call, with `chat_template_kwargs`
+    threaded through so `merge_tokens` and the dummy-context segment renders
     use the same kwargs as the reference full render.
     """
     from miles.utils.chat_template_utils import get_tito_tokenizer
@@ -552,15 +552,15 @@ def run_all_checks_via_tito(
 ) -> list[VerifyResult]:
     """Same shape as :func:`run_all_checks` but routes through TITO + tokenizer.
 
-    Per-case TITO rebuild: each (case, ``enable_thinking`` variant) gets a fresh
+    Per-case TITO rebuild: each (case, `enable_thinking` variant) gets a fresh
     TITO instance constructed with the merged kwargs, so the dummy-context
-    segment renders inside ``tokenize_additional_non_assistant`` see the same
-    ``enable_thinking`` value as the reference render.  Construction is
+    segment renders inside `tokenize_additional_non_assistant` see the same
+    `enable_thinking` value as the reference render.  Construction is
     millisecond-level and runs ~50 times per CLI invocation; cheap.
 
-    The caller is responsible for setting ``tokenizer.chat_template`` (e.g. via
-    ``resolve_fixed_chat_template`` lookup or ``--template`` override) before
-    calling this — this function does not consult ``SUPPORTED_TEMPLATES``.
+    The caller is responsible for setting `tokenizer.chat_template` (e.g. via
+    `resolve_fixed_chat_template` lookup or `--template` override) before
+    calling this — this function does not consult `SUPPORTED_TEMPLATES`.
     """
     if allowed_append_roles is None:
         allowed_append_roles = {"tool"}
@@ -577,7 +577,7 @@ def run_all_checks_via_tito(
     for case in selected:
         # TITO incremental requires a non-empty non-assistant appendix at the
         # boundary.  Trajectories that end at the assistant turn (e.g. plain
-        # ``[sys, user, assistant]``) have no appendix to verify and are
+        # `[sys, user, assistant]`) have no appendix to verify and are
         # silently skipped here — the string-based primitive still covers
         # them at the text-prefix layer.
         msgs = case.traj_cls.MESSAGES

@@ -1,19 +1,19 @@
 # doc-dev: docs/developer/multi-process-session-server.md
 """Minimal framed, multiplexed RPC between the session router and one session worker.
 
-- One :class:`IpcChannel` wraps one connected stream socket (a ``socket.socketpair`` end); the router side is the client (:meth:`IpcChannel.request`), the worker side is the server (a ``request_handler`` coroutine).
-- Concurrent requests over the one socket are multiplexed by ``request_id``: replies are matched by id, not arrival order, so a reply never waits for an earlier request to finish *processing*. Writes are FIFO whole frames, so it can still queue behind a large frame already being sent (see the trailing note).
+- One :class:`IpcChannel` wraps one connected stream socket (a `socket.socketpair` end); the router side is the client (:meth:`IpcChannel.request`), the worker side is the server (a `request_handler` coroutine).
+- Concurrent requests over the one socket are multiplexed by `request_id`: replies are matched by id, not arrival order, so a reply never waits for an earlier request to finish *processing*. Writes are FIFO whole frames, so it can still queue behind a large frame already being sent (see the trailing note).
 - Wire format — one whole message per frame, no chunking:
 
     frame: u64 length | u64 request_id | u8 type | payload bytes
            └ length counts everything after it (the 9-byte header + payload) ┘
 
-- ``type`` is REQUEST / REPLY / ERROR; a REPLY carries the handler's return bytes, an ERROR a UTF-8 error message.
-- The payload is opaque to the channel; the worker/router layer packs it with :func:`encode_envelope` as ``u64 meta_len | meta_json | raw_body`` (raw body, no base64).
-- The shared ``OP_*`` session-op protocol and the request/envelope codecs live here so neither the router nor the worker imports the other's module.
-- Teardown (EOF / read-write error / ``aclose``) fails every pending ``request()`` with ``IpcChannelClosed``, so a peer death surfaces as an exception, never a hang; ``request()`` is cancel-safe (a late reply is dropped, not mis-delivered).
+- `type` is REQUEST / REPLY / ERROR; a REPLY carries the handler's return bytes, an ERROR a UTF-8 error message.
+- The payload is opaque to the channel; the worker/router layer packs it with :func:`encode_envelope` as `u64 meta_len | meta_json | raw_body` (raw body, no base64).
+- The shared `OP_*` session-op protocol and the request/envelope codecs live here so neither the router nor the worker imports the other's module.
+- Teardown (EOF / read-write error / `aclose`) fails every pending `request()` with `IpcChannelClosed`, so a peer death surfaces as an exception, never a hang; `request()` is cancel-safe (a late reply is dropped, not mis-delivered).
 
-Deliberately minimal — no round-robin scheduling across requests, no configurable frame/body size limit; the single ``_MAX_FRAME`` cap is a corruption guard (rejects a garbage length before allocating), not a size feature, so a large body (e.g. a multi-GiB ``GET /sessions`` records dump) crosses as one frame. A frame that would exceed the cap is refused at send time as a per-request failure (ERROR frame / ``IpcError``) — it must never reach the peer's reader, where an oversized length is indistinguishable from corruption and tears down the whole channel.
+Deliberately minimal — no round-robin scheduling across requests, no configurable frame/body size limit; the single `_MAX_FRAME` cap is a corruption guard (rejects a garbage length before allocating), not a size feature, so a large body (e.g. a multi-GiB `GET /sessions` records dump) crosses as one frame. A frame that would exceed the cap is refused at send time as a per-request failure (ERROR frame / `IpcError`) — it must never reach the peer's reader, where an oversized length is indistinguishable from corruption and tears down the whole channel.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class IpcChannelClosed(Exception):
 
 
 def encode_envelope(meta: dict, body: bytes) -> bytes:
-    """Pack ``meta`` (JSON) + raw ``body`` (no base64) into one buffer."""
+    """Pack `meta` (JSON) + raw `body` (no base64) into one buffer."""
     meta_bytes = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return _LEN.pack(len(meta_bytes)) + meta_bytes + body
 
@@ -118,10 +118,10 @@ def encode_request(
 class IpcChannel:
     """Framed multiplexed RPC over one connected stream socket.
 
-    Role is set by ``request_handler``: None ⇒ client (calls ``request()``; a
+    Role is set by `request_handler`: None ⇒ client (calls `request()`; a
     stray inbound REQUEST is logged and dropped); else ⇒ server (runs the handler
     per REQUEST; a stray REPLY for an unknown id is dropped). Teardown (EOF /
-    error / ``aclose()``) fails every pending ``request()`` with IpcChannelClosed,
+    error / `aclose()`) fails every pending `request()` with IpcChannelClosed,
     so a peer death surfaces as that exception, never a hang.
     """
 
@@ -153,7 +153,7 @@ class IpcChannel:
         """Send a request and await the peer's reply bytes.
 
         Cancel-safe: if the awaiting coroutine is cancelled, the pending future
-        is removed in ``finally`` so a late reply is dropped, not mis-delivered.
+        is removed in `finally` so a late reply is dropped, not mis-delivered.
 
         Raises IpcChannelClosed if the channel is/goes down, IpcError if the peer
         handler raised.
@@ -285,7 +285,7 @@ async def open_unix_channel(
     request_handler: Callable[[bytes], Awaitable[bytes]] | None = None,
     on_close: Callable[[], None] | None = None,
 ) -> IpcChannel:
-    """Wrap a connected socket (e.g. a ``socket.socketpair`` end) in an IpcChannel."""
+    """Wrap a connected socket (e.g. a `socket.socketpair` end) in an IpcChannel."""
     reader, writer = await asyncio.open_connection(sock=sock)
     channel = IpcChannel(reader, writer, request_handler=request_handler, on_close=on_close)
     channel.start()

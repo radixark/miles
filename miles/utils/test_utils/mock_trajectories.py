@@ -7,13 +7,13 @@ Used by:
 
 Class attributes consumed by chat_template_verify:
 
-- ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear *after*
-  the first assistant message (``tool`` / ``user`` / ``system``).  These are
+- `APPEND_ROLES: frozenset[str]` — non-assistant roles that appear *after*
+  the first assistant message (`tool` / `user` / `system`).  These are
   the roles the session must allow to be appended on top of an assistant-
-  stopped prefix; drives ``--tito-allowed-append-roles`` filtering.
-- ``IS_THINKING: bool`` — ``True`` iff at least one assistant message carries
-  ``reasoning_content``.  Drives ``--thinking`` filtering and whether the
-  ``enable_thinking`` chat-template kwarg is passed.
+  stopped prefix; drives `--tito-allowed-append-roles` filtering.
+- `IS_THINKING: bool` — `True` iff at least one assistant message carries
+  `reasoning_content`.  Drives `--thinking` filtering and whether the
+  `enable_thinking` chat-template kwarg is passed.
 
 Both are declared explicitly on each class so readers can see a trajectory's
 verify-layer classification without having to execute the module.
@@ -431,7 +431,7 @@ class MultiUserToolChainTrajectory:
     """sys, user1, ass(tool), tool, ass, user2, ass(tool), tool, ass(tool:date), tool
 
     NOTE: LinearTrajectory can carry multiple user messages when
-    ``allowed_append_roles`` includes ``"user"``; this trajectory exercises
+    `allowed_append_roles` includes `"user"`; this trajectory exercises
     that path.  The distribution may still deviate from the chat template
     behavior, causing high tito_session_mismatch_rate.
     """

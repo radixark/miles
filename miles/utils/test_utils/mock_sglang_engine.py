@@ -1,4 +1,4 @@
-"""In-memory stand-in for ``SGLangEngine`` (no CUDA, no sglang, no model)."""
+"""In-memory stand-in for `SGLangEngine` (no CUDA, no sglang, no model)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import ray
 logger = logging.getLogger(__name__)
 
 
-# Methods that just ``_record + _maybe_fault + return X``. The value is the
+# Methods that just `_record + _maybe_fault + return X`. The value is the
 # return value (no test asserts on its shape — sentinels keep the mock close
 # to what the real method's HTTP response shape returns).
 _RECORDING_METHODS: dict[str, Any] = {
@@ -53,8 +53,8 @@ def _make_recorder(name: str, return_value: Any) -> Callable:
 
 
 class MockSGLangEngine:
-    """Records every call into ``self.calls`` so tests can assert sequence and
-    arguments. Fault injection is set via ``set_fault(method, exception)``."""
+    """Records every call into `self.calls` so tests can assert sequence and
+    arguments. Fault injection is set via `set_fault(method, exception)`."""
 
     def __init__(
         self,

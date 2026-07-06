@@ -1,9 +1,9 @@
 """Custom-generate / custom-agent driver for TITO session-server verification.
 
-Wired through ``--custom-generate-function-path`` /
-``--custom-agent-function-path``; consumed by
-``tests/e2e/sglang/test_session_server_multi_role/`` (one test file per
-model family) and ``scripts/tools/verify_session_tito_tokenizer.py``.
+Wired through `--custom-generate-function-path` /
+`--custom-agent-function-path`; consumed by
+`tests/e2e/sglang/test_session_server_multi_role/` (one test file per
+model family) and `scripts/tools/verify_session_tito_tokenizer.py`.
 """
 
 from __future__ import annotations
@@ -44,12 +44,12 @@ _F = DriverAction.FORCE_FINAL
 class ToolCallFailureMode(StrEnum):
     """Recovery strategy when a TOOL_RESULT step finds the assistant emitted no tool_calls.
 
-    APPEND_TOOL  : Splice a sentinel ``tool`` message and continue.  Works on
+    APPEND_TOOL  : Splice a sentinel `tool` message and continue.  Works on
                    lenient templates; strict templates that hard-assert any
-                   ``tool`` role must follow an assistant with ``tool_calls``
+                   `tool` role must follow an assistant with `tool_calls`
                    (e.g. MiniMax-M2.7) will reject the next request at server-side.
-    APPEND_USER  : Splice a ``user`` message carrying the same failure text as
-                   APPEND_TOOL.  Requires "user" in ``allowed_append_roles`` —
+    APPEND_USER  : Splice a `user` message carrying the same failure text as
+                   APPEND_TOOL.  Requires "user" in `allowed_append_roles` —
                    raises ValueError at agent start otherwise, so misconfig is
                    immediately visible instead of silently downgrading.
     ROLLBACK     : Pop the offending assistant and let the loop's chat call at
@@ -84,8 +84,8 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
     {"special_token_count", "special_token_type", "non_assistant_text"}
 )
 
-# Override per call: ``--session-verify-cycles N`` (CLI) or ``cycles=N``
-# (pytest via ``run_session_verify``).  Smaller-context models with a 4K
+# Override per call: `--session-verify-cycles N` (CLI) or `cycles=N`
+# (pytest via `run_session_verify`).  Smaller-context models with a 4K
 # response budget should drop to 2 to avoid context overflow.
 DEFAULT_CYCLES = 3
 
@@ -152,7 +152,7 @@ INITIAL_USER_PROMPT = "What's the weather in Beijing?"
 
 
 def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[DriverAction]:
-    """Pick the schedule for ``frozenset(allowed_roles)``; raises on unregistered."""
+    """Pick the schedule for `frozenset(allowed_roles)`; raises on unregistered."""
     key = frozenset(allowed_roles)
     if key not in _SUPPORTED_ROLE_SURFACES:
         registered = sorted(sorted(k) for k in _SUPPORTED_ROLE_SURFACES)
@@ -184,12 +184,12 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
 
 
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
-    """Custom-agent entry point.  Returns ``{"driver_events": [...], **counters}``.
+    """Custom-agent entry point.  Returns `{"driver_events": [...], **counters}`.
 
-    ``allowed_append_roles`` must be present in ``metadata`` (the ``generate``
-    wrapper below injects it from ``args.tito_allowed_append_roles``).
-    ``prompt`` is ignored — the driver synthesizes its own initial conversation
-    from ``build_initial_messages`` so runs are reproducible.
+    `allowed_append_roles` must be present in `metadata` (the `generate`
+    wrapper below injects it from `args.tito_allowed_append_roles`).
+    `prompt` is ignored — the driver synthesizes its own initial conversation
+    from `build_initial_messages` so runs are reproducible.
     """
     allowed_roles = metadata.get("allowed_append_roles")
     if allowed_roles is None:
@@ -311,7 +311,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 # Pop the last assistant from our local copy.  The next
                 # request therefore has one fewer message than what the
                 # server has stored, which is the trigger for its
-                # ``_detect_and_rollback`` path — the server rewinds its
+                # `_detect_and_rollback` path — the server rewinds its
                 # state, then re-inferences.
                 if not messages or messages[-1]["role"] != "assistant":
                     raise AssertionError(
@@ -342,9 +342,9 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that asserts driver-action coverage.
 
-    - Per-sample: every sample must contain ``rollback``, plus ``append_user``
-      / ``append_system`` when those roles are allowed.
-    - Cross-sample: at least one sample must contain ``append_tool``
+    - Per-sample: every sample must contain `rollback`, plus `append_user`
+      / `append_system` when those roles are allowed.
+    - Cross-sample: at least one sample must contain `append_tool`
       (model-dependent on emitting a tool_call).
     """
     allowed_roles = list(input.args.tito_allowed_append_roles)

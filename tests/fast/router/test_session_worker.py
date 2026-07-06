@@ -1,6 +1,6 @@
 """Unit tests for the session worker's op dispatch / reply encoding (no process spawn).
 
-Drives ``SessionWorker.handle`` in-process against a real ``SessionCore`` (real
+Drives `SessionWorker.handle` in-process against a real `SessionCore` (real
 tokenizer) and a mock backend. The full chat-through-a-spawned-worker path is
 covered by the multi-process equivalence tests.
 """

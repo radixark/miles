@@ -7,7 +7,7 @@ These tests intentionally stay narrow:
 - only session/TITO plumbing + mismatch taxonomy checks
 
 Detailed template correctness remains covered by the lower-level chat-template
-tests in ``tests/fast/utils/chat_template_utils/``.
+tests in `tests/fast/utils/chat_template_utils/`.
 """
 
 from __future__ import annotations

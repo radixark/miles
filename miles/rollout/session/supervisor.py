@@ -1,12 +1,12 @@
 # doc-dev: docs/developer/multi-process-session-server.md
 """Supervisor for the multi-process session server — the process-lifecycle layer.
 
-- Runs in the rollout process and is the only way the session server runs; ``--session-server-workers=1`` (the default) is simply N=1, not a separate chassis.
-- ``start()`` spawns (``"spawn"`` context) N workers + 1 router, one ``socket.socketpair`` per worker, then closes every socket end the parent holds — so a child death is observable as EOF on the surviving peer.
-- Readiness: waits until the router's ``/health`` reports all workers healthy, raising early if a child dies during startup (e.g. while loading its tokenizer) or the deadline elapses; a failed ``start()`` tears down whatever it already spawned.
+- Runs in the rollout process and is the only way the session server runs; `--session-server-workers=1` (the default) is simply N=1, not a separate chassis.
+- `start()` spawns (`"spawn"` context) N workers + 1 router, one `socket.socketpair` per worker, then closes every socket end the parent holds — so a child death is observable as EOF on the surviving peer.
+- Readiness: waits until the router's `/health` reports all workers healthy, raising early if a child dies during startup (e.g. while loading its tokenizer) or the deadline elapses; a failed `start()` tears down whatever it already spawned.
 - A monitor thread records the first child death and tears the whole group down (fail-fast).
-- ``check()``, called on the rollout path, re-raises that recorded failure so a dead worker fails the rollout loudly instead of hanging requests routed to its shard.
-- ``shutdown()`` is idempotent and thread-safe (a concurrent caller blocks until teardown completes) — SIGTERM, a short grace period, then SIGKILL — and is also registered via ``atexit``, so no orphan processes survive.
+- `check()`, called on the rollout path, re-raises that recorded failure so a dead worker fails the rollout loudly instead of hanging requests routed to its shard.
+- `shutdown()` is idempotent and thread-safe (a concurrent caller blocks until teardown completes) — SIGTERM, a short grace period, then SIGKILL — and is also registered via `atexit`, so no orphan processes survive.
 """
 
 from __future__ import annotations

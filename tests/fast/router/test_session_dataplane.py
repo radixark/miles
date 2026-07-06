@@ -1,7 +1,7 @@
 """Data-plane integration: router + N worker shards over real socketpair IPC.
 
-Wires the router to N ``SessionWorker`` shards (each its own ``SessionRegistry``)
-over real ``socket.socketpair`` IPC channels in one event loop, and drives the
+Wires the router to N `SessionWorker` shards (each its own `SessionRegistry`)
+over real `socket.socketpair` IPC channels in one event loop, and drives the
 router app via httpx ASGITransport. This exercises hash routing, IPC framing,
 worker dispatch, TITO state per shard, and equivalence with the single-process
 server — without OS-process spawning (that lifecycle is the supervisor's job,

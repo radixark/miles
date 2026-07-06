@@ -1,7 +1,7 @@
 """Single-process FastAPI adapter for the session server.
 
 Thin layer: converts each HTTP request to primitive inputs, calls
-``SessionCore``. All session/TITO logic lives in ``core``.
+`SessionCore`. All session/TITO logic lives in `core`.
 """
 
 import logging
