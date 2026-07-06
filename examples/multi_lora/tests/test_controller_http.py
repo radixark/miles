@@ -7,7 +7,7 @@ import aiohttp
 from aiohttp import web
 import pytest
 
-from examples.multi_lora.controller import (
+from miles.utils.multi_lora import (
     MultiLoRAControllerLogic,
     MultiLoRAHTTPServer,
     make_rid,

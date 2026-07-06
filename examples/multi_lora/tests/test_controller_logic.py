@@ -2,7 +2,7 @@
 
 from miles.utils.adapter_config import AdapterState
 
-from examples.multi_lora.controller import MultiLoRAControllerLogic, make_rid, parse_adapter
+from miles.utils.multi_lora import MultiLoRAControllerLogic, make_rid, parse_adapter
 
 
 def test_rid_roundtrip_preserves_names_with_underscores():
