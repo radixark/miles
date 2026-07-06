@@ -185,14 +185,14 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         num_gpus_per_node = 1
         multinode = False
     else:
-        # GB300: PP=8 * EP=8 = 64 GPUs (16 nodes) to fit the rack (torch_dist is
-        # parallelism-agnostic on load). first=14/last=16 keeps DSA PP-stage starts
-        # on computing layers (same layout as training).
+        # torch_dist is parallelism-agnostic on load, so size EP to whatever
+        # world size the hardware provides.
+        world_size = args.num_nodes * args.num_gpus_per_node
         extra_args += (
-            "--pipeline-model-parallel-size 8 "
-            "--expert-model-parallel-size 8 "
-            "--decoder-first-pipeline-num-layers 14 "
-            "--decoder-last-pipeline-num-layers 16 "
+            "--pipeline-model-parallel-size 4 "
+            f"--expert-model-parallel-size {world_size // 4} "
+            "--decoder-first-pipeline-num-layers 18 "
+            "--decoder-last-pipeline-num-layers 20 "
         )
 
     U.convert_checkpoint(
