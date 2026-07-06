@@ -246,11 +246,14 @@ def _register_adapter(adapter: RegisteredAdapter, model) -> None:
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
 
-    ckpt_root = config.save / "checkpoints"
-    ckpt, step = find_latest_checkpoint(ckpt_root)
+    if config.save is not None:
+        ckpt_root = config.save / "checkpoints"
+        ckpt, step = find_latest_checkpoint(ckpt_root)
+    else:
+        ckpt = None
 
     if ckpt is None:
-        logger.info(f"{log_prefix} no checkpoint under {ckpt_root}, starting from random init")
+        logger.info(f"{log_prefix} no checkpoint, starting from random init")
     else:
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=True)
         loaded = load_adapter(model, slot, state_dict)
