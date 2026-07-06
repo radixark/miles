@@ -165,6 +165,10 @@ class IpcChannel:
         self._send_q.put_nowait(_LEN.pack(len(frame)) + frame)
 
     async def _writer_loop(self) -> None:
+        # finally-teardown: however this loop exits (expected socket error or an
+        # unexpected bug), the channel must be torn down so pending futures fail
+        # instead of hanging. The exit reason is carried into IpcChannelClosed.
+        reason = "writer loop exited"
         try:
             while True:
                 frame = await self._send_q.get()
@@ -173,9 +177,14 @@ class IpcChannel:
         except asyncio.CancelledError:
             raise
         except (ConnectionError, OSError) as exc:
-            self._teardown(IpcChannelClosed(f"write failed: {exc!r}"))
+            reason = f"write failed: {exc!r}"
+        except Exception as exc:
+            reason = f"writer loop crashed: {exc!r}"
+        finally:
+            self._teardown(IpcChannelClosed(reason))
 
     async def _reader_loop(self) -> None:
+        reason = "reader loop exited"
         try:
             while True:
                 (length,) = _LEN.unpack(await self._reader.readexactly(_LEN.size))
@@ -187,9 +196,13 @@ class IpcChannel:
         except asyncio.CancelledError:
             raise
         except asyncio.IncompleteReadError:
-            self._teardown(IpcChannelClosed("peer closed connection"))
+            reason = "peer closed connection"
         except (IpcError, ConnectionError, OSError) as exc:
-            self._teardown(IpcChannelClosed(f"read failed: {exc!r}"))
+            reason = f"read failed: {exc!r}"
+        except Exception as exc:
+            reason = f"reader loop crashed: {exc!r}"
+        finally:
+            self._teardown(IpcChannelClosed(reason))
 
     def _dispatch(self, mtype: int, request_id: int, payload: bytes) -> None:
         if mtype == _TYPE_REPLY:
