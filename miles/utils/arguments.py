@@ -215,23 +215,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--restore-weights-from-fp32-main",
+                "--rematerialize-param-from-master-weight",
                 action="store_true",
                 help=(
                     "Colocate only: drop the pinned CPU weight copy. update_weights reads live GPU "
-                    "weights (param buffer stays resident until then), and wake_up rebuilds them from "
-                    "the distributed optimizer's fp32 main params, bit-identical to the step-end cast."
+                    "weights (param buffer stays resident until then), and wake_up rematerializes them "
+                    "from the optimizer's fp32 master weights, bit-identical to the step-end cast."
                 ),
             )
             parser.add_argument(
-                "--restore-weights-from-fp32-main-check-cycles",
-                type=int,
-                default=2,
-                help=(
-                    "Verify the first N restore cycles of --restore-weights-from-fp32-main with "
-                    "per-tensor SHA256 recorded at backup time. 0 disables; large values verify "
-                    "every cycle (CI)."
-                ),
+                "--check-rematerialize-param-from-master-weight",
+                action="store_true",
+                help=("Verify the first two rematerialize cycles with per-tensor SHA256 recorded at " "backup time."),
             )
             parser.add_argument(
                 "--megatron-to-hf-mode",
@@ -2366,14 +2361,14 @@ def miles_validate_args(args):
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
-    if args.restore_weights_from_fp32_main:
+    if args.rematerialize_param_from_master_weight:
         assert args.colocate and args.offload_train
         assert args.use_distributed_optimizer
         assert args.enable_weights_backuper
         assert not args.keep_old_actor
         assert (
             args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
-        ), "--restore-weights-from-fp32-main does not support ref/teacher model tags"
+        ), "--rematerialize-param-from-master-weight does not support ref/teacher model tags"
         assert (
             not args.use_precision_aware_optimizer
         ), "precision-aware optimizers keep main params internally; _copy_main_params_to_model_params is a no-op"

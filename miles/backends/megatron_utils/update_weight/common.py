@@ -261,7 +261,7 @@ def named_params_and_buffers(
 
 
 def named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
-    """Tensors not reconstructable from fp32 main params: expert_bias buffers and
+    """Tensors not rematerializable from fp32 master weights: expert_bias buffers and
     fp32-dtype params (their optimizer "main" is a view of the param itself)."""
     for vp_stage, model_module in enumerate(model):
         for name, buffer in model_module.named_buffers():
