@@ -236,8 +236,7 @@ class MegatronTrainRayActor(TrainRayActor):
         destroy_process_groups()
 
         if self.args.rematerialize_param_from_master_weight and self.role == "actor":
-            # Params stay resident for update_weights (which the critic never runs);
-            # dropped there, rebuilt at the next train step.
+            # Keep params resident for update_weights, which pauses them afterwards.
             torch_memory_saver.pause(tag="grad_buffer")
             torch_memory_saver.pause(tag="default")
         else:

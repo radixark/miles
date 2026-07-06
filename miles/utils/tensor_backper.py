@@ -136,8 +136,7 @@ class _TensorBackuperMainCast(TensorBackuper):
 
     def get(self, tag: str):
         assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
-        # update_weights runs while non-param TMS regions are paused: extras must
-        # be read from their pinned backup, params are live GPU tensors.
+        # Extras are paused during update_weights: read them from the pinned backup.
         out = {}
         for name, tensor in self._source_getter():
             backup = self._extras_backup_by_id.get(id(tensor))
