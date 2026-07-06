@@ -36,13 +36,6 @@ async def main(args):
     assert not args.colocate, "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     configure_logger()
 
-    upstream_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    controller = create_controller(args, upstream_url)
-    port = await controller.start.remote()
-    host = await controller.http_host.remote()
-    args.sglang_router_ip = host
-    args.sglang_router_port = port
-
     args.rollout_function_path = ROLLOUT_FUNCTION_PATH
     args.data_source_path = DATA_SOURCE_PATH
     args.rollout_global_dataset = True
@@ -50,6 +43,18 @@ async def main(args):
     pgs = create_placement_groups(args)
     init_tracking(args)
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+
+    # Create the controller AFTER the rollout manager (which sets
+    # args.sglang_router_ip/port to the Miles Router). The controller proxies
+    # to the Miles Router (the upstream), then we override args.sglang_router_ip/port
+    # to the controller so rollout requests go through it (block/dummy by adapter).
+    upstream_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    controller = create_controller(args, upstream_url)
+    port = await controller.start.remote()
+    host = await controller.http_host.remote()
+    args.sglang_router_ip = host
+    args.sglang_router_port = port
+
     actor_model, _ = await create_training_models(args, pgs, rollout_manager)
 
     # Register adapters from CLI. The loop's first reconcile_adapters loads them
