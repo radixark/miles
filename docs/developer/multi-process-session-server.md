@@ -9,7 +9,7 @@ This is the demands-and-targets spec for the opt-in multi-process session server
 
 ## Goal
 
-Multi-turn agent rollouts must not be bottlenecked by the session server. Under R3 (`routed_experts` / `indexer_topk`) every chat turn returns a 100+ MiB body, and its `json.loads` + validation is pure-Python, GIL-bound work — a single process serializes every session's parse on one event loop, and threads add no parse throughput under the GIL. What we want is session throughput that scales with CPU cores; the only lever is more interpreters. So: shard sessions across worker processes, one GIL each. One topology at every worker count — a supervisor spawns N workers plus a thin router; `--session-server-workers=1` (the default) is simply N=1, not a separate chassis.
+Multi-turn agent rollouts must not be bottlenecked by the session server. Under R3 (`routed_experts` / `indexer_topk`) every chat turn returns a 100+ MiB body, and its `json.loads` + validation is pure-Python, GIL-bound work — a single process serializes every session's parse on one event loop, and threads add no parse throughput under the GIL. What we want is session throughput that scales with CPU cores; the only lever is more interpreters. So: shard sessions across worker processes, one GIL each. The process layout is the same at every worker count: a supervisor spawns N workers behind one thin router.
 
 Measured at the production shape (32 sessions × 50 turns, final-turn body ≈ 134 MiB): 16 workers give **7.2–7.6×** wall-time/throughput over single-process, with the workers pegged (~94% CPU, the intended bottleneck) and the router at ~5% (`tests/benchmark/bench_session_server_overhead.py`, landing separately).
 
@@ -17,7 +17,7 @@ If the session server is the bottleneck in a run (`miles-session-worker` process
 
 ## Functional requirements
 
-- **One chassis.** There is no separate single-process server: `--session-server-workers=1` runs the same supervisor topology with one worker. A second chassis would duplicate the route surface and the proxy stack and need permanent equivalence tests to keep the two from drifting.
+- **Single topology.** The server always runs as a supervisor spawning N workers behind one thin router (`--session-server-workers`).
 - **Process-stable sticky routing.** Sessions are stateful (the TITO trajectory accumulates across turns), so every turn of a session must reach the same worker; router and workers must agree on the owner of a `session_id` without coordination — a stable hash modulo worker count, never the builtin `hash()` (salted per process by `PYTHONHASHSEED`).
 - **TITO correctness under concurrency preserved exactly.** The per-session `asyncio.Lock`, the `closing` re-checks, and the `num_assistant`-mismatch skip path in `SessionCore.chat_completions` must remain.
 - **Worker death is a hard, fast error.** A dead worker owns a hash shard, so an undetected death turns every request to that shard into a black hole; the supervisor's `check()` must be called at the start of **both** `generate()` and `eval()` so either phase fails loudly instead of hanging.
@@ -70,11 +70,10 @@ Sessions are sticky-by-hash, so the chat path only ever carries a single turn's 
 
 ## Behavior parity
 
-The server must match the pre-extraction single-process server's observable behavior, with exactly three known deltas (the first two introduced by the `SessionCore` extraction and inherent to multi-process, where the worker receives already-read bytes over IPC):
+The server must match the pre-extraction single-process server's observable behavior, with exactly two known deltas (introduced by the `SessionCore` extraction and inherent to multi-process, where the worker receives already-read bytes over IPC):
 
 - **Body-read timing / lock scope.** The route reads the body before entering `SessionCore.chat_completions` instead of inside `session.lock`; JSON parsing, TITO mutation, and record writes remain under the lock, proxying remains outside it. Consequences: a chat to a missing/closing session consumes the full body before the error returns, and a DELETE-vs-chat race during upload more likely rejects the chat (the outcome was already non-deterministic; the race-condition tests pass).
 - **Per-request debug logging removed** (the `debug_request_logger` middleware and two DELETE-path `debug` lines). Logging-only; no contract impact.
-- **workers=1 topology.** The former in-process chassis is gone: even one worker runs behind the router across IPC (a per-request hop measured in µs against LLM-turn latencies) and the server is two child processes instead of one.
 
 ## Design targets
 
