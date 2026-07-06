@@ -185,7 +185,7 @@ class SessionCore:
             raise UpstreamResponseError(
                 "meta_info and output_token_logprobs must be in choice (requires logprobs=True)"
             )
-        assistant_message = choice.get("message", {})
+        assistant_message = choice.get("message") or {}
         if assistant_message.get("content") is None:
             raise UpstreamResponseError(
                 "assistant message content is None, when tool call parser failed SGLang should still return "

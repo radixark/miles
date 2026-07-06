@@ -150,3 +150,22 @@ class TestSessionProxy:
         )
         assert resp.status_code == 400
         assert resp.json()["error"].startswith("invalid JSON body:")
+
+    def test_chat_upstream_null_message_returns_502(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+
+        fixture_response = MockSGLangServer._compute_chat_completions_response
+
+        def null_message_response(self, payload: dict) -> dict:
+            response = fixture_response(self, payload)
+            response["choices"][0]["message"] = None
+            return response
+
+        with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=null_message_response):
+            resp = requests.post(
+                f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+                timeout=10.0,
+            )
+        assert resp.status_code == 502
+        assert "assistant message content is None" in resp.json()["error"]
