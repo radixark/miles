@@ -276,11 +276,10 @@ class DistBucketedWeightUpdateMixin:
         line up; only the source rank issues the engine RPCs / broadcasts.
         """
         from miles.ray.multi_lora_controller import get_multi_lora_controller
-        from miles.utils.adapter_config import AdapterState
+
 
         adapters = ray.get(get_multi_lora_controller().active_adapters.remote())
         for adapter in adapters.values():
-            if adapter.state == AdapterState.RUNNING:
                 # Always upsert: SGLang registers the adapter on first send and
                 # overwrites it in place on every later send.
                 self._send_one_multi_lora_adapter(adapter, upsert=True)
