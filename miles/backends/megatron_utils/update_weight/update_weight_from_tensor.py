@@ -163,6 +163,30 @@ class _UpdateWeightsProfiler:
             for i, s in enumerate(samples)
         ][::stride]
         logger.info(f"update_weights memory series (gpu_used, actor, engines) every {stride * 2}s: {series}")
+        self._release_ladder()
+
+    @staticmethod
+    def _release_ladder() -> None:
+        def used_gb():
+            free, total = torch.cuda.mem_get_info()
+            return round((total - free) / 2**30, 2)
+
+        def stats():
+            s = torch.cuda.memory_stats()
+            return {
+                k: round(s[f"{k}.all.current"] / 2**30, 2)
+                for k in ("reserved_bytes", "active_bytes", "inactive_split_bytes")
+            }
+
+        before, stats_before = used_gb(), stats()
+        torch.cuda.ipc_collect()
+        after_ipc = used_gb()
+        torch.cuda.empty_cache()
+        after_ec, stats_after = used_gb(), stats()
+        logger.info(
+            f"update_weights release ladder (gpu_used GB): {before} -> ipc_collect {after_ipc} "
+            f"-> empty_cache {after_ec} | stats before {stats_before} after {stats_after}"
+        )
 
 
 _NOOP_PROFILER = _UpdateWeightsProfiler(enabled=False)
