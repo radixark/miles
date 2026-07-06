@@ -399,13 +399,34 @@ class SGLangEngine(RayActor):
         )
 
     def flush_cache(self):
-        """Flush the cache of the server."""
+        """Flush the cache of the server, actively draining pending requests first.
+
+        The sglang scheduler only performs ``/flush_cache`` when there are zero
+        queued and zero running requests; otherwise it returns HTTP 400 (see
+        ``Scheduler.flush_cache``). Under ``--colocate`` the engine must flush and
+        free its KV memory at every rollout->train offload, so any request that
+        has not drained blocks the flush.
+
+        ``abort`` (``sglang_rollout.abort``) is issued before offload, but aborting
+        a *running* request only sets ``to_abort=True`` and relies on one more
+        decode forward pass to reap it. A single request that never reaches that
+        decode step (wedged engine, torn-down batch) keeps ``#running-req`` at 1
+        and the old passive retry loop then times out with
+        ``TimeoutError: Timeout while flushing cache`` — killing colocate runs
+        (see the ``godly-eddy`` / ``brave-altar`` failures: ``#queue-req: 0,
+        #running-req: 1``).
+
+        Fix: on each retry, re-issue ``/abort_request {abort_all: True}`` so the
+        scheduler keeps re-marking the lingering request every decode step until
+        the batch drains, turning the passive wait into an active drain.
+        """
         if self.node_rank != 0:
             return
+        base_url = f"http://{self.server_host}:{self.server_port}"
         # flush cache will not return status_code 200 when there are pending requests
-        for _ in range(60):
+        for attempt in range(60):
             try:
-                response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
+                response = requests.get(f"{base_url}/flush_cache")
                 if response.status_code == 200:
                     break
             except NewConnectionError as e:
@@ -414,6 +435,16 @@ class SGLangEngine(RayActor):
                 logger.info(f"Error flushing cache: {e}")
                 time.sleep(1)
                 continue
+
+            # Not flushed yet: requests are still queued/running. Re-issue an
+            # abort so the scheduler re-marks any lingering request for reaping
+            # on the next decode step, instead of passively waiting for a decode
+            # pass that a wedged request may never reach.
+            try:
+                requests.post(f"{base_url}/abort_request", json={"abort_all": True})
+            except Exception as e:
+                logger.info(f"Error aborting pending requests during flush_cache: {e}")
+            time.sleep(1)
         else:
             raise TimeoutError("Timeout while flushing cache.")
 
