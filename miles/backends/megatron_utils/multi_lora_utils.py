@@ -162,6 +162,10 @@ def save_multi_lora_checkpoints(
         log_prefix = f"[multilora] ({adapter_name})"
         iteration = adapter_steps[adapter_name]
 
+        if config.save is None:
+            logger.info(f"{log_prefix} skipping checkpoint (no save dir configured)")
+            continue
+
         final_dir = config.save / "checkpoints" / f"step_{iteration}"
         tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
         if is_dp_rank_0:
