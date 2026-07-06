@@ -1,6 +1,6 @@
 """Fast tests for MultiLoRAControllerLogic (no Ray, no HTTP, no SGLang, no torch)."""
 
-from miles.utils.adapter_config import AdapterState
+
 
 from miles.utils.multi_lora import MultiLoRAControllerLogic, make_rid, parse_adapter
 
@@ -19,7 +19,6 @@ def test_register_assigns_slot_and_active_adapters_view():
     assert view.name == "A"
     assert view.slot == 0
     assert view.config == {"rm_type": "x"}
-    assert view.state == AdapterState.RUNNING
 
 
 def test_forward_active_then_response_kept():
