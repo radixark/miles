@@ -16,7 +16,7 @@ from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.hf_config import load_hf_config
-from miles.utils.memory_utils import clear_memory, print_memory, start_cpu_memory_profiler
+from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -87,11 +87,6 @@ class MegatronTrainRayActor(TrainRayActor):
             )
         self.prof = TrainProfiler(args)
 
-        if args.record_memory_history:
-            start_cpu_memory_profiler(
-                output_path=f"{args.memory_snapshot_dir}/cpu_memory_{socket.gethostname()}_rank{dist.get_rank()}.csv"
-            )
-
         # read config and tokenizer serialized to prevent concurrent writing bug.
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
@@ -125,11 +120,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        print_memory("before init_model_and_optimizer")
         self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
             args, role
         )
-        print_memory("after init_model_and_optimizer")
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -161,7 +154,6 @@ class MegatronTrainRayActor(TrainRayActor):
         self._active_model_tag: str | None = "actor"
         if self._enable_weight_backup:
             self.weights_backuper.backup("actor")
-            print_memory("after weights backup")
 
         if with_ref:
             self.load_other_checkpoint("ref", args.ref_load)
@@ -405,7 +397,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
             # Train
             self._set_replay_stage("replay_backward")
-            print_memory("before actor train step")
             with timer("actor_train"):
                 train(
                     rollout_id,
@@ -415,7 +406,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     data_iterator,
                     num_microbatches,
                 )
-            print_memory("after actor train step")
 
             self.prof.step(rollout_id=rollout_id)
 
