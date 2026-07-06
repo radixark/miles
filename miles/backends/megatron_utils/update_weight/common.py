@@ -272,6 +272,47 @@ def named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str
                 yield f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}", param
 
 
+def build_main_cast_context(args: Namespace, model: Sequence[torch.nn.Module], optimizer):
+    from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+    from miles.utils.tensor_backper import MainCastContext
+
+    assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
+    extras = list(named_restore_extras(model))
+    extras_bytes = sum(t.numel() * t.element_size() for _, t in extras)
+    logger.info(
+        f"rematerialize-param-from-master-weight: {len(extras)} extra tensors "
+        f"({extras_bytes / 2**20:.1f} MiB) kept in pinned backup: "
+        f"{[name for name, _ in extras[:20]]}"
+    )
+    return MainCastContext(
+        optimizer=optimizer,
+        model_chunks=model,
+        extras_getter=lambda: named_restore_extras(model),
+        rematerializable_ids=_assert_rematerialize_coverage(model, extras),
+        check=args.check_rematerialize_param_from_master_weight,
+    )
+
+
+def _assert_rematerialize_coverage(model: Sequence[torch.nn.Module], extras: list[tuple[str, torch.Tensor]]) -> set:
+    """A param outside the DDP buffers (restored via cast + all-gather) and
+    the extras backup would silently come back as garbage. Optimizer-side
+    structures only cover this rank's owned shard under DP>1."""
+    restorable = {id(t) for _, t in extras}
+    for model_module in model:
+        for buffer in model_module.buffers + model_module.expert_parallel_buffers:
+            restorable.update(id(p) for p in buffer.params)
+    uncovered = []
+    for model_module in model:
+        for name, param in model_module.named_parameters():
+            if id(param) not in restorable:
+                uncovered.append(name)
+    assert not uncovered, (
+        f"--rematerialize-param-from-master-weight cannot restore {len(uncovered)} params "
+        f"(not in the DDP param buffers nor in the extras backup): {uncovered[:10]}"
+    )
+    return restorable
+
+
 def _maybe_get_cpu_backup(x: torch.Tensor):
     from torch_memory_saver import torch_memory_saver
 

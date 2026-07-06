@@ -26,7 +26,7 @@ from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
-from ...utils.tensor_backper import MainCastContext, TensorBackuper
+from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
@@ -38,7 +38,7 @@ from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
-from .update_weight.common import named_params_and_buffers, named_restore_extras
+from .update_weight.common import build_main_cast_context, named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
@@ -144,22 +144,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         main_cast_ctx = None
         if args.rematerialize_param_from_master_weight:
-            assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
-            extras = list(named_restore_extras(self.model))
-            extras_bytes = sum(t.numel() * t.element_size() for _, t in extras)
-            logger.info(
-                f"rematerialize-param-from-master-weight: {len(extras)} extra tensors "
-                f"({extras_bytes / 2**20:.1f} MiB) kept in pinned backup: "
-                f"{[name for name, _ in extras[:20]]}"
-            )
-            rematerializable_ids = self._assert_restore_coverage(extras)
-            main_cast_ctx = MainCastContext(
-                optimizer=self.optimizer,
-                model_chunks=self.model,
-                extras_getter=lambda: named_restore_extras(self.model),
-                rematerializable_ids=rematerializable_ids,
-                check=args.check_rematerialize_param_from_master_weight,
-            )
+            main_cast_ctx = build_main_cast_context(args, self.model, self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
             source_getter=lambda: named_params_and_buffers(
@@ -259,25 +244,6 @@ class MegatronTrainRayActor(TrainRayActor):
         clear_memory()
         reload_process_groups()
         print_memory("after wake_up model")
-
-    def _assert_restore_coverage(self, extras: list[tuple[str, torch.Tensor]]) -> set:
-        """A param outside the DDP buffers (restored via cast + all-gather) and
-        the extras backup would silently come back as garbage. Optimizer-side
-        structures only cover this rank's owned shard under DP>1."""
-        restorable = {id(t) for _, t in extras}
-        for model_module in self.model:
-            for buffer in model_module.buffers + model_module.expert_parallel_buffers:
-                restorable.update(id(p) for p in buffer.params)
-        uncovered = []
-        for model_module in self.model:
-            for name, param in model_module.named_parameters():
-                if id(param) not in restorable:
-                    uncovered.append(name)
-        assert not uncovered, (
-            f"--rematerialize-param-from-master-weight cannot restore {len(uncovered)} params "
-            f"(not in the DDP param buffers nor in the extras backup): {uncovered[:10]}"
-        )
-        return restorable
 
     @property
     def _enable_weight_backup(self) -> bool:
