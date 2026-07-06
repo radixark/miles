@@ -1829,12 +1829,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-server-workers",
                 type=int,
-                default=1,
+                default=8,
                 help="Number of session-server worker processes; sessions are sharded across "
-                "workers behind a thin router (1, the default, is the same topology with one "
-                "worker). If the session server is the bottleneck, raise this: each worker is "
-                "its own interpreter, so GIL-bound tokenization and response deserialization "
-                "scale with CPU cores.",
+                "workers behind a thin router. Each worker is its own interpreter, so GIL-bound "
+                "tokenization and response deserialization scale with CPU cores; idle workers "
+                "cost almost no CPU. Raise it if the session server is the bottleneck; lower it "
+                "to trim memory (each worker loads its own tokenizer).",
             )
             parser.add_argument(
                 "--tito-model",
