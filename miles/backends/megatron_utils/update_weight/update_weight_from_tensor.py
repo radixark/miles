@@ -1,6 +1,10 @@
 import logging
+import os
+import time
 from argparse import Namespace
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import ray
@@ -28,6 +32,47 @@ from .update_weight_from_distributed.broadcast import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _UpdateWeightsProfiler:
+    """Phase breakdown of update_weights, gated by MILES_PROFILE_UPDATE_WEIGHTS=1.
+    Sections are fenced with cuda synchronize, which serializes otherwise-async
+    phases - enable for measurement runs only."""
+
+    def __init__(self, enabled: bool | None = None):
+        if enabled is None:
+            enabled = os.environ.get("MILES_PROFILE_UPDATE_WEIGHTS", "0") not in ("0", "")
+        self.enabled = enabled
+        self._sections: dict[str, float] = defaultdict(float)
+        self._chunks: list[tuple[float, str]] = []
+
+    @contextmanager
+    def section(self, name: str):
+        if not self.enabled:
+            yield
+            return
+        torch.cuda.synchronize()
+        start = time.perf_counter()
+        yield
+        torch.cuda.synchronize()
+        self._sections[name] += time.perf_counter() - start
+
+    def record_chunk(self, label: str, seconds: float) -> None:
+        if self.enabled:
+            self._chunks.append((seconds, label))
+
+    def report(self, total: float) -> None:
+        if not self.enabled or dist.get_rank() != 0:
+            return
+        sections = " | ".join(
+            f"{name} {sec:.1f}s" for name, sec in sorted(self._sections.items(), key=lambda kv: -kv[1])
+        )
+        logger.info(f"update_weights profile: total {total:.1f}s ({len(self._chunks)} chunks) | {sections}")
+        top = ", ".join(f"{label} {sec:.2f}s" for sec, label in sorted(self._chunks, reverse=True)[:10])
+        logger.info(f"update_weights slowest chunks: {top}")
+
+
+_NOOP_PROFILER = _UpdateWeightsProfiler(enabled=False)
 
 
 class UpdateWeightFromTensor:
@@ -188,24 +233,36 @@ class UpdateWeightFromTensor:
         # calls that would otherwise prep / re-quantize fresh base bytes.
         skip_base_sync = self.is_lora and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
 
+        prof = _UpdateWeightsProfiler()
+        start = time.perf_counter()
+
         if rank == 0:
             mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            with prof.section("pause_and_flush"):
+                ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
             if not skip_base_sync:
-                begin_weight_update(self.rollout_engines)
+                with prof.section("session_begin"):
+                    begin_weight_update(self.rollout_engines)
         dist.barrier(group=get_gloo_group())
 
-        megatron_local_weights = self.weights_getter()
+        with prof.section("weights_getter"):
+            megatron_local_weights = self.weights_getter()
 
         if not skip_base_sync:
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
-                megatron_local_weights, weight_type="base"
-            ):
-                refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
-                results = ray.get(refs)
+            chunks = self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights, weight_type="base")
+            while True:
+                chunk_start = time.perf_counter()
+                with prof.section("convert"):
+                    hf_named_tensors = next(chunks, None)
+                if hf_named_tensors is None:
+                    break
+                refs, long_lived_tensors = self._send_base_params(hf_named_tensors, prof=prof)
+                with prof.section("engine_wait"):
+                    results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
+                prof.record_chunk(hf_named_tensors[0][0], time.perf_counter() - chunk_start)
 
         if self.is_lora:
             # SGLang's load_lora_adapter_from_tensors expects the full adapter in
@@ -237,17 +294,21 @@ class UpdateWeightFromTensor:
         if rank == 0:
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
-                end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+                with prof.section("session_end"):
+                    end_weight_update(self.rollout_engines)
+            with prof.section("continue_generation"):
+                ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
+        prof.report(time.perf_counter() - start)
 
-    def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def _send_base_params(self, hf_named_tensors, prof=_NOOP_PROFILER) -> tuple[list[ObjectRef], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=hf_named_tensors,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
             weight_version=self.weight_version,
+            prof=prof,
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
@@ -293,6 +354,7 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    prof: "_UpdateWeightsProfiler" = _NOOP_PROFILER,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -315,21 +377,24 @@ def _send_to_colocated_engine(
 
     serialized_tensors: list = []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
-        flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
-        flattened_tensor_data = {
-            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-            "metadata": flattened_tensor_bucket.get_metadata(),
-        }
+        with prof.section("flatten"):
+            flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
+            flattened_tensor_data = {
+                "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+                "metadata": flattened_tensor_bucket.get_metadata(),
+            }
         long_live_tensors.append(flattened_tensor_data)
-        serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
+        with prof.section("serialize"):
+            serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
 
     serialized_named_tensors = [None] * dist.get_world_size(ipc_gather_group) if is_gather_src else None
-    dist.gather_object(
-        serialized_tensors,
-        object_gather_list=serialized_named_tensors,
-        dst=ipc_gather_src,
-        group=ipc_gather_group,
-    )
+    with prof.section("gather_object"):
+        dist.gather_object(
+            serialized_tensors,
+            object_gather_list=serialized_named_tensors,
+            dst=ipc_gather_src,
+            group=ipc_gather_group,
+        )
 
     refs = []
     if is_gather_src:
