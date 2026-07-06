@@ -40,6 +40,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --multi-lora-adapter "gsm8k" "examples/multi_lora/adapters/gsm8k.yaml" \
    --multi-lora-disable-service-mode \
    --sglang-lora-backend triton \
+   --pause-generation-mode in_place \
    \
    --apply-chat-template \
    --rollout-shuffle \
