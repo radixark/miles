@@ -29,7 +29,6 @@ from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_fil
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.sglang_rollout import (
     GenerateState,
-    abort,
     generate_and_rm_group,
     get_model_url,
 )
@@ -189,7 +188,7 @@ async def generate_rollout_multi_lora_async(
         if len(data) < target_data_size:
             await asyncio.sleep(0.01)
 
-    aborted_samples = await abort(args, rollout_id)
+    aborted_samples = []
 
     data = sorted(data, key=lambda g: g[0].index)
     await state.hooks.on_generate_rollout_complete(rollout_id, data, aborted_samples)
