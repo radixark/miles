@@ -83,7 +83,7 @@ async def main(args):
         await actor_model.reconcile_adapters()
         await actor_model.update_weights()
 
-        rollout_data = await rollout_manager.generate(rollout_id)
+        rollout_data = await rollout_manager.generate.remote(rollout_id)
         await actor_model.train(rollout_id, rollout_data)
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
