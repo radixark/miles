@@ -1,13 +1,9 @@
 """Logic layer of the session server: ``SessionCore``.
 
-- Each operation takes a request's primitives (HTTP method, query string, headers, already-read body bytes), mutates session state and/or proxies upstream via the injected ``backend``, and returns a Starlette ``Response``.
-- Knows nothing about HTTP servers or routing; the FastAPI adapter (``sessions.py`` + ``server.py``) reads each request and calls these methods.
-- One ``SessionCore`` owns exactly one ``SessionRegistry`` (the per-session TITO/trajectory state) and one proxy ``backend``.
-- Operations: ``health``, ``create_session``, ``get_session``, ``delete_session``, ``chat_completions``, and a generic ``proxy``.
-- Client-facing chat responses are rendered by ``_chat_client_response``, which strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) copy-on-write; the stored ``SessionRecord`` keeps the full upstream response, which is what ``GET /sessions/{id}`` serves to the training data path.
-- Correctness-critical path: ``chat_completions`` — the per-session lock is held for request prep and state update but never during the proxy call; the ``closing`` re-checks and the ``num_assistant`` mismatch check gate concurrent DELETE/chat.
+HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each request into primitives and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``.
 
-Structural extraction of the previous single-process route handlers with one deliberate contract change: chat responses no longer carry the R3 replay payloads (they are replay-only inputs, consumed from the records). All other observable behavior (status codes, error shapes, recorded trajectory) is unchanged.
+- ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
+- ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 """
 
 import json
