@@ -215,7 +215,6 @@ def execute(args: ScriptArgs):
                 )
                 misc_env_vars |= {
                     "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-                    "NVTE_ROCM_ENABLE_FP8_BLOCK_SCALING": "1",
                     # keep Ray from blanking HIP/CUDA visibility for the job entrypoint
                     "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES": "1",
                     "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
