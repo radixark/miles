@@ -437,8 +437,17 @@ class FSDPTrainRayActor(TrainRayActor):
         with inverse_timer("train_wait"), timer("train"):
             rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             if self.args.debug_rollout_only:
+                if getattr(self.args, "transfer_backend", "ray") == "mooncake":
+                    from miles.utils.data_transfer import release_mooncake_rollout_data
+
+                    release_mooncake_rollout_data(self.args, rollout_data)
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+
+        if getattr(self.args, "transfer_backend", "ray") == "mooncake":
+            from miles.utils.data_transfer import release_mooncake_rollout_data
+
+            release_mooncake_rollout_data(self.args, rollout_data)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,

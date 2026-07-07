@@ -282,8 +282,15 @@ def process_rollout_data(
     dp_size,
     witness_info: WitnessInfo | None,
 ):
+    if getattr(args, "transfer_backend", "ray") == "mooncake":
+        from miles.utils.data_transfer import get_mooncake_rollout_data
+
+        get_rollout_ref = lambda ref: get_mooncake_rollout_data(args, ref)
+    else:
+        get_rollout_ref = lambda ref: ray.get(ref.inner)
+
     if args.delay_split_train_data_by_dp:
-        raw = ray.get(rollout_data_ref.inner)
+        raw = get_rollout_ref(rollout_data_ref)
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
         raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
@@ -291,7 +298,7 @@ def process_rollout_data(
     else:
         assert len(rollout_data_ref) == dp_size
         assert witness_info is None
-        rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
+        rollout_data = get_rollout_ref(rollout_data_ref[dp_rank])
 
     partition = rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]

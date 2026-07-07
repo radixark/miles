@@ -74,6 +74,11 @@ async def train(args):
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
 
+        if getattr(args, "transfer_backend", "ray") == "mooncake":
+            from miles.utils.data_transfer import cleanup_mooncake_rollout_refs
+
+            cleanup_mooncake_rollout_refs(args, rollout_data_curr_ref)
+
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             await actor_model.save_model(
                 rollout_id,

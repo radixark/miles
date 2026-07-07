@@ -13,7 +13,11 @@ from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
-from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp
+from miles.ray.rollout.train_data_conversion import (
+    convert_samples_to_train_data,
+    put_unsplit_train_data,
+    split_train_data_by_dp,
+)
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -125,7 +129,7 @@ class RolloutManager:
         )
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
-            data_ref = Box(ray.put(data))
+            data_ref = put_unsplit_train_data(self.args, data, rollout_id=rollout_id)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)
