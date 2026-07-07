@@ -56,6 +56,19 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
+_DSV4_TE_PRECISION_CONFIG = """
+configs:
+  bf16:
+    transformer_engine_config_type: "TEQuantizationParams"
+    training_recipe: {}
+matchers:
+  dsa_indexer_weights_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.indexer.linear_weights_proj"
+    config: "bf16"
+""".strip()
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -563,6 +576,10 @@ def _train(args: ScriptArgs):
         # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
         fp32_scales = "0" if _is_blackwell(args) else "1"
         misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
+        # Keep the DSA indexer weights_proj (a TELinear) in BF16 on the trainer: blockwise
+        # fp8 on weights_proj is numerically unstable, so override it back to BF16 via TE.
+        if "--te-precision-config-file" not in args.extra_args:
+            misc_args += f"--te-precision-config-file " f"{U.save_to_temp_file(_DSV4_TE_PRECISION_CONFIG, 'yaml')} "
 
     train_args = (
         f"{ckpt_args} "

@@ -14,7 +14,7 @@ from miles.rollout.generate_utils.openai_endpoint_utils import (
     compute_samples_from_openai_records,
 )
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.session_types import SessionRecord
+from miles.rollout.session.types import SessionRecord
 from miles.utils.types import Sample
 
 # ── helpers ──────────────────────────────────────────────────────────

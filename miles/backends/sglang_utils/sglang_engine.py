@@ -486,8 +486,14 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str, allow_quant_error: bool = False):
-        return self._make_request("weights_checker", {"action": action, "allow_quant_error": allow_quant_error})
+    def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
+        payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
+        if skip_list is not None:
+            # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
+            payload["skip_tensor_list"] = skip_list
+        return self._make_request("weights_checker", payload)
 
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         """Reload weights from *model_path* without restarting the engine.

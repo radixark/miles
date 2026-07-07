@@ -96,6 +96,7 @@ def policy_loss_function(
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
     max_seq_lens = batch.get("max_seq_lens", None)
+    calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
 
     log_probs_and_entropy = get_log_probs_and_entropy(
         logits,
@@ -103,7 +104,8 @@ def policy_loss_function(
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=total_lengths,
         response_lengths=response_lengths,
-        with_entropy=args.entropy_coef != 0,
+        with_entropy=calculate_entropy,
+        entropy_requires_grad=args.entropy_coef != 0,
         max_seq_lens=max_seq_lens,
     )
 
@@ -267,15 +269,16 @@ def policy_loss_function(
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
     ppo_kl = sum_of_sample_mean(ppo_kl)
 
-    # entropy loss
-    if args.entropy_coef != 0:
+    entropy_loss = pg_loss.new_zeros(())
+    loss = pg_loss
+    if calculate_entropy:
         entropy = log_probs_and_entropy["entropy"]
         entropy = torch.cat(entropy, dim=0)
         entropy_loss = sum_of_sample_mean(entropy)
-        loss = pg_loss - args.entropy_coef * entropy_loss
-    else:
-        entropy_loss = pg_loss.new_zeros(())
-        loss = pg_loss
+        if args.entropy_coef != 0:
+            loss = pg_loss - args.entropy_coef * entropy_loss
+        else:
+            entropy_loss = entropy_loss.detach()
 
     if args.use_kl_loss:
         ref_log_probs = batch["ref_log_probs"]
