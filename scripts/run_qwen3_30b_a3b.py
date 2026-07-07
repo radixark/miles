@@ -285,7 +285,7 @@ def execute(args: ScriptArgs):
                 )
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
-        case ("MI350X" | "MI355X", 1):
+        case ("MI350X" | "MI355X", 1 | 2):
             perf_args += (
                 "--tensor-model-parallel-size 1 "
                 "--sequence-parallel "
