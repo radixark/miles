@@ -182,17 +182,10 @@ def execute_train(
             if megatron_model_type is not None
             else ""
         )
-        # `ray job submit` (blocking) tails the job's logs over a WebSocket; if that WebSocket drops
-        # (close code 1006) the submit command fails even though the job itself is healthy, tearing
-        # down the run. Setting MILES_RAY_SUBMIT_NO_WAIT decouples the job lifetime from the log
-        # tail: submit returns immediately and the job runs detached under Ray, to be polled via
-        # `ray job status` / `ray job logs`. MILES_RAY_SUBMISSION_ID pins the job id for polling.
-        _no_wait = get_bool_env_var("MILES_RAY_SUBMIT_NO_WAIT")
-        _sub_id = os.environ.get("MILES_RAY_SUBMISSION_ID", "")
         exec_command(
             f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{cmd_megatron_model_source}"
-            f"""ray job submit {'--no-wait ' if _no_wait else ''}{f'--submission-id {_sub_id} ' if _sub_id else ''}{'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
+            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
