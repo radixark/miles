@@ -13,7 +13,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.compatibility import load_generate_function

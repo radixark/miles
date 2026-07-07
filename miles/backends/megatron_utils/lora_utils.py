@@ -11,10 +11,9 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
-
-LORA_ADAPTER_NAME = "miles_lora"
 
 # ---------------------------------------------------------------------------
 # Unified HF <-> Megatron module name mappings
@@ -92,11 +91,6 @@ _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 # ---------------------------------------------------------------------------
 # Core helpers
 # ---------------------------------------------------------------------------
-
-
-def is_lora_enabled(args: Namespace) -> bool:
-    """Check if LoRA is enabled based on arguments."""
-    return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
 
 
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:

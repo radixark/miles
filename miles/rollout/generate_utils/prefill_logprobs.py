@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
