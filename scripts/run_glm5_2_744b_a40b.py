@@ -349,23 +349,28 @@ def _execute_train(args: ScriptArgs):
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.70 "
-        "--sglang-enable-dp-attention "
+        # cookbook is 0.8, which will OOM under RL.
+        "--sglang-mem-fraction-static 0.75 "
         f"--sglang-ep-size {sglang_world_size} "
-        f"--sglang-dp-size {sglang_world_size} "
-        "--sglang-moe-dense-tp-size 1 "
-        "--sglang-enable-dp-lm-head "
+        "--sglang-router-policy consistent_hashing "
     )
+    if args.enable_pd:
+        # slime native config
+        sglang_args += (
+            "--sglang-enable-dp-attention "
+            f"--sglang-dp-size {sglang_world_size} "
+            "--sglang-moe-dense-tp-size 1 "
+            "--sglang-enable-dp-lm-head "
+        )
     if args.fp8_rollout and args.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
     if args.enable_mtp:
-        # EAGLE using the model's own next-token-prediction layer (full GLM-5.2 only;
-        # the MTP layer is stripped from the pruned checkpoints).
+        # cookbook low-latency config
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
-            "--sglang-speculative-num-steps 4 "
+            "--sglang-speculative-num-steps 5 "
             "--sglang-speculative-eagle-topk 1 "
-            "--sglang-speculative-num-draft-tokens 5 "
+            "--sglang-speculative-num-draft-tokens 6 "
             "--sglang-speculative-draft-attention-backend nsa "
         )
     if args.enable_pd:
@@ -392,6 +397,9 @@ def _execute_train(args: ScriptArgs):
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{64 if args.enable_pd else 256}",
         "SGLANG_NSA_FORCE_MLA": "1",
+        # Node-local triton cache: the default ~/.triton on NFS races across nodes
+        # (ESTALE) when many processes cold-compile the same kernels.
+        "TRITON_CACHE_DIR": "/scratch/yyuan/triton_cache",
     }
 
     misc_args = (
