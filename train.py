@@ -30,7 +30,12 @@ async def train(args):
     await actor_model.update_weights()
 
     if args.check_weight_update_equal:
-        await rollout_manager.check_weights.remote(action="compare")
+        await rollout_manager.check_weights.remote(
+            action="compare",
+            allow_quant_error=args.check_weight_update_allow_quant_error,
+            selector=args.check_weight_update_selector,
+            skip_list=args.check_weight_update_skip_list,
+        )
 
     if args.offload_rollout:
         await rollout_manager.onload_kv.remote()
@@ -67,7 +72,7 @@ async def train(args):
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        if args.eval_interval is not None and rollout_id == 0 and not args.skip_eval_before_train:
+        if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
             await rollout_manager.eval.remote(rollout_id)
 
         rollout_data_ref = await rollout_manager.generate.remote(rollout_id)

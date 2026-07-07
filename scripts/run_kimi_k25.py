@@ -209,7 +209,6 @@ def _execute_train(args: ScriptArgs):
         "--attention-backend flash "
         "--no-check-for-nan-in-loss-and-grad "
         "--colocate "
-        "--use-miles-router "
         f"--update-weight-buffer-size {4 * 512 * 1024 * 1024} "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "

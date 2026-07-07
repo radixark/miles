@@ -11,9 +11,10 @@ import sys
 import torch
 import torch.distributed as dist
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=60, suite="stage-c-4-gpu-h200", labels=["precision"])
+register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["precision"])
 
 from miles_plugins.models.hf_attention import _packed_shard_to_zigzag, _zigzag_to_packed_shard
 

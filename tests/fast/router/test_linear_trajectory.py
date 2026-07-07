@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.session_types import SessionRecord
+from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 _MOCK_FIRST_TURN_TOKENS = [0]

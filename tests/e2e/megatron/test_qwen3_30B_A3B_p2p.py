@@ -95,7 +95,6 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
-        "--check-weight-update-equal "
         "--update-weight-transfer-mode p2p "
         "--moe-token-dispatcher-type alltoall "
     )

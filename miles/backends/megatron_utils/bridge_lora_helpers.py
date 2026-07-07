@@ -102,6 +102,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    if hasattr(provider, "dsa_attention_backend"):
+        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
     provider.finalize()
 
     lora = create_lora_instance(args)

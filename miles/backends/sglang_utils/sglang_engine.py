@@ -13,15 +13,11 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
-    convert_target_modules_to_hf,
-    is_lora_enabled,
-    lora_base_cpu_backup_enabled,
-)
+from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, lora_base_cpu_backup_enabled
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -486,8 +482,14 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str):
-        return self._make_request("weights_checker", {"action": action})
+    def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
+        payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
+        if skip_list is not None:
+            # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
+            payload["skip_tensor_list"] = skip_list
+        return self._make_request("weights_checker", payload)
 
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         """Reload weights from *model_path* without restarting the engine.
@@ -555,26 +557,13 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def post_process_weights(
-        self,
-        restore_weights_before_load: bool = False,
-        post_process_quantization: bool = False,
-        post_load_weights: bool = False,
-    ):
-        """
-        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
-        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
-        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
-        """
+    def begin_weight_update(self):
+        """Open a weight-update session on the engine (restores packed weights for loading)."""
+        return self._make_request("begin_weight_update", {})
 
-        return self._make_request(
-            "post_process_weights",
-            {
-                "restore_weights_before_load": restore_weights_before_load,
-                "post_process_quantization": post_process_quantization,
-                "post_load_weights": post_load_weights,
-            },
-        )
+    def end_weight_update(self):
+        """Close the weight-update session (post-load + quant post-process on the full model)."""
+        return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(

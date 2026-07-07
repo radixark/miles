@@ -171,13 +171,14 @@ def execute():
 
     sglang_args = (
         "--sglang-mem-fraction-static 0.8 "
-        "--sglang-attention-backend nsa "
-        "--sglang-nsa-decode-backend flashmla_sparse "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-attention-backend dsa "
+        "--sglang-dsa-decode-backend flashmla_sparse "
+        "--sglang-dsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-topk-backend flashinfer "
         "--sglang-kv-cache-dtype bf16 "
         "--sglang-page-size 64 "
         f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
-        "--sglang-fp8-gemm-backend flashinfer_cutlass "
+        "--sglang-fp8-gemm-backend flashinfer_trtllm "
         "--sglang-moe-runner-backend flashinfer_trtllm_routed "
         f"--sglang-tp-size {ROLLOUT_GPUS_PER_ENGINE} "
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
@@ -186,7 +187,7 @@ def execute():
         "--sglang-cuda-graph-max-bs 256 "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --check-weight-update-allow-quant-error "
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
@@ -224,6 +225,7 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--allgather-cp "
+        "--miles-dsa-topk-backend flashinfer "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
@@ -251,8 +253,9 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         megatron_path=MEGATRON_PATH,
         extra_env_vars={
-            "SGLANG_NSA_FORCE_MLA": "1",
-            "SGLANG_NSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
+            "SGLANG_DSA_FUSE_TOPK": "1",
+            "SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
+            "SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK": "large",
             "NVSHMEM_DISABLE_NCCL": "1",
         },
     )

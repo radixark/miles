@@ -9,14 +9,10 @@ __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 logger = logging.getLogger(__name__)
 
 
-def _is_muon_optimizer(optimizer: str | None) -> bool:
-    return optimizer is not None and "muon" in optimizer.lower()
-
-
 def set_default_megatron_args(args):
-    # Muon currently owns its sharding path and is incompatible with Megatron's
-    # distributed optimizer, while Adam/SGD keep the historical ZeRO default.
-    args.use_distributed_optimizer = not _is_muon_optimizer(args.optimizer)
+    # Muon currently owns its sharding path, and Megatron's distributed optimizer
+    # only supports Adam-family optimizers.
+    args.use_distributed_optimizer = args.optimizer is None or args.optimizer.lower() == "adam"
     # TODO: maybe change this after megatron has good fp8 support
     args.bf16 = not args.fp16
     # placeholders
@@ -37,5 +33,8 @@ def set_default_megatron_args(args):
         logger.info("--tokenizer-model not set, use --hf-checkpoint as tokenizer model.")
         args.tokenizer_model = args.hf_checkpoint
         args.tokenizer_type = "HuggingFaceTokenizer"
+
+    if not hasattr(args, "miles_dsa_topk_backend"):
+        args.miles_dsa_topk_backend = "torch"
 
     return args

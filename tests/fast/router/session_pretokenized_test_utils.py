@@ -8,7 +8,7 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from miles.rollout.session.session_server import SessionServer
+from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import MismatchType, apply_chat_template, get_tito_tokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.processing_utils import load_tokenizer

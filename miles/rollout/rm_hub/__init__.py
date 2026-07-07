@@ -6,7 +6,7 @@ import aiohttp
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
-from .deepscaler import get_deepscaler_rule_based_reward
+from .deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
 from .f1 import f1_score
 from .gpqa import compute_gpqa_reward
 from .math_dapo_utils import compute_score as compute_score_dapo
@@ -46,6 +46,8 @@ async def async_rm(args, sample: Sample, **kwargs):
         return await remote_rm(args, sample)
     elif rm_type == "deepscaler":
         return get_deepscaler_rule_based_reward(response, label)
+    elif rm_type == "gemma_math":
+        return get_gemma_math_reward(response, label)
     elif rm_type == "dapo":
         return compute_score_dapo(response, label)
     elif rm_type == "math":
