@@ -780,9 +780,26 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
     routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
-    with what the runtime serves.  Only the ``{tool}`` surface is registered, so
-    the base ``_split_appended_segments`` (contiguous tool runs) covers it
-    without a custom override.
+    with what the runtime serves.  The base ``_split_appended_segments``
+    (contiguous tool runs, single user/system turns) covers both registered
+    surfaces without a custom override.
+
+    Two append surfaces are registered:
+
+    - ``{tool}`` (native tool-calling harnesses, e.g. terminus-2): the encoder
+      forces ``drop_thinking=False`` whenever any message carries ``tools``
+      (``encoding_dsv4.encode_messages``), so prior assistants keep their
+      thinking and history never mutates on append.
+    - ``{tool, user}`` (text-protocol scaffolds like OpenEnv, which feed env
+      output back as plain ``user`` turns and pass no ``tools``): here the
+      encoder's default ``drop_thinking=True`` would strip every prior
+      assistant's thinking the moment a new ``user`` turn advances
+      ``last_user_index`` — a non-append-only history mutation that breaks the
+      pretokenized-prefix invariant and yields NaN grads on the first backward.
+      Pinning ``drop_thinking=False`` restores append-only for this surface
+      (same reason V3.2 registers only ``{tool}`` — see ``DeepSeekV32TITOTokenizer``).
+      Requires the sglang serving side to render with ``drop_thinking=False`` too
+      so generation and re-tokenization stay byte-identical.
     """
 
     reasoning_parser = "deepseek-v4"
@@ -792,6 +809,11 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template=None,
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"drop_thinking": False},
         ),
     )
 
