@@ -56,8 +56,6 @@ def compute_request_payload(
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
-    # Untagged requests are served by the BASE model; tag them so sglang applies the
-    # trained adapter (mirrors the legacy sglang_rollout.generate path).
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
