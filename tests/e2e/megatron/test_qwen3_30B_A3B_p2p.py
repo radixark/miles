@@ -117,6 +117,8 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
+        # fallback: CI host lacks nvidia_peermem; register GPU memory via dmabuf instead
+        extra_env_vars={"WITH_NVIDIA_PEERMEM": "0"},
     )
 
 
