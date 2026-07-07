@@ -349,7 +349,7 @@ def _execute_train(args: ScriptArgs):
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.70 "
+        "--sglang-mem-fraction-static 0.8 "
         "--sglang-enable-dp-attention "
         f"--sglang-ep-size {sglang_world_size} "
         f"--sglang-dp-size {sglang_world_size} "
@@ -363,9 +363,9 @@ def _execute_train(args: ScriptArgs):
         # the MTP layer is stripped from the pruned checkpoints).
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
-            "--sglang-speculative-num-steps 4 "
+            "--sglang-speculative-num-steps 5 "
             "--sglang-speculative-eagle-topk 1 "
-            "--sglang-speculative-num-draft-tokens 5 "
+            "--sglang-speculative-num-draft-tokens 6 "
             "--sglang-speculative-draft-attention-backend nsa "
         )
     if args.enable_pd:
