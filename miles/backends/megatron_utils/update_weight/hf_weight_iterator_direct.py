@@ -20,6 +20,7 @@ from .common import (
     named_params_and_buffers,
 )
 from .hf_weight_iterator_base import HfWeightIteratorBase
+from .profiling import active_profiler
 
 
 class HfWeightIteratorDirect(HfWeightIteratorBase):
@@ -35,10 +36,12 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
         for megatron_local_param_infos in tqdm(
             self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
         ):
-            megatron_full_params = _get_megatron_full_params(
-                self.args, megatron_local_param_infos, megatron_local_weights
-            )
-            hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, megatron_local_param_infos)
+            with active_profiler().section("convert.gather"):
+                megatron_full_params = _get_megatron_full_params(
+                    self.args, megatron_local_param_infos, megatron_local_weights
+                )
+            with active_profiler().section("convert.to_hf"):
+                hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, megatron_local_param_infos)
             yield hf_named_tensors
             del megatron_full_params
 
