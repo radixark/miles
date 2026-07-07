@@ -349,7 +349,11 @@ def _execute_train(args: ScriptArgs):
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.8 "
+        # 0.7, not cookbook 0.8: colocate shares the GPU with the actor process, and
+        # without DP attention the whole TP group processes the full batch, so the
+        # dynamic activation/MoE-workspace peak is ~8x the dp8 case. KV usage at RL
+        # concurrency is ~1%, so the smaller static pool costs nothing.
+        "--sglang-mem-fraction-static 0.7 "
         f"--sglang-ep-size {sglang_world_size} "
     )
     if args.enable_pd:
