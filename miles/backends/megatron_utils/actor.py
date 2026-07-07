@@ -177,6 +177,11 @@ class MegatronTrainRayActor(TrainRayActor):
         else:
             if self.args.update_weight_transfer_mode == "broadcast":
                 update_weight_cls = UpdateWeightFromDistributed
+            elif self.args.update_weight_transfer_mode == "disk-delta":
+                # Lazy import: keeps the delta deps (numpy/zstandard/xxhash) off the other paths.
+                from .update_weight.update_weight_from_distributed.delta import UpdateWeightFromDiskDelta
+
+                update_weight_cls = UpdateWeightFromDiskDelta
             else:
                 update_weight_cls = UpdateWeightP2P
         self.weight_updater = update_weight_cls(
@@ -432,7 +437,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     logger.info(f"Updating ref model at rollout_id {rollout_id}")
                 self.weights_backuper.backup("ref")
 
-        log_perf_data(rollout_id, self.args)
+        log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
