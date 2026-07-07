@@ -38,7 +38,7 @@ from .lora_utils import is_lora_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
-from .update_weight.common import named_params_and_buffers
+from .update_weight.common import build_main_cast_context, named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
@@ -142,6 +142,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
         start_rollout_id = loaded_rollout_id + 1
 
+        main_cast_ctx = None
+        if args.rematerialize_param_from_master_weight:
+            main_cast_ctx = build_main_cast_context(args, self.model, self.optimizer)
+
         self.weights_backuper = TensorBackuper.create(
             source_getter=lambda: named_params_and_buffers(
                 self.args,
@@ -150,6 +154,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 translate_gpu_to_cpu=not self.args.enable_weights_backuper,
             ),
             single_tag=None if args.enable_weights_backuper else "actor",
+            main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
         if self._enable_weight_backup:
@@ -215,8 +220,13 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before offload model")
         destroy_process_groups()
 
-        tag = "default" if is_lora_enabled(self.args) else None
-        torch_memory_saver.pause(tag=tag)
+        if self.args.rematerialize_param_from_master_weight and self.role == "actor":
+            # Keep params resident for update_weights, which pauses them afterwards.
+            torch_memory_saver.pause(tag="grad_buffer")
+            torch_memory_saver.pause(tag="default")
+        else:
+            tag = "default" if is_lora_enabled(self.args) else None
+            torch_memory_saver.pause(tag=tag)
 
         print_memory("after offload model")
 
@@ -490,6 +500,8 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
                 logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
+            if self.args.rematerialize_param_from_master_weight:
+                torch_memory_saver.pause(tag="param_buffer")
             if self.args.offload_train:
                 destroy_process_groups()
             return
@@ -518,6 +530,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
+        if self.args.rematerialize_param_from_master_weight:
+            torch_memory_saver.pause(tag="param_buffer")
         if self.args.offload_train:
             destroy_process_groups()
 

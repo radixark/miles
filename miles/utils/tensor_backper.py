@@ -1,15 +1,27 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 import torch
 
 _SourceGetter = Callable[[], Iterable[tuple[str, torch.Tensor]]]
 
 
+@dataclass
+class MainCastContext:
+    optimizer: object
+    model_chunks: list
+    extras_getter: _SourceGetter
+    rematerializable_ids: set
+    check: bool
+
+
 class TensorBackuper(ABC):
     @staticmethod
-    def create(source_getter, single_tag):
+    def create(source_getter, single_tag, main_cast_ctx: "MainCastContext | None" = None):
+        if main_cast_ctx is not None:
+            return _TensorBackuperMainCast(source_getter=source_getter, ctx=main_cast_ctx)
         if single_tag is None:
             return _TensorBackuperNormal(source_getter=source_getter)
         else:
@@ -72,6 +84,91 @@ class _TensorBackuperNormal(TensorBackuper):
             assert name in backup_dict
             param.copy_(backup_dict[name], non_blocking=True)
         torch.cuda.synchronize()
+
+
+class _TensorBackuperMainCast(TensorBackuper):
+    """Rematerialize weights from the optimizer's fp32 master weights (same cast +
+    param all-gather as the step end, so bit-identical) instead of a pinned CPU copy;
+    only `extras_getter` tensors keep a small pinned backup. With `check`, the first
+    `_check_num_cycles` restores are SHA256-verified against backup time."""
+
+    _check_num_cycles = 2
+
+    def __init__(self, source_getter, ctx: MainCastContext):
+        super().__init__(source_getter=source_getter)
+        self._ctx = ctx
+        self._extras_backup: dict[str, torch.Tensor] = {}
+        self._extras_backup_by_id: dict[int, torch.Tensor] = {}
+        self._backup_count = 0
+        self._expected_hashes: dict[str, str] | None = None
+
+    @property
+    def backup_tags(self):
+        return ["actor"]
+
+    @torch.no_grad()
+    def backup(self, tag: str) -> None:
+        assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
+        for name, tensor in self._ctx.extras_getter():
+            if name not in self._extras_backup:
+                self._extras_backup[name] = torch.empty_like(tensor, device=torch.device("cpu"), pin_memory=True)
+            self._extras_backup[name].copy_(tensor.detach(), non_blocking=True)
+            self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
+        torch.cuda.synchronize()
+        self._backup_count += 1
+        if self._ctx.check and self._backup_count <= self._check_num_cycles:
+            self._expected_hashes = self._compute_hashes()
+        else:
+            self._expected_hashes = None
+
+    @torch.no_grad()
+    def restore(self, tag: str) -> None:
+        assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
+        for optimizer in self._ctx.optimizer.chained_optimizers:
+            optimizer._copy_main_params_to_model_params()
+        for model_chunk in self._ctx.model_chunks:
+            model_chunk.start_param_sync(force_sync=True)
+        for name, tensor in self._ctx.extras_getter():
+            tensor.copy_(self._extras_backup[name], non_blocking=True)
+        torch.cuda.synchronize()
+        if self._expected_hashes is not None:
+            self._verify_hashes()
+
+    def get(self, tag: str):
+        assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
+        # Extras are paused during update_weights: read them from the pinned backup.
+        out = {}
+        for name, tensor in self._source_getter():
+            backup = self._extras_backup_by_id.get(id(tensor))
+            if backup is None:
+                assert (
+                    id(tensor) in self._ctx.rematerializable_ids
+                ), f"{name} is neither in the DDP param buffers nor in the extras backup"
+                backup = tensor.detach()
+            out[name] = backup
+        return out
+
+    def _compute_hashes(self) -> dict[str, str]:
+        from miles.backends.megatron_utils.ci_utils import _hash_tensor_sha256
+
+        return {name: _hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
+
+    def _verify_hashes(self) -> None:
+        actual = self._compute_hashes()
+        expected = self._expected_hashes
+        assert expected is not None
+        assert actual.keys() == expected.keys(), (
+            f"main-cast restore changed the tensor set: "
+            f"missing={sorted(expected.keys() - actual.keys())[:5]} "
+            f"extra={sorted(actual.keys() - expected.keys())[:5]}"
+        )
+        mismatches = [name for name in expected if actual[name] != expected[name]]
+        if mismatches:
+            raise RuntimeError(
+                f"main-cast weight restore is not bit-identical to the weights at "
+                f"backup time for {len(mismatches)}/{len(expected)} tensors "
+                f"(cycle {self._backup_count}): {mismatches[:20]}"
+            )
 
 
 class _TensorBackuperNoop(TensorBackuper):

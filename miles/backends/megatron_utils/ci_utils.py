@@ -39,6 +39,12 @@ def _hash_tensor_bytes(tensor: torch.Tensor) -> bytes:
     return data.view(torch.uint8).numpy().tobytes()
 
 
+# copied from PR #1435
+def _hash_tensor_sha256(tensor: torch.Tensor) -> str:
+    raw_bytes = _hash_tensor_bytes(tensor)
+    return hashlib.sha256(raw_bytes).hexdigest()
+
+
 def compute_model_hashes_by_layer(model: Sequence[DDP]) -> dict[str, str]:
     """Compute per-layer SHA256 hashes over parameter bytes.
 
