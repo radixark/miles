@@ -51,7 +51,8 @@ def add_sglang_arguments(parser):
         # memory
         "enable_memory_saver",
         # distributed
-        "tp_size",
+        # tp_size stays exposed: scripts pass --sglang-tp-size, but the value is
+        # overridden from --rollout-num-gpus-per-engine in validate_args below.
         "port",
         "nnodes",
         "node_rank",
