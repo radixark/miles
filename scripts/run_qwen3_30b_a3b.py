@@ -206,8 +206,6 @@ def execute(args: ScriptArgs):
                     "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
                 }
             case "MI350X" | "MI355X":
-                # ROCm gfx950: blockwise FP8 via ported Triton kernels.
-                # ROCm has no wgrad fusion yet, so turn off gradient-accumulation-fusion.
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
