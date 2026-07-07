@@ -186,8 +186,7 @@ class UpdateWeightFromTensor:
         # a host mirror across pause/resume), we can skip the base sync entirely
         # and the surrounding restore_weights_before_load / post_process_quantization
         # calls that would otherwise prep / re-quantize fresh base bytes.
-        # the weight-update checker resets engine weights and verifies the sync rewrites
-        # them, so the base must actually be re-shipped while it is on
+        # TODO: implement lora weight checker
         skip_base_sync = (
             self.is_lora
             and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
