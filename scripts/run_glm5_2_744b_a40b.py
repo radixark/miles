@@ -350,12 +350,17 @@ def _execute_train(args: ScriptArgs):
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         "--sglang-mem-fraction-static 0.8 "
-        "--sglang-enable-dp-attention "
         f"--sglang-ep-size {sglang_world_size} "
-        f"--sglang-dp-size {sglang_world_size} "
-        "--sglang-moe-dense-tp-size 1 "
-        "--sglang-enable-dp-lm-head "
     )
+    if args.enable_pd:
+        # DP attention only pays off at high concurrency (cookbook: balanced 64+);
+        # RL rollout runs ~8 requests/engine, squarely low-latency territory.
+        sglang_args += (
+            "--sglang-enable-dp-attention "
+            f"--sglang-dp-size {sglang_world_size} "
+            "--sglang-moe-dense-tp-size 1 "
+            "--sglang-enable-dp-lm-head "
+        )
     if args.fp8_rollout and args.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
     if args.enable_mtp:
