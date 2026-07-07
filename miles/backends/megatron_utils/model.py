@@ -903,14 +903,17 @@ def save(
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
+    checkpoint_optimizer = None if args.no_save_optim else optimizer
+    checkpoint_scheduler = None if args.no_save_optim else opt_param_scheduler
+
     if is_lora_model(model):
-        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler)
+        save_checkpoint_with_lora(iteration, model, checkpoint_optimizer, checkpoint_scheduler)
     else:
         save_checkpoint(
             iteration,
             model,
-            optimizer,
-            opt_param_scheduler,
+            checkpoint_optimizer,
+            checkpoint_scheduler,
             num_floating_point_operations_so_far=0,
             train_data_iterator=None,
             preprocess_common_state_dict_fn=None,
