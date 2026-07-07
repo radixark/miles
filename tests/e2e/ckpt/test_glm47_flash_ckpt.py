@@ -42,6 +42,10 @@ def prepare():
 
 def execute(mode: str = "", ckpt_step: int | None = None):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    # dp_reshardable keys optimizer param_state by position per PP rank; PP0/PP1
+    # hold 23/24 MoE layers here (uneven PP + MTP), so its common.pt never merges
+    # on load. fully_reshardable is model-space (name-keyed), PP-heterogeneity-safe.
+    ckpt_args += "--dist-ckpt-optim-fully-reshardable "
     if mode == "save":
         ckpt_args += f"--save /root/models/{MODEL_NAME}_miles "
         ckpt_args += "--save-interval 2 "
