@@ -1,19 +1,6 @@
-import functools
 import re
 
 import torch
-from transformers import AutoConfig
-
-
-@functools.lru_cache(maxsize=4)
-def _get_gdn_dims(hf_checkpoint: str):
-    """Return (qk_dim, v_dim, num_v_heads) for the GatedDeltaNet in_proj split."""
-    cfg = AutoConfig.from_pretrained(hf_checkpoint, trust_remote_code=True)
-    tc = cfg.text_config if hasattr(cfg, "text_config") else cfg
-    qk_dim = tc.linear_num_key_heads * tc.linear_key_head_dim
-    v_dim = tc.linear_num_value_heads * tc.linear_value_head_dim
-    num_v_heads = tc.linear_num_value_heads
-    return qk_dim, v_dim, num_v_heads
 
 
 def _convert_mtp_layer(args, name, param, layer_idx):
@@ -50,15 +37,6 @@ def convert_qwen3_5_to_hf(args, name, param):
     Qwen3.5 uses model.language_model.layers prefix and has separate
     in_proj_qkv, in_proj_z, in_proj_b, in_proj_a for linear attention.
     """
-    # Vision encoder weights exist in the Megatron model when the HF config is a VLM
-    # (has vision_config), but are not needed for text-only training or SGLang inference.
-    if "vision_model" in name:
-        return []
-
-    # VLM configs nest the text model under language_model — normalize so all
-    # handlers below work regardless of whether the model is pure-text or VLM.
-    name = name.replace("module.module.language_model.", "module.module.", 1)
-
     # Handle MTP layers
     if "mtp.layers" in name:
         parts = name.split(".")
@@ -211,41 +189,5 @@ def convert_qwen3_5_to_hf(args, name, param):
         ]:
             rest = rest[len("self_attention.") :]
             return [(f"{prefix}.{rest}", param)]
-
-        # Fused input layernorm from GatedDeltaNet's ColumnParallelLinearWithNorm.
-        elif rest == "self_attention.in_proj.layer_norm_weight":
-            return [(f"{prefix}.input_layernorm.weight", param)]
-
-        # Combined in_proj from native GatedDeltaNet — split into the 4 HF projections.
-        elif rest == "self_attention.in_proj.weight":
-            qk_dim, v_dim, num_v_heads = _get_gdn_dims(args.hf_checkpoint)
-            in_proj_qkv, in_proj_z, in_proj_b, in_proj_a = param.split(
-                [qk_dim * 2 + v_dim, v_dim, num_v_heads, num_v_heads], dim=0
-            )
-            return [
-                (f"{prefix}.linear_attn.in_proj_qkv.weight", in_proj_qkv),
-                (f"{prefix}.linear_attn.in_proj_z.weight", in_proj_z),
-                (f"{prefix}.linear_attn.in_proj_b.weight", in_proj_b),
-                (f"{prefix}.linear_attn.in_proj_a.weight", in_proj_a),
-            ]
-
-        # Direct SSM params when GatedDeltaNet sits at self_attention level without a
-        # linear_attn wrapper — map to the linear_attn.* names HF expects.
-        # out_norm → norm: Megatron calls it out_norm, HF calls it norm.
-        elif rest.startswith("self_attention."):
-            _SSM_RENAME = {
-                "dt_bias": "dt_bias",
-                "A_log": "A_log",
-                "conv1d.weight": "conv1d.weight",
-                "out_norm.weight": "norm.weight",
-                "out_proj.weight": "out_proj.weight",
-                "in_proj_qkv.weight": "in_proj_qkv.weight",
-                "in_proj_z.weight": "in_proj_z.weight",
-                "in_proj_b.weight": "in_proj_b.weight",
-                "in_proj_a.weight": "in_proj_a.weight",
-            }
-            sub_name = rest[len("self_attention."):]
-            if sub_name in _SSM_RENAME:
-                return [(f"{prefix}.linear_attn.{_SSM_RENAME[sub_name]}", param)]
 
     raise ValueError(f"Unknown parameter name: {name}")
