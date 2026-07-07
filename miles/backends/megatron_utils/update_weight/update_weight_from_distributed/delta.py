@@ -157,6 +157,25 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self._encode_delta()
         self._write_delta_files()
 
+    def _drop_duplicate_names(self, group, world: int, rank: int) -> None:
+        """A parameter Megatron replicates across PP stages — the word embedding on the last stage
+        when it hosts an MTP block, or tied embeddings — is gathered and diffed by one source rank
+        per stage, so the same HF tensor lands in several ranks' shards. The published artifact
+        must hold each tensor exactly once (the XOR apply is an involution: applied twice it
+        reverts), so keep the lowest-rank copy and drop the rest. The replicas are gradient-synced
+        and byte-identical; a checksum divergence means the sync is broken — never publish it."""
+        all_checksums: list = [None] * world
+        dist.all_gather_object(all_checksums, self._checksums, group=group)
+        for other_rank, other in enumerate(all_checksums[:rank]):
+            for name in self._delta.keys() & other.keys():
+                if other[name] != self._checksums[name]:
+                    raise RuntimeError(
+                        f"{name!r} published by rank {other_rank} and rank {rank} with different bytes; "
+                        "PP-replicated parameters must stay identical across stages."
+                    )
+                del self._delta[name]
+                del self._checksums[name]
+
     def _write_delta_files(self) -> None:
         """Write this rank's changed tensors as one canonical model-NNNNN.safetensors, and on rank
         0 the HF index. The sequential file numbers and the index are coordinated over gloo (small
@@ -164,6 +183,8 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         rank's writes to another until commit."""
         group = get_gloo_group()
         world, rank = dist.get_world_size(), dist.get_rank()
+
+        self._drop_duplicate_names(group, world, rank)
 
         # number the files sequentially across only the ranks that have one (no gaps)
         counts: list = [None] * world
