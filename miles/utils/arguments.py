@@ -2223,38 +2223,15 @@ def miles_validate_args(args):
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":
-            # "all-linear" = dense attention/MLP + (on MLA models only) the MLA up/down
-            # projections. The DSA indexer (wq_b/wk/weights_proj) is deliberately excluded --
-            # no gradient on tilelang, and auto-adding it breaks SGLang serving on non-DSA
-            # models; add it explicitly via a comma-list when wanted.
-            modules = [
-                # dense attention + MLP
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ]
-            # MLA projections are gated on the HF config: SGLang sizes LoRA buffers per module
-            # NAME (get_hidden_dim reads config.kv_lora_rank / q_lora_rank), so including them
-            # for a dense model (e.g. Qwen2) crashes the engine at init. If config.json is
-            # unreadable, keep the MLA names so MLA models never silently lose targets.
-            _hf_cfg = {}
-            try:
-                with open(os.path.join(args.hf_checkpoint, "config.json")) as _f:
-                    _hf_cfg = json.load(_f)
-            except (OSError, ValueError):
-                logger.warning(
-                    "all-linear: could not read %s/config.json; assuming MLA and keeping the "
-                    "MLA projections in the LoRA target list.",
-                    args.hf_checkpoint,
-                )
-                _hf_cfg = {"kv_lora_rank": 1, "q_lora_rank": 1}
-            if _hf_cfg.get("kv_lora_rank"):
+            # Dense attention + MLP; MLA models (per the HF config) additionally get the MLA
+            # projections -- SGLang sizes LoRA buffers per module name, so listing them on a
+            # dense model crashes the engine at init. The DSA indexer (wq_b/wk/weights_proj)
+            # stays excluded: no gradient on the tilelang backend; list it explicitly when wanted.
+            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            hf_config = load_hf_config(args.hf_checkpoint)
+            if getattr(hf_config, "kv_lora_rank", None):
                 modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
-                if _hf_cfg.get("q_lora_rank"):
+                if getattr(hf_config, "q_lora_rank", None):
                     modules += ["q_a_proj", "q_b_proj"]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
