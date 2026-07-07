@@ -10,13 +10,13 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update

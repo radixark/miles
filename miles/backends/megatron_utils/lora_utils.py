@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora import is_lora_enabled
 
 logger = logging.getLogger(__name__)
 
