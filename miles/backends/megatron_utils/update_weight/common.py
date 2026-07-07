@@ -383,28 +383,14 @@ def collect_named_tensors_for_weight_transfer(
             yield name, tensor
 
 
-def post_process_weights(
-    rollout_engines: Sequence[ActorHandle],
-    restore_weights_before_load: bool = False,
-    post_process_quantization: bool = False,
-    post_load_weights: bool = False,
-):
-    """
-    Trigger post-process on all rollout engines,
-    including:
-        - int4/fp4 quantization
-        - post_load_weights (should be enabled when using p2p weights updating)
-    """
-    ray.get(
-        [
-            engine.post_process_weights.remote(
-                restore_weights_before_load=restore_weights_before_load,
-                post_process_quantization=post_process_quantization,
-                post_load_weights=post_load_weights,
-            )
-            for engine in rollout_engines
-        ]
-    )
+def begin_weight_update(rollout_engines: Sequence[ActorHandle]):
+    """Open a weight-update session on all rollout engines (restore packed weights)."""
+    ray.get([engine.begin_weight_update.remote() for engine in rollout_engines])
+
+
+def end_weight_update(rollout_engines: Sequence[ActorHandle]):
+    """Close the weight-update session (post-load + quant post-process on the full model)."""
+    ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
 
 
 def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:

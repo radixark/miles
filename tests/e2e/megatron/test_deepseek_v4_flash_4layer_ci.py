@@ -15,7 +15,13 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=8,
         skip_saving=True,
         use_fault_tolerance=False,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper " "--num-rollout 2 "),
+        extra_args=(
+            "--ci-test "
+            "--check-weight-update-allow-quant-error "
+            "--ci-disable-logprobs-checker "
+            "--disable-weights-backuper "
+            "--num-rollout 2 "
+        ),
     )
 
 

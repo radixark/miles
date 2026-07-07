@@ -28,7 +28,7 @@ def _args() -> ScriptArgs:
         from_bf16_ckpt=False,
         num_rollout=2,
         extra_args=(
-            "--ci-test --bf16 --freeze-indexer "
+            "--ci-test --check-weight-update-allow-quant-error --bf16 --freeze-indexer "
             "--use-rollout-routing-replay "
             "--sglang-disable-shared-experts-fusion "
         ),

@@ -18,7 +18,7 @@ if str(_MILES_ROOT) not in sys.path:
     sys.path.insert(0, str(_MILES_ROOT))
 
 import typer
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
 
 import miles.utils.external_utils.command_utils as U
@@ -36,6 +36,7 @@ NUM_LAYERS: int = 5
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
 register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
+register_rocm_ci(est_time=2000, suite="stage-c-8-gpu-mi350", labels=["short"])
 
 
 @dataclasses.dataclass(frozen=True)
