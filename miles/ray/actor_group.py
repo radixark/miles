@@ -68,10 +68,15 @@ class RayTrainGroup:
         if self.args.offload_train and self.args.train_backend == "megatron":
             import torch_memory_saver
 
-            dynlib_path = os.path.join(
-                os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
-                "torch_memory_saver_hook_mode_preload.abi3.so",
-            )
+            try:
+                from torch_memory_saver.utils import get_binary_path_from_package
+
+                dynlib_path = str(get_binary_path_from_package("torch_memory_saver_hook_mode_preload"))
+            except ImportError:
+                dynlib_path = os.path.join(
+                    os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
+                    "torch_memory_saver_hook_mode_preload.abi3.so",
+                )
             assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
 
             env_vars["LD_PRELOAD"] = dynlib_path
