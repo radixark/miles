@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_RETRY_MAX_ATTEMPTS = 30
+
 
 class RayTrainGroup:
     """
@@ -159,7 +161,7 @@ class RayTrainGroup:
                 results=results,
             )
 
-        await retry(_fn)
+        await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
         self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
@@ -245,7 +247,10 @@ class RayTrainGroup:
     async def save_model(self, rollout_id: int, force_sync: bool = False):
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        await retry(lambda _: self._execute_first_alive("save_model", rollout_id, force_sync=force_sync))
+        await retry(
+            lambda _: self._execute_first_alive("save_model", rollout_id, force_sync=force_sync),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
@@ -256,7 +261,10 @@ class RayTrainGroup:
         info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
         await self._rollout_manager.health_monitoring_pause.remote()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        await retry(lambda _: self._execute_first_alive("update_weights", info=info))
+        await retry(
+            lambda _: self._execute_first_alive("update_weights", info=info),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
