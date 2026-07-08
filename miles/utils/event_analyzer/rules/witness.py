@@ -107,6 +107,7 @@ def _compute_zero_advantage_witness_ids(
     result: dict[int, set[int]] = defaultdict(set)
     for event in _filter_to_latest_attempt(events, group_key=lambda e: e.rollout_id):
         for adv_tokens, wid_tokens in zip(event.advantages, event.witness_ids, strict=True):
+            assert len(set(wid_tokens)) <= 1, f"witness ids within one sample must be uniform, got {set(wid_tokens)}"
             if adv_tokens and all(v == 0.0 for v in adv_tokens):
                 result[event.rollout_id].add(wid_tokens[0])
 
@@ -126,7 +127,7 @@ def _compute_expected_witness_ids_of_step(
     ans: dict[int, set[int]] = {}
     running: set[int] = set()
     for rollout_id in sorted(allocated_witness_ids_by_rollout.keys()):
-        running = running | allocated_witness_ids_by_rollout[rollout_id]
+        running |= allocated_witness_ids_by_rollout[rollout_id]
         ans[rollout_id] = set(running)
     return ans
 
