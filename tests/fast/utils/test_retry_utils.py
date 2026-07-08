@@ -132,6 +132,91 @@ class TestRetryLogging:
         assert "2.5s" in retry_records[0].message
 
 
+class TestRetryMaxAttempts:
+    async def test_raises_after_max_attempts(self):
+        """The last exception propagates once max_attempts calls have all failed."""
+        call_count = 0
+        fake_sleep = _FakeSleep()
+
+        async def fn(_attempt):
+            nonlocal call_count
+            call_count += 1
+            raise ValueError(f"fail {call_count}")
+
+        with pytest.raises(ValueError, match="fail 3"):
+            await retry(fn, initial_delay=1.0, sleep_fn=fake_sleep, max_attempts=3)
+
+        assert call_count == 3
+        assert len(fake_sleep.delays) == 2
+
+    async def test_succeeds_on_last_allowed_attempt(self):
+        """No exception when fn succeeds exactly at the max_attempts-th call."""
+        call_count = 0
+        fake_sleep = _FakeSleep()
+
+        async def fn(_attempt):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise RuntimeError("not yet")
+
+        await retry(fn, initial_delay=1.0, sleep_fn=fake_sleep, max_attempts=3)
+
+        assert call_count == 3
+
+    async def test_max_attempts_one_never_retries(self):
+        """max_attempts=1 means a single call with no retry."""
+        call_count = 0
+        fake_sleep = _FakeSleep()
+
+        async def fn(_attempt):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("fail")
+
+        with pytest.raises(RuntimeError):
+            await retry(fn, sleep_fn=fake_sleep, max_attempts=1)
+
+        assert call_count == 1
+        assert fake_sleep.delays == []
+
+    async def test_default_is_unlimited(self):
+        """Without max_attempts, retry keeps going far beyond any small cap."""
+        call_count = 0
+
+        async def fn(_attempt):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 50:
+                raise RuntimeError("fail")
+
+        await retry(fn, initial_delay=0.0, sleep_fn=_FakeSleep())
+
+        assert call_count == 50
+
+    async def test_invalid_max_attempts_rejected(self):
+        """max_attempts below 1 is a programming error."""
+
+        async def fn(_attempt):
+            pass
+
+        with pytest.raises(AssertionError):
+            await retry(fn, sleep_fn=_FakeSleep(), max_attempts=0)
+
+    async def test_gives_up_log_message(self, caplog):
+        """The final failure logs a giving-up warning instead of a retrying one."""
+
+        async def fn(_attempt):
+            raise RuntimeError("fail")
+
+        with caplog.at_level("WARNING"):
+            with pytest.raises(RuntimeError):
+                await retry(fn, initial_delay=1.0, sleep_fn=_FakeSleep(), max_attempts=2)
+
+        assert any("giving up" in r.message for r in caplog.records)
+        assert len([r for r in caplog.records if "retrying" in r.message]) == 1
+
+
 class TestRetryBackoff:
     async def test_delay_doubles_each_retry(self):
         call_count = 0
