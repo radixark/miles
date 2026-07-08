@@ -129,11 +129,6 @@ def split_train_data_by_dp(args, data, dp_size):
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
     """Split the train data by data parallel size."""
-    rollout_data = {}
-
-    if "prompt" in data:
-        rollout_data["prompt"] = data["prompt"]
-
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
