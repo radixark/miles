@@ -211,6 +211,8 @@ class _TensorViewCodec:
 
 
 def _create_transport(indep_dp: GroupInfo, timeout: timedelta) -> PGTransport:
+    if PGTransport is None:
+        raise ImportError("torchft is required for checkpoint transfer but could not be imported.")
     return PGTransport(
         pg=indep_dp.group,
         timeout=timeout,
