@@ -214,6 +214,9 @@ def _execute_train(args: ScriptArgs):
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256",
         "SGLANG_NSA_FORCE_MLA": "1",
         "TRITON_CACHE_DIR": "/scratch/yyuan/triton_cache",
+        # sglang jit_kernel (tvm_ffi) cache: default ~/.cache/tvm-ffi on NFS
+        # SIGBUSes under 128-proc cold-compile races when sglang imports from a worktree
+        "TVM_FFI_CACHE_DIR": "/scratch/yyuan/tvm_ffi_cache",
         "INDEXER_ROPE_NEOX_STYLE": "0",
         "NVSHMEM_DISABLE_NCCL": "1",
         # openenv_agent_function / openenv_generate import path; keep the
