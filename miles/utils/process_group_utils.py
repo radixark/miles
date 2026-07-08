@@ -338,6 +338,6 @@ def _gather_object_via_util(
 
 def collective_bool_and(*, value: bool, group: dist.ProcessGroup) -> bool:
     """Make a bool `and` operation on all ranks in this process group"""
-    tensor = torch.tensor([1.0 if value else 0.0], dtype=torch.float32)
+    tensor = torch.tensor([1.0 if value else 0.0], dtype=torch.float32, device=_get_object_coll_device(group))
     GeneralPGUtil.create(group).all_reduce(tensor, group, op=dist.ReduceOp.MIN)
     return tensor.item() > 0.5
