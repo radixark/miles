@@ -486,6 +486,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--custom-agent-function-path",
+                type=str,
+                default=None,
+                help=(
+                    "Agent function driven by generate_hub.agentic_tool_call; statically registered "
+                    "because the add_arguments plugin hook can be skipped in the ray-job driver."
+                ),
+            )
+            parser.add_argument(
                 "--custom-rollout-log-function-path",
                 type=str,
                 default=None,

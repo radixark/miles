@@ -139,9 +139,17 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
-    parser.add_argument("--custom-agent-function-path", type=str)
-    parser.add_argument("--generate-multi-samples", action="store_true", default=False)
-    parser.add_argument(
+    # Idempotent: --custom-agent-function-path is also statically registered in
+    # miles/utils/arguments.py (the plugin hook can be skipped in the ray-job driver).
+    def _add(*a, **kw):
+        try:
+            parser.add_argument(*a, **kw)
+        except argparse.ArgumentError:
+            pass
+
+    _add("--custom-agent-function-path", type=str)
+    _add("--generate-multi-samples", action="store_true", default=False)
+    _add(
         "--max-seq-len",
         type=int,
         default=None,
