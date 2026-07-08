@@ -241,7 +241,9 @@ def forward_only(
         Aggregated outputs keyed by ``store_prefix + key``.
     """
 
-    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_ONLY, rollout_id=rollout_id)
+    dumper_phase_util = DumperMegatronUtil(
+        args, model, DumperPhase.FWD_ONLY, rollout_id=rollout_id, store_prefix=store_prefix
+    )
 
     # reset data iterator
     for iterator in data_iterator:

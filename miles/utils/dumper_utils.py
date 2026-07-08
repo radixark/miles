@@ -92,11 +92,14 @@ class DumperMegatronUtil:
         phase: DumperPhase,
         *,
         rollout_id: int,
+        store_prefix: str = "",
     ) -> None:
         self.phase = phase
         self.rollout_id = rollout_id
         self.overrides = _get_phase_override_configs(args, phase)
-        self.enabled = self._configure(args, phase=phase, rollout_id=rollout_id, overrides=self.overrides)
+        self.enabled = self._configure(
+            args, phase=phase, rollout_id=rollout_id, store_prefix=store_prefix, overrides=self.overrides
+        )
         if self.enabled:
             dumper.register_non_intrusive_dumper(self._extract_model(model))
 
@@ -136,6 +139,7 @@ class DumperMegatronUtil:
         *,
         phase: DumperPhase,
         rollout_id: int,
+        store_prefix: str = "",
         overrides: dict[str, Any] | None = None,
     ) -> bool:
         if overrides is None:
@@ -143,7 +147,7 @@ class DumperMegatronUtil:
         if not overrides.get("enable"):
             return False
 
-        exp_name = f"{phase.value}/rollout_{rollout_id}"
+        exp_name = f"{phase.value}/{store_prefix}rollout_{rollout_id}"
         merged = {
             "dir": str(_get_dir(args)),
             "exp_name": exp_name,
