@@ -20,6 +20,7 @@ def run_comparator(
     # Callers may pass extra keys (e.g. no_failure skips 'dp'/'edp' too). (Grouping is a
     # comparator-matching detail, not a pass/fail threshold.)
     skip_keys: list[str] = list(grouping_skip_keys) if grouping_skip_keys is not None else ["rank"]
+    assert "rank" in skip_keys, f"grouping_skip_keys must include 'rank', got {skip_keys}"
 
     cmd: list[str] = [
         sys.executable,
