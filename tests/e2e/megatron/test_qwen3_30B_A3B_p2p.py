@@ -75,6 +75,10 @@ def execute():
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
+        # fp32 main params + adam m/v don't fit on 6 GPUs (dp-cp shard is only 2)
+        "--optimizer-cpu-offload "
+        "--overlap-cpu-optimizer-d2h-h2d "
+        "--use-precision-aware-optimizer "
     )
 
     sglang_args = (
