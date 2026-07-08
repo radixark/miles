@@ -96,25 +96,14 @@ RUN rm -rf /root/Megatron-LM && \
     git apply /tmp/amd_patch/megatron.patch && \
     pip install -e .
 
-RUN pip uninstall -y sgl_kernel sglang || true
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
-    git clean -fdx && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
     else \
       git checkout FETCH_HEAD; \
     fi && \
-    git submodule sync --recursive && \
-    git submodule update --init --recursive && \
-    cd sgl-kernel && \
-    rm -f pyproject.toml && \
-    mv pyproject_rocm.toml pyproject.toml && \
-    AMDGPU_TARGET=${GPU_ARCH} python setup_rocm.py install && \
-    cd .. && \
-    rm -rf python/pyproject.toml && \
-    mv python/pyproject_other.toml python/pyproject.toml && \
     pip install -e "python[all_hip]" --no-deps
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
