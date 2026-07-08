@@ -216,8 +216,9 @@ def _execute_train(args: ScriptArgs):
         "TRITON_CACHE_DIR": "/scratch/yyuan/triton_cache",
         "INDEXER_ROPE_NEOX_STYLE": "0",
         "NVSHMEM_DISABLE_NCCL": "1",
-        # openenv_agent_function / openenv_generate import path
-        "PYTHONPATH": f"{args.megatron_path}:{OPENENV_DIR}",
+        # openenv_agent_function / openenv_generate import path; keep the
+        # driver PYTHONPATH tail (sglang worktree) for actor-side imports
+        "PYTHONPATH": f"{args.megatron_path}:{OPENENV_DIR}:{os.environ.get('PYTHONPATH', '')}",
         # OpenEnv x Daytona
         "AGENT_MODEL_NAME": args.agent_model_name,
         "OPENENV_MAX_TURNS": str(args.openenv_max_turns),
