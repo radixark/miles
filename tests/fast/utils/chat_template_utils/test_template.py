@@ -398,7 +398,7 @@ class TestDeepSeekV32TITOAlignWithSGLang:
     """V3.2 TITO prompt tokenization must match sglang's dsv32 encoder.
 
     V3.2 ships no jinja chat_template; the ``DEEPSEEKV32`` TITO family rides
-    miles' ``apply_chat_template`` -> ``chat_template_utils.deepseek_v32`` bridge,
+    miles' ``apply_chat_template`` -> ``chat_template_utils.deepseek`` bridge,
     which mirrors sglang's ``chat_encoding_spec == "dsv32"`` branch.  These pin
     that ``get_tito_tokenizer(...).render_messages`` produces identical
     prompt_ids to sglang for the tool surface actually used in training, with

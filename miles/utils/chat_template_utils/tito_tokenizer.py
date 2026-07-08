@@ -723,7 +723,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
     V3.2 ships no jinja chat_template; sglang renders prompts through
     ``encoding_dsv32.encode_messages``, and miles' ``apply_chat_template`` routes
-    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek_v32`` bridge.
+    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek`` bridge.
     TITO incremental tokenization rides that same bridge so it stays
     byte-aligned with what the runtime serves.
 
@@ -778,7 +778,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     """DeepSeek V4 — official encoder via sglang's ``encoding_dsv4``.
 
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
-    routes any V4 tokenizer to the ``chat_template_utils.deepseek_v4`` bridge, and
+    routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
     with what the runtime serves.  Only the ``{tool}`` surface is registered, so
     the base ``_split_appended_segments`` (contiguous tool runs) covers it

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from miles.utils.chat_template_utils import apply_chat_template, deepseek_v32
+from miles.utils.chat_template_utils import apply_chat_template, deepseek
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
@@ -58,39 +58,39 @@ def _reference_encode(messages, *, thinking: bool = False, drop_thinking: bool =
 
 
 def test_detect_dsv32_by_config(tmp_path):
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "deepseek_v32")) is True
+    assert deepseek.model_type(_tok_with_model_type(tmp_path, "deepseek_v32")) == "deepseek_v32"
 
 
 def test_detect_non_dsv32(tmp_path):
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "qwen3")) is False
+    assert deepseek.model_type(_tok_with_model_type(tmp_path, "qwen3")) != "deepseek_v32"
 
 
 def test_detect_ignores_name(tmp_path):
     # Directory name looks like DeepSeek V3.2 but config says otherwise -> HF path.
     d = tmp_path / "deepseek-v3.2-base"
     d.mkdir()
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(d, "qwen3")) is False
+    assert deepseek.model_type(_tok_with_model_type(d, "qwen3")) != "deepseek_v32"
 
 
 def test_detect_missing_config_falls_back(tmp_path):
     # No config.json -> empty model_type -> not dsv32, no exception.
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer(str(tmp_path))) is False
+    assert deepseek.model_type(_FakeTokenizer(str(tmp_path))) != "deepseek_v32"
 
 
 def test_detect_invalid_config_falls_back(tmp_path):
     # Malformed JSON must fall back to HF, not raise.
     (tmp_path / "config.json").write_text("{ not valid json", encoding="utf-8")
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer(str(tmp_path))) is False
+    assert deepseek.model_type(_FakeTokenizer(str(tmp_path))) != "deepseek_v32"
 
 
 def test_detect_non_object_config_falls_back(tmp_path):
     # Valid JSON that is not an object (e.g. a list) must fall back to HF, not raise.
     (tmp_path / "config.json").write_text("[]", encoding="utf-8")
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer(str(tmp_path))) is False
+    assert deepseek.model_type(_FakeTokenizer(str(tmp_path))) != "deepseek_v32"
 
 
 def test_detect_empty_name_or_path():
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer("")) is False
+    assert deepseek.model_type(_FakeTokenizer("")) != "deepseek_v32"
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ _PARITY_SCENARIOS = {
 def test_render_matches_direct_encode_messages(scenario, thinking):
     messages = _PARITY_SCENARIOS[scenario]
     thinking_mode = "thinking" if thinking else "chat"
-    assert deepseek_v32.render_messages(messages, thinking_mode=thinking_mode) == _reference_encode(
+    assert deepseek.render_messages_v32(messages, thinking_mode=thinking_mode) == _reference_encode(
         messages, thinking=thinking
     )
 
@@ -132,7 +132,7 @@ def test_apply_chat_template_tokenize_matches_render(tmp_path, scenario, thinkin
     messages = _PARITY_SCENARIOS[scenario]
     thinking_mode = "thinking" if thinking else "chat"
     ids = apply_chat_template(messages, tokenizer=tok, tokenize=True, thinking_mode=thinking_mode)
-    assert ids == [ord(c) for c in deepseek_v32.render_messages(messages, thinking_mode=thinking_mode)]
+    assert ids == [ord(c) for c in deepseek.render_messages_v32(messages, thinking_mode=thinking_mode)]
 
 
 def test_dict_arguments_equal_string_arguments(tmp_path):
@@ -156,7 +156,7 @@ def test_dict_arguments_equal_string_arguments(tmp_path):
 
 
 def test_thinking_mode_changes_output():
-    assert deepseek_v32.render_messages(_MSGS_BASIC, thinking_mode="thinking") != deepseek_v32.render_messages(
+    assert deepseek.render_messages_v32(_MSGS_BASIC, thinking_mode="thinking") != deepseek.render_messages_v32(
         _MSGS_BASIC, thinking_mode="chat"
     )
 
@@ -179,7 +179,7 @@ _TOOLS = [
 
 def test_render_with_tools_injects_into_system_functions_block():
     # tools= is accepted (not rejected) and rendered into the system <functions> block.
-    out = deepseek_v32.render_messages([{"role": "user", "content": "hi"}], tools=_TOOLS, thinking_mode="chat")
+    out = deepseek.render_messages_v32([{"role": "user", "content": "hi"}], tools=_TOOLS, thinking_mode="chat")
     assert "<functions>" in out
     assert "get_weather" in out
 
@@ -192,16 +192,16 @@ def test_render_with_tools_matches_manual_system_injection():
 
     canonical = [Tool.model_validate(t).model_dump() for t in _TOOLS]
     msgs = [{"role": "user", "content": "weather?"}]
-    expected = deepseek_v32.render_messages(
+    expected = deepseek.render_messages_v32(
         [{"role": "system", "content": "", "tools": canonical}, *msgs], thinking_mode="chat"
     )
-    assert deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat") == expected
+    assert deepseek.render_messages_v32(msgs, tools=_TOOLS, thinking_mode="chat") == expected
 
 
 def test_render_with_tools_reuses_existing_system_message():
     # When a system message is already present, tools attach to it (no extra system inserted).
     msgs = [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "hi"}]
-    out = deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
+    out = deepseek.render_messages_v32(msgs, tools=_TOOLS, thinking_mode="chat")
     assert "You are helpful." in out
     assert "<functions>" in out
 
@@ -209,7 +209,7 @@ def test_render_with_tools_reuses_existing_system_message():
 def test_render_with_tools_does_not_mutate_input():
     msgs = [{"role": "user", "content": "hi"}]
     snapshot = copy.deepcopy(msgs)
-    deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
+    deepseek.render_messages_v32(msgs, tools=_TOOLS, thinking_mode="chat")
     assert msgs == snapshot
 
 
@@ -217,7 +217,7 @@ def test_apply_chat_template_with_tools_dispatches_to_bridge(tmp_path):
     tok = _tok_with_model_type(tmp_path, "deepseek_v32")
     msgs = [{"role": "user", "content": "hi"}]
     via_apply = apply_chat_template(msgs, tokenizer=tok, tools=_TOOLS, tokenize=False)
-    assert via_apply == deepseek_v32.render_messages(msgs, tools=_TOOLS)
+    assert via_apply == deepseek.render_messages_v32(msgs, tools=_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +247,11 @@ def test_does_not_mutate_input(tmp_path):
 
 def test_reject_unknown_kwargs():
     with pytest.raises(ValueError, match="unsupported kwargs"):
-        deepseek_v32.render_messages(_MSGS_BASIC, some_unknown_kwarg=1)
+        deepseek.render_messages_v32(_MSGS_BASIC, some_unknown_kwarg=1)
 
 
 def test_accept_none_tools_and_known_kwargs():
-    deepseek_v32.render_messages(_MSGS_BASIC, tools=None, thinking_mode="thinking", drop_thinking=False)
+    deepseek.render_messages_v32(_MSGS_BASIC, tools=None, thinking_mode="thinking", drop_thinking=False)
 
 
 # ---------------------------------------------------------------------------
@@ -260,45 +260,45 @@ def test_accept_none_tools_and_known_kwargs():
 
 
 def test_enable_thinking_true_maps_to_thinking():
-    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=True) == deepseek_v32.render_messages(
+    assert deepseek.render_messages_v32(_MSGS_BASIC, enable_thinking=True) == deepseek.render_messages_v32(
         _MSGS_BASIC, thinking_mode="thinking"
     )
 
 
 def test_enable_thinking_false_maps_to_chat():
-    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=False) == deepseek_v32.render_messages(
+    assert deepseek.render_messages_v32(_MSGS_BASIC, enable_thinking=False) == deepseek.render_messages_v32(
         _MSGS_BASIC, thinking_mode="chat"
     )
 
 
 def test_enable_thinking_absent_defaults_to_thinking():
     # No enable_thinking and no thinking_mode -> the cfg default ("thinking").
-    assert deepseek_v32.render_messages(_MSGS_BASIC) == deepseek_v32.render_messages(
+    assert deepseek.render_messages_v32(_MSGS_BASIC) == deepseek.render_messages_v32(
         _MSGS_BASIC, thinking_mode="thinking"
     )
 
 
 def test_enable_thinking_none_defaults_to_thinking():
     # Explicit None is treated as absent: falls through to the "thinking" default.
-    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=None) == deepseek_v32.render_messages(
+    assert deepseek.render_messages_v32(_MSGS_BASIC, enable_thinking=None) == deepseek.render_messages_v32(
         _MSGS_BASIC, thinking_mode="thinking"
     )
 
 
 def test_explicit_thinking_mode_wins_over_enable_thinking():
-    assert deepseek_v32.render_messages(
+    assert deepseek.render_messages_v32(
         _MSGS_BASIC, enable_thinking=False, thinking_mode="thinking"
-    ) == deepseek_v32.render_messages(_MSGS_BASIC, thinking_mode="thinking")
+    ) == deepseek.render_messages_v32(_MSGS_BASIC, thinking_mode="thinking")
 
 
 def test_enable_thinking_is_consumed_not_rejected():
     # enable_thinking is translated away, so it is not rejected as an unknown kwarg.
-    deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=True)
+    deepseek.render_messages_v32(_MSGS_BASIC, enable_thinking=True)
 
 
 def test_build_config_does_not_mutate_input_kwargs():
     kwargs = {"enable_thinking": True}
-    deepseek_v32._build_deepseek_encode_config(kwargs)
+    deepseek._build_encode_config(kwargs, deepseek._KNOWN_KWARGS_V32)
     assert kwargs == {"enable_thinking": True}
 
 
@@ -309,8 +309,8 @@ def test_build_config_does_not_mutate_input_kwargs():
 
 def test_dsv32_detector_does_not_match_dsv4(tmp_path):
     # V3.2 detection keys off model_type exactly, so a deepseek_v4 checkpoint is
-    # not mistaken for V3.2 -- V4 is routed by its own deepseek_v4 bridge.
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "deepseek_v4")) is False
+    # not mistaken for V3.2 -- V4 dispatches to its own render_messages_v4.
+    assert deepseek.model_type(_tok_with_model_type(tmp_path, "deepseek_v4")) != "deepseek_v32"
 
 
 # ---------------------------------------------------------------------------
@@ -319,11 +319,11 @@ def test_dsv32_detector_does_not_match_dsv4(tmp_path):
 
 
 def test_render_has_no_add_generation_prompt_param():
-    assert "add_generation_prompt" not in inspect.signature(deepseek_v32.render_messages).parameters
+    assert "add_generation_prompt" not in inspect.signature(deepseek.render_messages_v32).parameters
 
 
 def test_no_generation_prompt_suffix_strip():
-    src = Path(deepseek_v32.__file__).read_text(encoding="utf-8")
+    src = Path(deepseek.__file__).read_text(encoding="utf-8")
     assert "_GENERATION_PROMPT_SUFFIX" not in src
     assert "<｜Assistant｜>" not in src  # no hard-coded assistant-suffix surgery
 
@@ -342,7 +342,7 @@ def test_apply_chat_template_add_generation_prompt_is_noop(tmp_path):
 
 def test_apply_chat_template_dispatches_to_bridge(tmp_path):
     tok = _tok_with_model_type(tmp_path, "deepseek_v32")
-    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) == deepseek_v32.render_messages(_MSGS_BASIC)
+    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) == deepseek.render_messages_v32(_MSGS_BASIC)
 
 
 def test_apply_chat_template_is_generation_ready(tmp_path):
