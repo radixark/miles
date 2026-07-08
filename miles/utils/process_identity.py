@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import Discriminator
+from pydantic import Discriminator, NonNegativeInt
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -22,8 +22,8 @@ class RolloutManagerProcessIdentity(_ProcessIdentityBase):
 
 class TrainProcessIdentity(_ProcessIdentityBase):
     component: Literal["actor", "critic"]
-    cell_index: int
-    rank_within_cell: int
+    cell_index: NonNegativeInt
+    rank_within_cell: NonNegativeInt
 
     def to_name(self) -> str:
         return f"{self.component}_cell{self.cell_index}_rank{self.rank_within_cell}"

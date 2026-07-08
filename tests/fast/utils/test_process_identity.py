@@ -1,5 +1,8 @@
 """Tests for process_identity module."""
 
+import pytest
+from pydantic import ValidationError
+
 from miles.utils.process_identity import MainProcessIdentity, RolloutManagerProcessIdentity, TrainProcessIdentity
 
 
@@ -17,6 +20,18 @@ class TestProcessIdentityToName:
     def test_critic(self) -> None:
         source = TrainProcessIdentity(component="critic", cell_index=0, rank_within_cell=2)
         assert source.to_name() == "critic_cell0_rank2"
+
+
+class TestTrainProcessIdentityValidation:
+    def test_negative_cell_index_rejected(self) -> None:
+        """A negative cell_index fails validation."""
+        with pytest.raises(ValidationError):
+            TrainProcessIdentity(component="actor", cell_index=-1, rank_within_cell=0)
+
+    def test_negative_rank_within_cell_rejected(self) -> None:
+        """A negative rank_within_cell fails validation."""
+        with pytest.raises(ValidationError):
+            TrainProcessIdentity(component="actor", cell_index=0, rank_within_cell=-1)
 
 
 class TestTrainProcessIdentityRoundtrip:
