@@ -207,6 +207,16 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
+            # Default the backend's template kwargs from the server-side render
+            # config — e.g. dsv4 only separates reasoning when the request
+            # carries `thinking` (DeepSeek-V3.1's template kwarg, kept for V4).
+            # Explicit client keys win.
+            server_ctk = self.registry.tito_tokenizer.chat_template_kwargs
+            if server_ctk:
+                request_body["chat_template_kwargs"] = {
+                    **server_ctk,
+                    **(request_body.get("chat_template_kwargs") or {}),
+                }
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(

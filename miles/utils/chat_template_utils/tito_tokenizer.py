@@ -30,6 +30,7 @@ except ImportError:
 from pathlib import Path
 from typing import Any
 
+from miles.utils.chat_template_utils import deepseek
 from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
@@ -855,6 +856,14 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             tokenizer.convert_tokens_to_ids("</think>"),
         }
         self.trailing_token_ids = frozenset({self._assistant_id} | self._think_bracket_ids)
+        # sglang's dsv4 parser separates reasoning only when the request carries
+        # `thinking` (DeepSeek-V3.1's template kwarg, kept for the V4 family);
+        # make the effective render mode explicit so the session server forwards it.
+        if "thinking" not in self.chat_template_kwargs:
+            self.chat_template_kwargs = {
+                **self.chat_template_kwargs,
+                "thinking": deepseek.V4.render_thinking_enabled(self.chat_template_kwargs),
+            }
 
     def tokenize_additional_non_assistant(
         self,
