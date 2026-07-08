@@ -4,7 +4,11 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from torch.distributed.distributed_c10d import _object_to_tensor, _tensor_to_object
+
+# AllgatherOptions is not re-exported by torch.distributed (unlike
+# AllreduceOptions, BroadcastOptions, GatherOptions). PyTorch omission.
+from torch._C._distributed_c10d import AllgatherOptions
+from torch.distributed.distributed_c10d import _get_object_coll_device, _object_to_tensor, _tensor_to_object
 
 from miles.utils.det_process_group import DET_NCCL_BACKEND_NAME, det_all_reduce
 
@@ -196,10 +200,6 @@ class _RawPGUtil(GeneralPGUtil):
     def all_gather(
         self, output_tensors: list[torch.Tensor], input_tensor: torch.Tensor, group: dist.ProcessGroup
     ) -> None:
-        # AllgatherOptions is not re-exported by torch.distributed (unlike
-        # AllreduceOptions, BroadcastOptions, GatherOptions). PyTorch omission.
-        from torch._C._distributed_c10d import AllgatherOptions
-
         _check_wait(group.allgather([output_tensors], [input_tensor], AllgatherOptions()), "allgather")
 
     def gather(
@@ -296,8 +296,6 @@ def _gather_object_via_util(
         assert object_gather_list is not None
     else:
         assert object_gather_list is None
-
-    from torch.distributed.distributed_c10d import _get_object_coll_device
 
     current_device = _get_object_coll_device(group)
     input_tensor, local_size = _object_to_tensor(obj, current_device, group)
