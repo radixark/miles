@@ -495,6 +495,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--generate-multi-samples",
+                action="store_true",
+                default=False,
+            )
+            parser.add_argument(
+                "--max-seq-len",
+                type=int,
+                default=None,
+                help="Max sequence length (prompt + completion) per agentic session.",
+            )
+            parser.add_argument(
                 "--custom-rollout-log-function-path",
                 type=str,
                 default=None,
