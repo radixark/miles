@@ -9,6 +9,7 @@ import torch.nn as nn
 from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer, Range
 from megatron.core.optimizer.optimizer import ChainedOptimizer
 
+from miles.utils.event_logger.models import WitnessSnapshotParamEvent
 from miles.utils.witness.allocator import WitnessInfo
 from miles.utils.witness.module import (
     _abs_broadcast_add,
@@ -119,8 +120,6 @@ class TestRecordAndLogWitnessParam:
             _record_and_log_witness_param(witness=witness, instance_id="pp0.tail", stale_ids=[])
 
             mock_logger.log.assert_called_once()
-            from miles.utils.event_logger.models import WitnessSnapshotParamEvent
-
             assert mock_logger.log.call_args[0][0] is WitnessSnapshotParamEvent
             partial = mock_logger.log.call_args[0][1]
             assert partial["instance_id"] == "pp0.tail"

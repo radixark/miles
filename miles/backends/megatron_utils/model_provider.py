@@ -130,7 +130,7 @@ def get_model_provider_func(
             if pg_collection is not None:
                 provider._pg_collection = pg_collection
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
-            assert not args.enable_witness, "Witness is not supported yet in this mode"
+            assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             return model
 
         return wrapped_bridge_provider
