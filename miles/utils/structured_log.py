@@ -104,11 +104,7 @@ def _maybe_quote(text: str) -> str:
 
 def _quote(text: str) -> str:
     escaped = (
-        text.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
+        text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     )
     return f'"{escaped}"'
 
