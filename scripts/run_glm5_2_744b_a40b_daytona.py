@@ -5,8 +5,8 @@ run_glm5_2_744b_a40b.py) to the OpenEnv tbench2 agentic rollout from
 examples/experimental/openenv/, with episodes executing inside a pool of
 Daytona sandboxes provisioned from OPENENV_DAYTONA_SNAPSHOT.
 
-First-step goal is pipeline bring-up, not learning: tiny rollout batch, few
-turns, short responses, two RL steps, no checkpoint save.
+Rollout batch stays smoke-sized (4x4), but the episode budget matches the
+upstream PR: 30 turns, 3600s wall-clock, 8k per-turn generation, 64k session.
 
 Prereqs (login node / NFS):
     git clone --depth 1 https://github.com/laude-institute/terminal-bench-2.git \
@@ -57,15 +57,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 4
     global_batch_size: int = 16
-    rollout_max_response_len: int = 4096
+    rollout_max_response_len: int = 8192
 
     # OpenEnv / Daytona
     prompt_data: str = ""  # default: <data_dir>/tbench2_train.jsonl
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
-    openenv_max_turns: int = int(os.environ.get("OPENENV_MAX_TURNS", "3"))
-    openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "900"))
+    openenv_max_turns: int = int(os.environ.get("OPENENV_MAX_TURNS", "30"))
+    openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
     openenv_daytona_snapshot: str = os.environ.get("OPENENV_DAYTONA_SNAPSHOT", "tbench2-env-shi-10g")
-    openenv_daytona_pool_size: int = int(os.environ.get("OPENENV_DAYTONA_POOL_SIZE", "8"))
+    openenv_daytona_pool_size: int = int(os.environ.get("OPENENV_DAYTONA_POOL_SIZE", "16"))
     openenv_daytona_port: int = int(os.environ.get("OPENENV_DAYTONA_PORT", "8000"))
     daytona_api_key: str = os.environ.get("DAYTONA_API_KEY", "")
 
@@ -96,6 +96,7 @@ def _execute_train(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
+        "--max-seq-len 65536 "
         "--rollout-temperature 0.8 "
         f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
