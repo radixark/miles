@@ -239,6 +239,13 @@ def _execute_train(args: ScriptArgs):
     )
 
 
+@app.callback()
+def _cli():
+    # Force subcommand mode: a single-command Typer app would otherwise
+    # swallow the command name and reject `... daytona.py train`.
+    pass
+
+
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
