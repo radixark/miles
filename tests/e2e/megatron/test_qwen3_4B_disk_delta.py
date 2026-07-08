@@ -10,7 +10,6 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
-    disabled="Requires sglang /pull_weights (sgl-project/sglang#30366) in the CI image.",
 )
 
 
