@@ -151,25 +151,20 @@ class TestConvertTargetModulesToHf:
     def test_gdn_in_proj_expands_to_sglang_modules(self):
         assert convert_target_modules_to_hf(["in_proj"]) == ["in_proj_qkvz", "in_proj_ba"]
 
-    def test_gdn_out_proj_passthrough(self):
-        assert convert_target_modules_to_hf(["out_proj"]) == ["out_proj"]
-
-    def test_wildcard_passthrough_reduces_to_leaf(self):
-        assert convert_target_modules_to_hf(["language_model.decoder.layers.*.self_attention.out_proj"]) == [
-            "out_proj"
-        ]
-
-    def test_dotted_path_without_wildcard_reduces_to_leaf(self):
-        assert convert_target_modules_to_hf(["language_model.decoder.layers.0.self_attention.linear_qkv"]) == [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-        ]
-
-    def test_dotted_path_passthrough_reduces_to_leaf(self):
-        assert convert_target_modules_to_hf(["language_model.decoder.layers.0.self_attention.out_proj"]) == [
-            "out_proj"
-        ]
+    @pytest.mark.parametrize(
+        "module,expected",
+        [
+            ("out_proj", ["out_proj"]),  # same-name passthrough
+            ("language_model.decoder.layers.*.self_attention.out_proj", ["out_proj"]),  # wildcard path
+            ("language_model.decoder.layers.0.self_attention.out_proj", ["out_proj"]),  # dotted path, passthrough
+            (
+                "language_model.decoder.layers.0.self_attention.linear_qkv",  # dotted path, table-mapped
+                ["q_proj", "k_proj", "v_proj"],
+            ),
+        ],
+    )
+    def test_paths_reduce_to_leaf_before_mapping(self, module, expected):
+        assert convert_target_modules_to_hf([module]) == expected
 
     def test_canonical_split_modules(self):
         result = convert_target_modules_to_hf(["linear_q", "linear_k", "linear_v"])
