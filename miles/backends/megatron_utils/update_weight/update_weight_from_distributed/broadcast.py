@@ -206,9 +206,11 @@ def disconnect_rollout_engines_from_distributed(args, group_name, model_update_g
     Destroy NCCL on training and engines.
     """
     refs = [engine.destroy_weights_update_group.remote(group_name) for engine in rollout_engines]
-    if model_update_groups is not None:
-        dist.destroy_process_group(model_update_groups)
-    ray.get(refs)
+    try:
+        if model_update_groups is not None:
+            dist.destroy_process_group(model_update_groups)
+    finally:
+        ray.get(refs)
 
 
 def update_weights_from_distributed(
