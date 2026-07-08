@@ -174,14 +174,17 @@ class TestMarkAsErrored:
 
         assert cell.is_errored
 
-
-class TestInvalidTransitions:
-    def test_mark_as_errored_rejects_from_uninitialized(self):
+    def test_transitions_uninitialized_to_errored_without_info(self):
+        """A cell whose init never completed can still be marked errored; its indep_dp_info is None."""
         cell = make_cell()
 
-        with pytest.raises(AssertionError):
-            cell._mark_as_errored()
+        cell._mark_as_errored()
 
+        assert cell.is_errored
+        assert cell.indep_dp_info is None
+
+
+class TestInvalidTransitions:
     def test_allocate_for_pending_rejects_from_alive(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
 
@@ -239,6 +242,20 @@ class TestAsyncInit:
             kwargs = calls[0][2]
             assert kwargs["indep_dp_info"] == info
             assert kwargs["recv_ckpt_src_rank"] is None
+
+
+class TestAsyncInitFailure:
+    async def test_init_failure_leaves_cell_stopped_not_alive(self):
+        """A failed remote init routes through errored to stopped; the cell is never reported alive."""
+        cell = make_cell(actor_count=1)
+        for handle in cell._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["init"]))
+
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await cell.init(indep_dp_info=make_indep_dp_info())
+
+        assert not cell.is_alive
+        assert cell.is_stopped
 
 
 class TestPrepareIndepDPModeAlive:

@@ -60,7 +60,6 @@ class RayTrainCell:
         indep_dp_info: IndepDPInfo,
         recv_ckpt_src_rank: int | None = None,
     ):
-        self._mark_as_alive(indep_dp_info=indep_dp_info)
         results = await self.execute(
             "init",
             args=self.args,
@@ -70,6 +69,7 @@ class RayTrainCell:
             indep_dp_info=indep_dp_info,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
+        self._mark_as_alive(indep_dp_info=indep_dp_info)
         await self.health_checker.start()
         return results
 
@@ -182,12 +182,13 @@ class RayTrainCell:
 
     def _mark_as_errored(self) -> None:
         assert isinstance(
-            self._state, (StateAllocatedAlive, StateAllocatedErrored)
+            self._state, (StateAllocatedUninitialized, StateAllocatedAlive, StateAllocatedErrored)
         ), f"{self.cell_index=} {self._state=}"
+        indep_dp_info = None if isinstance(self._state, StateAllocatedUninitialized) else self._state.indep_dp_info
         self._change_state(
             "_mark_as_errored",
-            (StateAllocatedAlive, StateAllocatedErrored),
-            StateAllocatedErrored(actor_handles=self._state.actor_handles, indep_dp_info=self._state.indep_dp_info),
+            (StateAllocatedUninitialized, StateAllocatedAlive, StateAllocatedErrored),
+            StateAllocatedErrored(actor_handles=self._state.actor_handles, indep_dp_info=indep_dp_info),
         )
 
     def _change_state(
@@ -299,7 +300,7 @@ class RayTrainCell:
         return compute_cell_status(self._state, self.health_checker.status)
 
     @property
-    def indep_dp_info(self) -> IndepDPInfo:
+    def indep_dp_info(self) -> IndepDPInfo | None:
         assert isinstance(self._state, (StateAllocatedAlive, StateAllocatedErrored))
         return self._state.indep_dp_info
 
