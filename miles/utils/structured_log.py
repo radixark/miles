@@ -88,13 +88,20 @@ def _format_scalar(value: Any) -> str:
 
 
 def _maybe_quote(text: str) -> str:
-    if text and any(ch in text for ch in (" ", "=", '"')):
+    if text and any(ch in text for ch in (" ", "=", '"', "\\", "\n", "\r", "\t")):
         return _quote(text)
     return text
 
 
 def _quote(text: str) -> str:
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    escaped = (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
 
 
 def prune_for_log(value: Any, cap: int = _PRUNE_CAP) -> Any:

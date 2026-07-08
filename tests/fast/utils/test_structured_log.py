@@ -48,6 +48,34 @@ class TestFormatValue:
         """When quoting is triggered, backslashes are escaped too."""
         assert _format_value("a\\b c") == '"a\\\\b c"'
 
+    def test_string_with_newline_is_quoted_and_escaped(self):
+        """A literal newline is escaped so the entry stays on one log line."""
+        assert _format_value("a\nb") == '"a\\nb"'
+
+    def test_string_with_carriage_return_is_quoted_and_escaped(self):
+        """A carriage return is escaped so it can't corrupt the log stream."""
+        assert _format_value("a\rb") == '"a\\rb"'
+
+    def test_string_with_tab_is_quoted_and_escaped(self):
+        """A tab is escaped so the value stays one unambiguous token."""
+        assert _format_value("a\tb") == '"a\\tb"'
+
+    def test_string_with_only_backslash_is_quoted_and_escaped(self):
+        """A backslash alone (no space) still triggers quoting so it round-trips."""
+        assert _format_value("a\\b") == '"a\\\\b"'
+
+    def test_string_mixing_all_control_chars(self):
+        """Newline, quote, tab and backslash all escape together."""
+        assert _format_value('a\n"b"\t\\c\r') == '"a\\n\\"b\\"\\t\\\\c\\r"'
+
+    def test_backslash_escaped_before_other_escapes(self):
+        """A pre-escaped-looking string round-trips: the backslash doubles, the newline escapes."""
+        assert _format_value("\\n\n") == '"\\\\n\\n"'
+
+    def test_list_element_with_newline_is_quoted(self):
+        """A newline inside a list element quotes and escapes the joined value."""
+        assert _format_value(["a\nb", "c"]) == '"a\\nb,c"'
+
     def test_list_of_ints_is_comma_joined_no_space(self):
         """A list renders comma-joined with no spaces."""
         assert _format_value([0, 1, 2]) == "0,1,2"
