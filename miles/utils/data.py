@@ -8,7 +8,7 @@ import re
 import numpy as np
 import ray
 
-from .data_utils import split_train_data_by_dp
+from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 from .witness.allocator import WitnessInfo
 
 try:
@@ -286,7 +286,7 @@ def process_rollout_data(
         raw = ray.get(rollout_data_ref.inner)
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
-        raw = split_train_data_by_dp(args, raw, dp_size=dp_size)
+        raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
         rollout_data = raw[dp_rank]
     else:
         assert len(rollout_data_ref) == dp_size
