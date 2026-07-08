@@ -11,7 +11,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     get_routed_experts_from_response,
 )
-from miles.rollout.session.session_types import GetSessionResponse, SessionRecord
+from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 

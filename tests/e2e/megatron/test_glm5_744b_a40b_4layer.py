@@ -161,6 +161,8 @@ def execute():
     )
 
     ci_args = "--ci-test --ci-disable-logprobs-checker "
+    if USE_FP8_ROLLOUT:
+        ci_args += "--check-weight-update-allow-quant-error "
 
     misc_args = (
         # default dropout in megatron is 0.1

@@ -13,7 +13,7 @@ from tqdm import tqdm
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
 
-from ...lora_utils import LORA_ADAPTER_NAME
+from miles.utils.lora import LORA_ADAPTER_NAME
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 

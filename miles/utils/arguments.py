@@ -156,6 +156,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--miles-dsa-topk-backend",
+                type=str,
+                choices=["torch", "flashinfer"],
+                default="torch",
+                help="Top-k backend for Miles DSA indexer.",
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,
@@ -217,6 +224,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["raw", "bridge"],
                 default="raw",
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
+            )
+            parser.add_argument(
+                "--dsa-attention-backend",
+                choices=["megatron", "tilelang"],
+                default="tilelang",
+                help=(
+                    "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
+                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
+                    "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
+                    "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
+                    "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
+                    "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
+                ),
             )
             parser.add_argument(
                 "--extra-high-precision-layers-hf",
@@ -1059,6 +1079,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--observe-training-entropy",
+                action="store_true",
+                default=False,
+                help=(
+                    "Compute training entropy as a logged metric even when --entropy-coef is 0. "
+                    "When the coefficient is 0, the observed entropy is detached and does not affect backward."
+                ),
+            )
+            parser.add_argument(
                 "--get-mismatch-metrics",
                 action="store_true",
                 default=False,
@@ -1124,7 +1153,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-rollout-routing-replay",
                 action="store_true",
                 default=False,
-                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
+                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370 (R3): "
+                "replay the rollout's MoE routing in training. MoE-only; the GLM-5 launchers pass it "
+                "explicitly.",
             )
             parser.add_argument(
                 "--use-indexer-replay",
@@ -1378,7 +1409,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Log statistics of the category of reward, such as why the reward function considers it as failed. "
-                    "Specify the key in the reward dict using this argument.",
+                    "Specify the key in the reward dict using this argument."
                 ),
             )
             parser.add_argument(
@@ -1581,6 +1612,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--check-weight-update-selector",
+                type=str,
+                default="all",
+                choices=["all", "target", "draft"],
+                help="Which model the post-update equality check covers: 'all' (target + "
+                "draft/MTP), 'target' (target model only; skips the draft, e.g. when MTP "
+                "training is off), or 'draft' (draft/MTP worker only).",
+            )
+            parser.add_argument(
+                "--check-weight-update-skip-list",
+                type=str,
+                nargs="*",
+                default=None,
+                help="Weight-name substrings to exclude from the post-update equality check; "
+                "their mismatches are downgraded to non-fatal info (e.g. MTP/draft layer names "
+                "that are absent on the training side).",
+            )
+            parser.add_argument(
+                "--check-weight-update-allow-quant-error",
+                action="store_true",
+                help="When comparing weights after update, allow quantized tensors to differ "
+                "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
+            )
             parser.add_argument(
                 "--save-local-weight-checksum",
                 action="store_true",
@@ -1943,13 +1998,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     fn.add_arguments(parser)
             return parser
 
-        def add_sglang_tp_size():
-            temp_parser = argparse.ArgumentParser(add_help=False)
-            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
-            temp_args, _ = temp_parser.parse_known_args()
-            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
-            return sglang_tp_size
-
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
@@ -1970,6 +2018,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        # required whenever expert projections are LoRA targets, inert otherwise
+        # (sglang's own default is False)
+        parser.set_defaults(sglang_lora_use_virtual_experts=True)
+        parser.add_argument(
+            "--no-sglang-lora-use-virtual-experts",
+            dest="sglang_lora_use_virtual_experts",
+            action="store_false",
+            help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
+            "of the virtual-experts path.",
+        )
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
@@ -1990,7 +2048,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         )
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
-        parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser
 
     return add_miles_arguments
@@ -2329,7 +2386,14 @@ def miles_validate_args(args):
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":
+            # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
+            # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
             modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            hf_config = load_hf_config(args.hf_checkpoint)
+            if getattr(hf_config, "kv_lora_rank", None):
+                modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
+                if getattr(hf_config, "q_lora_rank", None):
+                    modules += ["q_a_proj", "q_b_proj"]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
         else:
@@ -2352,6 +2416,14 @@ def miles_validate_args(args):
         assert args.experts_shared_outer_loras == bool(
             args.sglang_experts_shared_outer_loras
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
+
+        # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
+        _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
+        if any(leaf in str(tm) for tm in modules for leaf in _expert_leaves):
+            logger.warning(
+                "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
+                "shared-outer" if args.experts_shared_outer_loras else "per-expert",
+            )
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -2437,6 +2509,9 @@ def miles_validate_args(args):
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
+    if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
+        args.check_weight_update_equal = True
+
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
@@ -2453,13 +2528,16 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
-        if args.sglang_enforce_piecewise_cuda_graph:
-            logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
-        if not args.sglang_disable_piecewise_cuda_graph:
-            args.sglang_disable_piecewise_cuda_graph = True
+        if args.sglang_cuda_graph_backend_prefill is None:
+            args.sglang_cuda_graph_backend_prefill = "disabled"
             logger.info(
-                "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
-                "Use --sglang-enforce-piecewise-cuda-graph to override."
+                "Colocate mode: defaulting --sglang-cuda-graph-backend-prefill=disabled to avoid NVLS OOM. "
+                "Set --sglang-cuda-graph-backend-prefill explicitly to override."
+            )
+        elif args.sglang_cuda_graph_backend_prefill != "disabled":
+            logger.warning(
+                f"Warning: colocate mode with --sglang-cuda-graph-backend-prefill="
+                f"{args.sglang_cuda_graph_backend_prefill} may trigger NVLS OOM."
             )
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             logger.info(
@@ -2613,6 +2691,12 @@ def hf_validate_args(args, hf_config):
     if hasattr(hf_config, "rope_parameters") and isinstance(hf_config.rope_parameters, dict):
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
+        else:
+            # Gemma-4 nests rope_theta per attention type; take the first.
+            for _entry in hf_config.rope_parameters.values():
+                if isinstance(_entry, dict) and "rope_theta" in _entry:
+                    hf_config.rope_theta = _entry["rope_theta"]
+                    break
 
     model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:

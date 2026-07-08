@@ -169,7 +169,6 @@ def execute(args: ScriptArgs):
         f"{args.extra_args} "
     )
 
-    # r3 not compatible with spec v2
     U.execute_train(
         train_args=train_args,
         config=args,

@@ -99,6 +99,8 @@ class ServerGroup:
             env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
                 key: os.environ.get(key, default_val)
                 for key, default_val in {
+                    # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
+                    "NVSHMEM_DISABLE_NCCL": "1",
                     "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
                     # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
                     # to enable this isolation.
@@ -258,10 +260,14 @@ class ServerGroup:
             if engine.is_allocated
         ]
 
-    async def check_weights(self, action: str):
+    async def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
         return await asyncio.gather(
             *[
-                engine.actor_handle.check_weights.remote(action=action)
+                engine.actor_handle.check_weights.remote(
+                    action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+                )
                 for engine in self.engines
                 if engine.is_allocated
             ]

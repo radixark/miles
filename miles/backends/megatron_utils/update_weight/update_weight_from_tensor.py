@@ -10,16 +10,16 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import _check_weight_sync_results, post_process_weights
+from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -196,22 +196,19 @@ class UpdateWeightFromTensor:
         # a host mirror across pause/resume), we can skip the base sync entirely
         # and the surrounding restore_weights_before_load / post_process_quantization
         # calls that would otherwise prep / re-quantize fresh base bytes.
-        skip_base_sync = self.is_lora and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+        # TODO: implement lora weight checker
+        skip_base_sync = (
+            self.is_lora
+            and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+            and not getattr(self.args, "check_weight_update_equal", False)
+        )
 
         if rank == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            if (
-                not skip_base_sync
-                and self.quantization_config
-                and self.quantization_config["quant_method"] in ["compressed-tensors"]
-            ):
-                post_process_weights(
-                    rollout_engines=self.rollout_engines,
-                    restore_weights_before_load=True,
-                    post_process_quantization=False,
-                )
+            if not skip_base_sync:
+                begin_weight_update(self.rollout_engines)
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
@@ -253,14 +250,9 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         if rank == 0:
-            # process_weights_after_loading is a one-shot bf16 → int4/Marlin
-            # transform; skip when no fresh base bytes landed (skip_base_sync).
+            # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
-                post_process_weights(
-                    rollout_engines=self.rollout_engines,
-                    restore_weights_before_load=False,
-                    post_process_quantization=True,
-                )
+                end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 

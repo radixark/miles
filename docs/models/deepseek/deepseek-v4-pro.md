@@ -95,9 +95,11 @@ Required env vars (the launcher sets these for you): `SGLANG_SKIP_CHECKPOINT_LOA
 Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 
 <Warning title="Pro-specific rollout caveats">
+
 1. **Engine size ≥ 32 GPUs.** Pro needs a single SGLang engine spanning at least 32 GPUs — the launcher hard-codes `--rollout-num-gpus-per-engine 32`. Smaller engines do not leave enough memory after weights, KV cache, indexer state, and DeepEP buffers, and rollout will OOM under load.
 2. **EP is mandatory; pure TP will not shard the model.** 384 routed experts × `moe_ffn_hidden_size=3072` cannot be partitioned by tensor parallelism alone — the model must use expert parallelism (`--sglang-ep-size 32`) to spread the expert MLPs across ranks. `--sglang-tp-size 32` only covers the attention / embedding paths.
 3. **DeepEP normal-mode + CUDA graphs can hang at large batch sizes.** When `--sglang-moe-a2a-backend deepep` is on, an overly large `--sglang-cuda-graph-max-bs` makes SGLang hang during graph capture or replay. The launcher pins it to `8` for Pro — raise it only after verifying the engine doesn't deadlock at your target batch.
+
 </Warning>
 
 ### 5.4 Optimizer

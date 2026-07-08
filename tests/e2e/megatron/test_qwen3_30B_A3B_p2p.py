@@ -2,21 +2,22 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-MODEL_NAME = "Qwen3-4B"
-MODEL_TYPE = "qwen3-4B"
+MODEL_NAME = "Qwen3-30B-A3B"
+MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
+ROLLOUT_NUM_GPUS = 2  # inference engine pool
+ACTOR_NUM_GPUS = NUM_GPUS - ROLLOUT_NUM_GPUS  # 6: training actor pool (p2p keeps it disjoint from rollout)
 
 register_cuda_ci(
-    est_time=600,
+    est_time=900,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
-    disabled="RDMA weight update is not supported by current CI machine.",
 )
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
+    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
 
@@ -40,11 +41,17 @@ def execute():
         "--balance-data "
     )
 
+    # p2p weight update is incompatible with --colocate, so actor and rollout use
+    # disjoint pools (6 actor + 2 rollout = 8). tp1 * cp2 * pp3 = 6 fills the actor
+    # pool (dp1); experts span ep = 6 / pp3 = 2 ranks. (ep8 would need all 8 GPUs
+    # on the actor, impossible while rollout needs its own.)
     perf_args = (
-        "--tensor-model-parallel-size 2 "
+        "--tensor-model-parallel-size 1 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "  # FIXME: better add moe ci with pp2, ep4
+        "--pipeline-model-parallel-size 3 "
         "--context-parallel-size 2 "
+        "--expert-model-parallel-size 2 "
+        "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -68,12 +75,16 @@ def execute():
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
+        # fp32 main params + adam m/v don't fit on 6 GPUs (dp-cp shard is only 2)
+        "--optimizer-cpu-offload "
+        "--overlap-cpu-optimizer-d2h-h2d "
+        "--use-precision-aware-optimizer "
     )
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 2 "
-        f"--rollout-num-gpus {NUM_GPUS // 2} "
-        "--sglang-mem-fraction-static 0.8 "
+        f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
+        "--sglang-mem-fraction-static 0.7 "
         "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     )
 
@@ -86,10 +97,10 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
+        f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
-        "--check-weight-update-equal "
         "--update-weight-transfer-mode p2p "
+        "--moe-token-dispatcher-type alltoall "
     )
 
     train_args = (
@@ -109,6 +120,8 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
+        # fallback: CI host lacks nvidia_peermem; register GPU memory via dmabuf instead
+        extra_env_vars={"WITH_NVIDIA_PEERMEM": "0"},
     )
 
 

@@ -216,7 +216,7 @@ def ray_actor_baseline(ray_local_mode):
 
 @pytest.fixture(autouse=True)
 def _autouse_subprocess_leak_check():
-    """Catch leaked router / session_server multiprocessing children."""
+    """Catch leaked router / session-server multiprocessing children."""
     import multiprocessing
 
     before = {p.pid for p in multiprocessing.active_children()}
