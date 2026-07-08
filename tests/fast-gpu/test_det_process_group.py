@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.distributed.distributed_c10d import _coalescing_manager
+from torch.distributed.distributed_c10d import AllreduceOptions, ReduceScatterOptions, _coalescing_manager
 
 from miles.utils.det_process_group import (
     DET_NCCL_BACKEND_NAME,
@@ -129,8 +129,6 @@ def test_fold_gathered_sum(parts: list[float], dtype: torch.dtype, expected: flo
 
 def test_reduce_op_of_extracts_reduceop_from_options_object():
     """_reduce_op_of reads .reduceOp from an options object and passes a bare ReduceOp through."""
-    from torch.distributed.distributed_c10d import AllreduceOptions, ReduceScatterOptions
-
     ar_opts = AllreduceOptions()
     ar_opts.reduceOp = dist.ReduceOp.SUM
     assert _reduce_op_of(ar_opts) == dist.ReduceOp.SUM
