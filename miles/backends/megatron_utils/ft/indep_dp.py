@@ -8,12 +8,12 @@ from megatron.core import mpu
 
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.environ import enable_experimental_ft_trainer
-from miles.utils.indep_dp import IndepDPInfo
-from miles.utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
-from miles.utils.structured_log import log_structured
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
+from miles.utils.tracking_utils.structured_log import log_structured
 
-from ..training_utils.log_utils import aggregate_train_losses
-from ..training_utils.parallel import ParallelState
+from ...training_utils.log_utils import aggregate_train_losses
+from ...training_utils.parallel import ParallelState
 
 if TYPE_CHECKING:
     from megatron.core.distributed import DistributedDataParallel as DDP

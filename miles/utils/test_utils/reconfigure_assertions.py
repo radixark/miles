@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from miles.utils.event_logger.logger import read_events
-from miles.utils.event_logger.models import CellReconfigureEvent
+from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 

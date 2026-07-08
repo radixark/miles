@@ -6,7 +6,7 @@ from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
-from miles.backends.megatron_utils.checkpoint_transfer import _TensorViewCodec, _TransportCodec
+from miles.backends.megatron_utils.ft.checkpoint_transfer import _TensorViewCodec, _TransportCodec
 
 
 @pytest.fixture()

@@ -24,15 +24,15 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
-from miles.backends.megatron_utils.indep_dp import allreduce_grads_and_losses_across_replicas
+from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
-from miles.backends.megatron_utils.types import TrainStepOutcome
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
-from miles.utils.structured_log import log_structured
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
-from miles.utils.witness.allocator import WitnessInfo
-from miles.utils.witness.module import witness_dump_and_clear_stale
+from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
 from ..training_utils.ci_utils import check_grad_norm, check_kl

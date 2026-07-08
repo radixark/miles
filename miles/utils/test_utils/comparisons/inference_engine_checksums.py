@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from miles.utils.event_analyzer.rules import inference_engine_weight_checksum_consistency
-from miles.utils.event_analyzer.rules.checksum_compare import ChecksumMismatchIssue, compare_flat_dicts
-from miles.utils.event_logger.logger import read_events
-from miles.utils.event_logger.models import InferenceEngineWeightChecksumEvent
+from miles.utils.audit_utils.event_analyzer.rules import inference_engine_weight_checksum_consistency
+from miles.utils.audit_utils.event_analyzer.rules.checksum_compare import ChecksumMismatchIssue, compare_flat_dicts
+from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 
 
 def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> None:

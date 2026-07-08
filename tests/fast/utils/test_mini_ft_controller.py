@@ -9,15 +9,21 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from miles.utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
-from miles.utils.mini_ft_controller import (
+from miles.utils.ft_utils.control_server.models import (
+    Cell,
+    CellCondition,
+    CellMetadata,
+    CellSpec,
+    CellStatus,
+    TriState,
+)
+from miles.utils.ft_utils.mini_ft_controller import (
     CellHealthStatus,
     _CellSnapshot,
     _compute_cell_snapshot,
     _MiniFTController,
     _MiniFTControllerRunner,
 )
-
 
 # ------------------------ helpers ------------------------
 

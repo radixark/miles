@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from miles.backends.megatron_utils.types import TrainStepOutcome
-from miles.utils.event_logger.models import (
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     Event,
     InferenceEngineWeightChecksumEvent,
@@ -12,7 +12,7 @@ from miles.utils.event_logger.models import (
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
 )
-from miles.utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
 
 _event_adapter = TypeAdapter(Event)
 
@@ -206,6 +206,6 @@ class TestDiscriminatedUnionParsesAllEvents:
 
 class TestCheckEventNaming:
     def test_naming_convention_holds(self) -> None:
-        from miles.utils.event_logger.models import _check_event_naming
+        from miles.utils.audit_utils.event_logger.models import _check_event_naming
 
         _check_event_naming()

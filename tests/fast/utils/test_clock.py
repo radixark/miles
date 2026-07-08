@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from miles.utils.clock import FakeClock, RealClock
+from miles.utils.test_utils.clock import FakeClock, RealClock
 
 
 class TestRealClock:

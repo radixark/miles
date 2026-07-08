@@ -8,8 +8,8 @@ from miles.ray.train.cell_state import (
     StatePending,
     StateStopped,
 )
-from miles.utils.control_server.models import CellCondition, CellStatus, TriState
-from miles.utils.health_checker import SimpleHealthChecker, SimpleHealthCheckerConfig
+from miles.utils.ft_utils.control_server.models import CellCondition, CellStatus, TriState
+from miles.utils.ft_utils.health_checker import SimpleHealthChecker, SimpleHealthCheckerConfig
 
 if TYPE_CHECKING:
     from miles.ray.train.cell import RayTrainCell

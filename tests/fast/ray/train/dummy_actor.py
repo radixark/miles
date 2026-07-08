@@ -7,8 +7,8 @@ from typing import Any
 
 import ray
 
-from miles.backends.megatron_utils.types import TrainStepOutcome
-from miles.utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 
 
 @ray.remote(num_gpus=0, num_cpus=0)

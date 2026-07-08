@@ -3,7 +3,13 @@ import logging
 
 import pytest
 
-from miles.utils.structured_log import _format_value, _to_logfmt, log_structured, prune_for_log, with_logs
+from miles.utils.tracking_utils.structured_log import (
+    _format_value,
+    _to_logfmt,
+    log_structured,
+    prune_for_log,
+    with_logs,
+)
 
 
 class TestFormatValue:

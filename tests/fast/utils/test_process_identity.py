@@ -3,7 +3,11 @@
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.process_identity import MainProcessIdentity, RolloutManagerProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import (
+    MainProcessIdentity,
+    RolloutManagerProcessIdentity,
+    TrainProcessIdentity,
+)
 
 
 class TestProcessIdentityToName:

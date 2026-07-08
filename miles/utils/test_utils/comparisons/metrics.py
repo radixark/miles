@@ -6,8 +6,8 @@ from pathlib import Path
 import polars as pl
 from sglang.srt.debug_utils.comparator.display import _render_polars_as_text
 
-from miles.utils.event_logger.logger import read_events
-from miles.utils.event_logger.models import MetricEvent
+from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import MetricEvent
 
 logger = logging.getLogger(__name__)
 

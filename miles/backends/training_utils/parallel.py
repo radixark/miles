@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import StrEnum, auto
 
 
-from miles.utils.process_group_utils import GroupInfo, GroupsInfo
+from miles.utils.ft_utils.process_group_utils import GroupInfo, GroupsInfo
 
 
 _parallel_state: "ParallelState | None" = None

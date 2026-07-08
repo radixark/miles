@@ -27,7 +27,7 @@ def add_checkpoint_args(parser):
 
 
 def main(args):
-    from miles.utils.indep_dp import IndepDPInfo
+    from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
     megatron_utils.init(
         args,

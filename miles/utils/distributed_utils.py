@@ -14,7 +14,7 @@ from torch.distributed.distributed_c10d import (
     rendezvous,
 )
 
-from miles.utils.process_group_utils import GeneralPGUtil
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 
 GLOO_GROUP = None
 

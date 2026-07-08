@@ -2,7 +2,7 @@ import ray
 
 from pydantic import BaseModel, ConfigDict
 
-from miles.utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
 class StateBase(BaseModel):

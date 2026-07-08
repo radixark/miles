@@ -5,10 +5,15 @@ from pathlib import Path
 
 import pytest
 
-import miles.utils.event_logger.logger as event_logger_module
-from miles.utils.event_logger.logger import EventLogger, event_logger_context, get_event_logger, set_event_logger
-from miles.utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
-from miles.utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+import miles.utils.audit_utils.event_logger.logger as event_logger_module
+from miles.utils.audit_utils.event_logger.logger import (
+    EventLogger,
+    event_logger_context,
+    get_event_logger,
+    set_event_logger,
+)
+from miles.utils.audit_utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
+from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
 
 _TEST_SOURCE = MainProcessIdentity()
 
@@ -155,7 +160,7 @@ class TestEventLoggerFilePerWrite:
 
 class TestReadEvents:
     def test_malformed_line_skipped_with_warning(self, tmp_path: Path) -> None:
-        from miles.utils.event_logger.logger import read_events
+        from miles.utils.audit_utils.event_logger.logger import read_events
 
         logger = _make_logger(tmp_path)
         logger.log(_EVENT_CLS, _EVENT_PARTIAL)
@@ -168,7 +173,7 @@ class TestReadEvents:
         assert len(events) == 1
 
     def test_reads_multiple_jsonl_files(self, tmp_path: Path) -> None:
-        from miles.utils.event_logger.logger import read_events
+        from miles.utils.audit_utils.event_logger.logger import read_events
 
         logger_a = EventLogger(log_dir=tmp_path, file_name="a.jsonl", source=_TEST_SOURCE)
         logger_a.log(_EVENT_CLS, _EVENT_PARTIAL)

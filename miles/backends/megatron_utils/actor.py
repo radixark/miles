@@ -14,22 +14,22 @@ from torch_memory_saver import torch_memory_saver
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
+from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
-from miles.utils.event_logger.logger import event_logger_context
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
-from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
-from miles.utils.structured_log import with_logs
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.tracking_utils.structured_log import with_logs
+from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.types import RolloutBatch
-from miles.utils.witness.allocator import WitnessInfo
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
@@ -44,10 +44,10 @@ from ..training_utils.loss import (
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
-from .checkpoint_transfer import recv_ckpt
-from .checkpoint_transfer import send_ckpt as _send_ckpt
-from .in_memory_checkpoint import InMemoryCheckpointManager
-from .indep_dp import reconfigure_indep_dp_group
+from .ft.checkpoint_transfer import recv_ckpt
+from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
+from .ft.in_memory_checkpoint import InMemoryCheckpointManager
+from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train

@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from miles.utils.event_logger.models import MetricEvent
-from miles.utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.event_logger.models import MetricEvent
+from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.test_utils.comparisons.metrics import _check_single_metric, _keep_only_final_attempt
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)

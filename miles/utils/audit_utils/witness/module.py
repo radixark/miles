@@ -11,9 +11,9 @@ from megatron.core.transformer.utils import sharded_state_dict_default
 from torch import Tensor
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.event_logger.logger import get_event_logger
-from miles.utils.event_logger.models import WitnessSnapshotParamEvent
-from miles.utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.event_logger.logger import get_event_logger
+from miles.utils.audit_utils.event_logger.models import WitnessSnapshotParamEvent
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
 

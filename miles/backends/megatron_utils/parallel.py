@@ -8,7 +8,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 
-from miles.utils.process_group_utils import GroupInfo
+from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 from ..training_utils.parallel import ParallelState, get_parallel_state
 

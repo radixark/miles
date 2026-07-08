@@ -5,9 +5,9 @@ from typing import Any
 
 import pytest
 
-from miles.utils.event_logger.logger import EventLogger
-from miles.utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
+from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
 
 

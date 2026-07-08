@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.distributed.distributed_c10d import AllreduceOptions, ReduceScatterOptions, _coalescing_manager
 
-from miles.utils.det_process_group import (
+from miles.utils.test_utils.det_process_group import (
     DET_NCCL_BACKEND_NAME,
     _CompletedWork,
     _fold_gathered_sum,
@@ -178,7 +178,7 @@ def test_det_all_reduce_avg_non_contiguous_recursion_passes_reduce_op_through():
 
 def test_det_all_reduce_multi_chunk_matches_single_chunk(monkeypatch: pytest.MonkeyPatch):
     """A tiny gather-buffer cap (forcing many chunks) gives bitwise-identical results to one chunk."""
-    import miles.utils.det_process_group as dpg
+    import miles.utils.test_utils.det_process_group as dpg
 
     gen = torch.Generator().manual_seed(_SEED + 21)
     per_rank = [torch.randn(50, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
@@ -193,7 +193,7 @@ def test_det_all_reduce_multi_chunk_matches_single_chunk(monkeypatch: pytest.Mon
 
 def test_det_reduce_scatter_multi_chunk_slice_matches_full_fold(monkeypatch: pytest.MonkeyPatch):
     """det_reduce_scatter under a tiny chunk cap writes exactly this rank's slice of the full fold."""
-    import miles.utils.det_process_group as dpg
+    import miles.utils.test_utils.det_process_group as dpg
 
     gen = torch.Generator().manual_seed(_SEED + 22)
     per_rank = [torch.randn(48, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
@@ -225,7 +225,7 @@ def test_det_all_reduce_torchft_list_gather_matches_flat_gather_bitwise():
 def test_gather_into_routes_process_group_instances_to_list_form_allgather():
     """Regression: ProcessGroup subclasses inherit _allgather_base from the C++ base (hasattr is
     always True), so routing must key on isinstance and take the overridden list-form allgather."""
-    import miles.utils.det_process_group as dpg
+    import miles.utils.test_utils.det_process_group as dpg
 
     gen = torch.Generator().manual_seed(_SEED + 23)
     per_rank = [torch.randn(8, generator=gen, dtype=torch.float32) for _ in range(_WORLD_SIZE)]
@@ -400,7 +400,7 @@ def _expected_slot_fold(rank: int, inputs: list[torch.Tensor]) -> torch.Tensor:
 def _check_uneven_reduce_scatter_shapes(rank: int, det1: dist.ProcessGroup) -> None:
     """List reduce_scatter with per-slot distinct multi-dim shapes, non-contiguous slots/output,
     bf16, and a forced multi-chunk fold all match the per-slot tree fold bitwise."""
-    import miles.utils.det_process_group as dpg
+    import miles.utils.test_utils.det_process_group as dpg
 
     device = torch.device("cuda", torch.cuda.current_device())
     slot_shapes = [(2, 3), (5,), (4, 2), (3, 3)]
@@ -632,7 +632,7 @@ def _check_reduce_scatter_uneven_avg(rank: int, det1: dist.ProcessGroup) -> None
 def _check_multi_chunk_through_nccl(rank: int, det1: dist.ProcessGroup, x: torch.Tensor, tree: torch.Tensor) -> None:
     """A tiny gather-buffer cap forces multi-chunk gathers through real NCCL; SUM allreduce and
     reduce_scatter_tensor over det1 stay bitwise equal to the single-chunk tree reference."""
-    import miles.utils.det_process_group as dpg
+    import miles.utils.test_utils.det_process_group as dpg
 
     original_cap = dpg._GATHER_BUFFER_CAP_BYTES
     try:

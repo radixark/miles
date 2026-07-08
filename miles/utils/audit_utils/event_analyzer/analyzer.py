@@ -5,12 +5,12 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
-from miles.utils.event_analyzer.rules import (
+from miles.utils.audit_utils.event_analyzer.rules import (
     cross_replica_weight_checksum,
     inference_engine_weight_checksum_consistency,
 )
-from miles.utils.event_analyzer.rules import witness as witness_rule
-from miles.utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_analyzer.rules import witness as witness_rule
+from miles.utils.audit_utils.event_logger.logger import read_events
 
 logger = logging.getLogger(__name__)
 

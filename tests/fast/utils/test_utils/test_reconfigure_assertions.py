@@ -3,9 +3,9 @@ from typing import Any
 
 import pytest
 
-from miles.utils.event_logger.logger import EventLogger
-from miles.utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
-from miles.utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
+from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.test_utils.reconfigure_assertions import (
     ReconfigureInfo,
     assert_reconfigure_events,

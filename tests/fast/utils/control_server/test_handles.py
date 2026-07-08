@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.ray.train.group import RayTrainGroup
-from miles.utils.control_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
+from miles.utils.ft_utils.control_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
 from miles.utils.test_utils.fault_injector import FailureMode
 
 from .conftest import MockRayTrainCell, MockRolloutManager, make_mock_group

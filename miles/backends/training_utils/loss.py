@@ -10,8 +10,8 @@ from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.event_logger.models import TrainAdvantageComputationEvent
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.audit_utils.event_logger.models import TrainAdvantageComputationEvent
 from miles.utils.types import RolloutBatch
 
 

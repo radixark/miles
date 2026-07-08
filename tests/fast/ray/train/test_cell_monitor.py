@@ -11,9 +11,9 @@ from miles.ray.train.cell_state import (
     StatePending,
     StateStopped,
 )
-from miles.utils.control_server.models import TriState
-from miles.utils.health_checker import SimpleHealthCheckerConfig
-from miles.utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.control_server.models import TriState
+from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
 def _make_actor_handle_mock() -> MagicMock:

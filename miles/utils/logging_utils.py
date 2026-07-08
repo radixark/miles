@@ -3,8 +3,8 @@ import os
 import re
 import sys
 import warnings
-from miles.utils.event_logger.logger import EventLogger, is_event_logger_initialized, set_event_logger
-from miles.utils.process_identity import ProcessIdentity
+from miles.utils.audit_utils.event_logger.logger import EventLogger, is_event_logger_initialized, set_event_logger
+from miles.utils.audit_utils.process_identity import ProcessIdentity
 
 _LOGGER_CONFIGURED = False
 
