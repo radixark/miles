@@ -780,9 +780,18 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
     routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
-    with what the runtime serves.  The base ``_split_appended_segments``
-    (contiguous tool runs, single user/system turns) covers both registered
-    surfaces without a custom override.
+    with what the runtime serves.
+
+    V4 has no standalone ``tool`` role: the encoder's ``merge_tool_messages``
+    folds every contiguous run of ``tool``/``user`` messages into ONE
+    ``<｜User｜>`` block (``\\n\\n``-joined), and any message rendered with a
+    ``user`` tail auto-appends the ``<｜Assistant｜>`` + ``<think>``/``</think>``
+    opener regardless of ``add_generation_prompt``.  The base per-segment
+    dummy-context renders therefore fabricate extra ``<｜User｜>`` markers and
+    misplace the opener whenever a ``user`` turn follows a ``tool`` turn, so
+    this class overrides ``tokenize_additional_non_assistant`` to diff the
+    real-history render instead (see below) and ``merge_tokens`` to strip the
+    baked-in opener from a prefix that ends mid-user-block.
 
     Two append surfaces are registered:
 
@@ -818,6 +827,10 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
+    # After a user-tail render the encoder always emits assistant-start plus a
+    # thinking bracket; these two-token suffixes are what merge must strip when
+    # the appended messages keep extending the same user block.
+    _OPENER_STRS = ("<｜Assistant｜><think>", "<｜Assistant｜></think>")
 
     def __init__(
         self,
@@ -836,6 +849,65 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             },
             allowed_append_roles=allowed_append_roles,
         )
+        self._assistant_id: int = tokenizer.convert_tokens_to_ids("<｜Assistant｜>")
+        self._think_bracket_ids: set[int] = {
+            tokenizer.convert_tokens_to_ids("<think>"),
+            tokenizer.convert_tokens_to_ids("</think>"),
+        }
+        self.trailing_token_ids = frozenset({self._assistant_id} | self._think_bracket_ids)
+
+    def tokenize_additional_non_assistant(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        """Diff the real-history render instead of per-segment dummy contexts.
+
+        A ``user`` appended after a ``tool`` extends the prefix's still-open
+        ``<｜User｜>`` block (``\\n\\n`` + text, no new marker), so the appended
+        bytes depend on the real history — a dummy context cannot know whether
+        the block is open.  With ``drop_thinking=False`` (or tools present,
+        which forces it) the V4 render is append-only except for the auto
+        opener on a user tail, so stripping that opener from the prefix render
+        makes the full render a strict extension and the suffix is exact.
+        """
+        assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
+        text_old = self.render_messages(old_messages, add_generation_prompt=False, tools=tools)
+        text_new = self.render_messages(new_messages, add_generation_prompt=True, tools=tools)
+        for opener in self._OPENER_STRS:
+            if text_old.endswith(opener):
+                text_old = text_old[: -len(opener)]
+                break
+        if not text_new.startswith(text_old):
+            raise ValueError(
+                "deepseek_v4 render is not append-only for the appended messages "
+                "(prefix render changed; check drop_thinking and tool-result ordering)"
+            )
+        return self._encode_text(text_new[len(text_old) :])
+
+    def merge_tokens(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        pretokenized_token_ids: list[int],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        prefix = list(pretokenized_token_ids)
+        # A prefix cut at a tool/user turn carries the render's auto opener;
+        # the incremental suffix re-emits the correct one after the appended
+        # messages.  Gated on the old tail role so tokens the model actually
+        # generated (assistant tail) are never touched.
+        if (
+            old_messages
+            and old_messages[-1].get("role") != "assistant"
+            and len(prefix) >= 2
+            and prefix[-2] == self._assistant_id
+            and prefix[-1] in self._think_bracket_ids
+        ):
+            prefix = prefix[:-2]
+        return prefix + incremental
 
 
 # ---------------------------------------------------------------------------
