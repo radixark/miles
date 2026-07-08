@@ -463,7 +463,7 @@ class TestRolloutHealthCheckerPreservesImmediateFailure:
         checker = create_rollout_cell_health_checker(
             cell_id="c0",
             get_engines=lambda: [object()],
-            config=SimpleHealthCheckerConfig(failure_threshold=5),
+            config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=5),
         )
 
         assert checker._config.failure_threshold == 1

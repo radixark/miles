@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleHealthCheckerConfig(StrictBaseModel):
-    interval: float = 10.0
-    timeout: float = 10.0
-    first_wait: float = 0.0
-    failure_threshold: int = 3
+    interval: float
+    timeout: float
+    first_wait: float
+    failure_threshold: int
 
     @staticmethod
     def add_arguments(parser: argparse.ArgumentParser, *, prefix: str) -> None:

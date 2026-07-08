@@ -122,7 +122,10 @@ class TestTrainerCellHealthCheckLiveness:
         execute = AsyncMock(return_value=[MagicMock(last_active_timestamp=0.0, bump_count=1)])
         cell = _make_cell_mock(is_alive=True, execute=execute)
 
-        checker = create_trainer_cell_health_checker(cell=cell, config=SimpleHealthCheckerConfig())
+        checker = create_trainer_cell_health_checker(
+            cell=cell,
+            config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+        )
 
         await checker._check_fn()
         execute.assert_awaited_once_with("get_heartbeat_status", kill_on_failure=False)
@@ -134,7 +137,10 @@ class TestTrainerCellHealthCheckLiveness:
         execute = AsyncMock(side_effect=ray.exceptions.RayActorError())
         cell = _make_cell_mock(is_alive=True, execute=execute)
 
-        checker = create_trainer_cell_health_checker(cell=cell, config=SimpleHealthCheckerConfig())
+        checker = create_trainer_cell_health_checker(
+            cell=cell,
+            config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+        )
 
         with pytest.raises(ray.exceptions.RayActorError):
             await checker._check_fn()
@@ -145,7 +151,10 @@ class TestTrainerCellHealthCheckLiveness:
         execute = AsyncMock()
         cell = _make_cell_mock(is_alive=False, execute=execute)
 
-        checker = create_trainer_cell_health_checker(cell=cell, config=SimpleHealthCheckerConfig())
+        checker = create_trainer_cell_health_checker(
+            cell=cell,
+            config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+        )
 
         await checker._check_fn()
         execute.assert_not_awaited()
