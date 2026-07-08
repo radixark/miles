@@ -159,6 +159,13 @@ class TestConvertTargetModulesToHf:
             "out_proj"
         ]
 
+    def test_dotted_path_without_wildcard_reduces_to_leaf(self):
+        assert convert_target_modules_to_hf(["language_model.decoder.layers.0.self_attention.linear_qkv"]) == [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+        ]
+
     def test_canonical_split_modules(self):
         result = convert_target_modules_to_hf(["linear_q", "linear_k", "linear_v"])
         assert result == ["q_proj", "k_proj", "v_proj"]

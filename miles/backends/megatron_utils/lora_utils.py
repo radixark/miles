@@ -253,7 +253,7 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
         megatron_modules = list(megatron_modules)
     hf_modules: list[str] = []
     for module in megatron_modules:
-        lookup_key = module.rsplit(".", 1)[-1] if "*" in module else module
+        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
         if lookup_key in _MEGATRON_MLA_TO_HF:
             hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
         elif lookup_key in _MEGATRON_TO_HF_MODULES:
