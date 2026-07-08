@@ -1,0 +1,62 @@
+NLAYERS=40
+FIRST_K_DENSE_REPLACE=0
+
+arr=()
+for ((i=0; i<NLAYERS; i++)); do
+  if (( i < FIRST_K_DENSE_REPLACE )); then
+    arr+=(0)
+  else
+    arr+=(1)
+  fi
+done
+
+printf -v MOE_LAYER_FREQ "[%s]" "$(IFS=', '; echo "${arr[*]}")"
+
+
+MODEL_ARGS=(
+   --spec "miles_plugins.models.qwen3_5" "get_qwen3_5_spec"
+
+   --disable-bias-linear
+   --qk-layernorm
+   --group-query-attention
+   --num-attention-heads 16
+   --num-query-groups 2
+   --kv-channels 256
+   --num-layers 40
+   --hidden-size 2048
+   --ffn-hidden-size 512
+
+   --normalization RMSNorm
+   --apply-layernorm-1p
+   --position-embedding-type rope
+   --norm-epsilon 1e-6
+   --rotary-percent 0.25
+   --swiglu
+   --untie-embeddings-and-output-weights
+   --vocab-size 248320
+
+   --rotary-base 10000000
+
+   # moe
+   --moe-ffn-hidden-size 512
+   --moe-shared-expert-intermediate-size 512
+   --moe-router-score-function softmax
+   --moe-token-dispatcher-type alltoall
+   --moe-router-topk 8
+   --moe-layer-freq "$MOE_LAYER_FREQ"
+   --num-experts 256
+   --moe-grouped-gemm
+   --moe-token-drop-policy probs
+   --moe-router-dtype fp32
+   --moe-permute-fusion
+   --moe-aux-loss-coeff 0
+
+   # qwen3.6 specific (same architecture as qwen3.5)
+   --attention-output-gate
+   --moe-shared-expert-gate
+   --mtp-num-layers 1
+)
+
+# Qwen3.6 (same architecture as qwen3.5). LoRA registry for bridge-mode LoRA runs: MODEL_ARGS carries the architecture only
+# (identical to qwen3.5-35B-A3B.sh); every LoRA / run-mode flag lives in the runner,
+# which always wins (argparse last-occurrence). --spec above is inert under bridge LoRA.
