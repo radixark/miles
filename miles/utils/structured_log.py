@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import inspect
 import json
@@ -30,6 +31,11 @@ def with_logs(func: Callable[..., Any]) -> Callable[..., Any]:
             method_logger.error, cls=cls, fn=fn_name, phase="end", ok=False, elapsed_s=_elapsed(start), exc_info=True
         )
 
+    def log_cancelled(cls: str, start: float) -> None:
+        log_structured(
+            method_logger.info, cls=cls, fn=fn_name, phase="end", ok=False, elapsed_s=_elapsed(start), cancelled=True
+        )
+
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
@@ -37,6 +43,9 @@ def with_logs(func: Callable[..., Any]) -> Callable[..., Any]:
             cls, start = log_start(args)
             try:
                 result = await func(*args, **kwargs)
+            except asyncio.CancelledError:
+                log_cancelled(cls, start)
+                raise
             except BaseException:
                 log_fail(cls, start)
                 raise

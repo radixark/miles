@@ -191,6 +191,10 @@ class FakeActor:
     async def send_ckpt(self):
         return "done"
 
+    @with_logs
+    async def wait_forever(self):
+        await asyncio.Event().wait()
+
 
 class TestWithLogs:
     def test_sync_method_emits_start_then_end_with_class_and_method(self, caplog):
@@ -227,6 +231,24 @@ class TestWithLogs:
             assert asyncio.run(FakeActor().send_ckpt()) == "done"
         assert caplog.messages[0] == "ft cls=FakeActor fn=send_ckpt phase=start"
         assert caplog.messages[1].startswith("ft cls=FakeActor fn=send_ckpt phase=end ok=true elapsed_s=")
+
+    def test_async_cancellation_logs_cancelled_at_info_and_reraises(self, caplog):
+        """Cancelling an async call emits an info end line with cancelled=true and no traceback."""
+
+        async def run() -> None:
+            task = asyncio.ensure_future(FakeActor().wait_forever())
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        with caplog.at_level(logging.INFO):
+            asyncio.run(run())
+        end = caplog.records[1]
+        assert end.getMessage().startswith("ft cls=FakeActor fn=wait_forever phase=end ok=false elapsed_s=")
+        assert end.getMessage().endswith("cancelled=true")
+        assert end.levelno == logging.INFO
+        assert end.exc_info is None
 
     def test_preserves_wrapped_function_metadata(self):
         """functools.wraps keeps the original __name__ so Ray/introspection still sees it."""
