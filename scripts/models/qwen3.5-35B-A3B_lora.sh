@@ -57,6 +57,6 @@ MODEL_ARGS=(
    --mtp-num-layers 1
 )
 
-# LoRA registry for bridge-mode LoRA runs: MODEL_ARGS carries the architecture only
+# LoRA registry for scripts/run_qwen3_5_35b_a3b_lora.py: MODEL_ARGS carries the architecture only
 # (identical to qwen3.5-35B-A3B.sh); every LoRA / run-mode flag lives in the runner,
 # which always wins (argparse last-occurrence). --spec above is inert under bridge LoRA.
