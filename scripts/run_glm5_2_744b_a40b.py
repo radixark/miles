@@ -344,20 +344,19 @@ def _execute_train(args: ScriptArgs):
         else:
             sglang_world_size = 64
     else:
-        sglang_decode_max_bs = 256
+        # RL rollout runs <=16 req/engine; graphs beyond bs 32 waste ~20 GB/GPU
+        sglang_decode_max_bs = 32
         sglang_world_size = 8
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        # 0.75, not cookbook 0.8: colocate shares the GPU with the actor process, and
-        # without DP attention the whole TP group processes the full batch, so the
-        # dynamic activation/MoE-workspace peak is ~8x the dp8 case.
+        # cookbook is 0.8, which will OOM under RL.
         "--sglang-mem-fraction-static 0.75 "
         f"--sglang-ep-size {sglang_world_size} "
+        "--sglang-router-policy consistent_hashing "
     )
     if args.enable_pd:
-        # DP attention only pays off at high concurrency (cookbook: balanced 64+);
-        # RL rollout runs ~8 requests/engine, squarely low-latency territory.
+        # slime native config
         sglang_args += (
             "--sglang-enable-dp-attention "
             f"--sglang-dp-size {sglang_world_size} "
@@ -367,8 +366,7 @@ def _execute_train(args: ScriptArgs):
     if args.fp8_rollout and args.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
     if args.enable_mtp:
-        # EAGLE using the model's own next-token-prediction layer (full GLM-5.2 only;
-        # the MTP layer is stripped from the pruned checkpoints).
+        # cookbook low-latency config
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
             "--sglang-speculative-num-steps 5 "
