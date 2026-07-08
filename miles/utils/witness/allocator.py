@@ -12,6 +12,8 @@ class WitnessInfo(FrozenStrictBaseModel):
 
 class WitnessIdAllocator:
     def __init__(self, *, buffer_size: int) -> None:
+        if buffer_size <= 0:
+            raise ValueError(f"buffer_size ({buffer_size}) must be positive.")
         self._buffer_size = buffer_size
         self._counter: int = 0
 
@@ -24,6 +26,8 @@ class WitnessIdAllocator:
         self._counter = counter
 
     def allocate(self, num_ids: int) -> WitnessInfo:
+        if num_ids < 0:
+            raise ValueError(f"num_ids ({num_ids}) must be non-negative.")
         assert num_ids <= self._buffer_size, (
             f"num_ids ({num_ids}) exceeds buffer_size ({self._buffer_size}). " f"Increase --witness-buffer-size."
         )

@@ -49,6 +49,20 @@ class TestWitnessIdAllocator:
         assert info.witness_ids == []
         assert isinstance(info.stale_ids, list)
 
+    def test_non_positive_buffer_size_raises(self) -> None:
+        """buffer_size <= 0 raises ValueError at construction."""
+        with pytest.raises(ValueError, match="must be positive"):
+            WitnessIdAllocator(buffer_size=0)
+        with pytest.raises(ValueError, match="must be positive"):
+            WitnessIdAllocator(buffer_size=-1)
+
+    def test_negative_num_ids_raises(self) -> None:
+        """allocate(num_ids<0) raises ValueError and leaves the counter untouched."""
+        allocator = WitnessIdAllocator(buffer_size=5)
+        with pytest.raises(ValueError, match="must be non-negative"):
+            allocator.allocate(num_ids=-1)
+        assert allocator.counter == 0
+
     def test_allocate_exceeds_buffer_size_raises(self) -> None:
         """num_ids > buffer_size raises AssertionError."""
         allocator = WitnessIdAllocator(buffer_size=5)
