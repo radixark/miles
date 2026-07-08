@@ -172,19 +172,19 @@ class _TensorViewCodec:
 
     @staticmethod
     def encode(tensors: list[torch.Tensor]) -> tuple[list[torch.Tensor], list[dict]]:
-        storage_id_by_ptr: dict[int, int] = {}
+        storage_id_by_key: dict[tuple[torch.device, int], int] = {}
         unique_storages: list[torch.Tensor] = []
         view_metas: list[dict] = []
         for t in tensors:
             storage = t.untyped_storage()
-            ptr = storage.data_ptr()
-            if ptr not in storage_id_by_ptr:
-                storage_id_by_ptr[ptr] = len(unique_storages)
+            key = (t.device, storage.data_ptr())
+            if key not in storage_id_by_key:
+                storage_id_by_key[key] = len(unique_storages)
                 # Wrap full storage as uint8 tensor (no copy, shares memory).
                 unique_storages.append(torch.tensor(storage, dtype=torch.uint8, device=t.device))
             view_metas.append(
                 {
-                    "storage_id": storage_id_by_ptr[ptr],
+                    "storage_id": storage_id_by_key[key],
                     "dtype": t.dtype,
                     "shape": tuple(t.shape),
                     "stride": tuple(t.stride()),

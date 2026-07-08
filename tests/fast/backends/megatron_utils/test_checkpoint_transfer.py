@@ -459,3 +459,39 @@ class TestTensorViewCodec:
         # Mutate input — should propagate through the encoded storage to decoded view.
         original.zero_()
         assert decoded[0].sum().item() == 0
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_mixed_device_tensors_get_distinct_storages(self):
+        """CPU and CUDA tensors never share a storage entry, and each decoded view keeps its device."""
+        cpu_t = torch.arange(8, dtype=torch.float32)
+        cuda_t = torch.arange(8, dtype=torch.float32, device="cuda")
+
+        unique_storages, view_metas = _TensorViewCodec.encode([cpu_t, cuda_t])
+
+        assert len(unique_storages) == 2
+        assert [vm["storage_id"] for vm in view_metas] == [0, 1]
+        assert unique_storages[0].device.type == "cpu"
+        assert unique_storages[1].device.type == "cuda"
+
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+        assert decoded[0].device.type == "cpu"
+        assert decoded[1].device.type == "cuda"
+        assert torch.equal(decoded[0], cpu_t)
+        assert torch.equal(decoded[1], cuda_t)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_mixed_device_dedup_stays_per_device(self):
+        """Views sharing storage dedup within their device while the other device's tensor stays separate."""
+        base = torch.arange(16, dtype=torch.float32, device="cuda")
+        view = base[4:12]
+        cpu_t = torch.arange(4, dtype=torch.float32)
+
+        unique_storages, view_metas = _TensorViewCodec.encode([base, view, cpu_t])
+
+        assert len(unique_storages) == 2
+        assert [vm["storage_id"] for vm in view_metas] == [0, 0, 1]
+
+        decoded = _TensorViewCodec.decode(unique_storages, view_metas)
+        assert torch.equal(decoded[0], base)
+        assert torch.equal(decoded[1], view)
+        assert torch.equal(decoded[2], cpu_t)
