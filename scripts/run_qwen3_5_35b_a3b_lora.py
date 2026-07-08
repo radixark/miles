@@ -47,8 +47,7 @@ _MEGATRON_MODEL_TYPE = {
     "Qwen3.6-35B-A3B": "qwen3.6-35B-A3B_lora",
 }
 
-# Wildcards anchored below language_model.decoder.layers keep LoRA off the MTP
-# block and the vision tower (see module docstring).
+# Anchored below decoder.layers: keeps LoRA off the MTP block and the vision tower.
 _LAYERS = "language_model.decoder.layers.*"
 _DEFAULT_TARGET_MODULES = ",".join(
     [

@@ -28,8 +28,7 @@ _STANDARD_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1",
     "up_proj": "linear_fc1",
     "down_proj": "linear_fc2",
-    # GDN linear attention (Qwen3.5 / Qwen3-Next): one fused megatron in_proj
-    # carries the qkvz and ba slices served separately by SGLang
+    # GDN (Qwen3.5/Qwen3-Next): both slices live in the single fused megatron in_proj
     "in_proj_qkvz": "in_proj",
     "in_proj_ba": "in_proj",
 }
@@ -259,8 +258,7 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
         elif lookup_key in _MEGATRON_TO_HF_MODULES:
             hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
         else:
-            # passthrough: same-name modules (e.g. out_proj); for wildcarded
-            # names SGLang needs the leaf, not the full pattern
+            # same-name passthrough; SGLang needs the leaf, not a path or pattern
             hf_modules.append(lookup_key)
     seen: set[str] = set()
     unique: list[str] = []
