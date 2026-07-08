@@ -16,8 +16,8 @@ from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.environ import enable_experimental_ft_trainer
-from miles.utils.process_group_utils import GeneralPGUtil
-from miles.utils.structured_log import log_structured
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 

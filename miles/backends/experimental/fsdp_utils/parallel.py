@@ -6,7 +6,7 @@ from torch.distributed.device_mesh import init_device_mesh
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from miles.utils.process_group_utils import GroupInfo
+from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 from ...training_utils.parallel import ParallelState
 

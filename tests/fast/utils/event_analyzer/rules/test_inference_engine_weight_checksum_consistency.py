@@ -2,9 +2,9 @@
 
 from datetime import datetime, timezone
 
-from miles.utils.event_analyzer.rules.inference_engine_weight_checksum_consistency import check
-from miles.utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_consistency import check
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
+from miles.utils.audit_utils.process_identity import MainProcessIdentity
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

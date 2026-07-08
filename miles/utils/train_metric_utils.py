@@ -3,9 +3,9 @@ from argparse import Namespace
 from collections.abc import Callable
 from copy import deepcopy
 
-from miles.utils import tracking_utils
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.timer import Timer
+from miles.utils.tracking_utils import tracking
 
 logger = logging.getLogger(__name__)
 
@@ -51,4 +51,4 @@ def log_perf_data_raw(
 
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
-    tracking_utils.log(args, log_dict, step_key="rollout/step")
+    tracking.log(args, log_dict, step_key="rollout/step")

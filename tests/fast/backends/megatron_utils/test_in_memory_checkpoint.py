@@ -2,12 +2,12 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.backends.megatron_utils.in_memory_checkpoint import InMemoryCheckpointManager
+from miles.backends.megatron_utils.ft.in_memory_checkpoint import InMemoryCheckpointManager
 
 
 @pytest.fixture()
 def manager():
-    with patch("miles.backends.megatron_utils.in_memory_checkpoint.get_args") as mock_get_args:
+    with patch("miles.backends.megatron_utils.ft.in_memory_checkpoint.get_args") as mock_get_args:
         mock_args = mock_get_args.return_value
         mock_args.non_persistent_ckpt_type = "local"
         mock_args.non_persistent_local_ckpt_algo = "fully_parallel"

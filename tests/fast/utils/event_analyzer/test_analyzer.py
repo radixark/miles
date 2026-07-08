@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from miles.utils.event_analyzer.analyzer import run_analysis, run_analysis_from_args
-from miles.utils.event_logger.logger import EventLogger
-from miles.utils.event_logger.models import (
+from miles.utils.audit_utils.event_analyzer.analyzer import run_analysis, run_analysis_from_args
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.models import (
     InferenceEngineWeightChecksumEvent,
     TrainEngineLocalWeightChecksumEvent,
     TrainEngineLocalWeightChecksumState,
 )
-from miles.utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
 
 
 def _log_checksum_event(

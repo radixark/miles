@@ -1,9 +1,8 @@
 import asyncio
 
-
-from miles.utils.clock import FakeClock
-from miles.utils.control_server.models import TriState
-from miles.utils.health_checker import NoopHealthChecker, SimpleHealthChecker
+from miles.utils.ft_utils.control_server.models import TriState
+from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthChecker
+from miles.utils.test_utils.clock import FakeClock
 
 
 async def _settle(clock: FakeClock) -> None:
@@ -24,7 +23,7 @@ def _make_checker(
     name: str = "test",
     clock: FakeClock | None = None,
 ) -> tuple[SimpleHealthChecker, FakeClock]:
-    from miles.utils.health_checker import SimpleHealthCheckerConfig
+    from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 
     if check_fn is None:
 
@@ -476,7 +475,7 @@ class TestRolloutHealthCheckerPreservesImmediateFailure:
     def test_rollout_checker_forces_failure_threshold_one(self):
         """Rollout health checker keeps pre-debounce semantics (single failure -> unhealthy)
         even when handed a config with a larger threshold."""
-        from miles.utils.health_checker import SimpleHealthCheckerConfig, create_rollout_cell_health_checker
+        from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig, create_rollout_cell_health_checker
 
         checker = create_rollout_cell_health_checker(
             cell_id="c0",

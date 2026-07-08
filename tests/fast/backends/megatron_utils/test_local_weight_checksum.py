@@ -12,9 +12,9 @@ from miles.backends.megatron_utils.local_weight_checksum import (
     _transform_tensor_to_hash,
     dump_local_weight_checksums,
 )
-from miles.utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.event_logger.models import TrainEngineLocalWeightChecksumEvent
-from miles.utils.process_identity import TrainProcessIdentity
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.audit_utils.event_logger.models import TrainEngineLocalWeightChecksumEvent
+from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 
 
 def _make_mock_model_chunk(
@@ -176,7 +176,7 @@ class TestTransformTensorToHash:
 
 class TestFailFastAssertions:
     def test_assert_event_logger_initialized_when_enabled(self) -> None:
-        import miles.utils.event_logger.logger as mod
+        import miles.utils.audit_utils.event_logger.logger as mod
 
         original = mod._event_logger
         mod._event_logger = None

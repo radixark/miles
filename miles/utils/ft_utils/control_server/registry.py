@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from miles.utils.control_server.handles import _CellHandle
+from miles.utils.ft_utils.control_server.handles import _CellHandle
 
 
 class _CellRegistry:

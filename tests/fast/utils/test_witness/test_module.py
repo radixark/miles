@@ -1,4 +1,4 @@
-"""Tests for miles.utils.witness.module."""
+"""Tests for miles.utils.audit_utils.witness.module."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -9,9 +9,9 @@ import torch.nn as nn
 from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer, Range
 from megatron.core.optimizer.optimizer import ChainedOptimizer
 
-from miles.utils.event_logger.models import WitnessSnapshotParamEvent
-from miles.utils.witness.allocator import WitnessInfo
-from miles.utils.witness.module import (
+from miles.utils.audit_utils.event_logger.models import WitnessSnapshotParamEvent
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.witness.module import (
     _abs_broadcast_add,
     _AbsBroadcastAdd,
     _DataWitness,
@@ -96,7 +96,7 @@ class TestRecordAndLogWitnessParam:
         witness.witness.weight.data[3] = 1.0
         witness.witness.weight.data[7] = 2.0
 
-        with patch("miles.utils.witness.module.get_event_logger") as mock_get_logger:
+        with patch("miles.utils.audit_utils.witness.module.get_event_logger") as mock_get_logger:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
@@ -113,7 +113,7 @@ class TestRecordAndLogWitnessParam:
         witness.witness.weight.data[1] = 0.5
         witness.witness.weight.data[4] = -0.3
 
-        with patch("miles.utils.witness.module.get_event_logger") as mock_get_logger:
+        with patch("miles.utils.audit_utils.witness.module.get_event_logger") as mock_get_logger:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
@@ -374,8 +374,8 @@ class TestWitnessDumpAndClearStale:
         optimizer = _make_chained_optimizer_for_witnesses(model)
         witness_info = WitnessInfo(witness_ids=[1, 2, 3, 4], stale_ids=[5, 6])
 
-        with patch("miles.utils.witness.module.get_event_logger") as mock_get_logger, patch(
-            "miles.utils.witness.module.get_parallel_state"
+        with patch("miles.utils.audit_utils.witness.module.get_event_logger") as mock_get_logger, patch(
+            "miles.utils.audit_utils.witness.module.get_parallel_state"
         ) as mock_get_parallel_state:
             mock_get_parallel_state.return_value.pp.rank = 0
             mock_logger = MagicMock()
@@ -406,8 +406,8 @@ class TestWitnessDumpAndClearStale:
         optimizer = _make_chained_optimizer_for_witnesses(model)
         witness_info = WitnessInfo(witness_ids=[0], stale_ids=[3, 7])
 
-        with patch("miles.utils.witness.module.get_event_logger") as mock_get_logger, patch(
-            "miles.utils.witness.module.get_parallel_state"
+        with patch("miles.utils.audit_utils.witness.module.get_event_logger") as mock_get_logger, patch(
+            "miles.utils.audit_utils.witness.module.get_parallel_state"
         ) as mock_get_parallel_state:
             mock_get_parallel_state.return_value.pp.rank = 0
             mock_get_logger.return_value = MagicMock()
@@ -429,8 +429,8 @@ class TestWitnessDumpAndClearStale:
         optimizer = _make_chained_optimizer_for_witnesses(model)
         witness_info = WitnessInfo(witness_ids=[0], stale_ids=[])
 
-        with patch("miles.utils.witness.module.get_event_logger") as mock_get_logger, patch(
-            "miles.utils.witness.module.get_parallel_state"
+        with patch("miles.utils.audit_utils.witness.module.get_event_logger") as mock_get_logger, patch(
+            "miles.utils.audit_utils.witness.module.get_parallel_state"
         ) as mock_get_parallel_state:
             mock_get_parallel_state.return_value.pp.rank = 0
             mock_get_logger.return_value = MagicMock()
@@ -445,7 +445,7 @@ class TestWitnessDumpAndClearStale:
         witness = _DataWitness(buffer_size=10)
         witness.witness.weight.data[2] = 1.0
 
-        with patch("miles.utils.witness.module.get_event_logger") as mock_get_logger:
+        with patch("miles.utils.audit_utils.witness.module.get_event_logger") as mock_get_logger:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 

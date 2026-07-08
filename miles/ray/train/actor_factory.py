@@ -5,7 +5,7 @@ from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.utils.heartbeat_utils import HeartbeatStatus
+from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus
 
 
 def allocate_gpus_for_actor(

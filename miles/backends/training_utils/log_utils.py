@@ -9,12 +9,12 @@ import torch.distributed as dist
 
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
+from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
-from miles.utils.process_group_utils import MultiPGUtil
-from miles.utils.structured_log import log_structured
+from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
-from ...utils import tracking_utils
+from ...utils.tracking_utils import tracking
 from .cp_utils import get_sum_of_sample_mean
 from .data import DataIterator
 from .parallel import get_parallel_state
@@ -68,7 +68,7 @@ def gather_log_data(
         # Calculate step once to avoid duplication
         step = compute_rollout_step(args, rollout_id)
         reduced_log_dict["rollout/step"] = step
-        tracking_utils.log(args, reduced_log_dict, step_key="rollout/step")
+        tracking.log(args, reduced_log_dict, step_key="rollout/step")
 
         return reduced_log_dict
     else:
@@ -376,7 +376,7 @@ def log_cpu_memory(rollout_id: int, args: Namespace, label: str) -> None:
     cpu_mem_gb = psutil.virtual_memory().used / 1e9
     step = compute_rollout_step(args, rollout_id)
     logger.info(f"[CPU memory] {label}: {cpu_mem_gb:.2f} GB (rollout_id={rollout_id}, step={step})")
-    tracking_utils.log(
+    tracking.log(
         args,
         {f"perf/cpu_memory_{label}_gb": cpu_mem_gb, "rollout/step": step},
         step_key="rollout/step",
@@ -475,7 +475,7 @@ def log_train_step(
         should_log = dist.get_rank() == 0
 
     if should_log:
-        tracking_utils.log(args, log_dict_out, step_key="train/step")
+        tracking.log(args, log_dict_out, step_key="train/step")
         logger.info(f"{role_tag}step {accumulated_step_id}: {log_dict_out}")
 
     return log_dict_out

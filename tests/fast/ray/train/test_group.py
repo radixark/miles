@@ -7,12 +7,12 @@ import pytest
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
-from miles.backends.megatron_utils.types import TrainStepOutcome
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.train.group import RayTrainGroup, _paused_health_checkers
-from miles.utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.event_logger.models import CellReconfigureEvent
-from miles.utils.process_identity import MainProcessIdentity
-from miles.utils.witness.allocator import WitnessIdAllocator
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
+from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 
 pytestmark = pytest.mark.asyncio
 

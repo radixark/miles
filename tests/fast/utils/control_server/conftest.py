@@ -5,9 +5,9 @@ import asyncio
 import httpx
 import pytest
 
-from miles.utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
-from miles.utils.control_server.registry import _CellRegistry
-from miles.utils.control_server.server import _create_control_app
+from miles.utils.ft_utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.control_server.registry import _CellRegistry
+from miles.utils.ft_utils.control_server.server import _create_control_app
 
 
 class MockHandle:
@@ -139,7 +139,7 @@ class MockRayTrainCell:
         return self._is_stopped
 
     def cell_status(self) -> CellStatus:
-        from miles.utils.control_server.models import CellCondition, CellStatus
+        from miles.utils.ft_utils.control_server.models import CellCondition, CellStatus
 
         return CellStatus(
             phase=self._phase,

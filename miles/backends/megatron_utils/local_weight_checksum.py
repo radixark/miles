@@ -19,7 +19,7 @@ from megatron.core.optimizer.optimizer import MegatronOptimizer
 from miles.backends.megatron_utils.ci_utils import _hash_tensor_bytes
 
 if TYPE_CHECKING:
-    from miles.utils.event_logger.models import OptimizerStateInfo, TrainEngineLocalWeightChecksumState
+    from miles.utils.audit_utils.event_logger.models import OptimizerStateInfo, TrainEngineLocalWeightChecksumState
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,8 @@ def dump_local_weight_checksums(
 
     # Local imports to break circular dependency:
     # logger.py → models.py → model.py → local_weight_checksum.py → logger.py
-    from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-    from miles.utils.event_logger.models import TrainEngineLocalWeightChecksumEvent
+    from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+    from miles.utils.audit_utils.event_logger.models import TrainEngineLocalWeightChecksumEvent
 
     assert is_event_logger_initialized(), "save_local_weight_checksum is enabled but EventLogger is not initialized"
 
@@ -65,7 +65,7 @@ def _compute_weight_checksum_state(
     model: Sequence[DDP],
     optimizer: MegatronOptimizer,
 ) -> "TrainEngineLocalWeightChecksumState":
-    from miles.utils.event_logger.models import TrainEngineLocalWeightChecksumState
+    from miles.utils.audit_utils.event_logger.models import TrainEngineLocalWeightChecksumState
 
     param_hashes = _hash_named_tensors(model, accessor="named_parameters")
     assert param_hashes, "No parameters found in model"
@@ -100,7 +100,7 @@ def _collect_optimizer_hashes(
     optimizer: MegatronOptimizer,
 ) -> list["OptimizerStateInfo"]:
     """Collect optimizer state snapshots with tensors replaced by hashes."""
-    from miles.utils.event_logger.models import OptimizerStateInfo
+    from miles.utils.audit_utils.event_logger.models import OptimizerStateInfo
 
     name_by_tensor_id = _build_name_by_tensor_id(model)
     result: list[OptimizerStateInfo] = []

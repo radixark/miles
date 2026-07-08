@@ -11,13 +11,13 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
-from miles.utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
+from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
-from miles.utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
+from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.process_identity import TrainProcessIdentity
+from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
 if TYPE_CHECKING:

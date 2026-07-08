@@ -11,9 +11,9 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from miles.utils.event_logger.models import Event, EventBase
-from miles.utils.process_identity import ProcessIdentity
-from miles.utils.structured_log import log_structured, prune_for_log
+from miles.utils.audit_utils.event_logger.models import Event, EventBase
+from miles.utils.audit_utils.process_identity import ProcessIdentity
+from miles.utils.tracking_utils.structured_log import log_structured, prune_for_log
 
 logger = logging.getLogger(__name__)
 

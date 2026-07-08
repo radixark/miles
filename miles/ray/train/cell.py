@@ -15,10 +15,10 @@ from miles.ray.train.cell_state import (
     StatePending,
     StateStopped,
 )
-from miles.utils.control_server.models import CellStatus
-from miles.utils.health_checker import BaseHealthChecker
-from miles.utils.indep_dp import IndepDPInfo
-from miles.utils.structured_log import log_structured
+from miles.utils.ft_utils.control_server.models import CellStatus
+from miles.utils.ft_utils.health_checker import BaseHealthChecker
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 

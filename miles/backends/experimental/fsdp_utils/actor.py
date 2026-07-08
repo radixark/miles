@@ -13,13 +13,13 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
-from miles.utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.tracking_utils.tracking import init_tracking
 
 from ....utils.profile_utils import TrainProfiler
 from ...training_utils.ci_utils import check_grad_norm
@@ -39,7 +39,7 @@ from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTe
 
 if TYPE_CHECKING:
     from miles.ray.rollout.rollout_manager import EnginesAndLock
-    from miles.utils.witness.allocator import WitnessInfo
+    from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
 

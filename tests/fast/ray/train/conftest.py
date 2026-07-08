@@ -6,8 +6,8 @@ import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 from miles.ray.train.cell import RayTrainCell
-from miles.utils.health_checker import NoopHealthChecker
-from miles.utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.health_checker import NoopHealthChecker
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
 @pytest.fixture(scope="module", autouse=True)

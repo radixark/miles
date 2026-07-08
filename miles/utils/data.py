@@ -9,7 +9,7 @@ import numpy as np
 import ray
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
-from .witness.allocator import WitnessInfo
+from .audit_utils.witness.allocator import WitnessInfo
 
 try:
     import pyarrow.parquet as pq

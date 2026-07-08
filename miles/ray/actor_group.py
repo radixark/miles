@@ -8,7 +8,7 @@ import asyncio
 from ray.util.placement_group import PlacementGroup
 
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
-from miles.utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
 class RayTrainGroup:

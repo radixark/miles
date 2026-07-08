@@ -8,27 +8,27 @@ from typing import TYPE_CHECKING
 import ray
 from ray.util.placement_group import PlacementGroup
 
-from miles.backends.megatron_utils.types import TrainStepOutcome
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
-from miles.utils.checksum_utils import flatten_inference_engine_checksums
-from miles.utils.event_analyzer import analyzer as event_analyzer
-from miles.utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.event_logger.models import (
+from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     InferenceEngineWeightChecksumEvent,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
-from miles.utils.health_checker import NoopHealthChecker, SimpleHealthCheckerConfig
-from miles.utils.indep_dp import IndepDPInfo
+from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
+from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthCheckerConfig
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
-from miles.utils.structured_log import log_structured
 from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
-from miles.utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
+from miles.utils.tracking_utils.structured_log import log_structured
 
 if TYPE_CHECKING:
     import torch
