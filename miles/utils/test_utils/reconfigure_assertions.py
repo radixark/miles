@@ -22,6 +22,7 @@ class ReconfigureInfo(FrozenStrictBaseModel):
 
 
 def assert_reconfigure_events(event_dir: Path, *, expected: list[ReconfigureInfo]) -> None:
+    assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
     actual = [ReconfigureInfo.from_event(event) for event in load_reconfigure_events(event_dir)]
     assert actual == expected, (
         f"CellReconfigureEvent sequence mismatch in {event_dir}:\n" f"  expected: {expected}\n" f"  actual:   {actual}"
@@ -33,6 +34,7 @@ MIN_SOAK_HEALINGS: int = 2
 
 
 def assert_soak_reconfigure_events(event_dir: Path, *, num_successful_injections: int) -> None:
+    assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
     events = load_reconfigure_events(event_dir)
     healings = [event for event in events if event.healed_cell_indices]
 
