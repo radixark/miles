@@ -1,5 +1,6 @@
 import contextvars
 import functools
+import inspect
 import logging
 import threading
 from collections.abc import Callable, Generator
@@ -99,6 +100,8 @@ def event_logger_context(ctx_fn: Callable[..., dict[str, Any]]) -> Callable:
     """
 
     def decorator(method: Callable) -> Callable:
+        assert not inspect.iscoroutinefunction(method), "event_logger_context does not support async methods"
+
         @functools.wraps(method)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             if not is_event_logger_initialized():
