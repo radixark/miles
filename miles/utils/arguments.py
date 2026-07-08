@@ -271,6 +271,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(
+                "--delay-split-train-data-by-dp",
+                action="store_true",
+                default=False,
+            )
+            parser.add_argument(
                 "--allgather-cp",
                 action="store_true",
                 default=False,

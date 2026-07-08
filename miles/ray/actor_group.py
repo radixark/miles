@@ -119,9 +119,9 @@ class RayTrainGroup:
             "init", self.args, self.role, with_ref=self.with_ref, with_opd_teacher=self.with_opd_teacher
         )
 
-    async def train(self, rollout_id, rollout_data_ref):
+    async def train(self, rollout_id, rollout_data_pack):
         """Do one rollout training"""
-        await self._broadcast("train", rollout_id, rollout_data_ref)
+        await self._broadcast("train", rollout_id, rollout_data_pack["data_ref"])
 
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
