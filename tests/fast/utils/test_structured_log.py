@@ -248,7 +248,7 @@ class TestWithLogs:
         assert end.getMessage().startswith("ft cls=FakeActor fn=wait_forever phase=end ok=false elapsed_s=")
         assert end.getMessage().endswith("cancelled=true")
         assert end.levelno == logging.INFO
-        assert end.exc_info is None
+        assert not end.exc_info
 
     def test_preserves_wrapped_function_metadata(self):
         """functools.wraps keeps the original __name__ so Ray/introspection still sees it."""
