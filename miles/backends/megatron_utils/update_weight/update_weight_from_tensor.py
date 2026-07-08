@@ -11,7 +11,6 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
@@ -19,6 +18,7 @@ from miles.backends.megatron_utils.lora_utils import (
 from miles.backends.megatron_utils.multi_lora_utils import is_multi_lora_enabled
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
@@ -195,7 +195,12 @@ class UpdateWeightFromTensor:
         # a host mirror across pause/resume), we can skip the base sync entirely
         # and the surrounding restore_weights_before_load / post_process_quantization
         # calls that would otherwise prep / re-quantize fresh base bytes.
-        skip_base_sync = self.is_lora and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+        # TODO: implement lora weight checker
+        skip_base_sync = (
+            self.is_lora
+            and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+            and not getattr(self.args, "check_weight_update_equal", False)
+        )
 
         if rank == 0:
             mode = self.args.pause_generation_mode

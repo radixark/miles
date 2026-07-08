@@ -221,6 +221,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
             parser.add_argument(
+                "--dsa-attention-backend",
+                choices=["megatron", "tilelang"],
+                default="tilelang",
+                help=(
+                    "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
+                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
+                    "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
+                    "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
+                    "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
+                    "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
+                ),
+            )
+            parser.add_argument(
                 "--extra-high-precision-layers-hf",
                 type=str,
                 nargs="*",
@@ -1085,7 +1098,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-rollout-routing-replay",
                 action="store_true",
                 default=False,
-                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
+                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370 (R3): "
+                "replay the rollout's MoE routing in training. MoE-only; the GLM-5 launchers pass it "
+                "explicitly.",
             )
             parser.add_argument(
                 "--use-indexer-replay",
@@ -1894,13 +1909,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     fn.add_arguments(parser)
             return parser
 
-        def add_sglang_tp_size():
-            temp_parser = argparse.ArgumentParser(add_help=False)
-            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
-            temp_args, _ = temp_parser.parse_known_args()
-            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
-            return sglang_tp_size
-
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
@@ -1921,6 +1929,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        # required whenever expert projections are LoRA targets, inert otherwise
+        # (sglang's own default is False)
+        parser.set_defaults(sglang_lora_use_virtual_experts=True)
+        parser.add_argument(
+            "--no-sglang-lora-use-virtual-experts",
+            dest="sglang_lora_use_virtual_experts",
+            action="store_false",
+            help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
+            "of the virtual-experts path.",
+        )
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
@@ -1941,7 +1959,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         )
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
-        parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser
 
     return add_miles_arguments
@@ -2236,7 +2253,14 @@ def miles_validate_args(args):
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
         if args.target_modules == "all-linear":
+            # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
+            # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
             modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            hf_config = load_hf_config(args.hf_checkpoint)
+            if getattr(hf_config, "kv_lora_rank", None):
+                modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
+                if getattr(hf_config, "q_lora_rank", None):
+                    modules += ["q_a_proj", "q_b_proj"]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
         else:
@@ -2259,6 +2283,14 @@ def miles_validate_args(args):
         assert args.experts_shared_outer_loras == bool(
             args.sglang_experts_shared_outer_loras
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
+
+        # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
+        _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
+        if any(leaf in str(tm) for tm in modules for leaf in _expert_leaves):
+            logger.warning(
+                "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
+                "shared-outer" if args.experts_shared_outer_loras else "per-expert",
+            )
 
     # Multi-LoRA flag — adapter configs are loaded later by the controller
     args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
@@ -2360,13 +2392,16 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
-        if args.sglang_enforce_piecewise_cuda_graph:
-            logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
-        if not args.sglang_disable_piecewise_cuda_graph:
-            args.sglang_disable_piecewise_cuda_graph = True
+        if args.sglang_cuda_graph_backend_prefill is None:
+            args.sglang_cuda_graph_backend_prefill = "disabled"
             logger.info(
-                "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
-                "Use --sglang-enforce-piecewise-cuda-graph to override."
+                "Colocate mode: defaulting --sglang-cuda-graph-backend-prefill=disabled to avoid NVLS OOM. "
+                "Set --sglang-cuda-graph-backend-prefill explicitly to override."
+            )
+        elif args.sglang_cuda_graph_backend_prefill != "disabled":
+            logger.warning(
+                f"Warning: colocate mode with --sglang-cuda-graph-backend-prefill="
+                f"{args.sglang_cuda_graph_backend_prefill} may trigger NVLS OOM."
             )
         if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
             logger.info(

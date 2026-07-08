@@ -145,7 +145,7 @@ Sections mirror the launch-script argument groups.
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
 | `--rollout-num-gpus-per-engine` | int | `1` | TP size of each SGLang engine. |
-| `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and `--sglang-disable-piecewise-cuda-graph`. |
+| `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and defaults `--sglang-cuda-graph-backend-prefill=disabled`. |
 
 ### Model and checkpoints
 
@@ -288,7 +288,7 @@ Common `--sglang-*` flags:
 --sglang-enable-dp-attention
 --sglang-enable-deepep
 --sglang-enable-overlap-schedule
---sglang-enforce-piecewise-cuda-graph     # off by default in colocate mode
+--sglang-cuda-graph-backend-prefill       # prefill graphs default to disabled in colocate mode
 ```
 
 ### MTP / speculative decoding
