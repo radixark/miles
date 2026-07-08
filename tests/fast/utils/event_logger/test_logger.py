@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import miles.utils.event_logger.logger as event_logger_module
 from miles.utils.event_logger.logger import EventLogger, event_logger_context, get_event_logger, set_event_logger
 from miles.utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
 from miles.utils.process_identity import MainProcessIdentity, TrainProcessIdentity
@@ -111,15 +112,13 @@ class TestSetGetEventLogger:
 
 class TestGetEventLoggerRaisesWhenNotSet:
     def test_raises_runtime_error(self) -> None:
-        import miles.utils.event_logger.logger as mod
-
-        original = mod._event_logger
-        mod._event_logger = None
+        original = event_logger_module._event_logger
+        event_logger_module._event_logger = None
         try:
             with pytest.raises(RuntimeError, match="EventLogger not initialized"):
                 get_event_logger()
         finally:
-            mod._event_logger = original
+            event_logger_module._event_logger = original
 
 
 class TestEventLoggerFlushOnEachWrite:
