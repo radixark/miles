@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.test_utils.fault_injector import FailureMode
 
 
-class TriState(str, Enum):
+class TriState(StrEnum):
     """K8s condition status: ``"True"``, ``"False"``, or ``"Unknown"``."""
 
     TRUE = "True"
