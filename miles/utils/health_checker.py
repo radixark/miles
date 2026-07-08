@@ -186,7 +186,12 @@ class SimpleHealthChecker(BaseHealthChecker):
                     )
 
                 if self._on_result is not None:
-                    self._on_result(success)
+                    try:
+                        self._on_result(success)
+                    except Exception:
+                        log_structured(
+                            logger.error, op="health", phase="on_result_failed", name=self._name, exc_info=True
+                        )
 
             await self._clock.sleep(self._config.interval)
 
@@ -213,7 +218,7 @@ class NoopHealthChecker(BaseHealthChecker):
 def create_rollout_cell_health_checker(
     *,
     cell_id: str,
-    get_engines: Callable[[], list[object]],
+    get_engines: Callable[[], list[Any]],
     config: SimpleHealthCheckerConfig,
     on_result: Callable[[bool], None] | None = None,
 ) -> SimpleHealthChecker:

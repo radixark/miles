@@ -144,6 +144,24 @@ class TestOnResult:
 
         assert results == [False]
 
+    async def test_loop_survives_on_result_raising(self, caplog):
+        """A raising on_result callback is logged and does not kill the check loop."""
+        results: list[bool] = []
+
+        def on_result(success: bool) -> None:
+            results.append(success)
+            raise RuntimeError("callback boom")
+
+        checker, clock = _make_checker(on_result=on_result, interval=5.0)
+        await checker.start()
+
+        await _settle(clock)
+        await clock.elapse(5.0)
+        checker.stop()
+
+        assert results == [True, True]
+        assert any("on_result_failed" in r.message for r in caplog.records)
+
     async def test_loop_continues_after_failure(self):
         results: list[bool] = []
 
