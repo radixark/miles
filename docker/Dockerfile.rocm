@@ -1,15 +1,18 @@
 # doc-dev: docs/ci/02-docker-build.md
 # Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
 #
-# 1. rocm/sgl-dev:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
-#    use default settings
+# 1. rocm700-mi35x  (gfx950, ROCm 7.0 / MI350 / MI355X)
+#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
 #
-# 2. rocm/sgl-dev:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
-#    build-arg:GPU_ARCH=gfx942
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+# 2. rocm700-mi30x  (gfx942, ROCm 7.0 / MI300 / MI325)
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+#
+# 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
-FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
+ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
+ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
+FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
@@ -24,9 +27,6 @@ ARG MILES_COMMIT=main
 
 ARG GPU_ARCH=gfx950
 ARG MAX_JOBS=128
-
-ARG AITER_REPO=https://github.com/ROCm/aiter.git
-ARG AITER_COMMIT=v0.1.11.post1
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
@@ -130,11 +130,11 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 # still import it; re-pin to the base image's setuptools.
 RUN pip install "setuptools==79.0.1"
 
-# Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
-RUN pip install "typer==0.25.1" "click==8.2.1"
-
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
     pip install -r /tmp/requirements.txt
+
+# Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
+RUN pip install "typer==0.25.1" "click==8.2.1"
 
 # Pin numpy 1.x for Megatron compatibility.
 RUN pip install "numpy<2"
