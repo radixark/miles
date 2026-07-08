@@ -28,7 +28,6 @@ Usage:
   python scripts/run_qwen3_5_35b_a3b_lora.py train      --model-name Qwen3.6-35B-A3B --task dapo-math
 """
 
-import os
 from dataclasses import dataclass
 from typing import Literal
 
