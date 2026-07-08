@@ -3,7 +3,7 @@
 ## Layout
 
 - Scenario logic lives in `conftest_ft/scenario_<name>.py`.
-- CI runs it via thin per-mode entry files `test_trainer_ft_<scenario>_<mode>.py`, each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft"])`.
+- CI runs it via thin per-mode entry files `test_trainer_ft_<scenario>_<mode>.py`, each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft-short"])` (comparison scenarios) or `labels=["ft-long"]` (soak scenarios).
 - The CUDA CI runner executes each entry as bare `python3 <file>` (exit code = pass/fail); the entry just calls the scenario's `run_ci(mode)`.
 
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
@@ -36,7 +36,7 @@
 
 ### In CI
 
-- Gated on the `run-ci-ft` PR label (FT is expensive — not run on every PR). With the label set, every entry runs on `stage-c-8-gpu-h200`.
+- Gated on the `run-ci-ft-short` / `run-ci-ft-long` PR labels (FT is expensive — not run on every PR). `ft-short` covers the comparison scenarios (no_failure / deterministic / with_failure, minutes each); `ft-long` covers the soak scenarios (random-crash survival, realistic-gsm8k convergence — tens of minutes to hours). With a label set, the matching entries run on `stage-c-8-gpu-h200`.
 - Add a `(scenario, mode)` to CI: copy an entry file, change `run_ci(...)`'s mode.
 - Add a new label: edit `tests/ci/labels.py` and create the matching `run-ci-<label>` GitHub label.
 
