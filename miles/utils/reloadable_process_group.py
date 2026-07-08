@@ -43,6 +43,7 @@ def monkey_patch_torch_dist():
             return group
 
         backend = args[2] if len(args) >= 3 else kwargs.get("backend")
+        assert len(args) <= 3, "ReloadableProcessGroup cannot preserve pg_options across reloads"
         group = ReloadableProcessGroup(group, ranks, backend=backend)
         return group
 
