@@ -1,6 +1,10 @@
 import logging
 import math
+from collections import defaultdict
 from pathlib import Path
+
+import polars as pl
+from sglang.srt.debug_utils.comparator.display import _render_polars_as_text
 
 from miles.utils.event_logger.logger import read_events
 from miles.utils.event_logger.models import MetricEvent
@@ -59,10 +63,9 @@ def _keep_only_final_attempt(events: list[MetricEvent]) -> list[MetricEvent]:
     def _attempt(e: MetricEvent) -> int:
         return e.attempt if e.attempt is not None else 0
 
-    max_attempt_by_rollout: dict[int, int] = {
-        rollout_id: max(_attempt(e) for e in events if e.rollout_id == rollout_id)
-        for rollout_id in {e.rollout_id for e in events}
-    }
+    max_attempt_by_rollout: dict[int, int] = defaultdict(int)
+    for e in events:
+        max_attempt_by_rollout[e.rollout_id] = max(max_attempt_by_rollout[e.rollout_id], _attempt(e))
     return [e for e in events if _attempt(e) == max_attempt_by_rollout[e.rollout_id]]
 
 
@@ -151,9 +154,6 @@ def _print_step_comparison_table(
     *,
     exclude_keys: list[str] | None = None,
 ) -> None:
-    import polars as pl
-    from sglang.srt.debug_utils.comparator.display import _render_polars_as_text
-
     rows: list[dict[str, str]] = []
     for key in sorted(baseline_event.metrics):
         if not any(key.startswith(p) for p in key_prefixes):
