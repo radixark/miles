@@ -125,7 +125,11 @@ def setup_model_and_optimizer(
               ``None`` when ``--debug-disable-optimizer`` is set.
     """
     assert not args.moe_use_upcycling
-    assert args.load is not None or args.pretrained_checkpoint is not None
+    assert (
+        args.load is not None
+        or args.pretrained_checkpoint is not None
+        or getattr(args, "debug_skip_load", False)
+    )
 
     if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
         model = _setup_lora_model_via_bridge(args)
@@ -831,13 +835,18 @@ def initialize_model_and_optimizer(
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
-    iteration, _ = load_checkpoint(
-        model,
-        optimizer,
-        opt_param_scheduler,
-        checkpointing_context={},
-        skip_load_to_model_and_opt=False,
-    )
+    if getattr(args, "debug_skip_load", False):
+        if is_megatron_main_rank():
+            logger.warning("--debug-skip-load set: using RANDOM-init weights, skipping load_checkpoint.")
+        iteration = 0
+    else:
+        iteration, _ = load_checkpoint(
+            model,
+            optimizer,
+            opt_param_scheduler,
+            checkpointing_context={},
+            skip_load_to_model_and_opt=False,
+        )
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 

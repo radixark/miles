@@ -18,4 +18,6 @@ __all__ = [
     "DeepseekV32Bridge",
     "DeepseekV4Bridge",
     "JoyAILLMFlashBridge",
+    "MiniMaxM3Bridge",
 ]
+from .minimax_m3 import MiniMaxM3Bridge

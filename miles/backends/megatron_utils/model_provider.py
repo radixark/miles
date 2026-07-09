@@ -318,6 +318,16 @@ def get_model_provider_func(
         if post_process and role == "critic":
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
 
+        # MiniMax-M3-VL: wrap the M3 text decoder in the composite VL model
+        # (HF-native vision tower + projector). Opt-in via --minimax-m3-vl so the
+        # default text path is untouched. See miles_plugins/models/minimax_m3.
+        if getattr(args, "minimax_m3_vl", False):
+            from miles_plugins.models.minimax_m3.vl_model import build_minimax_m3_vl
+
+            model = build_minimax_m3_vl(
+                model, args, freeze_vision=not getattr(args, "minimax_m3_train_vision", False)
+            )
+
         return model
 
     return model_provider

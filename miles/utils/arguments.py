@@ -173,6 +173,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--minimax-m3-vl",
+                action="store_true",
+                default=False,
+                help=(
+                    "Wrap the MiniMax-M3 text decoder in the composite VL model "
+                    "(HF-native vision tower + projector). Requires "
+                    "--spec miles_plugins.models.minimax_m3.minimax_m3 get_minimax_m3_spec."
+                ),
+            )
+            parser.add_argument(
+                "--minimax-m3-train-vision",
+                action="store_true",
+                default=False,
+                help=(
+                    "Unfreeze the M3 vision tower (default frozen). WIP / NOT YET CORRECT: "
+                    "the native vision tower + projector are replicated and are NOT in "
+                    "Megatron's grad buffer / distributed optimizer, and there is no TP grad "
+                    "all-reduce for them, so this flag does not (yet) update them consistently. "
+                    "See the plugin README 'Known limitations' before using."
+                ),
+            )
+            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -201,6 +223,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Debug-only: do not initialize the Megatron optimizer or LR scheduler. "
                     "Training still runs rollout, log-prob forward, and actor forward/backward, "
                     "but skips optimizer state allocation and optimizer updates."
+                ),
+            )
+            parser.add_argument(
+                "--debug-skip-load",
+                action="store_true",
+                default=False,
+                help=(
+                    "Debug-only: build the model with RANDOM init and skip checkpoint "
+                    "loading entirely (no --load / --pretrained-checkpoint required). "
+                    "For plumbing smoke tests of new model code without converted weights."
                 ),
             )
             parser.add_argument(
@@ -2629,6 +2661,11 @@ def hf_validate_args(args, hf_config):
         if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
             continue
         if getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size":
+            continue
+        # MiniMax-M3: HF text_config.intermediate_size is the EXPERT FFN (3072);
+        # dense layers use dense_intermediate_size (12288). Megatron splits these
+        # into moe_ffn_hidden_size / ffn_hidden_size, so the flat check doesn't apply.
+        if hasattr(hf_config, "dense_intermediate_size") and hf_config_name == "intermediate_size":
             continue
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):

@@ -56,6 +56,15 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
             for mm_dict in rollout_data["multimodal_train_inputs"]
         ]
 
+    # MiniMax-M3-VL: expand one media placeholder per image/video into the
+    # grid-derived number of slots so token / loss-mask / total_lengths match the
+    # vision embeddings the composite model scatters in. Runs before lengths are
+    # read below; no-op for samples without media. Gated on --minimax-m3-vl.
+    if getattr(args, "minimax_m3_vl", False):
+        from miles_plugins.models.minimax_m3.mm_data import expand_multimodal_in_place
+
+        expand_multimodal_in_place(rollout_data)
+
     if args.qkv_format == "bshd":
         # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
         max_seq_len = max(rollout_data["total_lengths"])
