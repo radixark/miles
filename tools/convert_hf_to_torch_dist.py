@@ -80,10 +80,12 @@ def get_args():
 def main():
     if torch.version.hip:
         import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
+        import megatron.core.dist_checkpointing.strategies.torch as torch_strategy_module
 
         from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
 
         filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
+        torch_strategy_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
         print("[ROCm] Applied FileSystemWriterAsync patch for HIP compatibility")
 
     configure_logger()
