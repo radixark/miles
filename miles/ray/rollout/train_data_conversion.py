@@ -4,7 +4,7 @@ import ray
 import torch
 
 from miles.utils.ray_utils import Box
-from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions, get_seqlen_bounded_partitions
 from miles.utils.types import Sample
 
 
@@ -131,9 +131,17 @@ def split_train_data_by_dp(args, data, dp_size):
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
-    if args.balance_data:
-        partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
+    if args.balance_data and len(total_lengths) >= dp_size:
+        if len(total_lengths) % dp_size == 0:
+            # Evenly divisible: exact equal per-rank counts, token-balanced via Karmarkar-Karp.
+            partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
+        else:
+            # Not divisible (e.g. invalid samples dropped, 206 % 4): token-balance while
+            # keeping per-rank sample counts within 1 of each other, rather than crashing.
+            partitions = get_seqlen_bounded_partitions(total_lengths, dp_size)
     else:
+        # Fewer samples than dp_size (or balancing disabled): strided split, which
+        # tolerates any count (some ranks may be empty when len < dp_size).
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
     rollout_data_refs = []
