@@ -1,0 +1,70 @@
+name: PR Test (ROCm)
+
+# ROCm counterpart to pr-test.yml. Same structure, different GPU stage:
+# calls _run-ci-rocm.yml instead of _run-ci.yml, using the ROCm container
+# with HIP/CUDA compatibility to run the same CUDA-registered test suites.
+#
+# Currently workflow_dispatch-only while the MI300x runner is being
+# stabilized. Add `pull_request:` and `schedule:` triggers once reliable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_megatron_pr:
+        description: 'Megatron-LM branch/commit (default: miles-main)'
+        required: false
+        type: string
+        default: 'miles-main'
+      ci_sglang_pr:
+        description: 'SGLang branch/commit (default: sglang-miles)'
+        required: false
+        type: string
+        default: 'sglang-miles'
+      ci_image_tag:
+        description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260708)'
+        required: false
+        type: string
+        default: 'miles-rocm700-mi30x-20260708'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-ci-image:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      container_image: ${{ steps.resolve.outputs.container_image }}
+    steps:
+      - name: Resolve CI image
+        id: resolve
+        shell: bash
+        env:
+          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+        run: |
+          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260708"
+          echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
+
+  stage-c-8-gpu-mi300x:
+    needs: [resolve-ci-image]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      runs_on: '["self-hosted", "rocm", "mi300x", "8gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ci_megatron_pr: ${{ github.event.inputs.ci_megatron_pr || 'miles-main' }}
+      ci_sglang_pr: ${{ github.event.inputs.ci_sglang_pr || 'sglang-miles' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
+        --match-all-labels
+        --enable-retry --max-attempts 2
+    secrets: inherit
