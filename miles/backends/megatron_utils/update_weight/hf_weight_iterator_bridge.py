@@ -4,11 +4,11 @@ import os
 
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
-from miles.utils.iter_utils import chunk_named_params_by_size
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
+from .common import get_atomic_update_groups
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
@@ -61,11 +61,13 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             named_weights = self._postprocess_and_quantize(named_weights, weight_type)
 
             if weight_type == "base":
-                named_weights = ((n, t) for n, t in named_weights if not is_lora_weight_name(n))
+                named_weights = ((h, w, m) for h, w, m in named_weights if not is_lora_weight_name(h))
             elif weight_type == "lora":
-                named_weights = ((n, t) for n, t in named_weights if is_lora_weight_name(n))
+                named_weights = ((h, w, m) for h, w, m in named_weights if is_lora_weight_name(h))
 
-            yield from chunk_named_params_by_size(named_weights, chunk_size=self.args.update_weight_buffer_size)
+            groups = get_atomic_update_groups(self.args, self.model_name)
+            units = _stream_atomic_units(named_weights, groups)
+            yield from _chunk_atomic_units_by_size(units, chunk_size=self.args.update_weight_buffer_size)
 
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
         for hf_param_name, weight, megatron_param_name in named_weights:
@@ -80,9 +82,12 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                 # quantize_params expects the megatron name with the `module.module.`
                 # prefix that the direct iterator uses; the bridge yields it without.
                 qmegatron_name = f"module.module.{megatron_param_name}"
-                yield from quantize_params(self.args, qmegatron_name, [(hf_name, weight)], self.quantization_config)
+                for q_hf_name, q_weight in quantize_params(
+                    self.args, qmegatron_name, [(hf_name, weight)], self.quantization_config
+                ):
+                    yield q_hf_name, q_weight, megatron_param_name
             else:
-                yield hf_name, weight
+                yield hf_name, weight, megatron_param_name
 
 
 def _load_quantized_param_basenames(hf_checkpoint):
@@ -95,16 +100,62 @@ def _load_quantized_param_basenames(hf_checkpoint):
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
+def _stream_atomic_units(items, atomic_update_groups):
+    """Streaming counterpart of get_named_value_update_units: buffer items
+    whose megatron name matches an AtomicUpdateGroup suffix until every
+    suffix in the same (prefix, group.key) arrives, then yield together."""
+    pending: dict[tuple[str, str], list] = {}
+    for hf_name, weight, megatron_name in items:
+        match = next(
+            (
+                (group, idx, suffix)
+                for group in atomic_update_groups
+                for idx, suffix in enumerate(group.suffixes)
+                if megatron_name.endswith(suffix)
+            ),
+            None,
+        )
+        if match is None:
+            yield [(hf_name, weight)]
+            continue
+        group, idx, suffix = match
+        prefix = megatron_name[: -len(suffix)]
+        slots = pending.setdefault((prefix, group.key), [None] * len(group.suffixes))
+        slots[idx] = (hf_name, weight)
+        if None not in slots:
+            yield list(slots)
+            del pending[(prefix, group.key)]
+    assert not pending, f"Incomplete atomic update groups at end of stream: {sorted(pending)}"
+
+
+def _chunk_atomic_units_by_size(units, chunk_size):
+    """Pack atomic units into chunks <= chunk_size bytes, never splitting a unit."""
+    bucket: list = []
+    bucket_size = 0
+    for unit in units:
+        unit_size = sum(t.nbytes for _, t in unit)
+        if bucket and bucket_size + unit_size >= chunk_size:
+            yield bucket
+            bucket = []
+            bucket_size = 0
+        bucket.extend(unit)
+        bucket_size += unit_size
+    if bucket:
+        yield bucket
+
+
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
     def _handle_one(task):
+        if task is None:
+            # no HF mapping (e.g. Gemma-4 post_shared_expert_layernorm)
+            return task
         if task.param_weight is None:
             return task
 
         weight_dict_key = f"vp_stages.{task.vp_stage}.{task.param_name}"
-        assert (
-            weight_dict_key in new_weight_dict
-        ), f"{weight_dict_key=} not in new_weight_dict ({task.vp_stage=}, {task.param_name=}, {list(new_weight_dict)=})"
-
+        if weight_dict_key not in new_weight_dict:
+            # buffer-like params (Gemma-4 layer_scalar/scale) aren't in optimizer state; keep as-is
+            return task
         new_param_weight = new_weight_dict[weight_dict_key]
         new_param_weight = new_param_weight.cuda()
         return dataclasses.replace(task, param_weight=new_param_weight)

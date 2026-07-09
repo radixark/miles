@@ -347,7 +347,7 @@ collision produces an OOM before training ever starts. Drop
 
 - `--offload-train` — train state offloads to CPU between phases
 - `--offload-rollout` — rollout state offloads to CPU between phases
-- `--sglang-disable-piecewise-cuda-graph` — avoids NVLS OOM in colocate mode
+- `--sglang-cuda-graph-backend-prefill=disabled` — avoids NVLS OOM in colocate mode
 
 </Note>
 

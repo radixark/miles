@@ -1,6 +1,7 @@
 import torch
 
 from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 from .tilelang_indexer_bwd import indexer_bwd_interface
 from .tilelang_indexer_fwd import indexer_fwd_interface
@@ -12,12 +13,6 @@ def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):
     scores = torch.gather(logits, dim=dim, index=safe_indices)
     scores = torch.where(valid_mask, scores, float("-inf"))
     return scores
-
-
-def _original_topk(logits, topk):
-    score, indices = torch.topk(logits, topk, dim=-1)
-    indices = indices.to(torch.int32)
-    return indices.masked_fill(score == -torch.inf, -1)
 
 
 class IndexerFunction(torch.autograd.Function):
@@ -50,6 +45,7 @@ def lighting_indexer(
     cu_seqlen_ks: torch.Tensor,
     cu_seqlen_ke: torch.Tensor,
     topk: int,
+    topk_backend: str = "torch",
     topk_indices: torch.Tensor | None = None,
 ):
     if topk_indices is not None:
@@ -59,7 +55,7 @@ def lighting_indexer(
     logits = indexer_fwd_interface(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True)
 
     if topk_indices is None:
-        topk_fn = indexer_replay_manager.get_topk_fn(_original_topk, return_probs=False)
+        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(topk_backend), return_probs=False)
         topk_indices = topk_fn(logits, topk)
 
     index_score = IndexerFunction.apply(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, logits, topk_indices)

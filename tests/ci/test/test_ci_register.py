@@ -627,7 +627,7 @@ class TestNoSemanticDefaultRegisterCpuCi:
     """
 
     def test_no_default_form_register_cpu_ci_in_tests_fast(self):
-        repo_root = Path(__file__).resolve().parents[2]
+        repo_root = Path(__file__).resolve().parents[3]
         fast_root = repo_root / "tests" / "fast"
         if not fast_root.is_dir():
             pytest.skip(f"{fast_root} does not exist in this checkout")

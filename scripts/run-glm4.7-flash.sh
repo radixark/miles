@@ -125,7 +125,6 @@ SGLANG_ARGS=(
    # --sglang-max-running-requests 512
 
    # use rollout routing replay
-   --use-miles-router
    --use-rollout-routing-replay
 )
 
