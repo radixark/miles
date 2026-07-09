@@ -16,9 +16,7 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
 
 import copy
-import inspect
 import json
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -388,25 +386,29 @@ def test_build_config_does_not_mutate_input_kwargs():
 
 
 # ---------------------------------------------------------------------------
-# Generation-prompt behavior: no knob, no suffix surgery
+# Generation-prompt behavior: the encoder's auto opener honors the knob
 # ---------------------------------------------------------------------------
 
 
-def test_render_has_no_add_generation_prompt_param():
-    assert "add_generation_prompt" not in inspect.signature(deepseek.V4.render_messages).parameters
+def test_add_generation_prompt_false_strips_the_auto_opener():
+    for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
+        with_opener = deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode=mode)
+        without = deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode=mode, add_generation_prompt=False)
+        assert with_opener == without + opener
 
 
-def test_no_generation_prompt_suffix_strip():
-    src = Path(deepseek.__file__).read_text(encoding="utf-8")
-    assert "_GENERATION_PROMPT_SUFFIX" not in src
-    assert "<｜Assistant｜>" not in src  # no hard-coded assistant-suffix surgery
+def test_add_generation_prompt_false_noop_on_assistant_tail():
+    # reasoning_content is required by the thinking-mode encoder for a
+    # last-round assistant message.
+    msgs = _MSGS_BASIC + [{"role": "assistant", "content": "done", "reasoning_content": "r"}]
+    assert deepseek.V4.render_messages(msgs, add_generation_prompt=False) == deepseek.V4.render_messages(msgs)
 
 
-def test_apply_chat_template_add_generation_prompt_is_noop(tmp_path):
+def test_apply_chat_template_forwards_add_generation_prompt(tmp_path):
     tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    with_prompt = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False, add_generation_prompt=True)
     without_prompt = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False, add_generation_prompt=False)
-    assert with_prompt == without_prompt
+    assert without_prompt == deepseek.V4.render_messages(_MSGS_BASIC, add_generation_prompt=False)
+    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) != without_prompt
 
 
 # ---------------------------------------------------------------------------

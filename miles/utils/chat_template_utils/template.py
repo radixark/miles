@@ -227,7 +227,12 @@ def apply_chat_template(
     """
     if deepseek.model_type(tokenizer) is not None:
         return deepseek.apply_chat_template(
-            normalize_tool_arguments(messages, "json"), tokenizer, tools=tools, tokenize=tokenize, **kwargs
+            normalize_tool_arguments(messages, "json"),
+            tokenizer,
+            tools=tools,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            **kwargs,
         )
 
     messages = normalize_tool_arguments(messages, "dict")

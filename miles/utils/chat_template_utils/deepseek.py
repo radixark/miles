@@ -19,6 +19,12 @@ from typing import Any
 from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv32
 from sglang.srt.entrypoints.openai.protocol import Tool
 
+# After a non-assistant tail both family encoders unconditionally append the
+# next assistant turn's opener (assistant-start + thinking bracket); rendering
+# with add_generation_prompt=False strips it so a prefix render can be diffed
+# out of a full one (the TITO incremental paths).
+_GENERATION_OPENERS = ("<｜Assistant｜><think>", "<｜Assistant｜></think>")
+
 
 @functools.cache
 def _read_model_type(name_or_path: str) -> str:
@@ -75,17 +81,29 @@ class DeepSeekFamily:
         return self._build_encode_config(chat_template_kwargs)["thinking_mode"] == "thinking"
 
     def render_messages(
-        self, messages: list[dict[str, Any]], *, tools: list[dict] | None = None, **kwargs: Any
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict] | None = None,
+        add_generation_prompt: bool = True,
+        **kwargs: Any,
     ) -> str:
         """Render *messages* into this family's prompt via sglang ``encode_messages``.
 
         Tool_call ``arguments`` must already be JSON strings; *tools*, if given, are
-        injected into the system message (see ``_inject_tools_into_system``).
+        injected into the system message (see ``_inject_tools_into_system``).  The
+        encoder unconditionally appends the next assistant turn's opener after a
+        non-assistant tail; ``add_generation_prompt=False`` strips it.
         """
         encode_config = self._build_encode_config(kwargs)
         if tools:
             messages = _inject_tools_into_system(messages, tools)
-        return self.template.encode_messages(messages, **encode_config)
+        rendered = self.template.encode_messages(messages, **encode_config)
+        if not add_generation_prompt:
+            for opener in _GENERATION_OPENERS:
+                if rendered.endswith(opener):
+                    return rendered[: -len(opener)]
+        return rendered
 
 
 V32 = DeepSeekFamily(template=encoding_dsv32)
@@ -110,6 +128,7 @@ def apply_chat_template(
     *,
     tools: list[dict] | None = None,
     tokenize: bool = False,
+    add_generation_prompt: bool = True,
     **kwargs: Any,
 ) -> str | list[int]:
     """Render *messages* for *tokenizer*'s DeepSeek family, optionally encoding.
@@ -121,5 +140,7 @@ def apply_chat_template(
     mt = model_type(tokenizer)
     if mt is None:
         raise ValueError(f"not a DeepSeek official-encoder checkpoint: {tokenizer.name_or_path!r}")
-    rendered = _FAMILIES[mt].render_messages(messages, tools=tools, **kwargs)
+    rendered = _FAMILIES[mt].render_messages(
+        messages, tools=tools, add_generation_prompt=add_generation_prompt, **kwargs
+    )
     return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered
