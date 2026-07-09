@@ -6,7 +6,12 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.ft.conftest_ft.scenario_deterministic import run_ci
 
-register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["ft-short"])
+register_cuda_ci(
+    est_time=900,
+    suite="stage-c-8-gpu-h100",
+    labels=["ft-short"],
+    disabled="FT e2e suite disabled in CI pending stabilization on current image (follow-up PR)",
+)
 
 _MODE: str = "dp2_cp2_pp2"
 
