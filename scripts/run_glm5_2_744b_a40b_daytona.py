@@ -38,6 +38,7 @@ OPENENV_DIR = (SCRIPT_DIR.parent / "examples" / "experimental" / "openenv").reso
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal"] = "normal"
+    fully_async: bool = False
     run_id: str = U.create_run_id()
     model_name: str = "GLM-5.2"
     megatron_model_type: str = "glm5.2-744B-A40B"
@@ -71,6 +72,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         assert self.num_nodes >= 16 and self.num_gpus_per_node == 4, "GB300 16-node config only"
+        if self.fully_async:
+            assert self.num_nodes == 16, "fully-async split is 8 train + 8 inference nodes"
         assert self.daytona_api_key, "DAYTONA_API_KEY must be set in the environment"
         if not self.prompt_data:
             self.prompt_data = f"{self.data_dir}/tbench2_train.jsonl"
@@ -87,7 +90,13 @@ def _execute_train(args: ScriptArgs):
         "--save-interval 100000 "  # smoke: never save
     )
 
-    rollout_args = (
+    rollout_args = ""
+    if args.fully_async:
+        rollout_args += (
+            "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
+            "--pause-generation-mode in_place "
+        )
+    rollout_args += (
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
         "--apply-chat-template "
@@ -113,7 +122,9 @@ def _execute_train(args: ScriptArgs):
         "--tito-allowed-append-roles user tool "
     )
 
-    # GB300 64-GPU training topology (see run_glm5_2_744b_a40b.py for rationale)
+    # Colocate: 64-GPU training topology. Fully-async: 32-GPU training half
+    # (TP8*PP4*DP1, EP capped at TP*DP=8), optimizer state streamed from NVMe.
+    expert_parallel = 8 if args.fully_async else 16
     perf_args = (
         "--tensor-model-parallel-size 8 "
         "--sequence-parallel "
@@ -121,7 +132,7 @@ def _execute_train(args: ScriptArgs):
         "--decoder-first-pipeline-num-layers 18 "
         "--decoder-last-pipeline-num-layers 20 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 16 "
+        f"--expert-model-parallel-size {expert_parallel} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -191,12 +202,18 @@ def _execute_train(args: ScriptArgs):
         "--attention-backend flash "
         "--allgather-cp "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
-        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-nodes {8 if args.fully_async else args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--colocate "
         "--moe-token-dispatcher-type alltoall "
     )
+    if args.fully_async:
+        misc_args += (
+            "--rollout-num-gpus 32 "
+            "--update-weight-transfer-mode broadcast "
+        )
+    else:
+        misc_args += "--colocate "
 
     train_args = (
         f"{ckpt_args} "
@@ -222,7 +239,11 @@ def _execute_train(args: ScriptArgs):
         "NVSHMEM_DISABLE_NCCL": "1",
         # openenv_agent_function / openenv_generate import path; keep the
         # driver PYTHONPATH tail (sglang worktree) for actor-side imports
-        "PYTHONPATH": f"{args.megatron_path}:{OPENENV_DIR}:{os.environ.get('PYTHONPATH', '')}",
+        "PYTHONPATH": (
+            f"{args.megatron_path}:{OPENENV_DIR}:"
+            f"{(SCRIPT_DIR.parent / 'examples' / 'fully_async').resolve()}:"
+            f"{os.environ.get('PYTHONPATH', '')}"
+        ),
         # OpenEnv x Daytona
         "AGENT_MODEL_NAME": args.agent_model_name,
         "OPENENV_MAX_TURNS": str(args.openenv_max_turns),
@@ -233,6 +254,9 @@ def _execute_train(args: ScriptArgs):
         "DAYTONA_API_KEY": args.daytona_api_key,
     }
 
+    kwargs = {}
+    if args.fully_async:
+        kwargs["train_script"] = "train_async.py"
     U.execute_train(
         train_args=train_args,
         config=args,
@@ -240,6 +264,7 @@ def _execute_train(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         extra_env_vars=extra_env_vars,
         megatron_path=args.megatron_path,
+        **kwargs,
     )
 
 
