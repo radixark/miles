@@ -42,6 +42,18 @@ EXAMPLE_DIR=${EXAMPLE_DIR:-$(cd "$(dirname "$0")" && pwd)}
 MILES_DIR=${MILES_DIR:-/workspace/miles}
 RAY_ADDRESS=${RAY_ADDRESS:-http://127.0.0.1:8265}
 OPD_KL_COEF=${OPD_KL_COEF:-0.2}
+MOE_FLEX_DISPATCHER_BACKEND=${MOE_FLEX_DISPATCHER_BACKEND:-hybridep}
+NUM_ROLLOUT=${NUM_ROLLOUT:-12}
+ROLLOUT_BATCH_SIZE=${ROLLOUT_BATCH_SIZE:-32}
+N_SAMPLES_PER_PROMPT=${N_SAMPLES_PER_PROMPT:-8}
+OVER_SAMPLING_BATCH_SIZE=${OVER_SAMPLING_BATCH_SIZE:-32}
+GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-256}
+ROLLOUT_MAX_RESPONSE_LEN=${ROLLOUT_MAX_RESPONSE_LEN:-24576}
+MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-16384}
+SAVE_INTERVAL=${SAVE_INTERVAL:-5}
+EVAL_INTERVAL=${EVAL_INTERVAL:-5}
+SKIP_EVAL_BEFORE_TRAIN=${SKIP_EVAL_BEFORE_TRAIN:-0}
+read -r -a SGLANG_CUDA_GRAPH_BS_ARRAY <<< "${SGLANG_CUDA_GRAPH_BS:-1 2 4}"
 mkdir -p "${OUTPUT_DIR}"
 
 EVAL_CONFIG="${OUTPUT_DIR}/eval_dapo_heldout.yaml"
@@ -63,6 +75,7 @@ MODEL_ARGS=(
    --untie-embeddings-and-output-weights --vocab-size 248320 --rotary-base 10000000
    --moe-ffn-hidden-size 512 --moe-shared-expert-intermediate-size 512
    --moe-router-score-function softmax --moe-token-dispatcher-type flex
+   --moe-flex-dispatcher-backend ${MOE_FLEX_DISPATCHER_BACKEND}
    --moe-router-topk 8
    --moe-layer-freq "[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
    --num-experts 256 --moe-grouped-gemm --moe-token-drop-policy probs --moe-router-dtype fp32
@@ -71,21 +84,29 @@ MODEL_ARGS=(
 )
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_DIR}/Qwen3.5-35B-A3B
-   --ref-load ${MODEL_DIR}/Qwen3.5-35B-A3B_torch_dist
-   --load ${OUTPUT_DIR} --save ${OUTPUT_DIR} --save-interval 5
+   --ref-load ${MODEL_DIR}/Qwen3.5-35B-A3B_torch_dist --load ${OUTPUT_DIR}
 )
+if [ "${SAVE_INTERVAL}" != "none" ]; then
+   CKPT_ARGS+=(--save ${OUTPUT_DIR} --save-interval ${SAVE_INTERVAL})
+fi
 OPD_ARGS=(
    --use-opd --opd-type megatron --opd-teacher-load ${TEACHER_LOAD} --opd-kl-coef ${OPD_KL_COEF}
 )
 ROLLOUT_ARGS=(
    --prompt-data ${DATA_DIR}/dapo_train.jsonl --input-key prompt --label-key label
    --apply-chat-template --rollout-shuffle
-   --num-rollout 12 --rollout-batch-size 32 --n-samples-per-prompt 8
-   --rollout-max-response-len 24576 --rollout-temperature 1 --num-steps-per-rollout 1
-   --over-sampling-batch-size 32 --global-batch-size 256 --balance-data
+   --num-rollout ${NUM_ROLLOUT} --rollout-batch-size ${ROLLOUT_BATCH_SIZE}
+   --n-samples-per-prompt ${N_SAMPLES_PER_PROMPT}
+   --rollout-max-response-len ${ROLLOUT_MAX_RESPONSE_LEN}
+   --rollout-temperature 1 --num-steps-per-rollout 1
+   --over-sampling-batch-size ${OVER_SAMPLING_BATCH_SIZE}
+   --global-batch-size ${GLOBAL_BATCH_SIZE} --balance-data
 )
 RM_ARGS=( --custom-rm-path ${RM_FUNC} )
-EVAL_ARGS=( --eval-interval 5 --eval-config ${EVAL_CONFIG} )
+EVAL_ARGS=( --eval-interval ${EVAL_INTERVAL} --eval-config ${EVAL_CONFIG} )
+if [ "${SKIP_EVAL_BEFORE_TRAIN}" = "1" ]; then
+   EVAL_ARGS+=(--skip-eval-before-train)
+fi
 GRPO_ARGS=(
    --advantage-estimator grpo --kl-loss-type low_var_kl --entropy-coef 0.00
    --eps-clip 0.2 --eps-clip-high 0.28 --use-tis
@@ -99,7 +120,7 @@ PERF_ARGS=(
    --tensor-model-parallel-size 2 --sequence-parallel --pipeline-model-parallel-size 1
    --context-parallel-size 2 --expert-model-parallel-size 8 --expert-tensor-parallel-size 1
    --recompute-granularity full --recompute-method uniform --recompute-num-layers 1
-   --use-dynamic-batch-size --max-tokens-per-gpu 16384 --log-probs-chunk-size 4096
+   --use-dynamic-batch-size --max-tokens-per-gpu ${MAX_TOKENS_PER_GPU} --log-probs-chunk-size 4096
 )
 # Blackwell (GB200 sm100 / B300 sm103) backends, per scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py:
 # - moe-runner-backend flashinfer_cutlass: the default triton fused-MoE mis-shards
@@ -109,7 +130,7 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 8 --sglang-mem-fraction-static 0.7 --sglang-ep-size 8
    --sglang-watchdog-timeout 1800 --sglang-enable-metrics
    --sglang-moe-runner-backend flashinfer_cutlass --sglang-attention-backend trtllm_mha
-   --sglang-cuda-graph-bs 1 2 4 8 16 32 --use-rollout-routing-replay
+   --sglang-cuda-graph-bs "${SGLANG_CUDA_GRAPH_BS_ARRAY[@]}" --use-rollout-routing-replay
    --sglang-mamba-scheduler-strategy extra_buffer
 )
 MISC_ARGS=(
@@ -126,7 +147,14 @@ WANDB_ARGS=( --use-wandb --wandb-project miles-opd --wandb-group qwen3.5-35b-opd
 # during cross-node ncclCommInitRank ("unhandled cuda error" / CUDA 999), which
 # kills the EP8 sglang engine spanning both nodes. MNNVL stays enabled (pod env)
 # for the NVLink fabric itself; only NVLS multicast is disabled.
-RUNTIME_ENV_JSON="{\"env_vars\": {\"PYTHONPATH\": \"${MILES_DIR}:/root/Megatron-LM/\", \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\", \"WANDB_API_KEY\": \"${WANDB_API_KEY}\", \"PROMETHEUS_PORT\": \"9090\", \"NCCL_NVLS_ENABLE\": \"0\"}}"
+TRACE_RUNTIME_ENV=""
+if [ -n "${TMS_CUMEM_TRACE_LIB:-}" ]; then
+   TRACE_RUNTIME_ENV=", \"TMS_CUMEM_TRACE_LIB\": \"${TMS_CUMEM_TRACE_LIB}\", \"CUMEM_TRACE_ALL\": \"${CUMEM_TRACE_ALL:-}\""
+fi
+if [ -n "${TORCH_SHM_UNLINK_COMPAT_LIB:-}" ]; then
+   TRACE_RUNTIME_ENV="${TRACE_RUNTIME_ENV}, \"TORCH_SHM_UNLINK_COMPAT_LIB\": \"${TORCH_SHM_UNLINK_COMPAT_LIB}\""
+fi
+RUNTIME_ENV_JSON="{\"env_vars\": {\"PYTHONPATH\": \"${MILES_DIR}:/root/Megatron-LM/\", \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\", \"WANDB_API_KEY\": \"${WANDB_API_KEY}\", \"PROMETHEUS_PORT\": \"9090\", \"NCCL_NVLS_ENABLE\": \"0\"${TRACE_RUNTIME_ENV}}}"
 
 cd "${MILES_DIR}"
 ray job submit --address="${RAY_ADDRESS}" --submission-id qwen3.5-opd-${MODE} --no-wait \

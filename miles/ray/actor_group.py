@@ -74,7 +74,22 @@ class RayTrainGroup:
             )
             assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
 
-            env_vars["LD_PRELOAD"] = dynlib_path
+            preload_libs = []
+            shm_compat_lib = os.environ.get("TORCH_SHM_UNLINK_COMPAT_LIB")
+            if shm_compat_lib:
+                assert os.path.exists(
+                    shm_compat_lib
+                ), f"torch shared-memory cleanup library {shm_compat_lib} does not exist."
+                preload_libs.append(shm_compat_lib)
+
+            trace_lib = os.environ.get("TMS_CUMEM_TRACE_LIB")
+            if trace_lib:
+                assert os.path.exists(trace_lib), f"cuMemCreate trace library {trace_lib} does not exist."
+                preload_libs.append(trace_lib)
+                env_vars["CUMEM_TRACE_ALL"] = os.environ.get("CUMEM_TRACE_ALL", "")
+
+            preload_libs.append(dynlib_path)
+            env_vars["LD_PRELOAD"] = ":".join(preload_libs)
             env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
