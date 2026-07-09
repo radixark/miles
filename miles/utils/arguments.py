@@ -956,7 +956,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--custom-post-save-hook-path",
+                "--custom-megatron-post-save-hook-path",
                 type=str,
                 default=None,
                 help=(
@@ -2287,8 +2287,8 @@ def miles_validate_args(args):
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
 
-    if args.custom_post_save_hook_path is not None:
-        assert args.save is not None, "'--save' is required when custom_post_save_hook_path is set."
+    if args.custom_megatron_post_save_hook_path is not None:
+        assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     # Parse LoRA target modules
     if args.lora_rank > 0:

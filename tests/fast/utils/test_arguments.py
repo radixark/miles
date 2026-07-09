@@ -143,22 +143,24 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
-def test_custom_post_save_hook_path_is_parsed():
+def test_custom_megatron_post_save_hook_path_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
 
-    args = parser.parse_args(["--custom-post-save-hook-path", "pkg.module.hook"] + REQUIRED_ARGS)
+    args = parser.parse_args(["--custom-megatron-post-save-hook-path", "pkg.module.hook"] + REQUIRED_ARGS)
 
-    assert args.custom_post_save_hook_path == "pkg.module.hook"
+    assert args.custom_megatron_post_save_hook_path == "pkg.module.hook"
 
 
-def test_custom_post_save_hook_path_requires_save():
+def test_custom_megatron_post_save_hook_path_requires_save():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
-    args = parser.parse_args(["--custom-post-save-hook-path", "pkg.module.hook", "--num-rollout", "1"] + REQUIRED_ARGS)
+    args = parser.parse_args(
+        ["--custom-megatron-post-save-hook-path", "pkg.module.hook", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
 
     with pytest.raises(
         AssertionError,
-        match="'--save' is required when custom_post_save_hook_path is set.",
+        match="'--save' is required when custom_megatron_post_save_hook_path is set.",
     ):
         miles_validate_args(args)
