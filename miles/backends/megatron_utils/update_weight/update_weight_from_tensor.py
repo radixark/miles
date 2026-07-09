@@ -172,6 +172,12 @@ class UpdateWeightFromTensor:
             if start <= dist.get_rank() < end:
                 self._ipc_engine = engine
 
+    def pop_metrics(self) -> dict[str, float]:
+        """Return and clear ``update_weight_metrics``. Empty under colocate today; kept symmetric
+        with the distributed updaters so the actor can drain unconditionally."""
+        out = self.__dict__.pop("update_weight_metrics", {})
+        return out
+
     @torch.no_grad()
     def update_weights(self) -> None:
         """
