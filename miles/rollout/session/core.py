@@ -222,8 +222,19 @@ class SessionCore:
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
+        # Measure server-side generation time: the backend call duration as seen by
+        # the session server (≈ GPU generation + scheduler queue), which EXCLUDES the
+        # agent<->session-server network round-trip. The agent-observed per-turn time
+        # (model_query_time) minus this gen_time isolates that network/comm latency.
+        # Logged per session_id so GPU-vs-network can be separated downstream.
+        _gen_t0 = time.perf_counter()
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
+        )
+        _gen_time = time.perf_counter() - _gen_t0
+        logger.info(
+            f"[session-server] GEN session_id={session_id} gen_time={_gen_time:.3f}s "
+            f"status={result['status_code']}"
         )
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
@@ -241,10 +252,11 @@ class SessionCore:
             )
         assistant_message = choice.get("message") or {}
         if assistant_message.get("content") is None:
-            raise UpstreamResponseError(
-                "assistant message content is None, when tool call parser failed SGLang should still return "
-                "an empty content rather than None. Please check your modified SGLang version."
-            )
+            # A tool-call-only turn (no natural-language text) legitimately yields
+            # content=None; coerce to "" so the turn records normally instead of
+            # aborting the sample. Token ids/logprobs come from meta_info, not this
+            # string, so training signal is unaffected.
+            assistant_message["content"] = ""
 
         output_token_logprobs = meta_info["output_token_logprobs"]
         completion_tokens = meta_info["completion_tokens"]
