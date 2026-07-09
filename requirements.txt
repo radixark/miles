@@ -1,11 +1,13 @@
 accelerate
 backports.strenum; python_version < "3.11"
+blake3  # disk-delta weight sync (checksum)
 blobfile
 datasets
 httpx[http2]
 hypothesis>=5.40
 mcp[cli]
 memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
+nvidia-resiliency-ext~=0.6.0; platform_system == "Linux"
 omegaconf
 pillow
 polars
@@ -19,5 +21,8 @@ ring_flash_attn; platform_system == "Linux"
 sglang-router>=0.2.3
 tensorboard
 torchft-nightly==2026.4.3; platform_system == "Linux" and platform_machine == "x86_64"
-transformers
+tqdm
+transformers<5.13  # 5.13.0 registers qwen3_asr natively, colliding with sglang's AutoConfig.register (exist_ok=False); lift once sglang registers with exist_ok=True
 wandb
+xxhash  # disk-delta weight sync (checksum)
+zstandard  # disk-delta weight sync (codec)

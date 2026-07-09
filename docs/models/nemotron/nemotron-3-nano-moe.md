@@ -110,13 +110,12 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
    # Replay the exact rollout routing during training forward so
    # train logprobs match rollout logprobs (needed for MoE).
-   --use-miles-router
    --use-rollout-routing-replay
 )
 ```
 
-`--use-miles-router --use-rollout-routing-replay` is what keeps train and rollout
-logprobs aligned for the sigmoid-routed MoE — drop them and you'll see the same
+The `--use-rollout-routing-replay` flag is what keeps train and rollout
+logprobs aligned for the sigmoid-routed MoE — drop it and you'll see the same
 ~0.28 drift the bridge shim was added to fix.
 
 ### 5.4 Optimizer

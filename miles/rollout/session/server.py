@@ -1,9 +1,9 @@
-"""Standalone Session Server that proxies through the inference router.
+"""Standalone session-server process: HTTP chassis + upstream proxy transport.
 
-This decouples session/TITO logic from the Miles Router, allowing sessions
-to work with the SGLang Rust Router or any other backend.  Inference
-requests are proxied through the router (sglang or miles), which handles
-load balancing and forwarding to worker engines.
+- ``SessionServer`` is a FastAPI app plus one shared httpx client; ``do_proxy`` forwards a request to the inference router (sglang or miles) — which does the load balancing to worker engines — and returns the raw result, or a 502 JSON error on transport failure.
+- Session/TITO logic lives in ``core.SessionCore``; ``setup_session_routes`` (``sessions.py``) wires the HTTP routes to it.
+- Standalone (own process, own event loop) so sessions also work with the SGLang Rust Router or any other backend, decoupled from the Miles Router.
+- ``run_session_server`` is the subprocess entry point: fresh interpreter, so it configures logging and the process title itself, then serves uvicorn.
 """
 
 import json
@@ -12,14 +12,16 @@ import logging
 import httpx
 import setproctitle
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from starlette.responses import Response
+from fastapi import FastAPI
 
+from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)
+
+# Request headers that must not be forwarded verbatim to the upstream backend.
+_DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host")
 
 
 class SessionServer:
@@ -41,24 +43,12 @@ class SessionServer:
 
         setup_session_routes(self.app, self, args)
 
-    async def do_proxy(
-        self,
-        request: Request,
-        path: str,
-        body: bytes | None = None,
-        headers: dict | None = None,
-    ) -> dict:
+    async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"
-        if request.url.query:
-            url = f"{url}?{request.url.query}"
+        if request.query:
+            url = f"{url}?{request.query}"
 
-        if body is None:
-            body = await request.body()
-        if headers is None:
-            headers = dict(request.headers)
-        headers = {
-            k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding", "host")
-        }
+        headers = {k: v for k, v in headers.items() if k.lower() not in _DROP_REQUEST_HEADERS}
 
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
@@ -78,23 +68,6 @@ class SessionServer:
             "status_code": response.status_code,
             "headers": dict(response.headers),
         }
-
-    def build_proxy_response(self, result: dict) -> Response:
-        content = result["response_body"]
-        status_code = result["status_code"]
-        # Drop wire-level framing headers from upstream so Starlette rebuilds them
-        # from the body we actually send: transfer-encoding is hop-by-hop
-        headers = {
-            k: v
-            for k, v in result["headers"].items()
-            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
-        }
-        content_type = headers.get("content-type", "")
-        try:
-            data = json.loads(content)
-            return JSONResponse(content=data, status_code=status_code, headers=headers)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
 
 
 def run_session_server(args, backend_url: str):

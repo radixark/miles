@@ -10,7 +10,6 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
-    disabled="RDMA weight update is not supported by current CI machine.",
 )
 
 
@@ -43,7 +42,7 @@ def execute():
     perf_args = (
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "  # FIXME: better add moe ci with pp2, ep4
+        "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -71,14 +70,14 @@ def execute():
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 2 "
-        f"--rollout-num-gpus {NUM_GPUS // 2} "
-        "--sglang-mem-fraction-static 0.8 "
-        "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
+        "--rollout-num-gpus-per-engine 2 " f"--rollout-num-gpus {NUM_GPUS // 2} " "--sglang-mem-fraction-static 0.8 "
     )
 
     ci_args = "--ci-test "
 
+    # Single node, so the "shared" publish dir and the host-local checkpoint are
+    # both plain local paths; the delta pipeline is exercised end to end
+    # (baseline pull + reload, per-sync publish -> /pull_weights apply -> reload).
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
@@ -88,8 +87,9 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
-        "--check-weight-update-equal "
-        "--update-weight-transfer-mode p2p "
+        "--update-weight-transfer-mode disk-delta "
+        "--update-weight-disk-dir /root/delta-updates "
+        "--update-weight-local-checkpoint-dir /root/delta-local-ckpt "
     )
 
     train_args = (
