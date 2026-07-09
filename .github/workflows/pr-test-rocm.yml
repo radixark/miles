@@ -1,3 +1,4 @@
+# doc-dev: docs/ci/00-stage.md
 name: PR Test (ROCm)
 
 # ROCm counterpart to pr-test.yml. Same structure, different GPU stage:
@@ -5,21 +6,17 @@ name: PR Test (ROCm)
 # with HIP/CUDA compatibility to run the same CUDA-registered test suites.
 #
 # Currently workflow_dispatch-only while the MI300x runner is being
-# stabilized. Add `pull_request:` and `schedule:` triggers once reliable.
+# stabilized. Before adding `pull_request:` or `schedule:` triggers, gate
+# fork PRs (label or environment approval): the job runs a --privileged
+# container on a self-hosted host.
+#
+# SGLang / Megatron-LM versions are baked into the ROCm image
+# (_run-ci-rocm.yml defaults skip_dependency_install to true), so unlike
+# pr-test.yml there are no ci_megatron_pr / ci_sglang_pr inputs here.
 
 on:
   workflow_dispatch:
     inputs:
-      ci_megatron_pr:
-        description: 'Megatron-LM branch/commit (default: miles-main)'
-        required: false
-        type: string
-        default: 'miles-main'
-      ci_sglang_pr:
-        description: 'SGLang branch/commit (default: sglang-miles)'
-        required: false
-        type: string
-        default: 'sglang-miles'
       ci_image_tag:
         description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260708)'
         required: false
@@ -48,21 +45,20 @@ jobs:
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
           [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260708"
+          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
+            exit 1
+          fi
           echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
 
   stage-c-8-gpu-mi300x:
     needs: [resolve-ci-image]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-image.result == 'success' &&
-      github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["self-hosted", "rocm", "mi300x", "8gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      ci_megatron_pr: ${{ github.event.inputs.ci_megatron_pr || 'miles-main' }}
-      ci_sglang_pr: ${{ github.event.inputs.ci_sglang_pr || 'sglang-miles' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
         --match-all-labels
