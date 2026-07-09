@@ -135,8 +135,11 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             )
             for engine in self.rollout_engines
         ]
+        contiguous_tensors = [
+            param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in named_tensors
+        ]
         handles = [
-            dist.broadcast(param.data, 0, group=self._model_update_groups, async_op=True) for _, param in named_tensors
+            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in contiguous_tensors
         ]
         for handle in handles:
             handle.wait()
@@ -220,9 +223,12 @@ def update_weights_from_distributed(
         for engine in rollout_engines
     ]
 
+    contiguous_tensors = [
+        param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in converted_named_tensors
+    ]
     handles = []
-    for _, param in converted_named_tensors:
-        handles.append(dist.broadcast(param.data, 0, group=group, async_op=True))
+    for tensor in contiguous_tensors:
+        handles.append(dist.broadcast(tensor, 0, group=group, async_op=True))
     for handle in handles:
         handle.wait()
 
