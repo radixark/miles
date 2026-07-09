@@ -17,7 +17,6 @@ from miles.utils import chat_template_utils
 from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
-from .timer import Timer
 
 __all__ = ["Dataset"]
 
@@ -273,14 +272,8 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
 
 
 def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
+    from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
+
     assert len(rollout_data_ref) == dp_size
     rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
-
-    partition = rollout_data.pop("partition")
-    total_lengths = rollout_data["total_lengths"]
-
-    # save the seqlen of the whole rollout batch
-    Timer().seq_lens = total_lengths
-    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
-
-    return rollout_data
+    return process_rollout_data_shard(args, rollout_data)

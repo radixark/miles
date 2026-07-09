@@ -5,6 +5,7 @@ import torch
 
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.timer import Timer
 from miles.utils.types import Sample
 
 
@@ -123,6 +124,12 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
 
 def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
+    return [Box(ray.put(shard)) for shard in split_train_data_by_dp_local(args, data, dp_size)]
+
+
+def split_train_data_by_dp_local(args, data, dp_size) -> list[dict]:
+    """Transport-free core of :func:`split_train_data_by_dp`: returns the plain
+    per-DP-rank shard dicts (each still carrying its ``partition`` key)."""
     rollout_data = {}
 
     if "prompt" in data:
@@ -136,7 +143,7 @@ def split_train_data_by_dp(args, data, dp_size):
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
-    rollout_data_refs = []
+    shards = []
 
     for i in range(dp_size):
         rollout_data = {}
@@ -172,5 +179,18 @@ def split_train_data_by_dp(args, data, dp_size):
             if key not in data:
                 continue
             rollout_data[key] = data[key]
-        rollout_data_refs.append(Box(ray.put(rollout_data)))
-    return rollout_data_refs
+        shards.append(rollout_data)
+    return shards
+
+
+def process_rollout_data_shard(args, rollout_data):
+    """Train-side completion of the DP split: drop the ``partition`` key and
+    reorder the batch-global ``total_lengths`` into this shard's row order."""
+    partition = rollout_data.pop("partition")
+    total_lengths = rollout_data["total_lengths"]
+
+    # save the seqlen of the whole rollout batch
+    Timer().seq_lens = total_lengths
+    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+
+    return rollout_data
