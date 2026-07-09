@@ -115,6 +115,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_num_gpus = self.num_nodes * self.num_gpus_per_node
         else:
             self.rollout_num_gpus = self.rollout_num_nodes * self.num_gpus_per_node
+        if self.model_name == "DeepSeek-V4-Flash-FP8-4layer":
+            self.skip_saving = True
 
     @property
     def megatron_model_type(self):
@@ -281,6 +283,17 @@ def _get_parallel_config(args: ScriptArgs) -> str:
         )
 
     if actor_num_gpus_per_node == 8:
+        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP8/PP4/EP8, 43 layers = 11+11+11+10
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 4 "
+                "--decoder-first-pipeline-num-layers 11 "
+                "--decoder-last-pipeline-num-layers 10 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
         if total_gpus == 64:  # 8 nodes x 8 GPUs
             return (
                 "--tensor-model-parallel-size 8 "
@@ -394,6 +407,10 @@ def _train(args: ScriptArgs):
         optimizer_args += (
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
+        if args.actor_num_nodes == 4:
+            # 4-node PP4 memory balance: partial optimizer offload (keep ~25% on GPU) + keep train
+            # weights on GPU; pair with --sglang-mem-fraction-static 0.6.
+            optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
 
     sglang_world_size = 4
     sglang_tp_size = 4
@@ -407,6 +424,9 @@ def _train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
+        # gfx950: DSv4 sgl-kernel topk_v2 is CUDA-only -> route DSA topk through torch + disable cuda-graph.
+        "--sglang-disable-cuda-graph "
+        "--sglang-dsa-topk-backend torch "
     )
     if args.enable_mtp:
         sglang_args += (
@@ -433,6 +453,7 @@ def _train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
         "--sglang-mem-fraction-static 0.7 "
+        "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
@@ -470,6 +491,11 @@ def _train(args: ScriptArgs):
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
+        # Skip indexer-replay for now
+        # misc_args += "--use-rollout-indexer-replay "
+        # Route replay through the miles python router: the Rust router drops return_routed_experts
+        # on /generate passthrough, so routed_experts never reaches the scheduler.
+        misc_args += "--use-miles-router "
 
     if args.train_deterministic:
         misc_args += "--deterministic-mode "
@@ -483,6 +509,8 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
         # gfx950 uses Hopper-style blockwise FP8 with fp32 scales.
         misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}' """
+        # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion.
+        misc_args += "--no-gradient-accumulation-fusion "
 
     train_args = (
         f"{ckpt_args} "
