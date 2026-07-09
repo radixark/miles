@@ -46,8 +46,12 @@ A **nightly** run is the full suite with fast-fail off, triggered either by the 
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
+## ROCm mirror (dispatch-only)
+
+`pr-test-rocm.yml` is a `workflow_dispatch`-only mirror of the GPU path for AMD MI300X runners: its `resolve-ci-image` (image family `rocm/sgl-dev:<tag>`) feeds one stage, `stage-c-8-gpu-mi300x`, which calls `_run-ci-rocm.yml` — the ROCm counterpart of `_run-ci.yml` (ROCm device flags, `rocm-smi` GPU-ready wait, no CPU job). It runs the CUDA-registered `stage-c-8-gpu-h100` suite via HIP/CUDA compatibility, unsharded — the one deliberate exception to the 1:1 suite ↔ stage mapping — and is not part of PR gating. SGLang / Megatron-LM versions come baked into the ROCm image (`skip_dependency_install` defaults to `true` in `_run-ci-rocm.yml`), so the dispatch has no dependency-override inputs.
+
 ## Assumptions
 
-- Suite ↔ stage stays 1:1 and is kept in sync manually across `run_suite.py` and `pr-test.yml`.
+- Suite ↔ stage stays 1:1 and is kept in sync manually across `run_suite.py` and `pr-test.yml` (the ROCm mirror above deliberately reuses `stage-c-8-gpu-h100`).
 - Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count.
 - `est_time` only affects shard balancing and per-file timeout, never pass/fail.
