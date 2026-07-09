@@ -152,6 +152,11 @@ RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJ
 # Pin numpy 1.x for Megatron compatibility.
 RUN pip install "numpy<2"
 
+# Re-pin click LAST. The earlier pin (click==8.2.1) gets bumped to 8.4.2 by a later install
+# (requirements.txt), which breaks ray 2.44.1's CLI ("ValueError: not a valid Sentinel").
+# 8.2.1 is the only version that satisfies BOTH ray 2.44.1 and typer 0.25.1 (Choice generic).
+RUN pip install "click==8.2.1"
+
 # ====================================== Install main package ===================================
 
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
