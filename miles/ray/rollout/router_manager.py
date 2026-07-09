@@ -129,17 +129,22 @@ def start_session_server(args):
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
     # spawn (not fork): see start_router for rationale.
+    instance_ids: dict[int, str] = {}
     processes = []
     for port in ports:
         child_args = copy.copy(args)
         child_args.session_server_port = port
         child_args.session_server_instance_id = uuid.uuid4().hex
+        instance_ids[port] = child_args.session_server_instance_id
         process = multiprocessing.get_context("spawn").Process(
             target=run_session_server, args=(child_args, router_url)
         )
         process.daemon = True
         process.start()
         processes.append((port, process))
+    # The per-port map OpenAIEndpointTracer.create reads instance ids from,
+    # replacing the per-session /health probe.
+    args.session_server_instance_ids = instance_ids
     for port, process in processes:
         wait_for_server_ready(ip, port, process, timeout=30)
     logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")

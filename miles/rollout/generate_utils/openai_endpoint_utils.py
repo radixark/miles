@@ -46,13 +46,8 @@ class OpenAIEndpointTracer:
         # per session; every later touch of the session reuses this URL.
         session_port = random.choice(session_ports)
         session_url = f"http://{session_ip}:{session_port}"
-        session_server_instance_id = None
-        try:
-            health = await post(f"{session_url}/health", {}, action="get")
-            if isinstance(health, dict):
-                session_server_instance_id = health.get("session_server_instance_id")
-        except Exception as e:
-            logger.warning("Failed to get session server health from %s: %s", session_url, e)
+        instance_ids = getattr(args, "session_server_instance_ids", None) or {}
+        session_server_instance_id = instance_ids.get(session_port)
         response = await post(f"{session_url}/sessions", {}, action="post")
         session_id = response["session_id"]
         return OpenAIEndpointTracer(
