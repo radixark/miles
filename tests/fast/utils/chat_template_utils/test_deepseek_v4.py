@@ -329,7 +329,7 @@ def test_dict_arguments_equal_string_arguments(tmp_path):
 
 
 def test_reject_unknown_kwargs():
-    with pytest.raises(ValueError, match="unsupported kwargs"):
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
         deepseek.V4.render_messages(_MSGS_BASIC, some_unknown_kwarg=1)
 
 

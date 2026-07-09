@@ -4,8 +4,8 @@ Neither family ships a jinja chat_template: sglang renders their prompts
 through per-family ``encoding_dsv*`` modules that share one calling
 convention, and miles' ``apply_chat_template`` routes any matching tokenizer
 here so training-side renders stay byte-aligned with what the runtime
-serves.  Each family is one ``DeepSeekFamily`` instance (its encoder module
-plus its known-kwargs set); everything else is shared.
+serves.  Each family is one ``DeepSeekFamily`` instance wrapping its encoder
+module; everything else is shared.
 """
 
 from __future__ import annotations
@@ -53,11 +53,10 @@ def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[s
 
 
 class DeepSeekFamily:
-    """One DeepSeek official-encoder family: its encoder module + kwarg policy."""
+    """One DeepSeek official-encoder family: wraps its ``encoding_dsv*`` module."""
 
-    def __init__(self, encoder: Any, known_kwargs: frozenset[str]) -> None:
-        self._encoder = encoder
-        self._known_kwargs = known_kwargs
+    def __init__(self, template: Any) -> None:
+        self.template = template
 
     def _build_encode_config(self, kwargs: dict) -> dict:
         kwargs = dict(kwargs)
@@ -66,20 +65,9 @@ class DeepSeekFamily:
         # sglang can accept thinking as a kwarg to set thinking_mode, like dsv3.1
         if (thinking := kwargs.pop("thinking", None)) is not None:
             kwargs.setdefault("thinking_mode", "thinking" if thinking else "chat")
-        # reject unknown kwargs to avoid silent config drop
-        unknown = set(kwargs) - self._known_kwargs
-        if unknown:
-            raise ValueError(
-                f"apply_chat_template_kwargs has unsupported kwargs {sorted(unknown)} "
-                f"for the DeepSeek encoder. Known keys: {sorted(self._known_kwargs)}"
-            )
-        # reasoning_effort has no default: like context, it is only forwarded when the
-        # caller supplies it, and its value is validated by the encoder (not here).
-        cfg = {"thinking_mode": "thinking", "drop_thinking": True, "add_default_bos_token": True}
-        for key in self._known_kwargs:
-            if key in kwargs:
-                cfg[key] = kwargs[key]
-        return cfg
+        # encode_messages requires thinking_mode; thinking-on matches the server default
+        kwargs.setdefault("thinking_mode", "thinking")
+        return kwargs
 
     def render_thinking_enabled(self, chat_template_kwargs: dict[str, Any]) -> bool:
         """Whether *chat_template_kwargs* resolve to thinking mode, through the
@@ -97,21 +85,11 @@ class DeepSeekFamily:
         encode_config = self._build_encode_config(kwargs)
         if tools:
             messages = _inject_tools_into_system(messages, tools)
-        return self._encoder.encode_messages(messages, **encode_config)
+        return self.template.encode_messages(messages, **encode_config)
 
 
-V32 = DeepSeekFamily(
-    encoding_dsv32,
-    frozenset(
-        {
-            "thinking_mode",
-            "drop_thinking",
-            "add_default_bos_token",
-            "context",
-        }
-    ),
-)
-V4 = DeepSeekFamily(encoding_dsv4, V32._known_kwargs | {"reasoning_effort"})
+V32 = DeepSeekFamily(template=encoding_dsv32)
+V4 = DeepSeekFamily(template=encoding_dsv4)
 
 _FAMILIES = {
     "deepseek_v32": V32,

@@ -246,7 +246,7 @@ def test_does_not_mutate_input(tmp_path):
 
 
 def test_reject_unknown_kwargs():
-    with pytest.raises(ValueError, match="unsupported kwargs"):
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
         deepseek.V32.render_messages(_MSGS_BASIC, some_unknown_kwarg=1)
 
 
