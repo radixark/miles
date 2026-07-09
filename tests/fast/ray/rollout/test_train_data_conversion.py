@@ -420,6 +420,22 @@ class TestSplitTrainDataByDp:
         sizes = [len(p["tokens"]) for p in parts]
         assert max(sizes) - min(sizes) <= 1
 
+    def test_balance_data_distributes_by_flops(self):
+        lengths = [1, 2, 3, 4, 5, 7, 9, 10]
+        args = make_args(balance_data=True)
+        data = {
+            "tokens": [list(range(length)) for length in lengths],
+            "response_lengths": lengths,
+            "rewards": [0] * len(lengths),
+            "truncated": [0] * len(lengths),
+            "loss_masks": [[1] * length for length in lengths],
+            "sample_indices": list(range(len(lengths))),
+        }
+        refs = split_train_data_by_dp(args, data, dp_size=2)
+        parts = [ray.get(r.inner) for r in refs]
+
+        assert [p["partition"] for p in parts] == [[1, 2, 5, 6], [0, 3, 4, 7]]
+
     def test_optional_keys_propagated_when_present(self):
         args = make_args(balance_data=False)
         data = {

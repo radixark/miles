@@ -3,6 +3,7 @@ from typing import Any
 import ray
 import torch
 
+from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import Sample
@@ -132,7 +133,8 @@ def split_train_data_by_dp(args, data, dp_size):
     data["total_lengths"] = total_lengths
 
     if args.balance_data:
-        partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
+        workloads = [calculate_fwd_flops([length], args) for length in total_lengths]
+        partitions = get_seqlen_balanced_partitions(workloads, dp_size, equal_size=True)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 

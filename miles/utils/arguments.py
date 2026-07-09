@@ -820,8 +820,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Repartition each rollout batch so each data-parallel rank gets a similar total token count via Karmarkar-Karp method. "
+                    "Repartition each rollout batch so each data-parallel rank gets similar estimated training FLOPs via Karmarkar-Karp method. "
                     "It may be beneficial for training speed but changes per-rank sample grouping and adds a small CPU scheduling overhead."
+                ),
+            )
+            parser.add_argument(
+                "--balance-by-flops",
+                action="store_true",
+                default=False,
+                help=(
+                    "Use estimated training FLOPs for dynamic micro-batch balancing. "
+                    "This may create micro-batches whose total tokens exceed --max-tokens-per-gpu and cause OOM. "
+                    "Also enables --balance-data. Requires --use-dynamic-batch-size."
                 ),
             )
 
@@ -2341,6 +2351,10 @@ def miles_validate_args(args):
             logger.info(
                 "get_mismatch_metrics is set; For metrics calculation, the log probs will still be recomputed by training engine. One more forward pass will be applied."
             )
+
+    if args.balance_by_flops:
+        assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
+        args.balance_data = True
 
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
