@@ -316,11 +316,40 @@ def test_dsv32_detector_does_not_match_dsv4(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_add_generation_prompt_false_strips_the_auto_opener():
+@pytest.mark.parametrize("role", ["user", "developer"])
+def test_add_generation_prompt_false_strips_the_auto_opener(role):
     for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
-        with_opener = deepseek.V32.render_messages(_MSGS_BASIC, thinking_mode=mode)
-        without = deepseek.V32.render_messages(_MSGS_BASIC, thinking_mode=mode, add_generation_prompt=False)
+        messages = [{"role": role, "content": "Hello"}]
+        with_opener = deepseek.V32.render_messages(messages, thinking_mode=mode)
+        without = deepseek.V32.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
         assert with_opener == without + opener
+
+
+def test_add_generation_prompt_false_strips_the_tool_tail_suffix():
+    messages = _PARITY_SCENARIOS["tool_calls_and_result"]
+    for mode, suffix in (("thinking", "\n\n<think>"), ("chat", "\n\n</think>")):
+        with_suffix = deepseek.V32.render_messages(messages, thinking_mode=mode)
+        without = deepseek.V32.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
+        assert with_suffix == without + suffix
+
+
+def test_add_generation_prompt_false_noop_on_partial_tool_results():
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"type": "function", "function": {"name": "f", "arguments": "{}"}},
+                {"type": "function", "function": {"name": "g", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "content": "first", "tool_call_id": "c0"},
+    ]
+    for mode in ("thinking", "chat"):
+        assert deepseek.V32.render_messages(
+            messages, thinking_mode=mode, add_generation_prompt=False
+        ) == deepseek.V32.render_messages(messages, thinking_mode=mode)
 
 
 def test_add_generation_prompt_false_noop_on_assistant_tail():

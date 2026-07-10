@@ -390,18 +390,46 @@ def test_build_config_does_not_mutate_input_kwargs():
 # ---------------------------------------------------------------------------
 
 
-def test_add_generation_prompt_false_strips_the_auto_opener():
+@pytest.mark.parametrize("role", ["user", "developer"])
+def test_add_generation_prompt_false_strips_the_auto_opener(role):
     for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
-        with_opener = deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode=mode)
-        without = deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode=mode, add_generation_prompt=False)
+        messages = [{"role": role, "content": "Hello"}]
+        with_opener = deepseek.V4.render_messages(messages, thinking_mode=mode)
+        without = deepseek.V4.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
         assert with_opener == without + opener
 
 
-def test_add_generation_prompt_false_noop_on_assistant_tail():
-    # reasoning_content is required by the thinking-mode encoder for a
-    # last-round assistant message.
-    msgs = _MSGS_BASIC + [{"role": "assistant", "content": "done", "reasoning_content": "r"}]
-    assert deepseek.V4.render_messages(msgs, add_generation_prompt=False) == deepseek.V4.render_messages(msgs)
+def test_add_generation_prompt_false_strips_the_tool_tail_opener():
+    messages = _PARITY_SCENARIOS["tool_calls_and_result"]
+    for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
+        with_opener = deepseek.V4.render_messages(messages, thinking_mode=mode)
+        without = deepseek.V4.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
+        assert with_opener == without + opener
+
+
+def test_add_generation_prompt_false_strips_one_opener_after_tool_and_user_tail():
+    messages = _PARITY_SCENARIOS["tool_calls_and_result"] + [{"role": "user", "content": "and tomorrow?"}]
+    for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
+        with_opener = deepseek.V4.render_messages(messages, thinking_mode=mode)
+        without = deepseek.V4.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
+        assert with_opener == without + opener
+
+
+def test_add_generation_prompt_false_noop_on_empty_wo_eos_assistant_tail():
+    messages = _MSGS_BASIC + [{"role": "assistant", "content": "", "reasoning_content": "r", "wo_eos": True}]
+    for mode in ("thinking", "chat"):
+        assert deepseek.V4.render_messages(
+            messages, thinking_mode=mode, add_generation_prompt=False
+        ) == deepseek.V4.render_messages(messages, thinking_mode=mode)
+
+
+@pytest.mark.parametrize("task", ["query", "action"])
+def test_add_generation_prompt_false_noop_on_task_tail(task):
+    for mode in ("thinking", "chat"):
+        messages = [{"role": "user", "content": "q", "task": task}]
+        assert deepseek.V4.render_messages(
+            messages, thinking_mode=mode, add_generation_prompt=False
+        ) == deepseek.V4.render_messages(messages, thinking_mode=mode)
 
 
 def test_apply_chat_template_forwards_add_generation_prompt(tmp_path):

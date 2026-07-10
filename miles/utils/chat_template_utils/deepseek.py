@@ -19,11 +19,7 @@ from typing import Any
 from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv32
 from sglang.srt.entrypoints.openai.protocol import Tool
 
-# After a non-assistant tail both family encoders unconditionally append the
-# next assistant turn's opener (assistant-start + thinking bracket); rendering
-# with add_generation_prompt=False strips it so a prefix render can be diffed
-# out of a full one (the TITO incremental paths).
-_GENERATION_OPENERS = ("<｜Assistant｜><think>", "<｜Assistant｜></think>")
+_ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
 
 
 @functools.cache
@@ -59,10 +55,9 @@ def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[s
 
 
 class DeepSeekFamily:
-    """One DeepSeek official-encoder family: wraps its ``encoding_dsv*`` module."""
+    """Shared behavior for the DeepSeek official-encoder families."""
 
-    def __init__(self, template: Any) -> None:
-        self.template = template
+    template: Any
 
     def _build_encode_config(self, kwargs: dict) -> dict:
         kwargs = dict(kwargs)
@@ -80,6 +75,9 @@ class DeepSeekFamily:
         same resolution path ``render_messages`` uses."""
         return self._build_encode_config(chat_template_kwargs)["thinking_mode"] == "thinking"
 
+    def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
+        raise NotImplementedError
+
     def render_messages(
         self,
         messages: list[dict[str, Any]],
@@ -92,22 +90,49 @@ class DeepSeekFamily:
 
         Tool_call ``arguments`` must already be JSON strings; *tools*, if given, are
         injected into the system message (see ``_inject_tools_into_system``).  The
-        encoder unconditionally appends the next assistant turn's opener after a
-        non-assistant tail; ``add_generation_prompt=False`` strips it.
+        encoder appends a family- and role-specific next-assistant suffix after
+        generation-ready tails; ``add_generation_prompt=False`` strips it.
         """
         encode_config = self._build_encode_config(kwargs)
         if tools:
             messages = _inject_tools_into_system(messages, tools)
         rendered = self.template.encode_messages(messages, **encode_config)
-        if not add_generation_prompt:
-            for opener in _GENERATION_OPENERS:
-                if rendered.endswith(opener):
-                    return rendered[: -len(opener)]
-        return rendered
+        if add_generation_prompt or not messages:
+            return rendered
+
+        thinking_token = (
+            self.template.thinking_start_token
+            if encode_config["thinking_mode"] == "thinking"
+            else self.template.thinking_end_token
+        )
+        suffix = self._generation_prompt_suffix(messages[-1].get("role"), thinking_token)
+        if suffix is None or not rendered.endswith(suffix):
+            return rendered
+        return rendered[: -len(suffix)]
 
 
-V32 = DeepSeekFamily(template=encoding_dsv32)
-V4 = DeepSeekFamily(template=encoding_dsv4)
+class DeepSeekV32Family(DeepSeekFamily):
+    template = encoding_dsv32
+
+    def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
+        if tail_role in {"user", "developer"}:
+            return _ASSISTANT_SP_TOKEN + thinking_token
+        if tail_role == "tool":
+            return "\n\n" + thinking_token
+        return None
+
+
+class DeepSeekV4Family(DeepSeekFamily):
+    template = encoding_dsv4
+
+    def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
+        if tail_role in {"user", "developer", "tool"}:
+            return _ASSISTANT_SP_TOKEN + thinking_token
+        return None
+
+
+V32 = DeepSeekV32Family()
+V4 = DeepSeekV4Family()
 
 _FAMILIES = {
     "deepseek_v32": V32,
