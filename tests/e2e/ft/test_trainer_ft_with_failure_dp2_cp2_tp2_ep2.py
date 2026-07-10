@@ -7,7 +7,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.ft.conftest_ft.scenario_with_failure import run_ci
 
 register_cuda_ci(
-    est_time=900,
+    est_time=2400,
     suite="stage-c-8-gpu-h100",
     labels=["ft-short"],
 )
