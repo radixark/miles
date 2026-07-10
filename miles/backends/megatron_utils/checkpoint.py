@@ -100,13 +100,18 @@ __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
+
     load_path = args.load
 
-    assert Path(load_path).exists() and _is_dir_nonempty(
-        load_path
-    ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
+    has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
+    if has_local_checkpoint_manager:
+        logger.info("Skipping disk path validation: using in-memory checkpoint via local_checkpoint_manager")
+    else:
+        assert Path(load_path).exists() and _is_dir_nonempty(
+            load_path
+        ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
-    if _is_megatron_checkpoint(load_path):
+    if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,

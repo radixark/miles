@@ -49,17 +49,18 @@ VARIANTS = {
             "WHEELS_TAG_X86": "cu129-x86_64-v0.5.12",
         },
     },
-    "rocm-mi350": {
+    "rocm700-mi35x": {
         "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm720-mi35x",
+        "tag_postfix": "-rocm700-mi35x",
         "tag_prefix": "miles",
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
+            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
+            "SGLANG_IMAGE_TAG": "v0.5.14-rocm700-mi35x-20260627",
         },
     },
-    "rocm-mi300": {
+    "rocm700-mi30x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm700-mi30x",
         "tag_prefix": "miles",
@@ -67,6 +68,16 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx942",
             "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
+        },
+    },
+    "rocm720-mi35x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm720-mi35x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx950",
+            "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
         },
     },
 }
@@ -143,8 +154,9 @@ class Variant(str, Enum):
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
     cu12_x86 = "cu12-x86"
-    rocm_mi350 = "rocm-mi350"
-    rocm_mi300 = "rocm-mi300"
+    rocm700_mi35x = "rocm700-mi35x"
+    rocm700_mi30x = "rocm700-mi30x"
+    rocm720_mi35x = "rocm720-mi35x"
 
 
 class ImageTag(str, Enum):

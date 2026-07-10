@@ -776,7 +776,13 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
 
 class DeepSeekV4TITOTokenizer(TITOTokenizer):
-    """Disable ``drop_thinking`` in ``{tool, user}`` mode so appends keep prior assistant tokens stable."""
+    """DeepSeek V4 — official encoder via sglang's ``encoding_dsv4``.
+
+    Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
+    routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
+    TITO incremental tokenization rides that same bridge to stay byte-aligned
+    with what the runtime serves.
+    """
 
     reasoning_parser = "deepseek-v4"
     tool_call_parser = "deepseekv4"

@@ -43,6 +43,8 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale: bool = False
         self._init_lora(
             args=args,
             model=model,
@@ -50,6 +52,13 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             quantization_config=quantization_config,
             is_lora=is_lora,
         )
+
+    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
+    def is_rollout_engines_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
 
     def connect_rollout_engines(
         self,
@@ -62,6 +71,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
+        self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
         self._engine_gpu_counts = engine_gpu_counts
 
@@ -73,8 +83,9 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             self._group_name = f"miles-pp_{pp_rank}"
 
         if self._is_source:
-            if (g := self._model_update_groups) is not None:
-                disconnect_rollout_engines_from_distributed(self.args, self._group_name, g, self.rollout_engines)
+            disconnect_rollout_engines_from_distributed(
+                self.args, self._group_name, self._model_update_groups, self.rollout_engines
+            )
             self._model_update_groups = connect_rollout_engines_from_distributed(
                 self.args, self._group_name, rollout_engines
             )
@@ -195,8 +206,11 @@ def disconnect_rollout_engines_from_distributed(args, group_name, model_update_g
     Destroy NCCL on training and engines.
     """
     refs = [engine.destroy_weights_update_group.remote(group_name) for engine in rollout_engines]
-    dist.destroy_process_group(model_update_groups)
-    ray.get(refs)
+    try:
+        if model_update_groups is not None:
+            dist.destroy_process_group(model_update_groups)
+    finally:
+        ray.get(refs)
 
 
 def update_weights_from_distributed(
