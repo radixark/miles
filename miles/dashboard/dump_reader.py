@@ -16,11 +16,14 @@ surfacing as corruption.
 
 from __future__ import annotations
 
+import json
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+import polars as pl
 import torch
 
 from miles.utils.types import Sample
@@ -115,10 +118,18 @@ class DumpReader:
     # on older files they are real corruption and propagate.
     FRESH_SECONDS: ClassVar[float] = 60.0
 
-    def __init__(self, dump_dir: Path | str):
+    # bump to invalidate summary parquet caches when their columns change
+    SUMMARY_VERSION: ClassVar[int] = 1
+
+    def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
         self.rollout_dir = self.dump_dir / "rollout_data"
         self.train_dir = self.dump_dir / "train_data"
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else self.dump_dir / "dashboard" / "cache"
+        self.tensor_lru = tensor_lru
+        self._joined_cache: OrderedDict[tuple[int, bool], JoinedRollout] = OrderedDict()
+        self._tokenizer = None
+        self._tokenizer_loaded = False
 
     def rollout_ids(self) -> RolloutIds:
         ids = RolloutIds(train=[], eval=[])
@@ -174,7 +185,222 @@ class DumpReader:
 
         return JoinedRollout(rollout_id=rollout_id, evaluation=evaluation, samples=samples, train_rows=train_rows)
 
+    def joined(self, rollout_id: int, *, evaluation: bool = False) -> JoinedRollout:
+        """LRU-cached :meth:`load_joined`. A completed rollout's dumps never
+        change, so entries stay valid; the LRU (``tensor_lru`` ids resident)
+        bounds memory since one id holds every per-token tensor of its step."""
+        key = (rollout_id, evaluation)
+        if key in self._joined_cache:
+            self._joined_cache.move_to_end(key)
+            return self._joined_cache[key]
+        result = self.load_joined(rollout_id, evaluation=evaluation)
+        self._joined_cache[key] = result
+        while len(self._joined_cache) > self.tensor_lru:
+            self._joined_cache.popitem(last=False)
+        return result
+
+    @property
+    def tokenizer(self):
+        """Tokenizer persisted by the run's data source, or None if absent."""
+        if not self._tokenizer_loaded:
+            self._tokenizer_loaded = True
+            tokenizer_dir = self.dump_dir / "tokenizer"
+            if tokenizer_dir.is_dir():
+                from miles.utils.processing_utils import load_tokenizer
+
+                self._tokenizer = load_tokenizer(str(tokenizer_dir))
+        return self._tokenizer
+
+    # ------------------------------- L1 views -------------------------------
+
+    def summary(self, rollout_id: int, *, evaluation: bool = False) -> pl.DataFrame:
+        """Per-sample summary table (one row per Sample), parquet-cached under
+        ``cache_dir`` and invalidated on source mtime or SUMMARY_VERSION change."""
+        stem = f"rollout_{'eval_' if evaluation else ''}{rollout_id}"
+        cache_path = self.cache_dir / f"{stem}.parquet"
+        sources_path = self.cache_dir / f"{stem}.sources.json"
+        sources = self._source_stamps(rollout_id, evaluation=evaluation)
+        if cache_path.exists() and sources_path.exists() and json.loads(sources_path.read_text()) == sources:
+            return pl.read_parquet(cache_path)
+
+        joined = self.joined(rollout_id, evaluation=evaluation)
+        df = pl.DataFrame([self._summary_row(s, joined.train_rows.get(s.index)) for s in joined.samples], strict=False)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        df.write_parquet(cache_path)
+        sources_path.write_text(json.dumps(sources))
+        return df
+
+    def groups(self, rollout_id: int, *, evaluation: bool = False) -> pl.DataFrame:
+        """Per-GRPO-group aggregates; ``zero_std`` flags degenerate groups
+        (all samples got the same reward, so advantages vanish)."""
+        reward_column = "reward" if evaluation else "raw_reward"
+        return (
+            self.summary(rollout_id, evaluation=evaluation)
+            .group_by("group_index")
+            .agg(
+                n=pl.len(),
+                reward_mean=pl.col(reward_column).mean(),
+                reward_std=pl.col(reward_column).std(),
+                response_length_mean=pl.col("response_length").mean(),
+                truncated_frac=pl.col("truncated").cast(pl.Float64).mean(),
+            )
+            .with_columns(zero_std=pl.col("reward_std").fill_null(0.0) <= 1e-12)
+            .sort("group_index")
+        )
+
+    def step_aggregates(self) -> pl.DataFrame:
+        """Dump-derived per-step series: the L0 fallback when no metrics.jsonl
+        exists. First call computes (and parquet-caches) every step's summary."""
+        rows = []
+        for rollout_id in self.rollout_ids().train:
+            df = self.summary(rollout_id)
+            groups = self.groups(rollout_id)
+            rows.append(
+                dict(
+                    rollout_id=rollout_id,
+                    n_samples=df.height,
+                    reward_mean=df["raw_reward"].mean(),
+                    reward_std=df["raw_reward"].std(),
+                    response_length_mean=df["response_length"].mean(),
+                    truncated_frac=df["truncated"].cast(pl.Float64).mean(),
+                    zero_std_group_frac=groups["zero_std"].cast(pl.Float64).mean(),
+                    mean_abs_lp_diff=df["mean_abs_lp_diff"].mean(),
+                    mean_entropy=df["mean_entropy"].mean(),
+                )
+            )
+        return pl.DataFrame(rows, strict=False)
+
+    # ------------------------------- L2 view --------------------------------
+
+    def tokens(
+        self, rollout_id: int, sample_index: int, *, start: int = 0, end: int | None = None, evaluation: bool = False
+    ) -> dict:
+        """Per-token payload for one sample over token positions [start, end).
+
+        Token ids/text cover the whole requested slice; per-token stat arrays
+        cover only its overlap with the response region (stat ``i`` maps to
+        token position ``prompt_len + a + i``). ``response_offset`` is the
+        index within the returned token slice where the response begins.
+        """
+        joined = self.joined(rollout_id, evaluation=evaluation)
+        sample = next((s for s in joined.samples if s.index == sample_index), None)
+        assert sample is not None, f"unknown sample_index {sample_index} in rollout {rollout_id}"
+        row = joined.train_rows.get(sample_index)
+
+        total = len(sample.tokens)
+        prompt_len = total - sample.response_length
+        start = max(0, start)
+        end = total if end is None else min(end, total)
+        assert start < end, f"empty token range [{start}, {end}) for total_len={total}"
+        a = max(0, start - prompt_len)
+        b = max(0, end - prompt_len)
+
+        def response_slice(values) -> list[float] | None:
+            return None if values is None else [float(v) for v in values[a:b]]
+
+        token_ids = [int(t) for t in sample.tokens[start:end]]
+        lp_diff = (
+            row.log_probs - row.rollout_log_probs if row is not None and row.rollout_log_probs is not None else None
+        )
+        return dict(
+            rollout_id=rollout_id,
+            sample_index=sample_index,
+            evaluation=evaluation,
+            total_len=total,
+            prompt_len=prompt_len,
+            start=start,
+            end=end,
+            response_offset=min(len(token_ids), max(0, prompt_len - start)),
+            token_ids=token_ids,
+            token_text=self._decode_tokens(token_ids),
+            rollout_log_probs=(
+                response_slice(sample.rollout_log_probs)
+                if sample.rollout_log_probs is not None
+                else response_slice(row.rollout_log_probs) if row is not None else None
+            ),
+            loss_mask=None if row is None else [int(v) for v in row.loss_mask[a:b]],
+            train_log_probs=None if row is None else response_slice(row.log_probs),
+            ref_log_probs=None if row is None else response_slice(row.ref_log_probs),
+            lp_diff=response_slice(lp_diff),
+            imp_ratio=None if lp_diff is None else response_slice(lp_diff.exp()),
+            entropy=None if row is None else response_slice(row.entropy),
+            ref_entropy=None if row is None else response_slice(row.ref_entropy),
+            advantages=None if row is None else response_slice(row.advantages),
+            returns=None if row is None else response_slice(row.returns),
+        )
+
     # ------------------------------- internals ------------------------------
+
+    def _decode_tokens(self, token_ids: list[int]) -> list[str] | None:
+        if self.tokenizer is None:
+            return None
+        return [self.tokenizer.decode([token_id]) for token_id in token_ids]
+
+    def _source_stamps(self, rollout_id: int, *, evaluation: bool) -> dict:
+        rollout_path = self.rollout_dir / (f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt")
+        paths = [rollout_path] + ([] if evaluation else self._train_paths(rollout_id))
+        return {"_summary_version": self.SUMMARY_VERSION, **{p.name: p.stat().st_mtime for p in paths}}
+
+    def _summary_row(self, sample: Sample, row: TrainRow | None) -> dict:
+        spec = sample.spec_info
+        cache_info = sample.prefix_cache_info
+        entry = dict(
+            sample_index=sample.index,
+            group_index=sample.group_index,
+            status=sample.status.value,
+            remove_sample=sample.remove_sample,
+            response_length=sample.response_length,
+            total_length=len(sample.tokens),
+            reward=float(sample.reward) if isinstance(sample.reward, (int, float)) else None,
+            weight_version=sample.weight_versions[-1] if sample.weight_versions else None,
+            non_generation_time=sample.non_generation_time,
+            spec_accept_rate=(
+                spec.spec_accept_token_num / spec.spec_draft_token_num if spec.spec_draft_token_num else None
+            ),
+            prefix_cache_hit_rate=(
+                cache_info.cached_tokens / cache_info.total_prompt_tokens if cache_info.total_prompt_tokens else None
+            ),
+        )
+        if row is None:
+            train_columns = dict.fromkeys(
+                (
+                    "raw_reward",
+                    "normalized_reward",
+                    "dumped_rank",
+                    "mean_entropy",
+                    "max_entropy",
+                    "ref_entropy_mean",
+                    "mean_abs_lp_diff",
+                    "max_abs_lp_diff",
+                    "mean_imp_ratio",
+                    "adv_mean",
+                    "adv_std",
+                    "return_mean",
+                )
+            )
+            train_columns["truncated"] = sample.status == Sample.Status.TRUNCATED
+            return entry | train_columns
+
+        mask = row.loss_mask > 0
+        lp_diff = None if row.rollout_log_probs is None else row.log_probs - row.rollout_log_probs
+        entropy = _masked(row.entropy, mask)
+        abs_diff = _masked(None if lp_diff is None else lp_diff.abs(), mask)
+        advantages = _masked(row.advantages, mask)
+        return entry | dict(
+            raw_reward=None if row.raw_reward is None else float(row.raw_reward),
+            normalized_reward=float(row.reward),
+            truncated=bool(row.truncated) if row.truncated is not None else sample.status == Sample.Status.TRUNCATED,
+            dumped_rank=row.rank,
+            mean_entropy=_mean(entropy),
+            max_entropy=_max(entropy),
+            ref_entropy_mean=_mean(_masked(row.ref_entropy, mask)),
+            mean_abs_lp_diff=_mean(abs_diff),
+            max_abs_lp_diff=_max(abs_diff),
+            mean_imp_ratio=_mean(_masked(None if lp_diff is None else lp_diff.exp(), mask)),
+            adv_mean=_mean(advantages),
+            adv_std=_std(advantages),
+            return_mean=_mean(_masked(row.returns, mask)),
+        )
 
     def _train_paths(self, rollout_id: int) -> list[Path]:
         return sorted(self.train_dir.glob(f"{rollout_id}_*.pt"), key=lambda p: int(p.stem.rsplit("_", 1)[1]))
@@ -193,3 +419,27 @@ class DumpReader:
             if time.time() - path.stat().st_mtime < self.FRESH_SECONDS:
                 raise DumpStillWriting(str(path)) from e
             raise
+
+
+# ---------------------- masked per-token statistics -------------------------
+
+
+def _masked(values: torch.Tensor | None, mask: torch.Tensor) -> torch.Tensor | None:
+    """Loss-masked positions (tool outputs, removed samples) are excluded from
+    all summary statistics; an empty selection yields None, not NaN."""
+    if values is None:
+        return None
+    selected = values[mask]
+    return selected.float() if selected.numel() else None
+
+
+def _mean(values: torch.Tensor | None) -> float | None:
+    return None if values is None else float(values.mean())
+
+
+def _max(values: torch.Tensor | None) -> float | None:
+    return None if values is None else float(values.max())
+
+
+def _std(values: torch.Tensor | None) -> float | None:
+    return None if values is None else float(values.std())

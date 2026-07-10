@@ -68,18 +68,30 @@ def dump_dummy_run(
     max_response_len: int = 16,
     with_entropy: bool = True,
     with_eval: bool = True,
+    with_tokenizer: bool = True,
+    remove_sample_indices: tuple[int, ...] = (),
     seed: int = 0,
 ) -> DummyRunTruth:
+    """``remove_sample_indices`` marks the given within-step positions as
+    ``remove_sample=True`` in every step; the real conversion then writes an
+    all-zero loss mask for them."""
     n = num_prompts * n_samples_per_prompt
     assert n % dp_size == 0, "equal-size DP partition needs divisible batch"
     args = _make_args(dump_dir, num_prompts=num_prompts, n_samples_per_prompt=n_samples_per_prompt)
     rng = random.Random(seed)
     truth = DummyRunTruth(n_samples_per_step=n, shard_indices={}, eval_ids=[])
 
+    if with_tokenizer:
+        _write_tokenizer(dump_dir)
+
     for rollout_id in range(steps):
         samples = [
             _make_sample(
-                rng, index=rollout_id * n + i, group_index=i // n_samples_per_prompt, max_response_len=max_response_len
+                rng,
+                index=rollout_id * n + i,
+                group_index=i // n_samples_per_prompt,
+                max_response_len=max_response_len,
+                remove_sample=i in remove_sample_indices,
             )
             for i in range(n)
         ]
@@ -129,7 +141,9 @@ def _make_args(dump_dir: Path, *, num_prompts: int, n_samples_per_prompt: int) -
     )
 
 
-def _make_sample(rng: random.Random, *, index: int, group_index: int, max_response_len: int) -> Sample:
+def _make_sample(
+    rng: random.Random, *, index: int, group_index: int, max_response_len: int, remove_sample: bool = False
+) -> Sample:
     response_length = rng.randint(4, max_response_len)
     prompt_length = rng.randint(3, 8)
     truncated = response_length == max_response_len
@@ -137,14 +151,30 @@ def _make_sample(rng: random.Random, *, index: int, group_index: int, max_respon
         group_index=group_index,
         index=index,
         prompt="What is 1+1?",
-        tokens=[rng.randint(0, 99) for _ in range(prompt_length + response_length)],
+        tokens=[rng.randint(0, _VOCAB_SIZE - 1) for _ in range(prompt_length + response_length)],
         response="x" * response_length,
         response_length=response_length,
         reward=float(rng.random() < 0.5),
         rollout_log_probs=[-rng.random() for _ in range(response_length)],
         weight_versions=[str(index % 3)],
         status=Sample.Status.TRUNCATED if truncated else Sample.Status.COMPLETED,
+        remove_sample=remove_sample,
     )
+
+
+_VOCAB_SIZE = 100
+
+
+def _write_tokenizer(dump_dir: Path) -> None:
+    """Persist a tiny word-level tokenizer (token id i <-> text "t{i}") with the
+    same ``save_pretrained`` mechanism the real data source uses for
+    ``{dump_details}/tokenizer/``."""
+    from tokenizers import Tokenizer, models
+    from transformers import PreTrainedTokenizerFast
+
+    vocab = {f"t{i}": i for i in range(_VOCAB_SIZE)}
+    raw = Tokenizer(models.WordLevel(vocab, unk_token="t0"))
+    PreTrainedTokenizerFast(tokenizer_object=raw).save_pretrained(dump_dir / "tokenizer")
 
 
 def _apply_dummy_actor_columns(shard: dict, generator: torch.Generator, *, with_entropy: bool) -> None:
