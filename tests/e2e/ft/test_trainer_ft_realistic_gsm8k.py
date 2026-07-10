@@ -8,7 +8,7 @@ from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import run_ci
 
 register_cuda_ci(
     est_time=9000,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-8-gpu-h200",
     labels=["ft-long", "long"],
     disabled="FT soak tests pending CI infra support",
 )
