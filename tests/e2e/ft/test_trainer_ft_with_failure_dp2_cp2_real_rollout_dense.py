@@ -10,7 +10,6 @@ register_cuda_ci(
     est_time=1500,
     suite="stage-c-8-gpu-h100",
     labels=["ft-short"],
-    disabled="real_rollout deterministic-inference sglang hang on current image",
 )
 
 _MODE: str = "dp2_cp2_real_rollout_dense"

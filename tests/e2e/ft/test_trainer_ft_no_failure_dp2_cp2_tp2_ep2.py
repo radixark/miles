@@ -10,7 +10,6 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h100",
     labels=["ft-short"],
-    disabled="FT e2e suite disabled in CI pending stabilization on current image (follow-up PR)",
 )
 
 _MODE: str = "dp2_cp2_tp2_ep2"
