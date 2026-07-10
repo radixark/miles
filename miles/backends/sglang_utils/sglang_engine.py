@@ -57,6 +57,18 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
+def _gpu_uuids(gpu_ids: list[int]) -> list:
+    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
+    spaces across processes; None entries when NVML is unavailable."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
+    except Exception:
+        return [None] * len(gpu_ids)
+
+
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
@@ -129,6 +141,29 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
+
+    def get_topology_info(self) -> dict:
+        """Placement facts for the dashboard timeline (called after init()).
+
+        ``base_gpu_id`` is node-physical (the local remap for the sglang
+        server happens later in ``_compute_server_args``), so these ids line
+        up with NVML device order used by the dashboard's GPU sampler.
+        """
+        from miles.utils.misc import get_current_node_ip
+
+        if self.base_gpu_id is None:  # external engines: placement unknown
+            gpu_ids = []
+        else:
+            gpus_on_node = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
+            gpu_ids = list(range(self.base_gpu_id, self.base_gpu_id + gpus_on_node))
+        return dict(
+            url=f"http://{self.server_host}:{self.server_port}",
+            node_ip=get_current_node_ip(),
+            gpu_ids=gpu_ids,
+            gpu_uuids=_gpu_uuids(gpu_ids),
+            worker_type=self.worker_type,
+            node_rank=self.node_rank,
+        )
 
     def init(
         self,
