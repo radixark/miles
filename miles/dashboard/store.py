@@ -177,6 +177,18 @@ class MetricStore:
     def append(self, record: Record) -> None:
         self._buffers[record.stream].append(record)
 
+    def buffered_count(self, stream: Stream) -> int:
+        return len(self._buffers[stream])
+
+    def drop_oldest_buffered(self, stream: Stream, *, keep_ratio: float = 0.9) -> int:
+        """Drop the oldest buffered (not yet flushed) records of one stream and
+        return how many were dropped. Lets the collector bound memory when the
+        disk stays unwritable instead of growing without limit."""
+        buffer = self._buffers[stream]
+        dropped = max(1, int(len(buffer) * (1 - keep_ratio)))
+        del buffer[:dropped]
+        return dropped
+
     def write_meta(self, meta: Meta) -> None:
         self.meta = meta
         self.dir.mkdir(parents=True, exist_ok=True)
