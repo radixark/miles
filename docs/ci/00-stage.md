@@ -27,6 +27,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | `resolve-ci-image`, `stage-a-cpu` |
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | `resolve-ci-image`, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 2 | `resolve-ci-image`, `stage-a-cpu` |
+| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 1 | `resolve-ci-image`, `stage-a-cpu` |
 
 `tier a` (CPU fast) gates the GPU fleet after `resolve-ci-image`; the GPU stages (`b` / `c`) all depend on `resolve-ci-image` and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline.
 
