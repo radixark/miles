@@ -776,38 +776,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
 
 class DeepSeekV4TITOTokenizer(TITOTokenizer):
-    """DeepSeek V4 — official encoder via sglang's ``encoding_dsv4``.
-
-    Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
-    routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
-    TITO incremental tokenization rides that same bridge to stay byte-aligned
-    with what the runtime serves.
-
-    V4 has no standalone ``tool`` role: the encoder's ``merge_tool_messages``
-    folds every contiguous run of ``tool``/``user`` messages into ONE
-    ``<｜User｜>`` block (``\\n\\n``-joined).  The base per-segment
-    dummy-context renders therefore fabricate extra ``<｜User｜>`` markers
-    whenever a ``user`` turn follows a ``tool`` turn, so this class overrides
-    ``tokenize_additional_non_assistant`` to diff the real-history render
-    instead (see below).
-
-    Two append surfaces are registered:
-
-    - ``{tool}`` (native tool-calling harnesses, e.g. terminus-2): the encoder
-      forces ``drop_thinking=False`` whenever any message carries ``tools``
-      (``encoding_dsv4.encode_messages``), so prior assistants keep their
-      thinking and history never mutates on append.
-    - ``{tool, user}`` (text-protocol scaffolds like OpenEnv, which feed env
-      output back as plain ``user`` turns and pass no ``tools``): here the
-      encoder's default ``drop_thinking=True`` would strip every prior
-      assistant's thinking the moment a new ``user`` turn advances
-      ``last_user_index`` — a non-append-only history mutation that breaks the
-      pretokenized-prefix invariant and yields NaN grads on the first backward.
-      Pinning ``drop_thinking=False`` restores append-only for this surface
-      (same reason V3.2 registers only ``{tool}`` — see ``DeepSeekV32TITOTokenizer``).
-      Requires the sglang serving side to render with ``drop_thinking=False`` too
-      so generation and re-tokenization stay byte-identical.
-    """
+    """Disable ``drop_thinking`` in ``{tool, user}`` mode so appends keep prior assistant tokens stable."""
 
     reasoning_parser = "deepseek-v4"
     tool_call_parser = "deepseekv4"
@@ -864,16 +833,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         new_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        """Diff the real-history render instead of per-segment dummy contexts.
-
-        A ``user`` appended after a ``tool`` extends the prefix's still-open
-        ``<｜User｜>`` block (``\\n\\n`` + text, no new marker), so the appended
-        bytes depend on the real history — a dummy context cannot know whether
-        the block is open.  With ``drop_thinking=False`` (or tools present,
-        which forces it) the V4 render is append-only once the bridge strips
-        the user-tail auto opener (``add_generation_prompt=False``), so the
-        full render is a strict extension and the suffix is exact.
-        """
+        """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns."""
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
         text_old = self.render_messages(old_messages, add_generation_prompt=False, tools=tools)
         text_new = self.render_messages(new_messages, add_generation_prompt=True, tools=tools)
