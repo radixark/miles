@@ -63,9 +63,22 @@ class MetricsRecord(Record):
     metrics: dict[str, Any]
 
 
+class Role(StrEnum):
+    TRAIN = "train"
+    ROLLOUT_MANAGER = "rollout_manager"
+    DERIVED = "derived"  # synthesized by the read side, not observed
+
+
+# phase name synthesized per lane for [meta.start_ts, first observed event)
+INITIALIZE_PHASE = "initialize"
+
+
 @dataclass
 class PhaseEvent(Record):
-    """One completed timer interval on one process (Timer sink event)."""
+    """One completed timer interval on one process (Timer sink event).
+
+    ``rollout_manager`` events carry no GPUs (the manager is a driver-side
+    process); the timeline queries expand them onto rollout-engine lanes."""
 
     stream: ClassVar[Stream] = Stream.PHASES
     name: str
@@ -74,7 +87,7 @@ class PhaseEvent(Record):
     node: str
     gpus: list[int]
     rank: int
-    role: str
+    role: str  # a Role value
 
     def timestamps(self) -> tuple[float, ...]:
         return (self.t0, self.t1)
@@ -247,6 +260,163 @@ class MetricStore:
         if not stamps:
             return None
         return min(stamps), max(stamps)
+
+    # --------------------------- timeline queries ---------------------------
+
+    def lanes(self) -> list[dict]:
+        """Every (node, gpu) seen in any stream — one timeline lane each."""
+        seen: set[tuple[str, int]] = set()
+        for sample in self.records[Stream.GPU_UTIL]:
+            seen.add((sample.node, sample.gpu))
+        for event in self.records[Stream.PHASES]:
+            for gpu in event.gpus:
+                seen.add((event.node, gpu))
+        for snapshot in self.records[Stream.TOPOLOGY]:
+            for engine in snapshot.engines:
+                for node, gpu in engine.gpus:
+                    seen.add((node, gpu))
+        return [dict(node=node, gpu=gpu) for node, gpu in sorted(seen)]
+
+    def topology_windows(self) -> list[dict]:
+        """Engine topology snapshots with validity windows: snapshot N is valid
+        [ts_N, ts_{N+1}); the last one is open-ended (t1=None)."""
+        snapshots = sorted(self.records[Stream.TOPOLOGY], key=lambda s: s.ts)
+        return [
+            dict(
+                t0=snapshot.ts,
+                t1=snapshots[i + 1].ts if i + 1 < len(snapshots) else None,
+                engines=[asdict(engine) for engine in snapshot.engines],
+            )
+            for i, snapshot in enumerate(snapshots)
+        ]
+
+    def phases_by_lane(self, *, t0: float | None = None, t1: float | None = None) -> list[dict]:
+        """Phase intervals resolved onto (node, gpu) lanes.
+
+        Train-side events carry their own GPUs. ``rollout_manager`` events have
+        none — the manager is a GPU-less driver process — so they are expanded
+        onto every GPU of every rollout engine, clipped at topology-window
+        boundaries (an engine restart mid-rollout splits the painted interval).
+        """
+
+        def overlaps(a0: float, a1: float) -> bool:
+            return (t1 is None or a0 < t1) and (t0 is None or a1 > t0)
+
+        out = []
+        windows = self.topology_windows()
+        for event in self.records[Stream.PHASES]:
+            if not overlaps(event.t0, event.t1):
+                continue
+            if event.role == Role.ROLLOUT_MANAGER:
+                for window in windows:
+                    clip0 = max(event.t0, window["t0"])
+                    clip1 = event.t1 if window["t1"] is None else min(event.t1, window["t1"])
+                    if clip0 >= clip1:
+                        continue
+                    lanes = {(node, gpu) for engine in window["engines"] for node, gpu in engine["gpus"]}
+                    for node, gpu in sorted(lanes):
+                        out.append(
+                            dict(
+                                name=event.name,
+                                t0=clip0,
+                                t1=clip1,
+                                node=node,
+                                gpu=gpu,
+                                rank=event.rank,
+                                role=event.role,
+                            )
+                        )
+            else:
+                for gpu in event.gpus:
+                    out.append(
+                        dict(
+                            name=event.name,
+                            t0=event.t0,
+                            t1=event.t1,
+                            node=event.node,
+                            gpu=gpu,
+                            rank=event.rank,
+                            role=event.role,
+                        )
+                    )
+        # synthesize the initialize band: from collector start (meta.start_ts)
+        # to each lane's first observed event — model loading / engine startup
+        # has GPU util but no Timer instrumentation
+        if self.meta is not None:
+            first_event: dict[tuple[str, int], float] = {}
+            for event in out:
+                key = (event["node"], event["gpu"])
+                first_event[key] = min(first_event.get(key, float("inf")), event["t0"])
+            for (node, gpu), first_t0 in first_event.items():
+                if first_t0 > self.meta.start_ts and overlaps(self.meta.start_ts, first_t0):
+                    out.append(
+                        dict(
+                            name=INITIALIZE_PHASE,
+                            t0=self.meta.start_ts,
+                            t1=first_t0,
+                            node=node,
+                            gpu=gpu,
+                            rank=-1,
+                            role=Role.DERIVED,
+                        )
+                    )
+        out.sort(key=lambda e: (e["node"], e["gpu"], e["t0"]))
+        return out
+
+    def gpu_series(
+        self, *, t0: float | None = None, t1: float | None = None, max_points: int = 2000
+    ) -> dict[str, dict]:
+        """Per-lane NVML series, min/max-downsampled on util (the primary
+        signal); mem/power take the same indices so all arrays stay aligned."""
+        by_lane: dict[str, list[GpuSample]] = {}
+        for sample in self.records[Stream.GPU_UTIL]:
+            if (t0 is not None and sample.ts < t0) or (t1 is not None and sample.ts > t1):
+                continue
+            by_lane.setdefault(f"{sample.node}:{sample.gpu}", []).append(sample)
+        out = {}
+        for lane, samples in sorted(by_lane.items()):
+            samples.sort(key=lambda s: s.ts)
+            util = np.asarray([s.util for s in samples])
+            indices, _ = minmax_downsample(np.arange(len(samples)), util, max_points)
+            out[lane] = dict(
+                ts=[samples[i].ts for i in indices],
+                util=[samples[i].util for i in indices],
+                mem_mb=[samples[i].mem_mb for i in indices],
+                power_w=[samples[i].power_w for i in indices],
+            )
+        return out
+
+    def engine_series(
+        self, metric: str, *, t0: float | None = None, t1: float | None = None, max_points: int = 2000
+    ) -> list[dict]:
+        """One series per (engine addr, label set) for the given metric."""
+        grouped: dict[tuple, list[EngineSample]] = {}
+        for sample in self.records[Stream.ENGINE_SERIES]:
+            if sample.metric != metric:
+                continue
+            if (t0 is not None and sample.ts < t0) or (t1 is not None and sample.ts > t1):
+                continue
+            grouped.setdefault((sample.addr, tuple(sorted(sample.labels.items()))), []).append(sample)
+        out = []
+        for (addr, labels), samples in sorted(grouped.items()):
+            samples.sort(key=lambda s: s.ts)
+            ts, values = stride_downsample([s.ts for s in samples], [s.value for s in samples], max_points)
+            out.append(dict(addr=addr, labels=dict(labels), ts=ts.tolist(), value=values.tolist()))
+        return out
+
+    def bubbles(self) -> list[dict]:
+        """Per-step bubble summary strip: step time and wait ratio from the
+        perf metrics, with the wall-clock ts as the timeline zoom anchor."""
+        out = []
+        for record in self.records[Stream.METRICS]:
+            if record.step_key != "rollout/step":
+                continue
+            step_time = record.metrics.get("perf/step_time")
+            wait_ratio = record.metrics.get("perf/wait_time_ratio")
+            if step_time is None and wait_ratio is None:
+                continue
+            out.append(dict(step=record.step, ts=record.ts, step_time=step_time, wait_ratio=wait_ratio))
+        return out
 
 
 # ------------------------------ downsampling --------------------------------
