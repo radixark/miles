@@ -203,8 +203,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             self.sleep()
 
-        self.rollout_engines = None
-
         self.rollout_data_postprocess = None
         if (x := self.args.rollout_data_postprocess_path) is not None:
             from miles.utils.misc import load_function
