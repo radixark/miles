@@ -689,6 +689,10 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
             },
             allowed_append_roles=allowed_append_roles,
         )
+        self.chat_template_kwargs = {
+            **self.chat_template_kwargs,
+            "thinking": deepseek.V32.render_thinking_enabled(self.chat_template_kwargs),
+        }
 
 
 # ---------------------------------------------------------------------------

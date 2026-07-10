@@ -46,11 +46,15 @@ TestFactory
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils import MismatchType, apply_chat_template, resolve_fixed_chat_template
 from miles.utils.chat_template_utils.tito_tokenizer import (
+    DeepSeekV32TITOTokenizer,
     GLM47TITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
@@ -225,6 +229,33 @@ class TestConfig:
     def test_default(self, default_tito: TITOTokenizer):
         assert default_tito._assistant_start_str is None
         assert default_tito.trailing_token_ids == frozenset()
+
+    @pytest.mark.parametrize(
+        "chat_template_kwargs, expected",
+        [
+            pytest.param({}, True, id="default-thinking"),
+            pytest.param({"enable_thinking": False}, False, id="disable-via-miles-kwarg"),
+            pytest.param({"thinking": False}, False, id="disable-via-sglang-kwarg"),
+            pytest.param(
+                {"enable_thinking": False, "thinking": True},
+                False,
+                id="miles-kwarg-precedes-sglang-kwarg",
+            ),
+            pytest.param(
+                {"thinking_mode": "thinking", "thinking": False},
+                True,
+                id="explicit-mode-precedes-sglang-kwarg",
+            ),
+            pytest.param({"thinking_mode": "chat"}, False, id="explicit-chat-mode"),
+        ],
+    )
+    def test_deepseek_v32_forwards_effective_thinking_mode(self, chat_template_kwargs, expected):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.side_effect = [1, 2]
+
+        tito = DeepSeekV32TITOTokenizer(tokenizer, chat_template_kwargs=chat_template_kwargs)
+
+        assert tito.chat_template_kwargs["thinking"] is expected
 
     def test_comparator_inherits_trailing_ids(self, qwen3_tito: Qwen3TITOTokenizer):
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
