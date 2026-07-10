@@ -83,11 +83,38 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
             capabilities=dict(
                 has_metrics=bool(store.records[Stream.METRICS]),
                 has_tokenizer=(reader.dump_dir / "tokenizer").is_dir(),
-                # timeline endpoints land with the live-collection PRs
-                has_timeline=False,
-                has_engine_series=False,
+                has_timeline=bool(store.records[Stream.PHASES] or store.records[Stream.GPU_UTIL]),
+                has_engine_series=bool(store.records[Stream.ENGINE_SERIES]),
             ),
         )
+
+    # ------------------------------ timeline --------------------------------
+
+    @app.get("/api/timeline/topology")
+    def timeline_topology():
+        return dict(lanes=store.lanes(), windows=store.topology_windows())
+
+    @app.get("/api/timeline/phases")
+    def timeline_phases(t0: float | None = None, t1: float | None = None):
+        return dict(phases=store.phases_by_lane(t0=t0, t1=t1))
+
+    @app.get("/api/timeline/gpu")
+    def timeline_gpu(t0: float | None = None, t1: float | None = None, max_points: int = 2000):
+        with _translate_errors():
+            if max_points < 2:
+                raise ValueError(f"{max_points=} must be >= 2")
+            return dict(lanes=store.gpu_series(t0=t0, t1=t1, max_points=max_points))
+
+    @app.get("/api/timeline/engine_series")
+    def timeline_engine_series(metric: str, t0: float | None = None, t1: float | None = None, max_points: int = 2000):
+        with _translate_errors():
+            if max_points < 2:
+                raise ValueError(f"{max_points=} must be >= 2")
+            return dict(series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points))
+
+    @app.get("/api/timeline/bubbles")
+    def timeline_bubbles():
+        return dict(bubbles=store.bubbles())
 
     @app.get("/api/metrics")
     def metrics(keys: str, x: str = "rollout/step", t0: float | None = None, t1: float | None = None):
