@@ -294,21 +294,32 @@ class _DaytonaPool:
             await asyncio.to_thread(slot.provider.stop_container)
         except Exception as e:
             logger.warning(f"Failed to stop broken sandbox {slot.url}: {e}")
+        if slot in self._slots:
+            self._slots.remove(slot)
         try:
             new_slot = await self._spawn_one(-1, asyncio.Semaphore(1))
         except Exception as e:
             logger.error(f"Failed to replace broken Daytona slot ({slot.url}): {e}")
             return
+        self._slots.append(new_slot)
         assert self._queue is not None
         self._queue.put_nowait(new_slot)
         logger.info(f"Daytona slot replaced: {slot.url} -> {new_slot.url}")
 
     async def teardown(self) -> None:
-        for slot in self._slots:
-            try:
-                await asyncio.to_thread(slot.provider.stop_container)
-            except Exception as e:
-                logger.warning(f"Failed to stop sandbox {slot.url}: {e}")
+        # Cancel in-flight replacements first: a task still awaiting _spawn_one
+        # would otherwise enqueue a sandbox after teardown and leak it.
+        try:
+            for task in list(self._replace_tasks):
+                task.cancel()
+            if self._replace_tasks:
+                await asyncio.gather(*self._replace_tasks, return_exceptions=True)
+        finally:
+            for slot in self._slots:
+                try:
+                    await asyncio.to_thread(slot.provider.stop_container)
+                except Exception as e:
+                    logger.warning(f"Failed to stop sandbox {slot.url}: {e}")
 
 
 async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> Any:
