@@ -25,6 +25,9 @@ class ModelConfig:
     allowed_append_roles: tuple[str, ...]
     num_gpus: int = 4
     tp_size: int = 1
+    # sglang expert-parallel size.  MoE archs like DeepSeek V4 hit a fused-moe
+    # shape assert at ep=1; mirror the family's serving recipe (usually =tp).
+    ep_size: int = 1
     cycles: int = 3
     n_samples_per_prompt: int = 4
     # Soft-threshold override for assistant_text mismatch ratio.  Default
@@ -40,6 +43,8 @@ class ModelConfig:
 
 
 def run_one(cfg: ModelConfig) -> None:
+    invariants = dict(SESSION_VERIFY_INVARIANT_ARGS)
+    invariants["sglang_expert_parallel_size"] = cfg.ep_size
     args = argparse.Namespace(
         hf_checkpoint=cfg.model_name,
         tito_model=cfg.tito_model,
@@ -53,6 +58,6 @@ def run_one(cfg: ModelConfig) -> None:
         session_verify_cycles=cfg.cycles,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
         assistant_text_threshold=cfg.assistant_text_threshold,
-        **SESSION_VERIFY_INVARIANT_ARGS,
+        **invariants,
     )
     run_session_verify(args=args)

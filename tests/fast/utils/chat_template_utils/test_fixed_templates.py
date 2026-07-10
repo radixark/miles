@@ -32,6 +32,26 @@ def test_tool_only_resolution_matches_registered_template(tito_model, expected_p
     assert os.path.isfile(path)
 
 
+def test_deepseek_v4_tool_only_is_hf_native_no_kwargs():
+    # The native tool-calling surface keeps the HF-native dsv4 bridge with no
+    # kwargs override; the encoder itself forces drop_thinking=False whenever
+    # `tools` are present, so this surface is already append-only.
+    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4, ["tool"])
+    assert path is None
+    assert kwargs == {}
+
+
+def test_deepseek_v4_tool_user_pins_drop_thinking_false():
+    # OpenEnv-style text-protocol scaffolds append env output as plain `user`
+    # turns and pass no `tools`. Without drop_thinking=False the encoder strips
+    # prior assistants' thinking once a new user turn advances last_user_index —
+    # a non-append-only mutation that corrupts the pretokenized prefix and NaNs
+    # the first backward. This row must pin drop_thinking=False.
+    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4, ["tool", "user"])
+    assert path is None
+    assert kwargs == {"drop_thinking": False}
+
+
 @pytest.mark.parametrize(
     "tito_model",
     [TITOTokenizerType.QWEN3, TITOTokenizerType.QWEN35, TITOTokenizerType.QWENNEXT],
