@@ -94,7 +94,7 @@ def bwd(
     is_causal=True,
     block_size=32,
     num_stages=0,
-    threads=128,
+    threads=None,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
@@ -123,6 +123,11 @@ def bwd(
     H = H_kv
     padded_H = max(tilelang.math.next_power_of_2(H_kv), 16)
     block_H = min(64, padded_H)
+    # adaptive: 256 threads (8 warps) hide more of this bandwidth-bound kernel's KV-gather
+    # latency, but need block_H>=64 to fill the GEMM warp tiling; smaller head blocks fall
+    # back to 128 so tiny shapes still build. Mirrors tilelang_sparse_mla_bwd_opt.py's gate.
+    if threads is None:
+        threads = 256 if block_H >= 64 else 128
     assert padded_H % block_H == 0
     NH = padded_H // block_H
     BS = block_size
