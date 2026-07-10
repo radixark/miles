@@ -1,0 +1,36 @@
+diff -ru a/tile_kernels/__init__.py b/tile_kernels/__init__.py
+--- a/tile_kernels/__init__.py
++++ b/tile_kernels/__init__.py
+@@ -1,15 +1,3 @@
+-import tilelang
+ 
+-from . import (
+-    config,
+-    engram,
+-    mhc,
+-    modeling,
+-    moe,
+-    quant,
+-    transpose,
+-    torch,
+-    testing,
+-)
+ 
+ from .config import get_num_sms, get_device_num_sms, set_num_sms
+diff -ru a/tile_kernels/mhc/post_kernel.py b/tile_kernels/mhc/post_kernel.py
+--- a/tile_kernels/mhc/post_kernel.py
++++ b/tile_kernels/mhc/post_kernel.py
+@@ -39,7 +39,6 @@
+             c_local = T.alloc_fragment(mhc, T.float32)
+             T.copy(a[pid_n, 0, 0], a_local)
+             T.copy(c[pid_n, 0], c_local)
+-            T.pdl_sync()
+ 
+             for i0_h in T.Pipelined(T.ceildiv(h, h_blk), num_stages=2):
+                 T.copy(b[pid_n, 0, i0_h * h_blk], b_shared, disable_tma=True)
+diff -ru a/tile_kernels/modeling/__init__.py b/tile_kernels/modeling/__init__.py
+--- a/tile_kernels/modeling/__init__.py
++++ b/tile_kernels/modeling/__init__.py
+@@ -1,2 +0,0 @@
+-from . import engram
+-from . import mhc
