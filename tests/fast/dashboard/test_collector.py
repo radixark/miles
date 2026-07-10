@@ -45,7 +45,7 @@ def test_collector_satisfies_dummy_telemetry_contract(tmp_path):
     )
     for record in reference.records[Stream.METRICS]:
         collector.push_metrics(record)
-    collector.push_phases(list(reference.records[Stream.PHASES]))
+    collector.push_phases(reference.iter_records(Stream.PHASES))
     for snapshot in reference.records[Stream.TOPOLOGY]:
         collector.update_topology(snapshot)
     by_node: dict[str, list[GpuSample]] = {}

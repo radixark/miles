@@ -87,8 +87,17 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
                 has_tokenizer=(reader.dump_dir / "tokenizer").is_dir(),
                 has_timeline=store.has_stream(Stream.PHASES) or store.has_stream(Stream.GPU_UTIL),
                 has_engine_series=store.has_stream(Stream.ENGINE_SERIES),
+                max_window_s=MetricStore.MAX_WINDOW_S,
             ),
         )
+
+    def _check_window(t0: float | None, t1: float | None) -> None:
+        if t0 is None or t1 is None:
+            return
+        if t1 <= t0:
+            raise ValueError(f"bad window: {t1=} <= {t0=}")
+        if t1 - t0 > MetricStore.MAX_WINDOW_S:
+            raise ValueError(f"window {t1 - t0:.0f}s exceeds max_window_s {MetricStore.MAX_WINDOW_S:.0f}")
 
     # ------------------------------ timeline --------------------------------
 
@@ -99,6 +108,7 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
     @app.get("/api/timeline/phases")
     def timeline_phases(t0: float | None = None, t1: float | None = None, lanes: str | None = None):
         with _translate_errors():
+            _check_window(t0, t1)
             return dict(phases=store.phases_by_lane(t0=t0, t1=t1, lanes=store.resolve_lanes(lanes)))
 
     @app.get("/api/timeline/gpu")
@@ -106,6 +116,7 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
         t0: float | None = None, t1: float | None = None, max_points: int = 2000, lanes: str | None = None
     ):
         with _translate_errors():
+            _check_window(t0, t1)
             if max_points < 2:
                 raise ValueError(f"{max_points=} must be >= 2")
             return dict(lanes=store.gpu_series(t0=t0, t1=t1, max_points=max_points, lanes=store.resolve_lanes(lanes)))
@@ -121,6 +132,7 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
         """Binary rank carpet: [4-byte LE header length][header JSON][uint8
         matrix, row-major] — one byte per (lane, time bucket) cell."""
         with _translate_errors():
+            _check_window(t0, t1)
             if not 2 <= x_buckets <= 4000:
                 raise ValueError(f"{x_buckets=} out of range [2, 4000]")
             result = store.heatmap(metric, t0=t0, t1=t1, x_buckets=x_buckets, lanes=store.resolve_lanes(lanes))
@@ -141,6 +153,7 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
     @app.get("/api/timeline/engine_series")
     def timeline_engine_series(metric: str, t0: float | None = None, t1: float | None = None, max_points: int = 2000):
         with _translate_errors():
+            _check_window(t0, t1)
             if max_points < 2:
                 raise ValueError(f"{max_points=} must be >= 2")
             return dict(series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points))
