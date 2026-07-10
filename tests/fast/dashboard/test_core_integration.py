@@ -69,7 +69,7 @@ def test_tracking_backend_end_to_end_local_ray(tmp_path):
     [metric] = store.records[Stream.METRICS]
     assert metric.step == 3 and metric.metrics["rollout/rewards_mean"] == 0.5
 
-    phases = {event.name: event for event in store.records[Stream.PHASES]}
+    phases = {event.name: event for event in store.iter_records(Stream.PHASES)}
     assert {"actor_train", "update_weights"} <= set(phases)
     actor_train = phases["actor_train"]
     assert actor_train.role == Role.TRAIN

@@ -11,14 +11,26 @@ Each stream holds one record type (one JSON object per line); see the
 
 The two high-rate streams (``gpu_util``, ``engine_series``) are held in memory
 as columnar polars frames instead of dataclass lists (design doc §17):
-~16 B/row instead of ~600 B, vectorized parsing and numpy queries. The disk
-format and the write side are unchanged.
+~16 B/row instead of ~600 B, vectorized parsing and numpy queries.
+
+High-rate streams (those two plus ``phases``) write hourly partition files
+``{stream}/{YYYYMMDD_HH}.jsonl`` (phases keyed by END hour) and parse lazily:
+open reads nothing from them; a windowed query parses only the hours it
+touches, through an LRU block cache with per-file byte-offset tail refresh.
+A v1 flat ``{stream}.jsonl`` still reads as one "legacy" partition. Lane
+metadata for selection resolution is folded into ``lane_catalog.json`` at
+flush time so it never needs a stream scan.
 """
 
 from __future__ import annotations
 
+import calendar
 import io
 import json
+import os
+import time
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -162,8 +174,134 @@ class Meta:
     FILENAME: ClassVar[str] = "meta.json"
 
 
+def _hour_key(ts: float) -> str:
+    return time.strftime("%Y%m%d_%H", time.gmtime(ts))
+
+
+def _hour_bounds(key: str) -> tuple[float, float]:
+    start = calendar.timegm(time.strptime(key, "%Y%m%d_%H"))
+    return float(start), float(start + 3600)
+
+
+class _PartitionReader:
+    """One hourly-partitioned JSONL stream on the read side.
+
+    Files parse lazily at first windowed read into an LRU block cache; a
+    cached block picks up appended bytes through a per-file byte offset with
+    the same complete-line rule as ``MetricStore.follow``. A v1 flat
+    ``{stream}.jsonl`` participates as one "legacy" partition spanning all
+    time, so every pre-partition dump dir keeps working.
+    """
+
+    LEGACY_KEY: ClassVar[str] = "legacy"
+
+    def __init__(
+        self,
+        dir: Path,
+        legacy_path: Path,
+        *,
+        parse: Callable[[bytes, Path, int], Any],
+        concat: Callable[[list], Any],
+        length: Callable[[Any], int],
+        line_stamps: Callable[[dict], tuple],
+        max_blocks: int,
+    ):
+        self.dir = dir
+        self.legacy_path = legacy_path
+        self._parse = parse
+        self._concat = concat
+        self._length = length
+        self._line_stamps = line_stamps
+        self._max_blocks = max_blocks
+        self._blocks: OrderedDict[str, Any] = OrderedDict()
+        self._offsets: dict[str, int] = {}
+
+    def files(self) -> list[tuple[str, Path]]:
+        out = [(self.LEGACY_KEY, self.legacy_path)] if self.legacy_path.exists() else []
+        if self.dir.is_dir():
+            out.extend(sorted((path.stem, path) for path in self.dir.glob("*.jsonl")))
+        return out
+
+    def has_data(self) -> bool:
+        return any(path.stat().st_size > 0 for _, path in self.files())
+
+    def window(self, t0: float | None, t1: float | None) -> Any:
+        """Concatenated block over the partitions intersecting [t0, t1]."""
+        blocks = []
+        for key, path in self.files():
+            if key != self.LEGACY_KEY:
+                lo, hi = _hour_bounds(key)
+                if (t0 is not None and hi <= t0) or (t1 is not None and lo > t1):
+                    continue
+            blocks.append(self._block(key, path))
+        return self._concat([block for block in blocks if self._length(block)])
+
+    def refresh_cached(self) -> int:
+        """Tail-refresh every cached block; returns rows appended. Partitions
+        never read remain lazy — they parse fully at their first read."""
+        paths = dict(self.files())
+        added = 0
+        for key in list(self._blocks):
+            if key in paths:
+                before = self._length(self._blocks[key])
+                self._block(key, paths[key])
+                added += self._length(self._blocks[key]) - before
+        return added
+
+    def _block(self, key: str, path: Path) -> Any:
+        offset = self._offsets.get(key, 0)
+        if key in self._blocks and path.stat().st_size <= offset:
+            self._blocks.move_to_end(key)
+            return self._blocks[key]
+        with open(path, "rb") as f:
+            f.seek(offset)
+            chunk = f.read()
+        end = chunk.rfind(b"\n")
+        if end >= 0:
+            new = self._parse(chunk[: end + 1], path, offset)
+            pieces = [self._blocks[key], new] if key in self._blocks else [new]
+            self._blocks[key] = self._concat([piece for piece in pieces if self._length(piece)])
+            self._offsets[key] = offset + end + 1
+        elif key not in self._blocks:
+            self._blocks[key] = self._concat([])
+            self._offsets[key] = offset
+        self._blocks.move_to_end(key)
+        while len(self._blocks) > self._max_blocks:
+            evicted, _ = self._blocks.popitem(last=False)
+            self._offsets.pop(evicted, None)
+        return self._blocks[key]
+
+    def edge_stamps(self) -> list[float]:
+        """Global-range candidates from the first line of the oldest file and
+        the last complete line of the newest — no full scan."""
+        files = [(key, path) for key, path in self.files() if path.stat().st_size > 0]
+        if not files:
+            return []
+        lines = []
+        with open(files[0][1], "rb") as f:
+            lines.append(f.readline())
+        with open(files[-1][1], "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 65536))
+            tail = f.read()
+        complete = tail[: tail.rfind(b"\n") + 1]
+        if complete:
+            lines.append(complete.splitlines()[-1])
+        stamps: list[float] = []
+        for line in lines:
+            try:
+                stamps.extend(self._line_stamps(json.loads(line)))
+            except json.JSONDecodeError:
+                pass  # partial line mid-append: no complete record to stamp yet
+        return stamps
+
+
 class MetricStore:
     COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
+    PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES, Stream.PHASES)
+    MAX_WINDOW_S: ClassVar[float] = 4 * 3600.0
+    PARTITION_CACHE_BLOCKS: ClassVar[int] = 24
+    CATALOG_FILENAME: ClassVar[str] = "lane_catalog.json"
     FRAME_SCHEMAS: ClassVar[dict[Stream, dict[str, Any]]] = {
         Stream.GPU_UTIL: dict(
             ts=pl.Float64, node=pl.String, gpu=pl.Int64, util=pl.Int64, mem_mb=pl.Int64, power_w=pl.Int64
@@ -177,12 +315,42 @@ class MetricStore:
     def __init__(self, dir: Path | str):
         self.dir = Path(dir)
         self.meta: Meta | None = None
-        self.records: dict[Stream, list[Record]] = {s: [] for s in Stream if s not in self.COLUMNAR_STREAMS}
-        self.frames: dict[Stream, pl.DataFrame] = {
-            s: pl.DataFrame(schema=schema) for s, schema in self.FRAME_SCHEMAS.items()
-        }
+        self.records: dict[Stream, list[Record]] = {s: [] for s in Stream if s not in self.PARTITIONED_STREAMS}
         self._buffers: dict[Stream, list[Record]] = {s: [] for s in Stream}
-        self._offsets: dict[Stream, int] = {s: 0 for s in Stream}
+        self._offsets: dict[Stream, int] = {s: 0 for s in Stream if s not in self.PARTITIONED_STREAMS}
+        self._readers: dict[Stream, _PartitionReader] = {s: self._make_reader(s) for s in self.PARTITIONED_STREAMS}
+        self._catalog: dict[str, dict] | None = None  # write-side lane catalog accumulator
+
+    def _make_reader(self, stream: Stream) -> _PartitionReader:
+        if stream in self.COLUMNAR_STREAMS:
+            empty = pl.DataFrame(schema=self.FRAME_SCHEMAS[stream])
+
+            def concat_frames(blocks: list, empty: pl.DataFrame = empty) -> pl.DataFrame:
+                if not blocks:
+                    return empty
+                merged = blocks[0] if len(blocks) == 1 else pl.concat(blocks, rechunk=False)
+                # bound chunk fragmentation from long tail sessions
+                return merged.rechunk() if merged.n_chunks() > 256 else merged
+
+            return _PartitionReader(
+                self.dir / stream.value,
+                self.dir / stream.filename,
+                parse=lambda raw, path, offset, stream=stream: self._parse_columnar(stream, raw, path, offset),
+                concat=concat_frames,
+                length=lambda frame: frame.height,
+                line_stamps=lambda data: (data["ts"],),
+                max_blocks=self.PARTITION_CACHE_BLOCKS,
+            )
+        assert stream is Stream.PHASES, stream
+        return _PartitionReader(
+            self.dir / stream.value,
+            self.dir / stream.filename,
+            parse=self._parse_phases,
+            concat=lambda blocks: [event for block in blocks for event in block],
+            length=len,
+            line_stamps=lambda data: (data["t0"], data["t1"]),
+            max_blocks=self.PARTITION_CACHE_BLOCKS,
+        )
 
     # ------------------------------ write side ------------------------------
 
@@ -208,12 +376,75 @@ class MetricStore:
 
     def flush(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
+        self._merge_catalog()
         for stream, buffer in self._buffers.items():
             if not buffer:
                 continue
-            with open(self.dir / stream.filename, "a") as f:
-                f.write("".join(json.dumps(record.to_dict(), separators=(",", ":")) + "\n" for record in buffer))
+            if stream in self.PARTITIONED_STREAMS:
+                subdir = self.dir / stream.value
+                subdir.mkdir(exist_ok=True)
+                groups: dict[str, list[Record]] = {}
+                for record in buffer:
+                    # phases key by END hour: the completion append is what
+                    # lands on disk, so the window lower bound stays exact
+                    ts = record.t1 if stream is Stream.PHASES else record.ts
+                    groups.setdefault(_hour_key(ts), []).append(record)
+                for key, group in sorted(groups.items()):
+                    with open(subdir / f"{key}.jsonl", "a") as f:
+                        f.write("".join(json.dumps(r.to_dict(), separators=(",", ":")) + "\n" for r in group))
+            else:
+                with open(self.dir / stream.filename, "a") as f:
+                    f.write("".join(json.dumps(r.to_dict(), separators=(",", ":")) + "\n" for r in buffer))
             buffer.clear()
+
+    def _merge_catalog(self) -> None:
+        """Fold buffered records into ``lane_catalog.json``: per-lane train
+        ranks, engine addrs and roles, so selection resolution and heatmap
+        rows never need a stream scan. Atomic rewrite, only when changed."""
+        if self._catalog is None:
+            path = self.dir / self.CATALOG_FILENAME
+            self._catalog = json.loads(path.read_text())["lanes"] if path.exists() else {}
+        lanes = self._catalog
+        dirty = False
+
+        def entry(node: str, gpu: int) -> dict:
+            nonlocal dirty
+            key = f"{node}:{gpu}"
+            if key not in lanes:
+                lanes[key] = dict(ranks=[], engine_addrs=[], roles=[])
+                dirty = True
+            return lanes[key]
+
+        def add(values: list, value) -> None:
+            nonlocal dirty
+            if value not in values:
+                values.append(value)
+                dirty = True
+
+        for event in self._buffers[Stream.PHASES]:
+            if event.role != Role.TRAIN:
+                continue
+            for gpu in event.gpus:
+                lane = entry(event.node, gpu)
+                add(lane["roles"], Role.TRAIN.value)
+                if event.rank >= 0:
+                    add(lane["ranks"], event.rank)
+        for snapshot in self._buffers[Stream.TOPOLOGY]:
+            for engine in snapshot.engines:
+                for node, gpu in engine.gpus:
+                    lane = entry(node, gpu)
+                    add(lane["roles"], "rollout")
+                    add(lane["engine_addrs"], engine.addr)
+        for sample in self._buffers[Stream.GPU_UTIL]:
+            entry(sample.node, sample.gpu)
+        if dirty:
+            for lane in lanes.values():
+                lane["ranks"].sort()
+                lane["engine_addrs"].sort()
+                lane["roles"].sort()
+            tmp = self.dir / (self.CATALOG_FILENAME + ".tmp")
+            tmp.write_text(json.dumps(dict(version=1, lanes=lanes)))
+            os.replace(tmp, self.dir / self.CATALOG_FILENAME)
 
     # ------------------------------ read side -------------------------------
 
@@ -232,10 +463,12 @@ class MetricStore:
         Only complete lines (terminated by a newline) are consumed, so a
         crash-interrupted partial write at the tail is left for a later call
         once its writer completes it. A malformed *complete* line is real
-        corruption and raises.
+        corruption and raises — for hour-partitioned streams that happens at
+        the first windowed read of the bad partition, since those parse
+        lazily; here only already-cached partition blocks refresh.
         """
         num_new = 0
-        for stream in Stream:
+        for stream in self.records:
             path = self.dir / stream.filename
             if not path.exists():
                 continue
@@ -246,14 +479,6 @@ class MetricStore:
             if end < 0:
                 continue
             complete = chunk[: end + 1]
-            if stream in self.COLUMNAR_STREAMS:
-                frame = self._parse_columnar(stream, complete, path)
-                merged = pl.concat([self.frames[stream], frame], rechunk=False)
-                # bound chunk fragmentation from long follow sessions
-                self.frames[stream] = merged.rechunk() if merged.n_chunks() > 256 else merged
-                num_new += frame.height
-                self._offsets[stream] += len(complete)
-                continue
             record_type = _RECORD_TYPE_OF_STREAM[stream]
             for line in complete.splitlines():
                 try:
@@ -264,9 +489,11 @@ class MetricStore:
                     ) from e
                 num_new += 1
             self._offsets[stream] += len(complete)
+        for reader in self._readers.values():
+            num_new += reader.refresh_cached()
         return num_new
 
-    def _parse_columnar(self, stream: Stream, raw: bytes, path: Path) -> pl.DataFrame:
+    def _parse_columnar(self, stream: Stream, raw: bytes, path: Path, offset: int) -> pl.DataFrame:
         schema = self.FRAME_SCHEMAS[stream]
         try:
             frame = pl.read_ndjson(io.BytesIO(raw))
@@ -282,17 +509,34 @@ class MetricStore:
                 raise ValueError(f"fields {sorted(frame.columns)} != schema {sorted(schema)}")
             return frame.select([pl.col(name).cast(dtype) for name, dtype in schema.items()])
         except (pl.exceptions.PolarsError, ValueError) as e:
-            raise ValueError(f"corrupt record in {path} near byte {self._offsets[stream]}: {e}") from e
+            raise ValueError(f"corrupt record in {path} near byte {offset}: {e}") from e
+
+    def _parse_phases(self, raw: bytes, path: Path, offset: int) -> list[PhaseEvent]:
+        events = []
+        for line in raw.splitlines():
+            try:
+                events.append(PhaseEvent.from_dict(json.loads(line)))
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                raise ValueError(f"corrupt record in {path} near byte {offset}: {line[:200]!r}") from e
+        return events
+
+    def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
+        # phases partition by END hour: the lower bound is exact (an event
+        # overlapping the window completed at or after t0); the upper bound
+        # extends one max phase duration FORWARD (design §17)
+        upper = None if t1 is None else t1 + self.MAX_WINDOW_S
+        return self._readers[Stream.PHASES].window(t0, upper)
 
     def has_stream(self, stream: Stream) -> bool:
-        if stream in self.COLUMNAR_STREAMS:
-            return self.frames[stream].height > 0
+        if stream in self.PARTITIONED_STREAMS:
+            return self._readers[stream].has_data()
         return bool(self.records[stream])
 
     def iter_records(self, stream: Stream) -> list[Record]:
         """Records as dataclass objects — slow materialization for tests/tools."""
         if stream is Stream.GPU_UTIL:
-            return [GpuSample(**row) for row in self.frames[stream].iter_rows(named=True)]
+            frame = self._readers[stream].window(None, None)
+            return [GpuSample(**row) for row in frame.iter_rows(named=True)]
         if stream is Stream.ENGINE_SERIES:
             return [
                 EngineSample(
@@ -302,8 +546,10 @@ class MetricStore:
                     labels={k: v for k, v in json.loads(row["labels_json"]).items() if v is not None},
                     value=row["value"],
                 )
-                for row in self.frames[stream].iter_rows(named=True)
+                for row in self._readers[stream].window(None, None).iter_rows(named=True)
             ]
+        if stream is Stream.PHASES:
+            return list(self._phase_events(None, None))
         return list(self.records[stream])
 
     @staticmethod
@@ -346,9 +592,8 @@ class MetricStore:
 
     def time_range(self) -> tuple[float, float] | None:
         stamps = [ts for records in self.records.values() for record in records for ts in record.timestamps()]
-        for frame in self.frames.values():
-            if frame.height:
-                stamps += [frame["ts"].min(), frame["ts"].max()]
+        for reader in self._readers.values():
+            stamps.extend(reader.edge_stamps())
         if not stamps:
             return None
         return min(stamps), max(stamps)
@@ -357,15 +602,7 @@ class MetricStore:
 
     def lanes(self) -> list[dict]:
         """Every (node, gpu) seen in any stream — one timeline lane each."""
-        seen: set[tuple[str, int]] = set(self.frames[Stream.GPU_UTIL].select("node", "gpu").unique().iter_rows())
-        for event in self.records[Stream.PHASES]:
-            for gpu in event.gpus:
-                seen.add((event.node, gpu))
-        for snapshot in self.records[Stream.TOPOLOGY]:
-            for engine in snapshot.engines:
-                for node, gpu in engine.gpus:
-                    seen.add((node, gpu))
-        return [dict(node=node, gpu=gpu) for node, gpu in sorted(seen)]
+        return [dict(node=entry["node"], gpu=entry["gpu"]) for entry in self.lane_index()]
 
     def topology_windows(self) -> list[dict]:
         """Engine topology snapshots with validity windows: snapshot N is valid
@@ -396,7 +633,7 @@ class MetricStore:
 
         out = []
         windows = self.topology_windows()
-        for event in self.records[Stream.PHASES]:
+        for event in self._phase_events(t0, t1):
             if not overlaps(event.t0, event.t1):
                 continue
             if event.role == Role.ROLLOUT_MANAGER:
@@ -437,8 +674,10 @@ class MetricStore:
                     )
         # synthesize the initialize band: from collector start (meta.start_ts)
         # to each lane's first observed event — model loading / engine startup
-        # has GPU util but no Timer instrumentation
-        if self.meta is not None:
+        # has GPU util but no Timer instrumentation. Only when the window
+        # covers the run start: a later window's first event is not the
+        # lane's first event ever
+        if self.meta is not None and (t0 is None or t0 <= self.meta.start_ts):
             first_event: dict[tuple[str, int], float] = {}
             for event in out:
                 key = (event["node"], event["gpu"])
@@ -471,7 +710,7 @@ class MetricStore:
     ) -> dict[str, dict]:
         """Per-lane NVML series, min/max-downsampled on util (the primary
         signal); mem/power take the same indices so all arrays stay aligned."""
-        frame = self._window(self.frames[Stream.GPU_UTIL], t0, t1)
+        frame = self._window(self._readers[Stream.GPU_UTIL].window(t0, t1), t0, t1)
         out = {}
         for (node, gpu), part in sorted(frame.partition_by(["node", "gpu"], as_dict=True).items()):
             if lanes is not None and (node, gpu) not in lanes:
@@ -491,7 +730,9 @@ class MetricStore:
         self, metric: str, *, t0: float | None = None, t1: float | None = None, max_points: int = 2000
     ) -> list[dict]:
         """One series per (engine addr, label set) for the given metric."""
-        frame = self._window(self.frames[Stream.ENGINE_SERIES].filter(pl.col("metric") == metric), t0, t1)
+        frame = self._window(self._readers[Stream.ENGINE_SERIES].window(t0, t1), t0, t1).filter(
+            pl.col("metric") == metric
+        )
         out = []
         for (addr, labels_json), part in sorted(frame.partition_by(["addr", "labels_json"], as_dict=True).items()):
             part = part.sort("ts")
@@ -502,14 +743,44 @@ class MetricStore:
 
     def lane_index(self) -> list[dict]:
         """Per-lane metadata for selection resolution: train ranks observed on
-        the lane, engine addrs that ever covered it, and derived roles."""
+        the lane, engine addrs that ever covered it, and derived roles.
+
+        Reads ``lane_catalog.json`` (merge-written at flush time) when
+        present; a legacy dir without one falls back to a full-stream scan.
+        """
+        path = self.dir / self.CATALOG_FILENAME
+        if path.exists():
+            lanes = json.loads(path.read_text())["lanes"]
+            out = []
+            for key, entry in lanes.items():
+                node, _, gpu = key.rpartition(":")
+                out.append(
+                    dict(
+                        node=node,
+                        gpu=int(gpu),
+                        ranks=entry["ranks"],
+                        engine_addrs=entry["engine_addrs"],
+                        roles=entry["roles"],
+                    )
+                )
+            return sorted(out, key=lambda entry: (entry["node"], entry["gpu"]))
+
+        seen: set[tuple[str, int]] = set(
+            self._readers[Stream.GPU_UTIL].window(None, None).select("node", "gpu").unique().iter_rows()
+        )
+        events = self._phase_events(None, None)
+        for event in events:
+            for gpu in event.gpus:
+                seen.add((event.node, gpu))
+        for snapshot in self.records[Stream.TOPOLOGY]:
+            for engine in snapshot.engines:
+                for node, gpu in engine.gpus:
+                    seen.add((node, gpu))
         info: dict[tuple[str, int], dict] = {
-            (lane["node"], lane["gpu"]): dict(
-                node=lane["node"], gpu=lane["gpu"], ranks=set(), engine_addrs=set(), roles=set()
-            )
-            for lane in self.lanes()
+            (node, gpu): dict(node=node, gpu=gpu, ranks=set(), engine_addrs=set(), roles=set())
+            for node, gpu in sorted(seen)
         }
-        for event in self.records[Stream.PHASES]:
+        for event in events:
             if event.role != Role.TRAIN:
                 continue
             for gpu in event.gpus:
@@ -615,7 +886,7 @@ class MetricStore:
             return min(x_buckets - 1, max(0, int((ts - t0) / span * x_buckets)))
 
         if metric in self.HEATMAP_MAGNITUDE_FIELDS:
-            frame = self._window(self.frames[Stream.GPU_UTIL], t0, t1)
+            frame = self._window(self._readers[Stream.GPU_UTIL].window(t0, t1), t0, t1)
             values = np.zeros((len(rows), x_buckets))
             filled = np.zeros((len(rows), x_buckets), dtype=bool)
             for (node, gpu), part in frame.partition_by(["node", "gpu"], as_dict=True).items():
@@ -672,7 +943,7 @@ class MetricStore:
         """Candidate lanes for the quick-pick buttons; the user confirms the
         selection — the machine only proposes."""
         if criterion == "lowest_util":
-            frame = self._window(self.frames[Stream.GPU_UTIL], t0, t1)
+            frame = self._window(self._readers[Stream.GPU_UTIL].window(t0, t1), t0, t1)
             grouped = frame.group_by("node", "gpu").agg(pl.col("util").mean().alias("score"))
             scored = [(row["score"], row["node"], row["gpu"]) for row in grouped.iter_rows(named=True)]
             scored.sort()

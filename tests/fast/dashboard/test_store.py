@@ -50,7 +50,7 @@ def test_roundtrip_all_streams(tmp_path):
     for record in records:
         got = (
             reader.iter_records(record.stream)
-            if record.stream in MetricStore.COLUMNAR_STREAMS
+            if record.stream in MetricStore.PARTITIONED_STREAMS
             else reader.records[record.stream]
         )
         assert got == [record]
@@ -68,7 +68,7 @@ def test_flush_clears_buffers_and_appends(tmp_path):
 
     reader = MetricStore.load(tmp_path)
     for stream in Stream:
-        got = reader.iter_records(stream) if stream in MetricStore.COLUMNAR_STREAMS else reader.records[stream]
+        got = reader.iter_records(stream) if stream in MetricStore.PARTITIONED_STREAMS else reader.records[stream]
         assert len(got) == 2, stream
 
 
@@ -81,11 +81,16 @@ def test_follow_incremental(tmp_path):
     assert len(reader.records[Stream.METRICS]) == 1
     assert reader.follow() == 0
 
+    assert reader.gpu_series() == {}  # prime the (empty) gpu partition cache
+
     writer.append(MetricsRecord(ts=2.0, step_key="rollout/step", step=1, metrics={"a": 2}))
     writer.append(GpuSample(ts=2.5, node="n", gpu=0, util=10, mem_mb=1, power_w=1))
     writer.flush()
-    assert reader.follow() == 2
+    # metrics tail eagerly; the gpu partition is new (never cached) so it
+    # stays lazy and surfaces through the query below
+    assert reader.follow() == 1
     assert [r.step for r in reader.records[Stream.METRICS]] == [0, 1]
+    assert list(reader.gpu_series()) == ["n:0"]
     assert reader.follow() == 0
 
 
@@ -122,8 +127,9 @@ def test_corrupt_complete_line_raises(tmp_path):
 def test_wrong_field_complete_line_raises(tmp_path):
     with open(tmp_path / Stream.GPU_UTIL.filename, "w") as f:
         f.write('{"ts": 1.0, "unexpected_field": 1}\n')
+    store = MetricStore.load(tmp_path)  # partitions parse lazily: load is clean
     with pytest.raises(ValueError, match="corrupt record"):
-        MetricStore.load(tmp_path)
+        store.gpu_series()
 
 
 def test_empty_dir(tmp_path):
