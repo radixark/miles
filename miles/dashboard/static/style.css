@@ -1,0 +1,79 @@
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #dde1e8;
+  --text: #24292f;
+  --muted: #667080;
+  --accent: #2f6feb;
+  --good: #1a9e6e;
+  --bad: #d1442e;
+  font-size: 14px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+.muted { color: var(--muted); }
+
+#topbar {
+  display: flex; align-items: baseline; gap: 16px; padding: 10px 18px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { font-weight: 600; color: var(--text); }
+#crumbs { flex: 1; color: var(--muted); }
+#crumbs a { margin-right: 6px; }
+#runinfo { color: var(--muted); font-size: 12px; }
+
+#view { padding: 16px 18px 60px; max-width: 1400px; margin: 0 auto; }
+
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 14px; }
+.panel h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.row > .panel { flex: 1; min-width: 380px; }
+
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.controls input[type="text"], .controls input[type="number"], .controls select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
+}
+.controls input[type="number"] { width: 90px; }
+button, .btn {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 13px;
+}
+button:hover { border-color: var(--accent); }
+button.active { border-color: var(--accent); color: var(--accent); }
+
+.keylist { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.keylist label { display: block; padding: 2px 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.keylist label:hover { background: var(--bg); }
+
+canvas.chart { width: 100%; height: 220px; display: block; }
+.chart-title { font-size: 13px; color: var(--text); margin: 0 0 4px; font-family: ui-monospace, monospace; }
+
+table.data { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+table.data th, table.data td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data th { color: var(--muted); cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--panel); }
+table.data th.sorted { color: var(--accent); }
+table.data tbody tr:hover { background: #eef2f8; cursor: pointer; }
+table.data tr.flagged td { color: var(--bad); }
+.tablewrap { max-height: 480px; overflow: auto; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.tokens { line-height: 1.9; font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+.tok { border-radius: 2px; padding: 1px 0; position: relative; }
+.tok.prompt { color: var(--muted); }
+.tok.masked { opacity: 0.35; }
+.tok:hover { outline: 1px solid var(--accent); }
+#tooltip {
+  position: fixed; pointer-events: none; background: #2b3038; color: #f0f2f5; border: 1px solid #2b3038;
+  border-radius: 4px; padding: 6px 9px; font-size: 12px; z-index: 100; display: none;
+  font-family: ui-monospace, monospace; white-space: pre;
+}
+.legend { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.legend .bar { width: 140px; height: 10px; border-radius: 2px; }
+.statgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.stat { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; }
+.stat .v { font-size: 16px; font-weight: 600; }
+.stat .k { font-size: 11px; color: var(--muted); }
+.error { color: var(--bad); padding: 12px; }

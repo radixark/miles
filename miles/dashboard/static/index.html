@@ -2,16 +2,17 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>miles dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
   </head>
-  <body style="font-family: sans-serif; margin: 2rem">
-    <h1>miles dashboard</h1>
-    <p>Frontend pending. The API is live:</p>
-    <ul>
-      <li><a href="/api/meta">/api/meta</a></li>
-      <li><code>/api/metrics?keys=dump/reward_mean</code></li>
-      <li><code>/api/rollout/{id}/summary</code> · <code>/api/rollout/{id}/groups</code></li>
-      <li><code>/api/rollout/{id}/sample/{index}/tokens?start=0&amp;end=64</code></li>
-    </ul>
+  <body>
+    <header id="topbar">
+      <a class="brand" href="#/">miles dashboard</a>
+      <nav id="crumbs"></nav>
+      <span id="runinfo"></span>
+    </header>
+    <main id="view"><p class="muted">loading…</p></main>
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>
