@@ -173,6 +173,24 @@ _TRAINER_FT_ENV_VARS: dict[str, str] = {
 }
 
 
+def get_train_env_vars_arg(mode: FTTestMode, *, deterministic: bool) -> str:
+    env_vars: dict[str, str] = {}
+    if deterministic:
+        env_vars.update(_DETERMINISTIC_ENV_VARS)
+    if mode.has_real_rollout:
+        # Disaggregated real_rollout puts the actor on only train_gpus_per_node GPUs (4) with no
+        # tensor/pipeline/expert sharding, so each actor GPU holds the full unsharded model plus the
+        # deterministic dumper's value/grad tensors. On 80GB H100 the peak fits but the allocator
+        # fragments (observed ~11GiB reserved-but-unallocated vs a 10.5GiB request -> spurious OOM);
+        # expandable_segments coalesces that. Scoped to the train actor (not the sglang engine),
+        # which is safe: no --offload-train, so it cannot collide with torch_memory_saver, and
+        # determinism is unaffected (it only changes virtual-address arena management).
+        env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    if not env_vars:
+        return ""
+    return f"--train-env-vars '{json.dumps(env_vars)}' "
+
+
 def run_training(
     train_args: str,
     mode: FTTestMode,
@@ -200,15 +218,6 @@ def run_training(
         "SGLANG_LOG_MS": "1",
         **(extra_env_vars or {}),
     }
-    if mode.has_real_rollout:
-        # Disaggregated real_rollout puts the actor on only train_gpus_per_node GPUs (4) with no
-        # tensor/pipeline/expert sharding, so each actor GPU holds the full unsharded model plus the
-        # deterministic dumper's value/grad tensors. On 80GB H100 the peak fits but the allocator
-        # fragments (observed ~11GiB reserved-but-unallocated vs a 10.5GiB request -> spurious OOM);
-        # expandable_segments coalesces that. Safe here: no --offload-train and enable_memory_saver
-        # is off, so it cannot collide with torch_memory_saver. Determinism is unaffected (both
-        # baseline and target use it, and it only changes virtual-address arena management).
-        merged_env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=mode.total_node_gpus,
