@@ -201,6 +201,15 @@ def run_training(
         "SGLANG_LOG_MS": "1",
         **(extra_env_vars or {}),
     }
+    if mode.has_real_rollout:
+        # Disaggregated real_rollout puts the actor on only train_gpus_per_node GPUs (4) with no
+        # tensor/pipeline/expert sharding, so each actor GPU holds the full unsharded model plus the
+        # deterministic dumper's value/grad tensors. On 80GB H100 the peak fits but the allocator
+        # fragments (observed ~11GiB reserved-but-unallocated vs a 10.5GiB request -> spurious OOM);
+        # expandable_segments coalesces that. Safe here: no --offload-train and enable_memory_saver
+        # is off, so it cannot collide with torch_memory_saver. Determinism is unaffected (both
+        # baseline and target use it, and it only changes virtual-address arena management).
+        merged_env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=mode.total_node_gpus,
