@@ -33,6 +33,19 @@ class DumpStillWriting(Exception):
     """A dump file exists but cannot be used yet (``torch.save`` in progress)."""
 
 
+# metric columns of DumpReader.step_aggregates(), i.e. the dump-derived L0
+# series (consumed by the server's metric catalog as "dump/<column>")
+STEP_AGGREGATE_METRICS = (
+    "reward_mean",
+    "reward_std",
+    "response_length_mean",
+    "truncated_frac",
+    "zero_std_group_frac",
+    "mean_abs_lp_diff",
+    "mean_entropy",
+)
+
+
 @dataclass
 class RolloutIds:
     train: list[int]
@@ -284,14 +297,16 @@ class DumpReader:
         """
         joined = self.joined(rollout_id, evaluation=evaluation)
         sample = next((s for s in joined.samples if s.index == sample_index), None)
-        assert sample is not None, f"unknown sample_index {sample_index} in rollout {rollout_id}"
+        if sample is None:
+            raise KeyError(f"unknown sample_index {sample_index} in rollout {rollout_id}")
         row = joined.train_rows.get(sample_index)
 
         total = len(sample.tokens)
         prompt_len = total - sample.response_length
         start = max(0, start)
         end = total if end is None else min(end, total)
-        assert start < end, f"empty token range [{start}, {end}) for total_len={total}"
+        if start >= end:
+            raise ValueError(f"empty token range [{start}, {end}) for total_len={total}")
         a = max(0, start - prompt_len)
         b = max(0, end - prompt_len)
 

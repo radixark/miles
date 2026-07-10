@@ -43,6 +43,7 @@ setup(
     version="0.2.1",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
+    package_data={"miles.dashboard": ["static/*"]},
     install_requires=_fetch_requirements("requirements.txt"),
     extras_require={
         "fsdp": [
@@ -50,6 +51,13 @@ setup(
         ],
         "mlflow": [
             "mlflow>=2.0",
+        ],
+        # dashboard server deps; present in the training image via sglang,
+        # needed explicitly only for standalone offline serving
+        "dashboard": [
+            "fastapi",
+            "uvicorn",
+            "prometheus_client",
         ],
     },
     python_requires=">=3.10",

@@ -130,8 +130,11 @@ def test_tokens_window_straddles_response_boundary(reader):
     clamped = reader.tokens(0, sample.index, start=0, end=10**6)
     assert clamped["end"] == len(sample.tokens)
 
-    with pytest.raises(AssertionError, match="empty token range"):
+    with pytest.raises(ValueError, match="empty token range"):
         reader.tokens(0, sample.index, start=5, end=5)
+
+    with pytest.raises(KeyError, match="unknown sample_index"):
+        reader.tokens(0, 10**6)
 
 
 def test_tokens_decode_via_dumped_tokenizer(reader):
