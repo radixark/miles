@@ -17,7 +17,11 @@ class _BFloat16LinearFP32Func(torch.autograd.Function):
         ctx.weight_dtype = weight.dtype
 
         x_2d = x_bf16.reshape(-1, x_bf16.shape[-1])
-        out = torch.mm(x_2d, weight_bf16.t(), out_dtype=torch.float32)
+        if torch.version.hip is not None:
+            # ROCm lacks bf16-in/fp32-out torch.mm, so upcast bf16-rounded inputs to fp32 to match CUDA/cublas fp32 accumulation.
+            out = torch.mm(x_2d.float(), weight_bf16.t().float())
+        else:
+            out = torch.mm(x_2d, weight_bf16.t(), out_dtype=torch.float32)
         return out.view(*x.shape[:-1], weight_bf16.shape[0])
 
     @staticmethod
