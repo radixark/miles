@@ -1,5 +1,6 @@
 import { api } from "./api.js";
 import { el, fmtNum, setViewCleanup } from "./app.js";
+import { createCarpet } from "./carpet.js";
 import { hideTooltip, showTooltip } from "./charts.js";
 
 const PHASE_COLORS = {
@@ -34,6 +35,12 @@ const MUTED = "#667080";
 const GRID = "#e3e7ee";
 
 const FOLLOW_REDRAW_MS = 5000;
+const LANE_CAP = 32;
+const QUICK_PICKS = [
+  { label: "pick: lowest util", criterion: "lowest_util" },
+  { label: "pick: slowest update_weights", criterion: "slowest_phase:update_weights" },
+];
+const QUICK_PICK_K = 8;
 
 const LANE_H = 66;
 const PHASE_H = 14;
@@ -42,8 +49,11 @@ const M_LEFT = 96;
 const M_TOP = 24;
 const M_RIGHT = 14;
 
-export async function renderTimeline(view, meta) {
+export async function renderTimeline(view, meta, route) {
   // mutable data state, reloaded on every follow-mode refresh
+  let selection = route?.lanes || null; // lane-selection grammar string
+  let resolvedKeys = null; // full "node:gpu" set the grammar resolved to (null = no pool)
+  let capped = 0; // lanes hidden by LANE_CAP
   let lanes = [];
   let windows = [];
   let phasesByLane = new Map();
@@ -63,14 +73,24 @@ export async function renderTimeline(view, meta) {
   async function loadData() {
     const [topology, phasesRes, bubblesRes, gpuRes] = await Promise.all([
       api("/api/timeline/topology"),
-      api("/api/timeline/phases"),
+      api("/api/timeline/phases", { lanes: selection }),
       api("/api/timeline/bubbles"),
-      api("/api/timeline/gpu", { max_points: 4000 }),
+      api("/api/timeline/gpu", { max_points: 4000, lanes: selection }),
     ]);
     engineSeries = overlayMetric
       ? (await api("/api/timeline/engine_series", { metric: overlayMetric, max_points: 4000 })).series
       : [];
     lanes = topology.lanes;
+    resolvedKeys = null;
+    if (selection) {
+      // the filtered responses reveal which lanes the grammar resolved to
+      const keys = new Set(Object.keys(gpuRes.lanes));
+      for (const p of phasesRes.phases) keys.add(`${p.node}:${p.gpu}`);
+      lanes = lanes.filter((l) => keys.has(laneKey(l)));
+      resolvedKeys = new Set(lanes.map(laneKey));
+    }
+    capped = Math.max(0, lanes.length - LANE_CAP);
+    if (capped) lanes = lanes.slice(0, LANE_CAP);
     windows = topology.windows;
     bubbles = bubblesRes.bubbles;
     gpu = gpuRes.lanes;
@@ -135,11 +155,101 @@ export async function renderTimeline(view, meta) {
       el("span", { class: "muted" }, ["overlay"]),
       ...(meta.capabilities.has_engine_series ? chips : [el("span", { class: "muted" }, ["(no engine series)"])]),
       memBtn,
-      el("button", { onclick: () => ((v0 = T0), (v1 = T1), draw()) }, ["reset zoom"]),
+      el("button", { onclick: () => ((v0 = T0), (v1 = T1), draw(), syncCarpet()) }, ["reset zoom"]),
       overlayScale,
       followBadge,
       el("span", { class: "muted" }, ["wheel = zoom · drag = pan"]),
     );
+  };
+
+  // ----------------------------- lane selection -----------------------------
+  const selRow = el("div", { class: "controls" });
+  const selError = el("span", { class: "error", style: "padding: 0" });
+  const selTerms = () => (selection ? selection.split(",").map((s) => s.trim()).filter(Boolean) : []);
+
+  async function setSelection(grammar) {
+    selection = grammar || null;
+    history.replaceState(null, "", selection ? `#/timeline?lanes=${encodeURIComponent(selection)}` : "#/timeline");
+    selError.textContent = "";
+    renderSelection();
+    try {
+      await loadData();
+    } catch (err) {
+      selError.textContent = String(err);
+      return;
+    }
+    renderAll();
+    carpet.redraw(); // selection markers
+  }
+
+  function renderSelection() {
+    const input = el("input", {
+      type: "text",
+      placeholder: "add: rank:0-7 · node:<ip> · gpu:<node>:<i> · engine:<addr> · role:train",
+      style: "flex: 1; min-width: 280px",
+    });
+    input.onkeydown = (ev) => {
+      if (ev.key === "Enter" && input.value.trim()) {
+        setSelection([...selTerms(), input.value.trim()].join(", "));
+      }
+    };
+    selRow.replaceChildren(
+      el("span", { class: "muted" }, ["lanes"]),
+      ...selTerms().map((term) =>
+        el("span", { class: "chip" }, [
+          term,
+          el(
+            "button",
+            { onclick: () => setSelection(selTerms().filter((t) => t !== term).join(", ")) },
+            ["×"],
+          ),
+        ]),
+      ),
+      ...(selection ? [] : [el("span", { class: "muted" }, ["all"])]),
+      input,
+      ...QUICK_PICKS.map(({ label, criterion }) =>
+        el(
+          "button",
+          {
+            onclick: async () => {
+              const res = await api("/api/timeline/outliers", { criterion, top_k: QUICK_PICK_K });
+              if (res.outliers.length) setSelection(res.outliers.map((o) => `gpu:${o.node}:${o.gpu}`).join(", "));
+            },
+          },
+          [label],
+        ),
+      ),
+      ...(selection ? [el("button", { onclick: () => setSelection(null) }, ["clear"])] : []),
+      ...(capped ? [el("span", { class: "warn" }, [`selection has ${capped + LANE_CAP} lanes; showing first ${LANE_CAP}`])] : []),
+      selError,
+    );
+  }
+
+  // -------------------------------- carpet ----------------------------------
+  const carpet = createCarpet({
+    phaseColors: PHASE_COLORS,
+    runStart: () => T0,
+    selectedKeys: () => resolvedKeys ?? new Set(),
+    // toggle semantics: brushed lanes join the detailed pool; a brush that only
+    // covers already-pooled lanes removes them instead
+    onBrush: (keys) => {
+      const pool = resolvedKeys ?? new Set();
+      if (keys.every((k) => pool.has(k))) {
+        const kept = [...pool].filter((k) => !keys.includes(k));
+        setSelection(kept.map((k) => `gpu:${k}`).join(", "));
+      } else {
+        const added = keys.filter((k) => !pool.has(k)).map((k) => `gpu:${k}`);
+        setSelection([...selTerms(), ...added].join(", "));
+      }
+    },
+  });
+  // the carpet tracks the lane view's zoom window (full range -> server default,
+  // so a growing follow-mode run keeps extending it)
+  const carpetRange = () => (v0 <= T0 + 1e-6 && v1 >= T1 - 1e-6 ? {} : { t0: v0, t1: v1 });
+  let carpetTimer = null;
+  const syncCarpet = () => {
+    clearTimeout(carpetTimer);
+    carpetTimer = setTimeout(() => carpet.refresh(carpetRange()).catch(() => {}), 250);
   };
 
   // ----------------------------- bubble strip -------------------------------
@@ -160,6 +270,7 @@ export async function renderTimeline(view, meta) {
           v0 = b.ts - b.step_time;
           v1 = b.ts;
           draw();
+          syncCarpet();
         }
       };
       cell.onmousemove = (ev) =>
@@ -323,6 +434,7 @@ export async function renderTimeline(view, meta) {
   }
 
   function renderAll() {
+    renderSelection();
     renderBubbles();
     renderLegend();
     draw();
@@ -341,12 +453,13 @@ export async function renderTimeline(view, meta) {
     v0 = Math.max(T0, pivot + (v0 - pivot) * factor);
     v1 = Math.min(T1, pivot + (v1 - pivot) * factor);
     draw();
+    syncCarpet();
   };
   let dragFrom = null;
   canvas.onmousedown = (ev) => (dragFrom = { x: ev.clientX, v0, v1 });
   const onMouseUp = () => (dragFrom = null);
   window.addEventListener("mouseup", onMouseUp);
-  canvas.ondblclick = () => ((v0 = T0), (v1 = T1), draw());
+  canvas.ondblclick = () => ((v0 = T0), (v1 = T1), draw(), syncCarpet());
   canvas.onmousemove = (ev) => {
     if (!haveData) return;
     if (dragFrom) {
@@ -356,6 +469,7 @@ export async function renderTimeline(view, meta) {
       v0 = Math.max(T0, Math.min(dragFrom.v0 + dt, T1 - span));
       v1 = v0 + span;
       draw();
+      syncCarpet();
       return;
     }
     const rect = canvas.getBoundingClientRect();
@@ -412,11 +526,16 @@ export async function renderTimeline(view, meta) {
     );
   };
 
-  view.replaceChildren(toolbar, bubbleStrip, el("div", { class: "panel" }, [canvas]), legendPanel);
+  view.replaceChildren(toolbar, selRow, carpet.root, bubbleStrip, el("div", { class: "panel" }, [canvas]), legendPanel);
   renderToolbar();
-  await loadData();
+  await Promise.all([loadData(), carpet.refresh({})]);
   renderAll();
-  window.addEventListener("resize", draw);
+  carpet.redraw(); // selection markers need the loaded lane list
+  const onResize = () => {
+    draw();
+    carpet.redraw();
+  };
+  window.addEventListener("resize", onResize);
 
   // ------------------------- follow-mode auto refresh -----------------------
   let refreshing = false;
@@ -429,6 +548,7 @@ export async function renderTimeline(view, meta) {
       try {
         await loadData();
         renderAll();
+        await carpet.refresh(carpetRange());
       } catch {
         // transient fetch failure (server restart, network blip): keep polling
       } finally {
@@ -438,7 +558,9 @@ export async function renderTimeline(view, meta) {
   }
   setViewCleanup(() => {
     if (intervalId !== null) clearInterval(intervalId);
-    window.removeEventListener("resize", draw);
+    clearTimeout(carpetTimer);
+    carpet.destroy();
+    window.removeEventListener("resize", onResize);
     window.removeEventListener("mouseup", onMouseUp);
   });
 }

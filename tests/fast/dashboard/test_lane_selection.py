@@ -98,6 +98,9 @@ def test_heatmap_phase_paints_dominant_and_initialize(loaded):
     assert palette[0] == ""
     assert {"initialize", "rollout", "actor_train", "train_wait"} <= set(palette)
 
+    # rows carry roles so the carpet can draw the train/rollout divider
+    assert result["rows"][0]["roles"] == ["rollout", "train"]
+
     lane0 = matrix[0]
     # the run starts with the initialize band, then rollout
     assert palette[lane0[0]] == "initialize"

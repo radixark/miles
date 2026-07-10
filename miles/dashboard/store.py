@@ -533,7 +533,11 @@ class MetricStore:
         t0 = window[0] if t0 is None else t0
         t1 = window[1] if t1 is None else t1
         assert t1 > t0, f"empty heatmap window [{t0}, {t1})"
-        rows = [lane for lane in self.lanes() if lanes is None or (lane["node"], lane["gpu"]) in lanes]
+        rows = [
+            dict(node=entry["node"], gpu=entry["gpu"], roles=entry["roles"])
+            for entry in self.lane_index()
+            if lanes is None or (entry["node"], entry["gpu"]) in lanes
+        ]
         row_of = {(lane["node"], lane["gpu"]): i for i, lane in enumerate(rows)}
         matrix = np.zeros((len(rows), x_buckets), dtype=np.uint8)
         span = t1 - t0

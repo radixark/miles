@@ -40,7 +40,7 @@ function parseRoute() {
   const segments = path.split("/").filter(Boolean);
   const params = new URLSearchParams(query || "");
   if (segments[0] === "timeline") {
-    return { view: "timeline" };
+    return { view: "timeline", lanes: params.get("lanes") };
   }
   if (segments[0] === "rollout" && segments.length >= 2) {
     const rolloutId = Number(segments[1]);
@@ -87,7 +87,7 @@ async function render() {
     document.getElementById("runinfo").textContent =
       `${meta.run_name ?? "unnamed run"} · ${meta.mode}` + (meta.capabilities.has_metrics ? "" : " · dump-derived metrics");
     if (route.view === "metrics") await renderMetrics(view, meta);
-    else if (route.view === "timeline") await renderTimeline(view, meta);
+    else if (route.view === "timeline") await renderTimeline(view, meta, route);
     else if (route.view === "rollout") await renderRollout(view, meta, route);
     else await renderTokens(view, meta, route);
   } catch (err) {

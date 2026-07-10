@@ -79,6 +79,15 @@ table.data tr.flagged td { color: var(--bad); }
 .error { color: var(--bad); padding: 12px; }
 
 canvas.timeline { width: 100%; display: block; cursor: crosshair; }
+canvas.carpet { width: 100%; display: block; cursor: crosshair; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px;
+  font-size: 12px; font-family: ui-monospace, monospace;
+}
+.chip button { border: none; background: none; padding: 0 2px; font-size: 12px; color: var(--muted); }
+.chip button:hover { color: var(--bad); border: none; }
+.warn { color: #9a6700; font-size: 12px; }
 .bubblestrip { display: flex; gap: 3px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .bubble {
   min-width: 26px; text-align: center; padding: 2px 4px; border: 1px solid var(--border);

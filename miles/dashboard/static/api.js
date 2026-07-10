@@ -1,6 +1,6 @@
 const RETRIES_503 = 3;
 
-export async function api(path, params = {}) {
+async function fetchOk(path, params) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, v);
@@ -20,8 +20,21 @@ export async function api(path, params = {}) {
       }
       throw new Error(`HTTP ${res.status}: ${detail || url.pathname}`);
     }
-    return res.json();
+    return res;
   }
+}
+
+export async function api(path, params = {}) {
+  return (await fetchOk(path, params)).json();
+}
+
+// framed binary endpoints (/api/timeline/heatmap):
+// [4-byte LE header length][header JSON][uint8 matrix, row-major]
+export async function apiBinary(path, params = {}) {
+  const buf = await (await fetchOk(path, params)).arrayBuffer();
+  const headerLen = new DataView(buf).getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, headerLen)));
+  return { ...header, values: new Uint8Array(buf, 4 + headerLen) };
 }
 
 let metaCache = null;
