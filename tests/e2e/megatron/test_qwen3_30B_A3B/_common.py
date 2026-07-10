@@ -170,7 +170,13 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
 
     if case.use_deepep:
-        sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+        sglang_args += "--sglang-moe-a2a-backend mori --sglang-deepep-mode auto "
+        # DEBUG(mori EP rollout garbage): single-variable test of the CUDA-graph x
+        # mori-combine interaction. A host-side sync/barrier cannot be captured into a
+        # CUDA graph, so disabling the graph is a prerequisite for any host-side combine
+        # ordering mitigation. Env-gated so default behavior is unchanged.
+        if os.environ.get("MILES_DEBUG_DISABLE_CUDA_GRAPH") == "1":
+            sglang_args += "--sglang-disable-cuda-graph "
     if case.sglang_ep_size is not None:
         sglang_args += f"--sglang-expert-parallel-size {case.sglang_ep_size} "
     if case.sglang_dp_size is not None:
@@ -231,6 +237,19 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
         }
+
+    # These switches only reach the SGLang subprocess when placed in
+    # extra_env_vars (forwarded via the Ray runtime_env). When unset in the
+    # parent environment, default behavior is unchanged.
+    for _passthrough_key in (
+        "SGLANG_USE_AITER",
+        "SGLANG_MORI_NUM_MAX_DISPATCH_TOKENS_PER_RANK",
+        "SGLANG_MORI_DISPATCH_DTYPE",
+        "MILES_MORI_SELFCHECK",
+        "MILES_MORI_COMBINE_PROBE",
+    ):
+        if _passthrough_key in os.environ:
+            extra_env_vars[_passthrough_key] = os.environ[_passthrough_key]
 
     U.execute_train(
         train_args=train_args,
