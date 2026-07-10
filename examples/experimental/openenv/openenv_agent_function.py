@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+import websockets.exceptions
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,14 @@ _POOL_PROVISION_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_BACK
 _POOL_PROVISION_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_BACKOFF_CAP_S", "30.0"))
 
 
+def _is_connection_error(exc: BaseException) -> bool:
+    # OpenEnv's EnvClient.connect normalizes every handshake failure (refused,
+    # timeout, HTTP 502 / rejected websocket) to a builtin ConnectionError;
+    # a mid-stream drop surfaces as websockets' ConnectionClosedError from
+    # recv/send. ConnectionClosedOK (clean 1000 close) is deliberately excluded.
+    return isinstance(exc, (ConnectionError, websockets.exceptions.ConnectionClosedError))
+
+
 def _is_throttle_error(exc: BaseException) -> bool:
     s = str(exc).lower()
     return "throttler" in s or "too many requests" in s or "429" in s
@@ -179,6 +188,7 @@ class _DaytonaPool:
         self._queue: asyncio.Queue[_DaytonaSlot] | None = None
         self._slots: list[_DaytonaSlot] = []
         self._init_lock = asyncio.Lock()
+        self._replace_tasks: set[asyncio.Task] = set()
 
     @classmethod
     def maybe(cls) -> "_DaytonaPool | None":
@@ -266,12 +276,43 @@ class _DaytonaPool:
         assert self._queue is not None
         self._queue.put_nowait(slot)
 
+    def replace_broken(self, slot: _DaytonaSlot) -> None:
+        logger.warning(f"Daytona slot {slot.url} marked broken; replacing in background")
+        task = asyncio.create_task(self._replace(slot))
+        self._replace_tasks.add(task)
+        task.add_done_callback(self._replace_tasks.discard)
+
+    async def _replace(self, slot: _DaytonaSlot) -> None:
+        try:
+            await asyncio.to_thread(slot.provider.stop_container)
+        except Exception as e:
+            logger.warning(f"Failed to stop broken sandbox {slot.url}: {e}")
+        if slot in self._slots:
+            self._slots.remove(slot)
+        try:
+            new_slot = await self._spawn_one(-1, asyncio.Semaphore(1))
+        except Exception as e:
+            logger.error(f"Failed to replace broken Daytona slot ({slot.url}): {e}")
+            return
+        self._slots.append(new_slot)
+        assert self._queue is not None
+        self._queue.put_nowait(new_slot)
+        logger.info(f"Daytona slot replaced: {slot.url} -> {new_slot.url}")
+
     async def teardown(self) -> None:
-        for slot in self._slots:
-            try:
-                await asyncio.to_thread(slot.provider.stop_container)
-            except Exception as e:
-                logger.warning(f"Failed to stop sandbox {slot.url}: {e}")
+        # Cancel in-flight replacements first: a task still awaiting _spawn_one
+        # would otherwise enqueue a sandbox after teardown and leak it.
+        try:
+            for task in list(self._replace_tasks):
+                task.cancel()
+            if self._replace_tasks:
+                await asyncio.gather(*self._replace_tasks, return_exceptions=True)
+        finally:
+            for slot in self._slots:
+                try:
+                    await asyncio.to_thread(slot.provider.stop_container)
+                except Exception as e:
+                    logger.warning(f"Failed to stop sandbox {slot.url}: {e}")
 
 
 async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> Any:
@@ -283,11 +324,18 @@ async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> A
     pool = _DaytonaPool.maybe()
     if pool is not None:
         slot = await pool.acquire()
+        broken = False
         try:
             async with env_cls(base_url=slot.url, message_timeout_s=_MESSAGE_TIMEOUT_S) as env:
                 return await body(env)
+        except BaseException as e:
+            broken = _is_connection_error(e)
+            raise
         finally:
-            await pool.release(slot)
+            if broken:
+                pool.replace_broken(slot)
+            else:
+                await pool.release(slot)
 
     deadline = asyncio.get_event_loop().time() + _CAPACITY_MAX_WAIT_S
     while True:
