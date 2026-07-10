@@ -77,3 +77,11 @@ table.data tr.flagged td { color: var(--bad); }
 .stat .v { font-size: 16px; font-weight: 600; }
 .stat .k { font-size: 11px; color: var(--muted); }
 .error { color: var(--bad); padding: 12px; }
+
+canvas.timeline { width: 100%; display: block; cursor: crosshair; }
+.bubblestrip { display: flex; gap: 3px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.bubble {
+  min-width: 26px; text-align: center; padding: 2px 4px; border: 1px solid var(--border);
+  border-radius: 3px; font-size: 12px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.bubble:hover { border-color: var(--accent); }

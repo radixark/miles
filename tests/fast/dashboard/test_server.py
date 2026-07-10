@@ -124,3 +124,16 @@ def test_static_index(client):
     response = client.get("/")
     assert response.status_code == 200
     assert "miles dashboard" in response.text
+
+
+def test_make_demo_dir(tmp_path):
+    from miles.dashboard.serve import make_demo_dir
+
+    make_demo_dir(tmp_path)
+    reader = DumpReader(tmp_path)
+    assert reader.rollout_ids().train == [0, 1, 2]
+    store = MetricStore.load(tmp_path / "dashboard")
+    client = TestClient(make_app(store, reader))
+    meta = client.get("/api/meta").json()
+    assert meta["capabilities"]["has_timeline"] is True
+    assert meta["rollout_ids"]["train"] == [0, 1, 2]

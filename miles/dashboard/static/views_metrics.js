@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { el } from "./app.js";
+import { el, setViewCleanup } from "./app.js";
 import { drawChart } from "./charts.js";
 
 const PINNED_STORE = ["rollout/rewards_mean", "train/loss", "perf/step_time", "perf/wait_time_ratio"];
@@ -107,4 +107,9 @@ export async function renderMetrics(view, meta) {
   );
   renderKeyList();
   await renderCharts();
+
+  if (meta.mode === "follow") {
+    const intervalId = setInterval(() => renderCharts().catch(() => {}), 5000);
+    setViewCleanup(() => clearInterval(intervalId));
+  }
 }
