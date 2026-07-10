@@ -49,11 +49,11 @@ def test_collector_satisfies_dummy_telemetry_contract(tmp_path):
     for snapshot in reference.records[Stream.TOPOLOGY]:
         collector.update_topology(snapshot)
     by_node: dict[str, list[GpuSample]] = {}
-    for sample in reference.records[Stream.GPU_UTIL]:
+    for sample in reference.iter_records(Stream.GPU_UTIL):
         by_node.setdefault(sample.node, []).append(sample)
     for node, batch in by_node.items():
         collector.push_gpu_samples(node, batch)
-    for sample in reference.records[Stream.ENGINE_SERIES]:
+    for sample in reference.iter_records(Stream.ENGINE_SERIES):
         collector._append(sample)  # the scraper sink path
     collector.flush()
 

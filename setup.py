@@ -58,6 +58,7 @@ setup(
             "fastapi",
             "uvicorn",
             "prometheus_client",
+            "polars",
         ],
     },
     python_requires=">=3.10",

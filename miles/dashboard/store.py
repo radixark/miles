@@ -8,10 +8,16 @@ tail, correct because every stream is append-only.
 
 Each stream holds one record type (one JSON object per line); see the
 ``Record`` subclasses for the schemas.
+
+The two high-rate streams (``gpu_util``, ``engine_series``) are held in memory
+as columnar polars frames instead of dataclass lists (design doc §17):
+~16 B/row instead of ~600 B, vectorized parsing and numpy queries. The disk
+format and the write side are unchanged.
 """
 
 from __future__ import annotations
 
+import io
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -23,6 +29,7 @@ except ImportError:
     from backports.strenum import StrEnum
 
 import numpy as np
+import polars as pl
 
 
 class Stream(StrEnum):
@@ -156,10 +163,24 @@ class Meta:
 
 
 class MetricStore:
+    COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
+    FRAME_SCHEMAS: ClassVar[dict[Stream, dict[str, Any]]] = {
+        Stream.GPU_UTIL: dict(
+            ts=pl.Float64, node=pl.String, gpu=pl.Int64, util=pl.Int64, mem_mb=pl.Int64, power_w=pl.Int64
+        ),
+        # labels dicts are canonicalized to a JSON string column at parse time
+        Stream.ENGINE_SERIES: dict(
+            ts=pl.Float64, addr=pl.String, metric=pl.String, labels_json=pl.String, value=pl.Float64
+        ),
+    }
+
     def __init__(self, dir: Path | str):
         self.dir = Path(dir)
         self.meta: Meta | None = None
-        self.records: dict[Stream, list[Record]] = {s: [] for s in Stream}
+        self.records: dict[Stream, list[Record]] = {s: [] for s in Stream if s not in self.COLUMNAR_STREAMS}
+        self.frames: dict[Stream, pl.DataFrame] = {
+            s: pl.DataFrame(schema=schema) for s, schema in self.FRAME_SCHEMAS.items()
+        }
         self._buffers: dict[Stream, list[Record]] = {s: [] for s in Stream}
         self._offsets: dict[Stream, int] = {s: 0 for s in Stream}
 
@@ -225,6 +246,14 @@ class MetricStore:
             if end < 0:
                 continue
             complete = chunk[: end + 1]
+            if stream in self.COLUMNAR_STREAMS:
+                frame = self._parse_columnar(stream, complete, path)
+                merged = pl.concat([self.frames[stream], frame], rechunk=False)
+                # bound chunk fragmentation from long follow sessions
+                self.frames[stream] = merged.rechunk() if merged.n_chunks() > 256 else merged
+                num_new += frame.height
+                self._offsets[stream] += len(complete)
+                continue
             record_type = _RECORD_TYPE_OF_STREAM[stream]
             for line in complete.splitlines():
                 try:
@@ -236,6 +265,54 @@ class MetricStore:
                 num_new += 1
             self._offsets[stream] += len(complete)
         return num_new
+
+    def _parse_columnar(self, stream: Stream, raw: bytes, path: Path) -> pl.DataFrame:
+        schema = self.FRAME_SCHEMAS[stream]
+        try:
+            frame = pl.read_ndjson(io.BytesIO(raw))
+            if stream is Stream.ENGINE_SERIES:
+                # all-empty labels: read_ndjson drops the column entirely
+                dtype = frame.schema.get("labels")
+                empty = dtype is None or dtype == pl.Null or (isinstance(dtype, pl.Struct) and not dtype.fields)
+                # struct schemas unify per chunk (same-writer key order is stable,
+                # so equal label dicts encode to equal strings within a store)
+                encoded = pl.lit("{}") if empty else pl.col("labels").struct.json_encode()
+                frame = frame.with_columns(encoded.alias("labels_json")).drop("labels", strict=False)
+            if set(frame.columns) != set(schema):
+                raise ValueError(f"fields {sorted(frame.columns)} != schema {sorted(schema)}")
+            return frame.select([pl.col(name).cast(dtype) for name, dtype in schema.items()])
+        except (pl.exceptions.PolarsError, ValueError) as e:
+            raise ValueError(f"corrupt record in {path} near byte {self._offsets[stream]}: {e}") from e
+
+    def has_stream(self, stream: Stream) -> bool:
+        if stream in self.COLUMNAR_STREAMS:
+            return self.frames[stream].height > 0
+        return bool(self.records[stream])
+
+    def iter_records(self, stream: Stream) -> list[Record]:
+        """Records as dataclass objects — slow materialization for tests/tools."""
+        if stream is Stream.GPU_UTIL:
+            return [GpuSample(**row) for row in self.frames[stream].iter_rows(named=True)]
+        if stream is Stream.ENGINE_SERIES:
+            return [
+                EngineSample(
+                    ts=row["ts"],
+                    addr=row["addr"],
+                    metric=row["metric"],
+                    labels={k: v for k, v in json.loads(row["labels_json"]).items() if v is not None},
+                    value=row["value"],
+                )
+                for row in self.frames[stream].iter_rows(named=True)
+            ]
+        return list(self.records[stream])
+
+    @staticmethod
+    def _window(frame: pl.DataFrame, t0: float | None, t1: float | None) -> pl.DataFrame:
+        if t0 is not None:
+            frame = frame.filter(pl.col("ts") >= t0)
+        if t1 is not None:
+            frame = frame.filter(pl.col("ts") <= t1)
+        return frame
 
     # ------------------------------- queries --------------------------------
 
@@ -269,6 +346,9 @@ class MetricStore:
 
     def time_range(self) -> tuple[float, float] | None:
         stamps = [ts for records in self.records.values() for record in records for ts in record.timestamps()]
+        for frame in self.frames.values():
+            if frame.height:
+                stamps += [frame["ts"].min(), frame["ts"].max()]
         if not stamps:
             return None
         return min(stamps), max(stamps)
@@ -277,9 +357,7 @@ class MetricStore:
 
     def lanes(self) -> list[dict]:
         """Every (node, gpu) seen in any stream — one timeline lane each."""
-        seen: set[tuple[str, int]] = set()
-        for sample in self.records[Stream.GPU_UTIL]:
-            seen.add((sample.node, sample.gpu))
+        seen: set[tuple[str, int]] = set(self.frames[Stream.GPU_UTIL].select("node", "gpu").unique().iter_rows())
         for event in self.records[Stream.PHASES]:
             for gpu in event.gpus:
                 seen.add((event.node, gpu))
@@ -393,23 +471,19 @@ class MetricStore:
     ) -> dict[str, dict]:
         """Per-lane NVML series, min/max-downsampled on util (the primary
         signal); mem/power take the same indices so all arrays stay aligned."""
-        by_lane: dict[str, list[GpuSample]] = {}
-        for sample in self.records[Stream.GPU_UTIL]:
-            if lanes is not None and (sample.node, sample.gpu) not in lanes:
-                continue
-            if (t0 is not None and sample.ts < t0) or (t1 is not None and sample.ts > t1):
-                continue
-            by_lane.setdefault(f"{sample.node}:{sample.gpu}", []).append(sample)
+        frame = self._window(self.frames[Stream.GPU_UTIL], t0, t1)
         out = {}
-        for lane, samples in sorted(by_lane.items()):
-            samples.sort(key=lambda s: s.ts)
-            util = np.asarray([s.util for s in samples])
-            indices, _ = minmax_downsample(np.arange(len(samples)), util, max_points)
-            out[lane] = dict(
-                ts=[samples[i].ts for i in indices],
-                util=[samples[i].util for i in indices],
-                mem_mb=[samples[i].mem_mb for i in indices],
-                power_w=[samples[i].power_w for i in indices],
+        for (node, gpu), part in sorted(frame.partition_by(["node", "gpu"], as_dict=True).items()):
+            if lanes is not None and (node, gpu) not in lanes:
+                continue
+            part = part.sort("ts")
+            util = part["util"].to_numpy()
+            indices, _ = minmax_downsample(np.arange(part.height), util, max_points)
+            out[f"{node}:{gpu}"] = dict(
+                ts=part["ts"].to_numpy()[indices].tolist(),
+                util=util[indices].tolist(),
+                mem_mb=part["mem_mb"].to_numpy()[indices].tolist(),
+                power_w=part["power_w"].to_numpy()[indices].tolist(),
             )
         return out
 
@@ -417,18 +491,13 @@ class MetricStore:
         self, metric: str, *, t0: float | None = None, t1: float | None = None, max_points: int = 2000
     ) -> list[dict]:
         """One series per (engine addr, label set) for the given metric."""
-        grouped: dict[tuple, list[EngineSample]] = {}
-        for sample in self.records[Stream.ENGINE_SERIES]:
-            if sample.metric != metric:
-                continue
-            if (t0 is not None and sample.ts < t0) or (t1 is not None and sample.ts > t1):
-                continue
-            grouped.setdefault((sample.addr, tuple(sorted(sample.labels.items()))), []).append(sample)
+        frame = self._window(self.frames[Stream.ENGINE_SERIES].filter(pl.col("metric") == metric), t0, t1)
         out = []
-        for (addr, labels), samples in sorted(grouped.items()):
-            samples.sort(key=lambda s: s.ts)
-            ts, values = stride_downsample([s.ts for s in samples], [s.value for s in samples], max_points)
-            out.append(dict(addr=addr, labels=dict(labels), ts=ts.tolist(), value=values.tolist()))
+        for (addr, labels_json), part in sorted(frame.partition_by(["addr", "labels_json"], as_dict=True).items()):
+            part = part.sort("ts")
+            ts, values = stride_downsample(part["ts"].to_numpy(), part["value"].to_numpy(), max_points)
+            labels = {k: v for k, v in json.loads(labels_json).items() if v is not None}
+            out.append(dict(addr=addr, labels=labels, ts=ts.tolist(), value=values.tolist()))
         return out
 
     def lane_index(self) -> list[dict]:
@@ -546,19 +615,20 @@ class MetricStore:
             return min(x_buckets - 1, max(0, int((ts - t0) / span * x_buckets)))
 
         if metric in self.HEATMAP_MAGNITUDE_FIELDS:
-            raw: dict[tuple[int, int], float] = {}
-            for sample in self.records[Stream.GPU_UTIL]:
-                row = row_of.get((sample.node, sample.gpu))
-                if row is None or sample.ts < t0 or sample.ts > t1:
+            frame = self._window(self.frames[Stream.GPU_UTIL], t0, t1)
+            values = np.zeros((len(rows), x_buckets))
+            filled = np.zeros((len(rows), x_buckets), dtype=bool)
+            for (node, gpu), part in frame.partition_by(["node", "gpu"], as_dict=True).items():
+                row = row_of.get((node, gpu))
+                if row is None:
                     continue
-                key = (row, bucket(sample.ts))
-                value = float(getattr(sample, metric))
-                if value > raw.get(key, float("-inf")):
-                    raw[key] = value
-            peak = max(raw.values(), default=1.0)
+                buckets = np.clip(((part["ts"].to_numpy() - t0) / span * x_buckets).astype(np.int64), 0, x_buckets - 1)
+                np.maximum.at(values[row], buckets, part[metric].to_numpy().astype(float))
+                filled[row, buckets] = True
+            peak = float(values[filled].max()) if filled.any() else 1.0
             scale = dict(max=100.0 if metric == "util" else peak)
-            for (row, col), value in raw.items():
-                matrix[row, col] = min(255, int(value / scale["max"] * 255))
+            cell = np.minimum(255, (values[filled] / scale["max"] * 255).astype(np.int64))
+            matrix[filled] = cell.astype(np.uint8)
             return dict(
                 rows=rows,
                 x_buckets=x_buckets,
@@ -602,12 +672,9 @@ class MetricStore:
         """Candidate lanes for the quick-pick buttons; the user confirms the
         selection — the machine only proposes."""
         if criterion == "lowest_util":
-            totals: dict[tuple[str, int], list[float]] = {}
-            for sample in self.records[Stream.GPU_UTIL]:
-                if (t0 is not None and sample.ts < t0) or (t1 is not None and sample.ts > t1):
-                    continue
-                totals.setdefault((sample.node, sample.gpu), []).append(float(sample.util))
-            scored = [(sum(v) / len(v), node, gpu) for (node, gpu), v in totals.items()]
+            frame = self._window(self.frames[Stream.GPU_UTIL], t0, t1)
+            grouped = frame.group_by("node", "gpu").agg(pl.col("util").mean().alias("score"))
+            scored = [(row["score"], row["node"], row["gpu"]) for row in grouped.iter_rows(named=True)]
             scored.sort()
         elif criterion.startswith("slowest_phase:"):
             phase_name = criterion.removeprefix("slowest_phase:")

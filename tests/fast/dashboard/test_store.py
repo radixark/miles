@@ -48,7 +48,12 @@ def test_roundtrip_all_streams(tmp_path):
     reader = MetricStore.load(tmp_path)
     assert reader.meta == Meta(run_name="test-run", start_ts=1.0, args={"colocate": True}, schema_version=1)
     for record in records:
-        assert reader.records[record.stream] == [record]
+        got = (
+            reader.iter_records(record.stream)
+            if record.stream in MetricStore.COLUMNAR_STREAMS
+            else reader.records[record.stream]
+        )
+        assert got == [record]
 
 
 def test_flush_clears_buffers_and_appends(tmp_path):
@@ -63,7 +68,8 @@ def test_flush_clears_buffers_and_appends(tmp_path):
 
     reader = MetricStore.load(tmp_path)
     for stream in Stream:
-        assert len(reader.records[stream]) == 2, stream
+        got = reader.iter_records(stream) if stream in MetricStore.COLUMNAR_STREAMS else reader.records[stream]
+        assert len(got) == 2, stream
 
 
 def test_follow_incremental(tmp_path):

@@ -77,10 +77,10 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
             metric_keys=store.metric_keys() + dump_keys,
             step_keys=store.step_keys(),
             capabilities=dict(
-                has_metrics=bool(store.records[Stream.METRICS]),
+                has_metrics=store.has_stream(Stream.METRICS),
                 has_tokenizer=(reader.dump_dir / "tokenizer").is_dir(),
-                has_timeline=bool(store.records[Stream.PHASES] or store.records[Stream.GPU_UTIL]),
-                has_engine_series=bool(store.records[Stream.ENGINE_SERIES]),
+                has_timeline=store.has_stream(Stream.PHASES) or store.has_stream(Stream.GPU_UTIL),
+                has_engine_series=store.has_stream(Stream.ENGINE_SERIES),
             ),
         )
 
