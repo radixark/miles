@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+import websockets.exceptions
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -156,19 +157,11 @@ _POOL_PROVISION_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_BACKO
 
 
 def _is_connection_error(exc: BaseException) -> bool:
-    s = str(exc).lower()
-    return any(
-        k in s
-        for k in (
-            "rejected websocket",
-            "failed to connect",
-            "no close frame",
-            "connection refused",
-            "connectionclosederror",
-            "server rejected",
-            "502",
-        )
-    )
+    # OpenEnv's EnvClient.connect normalizes every handshake failure (refused,
+    # timeout, HTTP 502 / rejected websocket) to a builtin ConnectionError;
+    # a mid-stream drop surfaces as websockets' ConnectionClosedError from
+    # recv/send. ConnectionClosedOK (clean 1000 close) is deliberately excluded.
+    return isinstance(exc, (ConnectionError, websockets.exceptions.ConnectionClosedError))
 
 
 def _is_throttle_error(exc: BaseException) -> bool:
