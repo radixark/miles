@@ -40,6 +40,10 @@ class FTTestMode:
     def total_rollout_gpus(self) -> int:
         return self.rollout_num_engines * self.rollout_gpus_per_engine
 
+    @property
+    def total_node_gpus(self) -> int:
+        return self.train_gpus_per_node + self.total_rollout_gpus
+
 
 MODES: dict[str, FTTestMode] = {
     # --- 1-node (8 GPUs) variants ---

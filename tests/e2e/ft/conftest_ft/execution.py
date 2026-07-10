@@ -203,7 +203,7 @@ def run_training(
     }
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=mode.train_gpus_per_node,
+        num_gpus_per_node=mode.total_node_gpus,
         megatron_model_type=mode.megatron_model_type,
         extra_env_vars=merged_env_vars,
         megatron_path=_MEGATRON_PATH,
