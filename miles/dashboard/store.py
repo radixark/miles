@@ -302,7 +302,9 @@ class MetricStore:
             for i, snapshot in enumerate(snapshots)
         ]
 
-    def phases_by_lane(self, *, t0: float | None = None, t1: float | None = None) -> list[dict]:
+    def phases_by_lane(
+        self, *, t0: float | None = None, t1: float | None = None, lanes: set[tuple[str, int]] | None = None
+    ) -> list[dict]:
         """Phase intervals resolved onto (node, gpu) lanes.
 
         Train-side events carry their own GPUs. ``rollout_manager`` events have
@@ -325,8 +327,10 @@ class MetricStore:
                     clip1 = event.t1 if window["t1"] is None else min(event.t1, window["t1"])
                     if clip0 >= clip1:
                         continue
-                    lanes = {(node, gpu) for engine in window["engines"] for node, gpu in engine["gpus"]}
-                    for node, gpu in sorted(lanes):
+                    covered = {(node, gpu) for engine in window["engines"] for node, gpu in engine["gpus"]}
+                    if lanes is not None:
+                        covered &= lanes
+                    for node, gpu in sorted(covered):
                         out.append(
                             dict(
                                 name=event.name,
@@ -340,6 +344,8 @@ class MetricStore:
                         )
             else:
                 for gpu in event.gpus:
+                    if lanes is not None and (event.node, gpu) not in lanes:
+                        continue
                     out.append(
                         dict(
                             name=event.name,
@@ -360,6 +366,8 @@ class MetricStore:
                 key = (event["node"], event["gpu"])
                 first_event[key] = min(first_event.get(key, float("inf")), event["t0"])
             for (node, gpu), first_t0 in first_event.items():
+                if lanes is not None and (node, gpu) not in lanes:
+                    continue
                 if first_t0 > self.meta.start_ts and overlaps(self.meta.start_ts, first_t0):
                     out.append(
                         dict(
@@ -376,12 +384,19 @@ class MetricStore:
         return out
 
     def gpu_series(
-        self, *, t0: float | None = None, t1: float | None = None, max_points: int = 2000
+        self,
+        *,
+        t0: float | None = None,
+        t1: float | None = None,
+        max_points: int = 2000,
+        lanes: set[tuple[str, int]] | None = None,
     ) -> dict[str, dict]:
         """Per-lane NVML series, min/max-downsampled on util (the primary
         signal); mem/power take the same indices so all arrays stay aligned."""
         by_lane: dict[str, list[GpuSample]] = {}
         for sample in self.records[Stream.GPU_UTIL]:
+            if lanes is not None and (sample.node, sample.gpu) not in lanes:
+                continue
             if (t0 is not None and sample.ts < t0) or (t1 is not None and sample.ts > t1):
                 continue
             by_lane.setdefault(f"{sample.node}:{sample.gpu}", []).append(sample)
@@ -415,6 +430,193 @@ class MetricStore:
             ts, values = stride_downsample([s.ts for s in samples], [s.value for s in samples], max_points)
             out.append(dict(addr=addr, labels=dict(labels), ts=ts.tolist(), value=values.tolist()))
         return out
+
+    def lane_index(self) -> list[dict]:
+        """Per-lane metadata for selection resolution: train ranks observed on
+        the lane, engine addrs that ever covered it, and derived roles."""
+        info: dict[tuple[str, int], dict] = {
+            (lane["node"], lane["gpu"]): dict(
+                node=lane["node"], gpu=lane["gpu"], ranks=set(), engine_addrs=set(), roles=set()
+            )
+            for lane in self.lanes()
+        }
+        for event in self.records[Stream.PHASES]:
+            if event.role != Role.TRAIN:
+                continue
+            for gpu in event.gpus:
+                entry = info.get((event.node, gpu))
+                if entry is not None:
+                    entry["roles"].add(Role.TRAIN.value)
+                    if event.rank >= 0:
+                        entry["ranks"].add(event.rank)
+        for snapshot in self.records[Stream.TOPOLOGY]:
+            for engine in snapshot.engines:
+                for node, gpu in engine.gpus:
+                    entry = info.get((node, gpu))
+                    if entry is not None:
+                        entry["roles"].add("rollout")
+                        entry["engine_addrs"].add(engine.addr)
+        return [
+            dict(
+                node=entry["node"],
+                gpu=entry["gpu"],
+                ranks=sorted(entry["ranks"]),
+                engine_addrs=sorted(entry["engine_addrs"]),
+                roles=sorted(entry["roles"]),
+            )
+            for entry in info.values()
+        ]
+
+    def resolve_lanes(self, grammar: str | None) -> set[tuple[str, int]] | None:
+        """Parse the lane-selection grammar into a lane set (None = all lanes).
+
+        Comma-separated selectors: ``rank:5`` / ``rank:0-7`` (train ranks),
+        ``node:<ip>``, ``gpu:<node>:<index>``, ``engine:<addr substring>``,
+        ``role:train`` / ``role:rollout``, or ``all``. Unknown selector syntax
+        raises; a valid selector matching nothing selects nothing.
+        """
+        if grammar is None or grammar.strip() in ("", "all"):
+            return None
+        index = self.lane_index()
+        selected: set[tuple[str, int]] = set()
+        for raw_token in grammar.split(","):
+            token = raw_token.strip()
+            if not token:
+                continue
+            kind, _, value = token.partition(":")
+            if not value:
+                raise ValueError(f"bad lane selector {token!r}: expected kind:value")
+            if kind == "rank":
+                lo, _, hi = value.partition("-")
+                ranks = set(range(int(lo), int(hi if hi else lo) + 1))
+                selected |= {(e["node"], e["gpu"]) for e in index if ranks & set(e["ranks"])}
+            elif kind == "node":
+                selected |= {(e["node"], e["gpu"]) for e in index if e["node"] == value}
+            elif kind == "gpu":
+                node, _, gpu = value.rpartition(":")
+                if not node:
+                    raise ValueError(f"bad lane selector {token!r}: expected gpu:<node>:<index>")
+                selected.add((node, int(gpu)))
+            elif kind == "engine":
+                selected |= {(e["node"], e["gpu"]) for e in index if any(value in a for a in e["engine_addrs"])}
+            elif kind == "role":
+                if value not in ("train", "rollout"):
+                    raise ValueError(f"bad lane selector {token!r}: role must be train or rollout")
+                selected |= {(e["node"], e["gpu"]) for e in index if value in e["roles"]}
+            else:
+                raise ValueError(f"unknown lane selector kind {kind!r} in {token!r}")
+        return selected
+
+    HEATMAP_MAGNITUDE_FIELDS: ClassVar[tuple[str, ...]] = ("util", "mem_mb", "power_w")
+
+    def heatmap(
+        self,
+        metric: str,
+        *,
+        t0: float | None = None,
+        t1: float | None = None,
+        x_buckets: int = 1200,
+        lanes: set[tuple[str, int]] | None = None,
+    ) -> dict:
+        """Rank-carpet matrix: one uint8 cell per (lane, time bucket).
+
+        Magnitude metrics take the bucket MAX (activity must not average away);
+        ``phase`` paints the covering phase id with non-idle winning over idle.
+        Returns rows metadata + the raw bytes; the server frames it as binary.
+        """
+        assert x_buckets >= 2, f"{x_buckets=}"
+        window = self.time_range()
+        if window is None:
+            return dict(
+                rows=[], x_buckets=x_buckets, t0=0.0, t1=0.0, metric=metric, values=b"", scale=None, palette=None
+            )
+        t0 = window[0] if t0 is None else t0
+        t1 = window[1] if t1 is None else t1
+        assert t1 > t0, f"empty heatmap window [{t0}, {t1})"
+        rows = [lane for lane in self.lanes() if lanes is None or (lane["node"], lane["gpu"]) in lanes]
+        row_of = {(lane["node"], lane["gpu"]): i for i, lane in enumerate(rows)}
+        matrix = np.zeros((len(rows), x_buckets), dtype=np.uint8)
+        span = t1 - t0
+
+        def bucket(ts: float) -> int:
+            return min(x_buckets - 1, max(0, int((ts - t0) / span * x_buckets)))
+
+        if metric in self.HEATMAP_MAGNITUDE_FIELDS:
+            raw: dict[tuple[int, int], float] = {}
+            for sample in self.records[Stream.GPU_UTIL]:
+                row = row_of.get((sample.node, sample.gpu))
+                if row is None or sample.ts < t0 or sample.ts > t1:
+                    continue
+                key = (row, bucket(sample.ts))
+                value = float(getattr(sample, metric))
+                if value > raw.get(key, float("-inf")):
+                    raw[key] = value
+            peak = max(raw.values(), default=1.0)
+            scale = dict(max=100.0 if metric == "util" else peak)
+            for (row, col), value in raw.items():
+                matrix[row, col] = min(255, int(value / scale["max"] * 255))
+            return dict(
+                rows=rows,
+                x_buckets=x_buckets,
+                t0=t0,
+                t1=t1,
+                metric=metric,
+                values=matrix.tobytes(),
+                scale=scale,
+                palette=None,
+            )
+
+        if metric != "phase":
+            raise ValueError(f"unknown heatmap metric {metric!r}")
+        idle = {INITIALIZE_PHASE, "train_wait", "sleep"}
+        events = self.phases_by_lane(t0=t0, t1=t1, lanes=lanes)
+        names = sorted({e["name"] for e in events})
+        palette = [""] + names  # id 0 = no phase observed
+        phase_id = {name: i + 1 for i, name in enumerate(names)}
+        # idle painted first so any active phase in the same bucket wins
+        for event in sorted(events, key=lambda e: e["name"] not in idle):
+            row = row_of.get((event["node"], event["gpu"]))
+            if row is None:
+                continue
+            b0 = bucket(max(event["t0"], t0))
+            b1 = bucket(min(event["t1"], t1))
+            matrix[row, b0 : b1 + 1] = phase_id[event["name"]]
+        return dict(
+            rows=rows,
+            x_buckets=x_buckets,
+            t0=t0,
+            t1=t1,
+            metric=metric,
+            values=matrix.tobytes(),
+            scale=None,
+            palette=palette,
+        )
+
+    def outliers(
+        self, criterion: str, *, t0: float | None = None, t1: float | None = None, top_k: int = 16
+    ) -> list[dict]:
+        """Candidate lanes for the quick-pick buttons; the user confirms the
+        selection — the machine only proposes."""
+        if criterion == "lowest_util":
+            totals: dict[tuple[str, int], list[float]] = {}
+            for sample in self.records[Stream.GPU_UTIL]:
+                if (t0 is not None and sample.ts < t0) or (t1 is not None and sample.ts > t1):
+                    continue
+                totals.setdefault((sample.node, sample.gpu), []).append(float(sample.util))
+            scored = [(sum(v) / len(v), node, gpu) for (node, gpu), v in totals.items()]
+            scored.sort()
+        elif criterion.startswith("slowest_phase:"):
+            phase_name = criterion.removeprefix("slowest_phase:")
+            durations: dict[tuple[str, int], list[float]] = {}
+            for event in self.phases_by_lane(t0=t0, t1=t1):
+                if event["name"] != phase_name:
+                    continue
+                durations.setdefault((event["node"], event["gpu"]), []).append(event["t1"] - event["t0"])
+            scored = [(sum(v) / len(v), node, gpu) for (node, gpu), v in durations.items()]
+            scored.sort(reverse=True)
+        else:
+            raise ValueError(f"unknown outlier criterion {criterion!r}")
+        return [dict(node=node, gpu=gpu, score=score) for score, node, gpu in scored[:top_k]]
 
     def bubbles(self) -> list[dict]:
         """Per-step bubble summary strip: step time and wait ratio from the

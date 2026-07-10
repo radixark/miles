@@ -17,12 +17,13 @@ Error mapping: ``DumpStillWriting`` -> 503 (client retries),
 
 from __future__ import annotations
 
+import json
 import math
 from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from miles.dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
@@ -90,15 +91,46 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
         return dict(lanes=store.lanes(), windows=store.topology_windows())
 
     @app.get("/api/timeline/phases")
-    def timeline_phases(t0: float | None = None, t1: float | None = None):
-        return dict(phases=store.phases_by_lane(t0=t0, t1=t1))
+    def timeline_phases(t0: float | None = None, t1: float | None = None, lanes: str | None = None):
+        with _translate_errors():
+            return dict(phases=store.phases_by_lane(t0=t0, t1=t1, lanes=store.resolve_lanes(lanes)))
 
     @app.get("/api/timeline/gpu")
-    def timeline_gpu(t0: float | None = None, t1: float | None = None, max_points: int = 2000):
+    def timeline_gpu(
+        t0: float | None = None, t1: float | None = None, max_points: int = 2000, lanes: str | None = None
+    ):
         with _translate_errors():
             if max_points < 2:
                 raise ValueError(f"{max_points=} must be >= 2")
-            return dict(lanes=store.gpu_series(t0=t0, t1=t1, max_points=max_points))
+            return dict(lanes=store.gpu_series(t0=t0, t1=t1, max_points=max_points, lanes=store.resolve_lanes(lanes)))
+
+    @app.get("/api/timeline/heatmap")
+    def timeline_heatmap(
+        metric: str = "util",
+        t0: float | None = None,
+        t1: float | None = None,
+        x_buckets: int = 1200,
+        lanes: str | None = None,
+    ):
+        """Binary rank carpet: [4-byte LE header length][header JSON][uint8
+        matrix, row-major] — one byte per (lane, time bucket) cell."""
+        with _translate_errors():
+            if not 2 <= x_buckets <= 4000:
+                raise ValueError(f"{x_buckets=} out of range [2, 4000]")
+            result = store.heatmap(metric, t0=t0, t1=t1, x_buckets=x_buckets, lanes=store.resolve_lanes(lanes))
+            values = result.pop("values")
+            header = json.dumps(_json_safe(result)).encode()
+            return Response(
+                content=len(header).to_bytes(4, "little") + header + values,
+                media_type="application/octet-stream",
+            )
+
+    @app.get("/api/timeline/outliers")
+    def timeline_outliers(criterion: str, t0: float | None = None, t1: float | None = None, top_k: int = 16):
+        with _translate_errors():
+            if not 1 <= top_k <= 256:
+                raise ValueError(f"{top_k=} out of range [1, 256]")
+            return dict(outliers=store.outliers(criterion, t0=t0, t1=t1, top_k=top_k))
 
     @app.get("/api/timeline/engine_series")
     def timeline_engine_series(metric: str, t0: float | None = None, t1: float | None = None, max_points: int = 2000):
