@@ -1,0 +1,12 @@
+diff --git a/python/sglang/srt/models/deepseek_v4.py b/python/sglang/srt/models/deepseek_v4.py
+--- a/python/sglang/srt/models/deepseek_v4.py
++++ b/python/sglang/srt/models/deepseek_v4.py
+@@ -1126,6 +1126,8 @@ class Compressor(nn.Module):
+             kv_score = _tgemm.mm(x, self.wkv_gate.weight, otype=x.dtype)
+         else:
+             kv_score = linear_bf16_fp32(x, self.wkv_gate.weight)
++        if kv_score.dtype != torch.float32:
++            kv_score = kv_score.float()
+         return self.compress_dispatch(kv_score, forward_batch)
+ 
+     def compress_extend_old(

@@ -1,0 +1,160 @@
+# DSv4 MI355X base: ROCm 7.2 SGLang stack.
+ARG SGLANG_IMAGE_TAG=rocm720-mi35x-da28108-20260605-DSv4
+FROM rocm/sgl-dev:${SGLANG_IMAGE_TAG} AS sglang
+
+SHELL ["/bin/bash", "-ceuxo", "pipefail"]
+
+# ======================================== Arguments =============================================
+
+ARG MEGATRON_REPO=radixark/Megatron-LM
+ARG MEGATRON_BASE_BRANCH=miles-main
+ARG MEGATRON_PR=28
+ARG MEGATRON_COMMIT=1c6e5b7bcde0097ebe193b6258115ff3558f69d6
+
+ARG MILES_COMMIT=main
+
+ARG GPU_ARCH=gfx950
+ARG MAX_JOBS=128
+
+ARG MBRIDGE_COMMIT=89eb10887887bc74853f89a4de258c0702932a1c
+
+ARG TORCH_MEMORY_SAVER_REPO=https://github.com/zyzshishui/torch_memory_saver.git
+ARG TORCH_MEMORY_SAVER_COMMIT=58631d96d6d75637ca071d09928d53dad2b2d82f
+
+ARG MEGATRON_BRIDGE_REPO=https://github.com/radixark/Megatron-Bridge.git
+ARG MEGATRON_BRIDGE_COMMIT=bridge
+
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_COMMIT=86438dc3d04e7726a2f8f7dc2bcbe74e2bc1f282
+
+ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
+ARG RCCL_TESTS_BRANCH=develop
+ARG RCCL_TESTS_PATH=projects/rccl-tests
+
+# ======================================== Setup =============================================
+
+WORKDIR /root/
+
+ENV MAX_JOBS=${MAX_JOBS}
+
+# Build configuration for MI350 / MI355, gfx950.
+ENV GPU_ARCH=${GPU_ARCH}
+ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}
+ENV GPU_ARCH_LIST=${GPU_ARCH}
+ENV AMDGPU_TARGET=${GPU_ARCH}
+
+# Transformer Engine build knobs for the ROCm branch.
+ENV NVTE_FRAMEWORK=pytorch
+ENV NVTE_ROCM_ARCH=${GPU_ARCH}
+ENV NVTE_USE_HIPBLASLT=1
+ENV NVTE_USE_ROCM=1
+ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
+
+# ======================================== Apt dependencies =============================================
+
+RUN apt update && \
+    apt install -y --no-install-recommends build-essential cmake dnsutils ethtool git nvtop rsync && \
+    rm -rf /var/lib/apt/lists/*
+
+# Build rccl-tests diagnostics binaries.
+RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/rocm-systems && \
+    make -C /tmp/rocm-systems/${RCCL_TESTS_PATH} -j$(nproc) \
+      HIP_HOME=/opt/rocm \
+      NCCL_HOME=/opt/rocm \
+      GPU_TARGETS=${GPU_ARCH} && \
+    cp /tmp/rocm-systems/${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
+    rm -rf /tmp/rocm-systems
+
+# ====================================== Python dependencies ============================================
+
+# Check base packages without importing modules that probe GPUs during build.
+RUN python -c "import importlib.util; assert all(importlib.util.find_spec(name) is not None for name in ('aiter', 'sglang', 'sgl_kernel')); print('DSv4 SGLang base packages: OK')"
+
+# Keep DSV4 compressed KV-score cache writes dtype-compatible.
+COPY docker/amd_patch/deepseek_v4/sglang_dsv4_compressor_fp32.patch /tmp/amd_patch/sglang_dsv4_compressor_fp32.patch
+RUN git -C /sgl-workspace/sglang apply /tmp/amd_patch/sglang_dsv4_compressor_fp32.patch
+
+# Expose the rollout-side weight post-process endpoint used by Miles.
+COPY docker/amd_patch/deepseek_v4/sglang_post_process_weights.patch /tmp/amd_patch/sglang_post_process_weights.patch
+RUN git -C /sgl-workspace/sglang apply /tmp/amd_patch/sglang_post_process_weights.patch
+
+# Install TileKernels and avoid eager TileLang imports on ROCm.
+RUN pip install --no-deps tile_kernels==1.0.0
+COPY docker/amd_patch/deepseek_v4/tile_kernels_lazy_import.patch /tmp/amd_patch/tile_kernels_lazy_import.patch
+RUN patch -p1 -d /opt/venv/lib/python3.10/site-packages < /tmp/amd_patch/tile_kernels_lazy_import.patch
+
+# Rebuild Transformer Engine from the ROCm commit paired with this stack.
+RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
+RUN rm -rf /root/TransformerEngine && \
+    git clone --recursive ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
+    cd /root/TransformerEngine && \
+    git checkout ${TRANSFORMER_ENGINE_COMMIT} && \
+    git submodule sync --recursive && \
+    git submodule update --init --recursive && \
+    NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
+
+# Install external mbridge used by Miles and the standalone verifier.
+RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@${MBRIDGE_COMMIT} --no-deps
+
+# Install Megatron with the DSV4/ROCm compatibility patches.
+COPY docker/amd_patch/deepseek_v4/megatron_dsv4_compat.patch /tmp/amd_patch/megatron_dsv4_compat.patch
+COPY docker/amd_patch/deepseek_v4/megatron_grad_clip.patch /tmp/amd_patch/megatron_grad_clip.patch
+RUN rm -rf /root/Megatron-LM && \
+    git clone -b ${MEGATRON_BASE_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
+    cd /root/Megatron-LM && \
+    git fetch origin pull/${MEGATRON_PR}/head:pr-${MEGATRON_PR}-deepseek-v4 && \
+    git checkout ${MEGATRON_COMMIT} && \
+    git submodule sync --recursive && \
+    git submodule update --init --recursive && \
+    git apply /tmp/amd_patch/megatron_dsv4_compat.patch && \
+    git apply /tmp/amd_patch/megatron_grad_clip.patch && \
+    pip install -e . --no-deps
+
+RUN pip install git+${TORCH_MEMORY_SAVER_REPO}@${TORCH_MEMORY_SAVER_COMMIT} --no-cache-dir --force-reinstall --no-deps
+RUN pip install "setuptools>=80" "pulp<4.0" "nvidia-ml-py>=12" --no-build-isolation
+RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation --no-deps
+# Install Megatron Bridge from the branch used by upstream Miles.
+RUN pip install git+${MEGATRON_BRIDGE_REPO}@${MEGATRON_BRIDGE_COMMIT} --no-deps --no-build-isolation --ignore-requires-python
+
+COPY requirements.txt /tmp/requirements.txt
+RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
+    pip install -r /tmp/requirements.txt
+
+# Pin runtime packages needed by Miles and Megatron.
+RUN pip install "ray[default]==2.55.1" "typer==0.25.1" "click==8.3.3"
+RUN pip install "numpy<2"
+
+# ====================================== Install main package ============================================
+
+# Install Miles with the minimal DSV4 ROCm compatibility patches.
+COPY docker/amd_patch/deepseek_v4/miles.patch /tmp/amd_patch/miles.patch
+RUN git clone https://github.com/radixark/miles.git /root/miles && \
+    cd /root/miles && \
+    git checkout ${MILES_COMMIT} && \
+    git apply --3way /tmp/amd_patch/miles.patch && \
+    pip install -e . --no-deps
+
+# Verify package availability without triggering GPU arch detection.
+RUN python -c "import importlib.util; assert all(importlib.util.find_spec(name) is not None for name in ('aiter', 'mbridge', 'megatron', 'megatron.bridge', 'sglang', 'sgl_kernel', 'torch', 'transformer_engine')); print('DSv4 runtime packages: OK')"
+
+# ====================================== Runtime knobs ============================================
+
+# Runtime knobs consumed by the DSV4 SGLang/Megatron stack.
+ENV HIP_FORCE_DEV_KERNARG=1
+ENV HSA_NO_SCRATCH_RECLAIM=1
+ENV SGLANG_USE_AITER=1
+ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+ENV SGLANG_MOE_PADDING=1
+ENV SGLANG_SET_CPU_AFFINITY=1
+ENV SGLANG_ROCM_FUSED_DECODE_MLA=1
+ENV SGLANG_USE_ROCM700A=1
+ENV MILES_DSV4_CKPT_VERSION=2604
+ENV MILES_DSV4_2604_SUBMODE=2604B
+ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
+ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
+
+RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
+
+WORKDIR /root/
+
+CMD ["/usr/bin/bash"]
