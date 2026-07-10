@@ -1955,6 +1955,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_prometheus_arguments(parser)
+        from miles.dashboard.args import add_dashboard_arguments
+
+        add_dashboard_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
@@ -2114,6 +2117,10 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 def miles_validate_args(args):
+    from miles.dashboard.args import validate_dashboard_args
+
+    validate_dashboard_args(args)
+
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.recompute_logprobs_via_prefill:

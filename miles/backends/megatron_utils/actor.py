@@ -80,6 +80,12 @@ class MegatronTrainRayActor(TrainRayActor):
         if self._is_main_rank:
             init_tracking(args, primary=False)
 
+        # every rank, not just main: per-GPU dashboard phase lanes need each
+        # rank's Timer events (no-op unless --use-miles-dashboard)
+        from miles.dashboard.hooks import register_train_actor
+
+        register_train_actor(args)
+
         unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
         if unsupported and args.use_pytorch_profiler:
             raise NotImplementedError(

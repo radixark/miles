@@ -120,6 +120,26 @@ class PrometheusBackend(TrackingBackend):
         return
 
 
+class MilesDashboardBackend(TrackingBackend):
+    # Live dashboard collection (see miles/dashboard). Lazy imports keep the
+    # dashboard package out of processes that never enable it.
+
+    def init(self, args, *, primary: bool = True, **kwargs) -> None:
+        from miles.dashboard.backend import init_dashboard
+
+        init_dashboard(args, primary=primary, **kwargs)
+
+    def log(self, metrics: dict[str, Any], step: int | None = None, *, step_key: str | None = None, **kwargs) -> None:
+        from miles.dashboard.backend import dashboard_log
+
+        dashboard_log(metrics, step=step, step_key=step_key)
+
+    def finish(self) -> None:
+        from miles.dashboard.backend import finish_dashboard
+
+        finish_dashboard()
+
+
 # Registry that maps backend name → (class, args-flag attribute)
 
 BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
@@ -127,6 +147,7 @@ BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
     "tensorboard": (TensorboardBackend, "use_tensorboard"),
     "mlflow": (MlflowBackend, "use_mlflow"),
     "prometheus": (PrometheusBackend, "use_prometheus"),
+    "miles_dashboard": (MilesDashboardBackend, "use_miles_dashboard"),
 }
 
 
