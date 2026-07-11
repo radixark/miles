@@ -42,10 +42,10 @@ def main():
             rows.append(line)
 
     random.Random(args.seed).shuffle(rows)  # fixed seed: reproducible, unbiased split
-    eval_rows, train_rows = rows[-args.eval_n:], rows[:-args.eval_n]
+    eval_rows, train_rows = rows[-args.eval_n :], rows[: -args.eval_n]
 
-    ek = {prompt_text(json.loads(l)) for l in eval_rows}
-    tk = {prompt_text(json.loads(l)) for l in train_rows}
+    ek = {prompt_text(json.loads(line)) for line in eval_rows}
+    tk = {prompt_text(json.loads(line)) for line in train_rows}
     assert ek.isdisjoint(tk), "LEAK: eval prompt found in train split"
 
     with open(os.path.join(args.out_dir, "dapo_train.jsonl"), "w") as f:
