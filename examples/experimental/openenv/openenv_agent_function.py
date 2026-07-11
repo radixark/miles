@@ -88,10 +88,15 @@ _TB2_TESTS_SRC = os.getenv("OPENENV_TB2_TESTS_SRC", "/task/tests")
 
 # The eval exec echoes reward.txt on this marker so we can parse it out of stdout.
 _REWARD_MARKER = "__TB2_REWARD__:"
+# Honor an empty _TASK_WORKDIR (workdir prefix disabled) the same way
+# _apply_workdir does, instead of silently forcing /app.
+_EVAL_CD_CMD = f"cd {_TASK_WORKDIR} && " if _TASK_WORKDIR else ""
 _CANONICAL_EVAL_CMD = (
-    "mkdir -p /tests /logs/verifier && "
+    # rm the reward file first so a stale one can never be read back if test.sh
+    # fails to run (e.g. in a reused sandbox where /logs survives across episodes).
+    "mkdir -p /tests /logs/verifier && rm -f /logs/verifier/reward.txt && "
     f"cp -a {_TB2_TESTS_SRC}/. /tests/ 2>/dev/null || true; "
-    f"cd {_TASK_WORKDIR or '/app'} && bash /tests/test.sh > /tmp/tb2_testsh.log 2>&1; "
+    f"{_EVAL_CD_CMD}bash /tests/test.sh > /tmp/tb2_testsh.log 2>&1; "
     f"echo {_REWARD_MARKER}$(cat /logs/verifier/reward.txt 2>/dev/null)"
 )
 
