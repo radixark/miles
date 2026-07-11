@@ -1,6 +1,6 @@
 ---
 title: Labels
-description: The three kinds of CI label — domain labels that gate tests, meta-labels that run everything, and bypass-fastfail.
+description: The three kinds of CI label — domain labels that gate tests, scope labels that broaden selection, and bypass-fastfail.
 ---
 
 # Labels
@@ -10,10 +10,12 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Kind | Example | Effect |
 |---|---|---|
 | Domain label | `run-ci-megatron` | selects which tests run |
-| Meta-label | `run-ci-image`, `run-ci-all` | run the full suite, ignoring domain labels |
+| Scope label | `run-ci-image` | run every enabled non-FT tag |
+| Scope label | `nightly` | run every enabled tag except `ft-long`, with fast-fail disabled |
+| Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
 
-Only domain labels are declared by tests; the other two are workflow switches in `pr-test.yml`.
+Only domain labels are declared by tests; scope and behavior labels are workflow switches in `pr-test.yml`.
 
 ## Domain labels: `register_*_ci(labels=...)` ↔ `run-ci-<x>`
 
@@ -34,13 +36,13 @@ Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` va
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
-## Meta-labels: run everything
+## Broad CI scopes
 
-`run-ci-image` and `run-ci-all` are the same switch: both add `--match-all-labels` to run every enabled test in the suite, ignoring domain labels. Neither is in `KNOWN_LABELS`.
+`run-ci-image` adds `--match-all-labels --exclude-labels ft-short ft-long`, so image validation ignores ordinary domain gating but does not schedule any FT tests.
 
-A manual `workflow_dispatch` run — and the nightly `schedule` run on `main` — gets `--match-all-labels` too, because neither has PR labels to filter on.
+A nightly run — the `schedule` on `main` or a PR carrying `nightly` — adds `--match-all-labels --exclude-labels ft-long`, so it includes `ft-short` but omits the FT soak tests. It also disables fast-fail on both levels.
 
-The `nightly` label runs a PR as a nightly: `--match-all-labels` plus fast-fail bypass on both levels.
+`run-ci-all` and a manual `workflow_dispatch` add `--match-all-labels` without exclusions, so every enabled tag is included. If scope labels overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`.
 
 ## Registration and scan scope
 
@@ -65,6 +67,6 @@ The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
 - Cross-stage: each GPU stage's check becomes `(needs.stage-a-cpu.result == 'success' || (needs.stage-a-cpu.result == 'failure' && contains(..., 'bypass-fastfail')))`, so GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: each stage adds `--continue-on-error` (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
 
-A nightly run — the `schedule` cron, or a PR carrying the `nightly` label — bypasses fast-fail on both levels: the same cross-stage `if` and per-stage `--continue-on-error` match `github.event_name == 'schedule' || contains(..., 'nightly')`, because a nightly is meant to exercise every test and surface every failure (one datapoint per test), not stop at the first.
+A nightly run — the `schedule` cron, or a PR carrying the `nightly` label — bypasses fast-fail on both levels: the same cross-stage `if` and per-stage `--continue-on-error` match `github.event_name == 'schedule' || contains(..., 'nightly')`, because a nightly is meant to exercise every enabled test except `ft-long` and surface every failure (one datapoint per test), not stop at the first.
 
-Like the meta-labels, `bypass-fastfail` is matched directly in `pr-test.yml` and is not in `KNOWN_LABELS`.
+Like the scope labels, `bypass-fastfail` is matched directly in `pr-test.yml` and is not in `KNOWN_LABELS`.

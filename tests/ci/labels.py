@@ -11,9 +11,9 @@ Adding a new label:
    The workflow does not need editing -- the generic stage job filters tests
    by labels at runtime.
 
-The meta-labels `run-ci-image` / `run-ci-all` are intentionally NOT listed
-here: they bypass the per-test labels filter and run the full suite via the
-`--match-all-labels` flag (handled in run_suite.py).
+The workflow-only scope labels are intentionally NOT listed here. `run-ci-all`
+uses `--match-all-labels` without exclusions; `run-ci-image` and nightly pair
+it with scope-specific `--exclude-labels` values (handled in run_suite.py).
 """
 
 KNOWN_LABELS: dict[str, str] = {
