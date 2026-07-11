@@ -53,13 +53,18 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     env:
-      PYTHONPATH: ${{ github.workspace }}
+      SGLANG_SOURCE_ROOT: /sgl-workspace/sglang/python
+      MEGATRON_SOURCE_ROOT: /root/Megatron-LM
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure source paths
+        shell: bash
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
 
       - name: Cleanup Ray processes
         shell: bash
@@ -126,31 +131,19 @@ jobs:
           echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
           echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
 
-      - name: Install dependencies
+      - name: Sync dependency sources
         if: ${{ !inputs.skip_dependency_install }}
         shell: bash
         env:
           MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
           SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
         run: |
-          if command -v rustup >/dev/null 2>&1; then
-            rustup default stable
-          fi
-          if ! command -v protoc >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y protobuf-compiler
-          fi
-          rustc --version
-          protoc --version
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
+          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
 
-      - name: Install (miles only)
-        if: ${{ inputs.skip_dependency_install }}
+      - name: Verify source resolution
         shell: bash
-        run: |
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+        run: python tests/ci/verify_source_resolution.py
 
       - name: Resolve suite plan
         shell: bash
@@ -167,12 +160,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # Megatron-LM's pyproject declares `packages.find.include = ["megatron.core", "megatron.core.*"]`,
-      # so `pip install -e` only exposes megatron.core — not megatron.training / legacy / rl.
-      # miles imports from megatron.training, so put the checkout on PYTHONPATH directly
-      # and skip the pip install for Megatron-LM entirely (its deps — torch, numpy,
-      # packaging — arrive via miles/requirements.txt transitively).
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/sglang/python:${{ github.workspace }}/Megatron-LM
+      SGLANG_SOURCE_ROOT: ${{ github.workspace }}/sglang/python
+      MEGATRON_SOURCE_ROOT: ${{ github.workspace }}/Megatron-LM
     steps:
       - name: Free disk space
         shell: bash
@@ -192,13 +181,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-
-      - name: Install system dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-          protoc --version
 
       - name: Resolve dependency refs
         id: resolve-refs
@@ -246,13 +228,17 @@ jobs:
           ref: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
           path: Megatron-LM
 
+      - name: Configure source paths
+        shell: bash
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         shell: bash
         env:
           UV_SYSTEM_PYTHON: "1"
         run: |
           uv pip install -r requirements.txt -r requirements-ci-cpu.txt
-          uv pip install -e . --no-deps
+          python tests/ci/verify_source_resolution.py
 
       - name: Resolve suite plan
         shell: bash
