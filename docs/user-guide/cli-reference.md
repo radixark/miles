@@ -237,7 +237,9 @@ Sections mirror the launch-script argument groups.
 | `--use-tis` | flag | off | Truncated Importance Sampling. |
 | `--use-routing-replay` | flag | off | Forward/backward routing consistency. |
 | `--use-rollout-routing-replay` | flag | off | R3 — capture inference-side expert routing and replay it during training. |
-| `--calculate-per-token-loss` | flag | off | Per-token loss reduction. |
+| `--calculate-per-token-loss` | flag | off | Legacy alias for `--loss-aggregation token_mean` (global per-token mean); kept for backward compatibility. Prefer `--loss-aggregation token_mean`. |
+| `--loss-aggregation` | enum | `sample_mean` | How pg_loss is aggregated (pg_loss only): `sample_mean` (GRPO), `prompt_mean` (DAPO), `token_mean` (= legacy `--calculate-per-token-loss`), `constant` (Dr.GRPO). See [customization](/user-guide/customization). |
+| `--loss-aggregation-divisor` | float | unset | Positive finite divisor `L` for `--loss-aggregation constant`; the final denominator is `L * global_batch_size`. |
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
 | `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |
 

@@ -18,6 +18,8 @@ def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
         eps_clip_high=0.2,
         custom_tis_function_path=None,
         custom_pg_loss_reducer_function_path=None,
+        loss_aggregation="sample_mean",
+        loss_aggregation_divisor=None,
         calculate_per_token_loss=False,
         qkv_format="thd",
         entropy_coef=0.0,

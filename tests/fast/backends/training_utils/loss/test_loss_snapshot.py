@@ -117,9 +117,9 @@ def _get_sum_of_sample_mean(batch, args, parallel_state):
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
-        args.qkv_format,
-        batch.get("max_seq_lens", None),
+        calculate_per_token_loss=args.calculate_per_token_loss,
+        qkv_format=args.qkv_format,
+        max_seq_lens=batch.get("max_seq_lens", None),
     )
 
 

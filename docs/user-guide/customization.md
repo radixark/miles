@@ -190,8 +190,54 @@ def get_pg_loss_reducer(
     ...
 ```
 
-Use case: Dr.GRPO divides by a constant instead of effective token count.
+Use case: a normalization not covered by `--loss-aggregation` below. The four
+standard modes are available first class; reach for this hook only for a custom
+reducer. When set, it takes precedence over `--loss-aggregation`.
 **Reference:** [`examples/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/DrGRPO/custom_reducer.py).
+
+### `--loss-aggregation`
+
+For one optimizer step, let `m_i` be the active-token count for sample `i`,
+`N` the sample count, `P` the prompt-group count, and `L` the configured
+constant divisor. The final policy-gradient scalar is:
+
+| Mode | Final scalar |
+| :--- | :--- |
+| `sample_mean` (default) | `(1 / N) * sum_i(sum_t loss_it * mask_it / max(m_i, 1))` |
+| `prompt_mean` | `(1 / P) * sum_g(sum_(i,t in g) loss_it * mask_it / max(sum_(i in g) m_i, 1))` |
+| `token_mean` | `sum_(i,t) loss_it * mask_it / sum_i m_i` |
+| `constant` | `sum_(i,t) loss_it * mask_it / (L * N)` |
+
+`sample_mean` preserves the previous default. `prompt_mean` is the DAPO-style
+prompt average, `token_mean` is a global active-token mean, and `constant` is
+the fixed-denominator form used by Dr.GRPO. `--loss-aggregation-divisor L`
+must be positive and finite and is accepted only for `constant`. `token_mean`
+rejects an optimizer step with no active tokens.
+
+`--calculate-per-token-loss` remains an alias for `--loss-aggregation
+token_mean`; new recipes should use the explicit mode. The legacy flag promotes
+`sample_mean` to `token_mean` and is rejected with `prompt_mean` or `constant`.
+When both keys appear in custom YAML, their values must agree. Both Megatron
+and FSDP apply the token denominator over the full data-parallel optimizer step.
+
+The mode changes `pg_loss`, not diagnostic metrics such as `pg_clipfrac` and
+`ppo_kl`, which remain sample means. In `token_mean`, the logged `loss`,
+`pg_loss`, and `ess_ratio` use the token denominator. Nonzero entropy or KL
+loss coefficients are rejected with `token_mean` because those auxiliary
+terms still use sample normalization.
+
+`prompt_mean` requires complete groups of exactly `n_samples_per_prompt`.
+Miles keeps groups within one optimizer step and validates custom converter
+metadata before training. A custom converter must emit one
+`prompt_group_indices` and one `prompt_mask_sums` value per sample; each
+`prompt_mask_sums` value is the total active-token count for that sample's
+group.
+
+The built-in TIS path preserves the loss mask and works with every mode. A
+custom TIS/RS function may change masks after data has been split into
+microbatches, so Miles rejects custom TIS with `prompt_mean` or `token_mean`
+rather than applying a stale step-level denominator. `sample_mean` and
+`constant` remain available with custom TIS/RS.
 
 ### `--custom-convert-samples-to-train-data-path`
 
@@ -212,6 +258,9 @@ def convert_samples_to_train_data(args, samples) -> dict:
         "metadata":                [...],
         "multimodal_train_inputs": [...],
         "teacher_log_probs":       [...],
+        # required when args.loss_aggregation == "prompt_mean"
+        "prompt_group_indices":    [...],
+        "prompt_mask_sums":        [...],
     }
 ```
 
