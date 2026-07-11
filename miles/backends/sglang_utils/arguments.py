@@ -1,13 +1,6 @@
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import _wrap_ipv6
 
-_SGLANG_PARALLEL_SIZE_DESTS = {
-    "tensor_parallel_size": "tp_size",
-    "data_parallel_size": "dp_size",
-    "pipeline_parallel_size": "pp_size",
-    "expert_parallel_size": "ep_size",
-}
-
 
 # TODO: use all sglang router arguments with `--sglang-router` prefix
 def add_sglang_router_arguments(parser):
@@ -107,19 +100,21 @@ def add_sglang_arguments(parser):
         # Make a copy to avoid modifying the original kwargs dict.
         final_kwargs = kwargs.copy()
 
-        short_parallel_dest = _SGLANG_PARALLEL_SIZE_DESTS.get(canonical_name_for_skip_check)
-        if short_parallel_dest is not None:
-            final_kwargs["dest"] = f"sglang_{short_parallel_dest}"
         # If 'dest' is explicitly provided and is a string, prefix it.
         # This ensures the attribute on the args namespace becomes, e.g., args.sglang_dest_name.
-        elif "dest" in final_kwargs and isinstance(final_kwargs["dest"], str):
+        if "dest" in final_kwargs and isinstance(final_kwargs["dest"], str):
             original_dest = final_kwargs["dest"]
             # Avoid double prefixing if dest somehow already starts with sglang_
             if not original_dest.startswith("sglang_"):
                 final_kwargs["dest"] = f"sglang_{original_dest}"
-        # If 'dest' is not explicitly provided (or is None/not a string),
-        # argparse will derive 'dest' from the (now prefixed) flag names.
-        # E.g., if the first flag is "--sglang-foo-bar", argparse sets dest to "sglang_foo_bar".
+        elif "dest" not in final_kwargs:
+            for item_flag in name_or_flags:
+                if not isinstance(item_flag, str) or not item_flag.startswith("--"):
+                    continue
+                canonical_dest = item_flag[2:].replace("-", "_")
+                if canonical_dest in ("tp_size", "dp_size", "pp_size", "ep_size"):
+                    final_kwargs["dest"] = f"sglang_{canonical_dest}"
+                    break
 
         old_add_argument(*new_name_or_flags_list, **final_kwargs)
 
