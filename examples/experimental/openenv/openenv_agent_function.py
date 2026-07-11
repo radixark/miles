@@ -21,6 +21,11 @@ Env vars:
                      stragglers that would otherwise stall the whole rollout batch).
   AGENT_MODEL_NAME   model name sent to the policy (default: "model")
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
+  OPENENV_TASK_WORKDIR  container dir every agent command + eval runs in (default:
+                     /app, the TB2 task image WORKDIR). Empty string disables the
+                     prefix. Needed because upstream OpenEnv defaults to /task.
+  OPENENV_TB2_TESTS_SRC  where the upstream env stages the task's tests inside the
+                     container (default: /task/tests); copied to /tests for test.sh.
 
 Daytona pool (optional; takes precedence over OPENENV_ENV_URL when set):
   OPENENV_DAYTONA_SNAPSHOT      Daytona snapshot name to provision sandboxes from
@@ -64,6 +69,50 @@ _FENCE_RE = re.compile(r"```(?:python|py|bash|sh)?\s*\n?(.*?)```", re.DOTALL | r
 
 # Max chars of command output fed back to the policy per turn (keeps context bounded).
 _OBS_CHAR_CAP = 4000
+
+# --- Adapter-driven Terminal-Bench-2 fidelity --------------------------------
+# Upstream OpenEnv's Tbench2DockerEnvironment runs the task container with workdir
+# /task (a copy of the task *source*) and scores via bare `pytest tests/` there.
+# Real TB2 tasks live at /app (the task image's WORKDIR) and are scored by the
+# task's canonical tests/test.sh, which pins the pytest toolchain, copies test.py
+# into /app, runs test_outputs.py, and writes the binary result to
+# /logs/verifier/reward.txt. We reproduce that faithfully from the adapter --
+# without patching OpenEnv or vendoring it -- by (a) running every agent command
+# in _TASK_WORKDIR and (b) driving the canonical harness through a plain `exec`
+# step instead of the env's built-in (non-canonical) `evaluate` action.
+#
+# This assumes the env server is UNMODIFIED upstream, which copies the task dir
+# (tests included) into the container at _TB2_TESTS_SRC.
+_TASK_WORKDIR = os.getenv("OPENENV_TASK_WORKDIR", "/app")
+_TB2_TESTS_SRC = os.getenv("OPENENV_TB2_TESTS_SRC", "/task/tests")
+
+# The eval exec echoes reward.txt on this marker so we can parse it out of stdout.
+_REWARD_MARKER = "__TB2_REWARD__:"
+_CANONICAL_EVAL_CMD = (
+    "mkdir -p /tests /logs/verifier && "
+    f"cp -a {_TB2_TESTS_SRC}/. /tests/ 2>/dev/null || true; "
+    f"cd {_TASK_WORKDIR or '/app'} && bash /tests/test.sh > /tmp/tb2_testsh.log 2>&1; "
+    f"echo {_REWARD_MARKER}$(cat /logs/verifier/reward.txt 2>/dev/null)"
+)
+
+
+def _apply_workdir(command: str) -> str:
+    """Prefix an agent command so it runs in the real task workdir (/app)."""
+    if not _TASK_WORKDIR:
+        return command
+    return f"cd {_TASK_WORKDIR} && {command}"
+
+
+def _parse_reward_marker(output: str) -> float:
+    """Parse the reward.txt value the canonical-eval exec echoed on its marker line."""
+    for line in output.splitlines()[::-1]:
+        if _REWARD_MARKER in line:
+            raw = line.split(_REWARD_MARKER, 1)[1].strip()
+            try:
+                return float(raw) if raw else 0.0
+            except ValueError:
+                return 0.0
+    return 0.0
 
 # Per-message WS recv timeout. Docker-mode tbench2 reset (container create),
 # exec, and evaluate (pytest) each routinely exceed the EnvClient default of 60s.
@@ -361,9 +410,11 @@ async def _multi_turn(
     """Agentic loop: reset(task) -> {policy -> exec -> feed output back} -> evaluate (tbench2).
 
     The policy emits one shell command per turn (a ```bash block or the bare
-    reply); the loop ends when the policy stops emitting a command, says
-    TASK_COMPLETE, or hits OPENENV_MAX_TURNS. The final ``evaluate`` action runs
-    the task's pytest suite and returns the binary reward.
+    reply), executed in the real task workdir (_TASK_WORKDIR, /app); the loop ends
+    when the policy stops emitting a command, says TASK_COMPLETE, or hits
+    OPENENV_MAX_TURNS. Scoring runs the task's canonical tests/test.sh via an
+    ``exec`` step and parses /logs/verifier/reward.txt for the binary reward
+    (faithful to Terminal-Bench-2, and needs no OpenEnv-side changes).
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
@@ -409,7 +460,9 @@ async def _multi_turn(
                 break
 
             t0 = time.monotonic()
-            step_result = await env.step(action_cls(action_type="exec", command=command))
+            step_result = await env.step(
+                action_cls(action_type="exec", command=_apply_workdir(command))
+            )
             tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
             # Feed the command output back as a user turn, not a tool turn. GLM
@@ -425,9 +478,11 @@ async def _multi_turn(
             convo.append({"role": "user", "content": content})
 
         t0 = time.monotonic()
-        eval_result = await env.step(action_cls(action_type="evaluate"))
+        eval_result = await env.step(
+            action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD)
+        )
         eval_time = time.monotonic() - t0
-        reward = float(getattr(eval_result, "reward", 0.0) or 0.0)
+        reward = _parse_reward_marker(_obs_field(eval_result, "output"))
 
         # rm-hack: the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
         # leaves a per-episode trial dir under that path after every episode, which
