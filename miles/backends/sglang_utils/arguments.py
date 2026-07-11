@@ -108,6 +108,7 @@ def add_sglang_arguments(parser):
             if not original_dest.startswith("sglang_"):
                 final_kwargs["dest"] = f"sglang_{original_dest}"
         elif "dest" not in final_kwargs:
+            # argparse derives dest from the first alias, so store parallel sizes under SGLang's short field names.
             for item_flag in name_or_flags:
                 if not isinstance(item_flag, str) or not item_flag.startswith("--"):
                     continue
