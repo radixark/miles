@@ -41,6 +41,8 @@ A **nightly** run is the full suite with fast-fail off, triggered either by the 
 
 **Runner selection.** GPU stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages set `cpu_runner: true` and run on GitHub-hosted `ubuntu-latest` instead, so they don't occupy GPU-fleet slots.
 
+**Dependency boundary.** GPU stages consume Python dependencies baked into `radixark/miles`; they install only the checked-out Miles, SGLang, and Megatron-LM sources with `--no-deps`. The hosted CPU stages install dependencies from `requirements.txt` and the fully pinned `requirements-ci-cpu.txt`, then expose the SGLang and Megatron-LM checkouts through `PYTHONPATH` so CI does not rebuild either project or maintain package names inline in the workflow.
+
 **Launch.** Every stage is a thin caller of the reusable workflow `_run-ci.yml` (`uses: ./.github/workflows/_run-ci.yml`). The stage passes only `execute_command`, `runs_on`, `container_image`, and `cpu_runner`; `_run-ci.yml` owns the rest — starting the container, waiting for the GPU to be ready, installing dependencies, then running `execute_command` twice (once `--list-only` to print the plan, then for real). The stage itself holds no test logic; it is purely "which runner, which image, which command".
 
 **Secrets.** Stages call the reusable workflow with `secrets: inherit`, so `_run-ci.yml` receives the caller's secrets (e.g. `WANDB_API_KEY`) without re-declaring each one.
