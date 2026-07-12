@@ -38,11 +38,13 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 ## Broad CI scopes
 
-`run-ci-image` adds `--match-all-labels --exclude-labels ft-short ft-long`, so image validation ignores ordinary domain gating but does not schedule any FT tests.
+Scope selection lives in `run_suite.py` `resolve_scope`: each workflow stage passes the raw PR label names (`--labels`) and the trigger (`--event-name`), and `resolve_scope` maps them to match-all plus per-scope exclusions. The workflow carries no scope policy of its own.
 
-A nightly run — the `schedule` on `main` or a PR carrying `nightly` — adds `--match-all-labels --exclude-labels ft-long`, so it includes `ft-short` but omits the FT soak tests. It also disables fast-fail on both levels.
+`run-ci-image` resolves to match-all minus `ft-short`/`ft-long`, so image validation ignores ordinary domain gating but does not schedule any FT tests.
 
-`run-ci-all` and a manual `workflow_dispatch` add `--match-all-labels` without exclusions, so every enabled tag is included. If scope labels overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`.
+A nightly run — the `schedule` on `main` or a PR carrying `nightly` — resolves to match-all minus `ft-long`, so it includes `ft-short` but omits the FT soak tests. It also disables fast-fail on both levels.
+
+`run-ci-all` and a manual `workflow_dispatch` resolve to match-all with no exclusions, so every enabled tag is included. If scope labels overlap, the precedence is `run-ci-all` > nightly > `run-ci-image` (the branch order of `resolve_scope`).
 
 ## Registration and scan scope
 
