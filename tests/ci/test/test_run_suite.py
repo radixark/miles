@@ -205,6 +205,20 @@ class TestResolveScope:
         # future trigger ever passes labels, this is not up for re-derivation.
         assert resolve_scope(event, labels) == expected
 
+    @pytest.mark.parametrize(
+        ("event", "labels", "expected"),
+        [
+            ("pull_request", {"run-ci-image", "run-ci-ft-short"}, (True, {"ft-long"})),
+            ("pull_request", {"nightly", "run-ci-ft-long"}, (True, set())),
+            ("pull_request", {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, (True, set())),
+            ("schedule", {"run-ci-ft-long"}, (True, set())),
+        ],
+    )
+    def test_explicit_domain_label_is_never_scope_excluded(self, event, labels, expected):
+        # Asking for FT coverage on an image bump must not be silently
+        # stripped by the image scope's exclusions.
+        assert resolve_scope(event, labels) == expected
+
 
 # --- pr-test.yml seam: stages pass facts, never scope policy -----------------
 

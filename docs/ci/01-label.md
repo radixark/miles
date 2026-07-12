@@ -46,6 +46,8 @@ A nightly run — the `schedule` on `main` or a PR carrying `nightly` — resolv
 
 `run-ci-all` and a manual `workflow_dispatch` resolve to match-all with no exclusions, so every enabled tag is included. If scope labels overlap, the precedence is `run-ci-all` > nightly > `run-ci-image` (the branch order of `resolve_scope`).
 
+A domain label explicitly requested on the PR wins over a scope exclusion: `run-ci-image` plus `run-ci-ft-short` runs the image scope *and* the ft-short tests, rather than silently dropping the explicit request.
+
 ## Registration and scan scope
 
 Labels are optional; registration is not. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
