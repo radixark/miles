@@ -92,10 +92,28 @@ async def batched_async_rm(
             sample.reward = reward
         return None
 
-    if args.custom_rm_path is not None:
+    samples_with_overrides = [(index, sample) for index, sample in enumerate(samples) if sample.custom_rm_path]
+    if not samples_with_overrides and args.custom_rm_path is not None:
         # Ensure the custom reward function is implemented in batch mode
         rm_function = load_function(args.custom_rm_path)
         return await rm_function(args, samples, **kwargs)
-    tasks = [async_rm(args, sample, **kwargs) for sample in samples]
-    rewards = await asyncio.gather(*tasks)
-    return rewards
+
+    samples_without_overrides = [(index, sample) for index, sample in enumerate(samples) if not sample.custom_rm_path]
+    override_rewards = asyncio.gather(*(async_rm(args, sample, **kwargs) for _, sample in samples_with_overrides))
+    if args.custom_rm_path is not None and samples_without_overrides:
+        rm_function = load_function(args.custom_rm_path)
+        default_rewards = rm_function(args, [sample for _, sample in samples_without_overrides], **kwargs)
+    else:
+        default_rewards = asyncio.gather(
+            *(async_rm(args, sample, **kwargs) for _, sample in samples_without_overrides)
+        )
+
+    override_rewards, default_rewards = await asyncio.gather(override_rewards, default_rewards)
+    rewards_by_index = dict(
+        zip(
+            [index for index, _ in samples_with_overrides] + [index for index, _ in samples_without_overrides],
+            [*override_rewards, *default_rewards],
+            strict=True,
+        )
+    )
+    return [rewards_by_index[index] for index in range(len(samples))]

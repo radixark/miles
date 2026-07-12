@@ -16,6 +16,8 @@ async def _per_sample_rm(args, sample, **kwargs):
 
 
 async def _global_rm(args, sample, **kwargs):
+    if isinstance(sample, list):
+        return [999] * len(sample)
     return 999
 
 
@@ -125,6 +127,18 @@ class TestAsyncRm:
 
 
 class TestBatchedAsyncRm:
+    def test_per_sample_custom_rm_takes_priority(self, mock_args):
+        mock_args.custom_rm_path = GLOBAL_RM_PATH
+        samples = [
+            Sample(prompt="", response="", label="", custom_rm_path=PER_SAMPLE_RM_PATH),
+            Sample(prompt="", response="", label=""),
+        ]
+        with function_registry.temporary(PER_SAMPLE_RM_PATH, _per_sample_rm), function_registry.temporary(
+            GLOBAL_RM_PATH, _global_rm
+        ):
+            rewards = run(batched_async_rm(mock_args, samples))
+        assert rewards == [111, 999]
+
     @pytest.mark.parametrize(
         "rm_type,samples_data,expected",
         [
