@@ -93,13 +93,18 @@ def resolve_scope(event_name: str, raw_labels: set[str]) -> tuple[bool, set[str]
     nightly > `run-ci-image`, with the label check ahead of the event check
     in each branch so an explicit label wins if the two ever co-occur
     (today `schedule` / `workflow_dispatch` runs carry no PR labels).
+
+    A domain label explicitly requested on the PR is never scope-excluded:
+    `run-ci-image` + `run-ci-ft-short` runs the image scope plus ft-short,
+    instead of silently dropping the request.
     """
+    requested = {raw[len(_RUN_CI_PREFIX) :] for raw in raw_labels if raw.startswith(_RUN_CI_PREFIX)}
     if "run-ci-all" in raw_labels or event_name == "workflow_dispatch":
         return True, set()
     if "nightly" in raw_labels or event_name == "schedule":
-        return True, {"ft-long"}
+        return True, {"ft-long"} - requested
     if "run-ci-image" in raw_labels:
-        return True, {"ft-short", "ft-long"}
+        return True, {"ft-short", "ft-long"} - requested
     return False, set()
 
 
