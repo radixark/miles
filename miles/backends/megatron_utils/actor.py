@@ -553,10 +553,16 @@ class MegatronTrainRayActor(TrainRayActor):
         cleanup_names = set(snapshot["cleanup"])
 
         loaded_names = set(self.loaded_adapters)
-        adapters_to_load = [adapter for name, adapter in should_be_loaded.items() if name not in loaded_names]
-        adapters_to_clean_up = [
-            self.loaded_adapters[n] for n in loaded_names if n in cleanup_names or n not in should_be_loaded
-        ]
+        # Sorted so per-adapter collectives (checkpoint export) run in the same
+        # order on every rank; set iteration order is process-specific.
+        adapters_to_load = sorted(
+            (adapter for name, adapter in should_be_loaded.items() if name not in loaded_names),
+            key=lambda adapter: adapter.name,
+        )
+        adapters_to_clean_up = sorted(
+            (self.loaded_adapters[n] for n in loaded_names if n in cleanup_names or n not in should_be_loaded),
+            key=lambda adapter: adapter.name,
+        )
         if adapters_to_load:
             _load_adapters(self.args, self.model, self.optimizer, adapters_to_load)
             for adapter in adapters_to_load:
