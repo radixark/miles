@@ -6,7 +6,12 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.arguments import _maybe_apply_dumper_overrides, _resolve_ft_components, get_miles_extra_args_provider
+from miles.utils.arguments import (
+    _maybe_apply_dumper_overrides,
+    _resolve_ft_components,
+    get_miles_extra_args_provider,
+    miles_validate_args,
+)
 from miles.utils.misc import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -142,6 +147,29 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+def test_custom_megatron_post_save_hook_path_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--custom-megatron-post-save-hook-path", "pkg.module.hook"] + REQUIRED_ARGS)
+
+    assert args.custom_megatron_post_save_hook_path == "pkg.module.hook"
+
+
+def test_custom_megatron_post_save_hook_path_requires_save():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--custom-megatron-post-save-hook-path", "pkg.module.hook", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(
+        AssertionError,
+        match="'--save' is required when custom_megatron_post_save_hook_path is set.",
+    ):
+        miles_validate_args(args)
 
 
 class TestResolveFtComponents:
