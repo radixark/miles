@@ -358,7 +358,7 @@ class DistBucketedWeightUpdateMixin:
         dist.barrier(group=get_gloo_group())
 
         with timer("update_weights_implementation"):
-            from ...multi_lora_utils import is_multi_lora_enabled
+            from miles.utils.multi_lora import is_multi_lora_enabled
 
             is_lora = getattr(self, "is_lora", False)
             is_multi_lora = is_lora and is_multi_lora_enabled(self.args)
