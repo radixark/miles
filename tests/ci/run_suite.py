@@ -136,7 +136,9 @@ def filter_tests(
       intersect the PR-supplied set.
     * `exclude_labels`: after either inclusion mode, remove tests carrying any
       excluded label. This lets broad scopes omit a specific expensive class;
-      an exclusion always wins over inclusion.
+      an exclusion always wins over inclusion. Excluded tests are removed
+      entirely: a disabled test carrying an excluded label also vanishes
+      from the skip report.
     """
     ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and t.nightly == nightly]
 

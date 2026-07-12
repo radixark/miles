@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
+from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import (
     PER_COMMIT_SUITES,
     build_cpu_pytest_cmd,
@@ -434,6 +435,49 @@ class TestFilterTestsBroadScopes:
             match_all_labels=True,
         )
         assert _names(enabled) == _names(broad_scope_tests)
+
+    def test_exclusion_applies_after_domain_label_inclusion(self, broad_scope_tests):
+        # The docstring promises exclusion "after either inclusion mode";
+        # cover the non-match-all path too.
+        enabled, _ = filter_tests(
+            broad_scope_tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            labels={"ft-short", "megatron"},
+            exclude_labels={"ft-short"},
+        )
+        assert _names(enabled) == {
+            "tests/e2e/always.py",
+            "tests/e2e/megatron.py",
+        }
+
+    def test_excluded_disabled_test_vanishes_from_skip_report(self):
+        tests = [
+            _make("tests/e2e/always.py", labels=[]),
+            _make("tests/e2e/ft/long.py", labels=["ft-long"], disabled="flaky"),
+        ]
+        enabled, skipped = filter_tests(
+            tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            match_all_labels=True,
+            exclude_labels={"ft-long"},
+        )
+        assert _names(enabled) == {"tests/e2e/always.py"}
+        assert skipped == [], "excluded-and-disabled tests are out of scope entirely, not skip-reported"
+
+    def test_scope_exclusions_are_known_labels(self):
+        # A typo'd exclusion label silently excludes nothing; every scope's
+        # exclude set must stay inside the domain-label registry.
+        scopes = [
+            resolve_scope("schedule", set()),
+            resolve_scope("workflow_dispatch", set()),
+            resolve_scope("pull_request", {"run-ci-image"}),
+            resolve_scope("pull_request", {"nightly"}),
+            resolve_scope("pull_request", {"run-ci-all"}),
+        ]
+        for _, exclude in scopes:
+            assert exclude <= set(KNOWN_LABELS), f"unknown label(s) in scope exclusions: {exclude - set(KNOWN_LABELS)}"
 
 
 # --- filter_tests: hw/suite/nightly partitioning still works ----------------
