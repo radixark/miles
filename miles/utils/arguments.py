@@ -2034,15 +2034,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Port of the standalone session server. Auto-allocated if not set.",
             )
             parser.add_argument(
-                "--agent-server-url",
-                type=str,
-                default=os.environ.get("AGENT_SERVER_URL"),
-                help="Base URL of the Harbor agent server driving agentic rollouts. "
-                "When set, oversampling abort also flushes the server's in-flight "
-                "trials so they stop hitting SGLang. Defaults to the AGENT_SERVER_URL "
-                "env var.",
-            )
-            parser.add_argument(
                 "--tito-model",
                 type=str,
                 default="default",

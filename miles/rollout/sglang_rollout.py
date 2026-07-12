@@ -1,7 +1,6 @@
 import asyncio
 import copy
 import logging
-import os
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
@@ -341,34 +340,32 @@ async def generate_and_rm_group(
     return group
 
 
-async def flush_agent_server(args: Namespace) -> None:
-    """Cancel in-flight Harbor agent-server trials for this run.
+async def _call_agent_abort_hook(args: Namespace) -> None:
+    """Invoke the agent plugin's optional abort hook, if it defines one.
 
-    Aborting SGLang only stops the in-flight generations; the Harbor agent loops
-    keep running and keep issuing fresh completion requests to SGLang until they
-    hit their own max_seq_len / timeout. Flushing the agent server cancels the
-    in-flight ``/run`` tasks (agent-agnostic) and releases their containers.
+    Aborting SGLang only stops the in-flight generations; an external agent loop
+    (driven by ``--custom-agent-function-path``) keeps running and keeps issuing
+    fresh completion requests until it hits its own limit. The agent integration
+    knows how to tell its backend to stop, so we look for a sibling ``abort``
+    callable in the same module as the configured agent function and call it.
+    Backends that don't expose one are simply left to drain as before.
     """
-    agent_server_url = getattr(args, "agent_server_url", None) or os.environ.get("AGENT_SERVER_URL")
-    instance_id = getattr(args, "session_server_instance_id", None)
-    if not agent_server_url or not instance_id:
+    agent_function_path = getattr(args, "custom_agent_function_path", None)
+    if not agent_function_path:
         return
 
-    headers = None
-    admin_secret = os.environ.get("HARBOR_ADMIN_SECRET")
-    if admin_secret:
-        headers = {"Authorization": f"Bearer {admin_secret}"}
+    module_path, _, _ = agent_function_path.rpartition(".")
+    if not module_path:
+        return
+    try:
+        abort_hook = load_function(f"{module_path}.abort")
+    except (AttributeError, ModuleNotFoundError):
+        return  # plugin doesn't expose an abort hook; nothing to tear down
 
     try:
-        result = await post(
-            f"{agent_server_url.rstrip('/')}/flush",
-            {"session_server_instance_id": instance_id},
-            max_retries=3,
-            headers=headers,
-        )
-        logger.info(f"Flushed agent server {agent_server_url}: {result}")
+        await abort_hook(args)
     except Exception as e:
-        logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
+        logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
 
 
 async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
@@ -392,9 +389,9 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         if isinstance(result, Exception):
             logger.warning(f"Failed to abort worker at {url}: {result}")
 
-    # Cancel in-flight Harbor trials so they stop hitting SGLang and release their
-    # containers instead of running on until their own max_seq_len / timeout.
-    await flush_agent_server(args)
+    # Let the agent integration tear down its in-flight trials so they stop hitting
+    # SGLang, instead of running on until their own max_seq_len / timeout.
+    await _call_agent_abort_hook(args)
 
     # make sure all the pending tasks are finished
     count = 0
