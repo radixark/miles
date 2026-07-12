@@ -151,8 +151,8 @@ def filter_tests(
         label_set: set[str] = labels or set()
         ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
 
-    excluded_label_set = exclude_labels or set()
-    ci_tests = [t for t in ci_tests if not (set(t.labels) & excluded_label_set)]
+    if exclude_labels:
+        ci_tests = [t for t in ci_tests if not any(lbl in exclude_labels for lbl in t.labels)]
 
     enabled_tests = [t for t in ci_tests if t.disabled is None]
     skipped_tests = [t for t in ci_tests if t.disabled is not None]
