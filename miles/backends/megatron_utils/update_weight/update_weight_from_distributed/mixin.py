@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.timer import timer
 
 from ...lora_utils import _is_adapter_param_name, build_lora_sync_config, is_lora_weight_name
@@ -254,10 +255,11 @@ class DistBucketedWeightUpdateMixin:
                 "(no lora_A/lora_B names found). Check weight iterator."
             )
 
-        self._update_lora_weight_implementation(
-            accumulated_named_tensors,
-            upsert=self._lora_loaded,
-        )
+        if self._lora_loaded:
+            ray.get(
+                [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
+            )
+        self._update_lora_weight_implementation(accumulated_named_tensors)
         self._lora_loaded = True
 
     def _update_multi_lora_weights(self) -> None:

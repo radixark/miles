@@ -151,6 +151,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
 
+        extra_kwargs = {"upsert": True} if upsert else {}
         refs = [
             engine.load_lora_adapter_from_distributed.remote(
                 lora_name=lora_name,
@@ -159,7 +160,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 dtypes=dtypes,
                 shapes=shapes,
                 group_name=self._group_name,
-                upsert=upsert,
+                **extra_kwargs,
             )
             for engine in self.rollout_engines
         ]
