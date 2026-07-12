@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import logging
+import os
 import uuid
 from argparse import Namespace
 from collections.abc import Callable
@@ -340,6 +341,36 @@ async def generate_and_rm_group(
     return group
 
 
+async def flush_agent_server(args: Namespace) -> None:
+    """Cancel in-flight Harbor agent-server trials for this run.
+
+    Aborting SGLang only stops the in-flight generations; the Harbor agent loops
+    keep running and keep issuing fresh completion requests to SGLang until they
+    hit their own max_seq_len / timeout. Flushing the agent server cancels the
+    in-flight ``/run`` tasks (agent-agnostic) and releases their containers.
+    """
+    agent_server_url = getattr(args, "agent_server_url", None) or os.environ.get("AGENT_SERVER_URL")
+    instance_id = getattr(args, "session_server_instance_id", None)
+    if not agent_server_url or not instance_id:
+        return
+
+    headers = None
+    admin_secret = os.environ.get("HARBOR_ADMIN_SECRET")
+    if admin_secret:
+        headers = {"Authorization": f"Bearer {admin_secret}"}
+
+    try:
+        result = await post(
+            f"{agent_server_url.rstrip('/')}/flush",
+            {"session_server_instance_id": instance_id},
+            max_retries=3,
+            headers=headers,
+        )
+        logger.info(f"Flushed agent server {agent_server_url}: {result}")
+    except Exception as e:
+        logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
+
+
 async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     aborted_samples = []
 
@@ -360,6 +391,10 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     for url, result in zip(urls, abort_results, strict=False):
         if isinstance(result, Exception):
             logger.warning(f"Failed to abort worker at {url}: {result}")
+
+    # Cancel in-flight Harbor trials so they stop hitting SGLang and release their
+    # containers instead of running on until their own max_seq_len / timeout.
+    await flush_agent_server(args)
 
     # make sure all the pending tasks are finished
     count = 0
