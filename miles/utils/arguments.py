@@ -1380,6 +1380,56 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "down lora_B shared across experts, expert_dim=1). Matches SGLang "
                 "PR #21466's experts_shared_outer_loras=True serving contract.",
             )
+            parser.add_argument(
+                "--multi-lora-n-adapters",
+                type=int,
+                default=0,
+                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
+            )
+            parser.add_argument(
+                "--multi-lora-adapter",
+                nargs=2,
+                action="append",
+                type=str,
+                dest="multi_lora_adapters",
+                default=[],
+            )
+            parser.add_argument(
+                "--multi-lora-idle-poll-s",
+                type=float,
+                default=5.0,
+                help="When no adapter is RUNNING, the trainer polls for new registrations every this many seconds (default: 5.0)",
+            )
+            parser.add_argument(
+                "--multi-lora-http-server-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-backend-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
+                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-api-port",
+                type=int,
+                default=8068,
+                help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
+            )
+            parser.add_argument(
+                "--multi-lora-disable-service-mode",
+                action="store_false",
+                dest="multi_lora_service_mode",
+                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
+            )
             return parser
 
         def add_router_arguments(parser):
@@ -2485,6 +2535,17 @@ def miles_validate_args(args):
                 "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",
             )
+
+    # Multi-LoRA flag — adapter configs are loaded later by the controller
+    args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
+    if args.multi_lora:
+        assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
+        assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
+        assert not args.colocate, (
+            "Multi-LoRA requires disaggregated rollout engines: weight sync is only "
+            "implemented for the distributed path, not the colocated tensor path."
+        )
+        args.megatron_to_hf_mode = "bridge"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

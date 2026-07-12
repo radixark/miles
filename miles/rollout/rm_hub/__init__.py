@@ -6,6 +6,7 @@ import aiohttp
 
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
+from miles.utils.multi_lora import is_multi_lora_enabled
 
 from .deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
 from .f1 import f1_score
@@ -28,15 +29,24 @@ async def remote_rm(args, sample: Sample):
             return await resp.json()
 
 
+def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
+    if sample.reward_spec is not None:
+        return sample.reward_spec.custom_rm_path, (sample.reward_spec.rm_type or "").strip()
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+    rm_type = (metadata.get("rm_type") or getattr(args, "rm_type", None) or "").strip()
+    return getattr(args, "custom_rm_path", None), rm_type
+
+
 async def async_rm(args, sample: Sample, **kwargs):
-    if args.custom_rm_path is not None:
-        rm_function = load_function(args.custom_rm_path)
+    custom_rm_path, rm_type = _resolve_reward_config(args, sample)
+
+    if custom_rm_path is not None:
+        rm_function = load_function(custom_rm_path)
         return await rm_function(args, sample, **kwargs)
 
-    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    rm_type = (metadata.get("rm_type") or args.rm_type or "").strip()
     response = sample.response
     label = sample.label
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     if rm_type.startswith("boxed_"):
         response = extract_boxed_answer(response) or ""
         rm_type = rm_type[len("boxed_") :]
@@ -88,8 +98,7 @@ async def batched_async_rm(
             sample.reward = reward
         return None
 
-    if args.custom_rm_path is not None:
-        # Ensure the custom reward function is implemented in batch mode
+    if args.custom_rm_path is not None and not is_multi_lora_enabled(args):
         rm_function = load_function(args.custom_rm_path)
         return await rm_function(args, samples, **kwargs)
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]

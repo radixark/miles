@@ -13,7 +13,11 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, lora_base_cpu_backup_enabled
+from miles.backends.megatron_utils.lora_utils import (
+    convert_target_modules_to_hf,
+    lora_base_cpu_backup_enabled,
+)
+from miles.backends.megatron_utils.multi_lora_utils import is_multi_lora_enabled
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
@@ -341,14 +345,22 @@ class SGLangEngine(RayActor):
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N.
+
+        When ``upsert`` is set, the adapter named ``lora_name`` must already be
+        loaded and is overwritten in place (no unload/register); used by the
+        multi-LoRA in-place update path.
+        """
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
             "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
+        if upsert:
+            payload["upsert"] = True
         if load_format is not None:
             payload["load_format"] = load_format
         if added_tokens_config is not None:
@@ -369,6 +381,7 @@ class SGLangEngine(RayActor):
         group_name: str,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
     ):
         """Load a LoRA adapter whose weights are broadcast over ``group_name``.
 
@@ -376,6 +389,11 @@ class SGLangEngine(RayActor):
         the tensors arrive via NCCL broadcast (src=0), so no CUDA IPC is used and
         this works across nodes. ``init_weights_update_group`` must have created
         ``group_name`` already.
+
+        When ``upsert`` is set, the adapter named ``lora_name`` must
+        already be loaded on the engines; its weights are overwritten in place
+        (no unload, no register, no wait_for_unload). This is the in-place update
+        path for the fixed multi-LoRA pool.
         """
         payload = {
             "lora_name": lora_name,
@@ -385,6 +403,7 @@ class SGLangEngine(RayActor):
             "shapes": shapes,
             "group_name": group_name,
             "pinned": pinned,
+            "upsert": upsert,
         }
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
@@ -707,7 +726,12 @@ def _compute_server_args(
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
-    if is_lora_enabled(args):
+    if is_multi_lora_enabled(args):
+        kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+    elif is_lora_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)

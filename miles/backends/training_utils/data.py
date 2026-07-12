@@ -167,7 +167,10 @@ def get_batch(
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
+        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+
         if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
             local_len = max_seqlen // cp_size
             start = parallel_state.cp.rank * local_len
@@ -176,12 +179,14 @@ def get_batch(
             ]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        sample_token_lengths = [t.size(0) for t in tokens]
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
         cp_rank = parallel_state.cp.rank
 
         if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             # DSA mode: concatenate all sequences first, then slice once with CP.
             # We also pad the *global* concatenated stream to make per-rank chunks equal.
             cu_seqlens_list: list[int] = [0]
@@ -202,6 +207,7 @@ def get_batch(
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
+            sample_token_lengths = [t.size(0) for t in tokens]
 
             cu_seqlens = [0]
             for t in tokens:
@@ -226,6 +232,21 @@ def get_batch(
         batch["max_seqlen"] = max_seqlen
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
+
+    # Multi-LoRA: compute per-adapter token counts from post-CP per-sample lengths.
+    # NOTE: allgather CP is currently not supported
+    adapter_slots = batch.get("adapter_slots")
+    if adapter_slots is not None:
+        assert all(
+            adapter_slots[i] <= adapter_slots[i + 1] for i in range(len(adapter_slots) - 1)
+        ), f"adapter_slots not sorted in micro-batch: {adapter_slots}"
+        n_adapters = data_iterator.rollout_data["n_adapters"]
+        total_tokens = tokens.numel()
+        counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())
+        for slot, length in zip(adapter_slots, sample_token_lengths, strict=True):
+            counts[slot] += length
+        counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
+        batch["adapter_token_counts"] = counts
 
     batch["tokens"] = tokens
 

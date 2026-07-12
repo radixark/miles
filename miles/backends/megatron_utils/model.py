@@ -6,6 +6,7 @@ import logging
 import math
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.multi_lora import is_multi_lora_enabled
 
 from ...utils.misc import filter_keys
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -137,7 +139,11 @@ def setup_model_and_optimizer(
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
 
-    if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
+    # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
+    # which picks the adapter type internally.
+    if is_multi_lora_enabled(args) or (
+        is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge"
+    ):
         model = _setup_lora_model_via_bridge(args)
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
@@ -280,6 +286,7 @@ def forward_only(
                 "response_lengths",
                 "max_seq_lens",
                 "witness_ids",
+                "adapter_slots",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -290,6 +297,11 @@ def forward_only(
         packed_seq_params = get_packed_seq_params(batch, args)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
+
+        if "adapter_token_counts" in batch:
+            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
+
+            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
         output_tensor = model(
             input_ids=tokens,
@@ -439,11 +451,17 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "adapter_slots",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+
+        if "adapter_token_counts" in batch:
+            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
+
+            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
         from miles.utils.replay_base import all_replay_managers
 
@@ -909,13 +927,25 @@ def initialize_model_and_optimizer(
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
-    iteration, _ = load_checkpoint(
-        model,
-        optimizer,
-        opt_param_scheduler,
-        checkpointing_context=checkpointing_context,
-        skip_load_to_model_and_opt=False,
-    )
+
+    multi_lora = is_multi_lora_enabled(args)
+    if multi_lora:
+        # Hide adapter params so the bridge's conversion-task walk doesn't see them
+        # while loading the base checkpoint.
+        from megatron.bridge.peft.multi_lora_layers import hide_adapters
+
+        load_ctx = hide_adapters(model)
+    else:
+        load_ctx = nullcontext()
+
+    with load_ctx:
+        iteration, _ = load_checkpoint(
+            model,
+            optimizer,
+            opt_param_scheduler,
+            checkpointing_context=checkpointing_context,
+            skip_load_to_model_and_opt=False,
+        )
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 

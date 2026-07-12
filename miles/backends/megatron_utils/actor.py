@@ -2,6 +2,7 @@ import logging
 import random
 import socket
 from argparse import Namespace
+from pathlib import Path
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,7 @@ from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
+from .multi_lora_utils import is_multi_lora_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
@@ -234,6 +236,9 @@ class MegatronTrainRayActor(TrainRayActor):
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=is_lora_enabled(args),
         )
+
+        # Adapters currently loaded into Megatron slots on this rank.
+        self.loaded_adapters: dict[str, object] = {}
 
         # empty cache after initialization
         clear_memory()
@@ -513,12 +518,61 @@ class MegatronTrainRayActor(TrainRayActor):
                         logger.info(f"Updating ref model at rollout_id {rollout_id}")
                     self.weights_backuper.backup("ref")
 
+        if is_multi_lora_enabled(self.args) and is_first_replica_megatron_main_rank():
+            from miles.ray.multi_lora_controller import get_multi_lora_controller
+
+            ray.get(get_multi_lora_controller().mark_batch_trained.remote(rollout_id))
+
         log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
 
         self._heartbeat.bump()
         return train_step_outcome
 
     @with_logs
+    @timer
+    def reconcile_adapters(self) -> None:
+        """Load what the controller wants served, tear down what it retired.
+        The snapshot is read once on the main rank and broadcast."""
+        if not is_multi_lora_enabled(self.args):
+            return
+        from miles.backends.megatron_utils.multi_lora_utils import (
+            cleanup_adapters as _cleanup_adapters,
+            load_adapters as _load_adapters,
+        )
+        from miles.ray.multi_lora_controller import get_multi_lora_controller
+
+        broadcast_buffer = [None]
+        if is_first_replica_megatron_main_rank():
+            controller = get_multi_lora_controller()
+            ray.get(controller.retire_adapters.remote())
+            broadcast_buffer[0] = ray.get(controller.snapshot.remote())
+        if dist.is_initialized():
+            dist.broadcast_object_list(broadcast_buffer, src=0, group=get_gloo_group())
+        snapshot = broadcast_buffer[0]
+        should_be_loaded = {**snapshot["active"], **snapshot["pending"], **snapshot["retiring"]}
+        cleanup_names = set(snapshot["cleanup"])
+
+        loaded_names = set(self.loaded_adapters)
+        adapters_to_load = [adapter for name, adapter in should_be_loaded.items() if name not in loaded_names]
+        adapters_to_clean_up = [
+            self.loaded_adapters[n] for n in loaded_names if n in cleanup_names or n not in should_be_loaded
+        ]
+        if adapters_to_load:
+            _load_adapters(self.args, self.model, self.optimizer, adapters_to_load)
+            for adapter in adapters_to_load:
+                self.loaded_adapters[adapter.name] = adapter
+            self.weights_backuper.backup("actor")
+        if adapters_to_clean_up:
+            _cleanup_adapters(self.args, self.model, self.optimizer, adapters_to_clean_up)
+            for adapter in adapters_to_clean_up:
+                self.loaded_adapters.pop(adapter.name, None)
+            self.weights_backuper.backup("actor")
+
+        # Deregistered before ever being loaded: nothing to save or clear.
+        if is_first_replica_megatron_main_rank():
+            for name in cleanup_names - loaded_names:
+                ray.get(get_multi_lora_controller().free_slot.remote(name))
+
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self._heartbeat.bump()
@@ -534,7 +588,35 @@ class MegatronTrainRayActor(TrainRayActor):
 
             maybe_finalize_async_save(blocking=True)
 
-        save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
+        if is_multi_lora_enabled(self.args):
+            from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
+            from miles.ray.multi_lora_controller import get_multi_lora_controller
+
+            # Rank 0 picks adapters at a save-interval multiple without a ckpt
+            # on disk, and broadcasts so the collective export lines up.
+            due_buffer = [None]
+            if is_first_replica_megatron_main_rank() and self.args.save_interval is not None:
+                snapshot = ray.get(get_multi_lora_controller().snapshot.remote())
+                adapters = {**snapshot["active"], **snapshot["retiring"]}
+                due_buffer[0] = {
+                    name: adapter
+                    for name, adapter in adapters.items()
+                    if adapter.step > 0
+                    and adapter.step % self.args.save_interval == 0
+                    and adapter.config.save is not None
+                    and not (Path(adapter.config.save) / "checkpoints" / f"step_{adapter.step}").exists()
+                }
+            if dist.is_initialized():
+                dist.broadcast_object_list(due_buffer, src=0, group=get_gloo_group())
+            due_adapters = due_buffer[0]
+            if not due_adapters:
+                if self.args.offload_train:
+                    destroy_process_groups()
+                return
+            adapter_steps = {name: adapter.step for name, adapter in due_adapters.items()}
+            save_multi_lora_checkpoints(self.args, self.model, adapter_steps, due_adapters)
+        else:
+            save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
 
         if force_sync and self.args.async_save:
             maybe_finalize_async_save(blocking=True)
@@ -581,6 +663,9 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.offload_train:
                 destroy_process_groups()
             return
+
+        if is_multi_lora_enabled(self.args):
+            self.weight_updater.multi_lora_adapters = dict(self.loaded_adapters)
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")

@@ -23,6 +23,7 @@ from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.multi_lora import make_rid
 from miles.utils.processing_utils import (
     call_processor,
     encode_image_for_rollout_engine,
@@ -172,7 +173,14 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
 
-    if is_lora_enabled(args):
+    if sample.adapter is not None:
+        from miles.ray.multi_lora_controller import AdaptersCache
+
+        payload["lora_path"] = f"__miles_slot_{sample.adapter.slot}"
+        payload["rid"] = make_rid(sample.adapter.name)
+        if (adapter := await AdaptersCache().get(sample.adapter.name)) is not None:
+            payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
+    elif is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
