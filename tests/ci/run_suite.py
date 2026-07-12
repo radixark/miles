@@ -51,30 +51,56 @@ NIGHTLY_SUITES = {
 }
 
 
+# PR labels that are workflow switches, not domain-label selectors: `nightly`
+# feeds `resolve_scope`, `bypass-fastfail` is matched in pr-test.yml itself.
+# `strip_run_ci_prefix` skips them without warning.
+_WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail"}
+
+
 def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
     """Strip the `run-ci-` prefix from each PR-side label.
 
-    Inputs come straight from the workflow (e.g. `["run-ci-megatron",
-    "run-ci-fsdp"]`). Empty input yields an empty set. Items missing the
-    `run-ci-` prefix are skipped after emitting a `warnings.warn(...)` --
-    the workflow contract requires every passed label to be a raw
-    `run-ci-<X>` string, and silently including a non-prefixed item would
-    risk matching the wrong domain label (e.g. bare `"megatron"` colliding
-    with a test's domain label by accident).
+    Inputs are the raw PR label names the workflow passes verbatim (e.g.
+    `["run-ci-megatron", "nightly"]`). Empty input yields an empty set.
+    Known workflow-only labels (`_WORKFLOW_ONLY_LABELS`) are consumed
+    elsewhere and skipped silently; any other item missing the `run-ci-`
+    prefix is skipped after a `warnings.warn(...)`, because silently
+    including it would risk matching the wrong domain label (e.g. bare
+    `"megatron"` colliding with a test's domain label by accident).
     """
     stripped: set[str] = set()
     for raw in raw_labels:
-        if not raw:
+        if not raw or raw in _WORKFLOW_ONLY_LABELS:
             continue
         if raw.startswith(_RUN_CI_PREFIX):
             stripped.add(raw[len(_RUN_CI_PREFIX) :])
         else:
             warnings.warn(
                 f"--labels entry {raw!r} is missing the expected {_RUN_CI_PREFIX!r} "
-                f"prefix; ignoring. The workflow must pass raw `run-ci-<X>` labels.",
+                f"prefix; ignoring. Domain labels must be raw `run-ci-<X>` strings.",
                 stacklevel=2,
             )
     return stripped
+
+
+def resolve_scope(event_name: str, raw_labels: set[str]) -> tuple[bool, set[str]]:
+    """Resolve the broad CI scope from the trigger event and raw PR labels.
+
+    Returns `(match_all_labels, exclude_labels)`. This is the single source
+    of the scope policy the workflow used to duplicate as per-stage YAML
+    expressions; pr-test.yml now passes only the two facts (`--event-name`,
+    raw `--labels`). Branch order encodes the precedence `run-ci-all` >
+    nightly > `run-ci-image`, with the label check ahead of the event check
+    in each branch so an explicit label wins if the two ever co-occur
+    (today `schedule` / `workflow_dispatch` runs carry no PR labels).
+    """
+    if "run-ci-all" in raw_labels or event_name == "workflow_dispatch":
+        return True, set()
+    if "nightly" in raw_labels or event_name == "schedule":
+        return True, {"ft-long"}
+    if "run-ci-image" in raw_labels:
+        return True, {"ft-short", "ft-long"}
+    return False, set()
 
 
 def filter_tests(
@@ -213,14 +239,21 @@ def run_a_suite(args):
     files = discover_ci_files()
     all_tests = collect_tests(files, sanity_check=True)
     stripped_labels = strip_run_ci_prefix(args.labels or [])
+    scope_match_all, scope_exclude = resolve_scope(args.event_name, set(args.labels or []))
+    match_all_labels = args.match_all_labels or scope_match_all
+    print(
+        f"Scope: event={args.event_name!r} match_all_labels={match_all_labels} "
+        f"exclude_labels={sorted(scope_exclude)}",
+        flush=True,
+    )
     ci_tests, skipped_tests = filter_tests(
         all_tests,
         hw,
         suite,
         nightly,
         labels=stripped_labels,
-        match_all_labels=args.match_all_labels,
-        exclude_labels=set(args.exclude_labels),
+        match_all_labels=match_all_labels,
+        exclude_labels=scope_exclude,
     )
 
     if auto_partition_size:
@@ -341,19 +374,20 @@ def main():
         default=False,
         help=(
             "Bypass the labels filter and run every enabled test in the "
-            "suite (subject to hw/suite/nightly/disabled). Set by the "
-            "workflow for broad scopes; narrower scopes pair it with "
-            "`--exclude-labels`."
+            "suite (subject to hw/suite/nightly/disabled). Manual override "
+            "for local runs; the workflow relies on `resolve_scope` via "
+            "`--event-name` and `--labels` instead."
         ),
     )
     parser.add_argument(
-        "--exclude-labels",
-        nargs="*",
-        default=[],
+        "--event-name",
+        default="",
         help=(
-            "Exclude tests carrying any listed domain label after the normal "
-            "label selection. The workflow uses this with broad scopes that "
-            "intentionally omit an expensive test class."
+            "GitHub Actions event that triggered the run (`pull_request`, "
+            "`schedule`, `workflow_dispatch`). Feeds `resolve_scope` together "
+            "with the raw `--labels`. Unset or unrecognized values fall back "
+            "to plain label selection; deliberately not `choices`-restricted "
+            "so a new trigger type cannot crash every stage."
         ),
     )
     args = parser.parse_args()

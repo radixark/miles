@@ -2,8 +2,12 @@
 
 These cover the Python-side label pipeline:
 
-* `strip_run_ci_prefix`: empty input, prefix stripping, ignoring inputs
-  without the `run-ci-` prefix (warning only).
+* `strip_run_ci_prefix`: empty input, prefix stripping, silent skip of
+  workflow-only labels, warning on other non-prefixed inputs.
+* `resolve_scope`: the broad-scope policy (event + raw labels -> match-all +
+  exclusions), pinned case-by-case to what the per-stage pr-test.yml
+  expressions emitted before the policy moved to Python.
+* The pr-test.yml seam: every stage passes `--event-name` and no scope flags.
 * `filter_tests`: domain-label inclusion, match-all behavior, and broad-scope
   exclusions with the "empty labels means always run" semantic.
 * `PER_COMMIT_SUITES`: locked to the new taxonomy including the
@@ -19,7 +23,13 @@ from pathlib import Path
 
 import pytest
 from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
-from tests.ci.run_suite import PER_COMMIT_SUITES, build_cpu_pytest_cmd, filter_tests, strip_run_ci_prefix
+from tests.ci.run_suite import (
+    PER_COMMIT_SUITES,
+    build_cpu_pytest_cmd,
+    filter_tests,
+    resolve_scope,
+    strip_run_ci_prefix,
+)
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
@@ -141,6 +151,74 @@ class TestStripRunCiPrefix:
             result = strip_run_ci_prefix(["", "run-ci-megatron"])
         assert result == {"megatron"}
         assert len(caught) == 0
+
+    def test_workflow_only_labels_skipped_without_warning(self):
+        # `nightly` / `bypass-fastfail` are scope/behavior switches consumed
+        # by resolve_scope and pr-test.yml, not malformed domain labels.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = strip_run_ci_prefix(["nightly", "bypass-fastfail", "run-ci-megatron"])
+        assert result == {"megatron"}
+        assert len(caught) == 0
+
+
+# --- resolve_scope: broad-scope policy, single unit-tested source ------------
+
+
+class TestResolveScope:
+    @pytest.mark.parametrize(
+        ("event", "labels", "expected"),
+        [
+            ("pull_request", set(), (False, set())),
+            ("pull_request", {"run-ci-megatron"}, (False, set())),
+            ("pull_request", {"bypass-fastfail"}, (False, set())),
+            ("pull_request", {"run-ci-image"}, (True, {"ft-short", "ft-long"})),
+            ("pull_request", {"nightly"}, (True, {"ft-long"})),
+            ("pull_request", {"run-ci-all"}, (True, set())),
+            ("pull_request", {"run-ci-image", "nightly"}, (True, {"ft-long"})),
+            ("pull_request", {"run-ci-image", "run-ci-all"}, (True, set())),
+            ("pull_request", {"nightly", "run-ci-all"}, (True, set())),
+            ("pull_request", {"run-ci-image", "nightly", "run-ci-all"}, (True, set())),
+            ("schedule", set(), (True, {"ft-long"})),
+            ("workflow_dispatch", set(), (True, set())),
+            ("", set(), (False, set())),
+            ("", {"run-ci-image"}, (True, {"ft-short", "ft-long"})),
+        ],
+    )
+    def test_matches_former_yaml_expressions(self, event, labels, expected):
+        # Each case reproduces exactly what the pre-refactor per-stage YAML
+        # expressions emitted for that trigger/label combination.
+        assert resolve_scope(event, labels) == expected
+
+    @pytest.mark.parametrize(
+        ("event", "labels", "expected"),
+        [
+            ("schedule", {"run-ci-all"}, (True, set())),
+            ("schedule", {"run-ci-image"}, (True, {"ft-long"})),
+            ("workflow_dispatch", {"nightly"}, (True, set())),
+        ],
+    )
+    def test_counterfactual_event_label_combos_pinned(self, event, labels, expected):
+        # Unreachable today (schedule/workflow_dispatch runs carry no PR
+        # labels) but pinned as decided behavior: an explicit `run-ci-all`
+        # outranks the event, and a dispatch outranks a nightly label. If a
+        # future trigger ever passes labels, this is not up for re-derivation.
+        assert resolve_scope(event, labels) == expected
+
+
+# --- pr-test.yml seam: stages pass facts, never scope policy -----------------
+
+
+class TestWorkflowScopeSeam:
+    def test_every_stage_passes_event_name_and_no_scope_flags(self):
+        workflow = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test.yml").read_text()
+        commands = workflow.split("execute_command:")[1:]
+        assert len(commands) == 7, "stage inventory changed; update this lock test"
+        for block in commands:
+            cmd = block.split("secrets:")[0]
+            assert "--event-name ${{ github.event_name }}" in cmd
+            assert "--match-all-labels" not in cmd, "scope policy lives in resolve_scope, not YAML"
+            assert "--exclude-labels" not in cmd, "scope policy lives in resolve_scope, not YAML"
 
 
 # --- discover_ci_files: location-based discovery across the CI roots --------
