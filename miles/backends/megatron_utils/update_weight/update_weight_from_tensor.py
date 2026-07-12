@@ -58,7 +58,6 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.is_lora = is_lora
-
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args,
             model=model,
@@ -213,8 +212,7 @@ class UpdateWeightFromTensor:
         if rank == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            if mode not in ("in_place"):
-                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
             if not skip_base_sync:
                 begin_weight_update(self.rollout_engines)
         dist.barrier(group=get_gloo_group())
@@ -304,6 +302,7 @@ class UpdateWeightFromTensor:
             )
             self._lora_loaded = True
             return refs or [], long_lived_tensors
+
 
 def _send_to_colocated_engine(
     hf_named_tensors: list[tuple[str, torch.Tensor]],
