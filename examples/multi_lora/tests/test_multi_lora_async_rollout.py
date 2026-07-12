@@ -1,12 +1,11 @@
 """Tests for the testable core of the multi-LoRA async rollout (process_group):
 keep-vs-recycle plus submission-time slot-version stamping."""
 
+import examples.multi_lora.multi_lora_async_rollout as mod
 import pytest
+from examples.multi_lora.multi_lora_async_rollout import process_group
 
 from miles.utils.types import AdapterRef, Sample
-
-import examples.multi_lora.multi_lora_async_rollout as mod
-from examples.multi_lora.multi_lora_async_rollout import process_group
 
 
 class FakeDataSource:

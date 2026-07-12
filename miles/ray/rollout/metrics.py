@@ -12,9 +12,9 @@ from miles.utils.metric_utils import (
     has_repetition,
 )
 from miles.utils.misc import load_function
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
-from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ def _compute_per_adapter_metrics(args, samples: list[Sample]) -> dict:
         log_dict |= dict_add_prefix(compute_statistics(rewards), f"{prefix}raw_reward/")
         log_dict |= dict_add_prefix(compute_statistics(response_lengths), f"{prefix}response_len/")
     return log_dict
+
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if (x := args.custom_rollout_log_function_path) is not None:

@@ -2,8 +2,8 @@ import logging
 import random
 import socket
 from argparse import Namespace
-from pathlib import Path
 from contextlib import nullcontext
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import ray
@@ -51,8 +51,8 @@ from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
-from .multi_lora_utils import is_multi_lora_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
+from .multi_lora_utils import is_multi_lora_enabled
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
@@ -535,10 +535,8 @@ class MegatronTrainRayActor(TrainRayActor):
         The snapshot is read once on the main rank and broadcast."""
         if not is_multi_lora_enabled(self.args):
             return
-        from miles.backends.megatron_utils.multi_lora_utils import (
-            cleanup_adapters as _cleanup_adapters,
-            load_adapters as _load_adapters,
-        )
+        from miles.backends.megatron_utils.multi_lora_utils import cleanup_adapters as _cleanup_adapters
+        from miles.backends.megatron_utils.multi_lora_utils import load_adapters as _load_adapters
         from miles.ray.multi_lora_controller import get_multi_lora_controller
 
         broadcast_buffer = [None]

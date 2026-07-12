@@ -9,19 +9,13 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from miles.ray.multi_lora_controller import AdaptersCache, get_multi_lora_controller
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
-from miles.rollout.sglang_rollout import (
-    GenerateState,
-    generate_and_rm_group,
-    get_model_url,
-)
+from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
 from miles.utils.misc import load_function
-
-from miles.ray.multi_lora_controller import AdaptersCache, get_multi_lora_controller
-
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -131,9 +125,7 @@ class AsyncMultiLoRAWorker:
                 await asyncio.wait(active)
 
     async def process_and_enqueue(self, group: list[Sample]) -> None:
-        result = await process_group(
-            self.args, group, self.state.sampling_params, self.generate_fn, self.data_source
-        )
+        result = await process_group(self.args, group, self.state.sampling_params, self.generate_fn, self.data_source)
         if result is not None:
             self.output_queue.put(result)
 
@@ -150,9 +142,7 @@ async def generate_rollout_multi_lora_async(
 
     state = GenerateState(args)
 
-    dynamic_filter = (
-        load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path else None
-    )
+    dynamic_filter = load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path else None
     metric_gatherer = MetricGatherer()
     target_data_size = args.rollout_batch_size
 
@@ -205,7 +195,9 @@ async def generate_rollout_multi_lora_async(
         if made_progress:
             last_progress = time.time()
         elif time.time() - last_progress > 30:
-            logger.warning(f"No progress for 30s. queue={worker.queue_size()} collected={len(data)}/{target_data_size}")
+            logger.warning(
+                f"No progress for 30s. queue={worker.queue_size()} collected={len(data)}/{target_data_size}"
+            )
             last_progress = time.time()
 
         if len(data) < target_data_size:
@@ -220,9 +212,7 @@ async def generate_rollout_multi_lora_async(
 
     data = sorted(data, key=lambda g: first_sample(g).index)
 
-    batch_adapters = sorted(
-        {first_sample(g).adapter.name for g in data if g and first_sample(g).adapter}
-    )
+    batch_adapters = sorted({first_sample(g).adapter.name for g in data if g and first_sample(g).adapter})
     if batch_adapters:
         await get_multi_lora_controller().record_batch_adapters.remote(rollout_id, batch_adapters)
 

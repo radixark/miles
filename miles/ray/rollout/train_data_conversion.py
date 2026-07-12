@@ -146,7 +146,6 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     if adapter_slots is not None:
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
-    rollout_data_refs = []
     ans = []
 
     for i in range(dp_size):

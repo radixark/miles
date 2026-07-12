@@ -4,14 +4,13 @@ import asyncio
 import logging
 from pathlib import Path
 
+from miles.ray.multi_lora_controller import create_controller, get_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.logging_utils import configure_logger
 from miles.utils.tracking_utils.tracking import init_tracking
-
-from miles.ray.multi_lora_controller import create_controller, get_multi_lora_controller
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,9 @@ DATA_SOURCE_PATH = "examples.multi_lora.multi_lora_data_source_async.MultiLoRAAs
 
 
 async def main(args):
-    assert not args.colocate, "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
+    assert (
+        not args.colocate
+    ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     configure_logger(args, source=MainProcessIdentity())
 
     args.rollout_function_path = ROLLOUT_FUNCTION_PATH

@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from miles.utils.adapter_config import AdapterRunConfig, AdapterRun, parse_adapter_run_yaml
+from miles.utils.adapter_config import AdapterRun, AdapterRunConfig, parse_adapter_run_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +103,7 @@ class AdapterRegistry:
 
     def register(self, name: str, config: Any) -> dict:
         if not VALID_ADAPTER_NAME.match(name) or name in (".", ".."):
-            raise ValueError(
-                f"Adapter name '{name}' is invalid: use only letters, digits, '.', '_' and '-'"
-            )
+            raise ValueError(f"Adapter name '{name}' is invalid: use only letters, digits, '.', '_' and '-'")
         if (existing := self.records.get(name)) is not None:
             if existing.state in (AdapterState.PENDING, AdapterState.ACTIVE):
                 raise ValueError(f"Adapter '{name}' already registered")
@@ -222,7 +220,6 @@ class AdapterRegistry:
         }
 
 
-
 class MultiLoRABackend:
     """Registry + engine-facing aborts, shared by the Ray actor and HTTP server.
     Subclass via --multi-lora-backend-path."""
@@ -250,9 +247,7 @@ class MultiLoRABackend:
         if config.save is not None:
             return config
         if getattr(self.args, "save", None) is None:
-            raise ValueError(
-                f"Adapter '{name}' has no save dir: set 'save' in the adapter config or pass --save"
-            )
+            raise ValueError(f"Adapter '{name}' has no save dir: set 'save' in the adapter config or pass --save")
         return replace(config, save=Path(self.args.save) / "adapters" / name)
 
     async def register(self, name: str, config: Any) -> dict:
@@ -294,10 +289,7 @@ class MultiLoRABackend:
             logger.warning(f"Abort for adapter '{adapter_name}': no workers discovered at {self.router_url}")
             return
         results = await asyncio.gather(
-            *(
-                self.client.post(f"{url}/abort_request", json={"rid": prefix, "prefix": True})
-                for url in urls
-            ),
+            *(self.client.post(f"{url}/abort_request", json={"rid": prefix, "prefix": True}) for url in urls),
             return_exceptions=True,
         )
         if failures := sum(isinstance(r, Exception) for r in results):
@@ -310,6 +302,9 @@ class RegisterAdapterRequest(BaseModel):
     name: str
     config: AdapterRunConfig | None = None
     yaml_path: str | None = None
+
+
+_NAMES_QUERY = Query(default_factory=list)
 
 
 class MultiLoRAHTTPServer:
@@ -388,7 +383,7 @@ class MultiLoRAHTTPServer:
     async def list_adapters(self) -> dict:
         return {"adapters": self.adapter_statuses()}
 
-    async def adapter_states(self, names: list[str] = Query(default_factory=list)) -> dict:
+    async def adapter_states(self, names: list[str] = _NAMES_QUERY) -> dict:
         return {"states": {name: self.backend.registry.adapter_state(name) for name in names}}
 
     async def get_adapter(self, name: str) -> dict:

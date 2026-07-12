@@ -18,7 +18,9 @@ def make_backend(max_adapters: int = 4, save: str | None = None) -> MultiLoRABac
 
 
 def make_config(save: str | None = None) -> AdapterRunConfig:
-    return AdapterRunConfig(rank=8, alpha=16, data="/d", save=save, input_key="text", label_key="label", rm_type="math")
+    return AdapterRunConfig(
+        rank=8, alpha=16, data="/d", save=save, input_key="text", label_key="label", rm_type="math"
+    )
 
 
 def register_and_promote(registry: AdapterRegistry, name: str, config=None) -> None:

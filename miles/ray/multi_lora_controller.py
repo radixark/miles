@@ -47,7 +47,6 @@ class AdaptersCache(metaclass=SingletonMeta):
         return (await self.get_all()).get(adapter_name)
 
 
-
 def _load_subclass(path: str | None, base_cls):
     if not path:
         return base_cls
@@ -62,9 +61,7 @@ class MultiLoRAController:
         backend_cls = _load_subclass(getattr(args, "multi_lora_backend_path", None), MultiLoRABackend)
         server_cls = _load_subclass(getattr(args, "multi_lora_http_server_path", None), MultiLoRAHTTPServer)
         self.backend = backend_cls(args, router_url)
-        self.server = server_cls(
-            self.backend, host, api_port=getattr(args, "multi_lora_api_port", 0)
-        )
+        self.server = server_cls(self.backend, host, api_port=getattr(args, "multi_lora_api_port", 0))
 
     async def start(self) -> int:
         await self.backend.init()

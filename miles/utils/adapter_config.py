@@ -35,6 +35,7 @@ class AdapterRunConfig:
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass(frozen=True)
 class AdapterRun:
     """Read-only join view of a run's static config and current slot."""

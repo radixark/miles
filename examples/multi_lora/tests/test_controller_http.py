@@ -4,12 +4,11 @@
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import aiohttp
 import pytest
 from aiohttp import web
-
-from types import SimpleNamespace
 
 from miles.utils.adapter_config import AdapterRunConfig
 from miles.utils.multi_lora import RID_SEPARATOR, MultiLoRABackend, MultiLoRAHTTPServer

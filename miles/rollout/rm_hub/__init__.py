@@ -5,8 +5,8 @@ import random
 import aiohttp
 
 from miles.utils.misc import load_function
-from miles.utils.types import Sample
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.types import Sample
 
 from .deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
 from .f1 import f1_score
