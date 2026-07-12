@@ -178,13 +178,6 @@ def get_train_env_vars_arg(mode: FTTestMode, *, deterministic: bool) -> str:
     if deterministic:
         env_vars.update(_DETERMINISTIC_ENV_VARS)
     if mode.has_real_rollout:
-        # Disaggregated real_rollout puts the actor on only train_gpus_per_node GPUs (4) with no
-        # tensor/pipeline/expert sharding, so each actor GPU holds the full unsharded model plus the
-        # deterministic dumper's value/grad tensors. On 80GB H100 the peak fits but the allocator
-        # fragments (observed ~11GiB reserved-but-unallocated vs a 10.5GiB request -> spurious OOM);
-        # expandable_segments coalesces that. Scoped to the train actor (not the sglang engine),
-        # which is safe: no --offload-train, so it cannot collide with torch_memory_saver, and
-        # determinism is unaffected (it only changes virtual-address arena management).
         env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if not env_vars:
         return ""
