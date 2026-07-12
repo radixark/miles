@@ -54,6 +54,8 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.weight_version = 0
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale: bool = False
         self.delta_dir = args.update_weight_disk_dir
         os.makedirs(self.delta_dir, exist_ok=True)
         self.delta_encoding = args.update_weight_delta_encoding
@@ -76,6 +78,12 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             is_lora=is_lora,
         )
 
+    def is_rollout_engines_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
+
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[ActorHandle],
@@ -87,6 +95,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         # NCCL path uses isn't needed either — the engine-side apply is serialized by a per-host
         # flock behind /pull_weights.
         self.rollout_engines = rollout_engines
+        self._connection_stale = False
         self._group_name = "miles-disk-delta"
 
     @property
