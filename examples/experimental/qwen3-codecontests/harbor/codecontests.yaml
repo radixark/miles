@@ -1,0 +1,169 @@
+# mini-swe-agent config for the CodeContests Harbor dataset (Qwen3-8B / Miles).
+#
+# Modeled on minisweagent v2.3.0 config/benchmarks/swebench.yaml, but adapted for
+# competitive-programming tasks instead of SWE-bench repo bug-fixing:
+#   * submission target is a single file /app/solution.py (NOT a git diff)
+#   * working dir is /app (NOT /testbed); there is no repo
+#   * environment_class: local (the agent already runs inside the Harbor-spawned
+#     task container; `local` runs commands in that container, `docker`/`shell`
+#     are wrong here)
+#
+# The task instruction.md already states the contract ("Write your Python
+# solution to /app/solution.py", stdin->stdout); this template reinforces it and
+# defines the finish signal mini-swe-agent/Harbor recognizes.
+#
+# mini-swe-agent keeps an append-only message history (system, user, assistant,
+# tool, assistant, ...) and resends it each turn, so it is compatible with the
+# Miles TITO session server (assistant messages anchor the token checkpoints).
+#
+# Wire it in via:  MSWEA_CONFIG_FILE=/root/miles_qwen/examples/experimental/qwen3-codecontests/codecontests.yaml
+
+agent:
+  system_template: |
+    You are an AI assistant tasked with solving command-line tasks in a Linux
+    environment. You are given a task description and the output from previously
+    executed commands, and you solve the task by issuing shell commands.
+
+    For every response, reason in three steps before acting:
+    - Analysis: analyze the current state from the latest command output - what do
+      you see, what has been accomplished, and what still needs to be done?
+    - Plan: describe the next step(s) and what you expect each command to do.
+    - Act: issue the command(s) via the bash tool.
+
+    Concretely, you solve competitive-programming problems by writing a Python
+    program, testing it on the provided example(s), and submitting once correct.
+  instance_template: |
+    <problem>
+    {{task}}
+    </problem>
+
+    <instructions>
+    # Task Instructions
+
+    ## Goal
+    Solve the competitive-programming problem above by writing a **Python 3**
+    program and saving it to **/app/solution.py**. The program must:
+    1. Read all input from standard input (stdin).
+    2. Write the answer to standard output (stdout).
+    3. Match the required output format exactly (whitespace/newlines/case).
+    4. Run within time/memory limits and handle the stated constraints/edge cases.
+
+    The grader runs `python3 /app/solution.py`, feeds it each hidden test input on
+    stdin, and compares stdout. Only the file at /app/solution.py is graded.
+
+    ## How you operate
+    You are given the task and the output of previously executed commands, and you
+    proceed step-by-step. Each response MUST contain, in order:
+    1. **Analysis** - what the latest output shows: what is done, what remains.
+    2. **Plan** - the next command(s) and what you expect each to accomplish.
+    3. **At least one bash tool call** to execute your planned command(s).
+
+    Execution notes:
+    - The system runs each command in a FRESH subshell and returns the result;
+      directory/env changes do NOT persist across commands. Prefix with
+      `cd /app && ...` or write/load env from files as needed.
+    - Prefer small, verifiable steps so you can iterate on each result.
+
+    ## Recommended workflow
+    1. Re-read the problem; note input/output format and constraints.
+    2. Write your solution to /app/solution.py (use a heredoc, see example).
+    3. Test it against the sample input shown in the problem and verify the
+       sample output matches exactly.
+    4. Fix and re-test until the sample passes (and consider edge cases).
+    5. Submit (see below).
+
+    ## Creating /app/solution.py
+    ```bash
+    mkdir -p /app && cat <<'EOF' > /app/solution.py
+    import sys
+    def main():
+        data = sys.stdin.read().split()
+        # ... your solution ...
+    if __name__ == "__main__":
+        main()
+    EOF
+    ```
+
+    ## Testing against the sample
+    ```bash
+    printf '3\n((()))\n(())()\n()((\n' | python3 /app/solution.py
+    ```
+
+    ## Submission
+    When /app/solution.py is correct, submit by issuing EXACTLY this command on
+    its own (do NOT combine it with other commands):
+
+    ```bash
+    echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+    ```
+
+    <important>
+    - /app/solution.py MUST exist at submission time; it is the only graded file.
+    - You CANNOT continue working after submitting.
+    </important>
+    </instructions>
+
+    <system_information>
+    {{system}} {{release}} {{version}} {{machine}}
+    </system_information>
+  # Contest problems need far fewer steps than SWE-bench repos; generous but bounded.
+  step_limit: 100
+  cost_limit: 0.
+
+environment:
+  # The agent runs inside the Harbor-spawned task container; run commands there.
+  environment_class: local
+  cwd: "/app"
+  timeout: 60
+  interpreter: ["bash", "-c"]
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PIP_PROGRESS_BAR: "off"
+    TQDM_DISABLE: "1"
+
+model:
+  # model_name is injected at runtime by the Harbor adapter / Miles (openai/model
+  # served by the SGLang router), so it is intentionally not pinned here.
+  observation_template: |
+    {% if output.exception_info -%}
+    <exception>{{output.exception_info}}</exception>
+    {% endif -%}
+    <returncode>{{output.returncode}}</returncode>
+    {% if output.output | length < 10000 -%}
+    <output>
+    {{ output.output -}}
+    </output>
+    {%- else -%}
+    <warning>
+    The output of your last command was too long; show less (head/tail/sed) or
+    redirect to a file and search it.
+    </warning>
+    <output_head>
+    {{ output.output[:5000] }}
+    </output_head>
+    <elided_chars>
+    {{ output.output | length - 10000 }} characters elided
+    </elided_chars>
+    <output_tail>
+    {{ output.output[-5000:] }}
+    </output_tail>
+    {%- endif -%}
+  format_error_template: |
+    Tool call error:
+
+    <error>
+    {{error}}
+    </error>
+
+    Every response must call the 'bash' tool at least once:
+    - Tool: bash
+    - Arguments: {"command": "your_command_here"}
+
+    When finished, submit with exactly: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+    on its own (not combined with other commands).
+  model_kwargs:
+    drop_params: true
+    # Single command per turn keeps the trajectory linear and TITO-friendly.
+    parallel_tool_calls: false

@@ -1,0 +1,12 @@
+# Harbor extra-compose override: attach each task's `main` service to the
+# miles `swe-net` network so the in-container mini-swe-agent can reach the
+# Miles session server / router (172.18.0.2:30000/31000).
+# Wired via HARBOR_EXTRA_DOCKER_COMPOSE on the agent_env Harbor server.
+services:
+  main:
+    networks:
+      - default
+      - swe-net
+networks:
+  swe-net:
+    external: true
