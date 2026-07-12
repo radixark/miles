@@ -19,7 +19,6 @@ service_smoke.py                     # register/deregister smoke test against th
 train_multi_lora_async.py            # trainer (entry point)
 multi_lora_async_rollout.py          # fully-async rollout function
 multi_lora_data_source_async.py      # data source (reads controller, deregisters at num_row)
-tests/                               # controller logic + HTTP tests (no torch)
 adapters/
   gsm8k.yaml
   dapo_math.yaml

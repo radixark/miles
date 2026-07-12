@@ -10,6 +10,10 @@ import aiohttp
 import pytest
 from aiohttp import web
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-cpu")
+
 from miles.utils.adapter_config import AdapterRunConfig
 from miles.utils.multi_lora import RID_SEPARATOR, MultiLoRABackend, MultiLoRAHTTPServer
 
