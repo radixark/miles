@@ -100,8 +100,10 @@ def main(fp8_path, bf16_path):
                     fp8_weight_names.append(weight_name)
                     new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
                 except KeyError:
-                    print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
-                    new_state_dict[weight_name] = weight
+                    # No scale_inv means the tensor is unscaled (scale 1.0); upcast so the
+                    # output checkpoint contains no FP8 tensors, which break dist-ckpt serialization.
+                    print(f"Warning: Missing scale_inv tensor for {weight_name}, upcasting to {torch.get_default_dtype()}")
+                    new_state_dict[weight_name] = weight.to(torch.get_default_dtype())
             else:
                 new_state_dict[weight_name] = weight
 
