@@ -3,6 +3,7 @@ Simple multi-turn generation with tool calling.
 """
 
 import argparse
+import time
 from copy import deepcopy
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -17,6 +18,7 @@ from miles.rollout.generate_utils.tool_call_utils import (
     update_sample_with_tool_responses,
 )
 from miles.utils.http_utils import post
+from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.misc import load_function
 
 
@@ -56,7 +58,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if args.generate_multi_samples:
             sample = deepcopy(input.sample)
 
+        gen_t0 = time.time()
         output = await post(url, payload)
+        sink = None if input.evaluation else TrajectoryLifecycle().sink
+        if sink is not None:
+            tokens = output.get("meta_info", {}).get("completion_tokens", "")
+            sink.gen_span(sample, gen_t0, time.time(), turn=_turn + 1, detail=str(tokens))
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
 
         if args.generate_multi_samples:
@@ -71,7 +78,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if len(tool_calls) == 0:
             break
 
+        tool_t0 = time.time()
         tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
+        if sink is not None:
+            sink.tool_span(sample, tool_t0, time.time(), turn=_turn + 1, detail=f"{len(tool_calls)} calls")
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
 
     return GenerateFnOutput(samples=multi_samples if args.generate_multi_samples else sample)
