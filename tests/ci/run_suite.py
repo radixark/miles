@@ -6,6 +6,7 @@ from collections.abc import Iterable
 
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.ci_utils import run_unittest_files
+from tests.ci.labels import KNOWN_LABELS
 
 HW_MAPPING = {
     "cpu": HWBackend.CPU,
@@ -83,29 +84,37 @@ def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
     return stripped
 
 
-def resolve_scope(event_name: str, raw_labels: set[str]) -> tuple[bool, set[str]]:
-    """Resolve the broad CI scope from the trigger event and raw PR labels.
+def resolve_scope(event_name: str, raw_labels: set[str]) -> set[str]:
+    """Resolve the effective include-label set from the trigger and raw PR labels.
 
-    Returns `(match_all_labels, exclude_labels)`. This is the single source
-    of the scope policy the workflow used to duplicate as per-stage YAML
-    expressions; pr-test.yml now passes only the two facts (`--event-name`,
-    raw `--labels`). Branch order encodes the precedence `run-ci-all` >
-    nightly > `run-ci-image`, with the label check ahead of the event check
+    This is the single source of the scope policy the workflow used to
+    duplicate as per-stage YAML expressions; pr-test.yml passes only the two
+    facts (`--event-name`, raw `--labels`). A test runs iff it declares no
+    labels (always-run) or any of its labels is in the returned set.
+
+    Broad scopes are just large include sets: `run-ci-all` and
+    `workflow_dispatch` include every registered label, nightly / `schedule`
+    everything except `ft-long`, `run-ci-image` everything except `ft-short`
+    and `ft-long`. Branch order encodes the precedence `run-ci-all` >
+    nightly > `run-ci-image`; the label check sits ahead of the event check
     in each branch so an explicit label wins if the two ever co-occur
     (today `schedule` / `workflow_dispatch` runs carry no PR labels).
 
-    A domain label explicitly requested on the PR is never scope-excluded:
-    `run-ci-image` + `run-ci-ft-short` runs the image scope plus ft-short,
-    instead of silently dropping the request.
+    Explicitly requested `run-ci-<x>` labels are unioned in last, so an
+    explicit request always wins over a scope subtraction. A subtraction is
+    not a per-test veto: a test carrying a subtracted label still runs when
+    another of its labels is included.
     """
-    requested = {raw[len(_RUN_CI_PREFIX) :] for raw in raw_labels if raw.startswith(_RUN_CI_PREFIX)}
+    requested = strip_run_ci_prefix(raw_labels) & set(KNOWN_LABELS)
     if "run-ci-all" in raw_labels or event_name == "workflow_dispatch":
-        return True, set()
-    if "nightly" in raw_labels or event_name == "schedule":
-        return True, {"ft-long"} - requested
-    if "run-ci-image" in raw_labels:
-        return True, {"ft-short", "ft-long"} - requested
-    return False, set()
+        scope = set(KNOWN_LABELS)
+    elif "nightly" in raw_labels or event_name == "schedule":
+        scope = set(KNOWN_LABELS) - {"ft-long"}
+    elif "run-ci-image" in raw_labels:
+        scope = set(KNOWN_LABELS) - {"ft-short", "ft-long"}
+    else:
+        scope = set()
+    return scope | requested
 
 
 def filter_tests(
@@ -114,31 +123,17 @@ def filter_tests(
     suite: str,
     nightly: bool = False,
     labels: set[str] | None = None,
-    match_all_labels: bool = False,
-    exclude_labels: set[str] | None = None,
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
 
     The base predicate (hw / suite / nightly / disabled) is applied first.
-    Label selection then narrows further, with two modes followed by an
-    optional exclusion:
-
-    * `match_all_labels=True`: ignore labels entirely -- every enabled test
-      that matches hw/suite/nightly runs. Used for broad CI scopes and for
-      `workflow_dispatch`. Precedence: this mode wins even when `labels` is
-      also passed.
-    * `match_all_labels=False` (default): include only tests where
-      `not test.labels or (set(test.labels) & labels)`. `labels` here is
-      the already-stripped domain-label set produced by
-      `strip_run_ci_prefix`. A test registered with `labels=[]` (or
-      omitted) is treated as always-run: it survives an empty PR-label
-      set; a test with non-empty `labels` survives only when its labels
-      intersect the PR-supplied set.
-    * `exclude_labels`: after either inclusion mode, remove tests carrying any
-      excluded label. This lets broad scopes omit a specific expensive class;
-      an exclusion always wins over inclusion. Excluded tests are removed
-      entirely: a disabled test carrying an excluded label also vanishes
-      from the skip report.
+    Label selection then keeps a test iff it declares no labels (always-run)
+    or any of its labels is in `labels` -- the effective include set from
+    `resolve_scope` (the requested domain labels for a plain PR, near-total
+    registry sets for broad scopes). There is no separate exclusion pass: a
+    label a scope subtracted simply grants no inclusion, so a test whose
+    only labels were subtracted drops out (including from the skip report),
+    while a test that also carries an included label still runs.
     """
     ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and t.nightly == nightly]
 
@@ -147,12 +142,8 @@ def filter_tests(
     if suite not in valid_suites:
         print(f"Warning: Unknown suite {suite} for backend {hw.name}, nightly={nightly}")
 
-    if not match_all_labels:
-        label_set: set[str] = labels or set()
-        ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
-
-    if exclude_labels:
-        ci_tests = [t for t in ci_tests if not any(lbl in exclude_labels for lbl in t.labels)]
+    label_set: set[str] = labels or set()
+    ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
 
     enabled_tests = [t for t in ci_tests if t.disabled is None]
     skipped_tests = [t for t in ci_tests if t.disabled is not None]
@@ -245,12 +236,11 @@ def run_a_suite(args):
 
     files = discover_ci_files()
     all_tests = collect_tests(files, sanity_check=True)
-    stripped_labels = strip_run_ci_prefix(args.labels or [])
-    scope_match_all, scope_exclude = resolve_scope(args.event_name, set(args.labels or []))
-    match_all_labels = args.match_all_labels or scope_match_all
+    include_labels = resolve_scope(args.event_name, set(args.labels or []))
+    if args.match_all_labels:
+        include_labels |= set(KNOWN_LABELS)
     print(
-        f"Scope: event={args.event_name!r} match_all_labels={match_all_labels} "
-        f"exclude_labels={sorted(scope_exclude)}",
+        f"Scope: event={args.event_name!r} include_labels={sorted(include_labels)}",
         flush=True,
     )
     ci_tests, skipped_tests = filter_tests(
@@ -258,9 +248,7 @@ def run_a_suite(args):
         hw,
         suite,
         nightly,
-        labels=stripped_labels,
-        match_all_labels=match_all_labels,
-        exclude_labels=scope_exclude,
+        labels=include_labels,
     )
 
     if auto_partition_size:
@@ -380,10 +368,10 @@ def main():
         action="store_true",
         default=False,
         help=(
-            "Bypass the labels filter and run every enabled test in the "
-            "suite (subject to hw/suite/nightly/disabled). Manual override "
-            "for local runs; the workflow relies on `resolve_scope` via "
-            "`--event-name` and `--labels` instead."
+            "Include every registered label, running every enabled test in "
+            "the suite (subject to hw/suite/nightly/disabled). Manual "
+            "override for local runs; the workflow relies on `resolve_scope` "
+            "via `--event-name` and `--labels` instead."
         ),
     )
     parser.add_argument(

@@ -38,9 +38,9 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 ## Broad CI scopes
 
-Scope selection lives in `run_suite.py` `resolve_scope`: each workflow stage passes the raw PR label names (`--labels`) and the trigger (`--event-name`), and `resolve_scope` maps them to match-all plus per-scope exclusions. The workflow carries no scope policy of its own.
+Scope selection lives in `run_suite.py` `resolve_scope`: each workflow stage passes the raw PR label names (`--labels`) and the trigger (`--event-name`), and `resolve_scope` maps them to one effective include-label set — a broad scope is just a large set (every registered label minus the scope's subtractions). The workflow carries no scope policy of its own.
 
-| Scope | Trigger | Runs | Excludes | Fast-fail |
+| Scope | Trigger | Runs | Subtracts | Fast-fail |
 |---|---|---|---|---|
 | all | `run-ci-all` label, or manual `workflow_dispatch` | every enabled tag | — | default |
 | nightly | `schedule` cron on `main`, or `nightly` label | every enabled tag incl. `ft-short` | `ft-long` | disabled on both levels |
@@ -48,7 +48,9 @@ Scope selection lives in `run_suite.py` `resolve_scope`: each workflow stage pas
 
 Rows are in precedence order: when scope labels overlap, the higher row wins (`run-ci-all` > nightly > `run-ci-image`, the branch order of `resolve_scope`).
 
-A domain label explicitly requested on the PR wins over a scope exclusion: `run-ci-image` plus `run-ci-ft-short` runs the image scope *and* the ft-short tests, rather than silently dropping the explicit request.
+A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must never run at nightly must carry only FT labels.
+
+A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-ft-short` runs the image scope *and* the ft-short tests, rather than silently dropping the explicit request.
 
 ## Registration and scan scope
 

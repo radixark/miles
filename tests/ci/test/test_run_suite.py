@@ -4,12 +4,12 @@ These cover the Python-side label pipeline:
 
 * `strip_run_ci_prefix`: empty input, prefix stripping, silent skip of
   workflow-only labels, warning on other non-prefixed inputs.
-* `resolve_scope`: the broad-scope policy (event + raw labels -> match-all +
-  exclusions), pinned case-by-case to what the per-stage pr-test.yml
-  expressions emitted before the policy moved to Python.
+* `resolve_scope`: the broad-scope policy (event + raw labels -> one
+  effective include-label set), pinned case-by-case to the selection the
+  per-stage pr-test.yml expressions produced before the policy moved here.
 * The pr-test.yml seam: every stage passes `--event-name` and no scope flags.
-* `filter_tests`: domain-label inclusion, match-all behavior, and broad-scope
-  exclusions with the "empty labels means always run" semantic.
+* `filter_tests`: include-set selection with the "empty labels means always
+  run" semantic; a scope subtraction is not a per-test veto.
 * `PER_COMMIT_SUITES`: locked to the new taxonomy including the
   always-run GPU bucket `stage-b-2-gpu-h200`.
 
@@ -166,37 +166,41 @@ class TestStripRunCiPrefix:
 # --- resolve_scope: broad-scope policy, single unit-tested source ------------
 
 
+_ALL = set(KNOWN_LABELS)
+
+
 class TestResolveScope:
     @pytest.mark.parametrize(
         ("event", "labels", "expected"),
         [
-            ("pull_request", set(), (False, set())),
-            ("pull_request", {"run-ci-megatron"}, (False, set())),
-            ("pull_request", {"bypass-fastfail"}, (False, set())),
-            ("pull_request", {"run-ci-image"}, (True, {"ft-short", "ft-long"})),
-            ("pull_request", {"nightly"}, (True, {"ft-long"})),
-            ("pull_request", {"run-ci-all"}, (True, set())),
-            ("pull_request", {"run-ci-image", "nightly"}, (True, {"ft-long"})),
-            ("pull_request", {"run-ci-image", "run-ci-all"}, (True, set())),
-            ("pull_request", {"nightly", "run-ci-all"}, (True, set())),
-            ("pull_request", {"run-ci-image", "nightly", "run-ci-all"}, (True, set())),
-            ("schedule", set(), (True, {"ft-long"})),
-            ("workflow_dispatch", set(), (True, set())),
-            ("", set(), (False, set())),
-            ("", {"run-ci-image"}, (True, {"ft-short", "ft-long"})),
+            ("pull_request", set(), set()),
+            ("pull_request", {"run-ci-megatron"}, {"megatron"}),
+            ("pull_request", {"bypass-fastfail"}, set()),
+            ("pull_request", {"run-ci-image"}, _ALL - {"ft-short", "ft-long"}),
+            ("pull_request", {"nightly"}, _ALL - {"ft-long"}),
+            ("pull_request", {"run-ci-all"}, _ALL),
+            ("pull_request", {"run-ci-image", "nightly"}, _ALL - {"ft-long"}),
+            ("pull_request", {"run-ci-image", "run-ci-all"}, _ALL),
+            ("pull_request", {"nightly", "run-ci-all"}, _ALL),
+            ("pull_request", {"run-ci-image", "nightly", "run-ci-all"}, _ALL),
+            ("schedule", set(), _ALL - {"ft-long"}),
+            ("workflow_dispatch", set(), _ALL),
+            ("", set(), set()),
+            ("", {"run-ci-image"}, _ALL - {"ft-short", "ft-long"}),
         ],
     )
-    def test_matches_former_yaml_expressions(self, event, labels, expected):
-        # Each case reproduces exactly what the pre-refactor per-stage YAML
-        # expressions emitted for that trigger/label combination.
+    def test_selection_matches_former_yaml_expressions(self, event, labels, expected):
+        # Each case selects exactly the tests the pre-refactor per-stage YAML
+        # flags selected for that trigger/label combination (single-label
+        # registry; multi-label subtraction semantics pinned separately).
         assert resolve_scope(event, labels) == expected
 
     @pytest.mark.parametrize(
         ("event", "labels", "expected"),
         [
-            ("schedule", {"run-ci-all"}, (True, set())),
-            ("schedule", {"run-ci-image"}, (True, {"ft-long"})),
-            ("workflow_dispatch", {"nightly"}, (True, set())),
+            ("schedule", {"run-ci-all"}, _ALL),
+            ("schedule", {"run-ci-image"}, _ALL - {"ft-long"}),
+            ("workflow_dispatch", {"nightly"}, _ALL),
         ],
     )
     def test_counterfactual_event_label_combos_pinned(self, event, labels, expected):
@@ -209,16 +213,32 @@ class TestResolveScope:
     @pytest.mark.parametrize(
         ("event", "labels", "expected"),
         [
-            ("pull_request", {"run-ci-image", "run-ci-ft-short"}, (True, {"ft-long"})),
-            ("pull_request", {"nightly", "run-ci-ft-long"}, (True, set())),
-            ("pull_request", {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, (True, set())),
-            ("schedule", {"run-ci-ft-long"}, (True, set())),
+            ("pull_request", {"run-ci-image", "run-ci-ft-short"}, _ALL - {"ft-long"}),
+            ("pull_request", {"nightly", "run-ci-ft-long"}, _ALL),
+            ("pull_request", {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL),
+            ("schedule", {"run-ci-ft-long"}, _ALL),
         ],
     )
-    def test_explicit_domain_label_is_never_scope_excluded(self, event, labels, expected):
+    def test_explicit_domain_label_wins_over_scope_subtraction(self, event, labels, expected):
         # Asking for FT coverage on an image bump must not be silently
-        # stripped by the image scope's exclusions.
+        # dropped: explicit requests are unioned in after the subtraction.
         assert resolve_scope(event, labels) == expected
+
+    @pytest.mark.parametrize(
+        ("event", "labels"),
+        [
+            ("pull_request", set()),
+            ("pull_request", {"run-ci-megatron", "run-ci-typo", "bypass-fastfail"}),
+            ("pull_request", {"run-ci-image", "run-ci-ft-short"}),
+            ("schedule", set()),
+            ("workflow_dispatch", set()),
+        ],
+    )
+    def test_include_set_stays_inside_known_labels(self, event, labels):
+        # The include set is drawn from the registry only: scope-label
+        # stripping artifacts (`image`, `all`) and typo'd requests must not
+        # leak in, and scope subtractions must name real registry labels.
+        assert resolve_scope(event, labels) <= _ALL
 
 
 # --- pr-test.yml seam: stages pass facts, never scope policy -----------------
@@ -260,7 +280,7 @@ class TestDiscoverCiFiles:
         assert "tests/e2e/short/test_dumper.py" in files  # re-enabled, no carve-out
 
 
-# --- `filter_tests` six scenarios -------------------------------------------
+# --- `filter_tests` label-selection scenarios --------------------------------
 
 
 @pytest.fixture
@@ -335,15 +355,14 @@ class TestFilterTestsLabels:
             "tests/e2e/megatron/m_or_s.py",
         }
 
-    def test_case4_match_all_labels_runs_everything_in_suite(self, cuda_h100_tests):
-        # --match-all-labels ignores labels filter; every enabled
-        # hw/suite/nightly-matching test runs.
+    def test_case4_full_include_set_runs_everything_in_suite(self, cuda_h100_tests):
+        # The full registry as include set (run-ci-all / workflow_dispatch /
+        # --match-all-labels): every enabled hw/suite/nightly match runs.
         enabled, skipped = filter_tests(
             cuda_h100_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            labels=set(),
-            match_all_labels=True,
+            labels=_ALL,
         )
         assert _names(enabled) == {
             "tests/e2e/fast1.py",
@@ -366,27 +385,8 @@ class TestFilterTestsLabels:
         )
         assert _names(enabled) == {"tests/e2e/fast1.py", "tests/e2e/fast2.py"}
 
-    def test_case6_match_all_labels_wins_over_labels(self, cuda_h100_tests):
-        # Both flags passed -> match_all_labels takes precedence. Compare
-        # against case4: same result regardless of `labels` value.
-        enabled_with_labels, _ = filter_tests(
-            cuda_h100_tests,
-            HWBackend.CUDA,
-            "stage-c-8-gpu-h100",
-            labels={"megatron"},
-            match_all_labels=True,
-        )
-        enabled_without_labels, _ = filter_tests(
-            cuda_h100_tests,
-            HWBackend.CUDA,
-            "stage-c-8-gpu-h100",
-            labels=set(),
-            match_all_labels=True,
-        )
-        assert _names(enabled_with_labels) == _names(enabled_without_labels)
 
-
-# --- filter_tests: broad CI scope exclusions ---------------------------------
+# --- filter_tests: broad CI scopes as include sets ---------------------------
 
 
 @pytest.fixture
@@ -400,84 +400,62 @@ def broad_scope_tests():
 
 
 class TestFilterTestsBroadScopes:
-    def test_image_scope_excludes_all_ft_labels(self, broad_scope_tests):
+    def test_image_scope_selects_no_ft_only_tests(self, broad_scope_tests):
         enabled, _ = filter_tests(
             broad_scope_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            match_all_labels=True,
-            exclude_labels={"ft-short", "ft-long"},
+            labels=resolve_scope("pull_request", {"run-ci-image"}),
         )
+        # ft/long.py still runs: its `long` label is in the include set. A
+        # subtraction is not a per-test veto (maintainer-decided semantics).
         assert _names(enabled) == {
             "tests/e2e/always.py",
             "tests/e2e/megatron.py",
+            "tests/e2e/ft/long.py",
         }
 
-    def test_nightly_scope_includes_ft_short_and_excludes_ft_long(self, broad_scope_tests):
+    def test_nightly_scope_selects_ft_short_but_not_ft_only_soak(self, broad_scope_tests):
         enabled, _ = filter_tests(
             broad_scope_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            match_all_labels=True,
-            exclude_labels={"ft-long"},
+            labels=resolve_scope("schedule", set()),
         )
+        # ft/long.py again enters via `long`; a soak test that must never
+        # run at nightly must carry only FT labels.
         assert _names(enabled) == {
             "tests/e2e/always.py",
             "tests/e2e/megatron.py",
             "tests/e2e/ft/short.py",
+            "tests/e2e/ft/long.py",
         }
+
+    def test_subtracted_only_test_drops_out_entirely(self):
+        tests = [
+            _make("tests/e2e/always.py", labels=[]),
+            _make("tests/e2e/ft/soak.py", labels=["ft-long"]),
+            _make("tests/e2e/ft/soak_disabled.py", labels=["ft-long"], disabled="flaky"),
+        ]
+        enabled, skipped = filter_tests(
+            tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            labels=resolve_scope("schedule", set()),
+        )
+        # A test whose only labels were subtracted is out of scope entirely,
+        # including from the skip report.
+        assert _names(enabled) == {"tests/e2e/always.py"}
+        assert skipped == []
 
     def test_all_scope_includes_every_label(self, broad_scope_tests):
         enabled, _ = filter_tests(
             broad_scope_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            match_all_labels=True,
+            labels=resolve_scope("pull_request", {"run-ci-all"}),
         )
         assert _names(enabled) == _names(broad_scope_tests)
-
-    def test_exclusion_applies_after_domain_label_inclusion(self, broad_scope_tests):
-        # The docstring promises exclusion "after either inclusion mode";
-        # cover the non-match-all path too.
-        enabled, _ = filter_tests(
-            broad_scope_tests,
-            HWBackend.CUDA,
-            "stage-c-8-gpu-h100",
-            labels={"ft-short", "megatron"},
-            exclude_labels={"ft-short"},
-        )
-        assert _names(enabled) == {
-            "tests/e2e/always.py",
-            "tests/e2e/megatron.py",
-        }
-
-    def test_excluded_disabled_test_vanishes_from_skip_report(self):
-        tests = [
-            _make("tests/e2e/always.py", labels=[]),
-            _make("tests/e2e/ft/long.py", labels=["ft-long"], disabled="flaky"),
-        ]
-        enabled, skipped = filter_tests(
-            tests,
-            HWBackend.CUDA,
-            "stage-c-8-gpu-h100",
-            match_all_labels=True,
-            exclude_labels={"ft-long"},
-        )
-        assert _names(enabled) == {"tests/e2e/always.py"}
-        assert skipped == [], "excluded-and-disabled tests are out of scope entirely, not skip-reported"
-
-    def test_scope_exclusions_are_known_labels(self):
-        # A typo'd exclusion label silently excludes nothing; every scope's
-        # exclude set must stay inside the domain-label registry.
-        scopes = [
-            resolve_scope("schedule", set()),
-            resolve_scope("workflow_dispatch", set()),
-            resolve_scope("pull_request", {"run-ci-image"}),
-            resolve_scope("pull_request", {"nightly"}),
-            resolve_scope("pull_request", {"run-ci-all"}),
-        ]
-        for _, exclude in scopes:
-            assert exclude <= set(KNOWN_LABELS), f"unknown label(s) in scope exclusions: {exclude - set(KNOWN_LABELS)}"
 
 
 # --- filter_tests: hw/suite/nightly partitioning still works ----------------
@@ -486,7 +464,7 @@ class TestFilterTestsBroadScopes:
 class TestFilterTestsBaseDimensions:
     def test_cross_suite_isolation(self):
         # A test registered to stage-c-4-gpu-h200 must not surface in
-        # stage-c-8-gpu-h100, even with match_all_labels=True.
+        # stage-c-8-gpu-h100, even with the full include set.
         tests = [
             _make("tests/e2e/h100/t.py", suite="stage-c-8-gpu-h100", labels=[]),
             _make("tests/e2e/h200/t.py", suite="stage-c-4-gpu-h200", labels=[]),
@@ -495,7 +473,7 @@ class TestFilterTestsBaseDimensions:
             tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            match_all_labels=True,
+            labels=_ALL,
         )
         assert _names(enabled) == {"tests/e2e/h100/t.py"}
 
