@@ -9,7 +9,7 @@ ROLLOUT_NUM_GPUS = 2  # inference engine pool
 ACTOR_NUM_GPUS = NUM_GPUS - ROLLOUT_NUM_GPUS  # 6: training actor pool (p2p keeps it disjoint from rollout)
 
 register_cuda_ci(
-    est_time=900,
+    est_time=700,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
 )

@@ -16,7 +16,7 @@ import miles.utils.external_utils.command_utils as U
 # also forces --use-indexer-replay via miles_validate_args, so the training
 # side consumes the per-layer topk emitted by SGLang.
 
-register_cuda_ci(est_time=1100, suite="stage-c-8-gpu-h100", labels=["megatron", "replay"])
+register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["megatron", "replay"])
 
 
 def _args() -> ScriptArgs:
