@@ -113,7 +113,13 @@ def _extract_reward(result) -> tuple[float, dict[str, Any]]:
     if vr is None:
         return 0.0, {}
     rewards = getattr(vr, "rewards", None) or {}
-    reward = float(rewards.get("reward", next(iter(rewards.values()), 0.0)))
+    reward_val = rewards.get("reward")
+    if reward_val is None:
+        reward_val = next(iter(rewards.values()), 0.0)
+    try:
+        reward = float(reward_val) if reward_val is not None else 0.0
+    except (TypeError, ValueError):
+        reward = 0.0
     return reward, dict(rewards)
 
 
@@ -195,12 +201,16 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
             logger.error(f"Invalid instance_id rejected: {raw_id!r}")
             return _error_response("InvalidInstanceId")
 
-        # Normalize and verify the path stays within tasks_dir.
-        # Uses the pattern recommended by CodeQL (py/path-injection):
-        #   normpath(join(base, user_input)) + startswith(base)
-        tasks_dir_str = str(tasks_dir)
-        task_path = os.path.normpath(os.path.join(tasks_dir_str, raw_id))
-        if not task_path.startswith(tasks_dir_str):
+        # Resolve and verify the path stays within tasks_dir. Path.is_relative_to
+        # is used instead of a string startswith() check, which is vulnerable to a
+        # partial-prefix bypass (e.g. "/root/harbor_tasks_secret" starts with
+        # "/root/harbor_tasks").
+        def _resolve_within(name: str) -> Path | None:
+            candidate = (tasks_dir / name).resolve()
+            return candidate if candidate.is_relative_to(tasks_dir) else None
+
+        task_path = _resolve_within(raw_id)
+        if task_path is None:
             logger.error(f"Path traversal blocked: {raw_id!r}")
             return _error_response("InvalidInstanceId")
 
@@ -208,17 +218,15 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
         # (Docker repo names must be lowercase), but dataset instance_ids keep the
         # original case (e.g. Project-MONAI__MONAI-1030). Try the lowercased dir if
         # the exact-case one is absent so those instances aren't TaskNotFound.
-        if not os.path.exists(task_path) and raw_id != raw_id.lower():
-            lower_path = os.path.normpath(os.path.join(tasks_dir_str, raw_id.lower()))
-            if lower_path.startswith(tasks_dir_str) and os.path.exists(lower_path):
+        if not task_path.exists() and raw_id != raw_id.lower():
+            lower_path = _resolve_within(raw_id.lower())
+            if lower_path is not None and lower_path.exists():
                 logger.info(f"Resolved {raw_id!r} -> lowercase task dir {raw_id.lower()!r}")
                 task_path = lower_path
 
-        if not os.path.exists(task_path):
+        if not task_path.exists():
             logger.error(f"Task directory not found: {task_path}")
             return _error_response("TaskNotFound")
-
-        task_path = Path(task_path)
         agent_kwargs: dict[str, Any] = {}
         agent_env: dict[str, str] = {}
 

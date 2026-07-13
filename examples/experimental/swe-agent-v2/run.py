@@ -249,7 +249,7 @@ def execute(args: ScriptArgs):
     # left entirely to Ray there, so this does not change NVIDIA behaviour.
     import torch
 
-    if torch.version.hip:
+    if getattr(torch.version, "hip", None):
         extra_env_vars["RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"] = "1"
 
     U.execute_train(
