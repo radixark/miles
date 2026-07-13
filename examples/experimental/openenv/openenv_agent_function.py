@@ -572,6 +572,8 @@ async def run(
             f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; "
             "terminating with reward 0"
         )
+        # eval_report empty: the episode was cancelled before the canonical
+        # eval ever ran, so there is no pytest report to surface.
         return {
             "reward": 0.0,
             "exit_status": "timeout",
@@ -582,6 +584,11 @@ async def run(
         logger.error(f"OpenEnv tbench2 episode failed: {e}", exc_info=True)
         return None
 
+    # eval_report is intentionally empty: the canonical-eval marker protocol
+    # (see _REWARD_MARKER) echoes back only the scalar reward. The detailed
+    # pytest CTRF report is written inside the sandbox at
+    # /logs/verifier/ctrf.json and is deliberately not captured back to the
+    # trainer, which consumes only `reward`.
     return {
         "reward": reward,
         "exit_status": "completed",
