@@ -10,7 +10,7 @@ register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["sglang"])
 # (MLA + MoE). Refs sgl-project/sglang#19824, #20691 and miles PR #1126.
 _ROCM_ENV = (
     {"SGLANG_ROCM_FUSED_DECODE_MLA": "0", "SGLANG_USE_AITER": "0"}
-    if torch.version.hip is not None
+    if getattr(torch.version, "hip", None) is not None
     else {}
 )
 
