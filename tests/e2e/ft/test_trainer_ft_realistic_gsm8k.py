@@ -10,7 +10,6 @@ register_cuda_ci(
     est_time=9000,
     suite="stage-c-8-gpu-h200",
     labels=["ft-long", "long"],
-    disabled="FT soak tests pending CI infra support",
 )
 
 if __name__ == "__main__":
