@@ -7,7 +7,7 @@ import dataclasses
 
 import pytest
 
-from miles.utils.argparse_utils import DataclassArgparseBridge
+from miles.utils.argparse_utils import DataclassArgparseBridge, inplace_modify_args
 
 
 @dataclasses.dataclass(frozen=True)
@@ -262,3 +262,52 @@ class TestValidation:
 
         with pytest.raises(TypeError, match="Unsupported field type"):
             bridge.register_on_parser(parser)
+
+
+class TestInplaceModifyArgs:
+    def test_overrides_inside_and_restores_on_exit(self) -> None:
+        """Overridden attributes are visible inside the block and restored afterwards."""
+        args = argparse.Namespace(no_load_optim=True, finetune=True, lr=1.0)
+
+        with inplace_modify_args(args, dict(no_load_optim=False, finetune=False)):
+            assert args.no_load_optim is False
+            assert args.finetune is False
+            assert args.lr == 1.0
+
+        assert args.no_load_optim is True
+        assert args.finetune is True
+
+    def test_restores_on_exception(self) -> None:
+        """Originals are restored even when the block raises."""
+        args = argparse.Namespace(flag=True)
+
+        with pytest.raises(RuntimeError):
+            with inplace_modify_args(args, dict(flag=False)):
+                raise RuntimeError("boom")
+
+        assert args.flag is True
+
+    def test_empty_overrides_is_noop(self) -> None:
+        """An empty override dict changes nothing."""
+        args = argparse.Namespace(flag=True)
+
+        with inplace_modify_args(args, {}):
+            assert args.flag is True
+
+        assert args.flag is True
+
+    def test_unknown_attribute_raises(self) -> None:
+        """Overriding an attribute the namespace does not have fails loudly."""
+        args = argparse.Namespace()
+
+        with pytest.raises(AttributeError):
+            with inplace_modify_args(args, dict(missing=1)):
+                pass
+
+    def test_mutation_inside_block_fails_on_exit(self) -> None:
+        """An attribute mutated inside the block is detected instead of silently clobbered."""
+        args = argparse.Namespace(flag=True)
+
+        with pytest.raises(AssertionError, match="modified inside"):
+            with inplace_modify_args(args, dict(flag=False)):
+                args.flag = True

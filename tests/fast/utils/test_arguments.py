@@ -1,11 +1,17 @@
 import argparse
+import logging
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
+from miles.utils.arguments import (
+    _maybe_apply_dumper_overrides,
+    _resolve_ft_components,
+    get_miles_extra_args_provider,
+    miles_validate_args,
+)
 from miles.utils.misc import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -141,3 +147,64 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+def test_custom_megatron_post_save_hook_path_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--custom-megatron-post-save-hook-path", "pkg.module.hook"] + REQUIRED_ARGS)
+
+    assert args.custom_megatron_post_save_hook_path == "pkg.module.hook"
+
+
+def test_custom_megatron_post_save_hook_path_requires_save():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--custom-megatron-post-save-hook-path", "pkg.module.hook", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(
+        AssertionError,
+        match="'--save' is required when custom_megatron_post_save_hook_path is set.",
+    ):
+        miles_validate_args(args)
+
+
+class TestResolveFtComponents:
+    def test_disabled_with_no_components_returns_empty_without_warning(self, caplog) -> None:
+        """use_fault_tolerance off and no ft_components yields an empty list and no warning."""
+        args = SimpleNamespace(use_fault_tolerance=False, ft_components=None)
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            result = _resolve_ft_components(args)
+
+        assert result == []
+        assert not any("--ft-components is ignored" in record.message for record in caplog.records)
+
+    def test_disabled_with_components_returns_empty_and_warns(self, caplog) -> None:
+        """use_fault_tolerance off but ft_components set returns empty list and logs an ignore warning."""
+        args = SimpleNamespace(use_fault_tolerance=False, ft_components=["train"])
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            result = _resolve_ft_components(args)
+
+        assert result == []
+        assert any(
+            "--ft-components is ignored without --use-fault-tolerance" in record.message for record in caplog.records
+        )
+
+    def test_enabled_with_no_components_returns_default(self) -> None:
+        """use_fault_tolerance on with no ft_components falls back to the default ['rollout']."""
+        args = SimpleNamespace(use_fault_tolerance=True, ft_components=None)
+        result = _resolve_ft_components(args)
+
+        assert result == ["rollout"]
+
+    def test_enabled_with_components_returns_distinct_copy(self) -> None:
+        """use_fault_tolerance on with ft_components returns an equal but distinct list copy."""
+        components = ["train", "rollout"]
+        args = SimpleNamespace(use_fault_tolerance=True, ft_components=components)
+        result = _resolve_ft_components(args)
+
+        assert result == ["train", "rollout"]
+        assert result is not components

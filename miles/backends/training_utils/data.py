@@ -6,7 +6,9 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -28,15 +30,20 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
-def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
+def get_rollout_data(
+    args: Namespace,
+    rollout_data_ref: Box,
+    witness_info: WitnessInfo | None = None,
+) -> RolloutBatch:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
     rollout_data = process_rollout_data(
         args,
         rollout_data_ref,
-        parallel_state.intra_dp.rank,
-        parallel_state.intra_dp.size,
+        parallel_state.effective_dp.rank,
+        parallel_state.effective_dp.size,
+        witness_info=witness_info,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
@@ -45,6 +52,13 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
     ]
+    if args.enable_witness:
+        seq_witness_ids = rollout_data.pop("seq_witness_ids")
+        rollout_data["witness_ids"] = [
+            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=torch.cuda.current_device())
+            for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
+        ]
+
     if "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [
@@ -215,25 +229,32 @@ def get_batch(
 
     batch["tokens"] = tokens
 
-    if get_position_ids:
+    def _compute_transform_like_token_ids(ids_list: list):
         assert not allgather_cp, "allgather CP is not supported for FSDP"
+        if qkv_format == "bshd":
+            ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in ids_list]
+            ids = torch.stack(ids)
+        elif qkv_format == "thd":
+            ids = [slice_with_cp(p, 0, qkv_format) for p in ids_list]
+            ids = torch.cat(ids)
+            if pad != 0:
+                ids = F.pad(ids, (0, pad), value=0)
+            ids = ids.unsqueeze(0)
+        else:
+            raise NotImplementedError
+        return ids
+
+    if get_position_ids:
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
             seq_len = t.size(0)
             pos_ids = torch.arange(seq_len, device=t.device, dtype=torch.long)
             position_ids_list.append(pos_ids)
 
-        if qkv_format == "bshd":
-            position_ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in position_ids_list]
-            position_ids = torch.stack(position_ids)
-        elif qkv_format == "thd":
-            position_ids = [slice_with_cp(p, 0, qkv_format) for p in position_ids_list]
-            position_ids = torch.cat(position_ids)
-            if pad != 0:
-                position_ids = F.pad(position_ids, (0, pad), value=0)
-            position_ids = position_ids.unsqueeze(0)
+        batch["position_ids"] = _compute_transform_like_token_ids(position_ids_list)
 
-        batch["position_ids"] = position_ids
+    if (witness_ids := batch.get("witness_ids")) is not None:
+        batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
 
     # loss masks
     loss_masks = []
@@ -379,8 +400,8 @@ def get_data_iterator(
     expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
-    dp_size = parallel_state.intra_dp.size
-    dp_group = parallel_state.intra_dp.group
+    dp_size = parallel_state.effective_dp.size
+    dp_group = parallel_state.effective_dp.group
     vpp_size = parallel_state.vpp_size
     microbatch_group_size_per_vp_stage = parallel_state.microbatch_group_size_per_vp_stage
 
@@ -420,7 +441,7 @@ def get_data_iterator(
             )
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
-        dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=dp_group)
+        GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
 
         if vpp_size > 1:
             # vpp requies the number of microbatches to be divisible by vpp_size

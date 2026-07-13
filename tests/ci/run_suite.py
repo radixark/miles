@@ -22,10 +22,10 @@ _RUN_CI_PREFIX = "run-ci-"
 # runtime by `filter_tests` via the `--labels` arg, not via per-suite jobs).
 #
 # CUDA suites: each is served by a matching workflow job in
-# .github/workflows/pr-test.yml. `stage-c-8-gpu-h100` runs on the full-node
-# 8-GPU H100 host; the H200 fleet is one 8-GPU node split into 2+2+4 workers
-# via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml stage-c-4-gpu-h200 /
-# stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job comments).
+# .github/workflows/pr-test.yml. `stage-c-8-gpu-h100` and `stage-c-8-gpu-h200`
+# run on full-node 8-GPU hosts; the split H200 fleet is one 8-GPU node divided
+# into 2+2+4 workers via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml
+# stage-c-4-gpu-h200 / stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job comments).
 PER_COMMIT_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
@@ -34,6 +34,7 @@ PER_COMMIT_SUITES = {
     HWBackend.CUDA: [
         "stage-b-2-gpu-h200",
         "stage-c-8-gpu-h100",
+        "stage-c-8-gpu-h200",
         "stage-c-4-gpu-h200",
         "stage-c-2-gpu-h200",
     ],
@@ -83,16 +84,18 @@ def filter_tests(
     nightly: bool = False,
     labels: set[str] | None = None,
     match_all_labels: bool = False,
+    exclude_labels: set[str] | None = None,
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
 
     The base predicate (hw / suite / nightly / disabled) is applied first.
-    Label selection then narrows further, with two modes:
+    Label selection then narrows further, with two modes followed by an
+    optional exclusion:
 
     * `match_all_labels=True`: ignore labels entirely -- every enabled test
-      that matches hw/suite/nightly runs. Used for the `run-ci-image` /
-      `run-ci-all` meta-labels and for `workflow_dispatch`. Precedence: this
-      mode wins even when `labels` is also passed.
+      that matches hw/suite/nightly runs. Used for broad CI scopes and for
+      `workflow_dispatch`. Precedence: this mode wins even when `labels` is
+      also passed.
     * `match_all_labels=False` (default): include only tests where
       `not test.labels or (set(test.labels) & labels)`. `labels` here is
       the already-stripped domain-label set produced by
@@ -100,6 +103,9 @@ def filter_tests(
       omitted) is treated as always-run: it survives an empty PR-label
       set; a test with non-empty `labels` survives only when its labels
       intersect the PR-supplied set.
+    * `exclude_labels`: after either inclusion mode, remove tests carrying any
+      excluded label. This lets broad scopes omit a specific expensive class;
+      an exclusion always wins over inclusion.
     """
     ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and t.nightly == nightly]
 
@@ -111,6 +117,9 @@ def filter_tests(
     if not match_all_labels:
         label_set: set[str] = labels or set()
         ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
+
+    excluded_label_set = exclude_labels or set()
+    ci_tests = [t for t in ci_tests if not (set(t.labels) & excluded_label_set)]
 
     enabled_tests = [t for t in ci_tests if t.disabled is None]
     skipped_tests = [t for t in ci_tests if t.disabled is not None]
@@ -211,6 +220,7 @@ def run_a_suite(args):
         nightly,
         labels=stripped_labels,
         match_all_labels=args.match_all_labels,
+        exclude_labels=set(args.exclude_labels),
     )
 
     if auto_partition_size:
@@ -332,8 +342,18 @@ def main():
         help=(
             "Bypass the labels filter and run every enabled test in the "
             "suite (subject to hw/suite/nightly/disabled). Set by the "
-            "workflow when the PR carries `run-ci-image` or `run-ci-all`, "
-            "and equivalently on `workflow_dispatch`."
+            "workflow for broad scopes; narrower scopes pair it with "
+            "`--exclude-labels`."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-labels",
+        nargs="*",
+        default=[],
+        help=(
+            "Exclude tests carrying any listed domain label after the normal "
+            "label selection. The workflow uses this with broad scopes that "
+            "intentionally omit an expensive test class."
         ),
     )
     args = parser.parse_args()

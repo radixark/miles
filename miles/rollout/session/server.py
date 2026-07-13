@@ -16,7 +16,7 @@ from fastapi import FastAPI
 
 from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.sessions import setup_session_routes
-from miles.utils.logging_utils import configure_logger
+from miles.utils.logging_utils import configure_logger_raw
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class SessionServer:
 def run_session_server(args, backend_url: str):
     """Entry point to start the standalone session server as a subprocess."""
     # Spawned as a fresh interpreter, so it inherits no logging config.
-    configure_logger()
+    configure_logger_raw("session_server")
     # Visible to `pkill -9 miles`; without this the daemon inherits "python".
     setproctitle.setproctitle("miles-session-server")
 

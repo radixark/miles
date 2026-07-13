@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
     _get_lora_class_name,
     _is_adapter_param_name,
     build_lora_sync_config,
@@ -20,6 +19,7 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_weight_name,
     parse_exclude_modules,
 )
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 # ---------------------------------------------------------------------------
 # _get_lora_class_name
