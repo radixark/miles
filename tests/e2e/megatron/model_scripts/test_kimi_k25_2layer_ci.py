@@ -10,7 +10,7 @@ import miles.utils.external_utils.command_utils as U
 # the training script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:

@@ -10,7 +10,7 @@ import miles.utils.external_utils.command_utils as U
 # every combination must pass. Functionality, not accuracy; 4 GPUs (TP=4, EP=1).
 
 
-register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
