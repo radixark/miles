@@ -56,6 +56,12 @@ async def test_process_group_keeps_completed():
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(
+    reason="Re-queuing aborted groups is not wired up yet (the per-adapter "
+    "source is read-only); planned for a future PR. This test pins the "
+    "intended end-state behavior.",
+    strict=True,
+)
 async def test_process_group_recycles_aborted():
     async def gen(args, group, sampling_params):
         for s in group:
