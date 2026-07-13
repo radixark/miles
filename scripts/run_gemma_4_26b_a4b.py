@@ -132,7 +132,6 @@ def _execute_train(args: ScriptArgs):
         "--sglang-disable-radix-cache "
         "--no-offload-train "
         "--no-offload-rollout "
-        "--use-miles-router "
         "--use-rollout-routing-replay "
     )
 

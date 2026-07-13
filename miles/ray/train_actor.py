@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import ray
 import torch
@@ -11,10 +11,14 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
+from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
+from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
+from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
 if TYPE_CHECKING:
     from miles.ray.rollout.rollout_manager import EnginesAndLock
@@ -32,11 +36,26 @@ def get_local_gpu_id():
 
 
 class TrainRayActor(RayActor):
-    def __init__(self, world_size, rank, master_addr, master_port):
-        configure_logger()
+    def __init__(
+        self,
+        args,
+        world_size: int,
+        rank: int,
+        master_addr,
+        master_port,
+        indep_dp_store_addr: str,
+        role: Literal["actor", "critic"],
+        cell_index: int,
+    ):
+        configure_logger(
+            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
+        )
+        self.args = args
 
+        self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
+        self._indep_dp_store_addr = indep_dp_store_addr
         if master_addr:
             self.master_addr, self.master_port = master_addr, master_port
         else:
@@ -53,6 +72,7 @@ class TrainRayActor(RayActor):
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
 
+    # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
         self.args = args
         self.role = role
@@ -70,6 +90,11 @@ class TrainRayActor(RayActor):
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(f"cuda:{local_rank}")
+
+        if args.debug_deterministic_collective:
+            register_det_nccl_backend()
+            args.distributed_backend = DET_NCCL_BACKEND_NAME
+            logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
         # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
         backend = args.distributed_backend
@@ -108,6 +133,14 @@ class TrainRayActor(RayActor):
             logger.info("Warning: pynvml not available, skipping NUMA affinity setup")
         except Exception as e:
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
+
+        self._heartbeat.bump()
+
+    def get_heartbeat_status(self) -> HeartbeatStatus:
+        return self._heartbeat.status()
+
+    def inject_fault(self, mode: str) -> None:
+        _inject_fault(mode=mode)
 
     def clear_memory(self):
         print_memory("before TrainRayActor.clear_memory")

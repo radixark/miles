@@ -79,8 +79,13 @@ class TestCheckWeightsAggregation:
                 cw_calls = [c for c in calls if c[0] == "check_weights"]
                 assert len(cw_calls) == 1
                 _, args, kwargs = cw_calls[0]
-                # server_group dispatches via kwargs (allow_quant_error defaults False)
-                assert not args and kwargs == {"action": "report", "allow_quant_error": False}
+                # server_group dispatches via kwargs (allow_quant_error/selector/skip_list defaults)
+                assert not args and kwargs == {
+                    "action": "report",
+                    "allow_quant_error": False,
+                    "selector": "all",
+                    "skip_list": None,
+                }
         finally:
             _kill_group(a)
             _kill_group(b)

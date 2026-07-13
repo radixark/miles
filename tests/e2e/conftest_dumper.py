@@ -195,7 +195,7 @@ def check_dump_dir(
     assert phase_dir.exists(), f"Missing dump dir: {phase_dir}"
     dump_subdirs: list[Path] = list(phase_dir.glob(exp_pattern))
     assert len(dump_subdirs) > 0, f"No {exp_pattern} subdirs in {phase_dir}"
-    dump_files: list[Path] = list(dump_subdirs[0].glob("*.pt"))
+    dump_files: list[Path] = list(dump_subdirs[0].rglob("*.pt"))
     assert len(dump_files) > 0, f"No .pt files in {dump_subdirs[0]}"
     sample: dict = torch.load(dump_files[0], weights_only=False)
     assert isinstance(sample, dict), f"Unexpected type: {type(sample)}"

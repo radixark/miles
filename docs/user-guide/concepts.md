@@ -88,4 +88,4 @@ Use this map when reading any launch script:
 - [Argument Groups](/user-guide/argument-groups) — where each launch-script array belongs.
 - [Training Script Walkthrough](/user-guide/training-script-walkthrough) — the launch script
   group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).
-- [CLI Reference](/user-guide/cli-reference) — every flag, grouped and fully catalogd.
+- [CLI Reference](/user-guide/cli-reference) — every flag, grouped and fully cataloged.
