@@ -8,22 +8,31 @@ CUDA graph padding, and power-of-two capture enabled.
 
 Use these pieces together:
 
-1. Miles PR #1634 from branch `agent/gb200-hybridep-fixes`.
-2. The narrow PyTorch `shm_unlink(ENOENT)` compatibility shim.
-3. A real installation of torch-memory-saver PR #82 at commit
+1. [Miles PR #1634](https://github.com/radixark/miles/pull/1634) from
+   branch `agent/gb200-hybridep-fixes`.
+2. The narrow PyTorch `shm_unlink(ENOENT)` compatibility shim. This is the
+   only remaining local workaround without an upstream PR.
+3. A real installation of
+   [torch-memory-saver PR #82](https://github.com/fzyzcjy/torch_memory_saver/pull/82)
+   at commit
    `c96bf60e093b4bec2b045cb5b8a08601d0ae8a79`.
-4. SGLang PR #27140 behavior: invalidate stale CUDA graphs and recapture them
-   after torch-memory-saver resumes graph-owned memory.
-5. Synchronize asynchronous replay before torch-memory-saver unmaps graph
-   memory.
-6. SGLang PR #31072: for hybrid linear-attention models, publish the
-   overlap-scheduler read-done event after CUDA graph replay, not before it.
+4. [SGLang PR #27140](https://github.com/sgl-project/sglang/pull/27140):
+   invalidate stale CUDA graphs and recapture them after torch-memory-saver
+   resumes graph-owned memory.
+5. [SGLang PR #31073](https://github.com/sgl-project/sglang/pull/31073):
+   synchronize asynchronous device work before torch-memory-saver unmaps its
+   backing memory.
+6. [SGLang PR #31072](https://github.com/sgl-project/sglang/pull/31072): for
+   hybrid linear-attention models, publish the overlap-scheduler read-done
+   event after CUDA graph replay, not before it.
 7. Capture exactly `1 2 4 8 16 32 64 128 256 512`, with graph padding and
    overlap scheduling enabled.
 
 SGLang PRs #30895 and #30974 are not required for this hang. The second
 validation completed with both disabled. They may remain useful as padded-row
-hygiene, but they are not part of the minimum validated stack.
+hygiene, but they are not part of the minimum validated stack. The other
+padding, replay-debug, and FlashInfer patches under `lab/opd_gb200/patches/`
+are disabled experiments and are not part of this workflow.
 
 Do not use the historical `libtms_cumem_compat.so` shim. Keep
 `TMS_CUMEM_TRACE_LIB` empty. The local `lab/` directory contains launchers and
@@ -83,9 +92,17 @@ TMS_SOURCE_COMMIT=c96bf60e093b4bec2b045cb5b8a08601d0ae8a79
 
 ## 4. Launch a Two-Update Validation
 
-Until SGLang PR #31072 is merged, the launcher applies
-`lab/opd_gb200/patches/sglang_hybrid_post_replay_war.patch` when
-`SGLANG_HYBRID_POST_REPLAY_WAR=1`.
+Until the SGLang PRs are present in the container image, the launcher applies
+these exact backports:
+
+| Upstream PR | Launcher patch | Switch |
+| --- | --- | --- |
+| [#27140](https://github.com/sgl-project/sglang/pull/27140) | `sglang_pr27140_forward_port.patch` and `sglang_pr27140_graph_reset.patch` | `SGLANG_RECAPTURE_AFTER_WEIGHT_UPDATE=pr27140` |
+| [#31073](https://github.com/sgl-project/sglang/pull/31073) | `sglang_sync_before_tms_pause.patch` | `SGLANG_SYNC_BEFORE_MEMORY_RELEASE=1` |
+| [#31072](https://github.com/sgl-project/sglang/pull/31072) | `sglang_hybrid_post_replay_war.patch` | `SGLANG_HYBRID_POST_REPLAY_WAR=1` |
+
+Do not add an unnamed source patch to this workflow. Create or reference its
+upstream PR first.
 
 ```bash
 cd /home/scratch.kaixih_ent/repo/miles-opd-gb200-main
@@ -124,7 +141,8 @@ For a B200-comparable curve, set `NUM_ROLLOUT=12` and
 A successful run must show:
 
 - `TMS_PR82_VERIFIED=1` on both nodes;
-- the #27140 recapture and pre-release synchronization patches verified;
+- the #27140 recapture and #31073 pre-release synchronization backports
+  verified;
 - `SGLANG_HYBRID_POST_REPLAY_WAR_VERIFIED=1` on both nodes;
 - `disable_overlap_schedule=False` and `disable_cuda_graph_padding=False`;
 - all ten power-of-two graph buckets recaptured after weight updates;
@@ -165,9 +183,9 @@ hybrid attention: load -> replay -> read-done event
 - **TMS #82:** fixes the GB200 CUDA VMM allocation-size failure.
 - **SGLang #27140:** prevents replaying graph objects whose memory was released
   and then restored by TMS.
-- **Pre-release synchronization:** finishes asynchronous replay before TMS
-  unmaps its backing memory.
-- **Hybrid overlap-event fix:** the existing WAR fast path publishes read-done
+- **SGLang #31073:** finishes asynchronous device work before TMS unmaps its
+  backing memory.
+- **SGLang #31072:** the existing WAR fast path publishes read-done
   after `load_batch`, which is safe for plain attention. Hybrid/Mamba decode
   keeps reading shared request/state buffers during graph replay, so the
   scheduler could mutate the next iteration's buffers too early. Publishing
