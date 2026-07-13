@@ -10,7 +10,7 @@ import torch.distributed as dist
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
-from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
@@ -225,8 +225,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
 
     if args.log_multi_turn:
         log_multi_turn_data(rollout_id, args, rollout_data)
-    if args.log_passrate:
-        log_passrate(rollout_id, args, rollout_data)
 
     if args.log_correct_samples:
         if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
@@ -325,29 +323,6 @@ def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutB
                 log_dict["multi_turn_metric/round_number_max"] = np.max(round_number_array)
                 log_dict["multi_turn_metric/round_number_min"] = np.min(round_number_array)
         gather_log_data("multi_turn", args, rollout_id, log_dict)
-
-
-def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -> None:
-    """
-    Compute pass@k metrics from `raw_reward` groups and log the results.
-
-    `raw_reward` is reshaped to `[group_number, group_size]`, then pass@k is
-    estimated per problem and averaged.
-    """
-    parallel_state = get_parallel_state()
-    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
-        log_dict = {}
-        for key, val in rollout_data.items():
-            if key != "raw_reward":
-                continue
-
-            log_dict |= compute_pass_rate(
-                flat_rewards=val,
-                group_size=args.n_samples_per_prompt,
-                num_groups=args.rollout_batch_size,
-            )
-
-        gather_log_data("passrate", args, rollout_id, log_dict)
 
 
 def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None = None) -> None:
