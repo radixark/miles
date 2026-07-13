@@ -1394,6 +1394,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_router_arguments(parser):
             parser.add_argument(
+                "--rollout-backend",
+                choices=["sglang", "dynamo"],
+                default="sglang",
+                help=(
+                    "Rollout router / worker stack. 'sglang' keeps the existing "
+                    "miles-router + sglang path; 'dynamo' selects the Dynamo "
+                    "backend (currently stubbed — raises NotImplementedError)."
+                ),
+            )
+            parser.add_argument(
                 "--use-miles-router",
                 action="store_true",
                 default=False,
@@ -2262,6 +2272,12 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 def miles_validate_args(args):
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if getattr(args, "rollout_backend", "sglang") == "dynamo":
+        raise NotImplementedError(
+            "--rollout-backend dynamo is stubbed; follow-up PRs land the "
+            "actual integration. Use --rollout-backend sglang for now."
+        )
 
     if args.mini_ft_controller_enable and args.control_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
