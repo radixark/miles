@@ -69,52 +69,104 @@ export async function renderTimeline(view, meta, route) {
   let showMem = false;
   let multiNode = false;
   const laneKey = (l) => `${l.node}:${l.gpu}`;
+  // hard viewport cap (design §17): the lane view never displays more than
+  // MAXW at once, so every data fetch is O(window), never O(run)
+  const MAXW = meta.capabilities.max_window_s ?? Infinity;
+  let allLanes = []; // full topology lane list (for the no-selection budget)
+  let fetched = null; // {t0, t1} bounds the loaded phases/gpu/engine data covers
+
+  // T0/T1 come from meta.time_range (an O(1) edge-stamp read server-side),
+  // not from scanning fetched data. Keeps the trailing window pinned to the
+  // growing run unless the user has panned away.
+  function applyRange(range) {
+    if (!range) {
+      haveData = false;
+      return;
+    }
+    const trailing = !haveData || v1 >= T1 - 1e-6;
+    const span = haveData ? v1 - v0 : Math.min(MAXW, range[1] - range[0] || 1);
+    [T0, T1] = range;
+    if (trailing) {
+      v1 = T1;
+      v0 = Math.max(T0, T1 - Math.min(span, MAXW));
+    }
+    if (v1 - v0 < 1) v0 = Math.max(T0, v1 - 1);
+    haveData = true;
+  }
 
   async function loadData() {
-    const [topology, phasesRes, bubblesRes, gpuRes] = await Promise.all([
+    const [topology, bubblesRes] = await Promise.all([
       api("/api/timeline/topology"),
-      api("/api/timeline/phases", { lanes: selection }),
       api("/api/timeline/bubbles"),
-      api("/api/timeline/gpu", { max_points: 4000, lanes: selection }),
+    ]);
+    allLanes = topology.lanes;
+    windows = topology.windows;
+    bubbles = bubblesRes.bubbles;
+    if (!haveData) {
+      lanes = [];
+      gpu = {};
+      phasesByLane = new Map();
+      return;
+    }
+
+    // fetch a margin beyond the viewport so small pans redraw without a reload
+    const span = v1 - v0;
+    const margin = Math.max(0, Math.min(span / 4, (MAXW - span) / 2));
+    const f0 = Math.max(T0, v0 - margin);
+    const f1 = Math.min(T1, v1 + margin);
+    // no selection: an explicit budget of the first lanes replaces the old
+    // fetch-everything default — transfer stays bounded at any cluster size
+    const budget =
+      !selection && allLanes.length > LANE_CAP
+        ? allLanes
+            .slice(0, LANE_CAP)
+            .map((l) => `gpu:${laneKey(l)}`)
+            .join(", ")
+        : null;
+    const laneParam = selection ?? budget;
+    const [phasesRes, gpuRes] = await Promise.all([
+      api("/api/timeline/phases", { t0: f0, t1: f1, lanes: laneParam }),
+      api("/api/timeline/gpu", { t0: f0, t1: f1, max_points: 4000, lanes: laneParam }),
     ]);
     engineSeries = overlayMetric
-      ? (await api("/api/timeline/engine_series", { metric: overlayMetric, max_points: 4000 })).series
+      ? (await api("/api/timeline/engine_series", { metric: overlayMetric, t0: f0, t1: f1, max_points: 4000 }))
+          .series
       : [];
-    lanes = topology.lanes;
+    fetched = { t0: f0, t1: f1 };
+    lanes = allLanes;
     resolvedKeys = null;
-    if (selection) {
+    if (laneParam) {
       // the filtered responses reveal which lanes the grammar resolved to
       const keys = new Set(Object.keys(gpuRes.lanes));
       for (const p of phasesRes.phases) keys.add(`${p.node}:${p.gpu}`);
       lanes = lanes.filter((l) => keys.has(laneKey(l)));
-      resolvedKeys = new Set(lanes.map(laneKey));
+      if (selection) resolvedKeys = new Set(lanes.map(laneKey));
     }
-    capped = Math.max(0, lanes.length - LANE_CAP);
-    if (capped) lanes = lanes.slice(0, LANE_CAP);
-    windows = topology.windows;
-    bubbles = bubblesRes.bubbles;
+    const total = selection ? lanes.length : allLanes.length;
+    if (lanes.length > LANE_CAP) lanes = lanes.slice(0, LANE_CAP);
+    capped = Math.max(0, total - lanes.length);
     gpu = gpuRes.lanes;
     multiNode = new Set(lanes.map((l) => l.node)).size > 1;
     phasesByLane = new Map(lanes.map((l) => [laneKey(l), []]));
     for (const p of phasesRes.phases) phasesByLane.get(`${p.node}:${p.gpu}`)?.push(p);
+  }
 
-    const stamps = [];
-    for (const p of phasesRes.phases) stamps.push(p.t0, p.t1);
-    for (const s of Object.values(gpu)) if (s.ts.length) stamps.push(s.ts[0], s.ts[s.ts.length - 1]);
-    if (!stamps.length) {
-      haveData = false;
-      return;
+  // pan/zoom past the fetched bounds: debounced windowed reload
+  let reloadTimer = null;
+  function afterViewChange() {
+    draw();
+    syncCarpet();
+    if (!fetched || v0 < fetched.t0 - 1e-6 || v1 > fetched.t1 + 1e-6) {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(async () => {
+        try {
+          await loadData();
+        } catch {
+          return; // transient fetch failure — the next interaction retries
+        }
+        renderAll();
+      }, 300);
     }
-    // keep following the growing run while the user is on the full range; a
-    // zoomed-in window is theirs and stays put
-    const wasFullRange = !haveData || (v0 <= T0 + 1e-6 && v1 >= T1 - 1e-6);
-    T0 = Math.min(...stamps);
-    T1 = Math.max(...stamps);
-    if (wasFullRange) {
-      v0 = T0;
-      v1 = T1;
-    }
-    haveData = true;
   }
 
   const engineAt = (node, gpuId, t) => {
@@ -155,10 +207,14 @@ export async function renderTimeline(view, meta, route) {
       el("span", { class: "muted" }, ["overlay"]),
       ...(meta.capabilities.has_engine_series ? chips : [el("span", { class: "muted" }, ["(no engine series)"])]),
       memBtn,
-      el("button", { onclick: () => ((v0 = T0), (v1 = T1), draw(), syncCarpet()) }, ["reset zoom"]),
+      el(
+        "button",
+        { onclick: () => ((v1 = T1), (v0 = Math.max(T0, T1 - MAXW)), afterViewChange()) },
+        ["latest window"],
+      ),
       overlayScale,
       followBadge,
-      el("span", { class: "muted" }, ["wheel = zoom · drag = pan"]),
+      el("span", { class: "muted" }, [`wheel = zoom · drag = pan · window ≤ ${Math.round(MAXW / 3600)}h`]),
     );
   };
 
@@ -220,7 +276,9 @@ export async function renderTimeline(view, meta, route) {
         ),
       ),
       ...(selection ? [el("button", { onclick: () => setSelection(null) }, ["clear"])] : []),
-      ...(capped ? [el("span", { class: "warn" }, [`selection has ${capped + LANE_CAP} lanes; showing first ${LANE_CAP}`])] : []),
+      ...(capped
+        ? [el("span", { class: "warn" }, [`${capped + lanes.length} lanes; showing first ${lanes.length}`])]
+        : []),
       selError,
     );
   }
@@ -243,9 +301,9 @@ export async function renderTimeline(view, meta, route) {
       }
     },
   });
-  // the carpet tracks the lane view's zoom window (full range -> server default,
-  // so a growing follow-mode run keeps extending it)
-  const carpetRange = () => (v0 <= T0 + 1e-6 && v1 >= T1 - 1e-6 ? {} : { t0: v0, t1: v1 });
+  // the carpet tracks the lane view's zoom window; before any data exists it
+  // asks for the (empty) server default
+  const carpetRange = () => (haveData ? { t0: v0, t1: v1 } : {});
   let carpetTimer = null;
   const syncCarpet = () => {
     clearTimeout(carpetTimer);
@@ -267,10 +325,9 @@ export async function renderTimeline(view, meta, route) {
       cell.style.background = `rgba(224, 96, 96, ${(0.85 * ratio) / worst})`;
       cell.onclick = () => {
         if (b.step_time !== null) {
-          v0 = b.ts - b.step_time;
           v1 = b.ts;
-          draw();
-          syncCarpet();
+          v0 = Math.max(b.ts - b.step_time, b.ts - MAXW);
+          afterViewChange();
         }
       };
       cell.onmousemove = (ev) =>
@@ -452,14 +509,19 @@ export async function renderTimeline(view, meta, route) {
     const factor = Math.exp(ev.deltaY * 0.002);
     v0 = Math.max(T0, pivot + (v0 - pivot) * factor);
     v1 = Math.min(T1, pivot + (v1 - pivot) * factor);
-    draw();
-    syncCarpet();
+    if (v1 - v0 > MAXW) {
+      // zoom-out stops at the viewport cap, anchored at the cursor
+      const anchor = (pivot - v0) / (v1 - v0);
+      v0 = Math.max(T0, pivot - anchor * MAXW);
+      v1 = v0 + MAXW;
+    }
+    afterViewChange();
   };
   let dragFrom = null;
   canvas.onmousedown = (ev) => (dragFrom = { x: ev.clientX, v0, v1 });
   const onMouseUp = () => (dragFrom = null);
   window.addEventListener("mouseup", onMouseUp);
-  canvas.ondblclick = () => ((v0 = T0), (v1 = T1), draw(), syncCarpet());
+  canvas.ondblclick = () => ((v1 = T1), (v0 = Math.max(T0, T1 - MAXW)), afterViewChange());
   canvas.onmousemove = (ev) => {
     if (!haveData) return;
     if (dragFrom) {
@@ -468,8 +530,7 @@ export async function renderTimeline(view, meta, route) {
       const span = dragFrom.v1 - dragFrom.v0;
       v0 = Math.max(T0, Math.min(dragFrom.v0 + dt, T1 - span));
       v1 = v0 + span;
-      draw();
-      syncCarpet();
+      afterViewChange();
       return;
     }
     const rect = canvas.getBoundingClientRect();
@@ -528,7 +589,8 @@ export async function renderTimeline(view, meta, route) {
 
   view.replaceChildren(toolbar, selRow, carpet.root, bubbleStrip, el("div", { class: "panel" }, [canvas]), legendPanel);
   renderToolbar();
-  await Promise.all([loadData(), carpet.refresh({})]);
+  applyRange(meta.time_range);
+  await Promise.all([loadData(), carpet.refresh(carpetRange())]);
   renderAll();
   carpet.redraw(); // selection markers need the loaded lane list
   const onResize = () => {
@@ -546,6 +608,8 @@ export async function renderTimeline(view, meta, route) {
       if (refreshing) return;
       refreshing = true;
       try {
+        // fresh global range (cheap edge-stamp read); getMeta() is cached
+        applyRange((await api("/api/meta")).time_range);
         await loadData();
         renderAll();
         await carpet.refresh(carpetRange());
@@ -559,6 +623,7 @@ export async function renderTimeline(view, meta, route) {
   setViewCleanup(() => {
     if (intervalId !== null) clearInterval(intervalId);
     clearTimeout(carpetTimer);
+    clearTimeout(reloadTimer);
     carpet.destroy();
     window.removeEventListener("resize", onResize);
     window.removeEventListener("mouseup", onMouseUp);
