@@ -99,9 +99,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     # with bf16 inputs → fp32 output + HIPBLASLT_EPILOGUE_BGRADB + accumulate,
     # for which hipBLASLt has no algorithm. Honor the Megatron CLI flag so
     # that --no-gradient-accumulation-fusion actually takes effect.
-    provider.gradient_accumulation_fusion = getattr(
-        args, "gradient_accumulation_fusion", provider.gradient_accumulation_fusion
-    )
+    if hasattr(provider, "gradient_accumulation_fusion"):
+        provider.gradient_accumulation_fusion = getattr(
+            args, "gradient_accumulation_fusion", provider.gradient_accumulation_fusion
+        )
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
 class LinearForLastLayer(torch.nn.Linear):
