@@ -6,7 +6,7 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=5000, suite="stage-c-2-gpu-h200", labels=["long"])
 register_rocm_ci(est_time=5000, suite="stage-c-2-gpu-mi350", labels=["long"])
-IS_ROCM = torch.version.hip is not None
+IS_ROCM = getattr(torch.version, "hip", None) is not None
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -85,8 +85,8 @@ def execute():
         "--ci-disable-kl-checker "
         # ROCm (gfx950): the unfused bf16 wgrad path (needed to avoid a
         # hipBLASLt BGRADB catalog gap) has ~1e-9 numerical drift.
-        + ("--ci-disable-logprobs-checker " if IS_ROCM else "")
-        + "--ci-metric-checker-key eval/gsm8k "
+        f"{'--ci-disable-logprobs-checker ' if IS_ROCM else ''}"
+        "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.55 "  # loose threshold at 250 step
     )
 
@@ -96,8 +96,8 @@ def execute():
         "--hidden-dropout 0.0 "
         # should be good for model performance
         "--accumulate-allreduce-grads-in-fp32 "
-        + ("--no-gradient-accumulation-fusion " if IS_ROCM else "")
-        + "--attention-softmax-in-fp32 "
+        f"{'--no-gradient-accumulation-fusion ' if IS_ROCM else ''}"
+        "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
