@@ -1,58 +1,64 @@
 # Two-Node GB200 Pure-OPD Workflow
 
-This document records the working two-node GB200 workflow for the Qwen3.5-35B-A3B pure-OPD experiment. It describes the exact checkout, mounts, runtime shims, launch sequence, and the reason for each local change.
+Validated on 2026-07-13 with two independent two-node runs. Each run completed
+two real rollouts and two online training updates with overlap scheduling,
+CUDA graph padding, and power-of-two capture enabled.
 
-## 1. Checkout and Branch
+## Required Stack
 
-Use the dedicated checkout and branch:
+Use these pieces together:
+
+1. Miles PR #1634 from branch `agent/gb200-hybridep-fixes`.
+2. The narrow PyTorch `shm_unlink(ENOENT)` compatibility shim.
+3. A real installation of torch-memory-saver PR #82 at commit
+   `c96bf60e093b4bec2b045cb5b8a08601d0ae8a79`.
+4. SGLang PR #27140 behavior: invalidate stale CUDA graphs and recapture them
+   after torch-memory-saver resumes graph-owned memory.
+5. Synchronize asynchronous replay before torch-memory-saver unmaps graph
+   memory.
+6. SGLang PR #31072: for hybrid linear-attention models, publish the
+   overlap-scheduler read-done event after CUDA graph replay, not before it.
+7. Capture exactly `1 2 4 8 16 32 64 128 256 512`, with graph padding and
+   overlap scheduling enabled.
+
+SGLang PRs #30895 and #30974 are not required for this hang. The second
+validation completed with both disabled. They may remain useful as padded-row
+hygiene, but they are not part of the minimum validated stack.
+
+Do not use the historical `libtms_cumem_compat.so` shim. Keep
+`TMS_CUMEM_TRACE_LIB` empty. The local `lab/` directory contains launchers and
+temporary patches and is intentionally not committed.
+
+## 1. Get Two Nodes
+
+Run this from the visible tmux shell on `dl3`:
 
 ```bash
-cd /home/scratch.kaixih_ent/repo/miles-opd-gb200-main
-git switch opd-gb200-main
+salloc_node gb200nvl72 2
 ```
 
-`opd-gb200-main` contains the four commits from PR #1488 cherry-picked onto the current `origin/main`, followed by the GB200 fixes documented below. Do not confuse it with `/home/scratch.kaixih_ent/repo/miles`, which is a different checkout.
+The launcher uses one Slurm task and four GPUs per node.
 
-The local `lab/` directory is intentionally not part of the commit. It contains experiment launchers, temporary repros, and credentials used only in the DLCluster workspace.
-
-## 2. Storage and Container Mounts
-
-The same shared storage has three path names:
+## 2. Check the Checkouts and Mounts
 
 ```text
-DLCluster login:  /home/scratch.kaixih_ent
-GB compute node:  /mnt/cifs/home/scratch.kaixih_ent
-Miles container:  /scratch
+Miles PR #1634:  /home/scratch.kaixih_ent/repo/miles-hybridep-pr
+Launcher/lab:    /home/scratch.kaixih_ent/repo/miles-opd-gb200-main
+TMS PR #82:      /home/scratch.kaixih_ent/repo/torch_memory_saver
 ```
 
-Launch the ARM Miles image with these bind mounts:
+The compute-node mounts are:
 
 ```text
-/mnt/cifs/home/scratch.kaixih_ent/repo/miles-opd-gb200-main -> /workspace/miles
-/mnt/cifs/home/scratch.kaixih_ent                              -> /scratch
+/mnt/cifs/home/scratch.kaixih_ent/repo/miles-hybridep-pr -> /workspace/miles
+/mnt/cifs/home/scratch.kaixih_ent/repo/miles-opd-gb200-main/lab -> /workspace/lab
+/mnt/cifs/home/scratch.kaixih_ent/repo/torch_memory_saver -> /workspace/torch_memory_saver
+/mnt/cifs/home/scratch.kaixih_ent -> /scratch
 ```
 
-The launcher uses:
+## 3. Build the Shim and Install TMS
 
-```bash
-MILES_DIR=/workspace/miles
-PYTHONPATH=/workspace/miles:/root/Megatron-LM/
-```
-
-Therefore Python imports Miles from the mounted checkout, including its committed changes. Megatron, PyTorch, torch-memory-saver, and SGLang still come from `radixark/miles:latest`; their installed source files are not edited.
-
-## 3. Build the Runtime Compatibility Shims
-
-The temporary shim sources are local lab artifacts and are intentionally not committed:
-
-```text
-lab/opd_gb200/tms_cumem_trace.c
-lab/opd_gb200/torch_shm_unlink_compat.c
-```
-
-Compile them on an ARM GB200 compute node, inside the same Miles image. Do not compile them on the x86 login node.
-
-From an active two-node allocation shell:
+Build the AArch64 `shm_unlink` shim inside the Miles container on a GB200 node:
 
 ```bash
 cd /home/scratch.kaixih_ent/repo/miles-opd-gb200-main
@@ -60,139 +66,113 @@ export ALLOC_JOB_ID="${SLURM_JOB_ID}"
 bash lab/opd_gb200/00_build_tms_compat.sh
 ```
 
-The build script runs the equivalent of:
-
-```bash
-mkdir -p /scratch/repro/opd-self-distill/runtime/aarch64
-
-cuda_header=$(find /usr/local/cuda* -path '*/targets/*/include/cuda.h' -print -quit)
-cuda_include=$(dirname "${cuda_header}")
-
-cc -shared -fPIC -O2 -I"${cuda_include}" \
-  /workspace/miles/lab/opd_gb200/tms_cumem_trace.c \
-  -o /scratch/repro/opd-self-distill/runtime/aarch64/libtms_cumem_compat.so \
-  -ldl
-
-cc -shared -fPIC -O2 \
-  /workspace/miles/lab/opd_gb200/torch_shm_unlink_compat.c \
-  -o /scratch/repro/opd-self-distill/runtime/aarch64/libtorch_shm_unlink_compat.so \
-  -ldl
-```
-
-The persistent host equivalents are:
+Only this runtime shim is loaded:
 
 ```text
-/home/scratch.kaixih_ent/repro/opd-self-distill/runtime/aarch64/libtms_cumem_compat.so
-/home/scratch.kaixih_ent/repro/opd-self-distill/runtime/aarch64/libtorch_shm_unlink_compat.so
+/scratch/repro/opd-self-distill/runtime/aarch64/libtorch_shm_unlink_compat.so
 ```
 
-Verify both outputs before launching:
+`node_entrypoint.sh` copies the mounted TMS source to node-local storage, runs
+`make reinstall`, and verifies the installed PR #82 library. Both nodes must
+print:
 
-```bash
-file /home/scratch.kaixih_ent/repro/opd-self-distill/runtime/aarch64/*.so
+```text
+TMS_PR82_VERIFIED=1
+TMS_SOURCE_COMMIT=c96bf60e093b4bec2b045cb5b8a08601d0ae8a79
 ```
 
-They must be AArch64 shared objects. `phase2_gb200.sh` passes their container paths into the Ray runtime environment, and `miles/ray/actor_group.py` prepends them to `LD_PRELOAD` before the original torch-memory-saver library.
+## 4. Launch a Two-Update Validation
 
-## 4. Launch the Two-Node Run
-
-The allocation must contain two `gb200nvl72` nodes with four GPUs per node. The local launcher starts one container per node, creates a Ray head on task 0, joins task 1 as a worker, and submits the Phase-2 payload from `/workspace/miles`.
-
-Run the current accuracy-focused recipe:
+Until SGLang PR #31072 is merged, the launcher applies
+`lab/opd_gb200/patches/sglang_hybrid_post_replay_war.patch` when
+`SGLANG_HYBRID_POST_REPLAY_WAR=1`.
 
 ```bash
 cd /home/scratch.kaixih_ent/repo/miles-opd-gb200-main
 
-RUN_ID="opd-gb200-$(date +%m%d-%H%M)" \
-NUM_ROLLOUT=12 \
+RUN_ID="opd-p2-hybridwar-$(date +%m%d-%H%M)" \
+HOST_MILES=/home/scratch.kaixih_ent/repo/miles-hybridep-pr \
+NUM_ROLLOUT=2 \
 SKIP_EVAL_BEFORE_TRAIN=1 \
-EVAL_INTERVAL=2 \
-bash lab/opd_gb200/04_run_long_8k_hybridep.sh
+EVAL_INTERVAL=5 \
+SAVE_INTERVAL=none \
+ROLLOUT_BATCH_SIZE=32 \
+N_SAMPLES_PER_PROMPT=8 \
+OVER_SAMPLING_BATCH_SIZE=32 \
+GLOBAL_BATCH_SIZE=256 \
+MAX_TOKENS_PER_GPU=8192 \
+MOE_FLEX_DISPATCHER_BACKEND=hybridep \
+SGLANG_CUDA_GRAPH_BS="1 2 4 8 16 32 64 128 256 512" \
+SGLANG_RECAPTURE_AFTER_WEIGHT_UPDATE=pr27140 \
+SGLANG_SYNC_BEFORE_MEMORY_RELEASE=1 \
+SGLANG_HYBRID_POST_REPLAY_WAR=1 \
+SGLANG_PR30895=0 \
+SGLANG_PR30974=0 \
+SGLANG_DISABLE_CUDA_GRAPH_PADDING=0 \
+SGLANG_NEUTRALIZE_MOE_CUDA_GRAPH_PADDING=0 \
+FLASHINFER_DISTRIBUTED_AUTOTUNE_SYNC=0 \
+TMS_CUMEM_TRACE_LIB="" \
+TORCH_SHM_UNLINK_COMPAT_LIB=/scratch/repro/opd-self-distill/runtime/aarch64/libtorch_shm_unlink_compat.so \
+bash lab/opd_gb200/01_launch_phase2_pure.sh
 ```
 
-The effective settings are:
+For a B200-comparable curve, set `NUM_ROLLOUT=12` and
+`SKIP_EVAL_BEFORE_TRAIN=0`; keep the runtime stack and capture list unchanged.
+
+## 5. Validate the Result
+
+A successful run must show:
+
+- `TMS_PR82_VERIFIED=1` on both nodes;
+- the #27140 recapture and pre-release synchronization patches verified;
+- `SGLANG_HYBRID_POST_REPLAY_WAR_VERIFIED=1` on both nodes;
+- `disable_overlap_schedule=False` and `disable_cuda_graph_padding=False`;
+- all ten power-of-two graph buckets recaptured after weight updates;
+- second-rollout padded batches reporting `cuda graph: True`;
+- no HybridEP timeout, CUDA IPC error, replay error, or non-finite metric;
+- OIS, ESS, and TIS near 1 and a finite ordinary-scale gradient norm;
+- Ray reporting `Job 'qwen3.5-opd-pure' succeeded`.
+
+## Validation Evidence
+
+Both runs below used the new overlap-event ordering and completed two real
+rollout/update cycles:
+
+| Run | Old padding PRs | Response length | Reverse-KL | Gradient norm |
+| --- | --- | --- | --- | --- |
+| `opd-p2-hybridwar-r1c-0713-1937` | #30895/#30974 on | 18881.8 -> 6469.1 | 0.04488 -> 0.01315 | 0.3104 -> 0.1387 |
+| `opd-p2-hybridwar-no56-r1c-0713-2041` | #30895/#30974 off | 18931.8 -> 6551.2 | 0.04466 -> 0.01359 | 0.3112 -> 0.1376 |
+
+For the A/B run with #30895/#30974 disabled, update 1 finished with
+`OIS=1.0000001`, `ESS=0.9999997`, and `TIS=1.0000067`. Its second rollout
+crossed padded request counts including 78, 75, 73, 70, and 69 while remaining
+on CUDA graph replay.
+
+The event-order unit test also passes in the Miles container:
 
 ```text
-2 nodes x 4 GB200 GPUs
-TP=2, CP=2, EP=8
-Flex dispatcher with HybridEP
-global batch size=256
-max tokens per GPU=8192
-CUDA graph capture sizes=1 2 4
-checkpoint saving disabled
+plain attention: load -> read-done event -> replay
+hybrid attention: load -> replay -> read-done event
+2 passed
 ```
 
-CUDA graph sizes larger than 4 currently use eager decode. This is a conservative mitigation for a separate replay hang after online weight handoff; it is not a final SGLang fix.
+## Why Each Change Exists
 
-## 5. What Changed and Why
+- **Miles #1634:** keeps model-input and routing-replay token rows aligned
+  across HybridEP ranks.
+- **PyTorch unlink shim:** makes cleanup idempotent only for an already-removed
+  `/torch_*` CUDA-IPC refcount file.
+- **TMS #82:** fixes the GB200 CUDA VMM allocation-size failure.
+- **SGLang #27140:** prevents replaying graph objects whose memory was released
+  and then restored by TMS.
+- **Pre-release synchronization:** finishes asynchronous replay before TMS
+  unmaps its backing memory.
+- **Hybrid overlap-event fix:** the existing WAR fast path publishes read-done
+  after `load_batch`, which is safe for plain attention. Hybrid/Mamba decode
+  keeps reading shared request/state buffers during graph replay, so the
+  scheduler could mutate the next iteration's buffers too early. Publishing
+  the event after replay closes that race while preserving the fast path for
+  plain attention.
 
-### Miles model-input alignment
-
-Files:
-
-```text
-miles/backends/megatron_utils/model.py
-miles/backends/training_utils/data.py
-```
-
-Dynamic THD batches can produce different token-row counts on different EP ranks. HybridEP expects rank-consistent metadata and buffer capacity. A mismatch caused `HYBRID-EP ALLGATHER TIMEOUT` and corrupted updates with extremely large gradient norms and importance-sampling ratios.
-
-For Flex + HybridEP only, Miles now all-reduces the maximum aligned token-row count across the EP group and pads every rank's model input to that common target.
-
-### Miles routing-replay alignment
-
-File:
-
-```text
-miles/backends/training_utils/replay_data.py
-```
-
-Model inputs and routing replay must use the same EP-wide row target. Local-only replay padding produced errors such as `replay n_tokens ... does not match scores n_tokens ...` under TP2 plus sequence parallelism. Replay rows are now padded to the same EP-wide target before TP/SP slicing; padding remains invalid with value `-1` and stays outside the loss.
-
-### GB200 recipe and runtime environment
-
-File:
-
-```text
-examples/on_policy_distillation/qwen3_5_35b_selfdistill/phase2_gb200.sh
-```
-
-The script now selects HybridEP explicitly and makes rollout count, batch sizes, response length, token budget, evaluation cadence, checkpoint cadence, and SGLang CUDA graph sizes configurable. It also forwards the two shim paths into Ray actors.
-
-### Ray actor preload composition
-
-File:
-
-```text
-miles/ray/actor_group.py
-```
-
-The actor environment composes this preload order:
-
-```text
-libtorch_shm_unlink_compat.so
-libtms_cumem_compat.so
-the original torch-memory-saver preload library
-```
-
-`libtms_cumem_compat.so` bypasses torch-memory-saver only for small allocations that are not aligned to the GB200 CUDA VMM granularity, routing them to native `cudaMalloc`.
-
-`libtorch_shm_unlink_compat.so` makes cleanup idempotent when PyTorch calls `shm_unlink()` for an already-removed `/torch_*` CUDA IPC refcount file. Only `ENOENT` for `/torch_*` is converted to success.
-
-These two shims are dependency workarounds. The permanent fixes belong in torch-memory-saver/container packaging and PyTorch respectively, not in OPD mathematics.
-
-## 6. Validation Signals
-
-A healthy run must have all of the following:
-
-- no `HYBRID-EP ALLGATHER TIMEOUT`;
-- no routing replay row mismatch;
-- no fatal CUDA IPC cleanup error;
-- `OIS`, `ESS`, and `TIS` remain near 1;
-- finite, ordinary-scale gradient norms;
-- successful online weight synchronization and the next rollout;
-- response length and reverse-KL move toward the teacher behavior.
-
-The validated run changed mean response length from about 18.8k to 6.6k tokens after the first update, reduced truncation from 0.367 to 0.043, and reduced per-token OPD reverse-KL from 0.0448 to 0.0130 while keeping the training diagnostics healthy.
-
-No Megatron, PyTorch, torch-memory-saver, or SGLang installed source file is modified by this workflow. The active code consists of the mounted Miles checkout, the two external runtime shims, and recipe flags.
+At teardown, W&B may emit an `atexit` `BrokenPipeError`. Treat it as teardown
+noise only when both updates completed and Ray explicitly reported success.
