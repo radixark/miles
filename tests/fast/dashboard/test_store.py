@@ -11,6 +11,8 @@ from miles.dashboard.store import (
     PhaseEvent,
     Stream,
     TopologySnapshot,
+    TrajectoryEvent,
+    TrajectoryEventKind,
     minmax_downsample,
     stride_downsample,
 )
@@ -33,6 +35,15 @@ def _one_of_each() -> list:
             ],
         ),
         GpuSample(ts=10.5, node="10.0.0.2", gpu=0, util=87, mem_mb=61234, power_w=612),
+        TrajectoryEvent(
+            ts=10.7,
+            kind=TrajectoryEventKind.GEN_START,
+            sample_index=3,
+            group_index=0,
+            turn=1,
+            weight_version="1",
+            detail="",
+        ),
         EngineSample(ts=10.6, addr="http://10.0.0.2:15000", metric="sglang_num_running_reqs", labels={}, value=42.0),
     ]
 

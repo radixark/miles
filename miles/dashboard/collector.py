@@ -36,6 +36,7 @@ from miles.dashboard.store import (
     PhaseEvent,
     Record,
     TopologySnapshot,
+    TrajectoryEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,10 @@ class DashboardCollector:
         self._append(record)
 
     def push_phases(self, batch: list[PhaseEvent]) -> None:
+        for event in batch:
+            self._append(event)
+
+    def push_trajectories(self, batch: list[TrajectoryEvent]) -> None:
         for event in batch:
             self._append(event)
 

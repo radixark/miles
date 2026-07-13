@@ -16,7 +16,8 @@ import time
 from dataclasses import dataclass
 
 from miles.dashboard.logging_utils import RateLimitedWarner
-from miles.dashboard.store import EngineInfo, PhaseEvent, Role, TopologySnapshot
+from miles.dashboard.store import EngineInfo, PhaseEvent, Role, TopologySnapshot, TrajectoryEvent, TrajectoryEventKind
+from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,90 @@ class PhaseSink:
             self._warner.warn("dashboard phase sink flush failed; dropping events")
 
 
+class TrajectorySink:
+    """Per-sample lifecycle events from the rollout process, batched to the
+    collector (fire-and-forget). Core code reaches it via
+    ``miles.dashboard.lifecycle.trajectory_sink()`` — duck-typed so the core
+    call sites never import this module."""
+
+    def __init__(self, handle):
+        self._handle = handle
+        self._buffer: list[TrajectoryEvent] = []
+        self._lock = threading.Lock()
+        self._last_flush = time.monotonic()
+        self._warner = RateLimitedWarner(logger)
+
+    # ------------------------- core-facing emitters -------------------------
+
+    def attempt_start(self, sample) -> None:
+        self._emit(TrajectoryEventKind.ATTEMPT_START, sample)
+
+    def gen_start(self, sample) -> None:
+        self._emit(TrajectoryEventKind.GEN_START, sample)
+
+    def attempt_end(self, result) -> None:
+        """``result`` is the Sample or the list of per-turn Samples a generate
+        function returned; per-turn samples share the identity and carry their
+        own lifecycle metadata segments (agentic endpoint path)."""
+        samples = result if isinstance(result, list) else [result]
+        for sample in samples:
+            value = (sample.metadata or {}).get("lifecycle")
+            # one dict per turn-sample; a TITO-merged sample carries the list
+            for segment in value if isinstance(value, list) else [value] if value else []:
+                if segment.get("t0") is not None:
+                    self._emit(TrajectoryEventKind.GEN_START, sample, ts=segment["t0"], turn=segment["turn"])
+                self._emit(TrajectoryEventKind.GEN_END, sample, ts=segment["t1"], turn=segment["turn"])
+        last = samples[-1]
+        status = last.status.value if getattr(last, "status", None) is not None else ""
+        self._emit(TrajectoryEventKind.ATTEMPT_END, last, detail=status)
+
+    def gen_span(self, sample, t0: float, t1: float, turn: int, detail: str = "") -> None:
+        self._emit(TrajectoryEventKind.GEN_START, sample, ts=t0, turn=turn)
+        self._emit(TrajectoryEventKind.GEN_END, sample, ts=t1, turn=turn, detail=detail)
+
+    def tool_span(self, sample, t0: float, t1: float, turn: int, detail: str = "") -> None:
+        self._emit(TrajectoryEventKind.TOOL_START, sample, ts=t0, turn=turn, detail=detail)
+        self._emit(TrajectoryEventKind.TOOL_END, sample, ts=t1, turn=turn, detail=detail)
+
+    # ------------------------------ internals -------------------------------
+
+    def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
+        try:
+            versions = getattr(sample, "weight_versions", None) or []
+            event = TrajectoryEvent(
+                ts=time.time() if ts is None else ts,
+                kind=kind,
+                sample_index=sample.index if sample.index is not None else -1,
+                group_index=sample.group_index if sample.group_index is not None else -1,
+                turn=turn,
+                weight_version=str(versions[-1]) if versions else "",
+                detail=detail,
+            )
+            with self._lock:
+                self._buffer.append(event)
+                batch = self._take_batch_if_due()
+            if batch:
+                self._handle.push_trajectories.remote(batch)
+        except Exception:
+            self._warner.warn("dashboard trajectory sink failed; dropping events")
+
+    def _take_batch_if_due(self) -> list[TrajectoryEvent] | None:
+        if len(self._buffer) < BATCH_MAX_EVENTS and time.monotonic() - self._last_flush < BATCH_MAX_SECONDS:
+            return None
+        batch, self._buffer = self._buffer, []
+        self._last_flush = time.monotonic()
+        return batch
+
+    def flush(self) -> None:
+        try:
+            with self._lock:
+                batch, self._buffer = self._buffer, []
+            if batch:
+                self._handle.push_trajectories.remote(batch)
+        except Exception:
+            self._warner.warn("dashboard trajectory sink flush failed; dropping events")
+
+
 _phase_sink: PhaseSink | None = None
 _engines_fingerprint: tuple | None = None
 _warner = RateLimitedWarner(logger)
@@ -124,6 +209,13 @@ def attach_phase_sink(handle, role: str) -> None:
     Timer().event_sinks.append(_phase_sink)
 
 
+def attach_trajectory_sink(handle) -> None:
+    seam = TrajectoryLifecycle()
+    if seam.sink is not None:
+        return  # one sink per process
+    seam.sink = TrajectorySink(handle)
+
+
 def detach_and_flush() -> None:
     global _phase_sink, _engines_fingerprint
     if _phase_sink is not None:
@@ -132,6 +224,10 @@ def detach_and_flush() -> None:
         _phase_sink.flush()
     _phase_sink = None
     _engines_fingerprint = None
+    seam = TrajectoryLifecycle()
+    if seam.sink is not None:
+        seam.sink.flush()
+    seam.sink = None
 
 
 def register_train_actor(args) -> None:

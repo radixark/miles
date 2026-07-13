@@ -79,6 +79,7 @@ def init_dashboard(args, *, primary: bool = True, router_addr: str | None = None
         # address is still "http://None:None" here — the real registration
         # happens via hooks.register_router once the router is up.
         hooks.attach_phase_sink(_handle, Role.ROLLOUT_MANAGER)
+        hooks.attach_trajectory_sink(_handle)
 
 
 def resolve_collector():

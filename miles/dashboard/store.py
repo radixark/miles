@@ -50,6 +50,7 @@ class Stream(StrEnum):
     TOPOLOGY = "topology"
     GPU_UTIL = "gpu_util"
     ENGINE_SERIES = "engine_series"
+    TRAJECTORIES = "trajectories"
 
     @property
     def filename(self) -> str:
@@ -134,6 +135,35 @@ class TopologySnapshot(Record):
         return cls(ts=data["ts"], engines=[EngineInfo(**e) for e in data["engines"]])
 
 
+class TrajectoryEventKind(StrEnum):
+    ATTEMPT_START = "attempt_start"
+    GEN_START = "gen_start"
+    GEN_END = "gen_end"
+    TOOL_START = "tool_start"
+    TOOL_END = "tool_end"
+    ATTEMPT_END = "attempt_end"
+
+
+@dataclass
+class TrajectoryEvent(Record):
+    """One lifecycle boundary of one sample's rollout (design §18.3).
+
+    ``sample_index`` is the run-global ``Sample.index`` — the same key the
+    dump join uses, so the read side can resolve a consuming step's batch to
+    its events. ``turn`` is 1-based for gen/tool segments and -1 for attempt
+    boundaries; ``weight_version`` is the engine-reported version of the
+    segment ("" when unknown)."""
+
+    stream: ClassVar[Stream] = Stream.TRAJECTORIES
+    ts: float
+    kind: str  # a TrajectoryEventKind value
+    sample_index: int
+    group_index: int  # -1 when the sample carries none
+    turn: int
+    weight_version: str
+    detail: str
+
+
 @dataclass
 class GpuSample(Record):
     """One NVML sample of one GPU."""
@@ -160,7 +190,7 @@ class EngineSample(Record):
 
 
 _RECORD_TYPE_OF_STREAM: dict[Stream, type[Record]] = {
-    cls.stream: cls for cls in (MetricsRecord, PhaseEvent, TopologySnapshot, GpuSample, EngineSample)
+    cls.stream: cls for cls in (MetricsRecord, PhaseEvent, TopologySnapshot, GpuSample, EngineSample, TrajectoryEvent)
 }
 
 
@@ -298,7 +328,12 @@ class _PartitionReader:
 
 class MetricStore:
     COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
-    PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES, Stream.PHASES)
+    PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (
+        Stream.GPU_UTIL,
+        Stream.ENGINE_SERIES,
+        Stream.PHASES,
+        Stream.TRAJECTORIES,
+    )
     MAX_WINDOW_S: ClassVar[float] = 4 * 3600.0
     PARTITION_CACHE_BLOCKS: ClassVar[int] = 24
     CATALOG_FILENAME: ClassVar[str] = "lane_catalog.json"
@@ -341,14 +376,18 @@ class MetricStore:
                 line_stamps=lambda data: (data["ts"],),
                 max_blocks=self.PARTITION_CACHE_BLOCKS,
             )
-        assert stream is Stream.PHASES, stream
+        assert stream in (Stream.PHASES, Stream.TRAJECTORIES), stream
+        record_type = _RECORD_TYPE_OF_STREAM[stream]
+        stamps = (lambda data: (data["t0"], data["t1"])) if stream is Stream.PHASES else (lambda data: (data["ts"],))
         return _PartitionReader(
             self.dir / stream.value,
             self.dir / stream.filename,
-            parse=self._parse_phases,
+            parse=lambda raw, path, offset, record_type=record_type: self._parse_object_lines(
+                record_type, raw, path, offset
+            ),
             concat=lambda blocks: [event for block in blocks for event in block],
             length=len,
-            line_stamps=lambda data: (data["t0"], data["t1"]),
+            line_stamps=stamps,
             max_blocks=self.PARTITION_CACHE_BLOCKS,
         )
 
@@ -511,14 +550,23 @@ class MetricStore:
         except (pl.exceptions.PolarsError, ValueError) as e:
             raise ValueError(f"corrupt record in {path} near byte {offset}: {e}") from e
 
-    def _parse_phases(self, raw: bytes, path: Path, offset: int) -> list[PhaseEvent]:
+    def _parse_object_lines(self, record_type: type[Record], raw: bytes, path: Path, offset: int) -> list[Record]:
         events = []
         for line in raw.splitlines():
             try:
-                events.append(PhaseEvent.from_dict(json.loads(line)))
+                events.append(record_type.from_dict(json.loads(line)))
             except (json.JSONDecodeError, TypeError, KeyError) as e:
                 raise ValueError(f"corrupt record in {path} near byte {offset}: {line[:200]!r}") from e
         return events
+
+    def trajectory_events(self, t0: float | None = None, t1: float | None = None) -> list[TrajectoryEvent]:
+        """Lifecycle events in [t0, t1], keyed by emission ts (no slack here —
+        the consuming-step join and its lookback window live in the reader)."""
+        return self._window_records(self._readers[Stream.TRAJECTORIES].window(t0, t1), t0, t1)
+
+    @staticmethod
+    def _window_records(events: list[TrajectoryEvent], t0: float | None, t1: float | None) -> list[TrajectoryEvent]:
+        return [e for e in events if (t0 is None or e.ts >= t0) and (t1 is None or e.ts <= t1)]
 
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
         # phases partition by END hour: the lower bound is exact (an event
@@ -550,6 +598,8 @@ class MetricStore:
             ]
         if stream is Stream.PHASES:
             return list(self._phase_events(None, None))
+        if stream is Stream.TRAJECTORIES:
+            return self.trajectory_events()
         return list(self.records[stream])
 
     @staticmethod
