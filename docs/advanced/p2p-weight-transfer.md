@@ -1,6 +1,7 @@
 ---
 title: P2P Weight Transfer
 description: Direct rank-to-rank weight sync from actor to rollout via RDMA writes.
+corresponding author: Jiadong Guo (JD-ETH)
 ---
 miles supports P2P (point-to-point) weight transfer between training and rollout engines. By using `--update-weight-transfer-mode p2p`, miles enables more efficient weight transfer from training ranks to rollout engine ranks. More details on the design and implementation can be found in [this issue](https://github.com/radixark/miles/issues/755).
 
