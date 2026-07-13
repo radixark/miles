@@ -31,8 +31,6 @@ Usage:
 """
 
 import os
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -40,6 +38,7 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+import openenv_launch_common as C
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -107,22 +106,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prometheus_run_name: str = "openenv-tbench2-learn"
 
 
-def cleanup():
-    """Kill old Ray jobs and stale processes to free GPU resources."""
-    my_pid = os.getpid()
-    ppid = os.getppid()
-    print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
-    targets = ["sglang", "train.py", "MegatronTrain"]
-    exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
-    for t in targets:
-        subprocess.run(
-            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
-            shell=True,
-        )
-    time.sleep(5)
-    print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
-
-
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format if not already done."""
     U.convert_checkpoint(
@@ -143,20 +126,7 @@ def execute(args: ScriptArgs):
         "--save-interval 100 "
     )
 
-    rollout_args = (
-        f"--prompt-data {args.prompt_data} "
-        "--input-key prompt "
-        "--metadata-key metadata "
-        "--rollout-shuffle "
-        "--num-rollout 40 "
-        f"--rollout-batch-size {args.rollout_batch_size} "
-        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
-        "--rollout-temperature 0.8 "
-        "--rollout-max-response-len 8192 "
-        f"--max-seq-len {args.max_seq_len} "
-        f"--global-batch-size {args.global_batch_size} "
-        "--balance-data "
-    )
+    rollout_args = C.rollout_args(args)
 
     perf_args = (
         "--tensor-model-parallel-size 4 "
@@ -175,24 +145,9 @@ def execute(args: ScriptArgs):
         "--use-precision-aware-optimizer "
     )
 
-    grpo_args = (
-        "--advantage-estimator grpo "
-        "--use-kl-loss "
-        "--kl-loss-coef 0.01 "
-        "--kl-loss-type low_var_kl "
-        "--entropy-coef 0.0 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
-    )
+    grpo_args = C.grpo_args()
 
-    optimizer_args = (
-        "--optimizer adam "
-        "--lr 1e-6 "
-        "--lr-decay-style constant "
-        "--weight-decay 0.1 "
-        "--adam-beta1 0.9 "
-        "--adam-beta2 0.98 "
-    )
+    optimizer_args = C.optimizer_args()
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
@@ -202,16 +157,7 @@ def execute(args: ScriptArgs):
         "--sglang-router-port 31000 "
     )
 
-    agent_args = (
-        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
-        "--custom-agent-function-path openenv_agent_function.run "
-        "--custom-rm-path openenv_generate.reward_func "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
-        "--tito-model glm47 "
-        "--use-session-server "
-        "--session-server-port 30000 "
-        "--tito-allowed-append-roles user tool "
-    )
+    agent_args = C.agent_args("glm47")
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -229,24 +175,9 @@ def execute(args: ScriptArgs):
 
     dump_args = f"--dump-details {args.dump_details} " if args.dump_details else ""
 
-    wandb_args = ""
-    if args.wandb_key:
-        wandb_args = (
-            "--use-wandb "
-            f"--wandb-project {args.wandb_project} "
-            f"--wandb-group {args.wandb_run_name} "
-            f"--wandb-key {args.wandb_key} "
-        )
-        if args.wandb_team:
-            wandb_args += f"--wandb-team {args.wandb_team} "
+    wandb_args = C.wandb_args(args)
 
-    prometheus_args = ""
-    if args.use_prometheus:
-        prometheus_args = (
-            "--use-prometheus "
-            f"--prometheus-port {args.prometheus_port} "
-            f"--prometheus-run-name {args.prometheus_run_name} "
-        )
+    prometheus_args = C.prometheus_args(args)
 
     train_args = (
         f"{ckpt_args}"
@@ -263,26 +194,10 @@ def execute(args: ScriptArgs):
         f"{dump_args}"
     )
 
-    miles_root = U.repo_base_dir
-
-    extra_env_vars = {
-        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
-        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-        "OPENENV_ENV_URL": args.openenv_env_url,
-        "OPENENV_MAX_TURNS": str(args.openenv_max_turns),
-        "OPENENV_MAX_ROLLOUT_TIME_SECONDS": str(args.openenv_max_rollout_time_seconds),
-        "AGENT_MODEL_NAME": args.agent_model_name,
-    }
-    if args.miles_host_ip:
-        extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
-    if args.openenv_daytona_snapshot:
-        assert args.daytona_api_key, "DAYTONA_API_KEY required when openenv_daytona_snapshot is set"
-        extra_env_vars["OPENENV_DAYTONA_SNAPSHOT"] = args.openenv_daytona_snapshot
-        extra_env_vars["OPENENV_DAYTONA_POOL_SIZE"] = str(args.openenv_daytona_pool_size)
-        extra_env_vars["OPENENV_DAYTONA_PORT"] = str(args.openenv_daytona_port)
-        extra_env_vars["DAYTONA_API_KEY"] = args.daytona_api_key
+    extra_env_vars = C.base_env_vars(
+        args, str(SCRIPT_DIR), args.megatron_path, U.repo_base_dir
+    )
+    C.apply_optional_env_vars(extra_env_vars, args)
 
     U.execute_train(
         train_args=train_args,
@@ -296,7 +211,7 @@ def execute(args: ScriptArgs):
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    cleanup()
+    C.cleanup()
     if not args.skip_prepare:
         prepare(args)
     execute(args)
