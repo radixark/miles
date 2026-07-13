@@ -15,7 +15,7 @@ from scripts.run_deepseek_v32 import (
 )
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=1900, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_cuda_ci(est_time=1900, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
