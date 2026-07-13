@@ -162,6 +162,45 @@ def test_deregister_holds_slot_until_free_slot():
 
 
 @pytest.mark.asyncio
+async def test_free_slot_reaborts_before_releasing_slot():
+    """Requests can survive the single retire-time abort (multi-turn groups
+    submitting between turns, engine tokenizer-window misses); free_slot must
+    fire one more abort round before the slot becomes reusable."""
+    backend = make_backend()
+    aborted: list[str] = []
+
+    async def record_abort(name: str) -> None:
+        aborted.append(name)
+
+    backend.abort_adapter_requests = record_abort
+
+    register_and_promote(backend.registry, "A")
+    await backend.deregister("A")
+    await backend.retire_adapters()
+    assert aborted == ["A"]
+
+    assert await backend.free_slot("A") == 0
+    assert aborted == ["A", "A"]
+    assert backend.registry.free_slots == {0, 1, 2, 3}
+
+
+@pytest.mark.asyncio
+async def test_free_slot_skips_abort_when_not_in_cleanup():
+    backend = make_backend()
+    aborted: list[str] = []
+
+    async def record_abort(name: str) -> None:
+        aborted.append(name)
+
+    backend.abort_adapter_requests = record_abort
+
+    register_and_promote(backend.registry, "A")  # ACTIVE, not CLEANUP
+    assert await backend.free_slot("A") == -1
+    assert await backend.free_slot("never-registered") == -1
+    assert aborted == []
+
+
+@pytest.mark.asyncio
 async def test_custom_backend_validation_rejects():
     class StrictBackend(MultiLoRABackend):
         async def validate_adapter(self, name, config):

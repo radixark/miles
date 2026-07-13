@@ -275,6 +275,22 @@ class MultiLoRABackend:
             await self.abort_adapter_requests(name)
         return names
 
+    async def free_slot(self, name: str) -> int:
+        """Free the adapter's slot, after one final abort round.
+
+        The abort in ``retire_adapters`` fires once at the RETIRING->CLEANUP
+        flip, but requests can survive it: a multi-turn group between turns
+        submits its next turn only after that round, and a request still inside
+        the engine's tokenizer window can be missed by the scheduler-side
+        matching. Aborting again here — right before the slot becomes reusable —
+        closes those escapes, so a later tenant of the slot cannot serve a
+        retired adapter's orphaned requests.
+        """
+        record = self.registry.records.get(name)
+        if record is not None and record.state is AdapterState.CLEANUP:
+            await self.abort_adapter_requests(name)
+        return self.registry.free_slot(name)
+
     async def worker_urls(self) -> list[str]:
         assert self.client is not None
         for endpoint, extract in (

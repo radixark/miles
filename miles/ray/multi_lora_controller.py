@@ -81,8 +81,8 @@ class MultiLoRAController:
     async def retire_adapters(self) -> list[str]:
         return await self.backend.retire_adapters()
 
-    def free_slot(self, name: str) -> int:
-        return self.backend.registry.free_slot(name)
+    async def free_slot(self, name: str) -> int:
+        return await self.backend.free_slot(name)
 
     def record_weight_update(self, names: list[str]) -> None:
         self.backend.registry.record_weight_update(names)

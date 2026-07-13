@@ -176,10 +176,20 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if sample.adapter is not None:
         from miles.ray.multi_lora_controller import AdaptersCache
 
+        if (adapter := await AdaptersCache().get(sample.adapter.name)) is None:
+            # Adapter no longer sampleable (deregistered / cleaned up). Don't
+            # POST a request the retire-time abort round can no longer see:
+            # once the slot is reused, such an orphan would keep decoding under
+            # the next tenant's weights and silently pollute its group.
+            logger.warning(
+                f"Dropping generation for adapter '{sample.adapter.name}' (slot {sample.adapter.slot}): "
+                "adapter is no longer sampleable"
+            )
+            sample.status = Sample.Status.ABORTED
+            return sample
         payload["lora_path"] = slot_lora_name(sample.adapter.slot)
         payload["rid"] = make_rid(sample.adapter.name)
-        if (adapter := await AdaptersCache().get(sample.adapter.name)) is not None:
-            payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
+        payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
     elif is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
