@@ -95,6 +95,22 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
 
     # ------------------------------ timeline --------------------------------
 
+    @app.get("/api/rollout/{rollout_id}/trajectories")
+    def rollout_trajectories(rollout_id: int):
+        """Batch anatomy: the consuming step's samples resolved to their
+        lifecycle lanes. The event scan is capped at one viewport (4 h) before
+        the consume anchor (design §18.5); empty lanes = run predates the
+        trajectory probes."""
+        with _translate_errors():
+            indices = set(reader.summary(rollout_id)["sample_index"].to_list())
+            consume = next((b["ts"] for b in store.bubbles() if b["step"] == rollout_id), None)
+            if consume is None:
+                window = store.time_range()
+                consume = window[1] if window else None
+            t0 = consume - MetricStore.MAX_WINDOW_S if consume is not None else None
+            lanes = store.trajectory_lanes(t0=t0, t1=consume, sample_indices=indices)
+            return _json_safe(dict(lanes=lanes, consume_ts=consume, t0=t0))
+
     @app.get("/api/timeline/topology")
     def timeline_topology():
         return dict(lanes=store.lanes(), windows=store.topology_windows())

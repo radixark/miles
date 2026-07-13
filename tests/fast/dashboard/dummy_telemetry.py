@@ -39,6 +39,8 @@ from miles.dashboard.store import (
     PhaseEvent,
     Role,
     TopologySnapshot,
+    TrajectoryEvent,
+    TrajectoryEventKind,
 )
 
 BASE_TS = 1_000_000.0
@@ -75,7 +77,50 @@ class DummyTelemetryTruth:
         return self.step_start(step), self.step_start(step) + ROLLOUT_SECONDS
 
 
-def dump_dummy_telemetry(dump_dir: Path, *, steps: int = 3, gpus: int = 4) -> DummyTelemetryTruth:
+SAMPLES_PER_STEP = 8  # dummy_dump's default num_prompts * n_samples_per_prompt
+
+
+def _trajectory_events(store: MetricStore, truth: DummyTelemetryTruth, samples_per_step: int) -> None:
+    """Lifecycle events for each step's batch, aligned with dummy_dump's
+    global sample indices (step * n + i) and its agentic pattern (every third
+    sample: two turns, one tool call, mixed weight versions)."""
+    for step in range(truth.steps):
+        t0, t1 = truth.rollout_interval(step)
+        for i in range(samples_per_step):
+            index = step * samples_per_step + i
+            agentic = index % 3 == 0
+            # stagger submits so every lifecycle fits inside the rollout window
+            start = t0 + i * (t1 - t0 - 16.0) / samples_per_step
+            version = str(index % 3)
+
+            def emit(kind, ts, turn=-1, version=version, detail="", index=index, group=i // 2):
+                store.append(
+                    TrajectoryEvent(
+                        ts=ts,
+                        kind=kind,
+                        sample_index=index,
+                        group_index=group,
+                        turn=turn,
+                        weight_version=version,
+                        detail=detail,
+                    )
+                )
+
+            emit(TrajectoryEventKind.ATTEMPT_START, start)
+            emit(TrajectoryEventKind.GEN_START, start + 1.0, turn=1)
+            emit(TrajectoryEventKind.GEN_END, start + 6.0, turn=1)
+            if agentic:
+                emit(TrajectoryEventKind.TOOL_START, start + 6.0, turn=1, detail="1 calls")
+                emit(TrajectoryEventKind.TOOL_END, start + 9.0, turn=1, detail="1 calls")
+                bumped = str(index % 3 + 1)
+                emit(TrajectoryEventKind.GEN_START, start + 9.0, turn=2, version=bumped)
+                emit(TrajectoryEventKind.GEN_END, start + 14.0, turn=2, version=bumped)
+            emit(TrajectoryEventKind.ATTEMPT_END, start + (15.0 if agentic else 7.0), detail="completed")
+
+
+def dump_dummy_telemetry(
+    dump_dir: Path, *, steps: int = 3, gpus: int = 4, samples_per_step: int = SAMPLES_PER_STEP
+) -> DummyTelemetryTruth:
     truth = DummyTelemetryTruth(
         steps=steps,
         gpus=gpus,
@@ -190,5 +235,6 @@ def dump_dummy_telemetry(dump_dir: Path, *, steps: int = 3, gpus: int = 4) -> Du
                     EngineSample(ts=ts, addr=addr, metric="sglang_gen_throughput", labels={}, value=running * 50.0)
                 )
 
+    _trajectory_events(store, truth, samples_per_step)
     store.flush()
     return truth

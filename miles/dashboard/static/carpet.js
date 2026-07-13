@@ -6,7 +6,8 @@ import { hideTooltip, showTooltip } from "./charts.js";
 const M_LEFT = 96;
 const M_RIGHT = 14;
 const X_BUCKETS = 1200;
-const METRICS = ["util", "phase", "mem_mb", "power_w"];
+const METRICS = ["util", "phase", "mem_mb", "power_w", "lifecycle"];
+const LIFECYCLE_COLORS = { queue: "#cfd6e0", generating: "#1d9e75", tool_wait: "#d97706" };
 const MAX_LABELED_ROWS = 48;
 
 // sequential ramp for magnitude metrics: one hue, light -> dark
@@ -56,7 +57,7 @@ export function createCarpet(opts) {
               refresh(range);
             },
           },
-          [m],
+          [m === "lifecycle" ? "traj" : m],
         ),
       ),
       scaleLabel,
@@ -103,7 +104,7 @@ export function createCarpet(opts) {
     const lut = new Array(256).fill(NO_DATA);
     if (data.palette) {
       data.palette.forEach((name, i) => {
-        if (i > 0) lut[i] = hexToRgb(phaseColors[name] ?? "#98a1b0");
+        if (i > 0) lut[i] = hexToRgb(LIFECYCLE_COLORS[name] ?? phaseColors[name] ?? "#98a1b0");
       });
     } else {
       for (let v = 0; v < 256; v++) {
@@ -127,34 +128,40 @@ export function createCarpet(opts) {
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(off, 0, 0, data.x_buckets, rows, M_LEFT, 0, plotW, h);
 
-    // node boundaries (solid) and train/rollout role changes (dashed)
-    ctx.strokeStyle = MUTED;
-    const roleKey = (row) => row.roles.join(",");
-    for (let r = 1; r < rows; r++) {
-      const prev = data.rows[r - 1];
-      const cur = data.rows[r];
-      if (prev.node !== cur.node) ctx.setLineDash([]);
-      else if (roleKey(prev) !== roleKey(cur)) ctx.setLineDash([3, 3]);
-      else continue;
-      ctx.beginPath();
-      ctx.moveTo(M_LEFT, r * rowH());
-      ctx.lineTo(rect.width - M_RIGHT, r * rowH());
-      ctx.stroke();
+    const sampleRows = data.rows[0]?.sample_index !== undefined;
+    if (!sampleRows) {
+      // node boundaries (solid) and train/rollout role changes (dashed)
+      ctx.strokeStyle = MUTED;
+      const roleKey = (row) => row.roles.join(",");
+      for (let r = 1; r < rows; r++) {
+        const prev = data.rows[r - 1];
+        const cur = data.rows[r];
+        if (prev.node !== cur.node) ctx.setLineDash([]);
+        else if (roleKey(prev) !== roleKey(cur)) ctx.setLineDash([3, 3]);
+        else continue;
+        ctx.beginPath();
+        ctx.moveTo(M_LEFT, r * rowH());
+        ctx.lineTo(rect.width - M_RIGHT, r * rowH());
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
     }
-    ctx.setLineDash([]);
 
     const labelEvery = Math.ceil(rows / MAX_LABELED_ROWS);
     ctx.fillStyle = TEXT;
     for (let r = 0; r < rows; r += labelEvery) {
-      ctx.fillText(`gpu ${data.rows[r].gpu}`, 8, r * rowH() + Math.min(rowH(), 11));
+      const label = sampleRows ? `s${data.rows[r].sample_index}` : `gpu ${data.rows[r].gpu}`;
+      ctx.fillText(label, 8, r * rowH() + Math.min(rowH(), 11));
     }
 
-    // left-edge markers for lanes in the current selection
-    const selected = opts.selectedKeys();
-    ctx.fillStyle = ACCENT;
-    for (let r = 0; r < rows; r++) {
-      if (selected.has(`${data.rows[r].node}:${data.rows[r].gpu}`)) {
-        ctx.fillRect(M_LEFT - 6, r * rowH(), 3, rowH());
+    if (!sampleRows) {
+      // left-edge markers for lanes in the current selection
+      const selected = opts.selectedKeys();
+      ctx.fillStyle = ACCENT;
+      for (let r = 0; r < rows; r++) {
+        if (selected.has(`${data.rows[r].node}:${data.rows[r].gpu}`)) {
+          ctx.fillRect(M_LEFT - 6, r * rowH(), 3, rowH());
+        }
       }
     }
 
@@ -164,7 +171,11 @@ export function createCarpet(opts) {
       ctx.fillRect(M_LEFT, a * rowH(), plotW, (b - a + 1) * rowH());
     }
 
-    scaleLabel.textContent = data.scale ? `0–${fmtNum(data.scale.max)}` : "";
+    scaleLabel.textContent = data.scale
+      ? `0–${fmtNum(data.scale.max)}`
+      : data.rows_total > data.rows.length
+        ? `showing ${data.rows.length}/${data.rows_total} trajectories`
+        : "";
   }
 
   const rowAt = (clientY) => {
@@ -174,6 +185,7 @@ export function createCarpet(opts) {
 
   canvas.onmousedown = (ev) => {
     if (!data || !data.rows.length) return;
+    if (data.rows[0].sample_index !== undefined) return; // trajectories: nothing to select
     const r = rowAt(ev.clientY);
     brush = { r0: r, r1: r };
     redraw();
@@ -209,7 +221,11 @@ export function createCarpet(opts) {
     );
     const value = data.values[r * data.x_buckets + col];
     const t = data.t0 + ((col + 0.5) / data.x_buckets) * (data.t1 - data.t0);
-    const lines = [`${row.node}:${row.gpu} (${row.roles.join("+") || "?"})  +${fmtNum(t - opts.runStart())}s`];
+    const identity =
+      row.sample_index !== undefined
+        ? `s${row.sample_index} (group ${row.group_index})`
+        : `${row.node}:${row.gpu} (${row.roles.join("+") || "?"})`;
+    const lines = [`${identity}  +${fmtNum(t - opts.runStart())}s`];
     if (data.palette) lines.push(`phase: ${data.palette[value] || "—"}`);
     else lines.push(`${metric}: ${fmtNum((value / 255) * data.scale.max)}`);
     showTooltip(ev.clientX, ev.clientY, lines.join("\n"));

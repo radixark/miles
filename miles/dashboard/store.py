@@ -568,6 +568,85 @@ class MetricStore:
     def _window_records(events: list[TrajectoryEvent], t0: float | None, t1: float | None) -> list[TrajectoryEvent]:
         return [e for e in events if (t0 is None or e.ts >= t0) and (t1 is None or e.ts <= t1)]
 
+    def trajectory_lanes(
+        self,
+        *,
+        t0: float | None = None,
+        t1: float | None = None,
+        sample_indices: set[int] | None = None,
+    ) -> list[dict]:
+        """Per-sample lifecycle assembly for the batch-anatomy swimlanes:
+        gen/tool segments paired by (kind, turn), attempt windows, and the
+        version span observed across segments. A start without an end (still
+        running, or clipped by the window) yields t1=None and vice versa."""
+        grouped: dict[int, list[TrajectoryEvent]] = {}
+        for event in self.trajectory_events(t0, t1):
+            if sample_indices is not None and event.sample_index not in sample_indices:
+                continue
+            grouped.setdefault(event.sample_index, []).append(event)
+
+        span_kinds = {
+            TrajectoryEventKind.GEN_START: ("gen", True),
+            TrajectoryEventKind.GEN_END: ("gen", False),
+            TrajectoryEventKind.TOOL_START: ("tool", True),
+            TrajectoryEventKind.TOOL_END: ("tool", False),
+        }
+        lanes = []
+        for index, events in grouped.items():
+            events.sort(key=lambda e: e.ts)
+            segments: list[dict] = []
+            open_spans: dict[tuple[str, int], dict] = {}
+            attempts: list[dict] = []
+            attempt_t0: float | None = None
+            status = ""
+            versions = sorted({int(e.weight_version) for e in events if e.weight_version.isdigit()})
+            for event in events:
+                if event.kind == TrajectoryEventKind.ATTEMPT_START:
+                    attempt_t0 = event.ts
+                elif event.kind == TrajectoryEventKind.ATTEMPT_END:
+                    attempts.append(dict(t0=attempt_t0, t1=event.ts))
+                    attempt_t0 = None
+                    status = event.detail or status
+                else:
+                    base, is_start = span_kinds[TrajectoryEventKind(event.kind)]
+                    if is_start:
+                        segment = dict(
+                            kind=base, t0=event.ts, t1=None, turn=event.turn, weight_version=event.weight_version
+                        )
+                        open_spans[(base, event.turn)] = segment
+                        segments.append(segment)
+                    else:
+                        segment = open_spans.pop((base, event.turn), None)
+                        if segment is None:
+                            segments.append(
+                                dict(
+                                    kind=base,
+                                    t0=None,
+                                    t1=event.ts,
+                                    turn=event.turn,
+                                    weight_version=event.weight_version,
+                                )
+                            )
+                        else:
+                            segment["t1"] = event.ts
+                            segment["weight_version"] = event.weight_version or segment["weight_version"]
+            if attempt_t0 is not None:
+                attempts.append(dict(t0=attempt_t0, t1=None))  # attempt still running
+            lanes.append(
+                dict(
+                    sample_index=index,
+                    group_index=events[0].group_index,
+                    first_ts=events[0].ts,
+                    last_ts=events[-1].ts,
+                    segments=segments,
+                    attempts=attempts,
+                    status=status,
+                    versions=versions,
+                )
+            )
+        lanes.sort(key=lambda lane: lane["first_ts"])
+        return lanes
+
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
         # phases partition by END hour: the lower bound is exact (an event
         # overlapping the window completed at or after t0); the upper bound
@@ -923,6 +1002,8 @@ class MetricStore:
         t0 = window[0] if t0 is None else t0
         t1 = window[1] if t1 is None else t1
         assert t1 > t0, f"empty heatmap window [{t0}, {t1})"
+        if metric == "lifecycle":
+            return self._lifecycle_heatmap(t0, t1, x_buckets)
         rows = [
             dict(node=entry["node"], gpu=entry["gpu"], roles=entry["roles"])
             for entry in self.lane_index()
@@ -985,6 +1066,43 @@ class MetricStore:
             values=matrix.tobytes(),
             scale=None,
             palette=palette,
+        )
+
+    LIFECYCLE_PALETTE: ClassVar[tuple[str, ...]] = ("", "queue", "generating", "tool_wait")
+    LIFECYCLE_MAX_ROWS: ClassVar[int] = 1024  # y-cap: thousands of samples must not explode the canvas
+
+    def _lifecycle_heatmap(self, t0: float, t1: float, x_buckets: int) -> dict:
+        """Run-wide trajectory carpet: y = samples ordered by first event,
+        color = lifecycle state. Queue paints attempt windows first so gen and
+        tool segments win the shared buckets. Rows cap at LIFECYCLE_MAX_ROWS
+        (submit order, earliest kept); ``rows_total`` reports the uncapped
+        count so the frontend can say "showing N/M"."""
+        all_lanes = self.trajectory_lanes(t0=t0, t1=t1)
+        lanes = all_lanes[: self.LIFECYCLE_MAX_ROWS]
+        matrix = np.zeros((len(lanes), x_buckets), dtype=np.uint8)
+        span = t1 - t0
+        state_id = {name: i for i, name in enumerate(self.LIFECYCLE_PALETTE)}
+
+        def bucket(ts: float) -> int:
+            return min(x_buckets - 1, max(0, int((ts - t0) / span * x_buckets)))
+
+        for row, lane in enumerate(lanes):
+            for attempt in lane["attempts"]:
+                matrix[row, bucket(attempt["t0"] or t0) : bucket(attempt["t1"] or t1) + 1] = state_id["queue"]
+            for segment in lane["segments"]:
+                cell = state_id["generating" if segment["kind"] == "gen" else "tool_wait"]
+                matrix[row, bucket(segment["t0"] or t0) : bucket(segment["t1"] or t1) + 1] = cell
+        rows = [dict(sample_index=lane["sample_index"], group_index=lane["group_index"]) for lane in lanes]
+        return dict(
+            rows=rows,
+            rows_total=len(all_lanes),
+            x_buckets=x_buckets,
+            t0=t0,
+            t1=t1,
+            metric="lifecycle",
+            values=matrix.tobytes(),
+            scale=None,
+            palette=list(self.LIFECYCLE_PALETTE),
         )
 
     def outliers(

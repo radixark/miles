@@ -37,7 +37,7 @@ def make_demo_dir(target: Path) -> Path:
     except ImportError as e:
         raise SystemExit("--demo needs the dummy generators under tests/; run from a miles repo checkout") from e
     dump_dummy_run(target, steps=3, num_prompts=8, n_samples_per_prompt=4, max_response_len=48)
-    dump_dummy_telemetry(target, steps=3)
+    dump_dummy_telemetry(target, steps=3, samples_per_step=32)
     return target
 
 

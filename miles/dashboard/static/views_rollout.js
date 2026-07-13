@@ -1,3 +1,4 @@
+import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
 import { el, fmtNum } from "./app.js";
 import { drawChart } from "./charts.js";
@@ -71,6 +72,16 @@ export async function renderRollout(view, meta, route) {
   ]);
   const rows = summary.rows;
   for (const row of rows) row.versions = versionSpan(row);
+  // lifecycle lanes exist only for runs with the trajectory probes (PR §18);
+  // older dumps or eval steps: no pane, table only
+  let trajectories = { lanes: [], consume_ts: null };
+  if (!evaluation) {
+    try {
+      trajectories = await api(`/api/rollout/${rolloutId}/trajectories`);
+    } catch {
+      /* endpoint absent or no events: keep the table-only layout */
+    }
+  }
   const rewardKey = evaluation ? "reward" : "raw_reward";
 
   // -------- header controls: prev/next step, train/eval toggle --------
@@ -140,7 +151,19 @@ export async function renderRollout(view, meta, route) {
     };
     allColumns.onchange = renderTable;
     renderTable();
+    const panels = [];
+    if (trajectories.lanes.length) {
+      panels.push(
+        createAnatomy({
+          lanes: trajectories.lanes,
+          consumeTs: trajectories.consume_ts,
+          rowsByIndex: new Map(rows.map((r) => [r.sample_index, r])),
+          onClickSample: (index) => openTokens({ sample_index: index }),
+        }),
+      );
+    }
     return [
+      ...panels,
       el("div", { class: "panel" }, [el("h3", {}, [`${rewardKey} vs response length (red = truncated)`]), scatter]),
       el("div", { class: "panel" }, [
         el("h3", {}, ["samples — click a row for the token view"]),

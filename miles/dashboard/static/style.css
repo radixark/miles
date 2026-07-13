@@ -80,6 +80,8 @@ table.data tr.flagged td { color: var(--bad); }
 
 canvas.timeline { width: 100%; display: block; cursor: crosshair; }
 canvas.carpet { width: 100%; display: block; cursor: crosshair; }
+canvas.anatomy { width: 100%; display: block; cursor: pointer; }
+.anatomywrap { overflow-y: auto; }
 .chip {
   display: inline-flex; align-items: center; gap: 4px; background: var(--bg);
   border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px;
