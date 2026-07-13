@@ -40,11 +40,13 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 Scope selection lives in `run_suite.py` `resolve_scope`: each workflow stage passes the raw PR label names (`--labels`) and the trigger (`--event-name`), and `resolve_scope` maps them to match-all plus per-scope exclusions. The workflow carries no scope policy of its own.
 
-`run-ci-image` resolves to match-all minus `ft-short`/`ft-long`, so image validation ignores ordinary domain gating but does not schedule any FT tests.
+| Scope | Trigger | Runs | Excludes | Fast-fail |
+|---|---|---|---|---|
+| all | `run-ci-all` label, or manual `workflow_dispatch` | every enabled tag | — | default |
+| nightly | `schedule` cron on `main`, or `nightly` label | every enabled tag incl. `ft-short` | `ft-long` | disabled on both levels |
+| image | `run-ci-image` label | every enabled non-FT tag | `ft-short`, `ft-long` | default |
 
-A nightly run — the `schedule` on `main` or a PR carrying `nightly` — resolves to match-all minus `ft-long`, so it includes `ft-short` but omits the FT soak tests. It also disables fast-fail on both levels.
-
-`run-ci-all` and a manual `workflow_dispatch` resolve to match-all with no exclusions, so every enabled tag is included. If scope labels overlap, the precedence is `run-ci-all` > nightly > `run-ci-image` (the branch order of `resolve_scope`).
+Rows are in precedence order: when scope labels overlap, the higher row wins (`run-ci-all` > nightly > `run-ci-image`, the branch order of `resolve_scope`).
 
 A domain label explicitly requested on the PR wins over a scope exclusion: `run-ci-image` plus `run-ci-ft-short` runs the image scope *and* the ft-short tests, rather than silently dropping the explicit request.
 
