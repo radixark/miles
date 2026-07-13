@@ -28,6 +28,7 @@ __all__ = [
     "is_multi_lora_enabled",
     "make_rid",
     "parse_adapter",
+    "slot_lora_name",
 ]
 
 
@@ -47,6 +48,12 @@ def make_rid(adapter_name: str) -> str:
 
 def parse_adapter(rid: str) -> str:
     return rid.rsplit(RID_SEPARATOR, 1)[0]
+
+
+def slot_lora_name(slot: int) -> str:
+    """Engine-side LoRA adapter name for a controller slot. Weight pushes and
+    every inference request (rollout and prefill scoring) must agree on this."""
+    return f"__miles_slot_{slot}"
 
 
 class AdapterState(str, Enum):

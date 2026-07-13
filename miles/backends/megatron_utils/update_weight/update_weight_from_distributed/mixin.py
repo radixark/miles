@@ -306,9 +306,11 @@ class DistBucketedWeightUpdateMixin:
                 "Megatron-Bridge or SGLang version is incompatible."
             )
 
+        from miles.utils.multi_lora import slot_lora_name
+
         self._update_lora_weight_implementation(
             accumulated_named_tensors,
-            lora_name=f"__miles_slot_{adapter.slot}",
+            lora_name=slot_lora_name(adapter.slot),
             lora_config=lora_config,
             upsert=upsert,
         )

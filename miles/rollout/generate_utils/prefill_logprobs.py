@@ -6,8 +6,23 @@ from typing import Any
 
 from miles.utils.http_utils import post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.multi_lora import slot_lora_name
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
+
+
+def _lora_path_for_sample(args: Any, sample: Sample) -> str | None:
+    """The adapter name this sample's scoring request must be served with.
+
+    Multi-LoRA samples carry an adapter ref and must score under their own
+    slot's adapter — the engines only know ``__miles_slot_{N}`` names there.
+    Single-adapter LoRA uses the fixed name; base models use none.
+    """
+    if sample.adapter is not None:
+        return slot_lora_name(sample.adapter.slot)
+    if is_lora_enabled(args):
+        return LORA_ADAPTER_NAME
+    return None
 
 
 def _build_prefill_scoring_payload(
@@ -37,8 +52,8 @@ def _build_prefill_scoring_payload(
         "logprob_start_len": prompt_len - 1,
     }
 
-    if is_lora_enabled(args):
-        payload["lora_path"] = LORA_ADAPTER_NAME
+    if (lora_path := _lora_path_for_sample(args, sample)) is not None:
+        payload["lora_path"] = lora_path
 
     if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
         image_data = sample.multimodal_inputs["images"]
@@ -63,14 +78,21 @@ def _build_batch_prefill_scoring_payload(
     if any(payload["logprob_start_len"] != logprob_start_len for payload in payloads):
         raise ValueError("Batched SGLang prefill scoring requires a shared logprob_start_len")
 
+    lora_paths = {payload.get("lora_path") for payload in payloads}
+    if len(lora_paths) > 1:
+        # A batch payload carries a single lora_path; scoring a mixed-adapter
+        # batch under one adapter would silently corrupt the other samples'
+        # logprobs. Callers must group by adapter first.
+        raise ValueError("Batched SGLang prefill scoring requires a shared lora_path")
+
     batch_payload: dict[str, Any] = {
         "input_ids": [payload["input_ids"] for payload in payloads],
         "sampling_params": payloads[0]["sampling_params"],
         "return_logprob": True,
         "logprob_start_len": logprob_start_len,
     }
-    if "lora_path" in payloads[0]:
-        batch_payload["lora_path"] = payloads[0]["lora_path"]
+    if (lora_path := next(iter(lora_paths))) is not None:
+        batch_payload["lora_path"] = lora_path
     return batch_payload
 
 
@@ -137,12 +159,15 @@ async def recompute_samples_rollout_logprobs_via_prefill(
     flush_url = url.rsplit("/", 1)[0] + "/flush_cache"
 
     if _can_batch_prefill_score(args, samples_to_score):
-        samples_by_logprob_start_len: dict[int, list[Sample]] = defaultdict(list)
+        # A batch shares one logprob_start_len and one lora_path, so group by
+        # both: mixed-adapter batches (multi-LoRA) must not score every sample
+        # under whichever adapter came first.
+        samples_by_batch_key: dict[tuple[int, str | None], list[Sample]] = defaultdict(list)
         for sample in samples_to_score:
             prompt_len = len(sample.tokens) - sample.response_length
-            samples_by_logprob_start_len[prompt_len - 1].append(sample)
+            samples_by_batch_key[(prompt_len - 1, _lora_path_for_sample(args, sample))].append(sample)
 
-        for batch_samples in samples_by_logprob_start_len.values():
+        for batch_samples in samples_by_batch_key.values():
             # SGLang can serve scoring requests from radix/KV cache. Flush before
             # each scoring group so every group uses the same clean-prefill path.
             await post(flush_url, {})
