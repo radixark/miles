@@ -120,10 +120,9 @@ def execute():
         f"--sglang-config {config_path} "
     )
 
-    ci_args = (
-        "--ci-test "
-        + ("--ci-disable-kl-checker --ci-disable-logprobs-checker " if IS_ROCM else "")
-    )
+    ci_args = "--ci-test "
+    if IS_ROCM:
+        ci_args += "--ci-disable-kl-checker --ci-disable-logprobs-checker "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
@@ -136,8 +135,8 @@ def execute():
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
-        + ("--no-gradient-accumulation-fusion " if IS_ROCM else "")
-        + "--attention-softmax-in-fp32 "
+        f"{'--no-gradient-accumulation-fusion ' if IS_ROCM else ''}"
+        "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS} "
