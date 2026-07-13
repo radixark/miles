@@ -38,11 +38,10 @@ def monkey_patch_torch_dist():
         else:
             # If no ranks specified, use all ranks in world
             ranks = list(range(dist.get_world_size()))
-
         if len(ranks) == 1:
             return group
 
-        group = ReloadableProcessGroup(group, ranks)
+        group = ReloadableProcessGroup(group, inner_args=args, inner_kwargs=kwargs)
         return group
 
     dist.new_group = new_group
@@ -112,15 +111,14 @@ def monkey_patch_torch_dist():
 class ReloadableProcessGroup(torch.distributed.ProcessGroup):
     GROUPS = {}
 
-    def __init__(self, group, ranks):
+    def __init__(self, group, inner_args, inner_kwargs):
         super().__init__(
             rank=dist.get_rank(group),
             size=dist.get_world_size(group),
         )
         self.group = group
-        self.group_info = {
-            "ranks": ranks,
-        }
+        self.inner_args = inner_args
+        self.inner_kwargs = inner_kwargs
         pid = os.getpid()
         if pid not in ReloadableProcessGroup.GROUPS:
             ReloadableProcessGroup.GROUPS[pid] = []
@@ -155,7 +153,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in reloadable_groups:
             if reloadable_group.group is not None:
                 continue
-            group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend="nccl")
+            group = old_new_group(*reloadable_group.inner_args, **reloadable_group.inner_kwargs)
             reloadable_group.group = group
 
     def rank(self) -> int:

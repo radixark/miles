@@ -1,13 +1,18 @@
 import asyncio
 import importlib
+import logging
 import re
 import subprocess
+from collections.abc import Sequence
 from contextlib import contextmanager
+from typing import Any
 
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from miles.utils.http_utils import is_port_available
+
+logger = logging.getLogger(__name__)
 
 
 # Mainly used for test purpose where `load_function` needs to load many in-flight generated functions
@@ -199,3 +204,11 @@ def should_run_periodic_action(
 async def as_completed_async(tasks):
     for coro in asyncio.as_completed(tasks):
         yield await coro
+
+
+def filter_keys(d: dict[str, Any], interest_keys: Sequence[str]) -> dict[str, Any]:
+    try:
+        return {k: d[k] for k in interest_keys}
+    except Exception:
+        logger.error(f"filter_keys d.keys={list(d)} {interest_keys=}", exc_info=True)
+        raise

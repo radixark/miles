@@ -1,11 +1,14 @@
+# FROZEN: v1 RayTrainGroup is the non-FT default path. Only critical bugfixes
+# go here; new features land in miles/ray/train/group.py (v2). Dispatch between
+# v1 and v2 happens in miles/ray/placement_group.py based on the env var
+# MILES_EXPERIMENTAL_FT_TRAINER (default off -> v1).
+
 import asyncio
-import os
 
-import ray
 from ray.util.placement_group import PlacementGroup
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.ray.train.actor_factory import allocate_gpus_for_actor
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
 class RayTrainGroup:
@@ -29,6 +32,7 @@ class RayTrainGroup:
         num_gpus_per_node,
         pg: tuple[PlacementGroup, list[int], list[int]],
         *,
+        rollout_manager: object | None,
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
@@ -39,93 +43,52 @@ class RayTrainGroup:
         self._num_gpus_per_node = num_gpus_per_node
         self.role = role
         self.with_ref = with_ref
+        self._rollout_manager = rollout_manager
         self.with_opd_teacher = with_opd_teacher
 
         # Allocate the GPUs for actors w/o instantiating them
         self._actor_handles = self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
 
     def _allocate_gpus_for_actor(self, pg, num_gpus_per_actor):
-        world_size = self._num_nodes * self._num_gpus_per_node
-
-        # Use placement group to lock resources for models of same type
-        assert pg is not None
-        pg, reordered_bundle_indices, _reordered_gpu_ids = pg
-
-        env_vars = {
-            # because sglang will always set NCCL_CUMEM_ENABLE to 0
-            # we need also set it to 0 to prevent nccl error.
-            "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-            # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
-            "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
-            **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
-            **self.args.train_env_vars,
-        }
-
-        if source_patcher_config := self.args.dumper_source_patcher_config_train:
-            env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
-
-        if self.args.offload_train and self.args.train_backend == "megatron":
-            import torch_memory_saver
-
-            dynlib_path = os.path.join(
-                os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
-                "torch_memory_saver_hook_mode_preload.abi3.so",
-            )
-            assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
-
-            env_vars["LD_PRELOAD"] = dynlib_path
-            env_vars["TMS_INIT_ENABLE"] = "1"
-            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
-
-        backend = self.args.train_backend
-        if backend == "megatron":
-            from miles.backends.megatron_utils.actor import MegatronTrainRayActor
-
-            actor_impl = MegatronTrainRayActor
-
-        else:
-            from miles.backends.experimental.fsdp_utils import FSDPTrainRayActor
-
-            actor_impl = FSDPTrainRayActor
-
-        TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
-
-        # Create worker actors
-        actor_handles = []
-        master_addr, master_port = None, None
-        for rank in range(world_size):
-            actor = TrainRayActor.options(
-                num_cpus=num_gpus_per_actor,
-                num_gpus=num_gpus_per_actor,
-                scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg,
-                    placement_group_bundle_index=reordered_bundle_indices[rank],
-                ),
-            ).remote(world_size, rank, master_addr, master_port)
-            if rank == 0:
-                master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
-            actor_handles.append(actor)
-
-        return actor_handles
+        return allocate_gpus_for_actor(
+            args=self.args,
+            gpus_per_cell=self._num_nodes * self._num_gpus_per_node,
+            pg=pg,
+            num_gpus_per_actor=num_gpus_per_actor,
+            indep_dp_store_addr=None,
+            role=self.role,
+            cell_index=0,
+        )
 
     async def init(self):
         """
         Allocate GPU resourced and initialize model, optimizer, local ckpt, etc.
         """
+        indep_dp_info = IndepDPInfo.create_trivial()
         return await self._broadcast(
-            "init", self.args, self.role, with_ref=self.with_ref, with_opd_teacher=self.with_opd_teacher
+            "init",
+            self.args,
+            self.role,
+            with_ref=self.with_ref,
+            with_opd_teacher=self.with_opd_teacher,
+            indep_dp_info=indep_dp_info,
         )
 
-    async def train(self, rollout_id, rollout_data_ref):
+    async def train(self, rollout_id, rollout_data_pack):
         """Do one rollout training"""
-        await self._broadcast("train", rollout_id, rollout_data_ref)
+        await self._broadcast(
+            "train",
+            rollout_id,
+            rollout_data_pack["data_ref"],
+            witness_info=None,
+            attempt=0,
+        )
 
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
-    async def update_weights(self):
+    async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights from rank 0 to all other ranks."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
@@ -134,6 +97,7 @@ class RayTrainGroup:
             await self.rollout_manager.recover_updatable_engines.remote()
 
         info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
+        await self.rollout_manager.health_monitoring_pause.remote()
 
         await self._broadcast("update_weights", info=info)
 
@@ -153,9 +117,9 @@ class RayTrainGroup:
         ]
         await asyncio.gather(*refs)
 
-    async def set_rollout_manager(self, rollout_manager):
-        self.rollout_manager = rollout_manager
-        await self._broadcast("set_rollout_manager", rollout_manager)
+    async def set_rollout_manager(self):
+        self.rollout_manager = self._rollout_manager
+        await self._broadcast("set_rollout_manager", self._rollout_manager)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:
         refs = [getattr(actor, method_name).remote(*args, **kwargs) for actor in self._actor_handles]

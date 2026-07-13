@@ -22,8 +22,9 @@ on:
           - cu13-x86
           - cu13-aarch64
           - cu12-x86
-          - rocm-mi300
-          - rocm-mi350
+          - rocm700-mi35x
+          - rocm700-mi30x
+          - rocm720-mi35x
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
         required: true

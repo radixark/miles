@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from enum import StrEnum, auto
 
-import torch.distributed as dist
+
+from miles.utils.ft_utils.process_group_utils import GroupInfo, GroupsInfo
 
 
 _parallel_state: "ParallelState | None" = None
@@ -16,31 +18,9 @@ def get_parallel_state() -> "ParallelState":
     return _parallel_state
 
 
-@dataclass(frozen=True)
-class GroupInfo:
-    rank: int
-    size: int
-    group: dist.ProcessGroup | None
-    gloo_group: dist.ProcessGroup | None = None
-
-    def __post_init__(self) -> None:
-        self._verify_group(self.group, "group")
-        self._verify_group(self.gloo_group, "gloo_group")
-
-    def _verify_group(self, group: dist.ProcessGroup | None, name: str) -> None:
-        if group is None:
-            return
-        if not _is_native_process_group(group):
-            return
-        actual_rank = dist.get_rank(group)
-        actual_size = dist.get_world_size(group)
-        assert actual_rank == self.rank, f"{name}: rank mismatch: expected {self.rank}, got {actual_rank}"
-        assert actual_size == self.size, f"{name}: size mismatch: expected {self.size}, got {actual_size}"
-
-
-def _is_native_process_group(group: dist.ProcessGroup) -> bool:
-    # torchft's ProcessGroup
-    return not hasattr(group, "_replica_id")
+class _DPMode(StrEnum):
+    INTRA = auto()
+    INDEP = auto()
 
 
 @dataclass
@@ -56,10 +36,30 @@ class ParallelState:
     pp: GroupInfo
     ep: GroupInfo
     etp: GroupInfo
+    indep_dp: GroupInfo
     cp_comm_type: str | list[str] | tuple[str, ...] | None = None
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1
     microbatch_group_size_per_vp_stage: int | None = None
+
+    @property
+    def _dp_mode(self) -> _DPMode:
+        intra_trivial = self.intra_dp.rank == 0 and self.intra_dp.size == 1
+        indep_trivial = self.indep_dp.rank == 0 and self.indep_dp.size == 1
+        assert intra_trivial or indep_trivial, "intra_dp and indep_dp cannot both be non-trivial"
+
+        return _DPMode.INTRA if indep_trivial else _DPMode.INDEP
+
+    @property
+    def effective_dp(self) -> GroupInfo:
+        return {_DPMode.INTRA: self.intra_dp, _DPMode.INDEP: self.indep_dp}[self._dp_mode]
+
+    @property
+    def effective_dp_cp(self) -> GroupsInfo:
+        return {
+            _DPMode.INTRA: GroupsInfo.from_single(self.intra_dp_cp),
+            _DPMode.INDEP: GroupsInfo.from_pair(inner=self.intra_dp_cp, outer=self.indep_dp),
+        }[self._dp_mode]
 
     @property
     def is_ulysses_cp(self) -> bool:

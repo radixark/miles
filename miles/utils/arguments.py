@@ -12,8 +12,10 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.hf_config import is_dsa, load_hf_config
-from miles.utils.logging_utils import configure_logger
+from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,9 @@ def reset_arg(parser, name, **kwargs):
             break
     else:
         parser.add_argument(name, **kwargs)
+
+
+_FT_CHOICES = ["rollout", "train"]
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
@@ -269,6 +274,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
+            )
+            parser.add_argument(
+                "--indep-dp",
+                action="store_true",
+                default=False,
+                help="Launch each DP replica as an independent Megatron instance instead of using Megatron-internal data parallelism.",
+            )
+            parser.add_argument(
+                "--delay-split-train-data-by-dp",
+                action="store_true",
+                default=False,
             )
             parser.add_argument(
                 "--allgather-cp",
@@ -583,9 +599,70 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p"],
+                choices=["broadcast", "p2p", "disk-delta"],
                 default="broadcast",
-                help="The method to transfer weights to remote rollout engines during update weight.",
+                help=(
+                    "The method to transfer weights to remote rollout engines during update weight. "
+                    "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
+                    "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
+                    "them into a host-local checkpoint that the engine reloads from."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-disk-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Filesystem directory disk-delta weight sync publishes to: one delta directory "
+                    "(changed tensors only) per sync, written by the trainer and read by every "
+                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-local-checkpoint-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Rollout-host-local directory (e.g. NVMe) holding a full HF checkpoint kept in "
+                    "sync by each engine's /pull_weights: every host seeds it from the engine's model "
+                    "path and patches published deltas in place, and the engines reload from it. "
+                    "Required for --update-weight-transfer-mode=disk-delta. The read-side counterpart "
+                    "of --custom-update-weight-post-write-path is the engine's "
+                    "--sglang-custom-pull-weights-pre-read-hook."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-delta-encoding",
+                choices=["xor", "overwrite"],
+                default="xor",
+                help=(
+                    "On-disk delta encoding for disk-delta weight sync. 'xor' (default): new ^ old — "
+                    "smallest wire and fastest, but an involution that must be applied exactly once "
+                    "against the correct base (applying it twice reverts). 'overwrite': changed positions "
+                    "+ new absolute values — larger, but idempotent. Both are byte-level and dtype-blind; "
+                    "the engine reads the choice from each version's index metadata."
+                ),
+            )
+            parser.add_argument(
+                "--update-weight-delta-checksum",
+                choices=["xxh3-128", "blake3", "adler32"],
+                default="xxh3-128",
+                help=(
+                    "Per-tensor integrity checksum for disk-delta apply. 'xxh3-128' (default): widest fast "
+                    "non-cryptographic digest. 'blake3': cryptographic, for untrusted storage. 'adler32': "
+                    "for interop. The engine reads the choice from each version's index metadata."
+                ),
+            )
+            parser.add_argument(
+                "--custom-update-weight-post-write-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a custom function called on each trainer rank after a disk-delta sync's "
+                    "files are written, before the engines read them — to publish the writes on a "
+                    "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
+                    "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
+                ),
             )
             parser.add_argument(
                 "--p2p-transfer-num-workers",
@@ -606,7 +683,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--use-fault-tolerance",
                 action="store_true",
                 default=False,
-                help="Whether to enable the fault tolerance function during rollout.",
+                help="Enable fault tolerance. Use --ft-components to select which components.",
+            )
+            parser.add_argument(
+                "--ft-components",
+                nargs="+",
+                default=None,
+                choices=_FT_CHOICES,
+                help="FT components to enable (requires --use-fault-tolerance). "
+                "Choices: rollout, train. Default when omitted: rollout.",
             )
             parser.add_argument(
                 "--rollout-health-check-interval",
@@ -626,6 +711,31 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
+            parser.add_argument(
+                "--control-server-port",
+                type=int,
+                default=0,
+                help="Port for HTTP control server. 0 = disabled.",
+            )
+            parser.add_argument(
+                "--mini-ft-controller-enable",
+                action="store_true",
+                default=False,
+                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells.",
+            )
+            parser.add_argument(
+                "--mini-ft-controller-poll-interval",
+                type=float,
+                default=10.0,
+                help="Interval in seconds between cell health polls.",
+            )
+            parser.add_argument(
+                "--mini-ft-controller-resume-delay",
+                type=float,
+                default=10.0,
+                help="Delay in seconds between suspending and resuming a cell during heal.",
+            )
+            SimpleHealthCheckerConfig.add_arguments(parser, prefix="trainer-heartbeat-checker")
             return parser
 
         # data
@@ -637,6 +747,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help="Number of rollout steps. If not set, we will calculate the number of rollout steps from the dataset size.",
+            )
+            parser.add_argument(
+                "--debug-exit-after-rollout",
+                type=int,
+                default=None,
+                help="Exit training after this many rollouts (for testing checkpoint resume with consistent scheduler params).",
             )
             parser.add_argument(
                 "--num-epoch",
@@ -892,6 +1008,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Path to save the model in HuggingFace format when using Megatron backend. "
                     "The model will be saved to `save_hf.format(rollout_id)`. "
+                ),
+            )
+            parser.add_argument(
+                "--custom-megatron-post-save-hook-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a custom function invoked on rank 0 after every checkpoint save. "
+                    "Signature: def hook(args, rollout_id: int, checkpoint_dir: str, "
+                    "hf_checkpoint_dir: str | None) -> None."
                 ),
             )
             reset_arg(parser, "--seed", type=int, default=1234)
@@ -1479,6 +1605,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The file will be saved to `save_debug_train_data.format(rollout_id)`."
                 ),
             )
+            parser.add_argument("--save-debug-event-data", type=str, default=None)
             parser.add_argument(
                 "--dump-details",
                 type=str,
@@ -1581,10 +1708,75 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
             )
             parser.add_argument(
+                "--save-local-weight-checksum",
+                action="store_true",
+                help="Save per-rank local weight checksum per-step.",
+            )
+            parser.add_argument(
+                "--enable-event-analyzer",
+                action="store_true",
+                help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
+            )
+            parser.add_argument(
+                "--enable-witness",
+                action="store_true",
+                help="Enable forward/backward pass witness.",
+            )
+            parser.add_argument(
+                "--witness-buffer-size",
+                type=int,
+                default=1048576,
+                help="Maximum number of unique witness IDs before recycling.",
+            )
+            parser.add_argument(
+                "--ci-ft-test-actions",
+                type=str,
+                default=None,
+                help="JSON array of fault injection actions. Each action: "
+                '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
+                '"cell_index": I, "rank": 0, "attempt": 0}. '
+                "cell_index -1 means last cell.",
+            )
+            parser.add_argument(
+                "--ci-inject-rollout-data-path",
+                type=str,
+                default=None,
+                help="CI comparison tests only: path template (with {rollout_id}) of rollout "
+                "data recorded via --save-debug-rollout-data. For rollouts at or after "
+                "--ci-inject-rollout-data-start-rollout-id, generation still runs normally "
+                "but its result is discarded and the recorded data is used for training "
+                "instead. Unlike --load-debug-rollout-data, sglang engines stay alive "
+                "(debug_train_only is not forced).",
+            )
+            parser.add_argument(
+                "--ci-inject-rollout-data-start-rollout-id",
+                type=int,
+                default=None,
+                help="First rollout_id whose training data is replaced by the "
+                "--ci-inject-rollout-data-path recordings.",
+            )
+            parser.add_argument(
+                "--ci-inject-rollout-data-min-match-ratio",
+                type=float,
+                default=0.9,
+                help="Minimum mean response-token match ratio between the discarded generated "
+                "data and the injected recording. Below this the engine weights are considered "
+                "wrong (legitimate ulp-level drift only flips occasional sampled tokens).",
+            )
+            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
                 help="JSON string containing environment report from external launcher.",
+            )
+            parser.add_argument(
+                "--debug-deterministic-collective",
+                action="store_true",
+                default=False,
+                help="Debug/test only: run the training world on the det_nccl backend "
+                "(miles.utils.test_utils.det_process_group), which folds order-sensitive SUM/AVG "
+                "reductions in a fixed tree order so different reduction topologies become "
+                "bitwise-comparable. Slow; never enable in production.",
             )
             return parser
 
@@ -1934,7 +2126,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
 def parse_args(add_custom_arguments=None):
     # Users may call `parse_args` very early, thus we ensure logger is configured here
-    configure_logger()
+    configure_logger_raw("main")
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
 
@@ -1955,6 +2147,7 @@ def parse_args(add_custom_arguments=None):
                 args.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
 
+        # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
@@ -1962,6 +2155,7 @@ def parse_args(add_custom_arguments=None):
         from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
+        # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
@@ -2052,8 +2246,50 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+_FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
+
+
+def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
+    if not args.use_fault_tolerance:
+        if args.ft_components is not None:
+            logger.warning("--ft-components is ignored without --use-fault-tolerance")
+        return []
+    if args.ft_components is None:
+        return list(_FT_DEFAULT_COMPONENTS)
+    return list(args.ft_components)
+
+
 def miles_validate_args(args):
+    args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
+
+    if args.mini_ft_controller_enable and args.control_server_port == 0:
+        raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
+
+    if "train" in args.ft_components:
+        args.indep_dp = True
+        args.delay_split_train_data_by_dp = True
+        args.save_local_weight_checksum = True
+        args.enable_event_analyzer = True
+        args.enable_witness = True
+        args.non_persistent_ckpt_type = "local"
+        if getattr(args, "non_persistent_local_ckpt_dir", None) is None:
+            args.non_persistent_local_ckpt_dir = "/tmp/miles_local_ckpt"
+        # atomic: each rank saves independently, no collective communication.
+        # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
+        args.non_persistent_local_ckpt_algo = "atomic"
+        logger.info(
+            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
+            args.non_persistent_local_ckpt_algo,
+        )
+
+    if args.indep_dp:
+        assert (
+            args.train_backend == "megatron"
+        ), f"indep_dp requires train_backend='megatron', got '{args.train_backend}'"
+        per_replica_size = compute_megatron_world_size_except_dp(args)
+        logger.info(f"indep_dp: adjusting args.world_size from {args.world_size} to {per_replica_size} (per-cell)")
+        args.world_size = per_replica_size
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
@@ -2216,6 +2452,9 @@ def miles_validate_args(args):
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
 
+    if args.custom_megatron_post_save_hook_path is not None:
+        assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
+
     # Parse LoRA target modules
     if args.lora_rank > 0:
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
@@ -2295,6 +2534,7 @@ def miles_validate_args(args):
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
+        args.save_debug_event_data = f"{args.dump_details}/events"
 
     if args.load_debug_rollout_data is not None:
         logger.info(
@@ -2302,6 +2542,15 @@ def miles_validate_args(args):
             "will not instantiate sglang servers and will only run the training process."
         )
         args.debug_train_only = True
+
+    assert (args.ci_inject_rollout_data_path is None) == (args.ci_inject_rollout_data_start_rollout_id is None), (
+        "--ci-inject-rollout-data-path and --ci-inject-rollout-data-start-rollout-id " "must be set together."
+    )
+    if args.ci_inject_rollout_data_path is not None:
+        assert args.load_debug_rollout_data is None, (
+            "--ci-inject-rollout-data-path replaces data of individual rollouts while engines "
+            "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
+        )
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.critic_num_gpus_per_node is None:
@@ -2347,6 +2596,29 @@ def miles_validate_args(args):
             getattr(args, "prefill_num_servers", None) is None
         ), "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+
+    if args.update_weight_transfer_mode == "disk-delta":
+        assert not args.colocate, (
+            "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
+            "weights via CUDA IPC (only a handle crosses processes), so the delta bookkeeping "
+            "(snapshot + diff + encode) is pure overhead."
+        )
+        assert (
+            getattr(args, "prefill_num_servers", None) is None
+        ), "Disk-delta weight transfer mode has not been tested when PD is enabled."
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for disk-delta weight transfer."
+        assert args.update_weight_disk_dir, (
+            "--update-weight-transfer-mode=disk-delta requires --update-weight-disk-dir to point at "
+            "a filesystem shared between the trainer and the rollout engines."
+        )
+        assert args.update_weight_local_checkpoint_dir, (
+            "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
+            "(a rollout-host-local directory, e.g. NVMe)."
+        )
+        assert os.path.isdir(args.hf_checkpoint), (
+            "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
+            "the baseline snapshot is seeded from its safetensors bytes."
+        )
 
     if args.colocate:
         if args.offload_train is None:

@@ -516,9 +516,12 @@ class TestGenerate:
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnTrainInput)
         assert captured[0].rollout_id == 42
+        # generate returns {"sample_indices": ..., "data_ref": ...};
         # split_train_data_by_dp returns Box(ObjectRef) per dp rank
-        assert len(result) == 2
-        partitions = ray.get([box.inner for box in result])
+        assert set(result) == {"sample_indices", "data_ref"}
+        data_refs = result["data_ref"]
+        assert len(data_refs) == 2
+        partitions = ray.get([box.inner for box in data_refs])
         for partition in partitions:
             assert "tokens" in partition
             assert "rewards" in partition
