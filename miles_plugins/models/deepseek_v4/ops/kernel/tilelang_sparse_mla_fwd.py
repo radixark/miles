@@ -61,6 +61,10 @@ def sparse_mqa_fwd(
 
     H_per_block = padded_H if REPLICATE_H == 1 else 64
 
+    # Limit pipeline buffering for 64-head HIP tiles to reduce LDS use.
+    if torch.version.hip is not None and H_per_block == 64:
+        num_stages = min(num_stages, 1)
+
     @T.prim_func
     def main(
         Q: T.Tensor(q_shape, dtype),  # type: ignore
