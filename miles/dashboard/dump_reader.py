@@ -43,7 +43,21 @@ STEP_AGGREGATE_METRICS = (
     "zero_std_group_frac",
     "mean_abs_lp_diff",
     "mean_entropy",
+    "mixed_version_frac",
 )
+
+
+def _min_numeric_version(versions: list[str] | None) -> int | None:
+    numeric = [int(v) for v in versions or [] if str(v).isdigit()]
+    return min(numeric) if numeric else None
+
+
+def _tool_call_count(sample: Sample) -> int | None:
+    """Tool messages in a chat-style prompt; None for plain-string prompts
+    (single-turn math runs have no message structure to count)."""
+    if not isinstance(sample.prompt, list):
+        return None
+    return sum(1 for message in sample.prompt if isinstance(message, dict) and message.get("role") == "tool")
 
 
 @dataclass
@@ -132,7 +146,7 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 1
+    SUMMARY_VERSION: ClassVar[int] = 2  # v2: staleness/turns/tool columns
 
     def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
@@ -279,6 +293,7 @@ class DumpReader:
                     zero_std_group_frac=groups["zero_std"].cast(pl.Float64).mean(),
                     mean_abs_lp_diff=df["mean_abs_lp_diff"].mean(),
                     mean_entropy=df["mean_entropy"].mean(),
+                    mixed_version_frac=df["mixed_version"].cast(pl.Float64).mean(),
                 )
             )
         return pl.DataFrame(rows, strict=False)
@@ -368,6 +383,10 @@ class DumpReader:
             total_length=len(sample.tokens),
             reward=float(sample.reward) if isinstance(sample.reward, (int, float)) else None,
             weight_version=sample.weight_versions[-1] if sample.weight_versions else None,
+            weight_version_min=_min_numeric_version(sample.weight_versions),
+            mixed_version=len(set(sample.weight_versions)) > 1 if sample.weight_versions else None,
+            turns=len(sample.weight_versions) if sample.weight_versions else None,
+            tool_calls=_tool_call_count(sample),
             non_generation_time=sample.non_generation_time,
             spec_accept_rate=(
                 spec.spec_accept_token_num / spec.spec_draft_token_num if spec.spec_draft_token_num else None

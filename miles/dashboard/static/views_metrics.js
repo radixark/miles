@@ -2,13 +2,22 @@ import { api } from "./api.js";
 import { el, setViewCleanup } from "./app.js";
 import { drawChart } from "./charts.js";
 
-const PINNED_STORE = ["rollout/rewards_mean", "train/loss", "perf/step_time", "perf/wait_time_ratio"];
+const PINNED_STORE = [
+  "rollout/rewards_mean",
+  "train/loss",
+  "perf/step_time",
+  "perf/wait_time_ratio",
+  // staleness (fully async): logged by miles when weight versions appear
+  "weight_version/mean",
+  "weight_version/mixed_version_ratio",
+];
 const PINNED_DUMP = [
   "dump/reward_mean",
   "dump/mean_abs_lp_diff",
   "dump/mean_entropy",
   "dump/truncated_frac",
   "dump/zero_std_group_frac",
+  "dump/mixed_version_frac",
 ];
 
 function axisOf(key) {

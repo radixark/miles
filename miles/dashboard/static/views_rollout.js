@@ -9,12 +9,23 @@ const DEFAULT_COLUMNS = [
   "reward",
   "response_length",
   "truncated",
+  "versions",
+  "turns",
+  "tool_calls",
   "mean_abs_lp_diff",
   "mean_imp_ratio",
   "mean_entropy",
   "adv_mean",
   "non_generation_time",
 ];
+
+// staleness span rendered as one sortable-ish string column; mixed-version
+// samples are exactly what --use-tis corrects, so they must not blend in
+function versionSpan(row) {
+  if (row.weight_version === null || row.weight_version === undefined) return null;
+  const lo = row.weight_version_min;
+  return row.mixed_version ? `v${lo}–v${row.weight_version}` : `v${row.weight_version}`;
+}
 
 function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
   const wrap = el("div", { class: "tablewrap" });
@@ -59,6 +70,7 @@ export async function renderRollout(view, meta, route) {
     api(`/api/rollout/${rolloutId}/groups`, { eval: evaluation }),
   ]);
   const rows = summary.rows;
+  for (const row of rows) row.versions = versionSpan(row);
   const rewardKey = evaluation ? "reward" : "raw_reward";
 
   // -------- header controls: prev/next step, train/eval toggle --------

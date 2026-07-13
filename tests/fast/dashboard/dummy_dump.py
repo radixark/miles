@@ -147,16 +147,27 @@ def _make_sample(
     response_length = rng.randint(4, max_response_len)
     prompt_length = rng.randint(3, 8)
     truncated = response_length == max_response_len
+    # every third sample is agentic-shaped: multi-turn (mixed weight versions
+    # under fully async) with a chat prompt carrying tool messages
+    agentic = index % 3 == 0
+    versions = [str(index % 3), str(index % 3 + 1)] if agentic else [str(index % 3)]
+    prompt: str | list = "What is 1+1?"
+    if agentic:
+        prompt = [
+            dict(role="user", content="What is 1+1?"),
+            dict(role="assistant", content="let me check"),
+            dict(role="tool", content="2"),
+        ]
     return Sample(
         group_index=group_index,
         index=index,
-        prompt="What is 1+1?",
+        prompt=prompt,
         tokens=[rng.randint(0, _VOCAB_SIZE - 1) for _ in range(prompt_length + response_length)],
         response="x" * response_length,
         response_length=response_length,
         reward=float(rng.random() < 0.5),
         rollout_log_probs=[-rng.random() for _ in range(response_length)],
-        weight_versions=[str(index % 3)],
+        weight_versions=versions,
         status=Sample.Status.TRUNCATED if truncated else Sample.Status.COMPLETED,
         remove_sample=remove_sample,
     )

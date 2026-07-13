@@ -190,3 +190,20 @@ def test_realdata_views(tmp_path):
 
     aggregates = reader.step_aggregates()
     assert aggregates.height == 5
+
+
+def test_staleness_and_agentic_columns(reader):
+    import polars as pl
+
+    df = reader.summary(0)
+    agentic = df.filter(pl.col("sample_index") % 3 == 0)
+    plain = df.filter(pl.col("sample_index") % 3 != 0)
+    # dummy dump: every third sample is two-turn with mixed versions + one tool message
+    assert agentic["mixed_version"].all() and agentic["turns"].min() == 2
+    assert agentic["tool_calls"].min() == 1
+    assert not plain["mixed_version"].any() and plain["turns"].max() == 1
+    assert plain["tool_calls"].is_null().all()  # string prompts: nothing to count
+    assert (agentic["weight_version"].cast(pl.Int64) - agentic["weight_version_min"] == 1).all()
+
+    aggregates = reader.step_aggregates()
+    assert 0 < aggregates["mixed_version_frac"][0] < 1
