@@ -2030,8 +2030,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-server-port",
                 type=int,
+                nargs="+",
                 default=None,
-                help="Port of the standalone session server. Auto-allocated if not set.",
+                help="Port(s) of the standalone session servers. One value: a single server on "
+                "that port. Two values: a half-open range [start, end), one server per port. "
+                "Auto-allocates a single port if not set.",
             )
             parser.add_argument(
                 "--tito-model",

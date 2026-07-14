@@ -295,9 +295,10 @@ def generation_env(request, variant):
 
         with cm:
             if is_agentic:
-                # Point session server address to the SessionServer we just started
+                # Point session server address to the SessionServer we just started,
+                # mirroring the driver-side contract set by start_session_server.
                 args.session_server_ip = "127.0.0.1"
-                args.session_server_port = server_port
+                args.session_server_ports = [server_port]
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
                 mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)
