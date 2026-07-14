@@ -406,9 +406,10 @@ def _train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
-        # gfx950: DSv4 sgl-kernel topk_v2 is CUDA-only -> route DSA topk through torch + disable cuda-graph.
-        "--sglang-disable-cuda-graph "
+        # gfx950: DSv4 sgl-kernel topk_v2 is CUDA-only; route DSA top-k through torch.
         "--sglang-dsa-topk-backend torch "
+        # AITER graph registration fails through HIP IPC on gfx950; use RCCL.
+        "--sglang-disable-custom-all-reduce "
     )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
