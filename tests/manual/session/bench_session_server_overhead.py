@@ -1,18 +1,20 @@
 """HTTP end-to-end benchmark for Session Server per-turn overhead.
 
-Stands up the real session server (`SessionServerSupervisor` — the one
-production topology, workers=1 is simply N=1), points it
-at a mock R3 backend that replays pre-built synthetic response bytes, and
-drives `sessions` concurrent sessions x `turns` sequential chat turns over
-loopback HTTP. The server does its real work — request/response `json.loads`,
-validate, TITO tokenization, record store — while the mock backend removes
-model generation from the measurement. Reports per-chat reply latency,
-throughput, and peak server-group RSS.
+Stands up N independent single-process session servers (`run_session_server`,
+the production chassis; N=1 is exactly today's single-instance deployment),
+points them at a mock R3 backend that replays pre-built synthetic response
+bytes, and drives `sessions` concurrent sessions x `turns` sequential chat
+turns over loopback HTTP. Each session picks one instance at create time and
+stays on it — the URL is the router, mirroring `OpenAIEndpointTracer.create`.
+The server does its real work — request/response `json.loads`, validate, TITO
+tokenization, record store — while the mock backend removes model generation
+from the measurement. Reports per-chat reply latency, throughput, and peak
+server-group RSS.
 
 Run it directly:
 
   python tests/manual/session/bench_session_server_overhead.py \
-      --sessions 32 --turns 50 --r3-scale 1000 --session-server-workers 16
+      --sessions 32 --turns 50 --r3-scale 1000 --session-server-instances 16
 
 Add `--incremental-r3` to mock a backend that returns only the new per-turn
 `routed_experts` payload instead of the full accumulated sequence payload;
@@ -303,15 +305,15 @@ def _write_json(result: dict[str, Any], path: str) -> None:
 # ---------------------------------------------------------------------------
 # Drive the REAL deployed session server over HTTP.
 #
-# Stands up the actual server the rollout path runs (single-process
-# `run_session_server` for OLD / multi-process supervisor for NEW), points it
-# at a mock backend that returns pre-built large-R3 response bytes, and drives
-# the production-shaped workload over loopback HTTP: `sessions` concurrent
-# sessions, each doing `turns` sequential chat turns. So the server does the
-# real json.loads / validate / record work end to end — OLD pays it on one
-# event loop under one GIL; NEW spreads it across N worker processes (N GILs)
-# behind a thin router. We measure per-request reply latency and aggregate,
-# plus peak RSS of the whole server process group.
+# Stands up the actual server the rollout path runs (`run_session_server`, one
+# independent process per port), points it at a mock backend that returns
+# pre-built large-R3 response bytes, and drives the production-shaped workload
+# over loopback HTTP: `sessions` concurrent sessions, each doing `turns`
+# sequential chat turns. So the server does the real json.loads / validate /
+# record work end to end — one instance pays it on one event loop under one
+# GIL; N instances spread the sessions across N processes with the client
+# picking an instance per session (no router hop). We measure per-request
+# reply latency and aggregate, plus peak RSS of the whole server process group.
 # ---------------------------------------------------------------------------
 
 
@@ -322,9 +324,9 @@ def _build_server_args(
     chat_template_kwargs,
     ip: str,
     port: int,
-    workers: int,
+    instance_idx: int,
 ) -> SimpleNamespace:
-    """A Miles-args namespace carrying exactly what the session server reads.
+    """A Miles-args namespace carrying exactly what one session-server instance reads.
 
     `use_rollout_routing_replay=True` makes the server inject
     `return_routed_experts=True` upstream and exercise the R3-strip path, i.e.
@@ -342,8 +344,7 @@ def _build_server_args(
         miles_router_timeout=600.0,
         session_server_ip=ip,
         session_server_port=port,
-        session_server_workers=workers,
-        session_server_instance_id=f"bench-w{workers}",
+        session_server_instance_id=f"bench-i{instance_idx}",
     )
 
 
@@ -453,7 +454,7 @@ def _merge_agg(into: dict[str, Any], src: dict[str, Any]) -> None:
 
 
 def _drive_workload(
-    base_url: str,
+    base_urls: list[str],
     request_bodies: list[bytes],
     num_sessions: int,
     *,
@@ -477,7 +478,7 @@ def _drive_workload(
 
     if driver_procs <= 1:
         wall_start = time.perf_counter()
-        samples, agg = asyncio.run(lg_drive_all(base_url, request_bodies, num_sessions, get_records, tool_interval))
+        samples, agg = asyncio.run(lg_drive_all(base_urls, request_bodies, num_sessions, get_records, tool_interval))
         return samples, agg, time.perf_counter() - wall_start
 
     base, rem = divmod(num_sessions, driver_procs)
@@ -505,7 +506,7 @@ def _drive_workload(
         for n in shards:
             p = ctx.Process(
                 target=load_generator_entry,
-                args=(base_url, request_bodies, n, get_records, tool_interval, result_q),
+                args=(base_urls, request_bodies, n, get_records, tool_interval, result_q),
                 name="bench-loadgen",
                 daemon=False,
             )
@@ -530,7 +531,7 @@ def _drive_workload(
 
 def run_http_bench(args) -> dict[str, Any]:
     from miles.utils.chat_template_utils import get_tito_tokenizer, resolve_fixed_chat_template
-    from miles.utils.http_utils import find_available_port
+    from miles.utils.http_utils import find_available_port, is_port_available, wait_for_server_ready
     from miles.utils.processing_utils import load_tokenizer
 
     if args.chat_template_path is not None:
@@ -565,37 +566,55 @@ def run_http_bench(args) -> dict[str, Any]:
     response_bodies = [spec.response_body for spec in specs]
 
     ip = "127.0.0.1"
-    workers = args.session_server_workers
+    instances = args.session_server_instances
     backend_procs, backend_url = _start_backend(
         response_bodies, ip, inference_interval=args.inference_interval, procs=args.mock_backend_procs
     )
 
-    server_objs: list[Any] = []
-    server_root_pids: list[int] = []
+    server_procs: list[multiprocessing.process.BaseProcess] = []
     try:
-        port = find_available_port(33000)
-        server_args = _build_server_args(
-            args,
-            chat_template_path=chat_template_path,
-            chat_template_kwargs=chat_template_kwargs,
-            ip=ip,
-            port=port,
-            workers=workers,
-        )
-        base_url = f"http://{ip}:{port}"
-        from miles.rollout.session.supervisor import SessionServerSupervisor
+        from miles.rollout.session.server import run_session_server
 
-        supervisor = SessionServerSupervisor(server_args, backend_url, ip, port)
-        supervisor.start()
-        server_objs.append(supervisor)
-        # Measure ONLY the server group (workers + router), not the bench
-        # driver process which holds the tokenizer + synthetic response bodies.
-        server_root_pids = [p.pid for p in supervisor._procs]
+        # Consecutive ports from one free base, mirroring the production
+        # `--session-server-port start end` range deployment.
+        base_port = find_available_port(33000)
+        ports = list(range(base_port, base_port + instances))
+        for port in ports[1:]:
+            if not is_port_available(port):
+                raise RuntimeError(f"port {port} in the bench range {ports[0]}..{ports[-1]} is already in use")
+        base_urls = [f"http://{ip}:{port}" for port in ports]
+
+        # Spawn every instance before waiting on any (matches
+        # start_session_server): N instances pay ~one transformers import of
+        # wall-time, not N.
+        ctx = multiprocessing.get_context("spawn")
+        for idx, port in enumerate(ports):
+            server_args = _build_server_args(
+                args,
+                chat_template_path=chat_template_path,
+                chat_template_kwargs=chat_template_kwargs,
+                ip=ip,
+                port=port,
+                instance_idx=idx,
+            )
+            proc = ctx.Process(
+                target=run_session_server,
+                args=(server_args, backend_url),
+                name=f"bench-session-server-{idx}",
+                daemon=False,
+            )
+            proc.start()
+            server_procs.append(proc)
+        for port, proc in zip(ports, server_procs, strict=True):
+            wait_for_server_ready(ip, port, proc, timeout=180.0)
+        # Measure ONLY the server group, not the bench driver process which
+        # holds the tokenizer + synthetic response bodies.
+        server_root_pids = [p.pid for p in server_procs]
 
         request_bodies = [spec.request_body for spec in specs]
         with _RSSSampler(server_root_pids) as rss:
             samples, agg, wall_s = _drive_workload(
-                base_url,
+                base_urls,
                 request_bodies,
                 args.sessions,
                 get_records=args.get_records,
@@ -604,11 +623,8 @@ def run_http_bench(args) -> dict[str, Any]:
             )
         peak_rss_bytes = rss.peak_bytes
     finally:
-        for obj in server_objs:
-            if isinstance(obj, multiprocessing.process.BaseProcess):
-                _terminate_proc(obj)
-            else:
-                obj.shutdown()  # supervisor
+        for proc in server_procs:
+            _terminate_proc(proc)
         for proc in backend_procs:
             _terminate_proc(proc)
 
@@ -628,7 +644,7 @@ def run_http_bench(args) -> dict[str, Any]:
 
     return {
         "mode": "http",
-        "session_server_workers": workers,
+        "session_server_instances": instances,
         "bench_driver_procs": args.bench_driver_procs,
         "mock_backend_procs": args.mock_backend_procs,
         "get_records": bool(args.get_records),
@@ -702,7 +718,7 @@ def _fmt_http_block(result: dict[str, Any]) -> str:
     last_spec = result["turn_specs"][-1]
     lines = [
         "=" * 72,
-        f"Session Server HTTP end-to-end benchmark (workers={result['session_server_workers']}, "
+        f"Session Server HTTP end-to-end benchmark (instances={result['session_server_instances']}, "
         f"driver_procs={result.get('bench_driver_procs', 1)}, backend_procs={result.get('mock_backend_procs', 1)})",
         "=" * 72,
         f"  sessions x turns             : {result['sessions']} x {result['turns_per_session']} "
@@ -784,10 +800,11 @@ def main() -> None:
         "--include-raw-samples", action="store_true", help="include every per-turn sample in JSON output"
     )
     parser.add_argument(
-        "--session-server-workers",
+        "--session-server-instances",
         type=_positive_int,
         default=1,
-        help="1 = single-process server (OLD); N>1 = multi-process supervisor (NEW)",
+        help="number of independent single-process session servers on consecutive ports; "
+        "each session picks one at create time (the URL is the router)",
     )
     parser.add_argument(
         "--get-records",

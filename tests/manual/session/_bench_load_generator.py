@@ -28,6 +28,7 @@ on the first hiccup.
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from typing import Any
 
@@ -161,11 +162,13 @@ def _empty_agg() -> dict[str, Any]:
     return agg
 
 
-async def lg_drive_all(base_url, request_bodies, num_sessions, get_records, tool_interval):
+async def lg_drive_all(base_urls, request_bodies, num_sessions, get_records, tool_interval):
     """Drive `num_sessions` sessions concurrently in ONE event loop/client.
 
-    Returns (samples, agg). Used directly for the single-process path and as the
-    body of each spawned load generator.
+    Each session picks one instance URL at create time and stays on it for its
+    whole lifecycle — the URL is the router, mirroring
+    `OpenAIEndpointTracer.create`. Returns (samples, agg). Used directly for the
+    single-process path and as the body of each spawned load generator.
     """
     import httpx
 
@@ -181,11 +184,17 @@ async def lg_drive_all(base_url, request_bodies, num_sessions, get_records, tool
         keepalive_expiry=2.0,
     )
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0), limits=limits) as client:
-        await client.get(f"{base_url}/health")
+        for base_url in base_urls:
+            await client.get(f"{base_url}/health")
         statuses = await asyncio.gather(
             *(
                 drive_one_session(
-                    client, base_url, request_bodies, samples, get_records=get_records, tool_interval=tool_interval
+                    client,
+                    random.choice(base_urls),
+                    request_bodies,
+                    samples,
+                    get_records=get_records,
+                    tool_interval=tool_interval,
                 )
                 for _ in range(num_sessions)
             )
@@ -202,7 +211,7 @@ async def lg_drive_all(base_url, request_bodies, num_sessions, get_records, tool
     return samples, agg
 
 
-def load_generator_entry(base_url, request_bodies, num_sessions, get_records, tool_interval, result_queue) -> None:
+def load_generator_entry(base_urls, request_bodies, num_sessions, get_records, tool_interval, result_queue) -> None:
     """spawn `Process` target: drive a shard of sessions, put (samples, agg) on
     `result_queue`. Drives no tokenizer — it only replays pre-built request
     bodies — so generator startup is cheap."""
@@ -212,5 +221,5 @@ def load_generator_entry(base_url, request_bodies, num_sessions, get_records, to
         setproctitle.setproctitle("miles-bench-loadgen")
     except Exception:
         pass
-    samples, agg = asyncio.run(lg_drive_all(base_url, request_bodies, num_sessions, get_records, tool_interval))
+    samples, agg = asyncio.run(lg_drive_all(base_urls, request_bodies, num_sessions, get_records, tool_interval))
     result_queue.put((samples, agg))
