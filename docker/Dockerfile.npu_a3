@@ -1,0 +1,86 @@
+FROM ascendhub.huawei.com/public-ascendhub/ascend-toolkit:8.5.0.rc1-devel-euleros2.0sp10-aarch64
+
+WORKDIR /root/workspace
+
+ARG PYTHON_VERSION=3.11
+ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_COMMIT=""
+ARG MILES_COMMIT=main
+ARG SGL_KERNEL_NPU_VERSION=2026.05.01
+
+RUN yum install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-devel python${PYTHON_VERSION}-pip \
+    git wget unzip gcc gcc-c++ make cmake && \
+    rm -rf /var/cache/yum
+
+RUN ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python && \
+    ln -sf /usr/bin/pip${PYTHON_VERSION} /usr/bin/pip
+
+RUN pip install --upgrade pip setuptools wheel
+
+RUN pip install torch-npu==2.8.0
+
+RUN git clone https://github.com/sgl-project/sglang.git && cd sglang && \
+    git checkout ${SGLANG_BRANCH} && \
+    if [ -n "${SGLANG_COMMIT}" ]; then git checkout ${SGLANG_COMMIT}; fi && \
+    mv python/pyproject.toml python/pyproject.toml.backup && \
+    mv python/pyproject_other.toml python/pyproject.toml && \
+    pip install -e "python[srt_npu]"
+
+RUN wget -q https://github.com/sgl-project/sgl-kernel-npu/releases/download/${SGL_KERNEL_NPU_VERSION}/sgl-kernel-npu-${SGL_KERNEL_NPU_VERSION}.zip && \
+    unzip sgl-kernel-npu-${SGL_KERNEL_NPU_VERSION}.zip && \
+    cd sgl-kernel-npu-${SGL_KERNEL_NPU_VERSION} && \
+    bash build.sh && \
+    bash build.sh -a memory-saver && \
+    pip install output/sgl_kernel_npu*.whl && \
+    pip install output/torch_memory_saver*.whl && \
+    cd .. && rm -rf sgl-kernel-npu-${SGL_KERNEL_NPU_VERSION} sgl-kernel-npu-${SGL_KERNEL_NPU_VERSION}.zip
+
+RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
+
+RUN git clone https://github.com/radixark/Megatron-Bridge.git -b bridge && \
+    cd Megatron-Bridge && \
+    pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
+
+RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
+    cd Megatron-LM && \
+    git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862 && \
+    pip install -e .
+
+RUN git clone https://gitcode.com/Ascend/MindSpeed.git && \
+    cd MindSpeed && \
+    git checkout fc63de5c48426dd019c3b3f39e65f5bdf56e4086 && \
+    pip install -e .
+
+RUN git clone https://github.com/radixark/miles.git && cd miles && \
+    git checkout ${MILES_COMMIT} && \
+    pip install -e .
+
+COPY npu_patch/ /root/workspace/npu_patch/
+
+RUN cd /root/workspace/miles && git apply /root/workspace/npu_patch/miles.patch
+
+RUN cd /root/workspace/sglang && git apply /root/workspace/npu_patch/sglang.patch
+
+RUN cd /root/workspace/Megatron-LM && \
+    git apply /root/workspace/npu_patch/megatron_common.patch && \
+    git apply /root/workspace/npu_patch/megatron.patch
+
+RUN cd /root/workspace/Megatron-Bridge && git apply /root/workspace/npu_patch/megatron_bridge.patch
+
+RUN cd /root/workspace/MindSpeed && git apply /root/workspace/npu_patch/mindspeed.patch
+
+RUN pip install triton-ascend
+RUN pip install torchvision==0.23.0
+RUN pip install numpy==1.26.0
+
+RUN pip install flash-linear-attention==0.4.2
+RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation
+
+RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    echo "source /usr/local/Ascend/ascend-toolkit/set_env.sh" >> /root/.bashrc
+
+ENV LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/lib64:/usr/local/Ascend/driver/lib64:$LD_LIBRARY_PATH
+ENV ASCEND_HOME=/usr/local/Ascend/ascend-toolkit
+ENV PATH=/usr/local/Ascend/ascend-toolkit/bin:$PATH
+
+WORKDIR /root/workspace/miles
