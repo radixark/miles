@@ -4,9 +4,9 @@
 sibling per-model launchers (e.g. a DeepSeek-V4-Flash variant) reuse the same
 agentic adapter and differ only in the model-family serving/training profile.
 The model-agnostic fragments (process cleanup, GRPO/optimizer/rollout/agent
-flags, W&B + Prometheus wiring, and the OpenEnv/Daytona env-var plumbing) live
-here so those launchers cannot silently drift apart. Each launcher keeps only
-its own perf/sglang/misc profile and its ``ScriptArgs`` defaults.
+flags, W&B + Prometheus wiring, and the OpenEnv env-var plumbing) live here so
+those launchers cannot silently drift apart. Each launcher keeps only its own
+perf/sglang/misc profile and its ``ScriptArgs`` defaults.
 """
 
 import os
@@ -28,10 +28,6 @@ class LaunchArgs(Protocol):
     agent_model_name: str
     openenv_max_turns: int
     openenv_max_rollout_time_seconds: int
-    openenv_daytona_snapshot: str
-    openenv_daytona_pool_size: int
-    openenv_daytona_port: int
-    daytona_api_key: str
     router_external_host: str
     miles_host_ip: str
 
@@ -151,14 +147,8 @@ def base_env_vars(args: LaunchArgs, script_dir: str, megatron_path: str, miles_r
 
 
 def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
-    """Add host-rewrite / Daytona-pool env vars when the args request them."""
+    """Add host-rewrite env vars when the args request them."""
     if args.miles_host_ip:
         env["MILES_HOST_IP"] = args.miles_host_ip
     if args.router_external_host:
         env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
-    if args.openenv_daytona_snapshot:
-        assert args.daytona_api_key, "DAYTONA_API_KEY required when openenv_daytona_snapshot is set"
-        env["OPENENV_DAYTONA_SNAPSHOT"] = args.openenv_daytona_snapshot
-        env["OPENENV_DAYTONA_POOL_SIZE"] = str(args.openenv_daytona_pool_size)
-        env["OPENENV_DAYTONA_PORT"] = str(args.openenv_daytona_port)
-        env["DAYTONA_API_KEY"] = args.daytona_api_key

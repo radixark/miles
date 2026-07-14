@@ -11,7 +11,6 @@ on every turn of the multi-turn episode.
 
 Env vars:
   OPENENV_ENV_URL    base_url of the env server (default: http://localhost:8003).
-                     Ignored when OPENENV_DAYTONA_SNAPSHOT is set.
   OPENENV_MAX_TURNS  multi-turn cap (default: 30)
   OPENENV_MESSAGE_TIMEOUT_S  per-message WS recv timeout (default: 600; docker-mode
                      reset/exec/pytest routinely exceed the client default of 60)
@@ -26,12 +25,6 @@ Env vars:
                      prefix. Needed because upstream OpenEnv defaults to /task.
   OPENENV_TB2_TESTS_SRC  where the upstream env stages the task's tests inside the
                      container (default: /task/tests); copied to /tests for test.sh.
-
-Daytona pool (optional; takes precedence over OPENENV_ENV_URL when set):
-  OPENENV_DAYTONA_SNAPSHOT      Daytona snapshot name to provision sandboxes from
-  OPENENV_DAYTONA_POOL_SIZE     # of long-lived sandboxes to spawn (default: 8)
-  OPENENV_DAYTONA_PORT          server port inside the sandbox (default: 8000)
-  DAYTONA_API_KEY               Daytona API key (required when SNAPSHOT is set)
 """
 
 import asyncio
@@ -41,11 +34,9 @@ import random
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-import websockets.exceptions
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -187,210 +178,8 @@ def _load_tbench2() -> dict[str, Any]:
 _DEFAULT_ENV_URL = "http://localhost:8003"
 
 
-# ---- Daytona sandbox pool (per-process singleton) ---------------------------
-#
-# When OPENENV_DAYTONA_SNAPSHOT is set, the adapter provisions a pool of N
-# long-lived Daytona sandboxes (one DaytonaProvider per sandbox) on first use
-# and rotates episodes across them through an asyncio.Queue. Episodes acquire a
-# slot, run reset() -> step() -> evaluate(), then release. Concurrency is capped
-# by the queue depth, so a rollout fan-out of 64 episodes onto a 64-slot pool
-# runs without queueing.
-#
-# When the env var is unset the legacy code path runs (single OPENENV_ENV_URL
-# host shared by all episodes), preserving the off-cluster manual-URL flow.
-_POOL_PROVISION_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_TIMEOUT_S", "600"))
-_POOL_READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
-# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests).
-# Firing every create in a large pool at once trips it and, with no backoff,
-# fails the whole pool. Cap in-flight creates and retry throttled ones with
-# jittered exponential backoff so a wide (e.g. 64-slot) pool still comes up.
-_POOL_PROVISION_CONCURRENCY = int(os.getenv("OPENENV_DAYTONA_PROVISION_CONCURRENCY", "8"))
-_POOL_PROVISION_MAX_RETRIES = int(os.getenv("OPENENV_DAYTONA_PROVISION_MAX_RETRIES", "8"))
-_POOL_PROVISION_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_BACKOFF_BASE_S", "2.0"))
-_POOL_PROVISION_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_BACKOFF_CAP_S", "30.0"))
-
-
-def _is_connection_error(exc: BaseException) -> bool:
-    # OpenEnv's EnvClient.connect normalizes every handshake failure (refused,
-    # timeout, HTTP 502 / rejected websocket) to a builtin ConnectionError;
-    # a mid-stream drop surfaces as websockets' ConnectionClosedError from
-    # recv/send. ConnectionClosedOK (clean 1000 close) is deliberately excluded.
-    return isinstance(exc, (ConnectionError, websockets.exceptions.ConnectionClosedError))
-
-
-def _is_throttle_error(exc: BaseException) -> bool:
-    s = str(exc).lower()
-    return "throttler" in s or "too many requests" in s or "429" in s
-
-
-@dataclass
-class _DaytonaSlot:
-    provider: Any
-    url: str
-
-
-class _DaytonaPool:
-    """Process-wide pool of provisioned Daytona sandboxes."""
-
-    _instance: "_DaytonaPool | None" = None
-
-    def __init__(self, snapshot: str, api_key: str, size: int, port: int = 8000):
-        self._snapshot = snapshot
-        self._api_key = api_key
-        self._size = size
-        self._port = port
-        self._queue: asyncio.Queue[_DaytonaSlot] | None = None
-        self._slots: list[_DaytonaSlot] = []
-        self._init_lock = asyncio.Lock()
-        self._replace_tasks: set[asyncio.Task] = set()
-
-    @classmethod
-    def maybe(cls) -> "_DaytonaPool | None":
-        """Return the singleton pool if env vars say to use one, else None."""
-        snapshot = os.getenv("OPENENV_DAYTONA_SNAPSHOT", "").strip()
-        if not snapshot:
-            return None
-        if cls._instance is None:
-            api_key = os.environ["DAYTONA_API_KEY"]
-            size = int(os.getenv("OPENENV_DAYTONA_POOL_SIZE", "8"))
-            port = int(os.getenv("OPENENV_DAYTONA_PORT", "8000"))
-            cls._instance = cls(snapshot=snapshot, api_key=api_key, size=size, port=port)
-        return cls._instance
-
-    async def _ensure_provisioned(self) -> None:
-        if self._queue is not None:
-            return
-        async with self._init_lock:
-            if self._queue is not None:
-                return
-            logger.info(
-                f"Provisioning {self._size} Daytona sandboxes from snapshot:{self._snapshot} "
-                f"(concurrency={_POOL_PROVISION_CONCURRENCY})"
-            )
-            sem = asyncio.Semaphore(_POOL_PROVISION_CONCURRENCY)
-            results = await asyncio.gather(
-                *(self._spawn_one(i, sem) for i in range(self._size)),
-                return_exceptions=True,
-            )
-            slots: list[_DaytonaSlot] = []
-            for i, r in enumerate(results):
-                if isinstance(r, BaseException):
-                    logger.error(f"Daytona slot {i} failed to provision: {r}")
-                    continue
-                slots.append(r)
-            if not slots:
-                raise RuntimeError("Failed to provision any Daytona sandboxes")
-            queue: asyncio.Queue[_DaytonaSlot] = asyncio.Queue(maxsize=len(slots))
-            for slot in slots:
-                queue.put_nowait(slot)
-            self._queue = queue
-            self._slots = slots
-            logger.info(f"Daytona pool ready: {len(slots)} / {self._size} slots online")
-
-    async def _spawn_one(self, idx: int, sem: asyncio.Semaphore) -> _DaytonaSlot:
-        from openenv.core.containers.runtime.daytona_provider import DaytonaProvider
-
-        def _start() -> tuple[Any, str]:
-            provider = DaytonaProvider(api_key=self._api_key, auto_stop_interval=0)
-            url = provider.start_container(image=f"snapshot:{self._snapshot}", port=self._port)
-            provider.wait_for_ready(url, timeout_s=_POOL_READY_TIMEOUT_S)
-            return provider, url
-
-        attempt = 0
-        while True:
-            try:
-                # Hold the semaphore only for the create attempt; release it
-                # during backoff so other slots keep the pipeline full.
-                async with sem:
-                    provider, url = await asyncio.wait_for(
-                        asyncio.to_thread(_start), timeout=_POOL_PROVISION_TIMEOUT_S
-                    )
-                logger.info(f"Daytona slot {idx}: {url}")
-                return _DaytonaSlot(provider=provider, url=url)
-            except Exception as e:
-                if not _is_throttle_error(e) or attempt >= _POOL_PROVISION_MAX_RETRIES:
-                    raise
-                attempt += 1
-                delay = min(
-                    _POOL_PROVISION_BACKOFF_CAP_S,
-                    _POOL_PROVISION_BACKOFF_BASE_S * (2 ** (attempt - 1)),
-                ) * (0.5 + random.random())
-                logger.warning(
-                    f"Daytona slot {idx} throttled (attempt {attempt}/"
-                    f"{_POOL_PROVISION_MAX_RETRIES}); retrying in {delay:.1f}s"
-                )
-                await asyncio.sleep(delay)
-
-    async def acquire(self) -> _DaytonaSlot:
-        await self._ensure_provisioned()
-        assert self._queue is not None
-        return await self._queue.get()
-
-    async def release(self, slot: _DaytonaSlot) -> None:
-        assert self._queue is not None
-        self._queue.put_nowait(slot)
-
-    def replace_broken(self, slot: _DaytonaSlot) -> None:
-        logger.warning(f"Daytona slot {slot.url} marked broken; replacing in background")
-        task = asyncio.create_task(self._replace(slot))
-        self._replace_tasks.add(task)
-        task.add_done_callback(self._replace_tasks.discard)
-
-    async def _replace(self, slot: _DaytonaSlot) -> None:
-        try:
-            await asyncio.to_thread(slot.provider.stop_container)
-        except Exception as e:
-            logger.warning(f"Failed to stop broken sandbox {slot.url}: {e}")
-        if slot in self._slots:
-            self._slots.remove(slot)
-        try:
-            new_slot = await self._spawn_one(-1, asyncio.Semaphore(1))
-        except Exception as e:
-            logger.error(f"Failed to replace broken Daytona slot ({slot.url}): {e}")
-            return
-        self._slots.append(new_slot)
-        assert self._queue is not None
-        self._queue.put_nowait(new_slot)
-        logger.info(f"Daytona slot replaced: {slot.url} -> {new_slot.url}")
-
-    async def teardown(self) -> None:
-        # Cancel in-flight replacements first: a task still awaiting _spawn_one
-        # would otherwise enqueue a sandbox after teardown and leak it.
-        try:
-            for task in list(self._replace_tasks):
-                task.cancel()
-            if self._replace_tasks:
-                await asyncio.gather(*self._replace_tasks, return_exceptions=True)
-        finally:
-            for slot in self._slots:
-                try:
-                    await asyncio.to_thread(slot.provider.stop_container)
-                except Exception as e:
-                    logger.warning(f"Failed to stop sandbox {slot.url}: {e}")
-
-
 async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> Any:
-    """Open an env session and run ``body(env)``, retrying while a slot is busy.
-
-    If OPENENV_DAYTONA_SNAPSHOT is set, the sandbox URL is checked out from a
-    process-wide pool; otherwise the shared ``env_url`` is used directly.
-    """
-    pool = _DaytonaPool.maybe()
-    if pool is not None:
-        slot = await pool.acquire()
-        broken = False
-        try:
-            async with env_cls(base_url=slot.url, message_timeout_s=_MESSAGE_TIMEOUT_S) as env:
-                return await body(env)
-        except BaseException as e:
-            broken = _is_connection_error(e)
-            raise
-        finally:
-            if broken:
-                pool.replace_broken(slot)
-            else:
-                await pool.release(slot)
-
+    """Open an env session and run ``body(env)``, retrying while a slot is busy."""
     deadline = asyncio.get_event_loop().time() + _CAPACITY_MAX_WAIT_S
     while True:
         try:
@@ -559,8 +348,8 @@ async def run(
     try:
         # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
         # wait_for cancels the coroutine, so any in-flight policy call / env.step
-        # is interrupted and the pooled sandbox slot is released by _with_env's
-        # finally block during cancellation cleanup.
+        # is interrupted and the env session is closed by _with_env's async-with
+        # during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
             _multi_turn(
                 classes, env_url, policy, model_name, messages, request_kwargs, metadata

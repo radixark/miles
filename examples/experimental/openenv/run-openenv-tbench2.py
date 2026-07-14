@@ -76,12 +76,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     openenv_max_rollout_time_seconds: int = int(
         os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600")
     )
-    # When set, the adapter ignores --openenv-env-url and instead provisions a
-    # pool of Daytona sandboxes from this snapshot, rotating episodes across them.
-    openenv_daytona_snapshot: str = os.environ.get("OPENENV_DAYTONA_SNAPSHOT", "")
-    openenv_daytona_pool_size: int = int(os.environ.get("OPENENV_DAYTONA_POOL_SIZE", "8"))
-    openenv_daytona_port: int = int(os.environ.get("OPENENV_DAYTONA_PORT", "8000"))
-    daytona_api_key: str = os.environ.get("DAYTONA_API_KEY", "")
     # When set, miles dumps full per-episode agent trajectories (tokens, logprobs,
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
