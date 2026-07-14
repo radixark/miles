@@ -125,7 +125,7 @@ def fill_replay_data(
                     target = torch.tensor(
                         [local_target],
                         dtype=torch.int64,
-                        device=replay_data.device,
+                        device=torch.cuda.current_device(),
                     )
                     dist.all_reduce(target, op=dist.ReduceOp.MAX, group=parallel_state.ep.group)
                     target_num_tokens = int(target.item())
