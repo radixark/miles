@@ -3,7 +3,7 @@
 
 
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
-from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.test_utils.comparisons.dumps import (
@@ -17,13 +17,17 @@ NUM_STEPS: int = 2
 
 
 def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
-    return get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_STEPS, enable_dumper=enable_dumper)
+    return get_common_train_args(
+        mode, dump_dir=dump_dir, num_steps=NUM_STEPS, enable_dumper=enable_dumper
+    ) + get_train_env_vars_arg(mode, deterministic=False)
 
 
 def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
-    return get_common_train_args(
-        mode, dump_dir=dump_dir, num_steps=NUM_STEPS, enable_dumper=enable_dumper
-    ) + get_ft_args(mode)
+    return (
+        get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_STEPS, enable_dumper=enable_dumper)
+        + get_ft_args(mode)
+        + get_train_env_vars_arg(mode, deterministic=False)
+    )
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:

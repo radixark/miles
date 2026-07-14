@@ -1,6 +1,7 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
 import os
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -44,23 +45,26 @@ def run_pipeline(
 
     prepare(ft_mode)
 
-    for phase in effective_phases:
-        baseline_dump = f"{dump_dir}/{_dump_subdir('baseline', phase)}"
-        run_training(
-            train_args=build_baseline_args(ft_mode, baseline_dump, enable_dumper),
-            mode=ft_mode,
-            dump_dir=baseline_dump,
-        )
+    try:
+        for phase in effective_phases:
+            baseline_dump = f"{dump_dir}/{_dump_subdir('baseline', phase)}"
+            run_training(
+                train_args=build_baseline_args(ft_mode, baseline_dump, enable_dumper),
+                mode=ft_mode,
+                dump_dir=baseline_dump,
+            )
 
-        target_dump = f"{dump_dir}/{_dump_subdir('target', phase)}"
-        run_training(
-            train_args=build_target_args(ft_mode, target_dump, enable_dumper),
-            mode=ft_mode,
-            dump_dir=target_dump,
-        )
+            target_dump = f"{dump_dir}/{_dump_subdir('target', phase)}"
+            run_training(
+                train_args=build_target_args(ft_mode, target_dump, enable_dumper),
+                mode=ft_mode,
+                dump_dir=target_dump,
+            )
 
-    if enable_dumper:
-        compare_fn(dump_dir, ft_mode)
+        if enable_dumper:
+            compare_fn(dump_dir, ft_mode)
+    finally:
+        shutil.rmtree(dump_dir, ignore_errors=True)
 
 
 def create_comparison_app_and_run_ci(
