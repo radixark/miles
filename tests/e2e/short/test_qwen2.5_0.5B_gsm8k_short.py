@@ -82,9 +82,6 @@ def execute():
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.7 " "--sglang-enable-metrics "
 
     ci_args = "--ci-test "
-    # ROCm (gfx950): the unfused bf16 wgrad path (needed to avoid a
-    # hipBLASLt BGRADB catalog gap) has numerical drift vs the
-    # fused fp32 path, exceeding the strict CI thresholds.
     if IS_ROCM:
         ci_args += "--ci-disable-kl-checker --ci-disable-logprobs-checker "
 
