@@ -120,9 +120,13 @@ def build(
     samples.sort(key=lambda s: (s["metadata"]["rating"] is None, s["metadata"]["rating"] or 0, s["metadata"]["instance_id"]))
 
     counts = {b: 0 for b in BUCKETS}
-    bucket_files = {b: open(out / f"cc_train_{b}.jsonl", "w") for b in BUCKETS}
     combined_path = out / combined_name
-    try:
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        bucket_files = {
+            b: stack.enter_context(open(out / f"cc_train_{b}.jsonl", "w"))
+            for b in BUCKETS
+        }
         with open(combined_path, "w") as combined:
             for s in samples:
                 line = json.dumps(s) + "\n"
@@ -130,9 +134,6 @@ def build(
                 b = s["metadata"]["difficulty"]
                 bucket_files[b].write(line)
                 counts[b] += 1
-    finally:
-        for f in bucket_files.values():
-            f.close()
 
     total = sum(counts.values())
     print(f"wrote {total} samples -> {out}")
