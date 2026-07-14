@@ -5,8 +5,7 @@ from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig,
 register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
 
-# ROCm: bypass two SGLang/aiter paths that crash on MI350 for GLM-4.7-Flash
-# (MLA + MoE). Refs sgl-project/sglang#19824, #20691 and miles PR #1126.
+
 _ROCM_ENV = {"SGLANG_ROCM_FUSED_DECODE_MLA": "0", "SGLANG_USE_AITER": "0"} if IS_ROCM else {}
 
 
