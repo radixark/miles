@@ -28,6 +28,8 @@ class LaunchArgs(Protocol):
     agent_model_name: str
     openenv_max_turns: int
     openenv_max_rollout_time_seconds: int
+    openenv_tb2_tasks_dir: str
+    daytona_api_key: str
     router_external_host: str
     miles_host_ip: str
 
@@ -147,8 +149,13 @@ def base_env_vars(args: LaunchArgs, script_dir: str, megatron_path: str, miles_r
 
 
 def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
-    """Add host-rewrite env vars when the args request them."""
+    """Add host-rewrite / per-task-Daytona env vars when the args request them."""
     if args.miles_host_ip:
         env["MILES_HOST_IP"] = args.miles_host_ip
     if args.router_external_host:
         env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+    if args.openenv_tb2_tasks_dir:
+        if not args.daytona_api_key:
+            raise ValueError("DAYTONA_API_KEY required in per-task Daytona mode")
+        env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
+        env["DAYTONA_API_KEY"] = args.daytona_api_key

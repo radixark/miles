@@ -18,6 +18,9 @@ Prereqs:
     #      TB2_MODE=local   -> runs in-process, ignores task Dockerfiles (degraded)
     TB2_MODE=docker TB2_TASKS_DIR=/workspace/terminal-bench-2 MAX_CONCURRENT_ENVS=32 \
         python -m tbench2_env.server.app --port 8003
+    #    ... or skip the shared server entirely: set OPENENV_TB2_TASKS_DIR
+    #    (+ DAYTONA_API_KEY) and the adapter runs each episode in its own
+    #    per-task Daytona cloud sandbox (no Docker host needed).
 
     NOTE (open decisions before a real run): docker mode wants a Docker host with
     disk + socket; colocating heavy per-task containers on the GPU pod is risky,
@@ -74,6 +77,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # within the limit is terminated and scored reward 0, bounding long-trajectory
     # stragglers that would otherwise stall the whole rollout batch.
     openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
+    # Per-task Daytona sandbox backend: every episode runs in its own cloud
+    # sandbox (the task's official image + env server layer; see the adapter
+    # docstring). Set to the TB2 checkout path; the adapter then ignores
+    # --openenv-env-url. Requires DAYTONA_API_KEY.
+    openenv_tb2_tasks_dir: str = os.environ.get("OPENENV_TB2_TASKS_DIR", "")
+    daytona_api_key: str = os.environ.get("DAYTONA_API_KEY", "")
     # When set, miles dumps full per-episode agent trajectories (tokens, logprobs,
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
