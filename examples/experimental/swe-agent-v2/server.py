@@ -147,9 +147,7 @@ def _extract_metrics(result) -> dict[str, Any]:
                 agent_steps = [s for s in steps if getattr(s, "source", None) == "agent"]
                 if agent_steps:
                     metrics["turns"] = len(agent_steps)
-                    metrics["tool_calls"] = sum(
-                        len(getattr(s, "tool_calls", None) or []) for s in agent_steps
-                    )
+                    metrics["tool_calls"] = sum(len(getattr(s, "tool_calls", None) or []) for s in agent_steps)
 
         agent_timing = getattr(result, "agent_execution", None)
         if agent_timing is not None:
@@ -179,6 +177,7 @@ async def _run_trial(request: RunRequest) -> dict[str, Any]:
     """
     try:
         from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
+
         # Harbor v0.13.x: ``Trial`` is an abstract base; use the concrete
         # SingleStepTrial and the async ``create`` factory instead of direct
         # construction.

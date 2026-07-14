@@ -21,10 +21,11 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
-
 # run.py lives in the same directory (added to PYTHONPATH by execute()).
-from run import ScriptArgs as BaseScriptArgs, cleanup, execute, prepare
+from run import ScriptArgs as BaseScriptArgs
+from run import cleanup, execute, prepare
+
+import miles.utils.external_utils.command_utils as U
 
 
 @dataclass
