@@ -211,7 +211,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         index = getattr(io, "index", None) if io is not None else None
         if not index:
             return True
-        fused = any("model.language_model.layers." in k and k.endswith("mlp.experts.gate_up_proj") for k in index)
+        fused = any(
+            "model.language_model.layers." in k and k.endswith("mlp.experts.gate_up_proj") for k in index
+        )
         self._experts_fused_cached = fused
         return fused
 
