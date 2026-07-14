@@ -165,9 +165,7 @@ class AsyncRolloutWorker:
                         sample_backfill_initialized = len(active_tasks) >= max_concurrent_tasks
 
                     while (
-                        sample_backfill_initialized
-                        and completed_sample_credits >= samples_per_group
-                        and self.running
+                        sample_backfill_initialized and completed_sample_credits >= samples_per_group and self.running
                     ):
                         if not submit_one_group():
                             break
