@@ -37,8 +37,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     num_rollout: int = 3000
-    # Skip checkpoint saving entirely (CI smoke tests: the ~220GB dist
-    # checkpoint save dominates runtime and can exceed the test timeout).
     no_save: bool = False
     rollout_mxfp8: bool = False
     rollout_fp8: bool = False
@@ -180,8 +178,6 @@ def _execute_train(args: ScriptArgs):
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
     ckpt_args = f"--hf-checkpoint {hf_checkpoint}/ " f"--ref-load {ref_load_path} " f"--load {load_save_path} "
     if not args.no_save:
-        # save_interval=None disables all saves, including the forced
-        # final-rollout save in should_run_periodic_action.
         ckpt_args += (
             f"--save {load_save_path} "
             f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "

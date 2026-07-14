@@ -269,9 +269,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
-        # Publish via the public API: sglang >= 0.5.15 stores server args in
-        # runtime_context, so writing the legacy module-private
-        # `_global_server_args` is no longer observed by get_global_server_args().
         server_args_module.set_global_server_args_for_scheduler(server_args)
         initialize_moe_config(server_args)
         initialize_fp8_gemm_config(server_args)

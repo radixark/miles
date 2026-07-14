@@ -27,8 +27,6 @@ def _args() -> ScriptArgs:
         use_single_node=True,
         from_bf16_ckpt=False,
         num_rollout=2,
-        # The ~220GB dist-checkpoint save dominates the 2250s CI timeout and
-        # nothing in this smoke test consumes the checkpoint.
         no_save=True,
         extra_args=(
             "--ci-test --check-weight-update-allow-quant-error --bf16 --freeze-indexer "
