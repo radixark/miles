@@ -111,6 +111,9 @@ SGLANG_ARGS=(
    --sglang-watchdog-timeout 1800 --sglang-enable-metrics
    --sglang-moe-runner-backend flashinfer_cutlass --sglang-attention-backend trtllm_mha
    --sglang-cuda-graph-bs 1 2 4 8 16 32 --use-rollout-routing-replay
+   # Hybrid linear-attention CUDA graphs keep reading shared recurrent state
+   # during replay. Disable overlap so the next batch cannot overwrite it early.
+   --sglang-disable-overlap-schedule
    --sglang-mamba-scheduler-strategy extra_buffer
 )
 MISC_ARGS=(
