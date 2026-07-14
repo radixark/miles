@@ -153,6 +153,9 @@ _POOL_PROVISION_CONCURRENCY = int(os.getenv("OPENENV_DAYTONA_PROVISION_CONCURREN
 _POOL_PROVISION_MAX_RETRIES = int(os.getenv("OPENENV_DAYTONA_PROVISION_MAX_RETRIES", "8"))
 _POOL_PROVISION_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_BACKOFF_BASE_S", "2.0"))
 _POOL_PROVISION_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_PROVISION_BACKOFF_CAP_S", "30.0"))
+# Ownership label: the org (and snapshot) may be shared with other users, so
+# the preflight sweep must only touch sandboxes created by this user's pools.
+_POOL_OWNER = os.getenv("OPENENV_DAYTONA_POOL_OWNER", os.getenv("USER", "miles-pool"))
 
 
 def _is_connection_error(exc: BaseException) -> bool:
@@ -245,6 +248,7 @@ class _DaytonaPool:
         def _start() -> tuple[Any, str]:
             provider = DaytonaProvider(api_key=self._api_key, auto_stop_interval=0)
             url = provider.start_container(image=f"snapshot:{self._snapshot}", port=self._port)
+            provider._sandbox.set_labels({"miles-pool-owner": _POOL_OWNER})
             provider.wait_for_ready(url, timeout_s=_POOL_READY_TIMEOUT_S)
             return provider, url
 
