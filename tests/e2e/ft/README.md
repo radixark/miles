@@ -270,8 +270,9 @@ Entry `test_trainer_ft_realistic_gsm8k.py`, no mode variants. Runs the same exte
 
 ```
 Type: non-comparison (no baseline run; reference = the baseline test's wandb curves)
-Recipe: Qwen2.5-0.5B, GRPO, 250 rollouts; parallelism mirrors dp2_cp2_real_rollout
-        (2 cells x CP2 on 4 train GPUs + 4 rollout engines x 1 GPU, disaggregated)
+Recipe: Qwen2.5-0.5B, GRPO, up to 250 rollouts; CI stops after the first eval reaches
+        the 0.55 threshold; parallelism mirrors dp2_cp2_real_rollout (2 cells x CP2
+        on 4 train GPUs + 4 rollout engines x 1 GPU, disaggregated)
 Faults: same external random injection loop as scenario_ft_random
         (train cells via control server)
 

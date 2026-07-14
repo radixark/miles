@@ -133,7 +133,7 @@ class RolloutManager:
     async def eval(self, rollout_id):
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
-            return
+            return False
         self._health_monitoring_resume()
 
         if self.use_experimental_refactor:
@@ -148,7 +148,9 @@ class RolloutManager:
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
-            self._metric_checker.on_eval(metrics)
+            check_succeeded = self._metric_checker.on_eval(metrics)
+            return self.args.ci_metric_checker_stop_on_success and check_succeeded
+        return False
 
     async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:

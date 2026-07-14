@@ -90,7 +90,9 @@ async def train(args):
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
-            await rollout_manager.eval.remote(rollout_id)
+            if await rollout_manager.eval.remote(rollout_id):
+                logger.info("CI metric threshold reached at rollout_id=%d; stopping training", rollout_id)
+                break
 
         rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
 
@@ -121,7 +123,9 @@ async def train(args):
             await rollout_manager.onload_kv.remote()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
-            await rollout_manager.eval.remote(rollout_id)
+            if await rollout_manager.eval.remote(rollout_id):
+                logger.info("CI metric threshold reached at rollout_id=%d; stopping training", rollout_id)
+                break
 
         if (
             args.debug_exit_after_rollout is not None

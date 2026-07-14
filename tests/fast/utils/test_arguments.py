@@ -149,6 +149,15 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def test_ci_metric_checker_stop_on_success_flag_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--ci-metric-checker-stop-on-success"] + REQUIRED_ARGS)
+
+    assert args.ci_metric_checker_stop_on_success is True
+
+
 def test_custom_megatron_post_save_hook_path_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)

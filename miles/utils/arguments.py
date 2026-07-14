@@ -1994,6 +1994,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
             )
             parser.add_argument(
+                "--ci-metric-checker-stop-on-success",
+                action="store_true",
+                help="Stop training after a CI metric evaluation reaches its threshold.",
+            )
+            parser.add_argument(
                 "--ci-save-grad-norm",
                 type=str,
                 default=None,
@@ -2265,6 +2270,14 @@ def miles_validate_args(args):
 
     if args.mini_ft_controller_enable and args.control_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
+
+    if args.ci_metric_checker_stop_on_success and (
+        not args.ci_test or args.ci_metric_checker_key is None or args.ci_metric_checker_threshold is None
+    ):
+        raise ValueError(
+            "--ci-metric-checker-stop-on-success requires --ci-test, "
+            "--ci-metric-checker-key, and --ci-metric-checker-threshold"
+        )
 
     if "train" in args.ft_components:
         args.indep_dp = True
