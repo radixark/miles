@@ -25,6 +25,24 @@ Env vars:
                      prefix. Needed because upstream OpenEnv defaults to /task.
   OPENENV_TB2_TESTS_SRC  where the upstream env stages the task's tests inside the
                      container (default: /task/tests); copied to /tests for test.sh.
+
+Per-task Daytona sandbox backend (alternative to OPENENV_ENV_URL): every episode
+gets its OWN cloud sandbox built from the task's OFFICIAL image plus an env
+server layer, deleted when the episode ends. The sandbox recipe lives in
+``tbench2_env.task_snapshots`` -- ``tbench2_env`` is OpenEnv's Terminal-Bench-2
+environment package (``envs/tbench2_env`` in huggingface/openenv), and this
+backend needs the patched branch proposed in openenv#965 + #966. Full per-task
+image fidelity with zero shared infrastructure (no Docker host, no resident
+env server) and zero cross-episode state leakage.
+  OPENENV_TB2_TASKS_DIR        path to a terminal-bench-2 checkout: build the
+                     sandbox declaratively per episode. Daytona caches image
+                     layers by definition hash, so only the first episode of a
+                     task builds (~10 min); repeats start in ~1 min. No named
+                     snapshots, so no org snapshot quota.
+  DAYTONA_API_KEY              required in per-task mode.
+  OPENENV_DAYTONA_CREATE_CONCURRENCY  max in-flight sandbox creates (default 4).
+  OPENENV_DAYTONA_READY_TIMEOUT_S     server-ready wait per sandbox (default 300).
+  TB2_COMMAND_TIMEOUT_S        per-exec timeout inside the sandbox (default 900).
 """
 
 import asyncio
@@ -34,6 +52,8 @@ import random
 import re
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -60,6 +80,21 @@ _FENCE_RE = re.compile(r"```(?:python|py|bash|sh)?\s*\n?(.*?)```", re.DOTALL | r
 
 # Max chars of command output fed back to the policy per turn (keeps context bounded).
 _OBS_CHAR_CAP = 4000
+
+# The system prompt that teaches a policy this adapter's agent contract, i.e.
+# what _multi_turn parses: exactly one shell command per turn in a single
+# ```bash block, TASK_COMPLETE (no code block) to stop. It lives here, next to
+# that parsing logic; make_tbench2_data.py (training prompt data) and
+# eval_tbench2_via_api.py (API-policy eval) import it so all consumers stay on
+# the one contract.
+TB2_AGENT_SYSTEM_PROMPT = (
+    "You are an autonomous terminal agent solving a Terminal-Bench task. You will "
+    "be given the task instruction, then interact with a real Linux shell. On each "
+    "turn respond with EXACTLY ONE shell command inside a single ```bash code block "
+    "and nothing else. Inspect the environment, make the required changes, and "
+    "verify your work. When you are confident the task is fully complete, reply with "
+    "TASK_COMPLETE (with no code block)."
+)
 
 # --- Adapter-driven Terminal-Bench-2 fidelity --------------------------------
 # Upstream OpenEnv's Tbench2DockerEnvironment runs the task container with workdir
@@ -209,6 +244,134 @@ def _load_tbench2() -> dict[str, Any]:
 _DEFAULT_ENV_URL = "http://localhost:8003"
 
 
+# --- Per-task Daytona sandboxes (one per episode) -----------------------------
+# The per-task image recipe (official task image + env server layer) lives in
+# OpenEnv's tbench2_env package (tbench2_env.task_snapshots). Each episode
+# materializes it declaratively from the Image definition, read off the local
+# TB2 checkout (OPENENV_TB2_TASKS_DIR); repeat creates hit Daytona's build
+# cache, and no named snapshot is involved.
+#
+# The sandbox's env server is the PATCHED tbench2_env baked by task_snapshots
+# (canonical tests/test.sh scoring built into `evaluate`, per-task WORKDIR
+# resolved server-side, configurable exec timeout). The adapter-driven fidelity
+# machinery above (_apply_workdir / _CANONICAL_EVAL_CMD) exists to compensate
+# for an UNMODIFIED upstream server and is deliberately not applied on this
+# backend -- each leg matches what its server actually provides.
+#
+# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests).
+# A rollout fans out many episodes at once; cap in-flight creates process-wide
+# and retry throttled ones with jittered exponential backoff.
+_CREATE_CONCURRENCY = int(os.getenv("OPENENV_DAYTONA_CREATE_CONCURRENCY", "4"))
+_CREATE_MAX_RETRIES = int(os.getenv("OPENENV_DAYTONA_CREATE_MAX_RETRIES", "8"))
+_CREATE_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_BASE_S", "2.0"))
+_CREATE_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_CAP_S", "30.0"))
+_READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
+_COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
+
+_create_sem: asyncio.Semaphore | None = None
+
+
+def _per_task_mode() -> bool:
+    """True when episodes run in per-task Daytona sandboxes instead of OPENENV_ENV_URL."""
+    return bool(os.getenv("OPENENV_TB2_TASKS_DIR", "").strip())
+
+
+def _is_throttle_error(exc: BaseException) -> bool:
+    """True when a sandbox create failed only because Daytona rate-limited it.
+
+    The daytona SDK is a lazy, per-task-mode-only dependency (shared-server
+    users don't install it), so its exception classes cannot be imported at
+    module scope -- but by the time a create has FAILED, daytona has
+    necessarily been imported, so the typed check happens here. The SDK
+    normalizes HTTP 429 to DaytonaRateLimitError; keep the text match as a
+    fallback for older SDKs and server messages that only surface as text
+    (e.g. "ThrottlerException: Too Many Requests").
+    """
+    try:
+        from daytona.common.errors import DaytonaRateLimitError
+
+        if isinstance(exc, DaytonaRateLimitError):
+            return True
+    except ImportError:  # pragma: no cover - only without the daytona SDK
+        pass
+    s = str(exc).lower()
+    return "throttler" in s or "too many requests" in s or "429" in s
+
+
+def _get_create_sem() -> asyncio.Semaphore:
+    global _create_sem
+    if _create_sem is None:
+        _create_sem = asyncio.Semaphore(_CREATE_CONCURRENCY)
+    return _create_sem
+
+
+def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
+    from tbench2_env import task_snapshots
+
+    daytona = task_snapshots._make_daytona()
+    sandbox, url = task_snapshots.create_task_sandbox(
+        daytona,
+        Path(tasks_dir) / task_id,
+        command_timeout_s=_COMMAND_TIMEOUT_S,
+        ready_timeout_s=_READY_TIMEOUT_S,
+    )
+    return (lambda: daytona.delete(sandbox)), url
+
+
+async def _start_task_sandbox(task_id: str) -> tuple[Any, str]:
+    """Create one per-task sandbox with the env server running.
+
+    Returns (close_fn, base_url); close_fn deletes the sandbox. Creation is
+    throttled process-wide and retried on Daytona rate limits.
+    """
+    tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
+
+    def _start() -> tuple[Any, str]:
+        return _start_declarative(task_id, tasks_dir)
+
+    attempt = 0
+    while True:
+        try:
+            # Hold the semaphore only for the create attempt; release it during
+            # backoff so other episodes keep the pipeline full.
+            async with _get_create_sem():
+                return await asyncio.to_thread(_start)
+        except Exception as e:
+            if not _is_throttle_error(e) or attempt >= _CREATE_MAX_RETRIES:
+                raise
+            attempt += 1
+            delay = min(
+                _CREATE_BACKOFF_CAP_S,
+                _CREATE_BACKOFF_BASE_S * (2 ** (attempt - 1)),
+            ) * (0.5 + random.random())
+            logger.warning(
+                f"Daytona create throttled for {task_id} "
+                f"(attempt {attempt}/{_CREATE_MAX_RETRIES}); retrying in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+
+
+@asynccontextmanager
+async def _episode_env(env_cls: Any, metadata: dict[str, Any]):
+    """Yield a connected env client on a fresh per-task sandbox; delete it after.
+
+    Per-task Daytona mode only (_per_task_mode() is True). The shared
+    OPENENV_ENV_URL backend goes through _with_env instead.
+    """
+    task_id = metadata.get("task_id") or metadata.get("task_name")
+    if not task_id:
+        raise ValueError("per-task sandbox mode requires metadata['task_id']")
+    close_fn, url = await _start_task_sandbox(str(task_id))
+    try:
+        async with env_cls(base_url=url, message_timeout_s=_MESSAGE_TIMEOUT_S) as env:
+            yield env
+    finally:
+        try:
+            await asyncio.to_thread(close_fn)
+        except Exception as e:
+            logger.warning(f"Failed to delete sandbox for {task_id}: {e}")
+
+
 async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> Any:
     """Open an env session and run ``body(env)``, retrying while a slot is busy."""
     deadline = asyncio.get_event_loop().time() + _CAPACITY_MAX_WAIT_S
@@ -225,7 +388,6 @@ async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> A
 
 async def _multi_turn(
     classes: dict[str, Any],
-    env_url: str,
     policy: AsyncOpenAI,
     model_name: str,
     messages: list[dict[str, str]],
@@ -235,15 +397,21 @@ async def _multi_turn(
     """Agentic loop: reset(task) -> {policy -> exec -> feed output back} -> evaluate (tbench2).
 
     The policy emits one shell command per turn (a ```bash block or the bare
-    reply), executed in the real task workdir (_TASK_WORKDIR, /app); the loop ends
-    when the policy stops emitting a command, says TASK_COMPLETE, or hits
-    OPENENV_MAX_TURNS. Scoring runs the task's canonical tests/test.sh via an
-    ``exec`` step and parses /logs/verifier/reward.txt for the binary reward
-    (faithful to Terminal-Bench-2, and needs no OpenEnv-side changes).
+    reply), executed in the real task workdir; the loop ends when the policy
+    stops emitting a command, says TASK_COMPLETE, or hits OPENENV_MAX_TURNS.
+
+    Scoring depends on the backend, matching what its env server provides:
+    shared-server episodes run the task's canonical tests/test.sh via an
+    ``exec`` step and parse /logs/verifier/reward.txt (faithful to
+    Terminal-Bench-2 against an unmodified upstream server); per-task-sandbox
+    episodes use the standard ``evaluate`` action, because the sandbox's
+    patched server runs that same canonical test.sh natively (and resolves the
+    task WORKDIR itself, so no _apply_workdir prefix either).
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
+    per_task = _per_task_mode()
 
     async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float, int | None]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
@@ -285,7 +453,10 @@ async def _multi_turn(
                 break
 
             t0 = time.monotonic()
-            step_result = await env.step(action_cls(action_type="exec", command=_apply_workdir(command)))
+            # Per-task sandboxes run the server-side toolkit in the task's real
+            # WORKDIR already; only the shared upstream server needs the prefix.
+            exec_command = command if per_task else _apply_workdir(command)
+            step_result = await env.step(action_cls(action_type="exec", command=exec_command))
             tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
             # Feed the command output back as a user turn, not a tool turn. GLM
@@ -301,13 +472,25 @@ async def _multi_turn(
             convo.append({"role": "user", "content": content})
 
         t0 = time.monotonic()
-        eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
-        eval_time = time.monotonic() - t0
-        eval_output = _obs_field(eval_result, "output")
-        reward = _parse_reward_marker(eval_output)
-        testsh_rc = _parse_testsh_rc(eval_output)
+        if per_task:
+            # Per-task sandbox: the patched server scores via the standard
+            # evaluate action (runs the canonical test.sh natively), so there
+            # is no adapter-side test.sh exit-code marker to parse.
+            eval_result = await env.step(action_cls(action_type="evaluate"))
+            eval_time = time.monotonic() - t0
+            reward = float(getattr(eval_result, "reward", 0.0) or 0.0)
+            testsh_rc = None
+        else:
+            # Shared upstream server: adapter-driven canonical exec + marker parse.
+            eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
+            eval_time = time.monotonic() - t0
+            eval_output = _obs_field(eval_result, "output")
+            reward = _parse_reward_marker(eval_output)
+            testsh_rc = _parse_testsh_rc(eval_output)
 
-        # rm-hack: the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
+        # rm-hack (shared-server backend only -- a per-task sandbox is deleted
+        # when its episode ends, so nothing accumulates there):
+        # the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
         # leaves a per-episode trial dir under that path after every episode, which
         # fills the sandbox overlay disk and trips ENOSPC. One episode holds the
         # sandbox at a time, so it is safe to purge them here.
@@ -320,24 +503,29 @@ async def _multi_turn(
         # either re-cloned the whole repo (huge) or raced into "Task path not found",
         # collapsing effective concurrency and exploding step time. Preserve
         # repo_cache; delete only the ephemeral per-trial dirs beside it.
-        try:
-            await env.step(
-                action_cls(
-                    action_type="exec",
-                    command=(
-                        "find /tmp/tbench2_env_runs -mindepth 1 -maxdepth 1 "
-                        "! -name repo_cache -exec rm -rf {} + 2>/dev/null || true"
-                    ),
+        if not per_task:
+            try:
+                await env.step(
+                    action_cls(
+                        action_type="exec",
+                        command=(
+                            "find /tmp/tbench2_env_runs -mindepth 1 -maxdepth 1 "
+                            "! -name repo_cache -exec rm -rf {} + 2>/dev/null || true"
+                        ),
+                    )
                 )
-            )
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         return reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc
 
-    reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc = await _with_env(
-        classes["env"], env_url, body
-    )
+    if per_task:
+        async with _episode_env(classes["env"], metadata) as env:
+            result = await body(env)
+    else:
+        env_url = os.getenv("OPENENV_ENV_URL", _DEFAULT_ENV_URL)
+        result = await _with_env(classes["env"], env_url, body)
+    reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -370,7 +558,6 @@ async def run(
     classes = _load_tbench2()
     session_url = _resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
-    env_url = os.getenv("OPENENV_ENV_URL", _DEFAULT_ENV_URL)
 
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")
     messages = _extract_messages(prompt)
@@ -378,10 +565,10 @@ async def run(
     try:
         # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
         # wait_for cancels the coroutine, so any in-flight policy call / env.step
-        # is interrupted and the env session is closed by _with_env's async-with
+        # is interrupted and the env session is closed by the env context manager
         # during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
-            _multi_turn(classes, env_url, policy, model_name, messages, request_kwargs, metadata),
+            _multi_turn(classes, policy, model_name, messages, request_kwargs, metadata),
             timeout=_MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
