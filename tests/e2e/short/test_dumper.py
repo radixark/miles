@@ -19,7 +19,7 @@ if str(_MILES_ROOT) not in sys.path:
     sys.path.insert(0, str(_MILES_ROOT))
 
 import typer
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.conftest_dumper import (
     MEGATRON_PATCHER_YAMLS,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
@@ -32,6 +32,7 @@ from tests.e2e.conftest_dumper import (
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
+register_rocm_ci(est_time=2000, suite="stage-c-8-gpu-mi300x", labels=["short"])
 
 
 app: typer.Typer = typer.Typer()

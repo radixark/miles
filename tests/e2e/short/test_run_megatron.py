@@ -36,7 +36,7 @@ NUM_LAYERS: int = 5
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
 register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
-register_rocm_ci(est_time=2000, suite="stage-c-8-gpu-mi350", labels=["short"])
+register_rocm_ci(est_time=2000, suite="stage-c-8-gpu-mi300x", labels=["short"])
 
 
 @dataclasses.dataclass(frozen=True)

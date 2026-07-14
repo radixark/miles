@@ -7,10 +7,11 @@ excluded: miles has no VLM/vision implementation on the training side.
 
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, execute, prepare
 
 register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["megatron", "qwen35"])
+register_rocm_ci(est_time=1200, suite="stage-c-8-gpu-mi300x", labels=["megatron", "qwen35"])
 
 CASE = CaseConfig(
     # tp2/pp2/cp1/ep4: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so stay at

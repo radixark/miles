@@ -6,7 +6,7 @@ duplicated all-gather computation.  See: https://github.com/radixark/miles/issue
 
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
@@ -14,6 +14,12 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(
     est_time=900,
     suite="stage-c-8-gpu-h100",
+    labels=["megatron"],
+    disabled="Flaky; temporarily disabled to validate PR correctness",
+)
+register_rocm_ci(
+    est_time=900,
+    suite="stage-c-8-gpu-mi300x",
     labels=["megatron"],
     disabled="Flaky; temporarily disabled to validate PR correctness",
 )

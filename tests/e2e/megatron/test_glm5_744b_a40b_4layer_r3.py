@@ -7,7 +7,7 @@ from scripts.run_glm5_744b_a40b import (
     _prepare_megatron_ckpt,
     _validate_glm_checkpoint,
 )
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
@@ -17,6 +17,7 @@ import miles.utils.external_utils.command_utils as U
 # side consumes the per-layer topk emitted by SGLang.
 
 register_cuda_ci(est_time=1100, suite="stage-c-8-gpu-h100", labels=["megatron", "replay"])
+register_rocm_ci(est_time=1100, suite="stage-c-8-gpu-mi300x", labels=["megatron", "replay"])
 
 
 def _args() -> ScriptArgs:

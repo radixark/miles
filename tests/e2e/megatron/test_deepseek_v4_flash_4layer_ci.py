@@ -1,9 +1,10 @@
 import os
 
 from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_rocm_ci(est_time=1800, suite="stage-c-8-gpu-mi300x", labels=["model-scripts"])
 
 
 def _args() -> ScriptArgs:
