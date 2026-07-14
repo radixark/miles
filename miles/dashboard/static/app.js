@@ -54,27 +54,30 @@ function parseRoute() {
 }
 
 function crumbs(route, meta) {
-  const parts = [el("a", { href: "#/" }, ["metrics"])];
+  const nav = (label, href, active) => el("a", { class: `nav${active ? " active" : ""}`, href }, [label]);
+  const parts = [nav("Metrics", "#/", route.view === "metrics")];
   if (meta.capabilities.has_timeline) {
-    parts.push(" · ", el("a", { href: "#/timeline" }, ["timeline"]));
+    parts.push(nav("Compute Utilization", "#/timeline", route.view === "timeline"));
   }
-  // steps: the per-step data view is a top-level destination, not a hidden
+  // the per-step data view is a top-level destination, not a hidden
   // click-through from chart points; land on the newest train step
   const latest = meta.rollout_ids.train.at(-1);
   if (latest !== undefined) {
-    parts.push(" · ", el("a", { href: `#/rollout/${latest}` }, ["steps"]));
-  }
-  if (route.view === "timeline") {
-    parts.push("› ", "efficiency");
+    parts.push(nav("Data / Trajectories", `#/rollout/${latest}`, route.view === "rollout" || route.view === "tokens"));
   }
   if (route.view === "rollout" || route.view === "tokens") {
     const evalSuffix = route.evaluation ? "?eval=1" : "";
-    parts.push("› ", el("a", { href: `#/rollout/${route.rolloutId}${evalSuffix}` }, [
-      `${route.evaluation ? "eval " : ""}step ${route.rolloutId}`,
-    ]));
+    parts.push(
+      el("span", { class: "crumb" }, [
+        "› ",
+        el("a", { href: `#/rollout/${route.rolloutId}${evalSuffix}` }, [
+          `${route.evaluation ? "eval " : ""}step ${route.rolloutId}`,
+        ]),
+      ]),
+    );
   }
   if (route.view === "tokens") {
-    parts.push("› ", `sample ${route.sampleIndex}`);
+    parts.push(el("span", { class: "crumb" }, [`› sample ${route.sampleIndex}`]));
   }
   document.getElementById("crumbs").replaceChildren(...parts);
 }

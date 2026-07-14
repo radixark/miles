@@ -33,6 +33,11 @@ function colorFor(stat, values) {
 
 export async function renderTokens(view, meta, route) {
   const { rolloutId, sampleIndex, evaluation } = route;
+  view.replaceChildren(
+    el("p", { class: "muted" }, [
+      "loading sample… the first open of a step detokenizes its whole dump and can take several minutes",
+    ]),
+  );
   const probe = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
     start: 0,
     end: 1,

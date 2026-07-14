@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { el, setViewCleanup } from "./app.js";
-import { drawChart, drawMultiLine } from "./charts.js";
+import { drawChart, drawMultiLine, SERIES_COLORS } from "./charts.js";
 
 // wandb-shaped L0: metric names come verbatim from the tracking fan-out, so
 // categories are simply the key prefixes. One category at a time (wandb
@@ -34,7 +34,9 @@ export async function renderMetrics(view, meta) {
   let active = sessionStorage.getItem("metricsCategory");
   if (!cats.includes(active)) active = cats[0] ?? null;
 
-  const chartsPanel = el("div", { style: "flex: 3; min-width: 500px" });
+  const chartsPanel = el("div", {
+    style: "flex: 3; min-width: 500px; display: grid; grid-template-columns: repeat(2, minmax(0, 500px)); gap: 0 14px; align-content: start",
+  });
   const filterInput = el("input", { type: "text", placeholder: "filter…" });
   const catList = el("div", { class: "keylist" });
 
@@ -68,11 +70,50 @@ export async function renderMetrics(view, meta) {
   // slots persist across refreshes; a chart repaints ONLY when its data
   // changed (signature check), so a live page sits visually still between
   // real updates instead of flickering on every poll
-  const slots = new Map(); // key -> {canvas, status, signature}
+  const slots = new Map(); // key -> {canvas, status, signature, lastSeries?}
   let epoch = 0;
+
+  // sglang legend: one checkbox per engine, all on by default; unchecking
+  // hides that engine's line in every chart (and drops it from the y-scale)
+  const engines = []; // sorted union of scraped addrs, fixes the color order page-wide
+  const hiddenEngines = new Set();
+  const legendPanel = el("div", { class: "panel", style: "flex: 0 0 240px; min-width: 240px; display: none" });
+  const engineOpts = () => ({ hidden: hiddenEngines, colorIndex: (label) => engines.indexOf(label) });
+  const redrawEngineCharts = () => {
+    for (const slot of slots.values()) {
+      if (slot.lastSeries) drawMultiLine(slot.canvas, slot.lastSeries, engineOpts());
+    }
+  };
+  const renderLegend = () => {
+    legendPanel.replaceChildren(
+      el("h3", {}, ["engines"]),
+      ...engines.map((addr, i) =>
+        el(
+          "label",
+          { style: "display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; font-size: 12px" },
+          [
+            el("input", {
+              type: "checkbox",
+              ...(hiddenEngines.has(addr) ? {} : { checked: "" }),
+              onchange: (ev) => {
+                if (ev.target.checked) hiddenEngines.delete(addr);
+                else hiddenEngines.add(addr);
+                redrawEngineCharts();
+              },
+            }),
+            el("span", {
+              style: `display: inline-block; width: 14px; height: 3px; background: ${SERIES_COLORS[i % SERIES_COLORS.length]}`,
+            }),
+            addr.replace(/^https?:\/\//, ""),
+          ],
+        ),
+      ),
+    );
+  };
 
   function buildPanels() {
     slots.clear();
+    legendPanel.style.display = active === "sglang" ? "" : "none";
     const keys = activeKeys();
     if (!keys.length) {
       chartsPanel.replaceChildren(el("p", { class: "muted" }, [active ? "no metrics here" : "no metrics logged"]));
@@ -100,10 +141,21 @@ export async function renderMetrics(view, meta) {
             if (signature === slot.signature) return;
             slot.signature = signature;
             slot.status.remove();
-            drawMultiLine(
-              slot.canvas,
-              series.map((s) => ({ label: s.addr, ts: s.ts, value: s.value })),
-            );
+            slot.lastSeries = series.map((s) => ({ label: s.addr, ts: s.ts, value: s.value }));
+            let grew = false;
+            for (const s of series) {
+              if (!engines.includes(s.addr)) {
+                engines.push(s.addr);
+                grew = true;
+              }
+            }
+            if (grew) {
+              engines.sort();
+              renderLegend();
+              redrawEngineCharts(); // sort may have shifted the color order
+            } else {
+              drawMultiLine(slot.canvas, slot.lastSeries, engineOpts());
+            }
           })
           .catch((err) => {
             if (current === epoch && slot.signature === null) slot.status.textContent = String(err);
@@ -149,12 +201,13 @@ export async function renderMetrics(view, meta) {
 
   view.replaceChildren(
     el("div", { class: "row" }, [
-      el("div", { class: "panel", style: "flex: 0 0 200px" }, [
+      el("div", { class: "panel", style: "flex: 0 0 200px; min-width: 200px" }, [
         el("h3", {}, ["metrics"]),
         el("div", { class: "controls" }, [filterInput]),
         catList,
       ]),
       chartsPanel,
+      legendPanel,
     ]),
   );
   renderCategories();

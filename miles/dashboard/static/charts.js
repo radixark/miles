@@ -34,7 +34,11 @@ const fmt = (v) => {
 };
 
 // points: [{x, y, label?, flag?}]; opts: {line: bool, onClick(point), color}
+// canvas._zoom = {x: [x0,x1]|null, y: [y0,y1]|null} — drag-selected domains;
+// a null axis autoscales (y re-fits the points inside the x window)
 export function drawChart(canvas, points, opts = {}) {
+  const zoom = canvas._zoom ?? null;
+  const pts = zoom?.x ? points.filter((p) => p.x >= zoom.x[0] && p.x <= zoom.x[1]) : points;
   const { ctx, width, height } = setupCanvas(canvas);
   const css = getComputedStyle(document.documentElement);
   const colText = css.getPropertyValue("--muted").trim();
@@ -52,15 +56,25 @@ export function drawChart(canvas, points, opts = {}) {
     return;
   }
 
-  const xs = points.map((p) => p.x);
-  const ys = points.map((p) => p.y);
-  let [xMin, xMax] = [Math.min(...xs), Math.max(...xs)];
-  let [yMin, yMax] = [Math.min(...ys), Math.max(...ys)];
+  let xMin, xMax;
+  if (zoom?.x) {
+    [xMin, xMax] = zoom.x;
+  } else {
+    const xs = pts.map((p) => p.x);
+    [xMin, xMax] = [Math.min(...xs), Math.max(...xs)];
+  }
   if (xMin === xMax) [xMin, xMax] = [xMin - 0.5, xMax + 0.5];
-  if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];
-  const yPad = (yMax - yMin) * 0.08;
-  yMin -= yPad;
-  yMax += yPad;
+  let yMin, yMax;
+  if (zoom?.y) {
+    [yMin, yMax] = zoom.y;
+  } else {
+    const ys = pts.map((p) => p.y);
+    [yMin, yMax] = ys.length ? [Math.min(...ys), Math.max(...ys)] : [0, 1];
+    if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];
+    const yPad = (yMax - yMin) * 0.08;
+    yMin -= yPad;
+    yMax += yPad;
+  }
   const X = (v) => MARGIN.left + ((v - xMin) / (xMax - xMin)) * plotW;
   const Y = (v) => MARGIN.top + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
 
@@ -78,6 +92,12 @@ export function drawChart(canvas, points, opts = {}) {
     ctx.fillText(fmt(t), X(t) - 8, height - 6);
   }
 
+  // marks are clipped to the plot area so zoomed-out data cannot paint over
+  // the margins; the full point list is drawn so lines run to the box edges
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(MARGIN.left, MARGIN.top, plotW, plotH);
+  ctx.clip();
   if (opts.line !== false) {
     ctx.strokeStyle = colMain;
     ctx.lineWidth = 1.5;
@@ -91,6 +111,7 @@ export function drawChart(canvas, points, opts = {}) {
     ctx.arc(X(p.x), Y(p.y), opts.line !== false ? 3 : 3.5, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
 
   const nearest = (ev) => {
     const rect = canvas.getBoundingClientRect();
@@ -98,7 +119,7 @@ export function drawChart(canvas, points, opts = {}) {
     const my = ev.clientY - rect.top;
     let best = null;
     let bestDist = 20;
-    for (const p of points) {
+    for (const p of pts) {
       const d = Math.hypot(X(p.x) - mx, Y(p.y) - my);
       if (d < bestDist) {
         bestDist = d;
@@ -107,22 +128,108 @@ export function drawChart(canvas, points, opts = {}) {
     }
     return best;
   };
-  canvas.onmousemove = (ev) => {
+  const hover = (ev) => {
     const p = nearest(ev);
-    canvas.style.cursor = p && opts.onClick ? "pointer" : "default";
+    canvas.style.cursor = p && opts.onClick ? "pointer" : "crosshair";
     if (p) {
       showTooltip(ev.clientX, ev.clientY, p.label ?? `${fmt(p.x)}, ${fmt(p.y)}`);
     } else {
       hideTooltip();
     }
   };
-  canvas.onmouseleave = hideTooltip;
-  if (opts.onClick) {
-    canvas.onclick = (ev) => {
-      const p = nearest(ev);
-      if (p) opts.onClick(p);
+  installDragZoom(canvas, {
+    plotLeft: MARGIN.left,
+    plotRight: width - MARGIN.right,
+    plotTop: MARGIN.top,
+    plotBottom: height - MARGIN.bottom,
+    invX: (px) => xMin + ((px - MARGIN.left) / plotW) * (xMax - xMin),
+    invY: (py) => yMax - ((py - MARGIN.top) / plotH) * (yMax - yMin),
+    redraw: () => drawChart(canvas, points, opts),
+    hover,
+    onClick:
+      opts.onClick &&
+      ((ev) => {
+        const p = nearest(ev);
+        if (p) opts.onClick(p);
+      }),
+  });
+}
+
+// an axis participates in a zoom only when dragged at least this many px, so
+// a horizontal-ish sweep zooms x and re-autoscales y instead of pinning y to
+// the few pixels the hand wobbled
+const AXIS_MIN_DRAG = 10;
+
+// drag a box on the plot = zoom into the selected x/y ranges; double-click
+// resets. Handlers are re-installed on every render so invX/invY match the
+// pixels on screen; drag state and the zoom live on the canvas element
+// because redraw() re-renders (and re-installs handlers) mid-drag. move/up
+// listen on window: a real drag routes events to whatever element is under
+// the pointer, so canvas-local handlers would lose any drag that strays
+// outside the canvas band and never complete the zoom.
+function installDragZoom(canvas, { plotLeft, plotRight, plotTop, plotBottom, invX, invY, redraw, hover, onClick }) {
+  const pos = (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(plotLeft, Math.min(plotRight, ev.clientX - rect.left)),
+      y: Math.max(plotTop, Math.min(plotBottom, ev.clientY - rect.top)),
     };
-  }
+  };
+  canvas.onmousemove = (ev) => {
+    if (canvas._dragAnchor == null) hover(ev);
+  };
+  canvas.onmousedown = (ev) => {
+    ev.preventDefault(); // no native text selection mid-drag
+    canvas._dragAnchor = pos(ev);
+    hideTooltip();
+    const onMove = (mv) => {
+      const cur = pos(mv);
+      redraw();
+      const a = canvas._dragAnchor;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "rgba(47, 111, 235, 0.15)";
+      // full-height band while the drag is x-only; a box once it has y extent
+      const boxY = Math.abs(cur.y - a.y) >= AXIS_MIN_DRAG;
+      ctx.fillRect(
+        Math.min(a.x, cur.x),
+        boxY ? Math.min(a.y, cur.y) : plotTop,
+        Math.abs(cur.x - a.x),
+        boxY ? Math.abs(cur.y - a.y) : plotBottom - plotTop,
+      );
+    };
+    const onUp = (up) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      const a = canvas._dragAnchor;
+      canvas._dragAnchor = null;
+      const cur = pos(up);
+      const dx = Math.abs(cur.x - a.x);
+      const dy = Math.abs(cur.y - a.y);
+      if (dx < 4 && dy < 4) {
+        redraw();
+        if (onClick) onClick(up);
+        return;
+      }
+      const prev = canvas._zoom ?? { x: null, y: null };
+      canvas._zoom = {
+        x: dx >= AXIS_MIN_DRAG ? [invX(Math.min(a.x, cur.x)), invX(Math.max(a.x, cur.x))] : prev.x,
+        y:
+          dy >= AXIS_MIN_DRAG
+            ? [invY(Math.max(a.y, cur.y)), invY(Math.min(a.y, cur.y))]
+            : dx >= AXIS_MIN_DRAG
+              ? null // x-only sweep: let y re-fit the new window
+              : prev.y,
+      };
+      redraw();
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+  canvas.onmouseleave = hideTooltip;
+  canvas.ondblclick = () => {
+    canvas._zoom = null;
+    redraw();
+  };
 }
 
 // ------------------------------ tooltip -------------------------------------
@@ -161,29 +268,60 @@ export function sequentialColor(t) {
 }
 
 
+// fixed categorical order, assigned by sorted-series index (stable across
+// refreshes because the store sorts by addr); cycles past 10 series
+export const SERIES_COLORS = [
+  "#2f6feb", "#e8590c", "#12b886", "#d6336c", "#7048e8",
+  "#f59f00", "#0c8599", "#5c940d", "#a61e4d", "#495057",
+];
+
 // seriesList: [{label, ts: [], value: []}] — one thin line per engine on a
-// shared scale; identity via hover (30+ engines make per-line color noise)
+// shared scale, one color per engine; hover names the engine
 export function drawMultiLine(canvas, seriesList, opts = {}) {
+  const zoom = canvas._zoom ?? null;
+  // opts.hidden: legend-unchecked engines render as empty (drop out of the
+  // y-scale too); opts.colorIndex(label) pins colors to a page-wide order
+  const shown = opts.hidden ? seriesList.map((s) => (opts.hidden.has(s.label) ? { ...s, ts: [], value: [] } : s)) : seriesList;
+  const visible = zoom?.x
+    ? shown.map((s) => {
+        const ts = [];
+        const value = [];
+        s.ts.forEach((t, i) => {
+          if (t >= zoom.x[0] && t <= zoom.x[1]) {
+            ts.push(t);
+            value.push(s.value[i]);
+          }
+        });
+        return { ...s, ts, value };
+      })
+    : shown;
   const { ctx, width, height } = setupCanvas(canvas);
   const css = getComputedStyle(document.documentElement);
   const colText = css.getPropertyValue("--muted").trim();
   const colBorder = css.getPropertyValue("--border").trim();
-  const colMain = css.getPropertyValue("--accent").trim();
   ctx.clearRect(0, 0, width, height);
   const plotW = width - MARGIN.left - MARGIN.right;
   const plotH = height - MARGIN.top - MARGIN.bottom;
   ctx.font = "11px ui-monospace, monospace";
 
-  const alive = seriesList.filter((s) => s.ts.length);
-  if (!alive.length) {
+  const alive = visible.filter((s) => s.ts.length);
+  if (!alive.length && !zoom) {
     ctx.fillStyle = colText;
     ctx.fillText("no data", MARGIN.left + plotW / 2 - 20, MARGIN.top + plotH / 2);
     return;
   }
-  const xMin = Math.min(...alive.map((s) => s.ts[0]));
-  const xMax = Math.max(...alive.map((s) => s.ts.at(-1)));
-  let yMin = Math.min(...alive.map((s) => Math.min(...s.value)));
-  let yMax = Math.max(...alive.map((s) => Math.max(...s.value)));
+  // x origin stays the run-wide first sample so +m:ss labels keep meaning under zoom
+  const withData = seriesList.filter((s) => s.ts.length);
+  const x0 = withData.length ? Math.min(...withData.map((s) => s.ts[0])) : 0;
+  const [xMin, xMax] = zoom?.x ?? [x0, alive.length ? Math.max(...alive.map((s) => s.ts.at(-1))) : x0 + 1];
+  let yMin, yMax;
+  if (zoom?.y) {
+    [yMin, yMax] = zoom.y;
+  } else {
+    [yMin, yMax] = alive.length
+      ? [Math.min(...alive.map((s) => Math.min(...s.value))), Math.max(...alive.map((s) => Math.max(...s.value)))]
+      : [0, 1];
+  }
   if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];
   const X = (t) => MARGIN.left + ((t - xMin) / Math.max(xMax - xMin, 1e-9)) * plotW;
   const Y = (v) => MARGIN.top + (1 - (v - yMin) / (yMax - yMin)) * plotH;
@@ -197,22 +335,28 @@ export function drawMultiLine(canvas, seriesList, opts = {}) {
     ctx.stroke();
     ctx.fillText(fmt(tick), 6, Y(tick) + 4);
   }
-  for (const tick of niceTicks(0, xMax - xMin, 6)) {
+  for (const tick of niceTicks(xMin - x0, xMax - x0, 6)) {
     const rel = Math.round(tick);
-    ctx.fillText(`+${Math.floor(rel / 60)}:${String(rel % 60).padStart(2, "0")}`, X(xMin + tick) - 12, height - 6);
+    ctx.fillText(`+${Math.floor(rel / 60)}:${String(rel % 60).padStart(2, "0")}`, X(x0 + tick) - 12, height - 6);
   }
 
-  ctx.strokeStyle = colMain;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(MARGIN.left, MARGIN.top, plotW, plotH);
+  ctx.clip();
   ctx.lineWidth = 1;
-  ctx.globalAlpha = Math.max(0.25, Math.min(1, 4 / alive.length));
-  for (const s of alive) {
+  visible.forEach((s, i) => {
+    if (!s.ts.length) return;
+    // index in the page-wide engine order, not the surviving subset: color follows the engine
+    const idx = opts.colorIndex ? opts.colorIndex(s.label) : i;
+    ctx.strokeStyle = SERIES_COLORS[idx % SERIES_COLORS.length];
     ctx.beginPath();
-    s.ts.forEach((t, i) => (i ? ctx.lineTo(X(t), Y(s.value[i])) : ctx.moveTo(X(t), Y(s.value[i]))));
+    s.ts.forEach((t, j) => (j ? ctx.lineTo(X(t), Y(s.value[j])) : ctx.moveTo(X(t), Y(s.value[j]))));
     ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
+  });
+  ctx.restore();
 
-  canvas.onmousemove = (ev) => {
+  const hover = (ev) => {
     const rect = canvas.getBoundingClientRect();
     const mx = ev.clientX - rect.left;
     const my = ev.clientY - rect.top;
@@ -227,7 +371,16 @@ export function drawMultiLine(canvas, seriesList, opts = {}) {
       hideTooltip();
       return;
     }
-    showTooltip(ev.clientX, ev.clientY, `${best.s.label}\n+${fmt(best.s.ts[best.i] - xMin)}s = ${fmt(best.s.value[best.i])}`);
+    showTooltip(ev.clientX, ev.clientY, `${best.s.label}\n+${fmt(best.s.ts[best.i] - x0)}s = ${fmt(best.s.value[best.i])}`);
   };
-  canvas.onmouseleave = hideTooltip;
+  installDragZoom(canvas, {
+    plotLeft: MARGIN.left,
+    plotRight: width - MARGIN.right,
+    plotTop: MARGIN.top,
+    plotBottom: height - MARGIN.bottom,
+    invX: (px) => xMin + ((px - MARGIN.left) / plotW) * Math.max(xMax - xMin, 1e-9),
+    invY: (py) => yMax - ((py - MARGIN.top) / plotH) * (yMax - yMin),
+    redraw: () => drawMultiLine(canvas, seriesList, opts),
+    hover,
+  });
 }

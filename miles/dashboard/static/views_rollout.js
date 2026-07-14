@@ -88,9 +88,20 @@ export async function renderRollout(view, meta, route) {
   const ids = evaluation ? meta.rollout_ids.eval : meta.rollout_ids.train;
   const position = ids.indexOf(rolloutId);
   const goto = (id, toEval) => (location.hash = `#/rollout/${id}${toEval ? "?eval=1" : ""}`);
+  // type a step number + Enter to jump straight to it
+  const jumpInput = el("input", {
+    type: "number",
+    value: String(rolloutId),
+    style: "width: 64px",
+    onkeydown: (ev) => {
+      if (ev.key === "Enter") goto(Number(ev.target.value), evaluation);
+    },
+  });
   const controls = el("div", { class: "controls" }, [
     el("button", { onclick: () => position > 0 && goto(ids[position - 1], evaluation) }, ["◀ prev"]),
-    el("span", {}, [`${evaluation ? "eval" : "train"} step ${rolloutId} (${position + 1}/${ids.length})`]),
+    el("span", {}, [`${evaluation ? "eval" : "train"} step`]),
+    jumpInput,
+    el("span", {}, [`(${position + 1}/${ids.length})`]),
     el("button", { onclick: () => position < ids.length - 1 && goto(ids[position + 1], evaluation) }, ["next ▶"]),
   ]);
   if (!evaluation && meta.rollout_ids.eval.includes(rolloutId)) {
