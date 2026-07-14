@@ -234,7 +234,7 @@ TITO needs two things from every SGLang response:
 By default, `build_chat_request_kwargs` sets both flags. The session middleware
 forwards raw `messages` to SGLang, which tokenizes the prompt and returns the
 response. `_compute_sample_from_openai_record` in
-[`openai_endpoint_utils.py`](https://github.com/radixark/miles/blob/main/miles/rollout/generate_utils/openai_endpoint_utils.py)
+[`samples.py`](https://github.com/radixark/miles/blob/main/miles/rollout/session/samples.py)
 extracts prompt and output ids from the response and concatenates them into
 `sample.tokens`. You don't need to provide `input_ids` yourself.
 
