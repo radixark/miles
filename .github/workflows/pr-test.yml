@@ -117,7 +117,7 @@ jobs:
   # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
   # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
-    needs: [resolve-ci-policy]
+    needs: [resolve-ci-policy, resolve-ci-image]
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true

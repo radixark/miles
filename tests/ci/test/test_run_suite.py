@@ -252,6 +252,15 @@ class TestWorkflowScopeSeam:
             assert "--event-name" not in cmd
             assert "--continue-on-error" not in cmd
 
+    def test_both_cpu_stages_require_both_resolvers(self):
+        workflow = self._workflow()
+        stage_a = workflow.split("  stage-a-cpu:", 1)[1].split("  stage-b-cpu:", 1)[0]
+        stage_b = workflow.split("  stage-b-cpu:", 1)[1].split("  stage-b-2-gpu-h200:", 1)[0]
+
+        expected = "needs: [resolve-ci-policy, resolve-ci-image]"
+        assert expected in stage_a
+        assert expected in stage_b
+
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
         policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]

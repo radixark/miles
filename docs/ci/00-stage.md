@@ -22,7 +22,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | Stage / suite | Hardware | Runner labels (`runs_on`) | Shards | Depends on |
 |---|---|---|---|---|
 | `stage-a-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 4 | `resolve-ci-policy`, `resolve-ci-image` |
-| `stage-b-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 1 | `resolve-ci-policy` |
+| `stage-b-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 1 | `resolve-ci-policy`, `resolve-ci-image` |
 | `stage-b-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | both resolvers, `stage-a-cpu` |
@@ -47,7 +47,7 @@ A **nightly** policy selects every enabled tag except `ft-long`, admits both reg
 
 `run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled non-FT tag. If scope signals overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see docs/ci/01-label.md for the subtraction semantics).
 
-**Dependencies / gating.** Both resolvers run first. `stage-a-cpu` requires both; `stage-b-cpu` requires only policy resolution, so image-resolution failure does not suppress unrelated CPU coverage. GPU stages require both resolvers and, by default, a successful `stage-a-cpu`, so a CPU-test failure short-circuits the expensive GPU fleet. Resolved nightly cadence and the `bypass-fastfail` PR label relax only the `stage-a-cpu` failure gate and make each suite continue after a test failure; neither bypasses resolver failure.
+**Dependencies / gating.** Both CPU stages require both resolvers. GPU stages also require both resolvers and, by default, a successful `stage-a-cpu`, so a CPU-test failure short-circuits the expensive GPU fleet. Resolved nightly cadence and the `bypass-fastfail` PR label relax only the `stage-a-cpu` failure gate and make each suite continue after a test failure; neither bypasses resolver failure.
 
 **Runner selection.** GPU stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages set `cpu_runner: true` and run on GitHub-hosted `ubuntu-latest` instead, so they don't occupy GPU-fleet slots.
 
