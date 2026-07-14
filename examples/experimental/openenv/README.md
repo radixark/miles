@@ -37,6 +37,10 @@ Run it in a separate shell (or off-node — see note). Docker mode gives real TB
 fidelity; it needs the Docker socket and pulls the per-task images on first use:
 
 ```bash
+# Raise the open-file limit first (see Notes): the WebSocket env server holds an
+# FD per live session + Docker connection and leaks sockets on unclean
+# disconnects, so the default 1024 soft limit is exhausted on a long run.
+ulimit -n 1048576
 TB2_MODE=docker TB2_TASKS_DIR=/workspace/terminal-bench-2 MAX_CONCURRENT_ENVS=32 \
     python -m tbench2_env.server.app --port 8003
 ```
@@ -78,3 +82,9 @@ Common overrides:
   default), so an unclean disconnect (trainer crash) can orphan containers. Sweep
   stale TB2 containers between runs, e.g. `docker rm -f` of any older than the
   episode wall-cap.
+- **Open-file limit.** The same unclean disconnects also leak socket FDs in the
+  env server process. On a long run under the default 1024 soft limit the accept
+  loop eventually fails every connection with `OSError: [Errno 24] Too many open
+  files`, silently throttling rollouts. Start the server with a raised limit
+  (`ulimit -n 1048576`, as in step 2); if a running server is already saturated,
+  restart it with the higher limit.
