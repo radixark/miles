@@ -89,17 +89,22 @@ def test_attempt_end_drains_lifecycle_metadata_from_turn_samples():
         sample.metadata["lifecycle"] = dict(t0=100.0 + i, t1=110.0 + i, turn=i + 1)
         turns.append(sample)
     turns[0].metadata["lifecycle"]["t0"] = None  # unknown start: only the end emits
+    turns[1].metadata["lifecycle"]["prev_t1"] = 110.0  # session gap = agent/tool work
+    turns[1].metadata["lifecycle"]["req_ts"] = 110.6  # server-edge arrival bounds it
 
     sink.attempt_end(turns)
     sink.flush()
     events = _pushed(handle)
     assert [(e.kind, e.turn) for e in events] == [
         (TrajectoryEventKind.GEN_END, 1),
+        (TrajectoryEventKind.TOOL_START, 2),
+        (TrajectoryEventKind.TOOL_END, 2),
         (TrajectoryEventKind.GEN_START, 2),
         (TrajectoryEventKind.GEN_END, 2),
         (TrajectoryEventKind.ATTEMPT_END, -1),
     ]
-    assert events[1].ts == 101.0 and events[2].ts == 111.0
+    assert (events[1].ts, events[2].ts) == (110.0, 110.6)  # gap ends at arrival, not gen start
+    assert events[1].detail == "agent gap"
 
 
 def test_batching_and_failure_swallowed():

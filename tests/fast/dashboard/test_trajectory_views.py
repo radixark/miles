@@ -136,6 +136,14 @@ def test_rollout_trajectories_endpoint(combined):
         assert all(lane["last_ts"] <= payload["consume_ts"] + 1e-6 for lane in lanes)
 
 
+def test_rollout_trajectories_single_sample_filter(combined):
+    store, reader, _ = combined
+    client = TestClient(make_app(store, reader))
+    payload = client.get("/api/rollout/1/trajectories", params={"sample_index": SAMPLES_PER_STEP + 1}).json()
+    [lane] = payload["lanes"]
+    assert lane["sample_index"] == SAMPLES_PER_STEP + 1
+
+
 def test_rollout_trajectories_empty_for_probe_less_runs(tmp_path):
     dump_dummy_run(tmp_path)  # dump only: no telemetry, no events
     client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))

@@ -32,6 +32,10 @@ def attach_lifecycle_metadata(sample, record, prev_record, turn: int) -> None:
     t1 = record.timestamp
     t0 = t1 - latency if latency is not None else None
     segment = dict(t0=t0, t1=t1, turn=turn)
+    if record.request_timestamp is not None:
+        # server-edge arrival: closes the agent-side gap exactly; the span
+        # up to gen start is engine/proxy queueing, not agent work
+        segment["req_ts"] = record.request_timestamp
     if prev_record is not None:
         # the gap between the previous chat call's end and this one's start is
         # agent-side work (tool execution, environment steps)

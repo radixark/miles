@@ -164,6 +164,13 @@ class TrajectorySink:
             value = (sample.metadata or {}).get("lifecycle")
             # one dict per turn-sample; a TITO-merged sample carries the list
             for segment in value if isinstance(value, list) else [value] if value else []:
+                gap_end = segment.get("req_ts") or segment.get("t0")
+                if segment.get("prev_t1") is not None and gap_end is not None:
+                    # the gap between chat calls is agent-side work (tool
+                    # execution, environment steps) — design §18.3. req_ts
+                    # (server-edge arrival) bounds it exactly; without it the
+                    # gen start approximates and absorbs engine queueing
+                    self.tool_span(sample, segment["prev_t1"], gap_end, turn=segment["turn"], detail="agent gap")
                 if segment.get("t0") is not None:
                     self._emit(TrajectoryEventKind.GEN_START, sample, ts=segment["t0"], turn=segment["turn"])
                 self._emit(TrajectoryEventKind.GEN_END, sample, ts=segment["t1"], turn=segment["turn"])

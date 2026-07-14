@@ -1,3 +1,4 @@
+import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
 import { el, fmtNum } from "./app.js";
 import { divergingColor, drawChart, hideTooltip, sequentialColor, showTooltip } from "./charts.js";
@@ -135,6 +136,26 @@ export async function renderTokens(view, meta, route) {
     );
   }
 
-  view.replaceChildren(controls, strip, chartPanel);
+  // this sample's own lifecycle lane (train steps with the trajectory
+  // probes; empty for eval samples and probe-less runs -> no panel)
+  const panels = [];
+  if (!evaluation) {
+    try {
+      const trajectories = await api(`/api/rollout/${rolloutId}/trajectories`, { sample_index: sampleIndex });
+      if (trajectories.lanes.length) {
+        panels.push(
+          createAnatomy({
+            lanes: trajectories.lanes,
+            consumeTs: trajectories.consume_ts,
+            rowsByIndex: new Map(),
+            onClickSample: () => {},
+          }),
+        );
+      }
+    } catch {
+      /* endpoint absent or no events: token view stands alone */
+    }
+  }
+  view.replaceChildren(...panels, controls, strip, chartPanel);
   await load();
 }

@@ -96,13 +96,18 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
     # ------------------------------ timeline --------------------------------
 
     @app.get("/api/rollout/{rollout_id}/trajectories")
-    def rollout_trajectories(rollout_id: int):
+    def rollout_trajectories(rollout_id: int, sample_index: int | None = None):
         """Batch anatomy: the consuming step's samples resolved to their
         lifecycle lanes. The event scan is capped at one viewport (4 h) before
         the consume anchor (design §18.5); empty lanes = run predates the
-        trajectory probes."""
+        trajectory probes. ``sample_index`` narrows to one sample (the L2
+        page's own lane) without touching the step summary."""
         with _translate_errors():
-            indices = set(reader.summary(rollout_id)["sample_index"].to_list())
+            indices = (
+                {sample_index}
+                if sample_index is not None
+                else set(reader.summary(rollout_id)["sample_index"].to_list())
+            )
             consume = next((b["ts"] for b in store.bubbles() if b["step"] == rollout_id), None)
             if consume is None:
                 window = store.time_range()
@@ -222,6 +227,16 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
 
     if _STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+        @app.middleware("http")
+        async def _no_stale_frontend(request, call_next):
+            # without Cache-Control browsers cache heuristically and keep
+            # serving a STALE SPA after a stack upgrade; no-cache forces a
+            # revalidation (cheap 304s) so the frontend always matches serve
+            response = await call_next(request)
+            if request.url.path == "/" or request.url.path.startswith("/static"):
+                response.headers["Cache-Control"] = "no-cache"
+            return response
 
         @app.get("/", include_in_schema=False)
         def index():
