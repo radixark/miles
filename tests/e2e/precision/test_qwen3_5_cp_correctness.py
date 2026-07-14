@@ -16,7 +16,7 @@ import torch.distributed as dist
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-register_cuda_ci(est_time=120, suite="stage-c-4-gpu-h200", labels=["precision"])
+register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"])
 register_rocm_ci(est_time=120, suite="stage-c-4-gpu-mi350", labels=["precision"])
 
 
