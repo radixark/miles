@@ -583,6 +583,8 @@ async def run(
     except Exception as e:
         logger.error(f"OpenEnv tbench2 episode failed: {e}", exc_info=True)
         return None
+    finally:
+        await policy.close()
 
     # eval_report is intentionally empty: the canonical-eval marker protocol
     # (see _REWARD_MARKER) echoes back only the scalar reward. The detailed
