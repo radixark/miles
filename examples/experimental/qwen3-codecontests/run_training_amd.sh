@@ -177,7 +177,7 @@ else
       cd $EX && PYTHONPATH=$REPO_DIR python3 harbor/server.py --port 11000 --max-concurrent '"$MAX_CONCURRENT"' > $WORK_DIR/harbor.log 2>&1'
 
   # health check runs from inside miles_swe (host can't reach swe-net directly)
-  if $DOCKER exec miles_swe bash -lc 'for i in $(seq 1 30); do curl -sf http://agent_env:11000/health && exit 0; sleep 2; done; exit 1'; then
+  if $DOCKER exec miles_swe bash -lc 'for i in $(seq 1 30); do python3 -c "import urllib.request; urllib.request.urlopen(\"http://agent_env:11000/health\")" && exit 0; sleep 2; done; exit 1'; then
     echo " <- harbor up"
   else
     echo "harbor NOT up; last 15 lines of harbor.log:"; tail -n 15 "$WORK_DIR/harbor.log" 2>/dev/null || true
