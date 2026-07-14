@@ -230,6 +230,7 @@ class SessionCore:
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
@@ -306,6 +307,7 @@ class SessionCore:
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
     ) -> Response:
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), path, body=body, headers=headers
         )
