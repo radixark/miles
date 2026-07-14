@@ -27,17 +27,10 @@ from types import SimpleNamespace
 
 import pytest
 import tests.ci.run_suite as run_suite_module
+from tests.ci.ci_policy import NIGHTLY_CADENCE, REGULAR_CADENCE, SCHEDULE_POLICIES, resolve_policy, strip_run_ci_prefix
 from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
-from tests.ci.run_suite import (
-    CI_SUITES,
-    NIGHTLY_CADENCE,
-    REGULAR_CADENCE,
-    build_cpu_pytest_cmd,
-    filter_tests,
-    resolve_policy,
-    strip_run_ci_prefix,
-)
+from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
@@ -259,47 +252,36 @@ class TestWorkflowScopeSeam:
             assert "--event-name" not in cmd
             assert "--continue-on-error" not in cmd
 
-    def test_schedule_is_mapped_by_exact_cron(self):
+    def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
         policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        assert "uses: actions/checkout@v4" in policy_block
+        assert "persist-credentials: false" in policy_block
+        assert "run: python -m tests.ci.ci_policy" in policy_block
+        assert "cadence: ${{ steps.resolve.outputs.cadence }}" in policy_block
+        assert "raw_labels: ${{ steps.resolve.outputs.raw_labels }}" in policy_block
+        assert "bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}" in policy_block
+        assert 'case "$EVENT_NAME"' not in policy_block
+        assert "jq " not in policy_block
+
+    def test_policy_job_passes_trigger_facts(self):
+        workflow = self._workflow()
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        assert "EVENT_NAME: ${{ github.event_name }}" in policy_block
         assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
-        assert "- cron: '0 15 * * *'" in workflow
-        schedule_block = policy_block.split("schedule)", 1)[1].split("workflow_dispatch)", 1)[0]
-        nightly_case = schedule_block.split("'0 15 * * *')", 1)[1].split(";;", 1)[0]
-        assert 'cadence="nightly"' in nightly_case
-        assert 'raw_labels=""' in nightly_case
-        assert 'bypass_fastfail="true"' in nightly_case
-        assert schedule_block.count('bypass_fastfail="true"') == 1
-        assert "No CI policy is defined for schedule" in policy_block
-        assert "event_name == 'schedule'" not in workflow
-
-    def test_every_configured_cron_has_an_explicit_policy_case(self):
-        workflow = self._workflow()
-        configured = re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE)
-        assert configured
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
-        for cron in configured:
-            assert policy_block.count(f"'{cron}')") == 1
-
-    def test_pr_labels_are_canonicalized_before_forwarding(self):
-        workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
         assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
         assert "join(github.event.pull_request.labels" not in policy_block
-        assert 'type == "array" and all(.[]; type == "string")' in policy_block
-        assert "^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$" in policy_block
-        assert 'raw_labels="${safe_labels[*]}"' in policy_block
+
+    def test_every_configured_cron_has_an_explicit_python_policy(self):
+        workflow = self._workflow()
+        configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
+        assert configured == set(SCHEDULE_POLICIES)
 
     def test_dispatch_has_no_implicit_scope(self):
         workflow = self._workflow()
         dispatch_inputs = workflow.split("workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
         assert "ci_cadence" not in dispatch_inputs
         assert "ci_scope" not in dispatch_inputs
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
-        dispatch_block = policy_block.split("workflow_dispatch)", 1)[1].split(";;", 1)[0]
-        assert 'cadence="regular"' in dispatch_block
-        assert 'raw_labels=""' in dispatch_block
-        assert "run-ci-all" not in dispatch_block
 
     def test_gpu_gates_consume_shared_bypass_output(self):
         workflow = self._workflow()

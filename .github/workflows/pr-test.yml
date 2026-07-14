@@ -41,9 +41,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
   cancel-in-progress: true
 
-# `resolve-ci-policy` adapts trigger-specific facts to an explicit cadence and
-# raw labels. `run_suite.py` owns test selection and within-stage fast-fail;
-# GPU jobs consume the shared bypass output for their cross-stage gate.
+# `resolve-ci-policy` passes trigger-specific facts to `ci_policy.py`, which
+# owns the explicit cadence, raw labels, test scope, and fast-fail policy.
+# `run_suite.py` consumes that shared policy; GPU jobs consume the shared
+# bypass output for their cross-stage gate.
 #
 # Trigger type is not policy: the current nightly cron is mapped by its exact
 # expression, while workflow_dispatch remains a regular manual operation with
@@ -57,67 +58,17 @@ jobs:
       raw_labels: ${{ steps.resolve.outputs.raw_labels }}
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Resolve CI policy inputs
         id: resolve
-        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule || '' }}
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-        run: |
-          case "$EVENT_NAME" in
-            pull_request)
-              cadence="regular"
-              bypass_fastfail="false"
-              safe_labels=()
-              if ! jq -e 'type == "array" and all(.[]; type == "string")' <<< "$PR_LABELS_JSON" >/dev/null; then
-                echo "::error::PR labels were not a JSON string array"
-                exit 1
-              fi
-              while IFS= read -r -d '' label; do
-                if [ "$label" = "nightly" ]; then
-                  cadence="nightly"
-                  bypass_fastfail="true"
-                  safe_labels+=("$label")
-                elif [ "$label" = "bypass-fastfail" ]; then
-                  bypass_fastfail="true"
-                  safe_labels+=("$label")
-                elif [[ "$label" =~ ^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-                  safe_labels+=("$label")
-                fi
-              done < <(jq -j '.[] | ., "\u0000"' <<< "$PR_LABELS_JSON")
-              raw_labels="${safe_labels[*]}"
-              ;;
-            schedule)
-              case "$SCHEDULE" in
-                '0 15 * * *')
-                  cadence="nightly"
-                  raw_labels=""
-                  bypass_fastfail="true"
-                  ;;
-                *)
-                  echo "::error::No CI policy is defined for schedule: $SCHEDULE"
-                  exit 1
-                  ;;
-              esac
-              ;;
-            workflow_dispatch)
-              cadence="regular"
-              raw_labels=""
-              bypass_fastfail="false"
-              ;;
-            *)
-              echo "::error::Unsupported PR Test trigger: $EVENT_NAME"
-              exit 1
-              ;;
-          esac
-
-          {
-            echo "cadence=$cadence"
-            echo "raw_labels=$raw_labels"
-            echo "bypass_fastfail=$bypass_fastfail"
-          } >> "$GITHUB_OUTPUT"
-          echo "Resolved CI policy: cadence=$cadence labels=[$raw_labels] bypass_fastfail=$bypass_fastfail"
+        run: python -m tests.ci.ci_policy
 
   resolve-ci-image:
     runs-on: ubuntu-latest

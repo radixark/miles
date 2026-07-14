@@ -1,10 +1,8 @@
 import argparse
 import subprocess
 import sys
-import warnings
-from collections.abc import Iterable
-from dataclasses import dataclass
 
+from tests.ci.ci_policy import CI_CADENCES, NIGHTLY_CADENCE, REGULAR_CADENCE, RunPolicy, resolve_policy
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.ci_utils import run_unittest_files
 from tests.ci.labels import KNOWN_LABELS
@@ -14,11 +12,6 @@ HW_MAPPING = {
     "cuda": HWBackend.CUDA,
     "rocm": HWBackend.ROCM,
 }
-
-# PR-side label prefix attached to every domain label. The workflow forwards
-# only canonical, shell-safe CI labels; stripping stays here so selection is
-# unit-testable.
-_RUN_CI_PREFIX = "run-ci-"
 
 # CI suites by hardware backend. Cadence is an eligibility filter within a
 # suite, not a second suite inventory.
@@ -46,92 +39,6 @@ CI_SUITES = {
         "stage-c-2-gpu-mi350",
     ],
 }
-
-# PR labels that are workflow switches, not domain-label selectors: `nightly`
-# is adapted to an explicit cadence by pr-test.yml; `bypass-fastfail` feeds
-# the resolved run policy.
-# `strip_run_ci_prefix` skips them without warning.
-_WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail"}
-
-REGULAR_CADENCE = "regular"
-NIGHTLY_CADENCE = "nightly"
-CI_CADENCES = frozenset({REGULAR_CADENCE, NIGHTLY_CADENCE})
-
-
-@dataclass(frozen=True)
-class RunPolicy:
-    cadence: str
-    include_labels: frozenset[str]
-    bypass_fastfail: bool
-
-    @property
-    def is_nightly(self) -> bool:
-        return self.cadence == NIGHTLY_CADENCE
-
-
-def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
-    """Strip the `run-ci-` prefix from each PR-side label.
-
-    Inputs are the canonical PR-side CI label names forwarded by the workflow
-    (e.g. `["run-ci-megatron", "nightly"]`). Empty input yields an empty set.
-    Known workflow-only labels (`_WORKFLOW_ONLY_LABELS`) are consumed
-    elsewhere and skipped silently; any other item missing the `run-ci-`
-    prefix is skipped after a `warnings.warn(...)`, because silently
-    including it would risk matching the wrong domain label (e.g. bare
-    `"megatron"` colliding with a test's domain label by accident).
-    """
-    stripped: set[str] = set()
-    for raw in raw_labels:
-        if not raw or raw in _WORKFLOW_ONLY_LABELS:
-            continue
-        if raw.startswith(_RUN_CI_PREFIX):
-            stripped.add(raw[len(_RUN_CI_PREFIX) :])
-        else:
-            warnings.warn(
-                f"--labels entry {raw!r} is missing the expected {_RUN_CI_PREFIX!r} "
-                f"prefix; ignoring. Domain labels must be raw `run-ci-<X>` strings.",
-                stacklevel=2,
-            )
-    return stripped
-
-
-def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
-    """Resolve selection and within-stage failure behavior from explicit inputs.
-
-    `pr-test.yml` adapts trigger-specific facts into a cadence and raw labels;
-    this function never infers policy from a GitHub event name. A test runs iff
-    it is cadence-eligible and declares no labels (always-run) or any of its
-    labels is in the effective include set.
-
-    Broad scopes are large include sets: `run-ci-all` includes every registered
-    label, nightly cadence everything except `ft-long`, and `run-ci-image`
-    everything except `ft-short` and `ft-long`. Branch order encodes the
-    precedence `run-ci-all` > nightly > `run-ci-image`.
-
-    Explicitly requested `run-ci-<x>` labels are unioned in last, so an
-    explicit request always wins over a scope subtraction. A subtraction is
-    not a per-test veto: a test carrying a subtracted label still runs when
-    another of its labels is included.
-    """
-    if cadence not in CI_CADENCES:
-        raise ValueError(f"Unknown CI cadence {cadence!r}; expected one of {sorted(CI_CADENCES)}")
-    if "nightly" in raw_labels and cadence != NIGHTLY_CADENCE:
-        raise ValueError("The nightly workflow label requires cadence='nightly'")
-
-    requested = strip_run_ci_prefix(raw_labels) & set(KNOWN_LABELS)
-    if "run-ci-all" in raw_labels:
-        scope = set(KNOWN_LABELS)
-    elif cadence == NIGHTLY_CADENCE:
-        scope = set(KNOWN_LABELS) - {"ft-long"}
-    elif "run-ci-image" in raw_labels:
-        scope = set(KNOWN_LABELS) - {"ft-short", "ft-long"}
-    else:
-        scope = set()
-    return RunPolicy(
-        cadence=cadence,
-        include_labels=frozenset(scope | requested),
-        bypass_fastfail=cadence == NIGHTLY_CADENCE or "bypass-fastfail" in raw_labels,
-    )
 
 
 def filter_tests(

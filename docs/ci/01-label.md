@@ -15,7 +15,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
 
-Only domain labels are declared in `labels=[...]`; scope and behavior labels are workflow switches in `pr-test.yml`. The separate `nightly=True` registration field is a cadence gate described below.
+Only domain labels are declared in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below.
 
 ## Domain labels: `register_*_ci(labels=...)` ↔ `run-ci-<x>`
 
@@ -42,7 +42,7 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 ## Broad CI scopes
 
-`resolve-ci-policy` adapts trigger-specific facts into explicit cadence and label inputs; `run_suite.py` `resolve_policy` maps those inputs to one effective include-label set and fast-fail policy. The runner never derives policy from `schedule` or `workflow_dispatch` event names. A broad scope is just a large include set (every registered label minus the scope's subtractions).
+The workflow's `resolve-ci-policy` job forwards trigger-specific facts to `tests/ci/ci_policy.py`; that module adapts them into explicit cadence and label inputs, then its shared `resolve_policy` maps those inputs to one effective include-label set and fast-fail policy. `run_suite.py` consumes the same resolved-policy function and never derives policy from `schedule` or `workflow_dispatch` event names. A broad scope is just a large include set (every registered label minus the scope's subtractions).
 
 | Scope | Explicit source | Runs | Subtracts | Fast-fail |
 |---|---|---|---|---|

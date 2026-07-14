@@ -13,8 +13,8 @@ Adding a new label:
 
 The workflow-only scope labels (`run-ci-all`, `run-ci-image`, `nightly`) are
 intentionally NOT listed here: they select a broad scope or cadence, which
-`run_suite.py` `resolve_policy` maps to an include-label set drawn from the
-registry below.
+`tests/ci/ci_policy.py` `resolve_policy` maps to an include-label set drawn
+from the registry below.
 """
 
 KNOWN_LABELS: dict[str, str] = {
