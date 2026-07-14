@@ -17,12 +17,18 @@ class Timer(metaclass=SingletonMeta):
         self.timers = {}
         self.start_time = {}
         # interval observers called as sink(name, start_ts, end_ts) on every
-        # end(); registered by miles.dashboard when the dashboard is enabled
+        # end(); a sink additionally exposing .begin(name, start_ts) hears
+        # starts too, so long-running intervals are observable while open.
+        # Registered by miles.dashboard when the dashboard is enabled.
         self.event_sinks = []
 
     def start(self, name):
         assert name not in self.start_time, f"Timer {name} already started."
         self.start_time[name] = time()
+        for sink in self.event_sinks:
+            begin = getattr(sink, "begin", None)
+            if callable(begin):
+                begin(name, self.start_time[name])
         if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
             logger.info(f"Timer {name} start")
 

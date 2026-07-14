@@ -84,6 +84,7 @@ def collector_config_from_args(args, *, start_ts: float) -> CollectorConfig:
         start_ts=start_ts,
         args_snapshot=snapshot,
         flush_interval_seconds=args.dashboard_flush_interval,
+        gpu_sample_interval_seconds=args.dashboard_gpu_sample_interval,
         scrape_interval_seconds=args.dashboard_sglang_scrape_interval,
         scrape_mode=args.dashboard_sglang_scrape_mode,
         metric_whitelist=whitelist,

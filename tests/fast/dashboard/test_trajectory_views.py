@@ -55,7 +55,7 @@ def test_trajectory_lanes_pairs_spans_and_attempts(tmp_path):
     assert by_kind == [
         ("gen", 11.0, 15.0, 1),
         ("tool", 15.0, 18.0, 1),
-        ("gen", 18.0, None, 2),  # unclosed: aborted mid-generation
+        ("gen", 18.0, 19.0, 2),  # aborted mid-generation: closed by attempt_end
         ("gen", 31.0, 35.0, 1),
     ]
 
@@ -81,6 +81,39 @@ def test_lifecycle_heatmap_palette_and_rows(combined):
     # rows are submit-ordered
     firsts = [r["sample_index"] for r in result["rows"][: SAMPLES_PER_STEP + 1]]
     assert firsts == sorted(firsts)
+
+
+def test_single_turn_gen_closes_at_attempt_end(tmp_path):
+    # the generate_and_rm probe alone (single-turn path: no gen_end) must
+    # yield a CLOSED gen span; dangling spans painted every sample's end at
+    # the consume line (report 2026-07-13)
+    writer = MetricStore(tmp_path)
+    kinds = TrajectoryEventKind
+    for event in (
+        _event(10.0, kinds.ATTEMPT_START),
+        _event(12.0, kinds.GEN_START),  # turn=-1: attempt-level probe
+        _event(50.0, kinds.ATTEMPT_END, detail="completed"),
+    ):
+        writer.append(event)
+    writer.flush()
+    [lane] = MetricStore.load(tmp_path).trajectory_lanes()
+    assert [(s["kind"], s["t0"], s["t1"]) for s in lane["segments"]] == [("gen", 12.0, 50.0)]
+
+
+def test_coarse_gen_span_superseded_by_turn_spans(tmp_path):
+    writer = MetricStore(tmp_path)
+    kinds = TrajectoryEventKind
+    for event in (
+        _event(10.0, kinds.ATTEMPT_START),
+        _event(11.0, kinds.GEN_START),  # coarse attempt-level span
+        _event(12.0, kinds.GEN_START, turn=1),
+        _event(20.0, kinds.GEN_END, turn=1),
+        _event(30.0, kinds.ATTEMPT_END, detail="completed"),
+    ):
+        writer.append(event)
+    writer.flush()
+    [lane] = MetricStore.load(tmp_path).trajectory_lanes()
+    assert [(s["kind"], s["turn"]) for s in lane["segments"]] == [("gen", 1)]
 
 
 # --------------------------------- endpoint ----------------------------------

@@ -161,3 +161,23 @@ def test_corrupt_partition_line_surfaces_at_read(tmp_path):
         f.write("not json\n")
     with pytest.raises(ValueError, match="corrupt record"):
         store.gpu_series(t0=BASE, t1=BASE + 100)
+
+
+def test_open_marker_partitions_by_start_hour_and_is_found(tmp_path):
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="open", start_ts=BASE, args={}))
+    writer.append(GpuSample(ts=BASE + 2 * HOUR, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.append(
+        PhaseEvent(
+            name="rollout", t0=BASE + 100, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN
+        )
+    )
+    writer.flush()
+    # the marker sits in hour 0 (keyed by t0, not by the -1 sentinel)
+    h0 = tmp_path / "phases" / f"{_hour_key(BASE)}.jsonl"
+    assert h0.exists() and "rollout" in h0.read_text()
+
+    store = MetricStore.load(tmp_path)
+    # windowed query two hours later still sees the growing band (backward slack)
+    phases = [p for p in store.phases_by_lane(t0=BASE + 2 * HOUR - 10, t1=BASE + 2 * HOUR) if p["name"] == "rollout"]
+    assert phases and phases[0]["t1"] == BASE + 2 * HOUR  # clipped to the data edge

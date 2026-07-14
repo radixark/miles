@@ -27,6 +27,10 @@ def test_resolve_lanes_grammar(loaded):
     assert store.resolve_lanes("rank:1") == {(GPU_NODE, 1)}
     assert store.resolve_lanes("rank:0-2") == {(GPU_NODE, 0), (GPU_NODE, 1), (GPU_NODE, 2)}
     assert store.resolve_lanes(f"gpu:{GPU_NODE}:3") == {(GPU_NODE, 3)}
+    # global lane numbers: single-node fixture makes them equal the gpu ids
+    assert store.resolve_lanes("g:2") == {(GPU_NODE, 2)}
+    assert store.resolve_lanes("g:1-3") == {(GPU_NODE, g) for g in (1, 2, 3)}
+    assert [e["index"] for e in store.lane_index()] == list(range(truth.gpus))
     assert store.resolve_lanes(f"node:{GPU_NODE}") == {(GPU_NODE, g) for g in range(truth.gpus)}
     assert store.resolve_lanes("node:10.9.9.9") == set()  # valid selector, no match
     # engine B (either addr) covers gpus 2-3
@@ -38,7 +42,7 @@ def test_resolve_lanes_grammar(loaded):
 
 def test_resolve_lanes_rejects_bad_grammar(loaded):
     store, _ = loaded
-    for bad in ("bananas", "rank", "role:banana", "gpu:3"):
+    for bad in ("bananas", "rank", "role:banana", "gpu:3", "g:x"):
         with pytest.raises(ValueError):
             store.resolve_lanes(bad)
 

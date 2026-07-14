@@ -52,3 +52,26 @@ def test_multiple_sinks_and_nested_timers(fresh_timer):
     timer_names = [name for _, name in events]
     # inverse_timer ends "outer" first, "inner" ends inside, "outer" ends last
     assert timer_names == ["outer", "outer", "inner", "inner", "outer", "outer"]
+
+
+def test_sink_with_begin_hears_starts():
+    timer = Timer()
+    begins, ends = [], []
+
+    class Sink:
+        def begin(self, name, t0):
+            begins.append((name, t0))
+
+        def __call__(self, name, t0, t1):
+            ends.append(name)
+
+    timer.event_sinks.append(Sink())
+    try:
+        timer.start("long_phase")
+        assert [name for name, _ in begins] == ["long_phase"]  # visible while open
+        assert ends == []
+        timer.end("long_phase")
+        assert ends == ["long_phase"]
+    finally:
+        timer.event_sinks.clear()
+        timer.reset()

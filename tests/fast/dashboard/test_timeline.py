@@ -24,7 +24,7 @@ def loaded(tmp_path):
 
 def test_lanes(loaded):
     store, truth = loaded
-    assert store.lanes() == [dict(node=GPU_NODE, gpu=g) for g in range(truth.gpus)]
+    assert store.lanes() == [dict(node=GPU_NODE, gpu=g, index=g) for g in range(truth.gpus)]
 
 
 def test_topology_windows(loaded):
@@ -159,3 +159,26 @@ def test_timeline_endpoints(tmp_path):
 
     bubbles = client.get("/api/timeline/bubbles").json()
     assert len(bubbles["bubbles"]) == truth.steps
+
+
+def test_open_interval_clips_to_data_edge_and_closed_twin_wins(tmp_path):
+    from miles.dashboard.store import GpuSample, Meta, PhaseEvent, Role
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="open", start_ts=0.0, args={}))
+    # newest data: a gpu sample at t=500 — the open band must grow to it
+    writer.append(GpuSample(ts=500.0, node="n", gpu=0, util=10, mem_mb=1, power_w=1))
+    writer.append(
+        PhaseEvent(name="rollout", t0=100.0, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    )
+    # a second phase that already closed: its open marker must be superseded
+    writer.append(
+        PhaseEvent(name="warmup", t0=10.0, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    )
+    writer.append(PhaseEvent(name="warmup", t0=10.0, t1=40.0, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+    writer.flush()
+
+    phases = {p["name"]: p for p in MetricStore.load(tmp_path).phases_by_lane() if p["name"] != "initialize"}
+    assert phases["rollout"]["t1"] == 500.0  # clipped to the data edge, not -1
+    assert phases["warmup"]["t1"] == 40.0  # exactly one warmup, the closed one
+    assert sum(1 for p in MetricStore.load(tmp_path).phases_by_lane() if p["name"] == "warmup") == 1

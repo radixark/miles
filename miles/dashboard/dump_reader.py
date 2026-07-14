@@ -87,7 +87,7 @@ class TrainRow:
     total_length: int
     reward: float
     loss_mask: torch.Tensor
-    log_probs: torch.Tensor
+    log_probs: torch.Tensor | None  # absent when the run does not dump them
     rollout_log_probs: torch.Tensor | None
     ref_log_probs: torch.Tensor | None
     entropy: torch.Tensor | None
@@ -112,7 +112,7 @@ class TrainRow:
             total_length=columns["total_lengths"][row],
             reward=columns["rewards"][row],
             loss_mask=columns["loss_masks"][row],
-            log_probs=columns["log_probs"][row],
+            log_probs=optional("log_probs"),
             rollout_log_probs=optional("rollout_log_probs"),
             ref_log_probs=optional("ref_log_probs"),
             entropy=optional("entropy"),
@@ -330,7 +330,9 @@ class DumpReader:
 
         token_ids = [int(t) for t in sample.tokens[start:end]]
         lp_diff = (
-            row.log_probs - row.rollout_log_probs if row is not None and row.rollout_log_probs is not None else None
+            row.log_probs - row.rollout_log_probs
+            if row is not None and row.log_probs is not None and row.rollout_log_probs is not None
+            else None
         )
         return dict(
             rollout_id=rollout_id,
@@ -349,7 +351,7 @@ class DumpReader:
                 else response_slice(row.rollout_log_probs) if row is not None else None
             ),
             loss_mask=None if row is None else [int(v) for v in row.loss_mask[a:b]],
-            train_log_probs=None if row is None else response_slice(row.log_probs),
+            train_log_probs=None if row is None or row.log_probs is None else response_slice(row.log_probs),
             ref_log_probs=None if row is None else response_slice(row.ref_log_probs),
             lp_diff=response_slice(lp_diff),
             imp_ratio=None if lp_diff is None else response_slice(lp_diff.exp()),
@@ -416,7 +418,9 @@ class DumpReader:
             return entry | train_columns
 
         mask = row.loss_mask > 0
-        lp_diff = None if row.rollout_log_probs is None else row.log_probs - row.rollout_log_probs
+        lp_diff = (
+            None if row.log_probs is None or row.rollout_log_probs is None else row.log_probs - row.rollout_log_probs
+        )
         entropy = _masked(row.entropy, mask)
         abs_diff = _masked(None if lp_diff is None else lp_diff.abs(), mask)
         advantages = _masked(row.advantages, mask)

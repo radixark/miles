@@ -250,3 +250,18 @@ def test_register_router_before_router_start_is_a_wiring_bug(monkeypatch):
 
 def test_register_router_without_collector_is_noop():
     hooks.register_router(_router_args())  # must not raise
+
+
+def test_phase_sink_begin_pushes_open_event_immediately():
+    from miles.dashboard.store import PhaseEvent
+
+    handle = FakeHandle()
+    hooks.attach_phase_sink(handle, Role.TRAIN)
+    [sink] = Timer().event_sinks
+
+    sink.begin("rollout", 100.0)
+    [(args, _)] = handle.push_phases.calls  # no batching for starts
+    [event] = args[0]
+    assert event.name == "rollout" and event.t0 == 100.0
+    assert event.open and event.t1 == PhaseEvent.OPEN_T1
+    assert (event.node, event.rank) == ("10.0.0.3", 7)

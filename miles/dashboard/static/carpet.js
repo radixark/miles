@@ -150,7 +150,7 @@ export function createCarpet(opts) {
     const labelEvery = Math.ceil(rows / MAX_LABELED_ROWS);
     ctx.fillStyle = TEXT;
     for (let r = 0; r < rows; r += labelEvery) {
-      const label = sampleRows ? `s${data.rows[r].sample_index}` : `gpu ${data.rows[r].gpu}`;
+      const label = sampleRows ? `s${data.rows[r].sample_index}` : `g${data.rows[r].index}`;
       ctx.fillText(label, 8, r * rowH() + Math.min(rowH(), 11));
     }
 
@@ -224,7 +224,7 @@ export function createCarpet(opts) {
     const identity =
       row.sample_index !== undefined
         ? `s${row.sample_index} (group ${row.group_index})`
-        : `${row.node}:${row.gpu} (${row.roles.join("+") || "?"})`;
+        : `g${row.index} ${row.node}:${row.gpu} (${row.roles.join("+") || "?"})`;
     const lines = [`${identity}  +${fmtNum(t - opts.runStart())}s`];
     if (data.palette) lines.push(`phase: ${data.palette[value] || "—"}`);
     else lines.push(`${metric}: ${fmtNum((value / 255) * data.scale.max)}`);

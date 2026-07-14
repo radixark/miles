@@ -36,6 +36,7 @@ const GRID = "#e3e7ee";
 
 const FOLLOW_REDRAW_MS = 5000;
 const LANE_CAP = 32;
+const DEFAULT_LANES = 8; // no-selection default: evenly spaced across the cluster
 const QUICK_PICKS = [
   { label: "pick: lowest util", criterion: "lowest_util" },
   { label: "pick: slowest update_weights", criterion: "slowest_phase:update_weights" },
@@ -52,6 +53,7 @@ const M_RIGHT = 14;
 export async function renderTimeline(view, meta, route) {
   // mutable data state, reloaded on every follow-mode refresh
   let selection = route?.lanes || null; // lane-selection grammar string
+  let autoDefault = !selection; // seed the spaced default once topology is known
   let resolvedKeys = null; // full "node:gpu" set the grammar resolved to (null = no pool)
   let capped = 0; // lanes hidden by LANE_CAP
   let lanes = [];
@@ -72,7 +74,7 @@ export async function renderTimeline(view, meta, route) {
   // hard viewport cap (design §17): the lane view never displays more than
   // MAXW at once, so every data fetch is O(window), never O(run)
   const MAXW = meta.capabilities.max_window_s ?? Infinity;
-  let allLanes = []; // full topology lane list (for the no-selection budget)
+  let allLanes = []; // full topology lane list (seeds the spaced default selection)
   let fetched = null; // {t0, t1} bounds the loaded phases/gpu/engine data covers
 
   // T0/T1 come from meta.time_range (an O(1) edge-stamp read server-side),
@@ -114,19 +116,23 @@ export async function renderTimeline(view, meta, route) {
     const margin = Math.max(0, Math.min(span / 4, (MAXW - span) / 2));
     const f0 = Math.max(T0, v0 - margin);
     const f1 = Math.min(T1, v1 + margin);
-    // no selection: an explicit budget of the first lanes replaces the old
-    // fetch-everything default — transfer stays bounded at any cluster size
-    const budget =
-      !selection && allLanes.length > LANE_CAP
-        ? allLanes
-            .slice(0, LANE_CAP)
-            .map((l) => `gpu:${laneKey(l)}`)
-            .join(", ")
-        : null;
-    const laneParam = selection ?? budget;
+    // first sight of the topology: DEFAULT_LANES evenly spaced across the
+    // global index range (8 gpus -> all, 64 -> g0,g8,...,g56) becomes a REAL
+    // selection — visible chips the user removes/extends/overwrites, no
+    // parallel "default budget" state to reason about
+    if (autoDefault && allLanes.length > 0) {
+      autoDefault = false;
+      if (allLanes.length > DEFAULT_LANES) {
+        selection = Array.from(
+          { length: DEFAULT_LANES },
+          (_, i) => `g:${allLanes[Math.floor((i * allLanes.length) / DEFAULT_LANES)].index}`,
+        ).join(", ");
+        history.replaceState(null, "", `#/timeline?lanes=${encodeURIComponent(selection)}`);
+      }
+    }
     const [phasesRes, gpuRes] = await Promise.all([
-      api("/api/timeline/phases", { t0: f0, t1: f1, lanes: laneParam }),
-      api("/api/timeline/gpu", { t0: f0, t1: f1, max_points: 4000, lanes: laneParam }),
+      api("/api/timeline/phases", { t0: f0, t1: f1, lanes: selection }),
+      api("/api/timeline/gpu", { t0: f0, t1: f1, max_points: 4000, lanes: selection }),
     ]);
     engineSeries = overlayMetric
       ? (await api("/api/timeline/engine_series", { metric: overlayMetric, t0: f0, t1: f1, max_points: 4000 }))
@@ -135,14 +141,14 @@ export async function renderTimeline(view, meta, route) {
     fetched = { t0: f0, t1: f1 };
     lanes = allLanes;
     resolvedKeys = null;
-    if (laneParam) {
+    if (selection) {
       // the filtered responses reveal which lanes the grammar resolved to
       const keys = new Set(Object.keys(gpuRes.lanes));
       for (const p of phasesRes.phases) keys.add(`${p.node}:${p.gpu}`);
       lanes = lanes.filter((l) => keys.has(laneKey(l)));
-      if (selection) resolvedKeys = new Set(lanes.map(laneKey));
+      resolvedKeys = new Set(lanes.map(laneKey));
     }
-    const total = selection ? lanes.length : allLanes.length;
+    const total = lanes.length;
     if (lanes.length > LANE_CAP) lanes = lanes.slice(0, LANE_CAP);
     capped = Math.max(0, total - lanes.length);
     gpu = gpuRes.lanes;
@@ -169,10 +175,18 @@ export async function renderTimeline(view, meta, route) {
     }
   }
 
+  // external engines (no miles actor) have unknown GPU placement (gpus=[]):
+  // fall back to host identity — the engine's addr host IS its node
+  const engineHost = (addr) => addr.split("//").pop().split(":")[0];
   const engineAt = (node, gpuId, t) => {
     for (const w of windows) {
       if (t >= w.t0 && (w.t1 === null || t < w.t1)) {
-        for (const e of w.engines) if (e.gpus.some(([n, g]) => n === node && g === gpuId)) return e.addr;
+        for (const e of w.engines) {
+          const match = e.gpus.length
+            ? e.gpus.some(([n, g]) => n === node && g === gpuId)
+            : engineHost(e.addr) === node;
+          if (match) return e.addr;
+        }
       }
     }
     return null;
@@ -241,7 +255,7 @@ export async function renderTimeline(view, meta, route) {
   function renderSelection() {
     const input = el("input", {
       type: "text",
-      placeholder: "add: rank:0-7 · node:<ip> · gpu:<node>:<i> · engine:<addr> · role:train",
+      placeholder: "add: g:0-31 · rank:0-7 · node:<ip> · gpu:<node>:<i> · engine:<addr> · role:train",
       style: "flex: 1; min-width: 280px",
     });
     input.onkeydown = (ev) => {
@@ -386,10 +400,10 @@ export async function renderTimeline(view, meta, route) {
       const yUtilBot = yUtilTop + UTIL_H;
 
       ctx.fillStyle = TEXT;
-      ctx.fillText(`gpu ${lane.gpu}`, 8, yUtilTop + 4);
+      ctx.fillText(`g${lane.index}`, 8, yUtilTop + 4);
       if (multiNode) {
         ctx.fillStyle = MUTED;
-        ctx.fillText(lane.node, 8, yUtilTop + 18);
+        ctx.fillText(`${lane.node}:${lane.gpu}`, 8, yUtilTop + 18);
       }
       ctx.strokeStyle = GRID;
       ctx.beginPath();
@@ -490,7 +504,15 @@ export async function renderTimeline(view, meta, route) {
         : "";
   }
 
+  // freshness: the newest data timestamp (server-side T1), not the browser
+  // fetch time — a stalled collector must READ as stale despite live redraws
+  const renderFreshness = () => {
+    const stamp = haveData ? new Date(T1 * 1000).toLocaleTimeString() : "…";
+    followBadge.textContent = meta.mode === "follow" ? `live · data → ${stamp}` : `data → ${stamp}`;
+  };
+
   function renderAll() {
+    renderFreshness();
     renderSelection();
     renderBubbles();
     renderLegend();
@@ -542,7 +564,7 @@ export async function renderTimeline(view, meta, route) {
     const lane = lanes[laneIdx];
     const key = laneKey(lane);
     const t = timeAt(ev.clientX);
-    const lines = [`${key}  +${fmtNum(t - T0)}s`];
+    const lines = [`g${lane.index} ${key}  +${fmtNum(t - T0)}s`];
     const phase = (phasesByLane.get(key) ?? []).find((p) => p.t0 <= t && t < p.t1);
     if (phase) lines.push(`phase: ${phase.name}${phase.rank >= 0 ? ` (rank ${phase.rank})` : ""}`);
     const series = gpu[key];
@@ -603,7 +625,6 @@ export async function renderTimeline(view, meta, route) {
   let refreshing = false;
   let intervalId = null;
   if (meta.mode === "follow") {
-    followBadge.textContent = `live · redraws every ${FOLLOW_REDRAW_MS / 1000}s`;
     intervalId = setInterval(async () => {
       if (refreshing) return;
       refreshing = true;

@@ -38,7 +38,6 @@ GET_ACTOR_INTERVAL_SECONDS = 2.0
 _handle = None
 _is_primary = False
 _resolution_failed = False
-_samplers: list = []
 _warner = RateLimitedWarner(logger)
 
 
@@ -67,8 +66,12 @@ def init_dashboard(args, *, primary: bool = True, router_addr: str | None = None
         )
         ray.get(_handle.ping.remote())
         _handle.start.remote()
-        _samplers.extend(spawn_node_samplers(_handle, interval=args.dashboard_gpu_sample_interval))
-        logger.info("dashboard collector created; %d node sampler(s) running", len(_samplers))
+        logger.info(
+            "miles dashboard: telemetry -> %s | view live: python -m miles.dashboard.serve "
+            "--dump-details %s --follow --port 7788",
+            config.dashboard_dir,
+            args.dump_details,
+        )
         return
 
     if resolve_collector() is None:
@@ -129,13 +132,6 @@ def finish_dashboard() -> None:
     if _handle is not None and _is_primary:
         import ray
 
-        for sampler in _samplers:
-            try:
-                ray.get(sampler.stop.remote(), timeout=10)
-            except Exception:
-                logger.warning("a dashboard gpu sampler did not stop cleanly", exc_info=True)
-            ray.kill(sampler)
-        _samplers.clear()
         try:
             # synchronous: the final flush must land before the driver exits
             ray.get(_handle.shutdown.remote(), timeout=30)
@@ -148,41 +144,6 @@ def finish_dashboard() -> None:
 
 
 # ------------------------------ ray helpers ---------------------------------
-
-
-class _RemoteGpuPush:
-    """Serializable push callable handed to sampler actors on other nodes."""
-
-    def __init__(self, handle):
-        self._handle = handle
-
-    def __call__(self, node: str, batch: list) -> None:
-        self._handle.push_gpu_samples.remote(node, batch)
-
-
-def spawn_node_samplers(collector_handle, *, interval: float) -> list:
-    import ray
-    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-
-    from miles.dashboard.gpu_sampler import GpuSampler
-
-    samplers = []
-    for node in ray.nodes():
-        if not node.get("Alive") or node.get("Resources", {}).get("GPU", 0) <= 0:
-            continue
-        sampler = (
-            ray.remote(GpuSampler)
-            .options(
-                num_cpus=0,
-                scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node["NodeID"], soft=False),
-            )
-            .remote(_RemoteGpuPush(collector_handle), node=node["NodeManagerAddress"], interval=interval)
-        )
-        if ray.get(sampler.start.remote()):
-            samplers.append(sampler)
-        else:  # NVML unavailable there; the sampler already warned
-            ray.kill(sampler)
-    return samplers
 
 
 def _prometheus_factory():

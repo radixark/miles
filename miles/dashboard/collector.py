@@ -22,12 +22,15 @@ problem cannot OOM the driver.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, ScrapeMode, SglangScraper
 from miles.dashboard.store import (
+    EngineInfo,
     EngineSample,
     GpuSample,
     Meta,
@@ -44,6 +47,64 @@ logger = logging.getLogger(__name__)
 COLLECTOR_ACTOR_NAME = "miles_dashboard_collector"
 
 
+class _SelfGpuPush:
+    """GpuSampler sink pushing back into this collector actor (the sampler
+    runs on its own node; the handle crosses the process boundary)."""
+
+    def __init__(self, handle):
+        self._handle = handle
+
+    def __call__(self, node: str, batch: list[GpuSample]) -> None:
+        self._handle.push_gpu_samples.remote(node, batch)
+
+
+def _default_list_gpu_nodes() -> list[tuple[str, str]]:
+    # no initialized ray in this process = not running as the collector actor
+    # (unit tests, tooling): nothing to reconcile, and never pay the import
+    ray = sys.modules.get("ray")
+    if ray is None or not ray.is_initialized():
+        return []
+    return [
+        (node["NodeID"], node["NodeManagerAddress"])
+        for node in ray.nodes()
+        if node.get("Alive") and node.get("Resources", {}).get("GPU", 0) > 0
+    ]
+
+
+def _default_spawn_sampler(node_id: str, node_ip: str, interval: float):
+    """Spawn + start a GpuSampler pinned to one node; None when NVML is
+    unavailable there (recorded so the node is not retried every tick)."""
+    import ray
+    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+    from miles.dashboard.gpu_sampler import GpuSampler
+
+    handle = (
+        ray.remote(GpuSampler)
+        .options(
+            num_cpus=0,
+            scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node_id, soft=False),
+        )
+        .remote(_SelfGpuPush(ray.get_runtime_context().current_actor), node=node_ip, interval=interval)
+    )
+    if ray.get(handle.start.remote()):
+        return handle
+    ray.kill(handle)  # NVML unavailable; the sampler already warned
+    return None
+
+
+def _default_kill_sampler(handle) -> None:
+    import ray
+
+    ray.kill(handle)
+
+
+# test seams; production always uses the defaults
+_list_gpu_nodes = _default_list_gpu_nodes
+_spawn_sampler = _default_spawn_sampler
+_kill_sampler = _default_kill_sampler
+
+
 @dataclass
 class CollectorConfig:
     dashboard_dir: str  # {dump_details}/dashboard
@@ -51,6 +112,7 @@ class CollectorConfig:
     start_ts: float
     args_snapshot: dict[str, Any] = field(default_factory=dict)
     flush_interval_seconds: float = 5.0
+    gpu_sample_interval_seconds: float = 1.0
     scrape_interval_seconds: float = 2.0
     scrape_mode: str = "auto"  # "auto" or a ScrapeMode value; auto resolves at set_router()
     metric_whitelist: tuple[str, ...] = DEFAULT_METRIC_WHITELIST
@@ -83,8 +145,15 @@ class DashboardCollector:
         self._latest_gpu: dict[tuple[str, int], GpuSample] = {}
         self._latest_running_reqs: dict[str, float] = {}
         self._latest_phase_seconds: dict[str, float] = {}
+        self._scraped_engine_addrs: set[str] = set()
+        self._actor_engine_addrs: set[str] = set()
         self._stop_event = threading.Event()
         self._flush_thread: threading.Thread | None = None
+        # per-node GPU samplers, keyed by ray NodeID and reconciled on every
+        # flush tick: nodes joining AFTER startup (late rollout nodes, node
+        # restarts) get a sampler too — a one-shot spawn at init cannot.
+        # None marks a node where NVML is unavailable (never retried).
+        self._samplers: dict[str, Any] = {}
 
     # ------------------------------ lifecycle -------------------------------
 
@@ -102,6 +171,10 @@ class DashboardCollector:
         self._stop_event.set()
         if self._flush_thread is not None:
             self._flush_thread.join(timeout=self.config.flush_interval_seconds + 1)
+        for handle in self._samplers.values():
+            if handle is not None:
+                _kill_sampler(handle)
+        self._samplers.clear()
         self.flush()
 
     # ------------------------------- ingestion ------------------------------
@@ -122,11 +195,43 @@ class DashboardCollector:
             self._append(sample)
 
     def update_topology(self, snapshot: TopologySnapshot) -> None:
+        # an addr the actor path ever registered must not be resurrected as
+        # "external" after a restart retires it — scrape memory is a fallback
+        # for engines the actor path NEVER knew, not a liveness source
+        self._actor_engine_addrs.update(e.addr for e in snapshot.engines if e.worker_type != "external")
+        snapshot = self._with_external_engines(snapshot)
         with self._lock:
             if self._last_topology is not None and self._last_topology.engines == snapshot.engines:
                 return  # steady-state re-registration; only changes are recorded
             self._last_topology = snapshot
         self._append(snapshot)
+
+    def _with_external_engines(self, snapshot: TopologySnapshot) -> TopologySnapshot:
+        """Merge in engines known only from scraping: externally launched
+        sglang servers have no miles engine actor, so actor registration
+        never sees them — but every scraped sample carries their addr. Node
+        is the addr host; GPU placement is unknown (gpus=[]), which the
+        frontend resolves by node match."""
+        covered = {engine.addr for engine in snapshot.engines} | self._actor_engine_addrs
+        synthetic = [
+            EngineInfo(addr=addr, worker_type="external", engine_rank=-1, gpus=[], gpu_uuids=[])
+            for addr in sorted(self._scraped_engine_addrs)
+            if addr not in covered
+        ]
+        if not synthetic:
+            return snapshot
+        return TopologySnapshot(ts=snapshot.ts, engines=snapshot.engines + synthetic)
+
+    def _sync_external_topology(self) -> None:
+        """Flush-loop step (outside the ingest lock): fold newly scraped
+        engine addrs into the topology. _update_latest only RECORDS addrs —
+        it runs under self._lock, and update_topology takes the same lock."""
+        with self._lock:
+            covered = set() if self._last_topology is None else {e.addr for e in self._last_topology.engines}
+            missing = self._scraped_engine_addrs - covered - self._actor_engine_addrs
+            base = [] if self._last_topology is None else list(self._last_topology.engines)
+        if missing:
+            self.update_topology(TopologySnapshot(ts=time.time(), engines=base))
 
     def set_router(self, router_addr: str, *, use_miles_router: bool) -> None:
         """Register the sglang router and start (or re-point) the scraper."""
@@ -175,6 +280,7 @@ class DashboardCollector:
         if isinstance(record, GpuSample):
             self._latest_gpu[(record.node, record.gpu)] = record
         elif isinstance(record, EngineSample):
+            self._scraped_engine_addrs.add(record.addr)
             if record.metric == "sglang_num_running_reqs":
                 self._latest_running_reqs[record.addr] = record.value
         elif isinstance(record, PhaseEvent):
@@ -185,7 +291,27 @@ class DashboardCollector:
     def _run_flush_loop(self) -> None:
         while not self._stop_event.is_set():
             self._stop_event.wait(self.config.flush_interval_seconds)
+            try:
+                self._reconcile_samplers()
+                self._sync_external_topology()
+            except Exception:
+                logger.exception("dashboard sampler reconcile failed; will retry next tick")
             self.flush()
+
+    def _reconcile_samplers(self) -> None:
+        """Diff alive GPU nodes against owned samplers; spawn the missing.
+
+        Runs on the flush cadence (a ray.nodes() call is cheap), so late-
+        joining nodes start reporting util within one flush interval. A node
+        restart changes its NodeID, which reads as gone + new -> respawn."""
+        alive = _list_gpu_nodes()
+        alive_ids = {node_id for node_id, _ in alive}
+        for node_id in list(self._samplers):
+            if node_id not in alive_ids:
+                del self._samplers[node_id]  # node gone; actor died with it
+        for node_id, node_ip in alive:
+            if node_id not in self._samplers:
+                self._samplers[node_id] = _spawn_sampler(node_id, node_ip, self.config.gpu_sample_interval_seconds)
 
     def flush(self) -> None:
         with self._lock:

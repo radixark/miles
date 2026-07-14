@@ -122,7 +122,13 @@ def test_scraper_mode_resolution_and_repoint(tmp_path):
     assert collector._scraper is not first
     assert first._stop_event.is_set()
     assert collector._scraper.mode == ScrapeMode.DIRECT
-    assert collector._scraper.engine_addrs() == ["http://e:1"]
+    # actor-registered engine first, then the externals remembered from the
+    # first router's scrapes (never actor-known -> kept as scrape targets)
+    assert collector._scraper.engine_addrs() == [
+        "http://e:1",
+        "http://10.0.0.1:15000",
+        "http://10.0.0.1:15004",
+    ]
     collector.shutdown()
 
 
@@ -177,3 +183,86 @@ def test_forwarding_disabled_by_default(tmp_path):
     collector = make_collector(tmp_path, prometheus_handle_factory=lambda: called.append(1))
     collector.flush()
     assert called == []
+
+
+def test_sampler_reconcile_spawns_late_nodes_and_skips_nvml_less(tmp_path, monkeypatch):
+    from miles.dashboard import collector as collector_mod
+
+    nodes = [("id-a", "10.0.0.1")]
+    spawned, killed = [], []
+
+    def fake_spawn(node_id, node_ip, interval):
+        spawned.append(node_id)
+        return None if node_id == "id-nvmlless" else f"handle-{node_id}"
+
+    monkeypatch.setattr(collector_mod, "_list_gpu_nodes", lambda: nodes)
+    monkeypatch.setattr(collector_mod, "_spawn_sampler", fake_spawn)
+    monkeypatch.setattr(collector_mod, "_kill_sampler", killed.append)
+
+    collector = make_collector(tmp_path)
+    collector._reconcile_samplers()
+    assert spawned == ["id-a"]
+
+    # a node joins late (fully async rollout node): next tick picks it up
+    nodes.append(("id-b", "10.0.0.2"))
+    collector._reconcile_samplers()
+    assert spawned == ["id-a", "id-b"]
+
+    # NVML-less node: spawn once, remember None, never retry
+    nodes.append(("id-nvmlless", "10.0.0.3"))
+    collector._reconcile_samplers()
+    collector._reconcile_samplers()
+    assert spawned.count("id-nvmlless") == 1
+
+    # node restart: new NodeID replaces the old entry and respawns
+    nodes[0] = ("id-a2", "10.0.0.1")
+    collector._reconcile_samplers()
+    assert "id-a2" in collector._samplers and "id-a" not in collector._samplers
+
+    collector.shutdown()
+    assert sorted(h for h in killed) == ["handle-id-a2", "handle-id-b"]
+
+
+def test_external_engines_synthesized_from_scrapes(tmp_path):
+    """Pure sglang engines (no miles actor) never reach register_engines;
+    the scrape itself is the topology source (disagg report 2026-07-14)."""
+    from miles.dashboard.store import EngineSample, Stream, TopologySnapshot
+
+    collector = make_collector(tmp_path)
+    collector.push_metrics(MetricsRecord(ts=1.0, step_key="rollout/step", step=0, metrics={}))
+    for addr in ("http://10.1.0.5:15000", "http://10.1.0.6:15000"):
+        collector._append(EngineSample(ts=2.0, addr=addr, metric="sglang_num_running_reqs", labels={}, value=1.0))
+    collector._sync_external_topology()  # the flush-loop step
+    collector._sync_external_topology()  # steady state: no duplicate snapshot
+    collector.flush()
+
+    store = MetricStore.load(collector.config.dashboard_dir)
+    [snapshot] = store.records[Stream.TOPOLOGY]
+    assert [(e.addr, e.worker_type, e.gpus) for e in snapshot.engines] == [
+        ("http://10.1.0.5:15000", "external", []),
+        ("http://10.1.0.6:15000", "external", []),
+    ]
+
+    # a real actor registration keeps the synthetic externals merged in
+    from miles.dashboard.store import EngineInfo
+
+    real = TopologySnapshot(
+        ts=3.0,
+        engines=[
+            EngineInfo(
+                addr="http://10.1.0.5:15000",
+                worker_type="regular",
+                engine_rank=0,
+                gpus=[["10.1.0.5", 0]],
+                gpu_uuids=[None],
+            )
+        ],
+    )
+    collector.update_topology(real)
+    collector.flush()
+    snapshots = MetricStore.load(collector.config.dashboard_dir).records[Stream.TOPOLOGY]
+    latest = snapshots[-1]
+    assert {e.addr: e.worker_type for e in latest.engines} == {
+        "http://10.1.0.5:15000": "regular",
+        "http://10.1.0.6:15000": "external",
+    }

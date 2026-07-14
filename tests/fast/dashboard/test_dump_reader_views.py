@@ -192,6 +192,28 @@ def test_realdata_views(tmp_path):
     assert aggregates.height == 5
 
 
+def test_summary_and_tokens_survive_dump_without_log_probs(tmp_path):
+    """A 744B-scale run may not dump train log_probs at all: everything
+    derived from them degrades to None instead of KeyError -> HTTP 404
+    (disagg report 2026-07-14)."""
+    import torch
+
+    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+
+    from miles.dashboard.dump_reader import DumpReader
+
+    dump_dummy_run(tmp_path)
+    for shard in (tmp_path / "train_data").glob("0_*.pt"):
+        payload = torch.load(shard, map_location="cpu", weights_only=False)
+        assert payload["rollout_data"].pop("log_probs") is not None  # must actually remove it
+        torch.save(payload, shard)
+
+    reader = DumpReader(tmp_path)
+    df = reader.summary(0)
+    assert df["mean_abs_lp_diff"].is_null().all()
+    assert df["mean_imp_ratio"].is_null().all()
+    assert df["reward"].null_count() < df.height  # the rest of the summary is intact
+    assert reader.step_aggregates().height >= 1  # the metrics page path
 def test_staleness_and_agentic_columns(reader):
     import polars as pl
 

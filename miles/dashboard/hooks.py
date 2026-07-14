@@ -70,6 +70,28 @@ class PhaseSink:
         self._identity: _Identity | None = None
         self._warner = RateLimitedWarner(logger)
 
+    def begin(self, name: str, t0: float) -> None:
+        """Timer.start notification: push an OPEN interval immediately (no
+        batching — starts are rare and while-open visibility is the point).
+        The closing event supersedes it on the read side."""
+        try:
+            with self._lock:
+                if self._identity is None or (self._identity.rank < 0 and self.role == Role.TRAIN):
+                    self._identity = _resolve_identity()
+                identity = self._identity
+            event = PhaseEvent(
+                name=name,
+                t0=t0,
+                t1=PhaseEvent.OPEN_T1,
+                node=identity.node,
+                gpus=identity.gpus,
+                rank=identity.rank,
+                role=self.role,
+            )
+            self._handle.push_phases.remote([event])
+        except Exception:
+            self._warner.warn("dashboard phase sink failed; dropping events")
+
     def __call__(self, name: str, t0: float, t1: float) -> None:
         try:
             with self._lock:

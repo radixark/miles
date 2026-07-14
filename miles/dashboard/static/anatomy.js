@@ -171,7 +171,8 @@ export function createAnatomy({ lanes, consumeTs, rowsByIndex, onClickSample }) 
     const lines = [`s${lane.sample_index}  +${fmtNum(t - T0)}s  ${lane.status}${versions}`];
     if (segment) {
       const version = segment.weight_version ? ` · v${segment.weight_version}` : "";
-      lines.push(`turn ${segment.turn} ${segment.kind === "gen" ? "generating" : "tool wait"}${version}`);
+      const turn = segment.turn > 0 ? `turn ${segment.turn} ` : "";
+      lines.push(`${turn}${segment.kind === "gen" ? "generating" : "tool wait"}${version}`);
     } else if (lane.attempts.some((a) => (a.t0 ?? T0) <= t && t < (a.t1 ?? T1))) {
       lines.push("queued / waiting");
     }

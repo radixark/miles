@@ -31,7 +31,7 @@ import os
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -109,8 +109,17 @@ class PhaseEvent(Record):
     rank: int
     role: str  # a Role value
 
+    # t1 sentinel: the interval was still running when this event was written
+    # (Timer.start emits it so long phases are visible before they end); the
+    # closing event with the real t1 supersedes it on the read side
+    OPEN_T1: ClassVar[float] = -1.0
+
+    @property
+    def open(self) -> bool:
+        return self.t1 == self.OPEN_T1
+
     def timestamps(self) -> tuple[float, ...]:
-        return (self.t0, self.t1)
+        return (self.t0,) if self.open else (self.t0, self.t1)
 
 
 @dataclass
@@ -424,9 +433,13 @@ class MetricStore:
                 subdir.mkdir(exist_ok=True)
                 groups: dict[str, list[Record]] = {}
                 for record in buffer:
-                    # phases key by END hour: the completion append is what
-                    # lands on disk, so the window lower bound stays exact
-                    ts = record.t1 if stream is Stream.PHASES else record.ts
+                    # phases key by END hour (the completion append is what
+                    # lands on disk, keeping the window lower bound exact);
+                    # OPEN markers have no end yet and key by their start
+                    if stream is Stream.PHASES:
+                        ts = record.t0 if record.open else record.t1
+                    else:
+                        ts = record.ts
                     groups.setdefault(_hour_key(ts), []).append(record)
                 for key, group in sorted(groups.items()):
                     with open(subdir / f"{key}.jsonl", "a") as f:
@@ -607,6 +620,13 @@ class MetricStore:
                     attempts.append(dict(t0=attempt_t0, t1=event.ts))
                     attempt_t0 = None
                     status = event.detail or status
+                    # an attempt ending closes whatever it left open: the
+                    # single-turn path emits no gen_end (generation ends WITH
+                    # the attempt), and an abort mid-turn stops right here —
+                    # dangling spans must not render to the consume line
+                    for segment in open_spans.values():
+                        segment["t1"] = event.ts
+                    open_spans.clear()
                 else:
                     base, is_start = span_kinds[TrajectoryEventKind(event.kind)]
                     if is_start:
@@ -632,6 +652,10 @@ class MetricStore:
                             segment["weight_version"] = event.weight_version or segment["weight_version"]
             if attempt_t0 is not None:
                 attempts.append(dict(t0=attempt_t0, t1=None))  # attempt still running
+            if any(segment["turn"] > 0 for segment in segments if segment["kind"] == "gen"):
+                # per-turn spans (multi_turn / agentic) supersede the coarse
+                # attempt-level gen span the generate_and_rm probe emits
+                segments = [s for s in segments if not (s["kind"] == "gen" and s["turn"] < 0)]
             lanes.append(
                 dict(
                     sample_index=index,
@@ -648,11 +672,12 @@ class MetricStore:
         return lanes
 
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
-        # phases partition by END hour: the lower bound is exact (an event
-        # overlapping the window completed at or after t0); the upper bound
-        # extends one max phase duration FORWARD (design §17)
+        # closed phases partition by END hour (lower bound exact, slack one
+        # max phase duration FORWARD — design §17); OPEN markers partition by
+        # their START hour, so the lower bound gets the same slack BACKWARD
+        lower = None if t0 is None else t0 - self.MAX_WINDOW_S
         upper = None if t1 is None else t1 + self.MAX_WINDOW_S
-        return self._readers[Stream.PHASES].window(t0, upper)
+        return self._readers[Stream.PHASES].window(lower, upper)
 
     def has_stream(self, stream: Stream) -> bool:
         if stream in self.PARTITIONED_STREAMS:
@@ -731,7 +756,7 @@ class MetricStore:
 
     def lanes(self) -> list[dict]:
         """Every (node, gpu) seen in any stream — one timeline lane each."""
-        return [dict(node=entry["node"], gpu=entry["gpu"]) for entry in self.lane_index()]
+        return [dict(node=entry["node"], gpu=entry["gpu"], index=entry["index"]) for entry in self.lane_index()]
 
     def topology_windows(self) -> list[dict]:
         """Engine topology snapshots with validity windows: snapshot N is valid
@@ -760,9 +785,21 @@ class MetricStore:
         def overlaps(a0: float, a1: float) -> bool:
             return (t1 is None or a0 < t1) and (t0 is None or a1 > t0)
 
+        # resolve OPEN intervals (Timer.start markers): a closing event with
+        # the real t1 supersedes its open twin; a still-open one is clipped to
+        # the newest data timestamp so it renders as a growing in-progress band
+        events = list(self._phase_events(t0, t1))
+        closed = {(e.node, e.rank, e.name, e.t0) for e in events if not e.open}
+        edge = (self.time_range() or (0.0, 0.0))[1]
+        events = [
+            replace(e, t1=max(edge, e.t0)) if e.open else e
+            for e in events
+            if not (e.open and (e.node, e.rank, e.name, e.t0) in closed)
+        ]
+
         out = []
         windows = self.topology_windows()
-        for event in self._phase_events(t0, t1):
+        for event in events:
             if not overlaps(event.t0, event.t1):
                 continue
             if event.role == Role.ROLLOUT_MANAGER:
@@ -892,7 +929,10 @@ class MetricStore:
                         roles=entry["roles"],
                     )
                 )
-            return sorted(out, key=lambda entry: (entry["node"], entry["gpu"]))
+            out.sort(key=lambda entry: (entry["node"], entry["gpu"]))
+            for i, entry in enumerate(out):
+                entry["index"] = i
+            return out
 
         seen: set[tuple[str, int]] = set(
             self._readers[Stream.GPU_UTIL].window(None, None).select("node", "gpu").unique().iter_rows()
@@ -929,18 +969,20 @@ class MetricStore:
             dict(
                 node=entry["node"],
                 gpu=entry["gpu"],
+                index=i,
                 ranks=sorted(entry["ranks"]),
                 engine_addrs=sorted(entry["engine_addrs"]),
                 roles=sorted(entry["roles"]),
             )
-            for entry in info.values()
+            for i, entry in enumerate(info.values())
         ]
 
     def resolve_lanes(self, grammar: str | None) -> set[tuple[str, int]] | None:
         """Parse the lane-selection grammar into a lane set (None = all lanes).
 
         Comma-separated selectors: ``rank:5`` / ``rank:0-7`` (train ranks),
-        ``node:<ip>``, ``gpu:<node>:<index>``, ``engine:<addr substring>``,
+        ``g:5`` / ``g:0-31`` (global lane numbers), ``node:<ip>``,
+        ``gpu:<node>:<index>``, ``engine:<addr substring>``,
         ``role:train`` / ``role:rollout``, or ``all``. Unknown selector syntax
         raises; a valid selector matching nothing selects nothing.
         """
@@ -959,6 +1001,11 @@ class MetricStore:
                 lo, _, hi = value.partition("-")
                 ranks = set(range(int(lo), int(hi if hi else lo) + 1))
                 selected |= {(e["node"], e["gpu"]) for e in index if ranks & set(e["ranks"])}
+            elif kind == "g":
+                # cluster-global lane numbers (the g{index} labels on every view)
+                lo, _, hi = value.partition("-")
+                positions = set(range(int(lo), int(hi if hi else lo) + 1))
+                selected |= {(e["node"], e["gpu"]) for e in index if e["index"] in positions}
             elif kind == "node":
                 selected |= {(e["node"], e["gpu"]) for e in index if e["node"] == value}
             elif kind == "gpu":
@@ -1005,7 +1052,7 @@ class MetricStore:
         if metric == "lifecycle":
             return self._lifecycle_heatmap(t0, t1, x_buckets)
         rows = [
-            dict(node=entry["node"], gpu=entry["gpu"], roles=entry["roles"])
+            dict(node=entry["node"], gpu=entry["gpu"], index=entry["index"], roles=entry["roles"])
             for entry in self.lane_index()
             if lanes is None or (entry["node"], entry["gpu"]) in lanes
         ]
