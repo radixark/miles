@@ -83,8 +83,6 @@ def execute():
     ci_args = (
         "--ci-test "
         "--ci-disable-kl-checker "
-        # ROCm (gfx950): the unfused bf16 wgrad path (needed to avoid a
-        # hipBLASLt BGRADB catalog gap) has ~1e-9 numerical drift.
         f"{'--ci-disable-logprobs-checker ' if IS_ROCM else ''}"
         "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.55 "  # loose threshold at 250 step
