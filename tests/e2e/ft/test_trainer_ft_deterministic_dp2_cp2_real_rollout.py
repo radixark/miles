@@ -7,10 +7,9 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.ft.conftest_ft.scenario_deterministic import run_ci
 
 register_cuda_ci(
-    est_time=1500,
-    suite="stage-c-8-gpu-h100",
+    est_time=3200,
+    suite="stage-c-8-gpu-h200",
     labels=["ft-short"],
-    disabled="real_rollout deterministic-inference sglang hang on current image",
 )
 
 _MODE: str = "dp2_cp2_real_rollout"
