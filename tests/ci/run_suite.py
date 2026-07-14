@@ -3,6 +3,7 @@ import subprocess
 import sys
 import warnings
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.ci_utils import run_unittest_files
@@ -14,20 +15,20 @@ HW_MAPPING = {
     "rocm": HWBackend.ROCM,
 }
 
-# PR-side label prefix the workflow attaches to every domain label and passes
-# verbatim to `--labels`. Stripping is done here (not in YAML) so the filter
-# is unit-testable and the workflow stays a thin pass-through.
+# PR-side label prefix attached to every domain label. The workflow forwards
+# only canonical, shell-safe CI labels; stripping stays here so selection is
+# unit-testable.
 _RUN_CI_PREFIX = "run-ci-"
 
-# Per-commit test suites (run on every PR; per-domain selection is done at
-# runtime by `filter_tests` via the `--labels` arg, not via per-suite jobs).
+# CI suites by hardware backend. Cadence is an eligibility filter within a
+# suite, not a second suite inventory.
 #
 # CUDA suites: each is served by a matching workflow job in
 # .github/workflows/pr-test.yml. `stage-c-8-gpu-h100` and `stage-c-8-gpu-h200`
 # run on full-node 8-GPU hosts; the split H200 fleet is one 8-GPU node divided
 # into 2+2+4 workers via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml
 # stage-c-4-gpu-h200 / stage-b-2-gpu-h200 / stage-c-2-gpu-h200 job comments).
-PER_COMMIT_SUITES = {
+CI_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
         "stage-b-cpu",
@@ -46,23 +47,33 @@ PER_COMMIT_SUITES = {
     ],
 }
 
-# Nightly test suites (placeholder for future use)
-NIGHTLY_SUITES = {
-    HWBackend.CUDA: [],
-}
-
-
 # PR labels that are workflow switches, not domain-label selectors: `nightly`
-# feeds `resolve_scope`, `bypass-fastfail` is matched in pr-test.yml itself.
+# is adapted to an explicit cadence by pr-test.yml; `bypass-fastfail` feeds
+# the resolved run policy.
 # `strip_run_ci_prefix` skips them without warning.
 _WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail"}
+
+REGULAR_CADENCE = "regular"
+NIGHTLY_CADENCE = "nightly"
+CI_CADENCES = frozenset({REGULAR_CADENCE, NIGHTLY_CADENCE})
+
+
+@dataclass(frozen=True)
+class RunPolicy:
+    cadence: str
+    include_labels: frozenset[str]
+    bypass_fastfail: bool
+
+    @property
+    def is_nightly(self) -> bool:
+        return self.cadence == NIGHTLY_CADENCE
 
 
 def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
     """Strip the `run-ci-` prefix from each PR-side label.
 
-    Inputs are the raw PR label names the workflow passes verbatim (e.g.
-    `["run-ci-megatron", "nightly"]`). Empty input yields an empty set.
+    Inputs are the canonical PR-side CI label names forwarded by the workflow
+    (e.g. `["run-ci-megatron", "nightly"]`). Empty input yields an empty set.
     Known workflow-only labels (`_WORKFLOW_ONLY_LABELS`) are consumed
     elsewhere and skipped silently; any other item missing the `run-ci-`
     prefix is skipped after a `warnings.warn(...)`, because silently
@@ -84,37 +95,43 @@ def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
     return stripped
 
 
-def resolve_scope(event_name: str, raw_labels: set[str]) -> set[str]:
-    """Resolve the effective include-label set from the trigger and raw PR labels.
+def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
+    """Resolve selection and within-stage failure behavior from explicit inputs.
 
-    This is the single source of the scope policy the workflow used to
-    duplicate as per-stage YAML expressions; pr-test.yml passes only the two
-    facts (`--event-name`, raw `--labels`). A test runs iff it declares no
-    labels (always-run) or any of its labels is in the returned set.
+    `pr-test.yml` adapts trigger-specific facts into a cadence and raw labels;
+    this function never infers policy from a GitHub event name. A test runs iff
+    it is cadence-eligible and declares no labels (always-run) or any of its
+    labels is in the effective include set.
 
-    Broad scopes are just large include sets: `run-ci-all` and
-    `workflow_dispatch` include every registered label, nightly / `schedule`
-    everything except `ft-long`, `run-ci-image` everything except `ft-short`
-    and `ft-long`. Branch order encodes the precedence `run-ci-all` >
-    nightly > `run-ci-image`; the label check sits ahead of the event check
-    in each branch so an explicit label wins if the two ever co-occur
-    (today `schedule` / `workflow_dispatch` runs carry no PR labels).
+    Broad scopes are large include sets: `run-ci-all` includes every registered
+    label, nightly cadence everything except `ft-long`, and `run-ci-image`
+    everything except `ft-short` and `ft-long`. Branch order encodes the
+    precedence `run-ci-all` > nightly > `run-ci-image`.
 
     Explicitly requested `run-ci-<x>` labels are unioned in last, so an
     explicit request always wins over a scope subtraction. A subtraction is
     not a per-test veto: a test carrying a subtracted label still runs when
     another of its labels is included.
     """
+    if cadence not in CI_CADENCES:
+        raise ValueError(f"Unknown CI cadence {cadence!r}; expected one of {sorted(CI_CADENCES)}")
+    if "nightly" in raw_labels and cadence != NIGHTLY_CADENCE:
+        raise ValueError("The nightly workflow label requires cadence='nightly'")
+
     requested = strip_run_ci_prefix(raw_labels) & set(KNOWN_LABELS)
-    if "run-ci-all" in raw_labels or event_name == "workflow_dispatch":
+    if "run-ci-all" in raw_labels:
         scope = set(KNOWN_LABELS)
-    elif "nightly" in raw_labels or event_name == "schedule":
+    elif cadence == NIGHTLY_CADENCE:
         scope = set(KNOWN_LABELS) - {"ft-long"}
     elif "run-ci-image" in raw_labels:
         scope = set(KNOWN_LABELS) - {"ft-short", "ft-long"}
     else:
         scope = set()
-    return scope | requested
+    return RunPolicy(
+        cadence=cadence,
+        include_labels=frozenset(scope | requested),
+        bypass_fastfail=cadence == NIGHTLY_CADENCE or "bypass-fastfail" in raw_labels,
+    )
 
 
 def filter_tests(
@@ -126,21 +143,20 @@ def filter_tests(
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
 
-    The base predicate (hw / suite / nightly / disabled) is applied first.
+    The base predicate (hw / suite / cadence eligibility / disabled) is applied first.
     Label selection then keeps a test iff it declares no labels (always-run)
     or any of its labels is in `labels` -- the effective include set from
-    `resolve_scope` (the requested domain labels for a plain PR, near-total
+    `resolve_policy` (the requested domain labels for a plain PR, near-total
     registry sets for broad scopes). There is no separate exclusion pass: a
     label a scope subtracted simply grants no inclusion, so a test whose
     only labels were subtracted drops out (including from the skip report),
     while a test that also carries an included label still runs.
     """
-    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and t.nightly == nightly]
-
-    valid_suites = NIGHTLY_SUITES.get(hw, []) if nightly else PER_COMMIT_SUITES.get(hw, [])
-
+    valid_suites = CI_SUITES.get(hw, [])
     if suite not in valid_suites:
-        print(f"Warning: Unknown suite {suite} for backend {hw.name}, nightly={nightly}")
+        raise ValueError(f"Unknown suite {suite} for backend {hw.name}")
+
+    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and (not t.nightly or nightly)]
 
     label_set: set[str] = labels or set()
     ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
@@ -178,10 +194,15 @@ def auto_partition(files: list[CIRegistry], rank, size):
     return []
 
 
-def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIRegistry]):
+def pretty_print_tests(
+    args,
+    policy: RunPolicy,
+    continue_on_error: bool,
+    ci_tests: list[CIRegistry],
+    skipped_tests: list[CIRegistry],
+):
     hw = HW_MAPPING[args.hw]
     suite = args.suite
-    nightly = args.nightly
     if args.auto_partition_size:
         partition_info = (
             f"{args.auto_partition_id + 1}/{args.auto_partition_size} " f"(0-based id={args.auto_partition_id})"
@@ -190,7 +211,10 @@ def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIR
         partition_info = "full"
 
     msg = f"\n{'='*60}\n"
-    msg += f"Hardware: {hw.name}  Suite: {suite}  Nightly: {nightly}  Partition: {partition_info}\n"
+    msg += (
+        f"Hardware: {hw.name}  Suite: {suite}  Cadence: {policy.cadence}  "
+        f"Continue on error: {continue_on_error}  Partition: {partition_info}\n"
+    )
     msg += f"{'='*60}\n"
 
     if skipped_tests:
@@ -201,7 +225,7 @@ def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIR
         msg += "\n"
 
     if len(ci_tests) == 0:
-        msg += f"No tests found for hw={hw.name}, suite={suite}, nightly={nightly}\n"
+        msg += f"No tests found for hw={hw.name}, suite={suite}, cadence={policy.cadence}\n"
         msg += "This is expected during incremental migration. Skipping.\n"
     else:
         total_est_time = sum(t.est_time for t in ci_tests)
@@ -216,7 +240,7 @@ def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIR
 def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[str]:
     """Build the single pytest invocation for a CPU suite.
 
-    `-x` (stop at first failure) is the default per-commit behavior. With
+    `-x` (stop at first failure) is the default regular-run behavior. With
     continue_on_error -- e.g. a PR carrying the `bypass-fastfail` label -- drop
     `-x` so every file runs; pytest still exits non-zero if any failed, so the
     stage stays red.
@@ -230,31 +254,33 @@ def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[
 def run_a_suite(args):
     hw = HW_MAPPING[args.hw]
     suite = args.suite
-    nightly = args.nightly
     auto_partition_id = args.auto_partition_id
     auto_partition_size = args.auto_partition_size
 
     files = discover_ci_files()
     all_tests = collect_tests(files, sanity_check=True)
-    include_labels = resolve_scope(args.event_name, set(args.labels or []))
+    policy = resolve_policy(args.cadence, set(args.labels or []))
+    include_labels = set(policy.include_labels)
     if args.match_all_labels:
         include_labels |= set(KNOWN_LABELS)
+    continue_on_error = args.continue_on_error or policy.bypass_fastfail
     print(
-        f"Scope: event={args.event_name!r} include_labels={sorted(include_labels)}",
+        f"Policy: cadence={policy.cadence!r} bypass_fastfail={policy.bypass_fastfail} "
+        f"include_labels={sorted(include_labels)}",
         flush=True,
     )
     ci_tests, skipped_tests = filter_tests(
         all_tests,
         hw,
         suite,
-        nightly,
+        policy.is_nightly,
         labels=include_labels,
     )
 
     if auto_partition_size:
         ci_tests = auto_partition(ci_tests, auto_partition_id, auto_partition_size)
 
-    pretty_print_tests(args, ci_tests, skipped_tests)
+    pretty_print_tests(args, policy, continue_on_error, ci_tests, skipped_tests)
 
     if len(ci_tests) == 0:
         print("No tests to run. Exiting with success.", flush=True)
@@ -265,7 +291,7 @@ def run_a_suite(args):
 
     # CPU tests (fast/) use pytest; CUDA tests use python3 per-file
     if hw == HWBackend.CPU:
-        cmd = build_cpu_pytest_cmd([t.filename for t in ci_tests], args.continue_on_error)
+        cmd = build_cpu_pytest_cmd([t.filename for t in ci_tests], continue_on_error)
         print(f"Running: {' '.join(cmd)}", flush=True)
         return subprocess.call(cmd)
 
@@ -277,7 +303,7 @@ def run_a_suite(args):
     return run_unittest_files(
         ci_tests,
         timeout_per_file=timeout,
-        continue_on_error=args.continue_on_error,
+        continue_on_error=continue_on_error,
         enable_retry=args.enable_retry,
         max_attempts=args.max_attempts,
         retry_wait_seconds=args.retry_wait_seconds,
@@ -294,10 +320,19 @@ def main():
         help="Hardware backend to run tests on.",
     )
     parser.add_argument("--suite", type=str, required=True, help="Test suite to run.")
-    parser.add_argument(
+    cadence_group = parser.add_mutually_exclusive_group()
+    cadence_group.add_argument(
+        "--cadence",
+        choices=sorted(CI_CADENCES),
+        default=REGULAR_CADENCE,
+        help="Explicit CI cadence resolved by the workflow (default: regular).",
+    )
+    cadence_group.add_argument(
         "--nightly",
-        action="store_true",
-        help="Run nightly tests instead of per-commit tests.",
+        dest="cadence",
+        action="store_const",
+        const=NIGHTLY_CADENCE,
+        help="Local alias for --cadence nightly; matches the nightly tag's selection and failure policy.",
     )
     parser.add_argument(
         "--timeout-per-file",
@@ -359,8 +394,8 @@ def main():
             "Raw PR-side labels (e.g. `run-ci-megatron run-ci-fsdp`). The "
             "`run-ci-` prefix is stripped on the Python side; the resulting "
             "domain-label set is intersected with each test's `labels` to "
-            "decide what runs. An empty list keeps only `always_on=True` "
-            "tests for the suite."
+            "decide what runs. An empty list keeps only registrations with "
+            "no domain labels."
         ),
     )
     parser.add_argument(
@@ -369,20 +404,9 @@ def main():
         default=False,
         help=(
             "Include every registered label, running every enabled test in "
-            "the suite (subject to hw/suite/nightly/disabled). Manual "
-            "override for local runs; the workflow relies on `resolve_scope` "
-            "via `--event-name` and `--labels` instead."
-        ),
-    )
-    parser.add_argument(
-        "--event-name",
-        default="",
-        help=(
-            "GitHub Actions event that triggered the run (`pull_request`, "
-            "`schedule`, `workflow_dispatch`). Feeds `resolve_scope` together "
-            "with the raw `--labels`. Unset or unrecognized values fall back "
-            "to plain label selection; deliberately not `choices`-restricted "
-            "so a new trigger type cannot crash every stage."
+            "the suite (subject to hw/suite/cadence/disabled). Manual "
+            "override for local runs; the workflow passes resolved cadence "
+            "and labels instead."
         ),
     )
     args = parser.parse_args()

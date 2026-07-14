@@ -1,16 +1,15 @@
 """Unit tests for `run_suite.py`.
 
-These cover the Python-side label pipeline:
+These cover the Python-side policy and label pipeline:
 
 * `strip_run_ci_prefix`: empty input, prefix stripping, silent skip of
   workflow-only labels, warning on other non-prefixed inputs.
-* `resolve_scope`: the broad-scope policy (event + raw labels -> one
-  effective include-label set), pinned case-by-case to the selection the
-  per-stage pr-test.yml expressions produced before the policy moved here.
-* The pr-test.yml seam: every stage passes `--event-name` and no scope flags.
+* `resolve_policy`: explicit cadence + raw labels -> selection and fast-fail.
+* The pr-test.yml seam: one adapter resolves trigger facts and every stage
+  consumes its outputs.
 * `filter_tests`: include-set selection with the "empty labels means always
   run" semantic; a scope subtraction is not a per-test veto.
-* `PER_COMMIT_SUITES`: locked to the new taxonomy including the
+* `CI_SUITES`: locked to the new taxonomy including the
   always-run GPU bucket `stage-b-2-gpu-h200`.
 
 We build `CIRegistry` instances directly via a small factory rather than
@@ -18,17 +17,25 @@ parsing fixture files -- the AST-side validation lives in
 `test_ci_register.py`; this module exercises the runtime filter.
 """
 
+import os
+import re
+import subprocess
+import sys
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import tests.ci.run_suite as run_suite_module
 from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import (
-    PER_COMMIT_SUITES,
+    CI_SUITES,
+    NIGHTLY_CADENCE,
+    REGULAR_CADENCE,
     build_cpu_pytest_cmd,
     filter_tests,
-    resolve_scope,
+    resolve_policy,
     strip_run_ci_prefix,
 )
 
@@ -66,7 +73,7 @@ def _make(
 
 class TestBuildCpuPytestCmd:
     def test_x_present_by_default(self):
-        # Default per-commit run stops at the first failure.
+        # A regular run stops at the first failure by default.
         cmd = build_cpu_pytest_cmd(["tests/fast/a.py", "tests/fast/b.py"], continue_on_error=False)
         assert "-x" in cmd
 
@@ -78,15 +85,15 @@ class TestBuildCpuPytestCmd:
         assert "tests/fast/a.py" in cmd and "tests/fast/b.py" in cmd
 
 
-# --- PER_COMMIT_SUITES locked to the new taxonomy ---------------------------
+# --- CI_SUITES locked to the stage taxonomy ---------------------------------
 
 
-class TestPerCommitSuites:
+class TestCISuites:
     def test_cpu_suites_exact(self):
-        assert PER_COMMIT_SUITES[HWBackend.CPU] == ["stage-a-cpu", "stage-b-cpu"]
+        assert CI_SUITES[HWBackend.CPU] == ["stage-a-cpu", "stage-b-cpu"]
 
     def test_cuda_suites_exact(self):
-        assert PER_COMMIT_SUITES[HWBackend.CUDA] == [
+        assert CI_SUITES[HWBackend.CUDA] == [
             "stage-b-2-gpu-h200",
             "stage-c-8-gpu-h100",
             "stage-c-8-gpu-h200",
@@ -110,7 +117,7 @@ class TestPerCommitSuites:
             "stage-c-lora-8-gpu",
             "stage-c-all",
         }
-        all_suites = {s for suites in PER_COMMIT_SUITES.values() for s in suites}
+        all_suites = {s for suites in CI_SUITES.values() for s in suites}
         assert legacy.isdisjoint(all_suites), f"Legacy suite name(s) still present: {legacy & all_suites}"
 
 
@@ -154,8 +161,8 @@ class TestStripRunCiPrefix:
         assert len(caught) == 0
 
     def test_workflow_only_labels_skipped_without_warning(self):
-        # `nightly` / `bypass-fastfail` are scope/behavior switches consumed
-        # by resolve_scope and pr-test.yml, not malformed domain labels.
+        # `nightly` / `bypass-fastfail` are cadence/behavior switches consumed
+        # by the resolved policy, not malformed domain labels.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             result = strip_run_ci_prefix(["nightly", "bypass-fastfail", "run-ci-megatron"])
@@ -163,97 +170,280 @@ class TestStripRunCiPrefix:
         assert len(caught) == 0
 
 
-# --- resolve_scope: broad-scope policy, single unit-tested source ------------
+# --- resolve_policy: explicit cadence, scope, and fast-fail ------------------
 
 
 _ALL = set(KNOWN_LABELS)
 
 
-class TestResolveScope:
+class TestResolvePolicy:
     @pytest.mark.parametrize(
-        ("event", "labels", "expected"),
+        ("cadence", "labels", "expected", "bypass"),
         [
-            ("pull_request", set(), set()),
-            ("pull_request", {"run-ci-megatron"}, {"megatron"}),
-            ("pull_request", {"bypass-fastfail"}, set()),
-            ("pull_request", {"run-ci-image"}, _ALL - {"ft-short", "ft-long"}),
-            ("pull_request", {"nightly"}, _ALL - {"ft-long"}),
-            ("pull_request", {"run-ci-all"}, _ALL),
-            ("pull_request", {"run-ci-image", "nightly"}, _ALL - {"ft-long"}),
-            ("pull_request", {"run-ci-image", "run-ci-all"}, _ALL),
-            ("pull_request", {"nightly", "run-ci-all"}, _ALL),
-            ("pull_request", {"run-ci-image", "nightly", "run-ci-all"}, _ALL),
-            ("schedule", set(), _ALL - {"ft-long"}),
-            ("workflow_dispatch", set(), _ALL),
-            ("", set(), set()),
-            ("", {"run-ci-image"}, _ALL - {"ft-short", "ft-long"}),
+            (REGULAR_CADENCE, set(), set(), False),
+            (REGULAR_CADENCE, {"run-ci-megatron"}, {"megatron"}, False),
+            (REGULAR_CADENCE, {"bypass-fastfail"}, set(), True),
+            (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"ft-short", "ft-long"}, False),
+            (REGULAR_CADENCE, {"run-ci-all"}, _ALL, False),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-all"}, _ALL, False),
+            (NIGHTLY_CADENCE, set(), _ALL - {"ft-long"}, True),
+            (NIGHTLY_CADENCE, {"nightly"}, _ALL - {"ft-long"}, True),
+            (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _ALL - {"ft-long"}, True),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-all"}, _ALL, True),
         ],
     )
-    def test_selection_matches_former_yaml_expressions(self, event, labels, expected):
-        # Each case selects exactly the tests the pre-refactor per-stage YAML
-        # flags selected for that trigger/label combination (single-label
-        # registry; multi-label subtraction semantics pinned separately).
-        assert resolve_scope(event, labels) == expected
+    def test_selection_and_fastfail(self, cadence, labels, expected, bypass):
+        policy = resolve_policy(cadence, labels)
+        assert policy.cadence == cadence
+        assert policy.include_labels == expected
+        assert policy.is_nightly is (cadence == NIGHTLY_CADENCE)
+        assert policy.bypass_fastfail is bypass
+
+    def test_unknown_cadence_rejected(self):
+        with pytest.raises(ValueError, match="Unknown CI cadence 'weekly'"):
+            resolve_policy("weekly", set())
+
+    def test_nightly_tag_and_explicit_cadence_converge(self):
+        assert resolve_policy(NIGHTLY_CADENCE, {"nightly"}) == resolve_policy(NIGHTLY_CADENCE, set())
+
+    def test_nightly_label_requires_resolved_nightly_cadence(self):
+        with pytest.raises(ValueError, match="nightly workflow label"):
+            resolve_policy(REGULAR_CADENCE, {"nightly"})
 
     @pytest.mark.parametrize(
-        ("event", "labels", "expected"),
+        ("cadence", "labels", "expected"),
         [
-            ("schedule", {"run-ci-all"}, _ALL),
-            ("schedule", {"run-ci-image"}, _ALL - {"ft-long"}),
-            ("workflow_dispatch", {"nightly"}, _ALL),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"ft-long"}),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _ALL),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL),
+            (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _ALL),
         ],
     )
-    def test_counterfactual_event_label_combos_pinned(self, event, labels, expected):
-        # Unreachable today (schedule/workflow_dispatch runs carry no PR
-        # labels) but pinned as decided behavior: an explicit `run-ci-all`
-        # outranks the event, and a dispatch outranks a nightly label. If a
-        # future trigger ever passes labels, this is not up for re-derivation.
-        assert resolve_scope(event, labels) == expected
-
-    @pytest.mark.parametrize(
-        ("event", "labels", "expected"),
-        [
-            ("pull_request", {"run-ci-image", "run-ci-ft-short"}, _ALL - {"ft-long"}),
-            ("pull_request", {"nightly", "run-ci-ft-long"}, _ALL),
-            ("pull_request", {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL),
-            ("schedule", {"run-ci-ft-long"}, _ALL),
-        ],
-    )
-    def test_explicit_domain_label_wins_over_scope_subtraction(self, event, labels, expected):
+    def test_explicit_domain_label_wins_over_scope_subtraction(self, cadence, labels, expected):
         # Asking for FT coverage on an image bump must not be silently
         # dropped: explicit requests are unioned in after the subtraction.
-        assert resolve_scope(event, labels) == expected
+        assert resolve_policy(cadence, labels).include_labels == expected
 
     @pytest.mark.parametrize(
-        ("event", "labels"),
+        ("cadence", "labels"),
         [
-            ("pull_request", set()),
-            ("pull_request", {"run-ci-megatron", "run-ci-typo", "bypass-fastfail"}),
-            ("pull_request", {"run-ci-image", "run-ci-ft-short"}),
-            ("schedule", set()),
-            ("workflow_dispatch", set()),
+            (REGULAR_CADENCE, set()),
+            (REGULAR_CADENCE, {"run-ci-megatron", "run-ci-typo", "bypass-fastfail"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}),
+            (NIGHTLY_CADENCE, set()),
         ],
     )
-    def test_include_set_stays_inside_known_labels(self, event, labels):
+    def test_include_set_stays_inside_known_labels(self, cadence, labels):
         # The include set is drawn from the registry only: scope-label
         # stripping artifacts (`image`, `all`) and typo'd requests must not
         # leak in, and scope subtractions must name real registry labels.
-        assert resolve_scope(event, labels) <= _ALL
+        assert resolve_policy(cadence, labels).include_labels <= _ALL
 
 
-# --- pr-test.yml seam: stages pass facts, never scope policy -----------------
+# --- pr-test.yml seam: one trigger adapter, shared stage inputs ---------------
 
 
 class TestWorkflowScopeSeam:
-    def test_every_stage_passes_event_name_and_no_scope_flags(self):
-        workflow = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test.yml").read_text()
+    @staticmethod
+    def _workflow() -> str:
+        return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test.yml").read_text()
+
+    def test_every_stage_consumes_resolved_policy(self):
+        workflow = self._workflow()
         commands = workflow.split("execute_command:")[1:]
         assert len(commands) == 7, "stage inventory changed; update this lock test"
         for block in commands:
             cmd = block.split("secrets:")[0]
-            assert "--event-name ${{ github.event_name }}" in cmd
-            assert "--match-all-labels" not in cmd, "scope policy lives in resolve_scope, not YAML"
-            assert "--exclude-labels" not in cmd, "scope policy lives in resolve_scope, not YAML"
+            assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in cmd
+            assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in cmd
+            assert "--event-name" not in cmd
+            assert "--continue-on-error" not in cmd
+
+    def test_schedule_is_mapped_by_exact_cron(self):
+        workflow = self._workflow()
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
+        assert "- cron: '0 15 * * *'" in workflow
+        schedule_block = policy_block.split("schedule)", 1)[1].split("workflow_dispatch)", 1)[0]
+        nightly_case = schedule_block.split("'0 15 * * *')", 1)[1].split(";;", 1)[0]
+        assert 'cadence="nightly"' in nightly_case
+        assert 'raw_labels=""' in nightly_case
+        assert 'bypass_fastfail="true"' in nightly_case
+        assert schedule_block.count('bypass_fastfail="true"') == 1
+        assert "No CI policy is defined for schedule" in policy_block
+        assert "event_name == 'schedule'" not in workflow
+
+    def test_every_configured_cron_has_an_explicit_policy_case(self):
+        workflow = self._workflow()
+        configured = re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE)
+        assert configured
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        for cron in configured:
+            assert policy_block.count(f"'{cron}')") == 1
+
+    def test_pr_labels_are_canonicalized_before_forwarding(self):
+        workflow = self._workflow()
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
+        assert "join(github.event.pull_request.labels" not in policy_block
+        assert 'type == "array" and all(.[]; type == "string")' in policy_block
+        assert "^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$" in policy_block
+        assert 'raw_labels="${safe_labels[*]}"' in policy_block
+
+    def test_dispatch_has_no_implicit_scope(self):
+        workflow = self._workflow()
+        dispatch_inputs = workflow.split("workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
+        assert "ci_cadence" not in dispatch_inputs
+        assert "ci_scope" not in dispatch_inputs
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        dispatch_block = policy_block.split("workflow_dispatch)", 1)[1].split(";;", 1)[0]
+        assert 'cadence="regular"' in dispatch_block
+        assert 'raw_labels=""' in dispatch_block
+        assert "run-ci-all" not in dispatch_block
+
+    def test_gpu_gates_consume_shared_bypass_output(self):
+        workflow = self._workflow()
+        bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
+        assert workflow.count(bypass_gate) == 5
+        assert workflow.count("needs.resolve-ci-policy.result == 'success'") == 5
+        assert workflow.count("needs.resolve-ci-image.result == 'success'") == 5
+
+    def test_non_pr_concurrency_does_not_collapse_to_ref(self):
+        workflow = self._workflow()
+        assert "github.event.schedule || github.run_id" in workflow
+
+
+# --- CLI seam: local nightly alias and invalid-suite exit behavior -----------
+
+
+class TestRunSuiteCLI:
+    @staticmethod
+    def _run(*args: str) -> subprocess.CompletedProcess[str]:
+        repo_root = Path(__file__).resolve().parents[3]
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(repo_root), env.get("PYTHONPATH"))))
+        return subprocess.run(
+            [sys.executable, "tests/ci/run_suite.py", *args],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_nightly_alias_matches_explicit_cadence(self):
+        common = ("--hw", "cpu", "--suite", "stage-b-cpu", "--list-only")
+        alias = self._run(*common, "--nightly")
+        explicit = self._run(*common, "--cadence", NIGHTLY_CADENCE)
+
+        assert alias.returncode == explicit.returncode == 0
+        alias_policy = alias.stdout.splitlines()[0]
+        explicit_policy = explicit.stdout.splitlines()[0]
+        assert alias_policy == explicit_policy
+        assert "cadence='nightly' bypass_fastfail=True" in alias_policy
+        assert "'ft-short'" in alias_policy
+        assert "'ft-long'" not in alias_policy
+        assert "Continue on error: True" in alias.stdout
+
+    def test_nightly_alias_and_explicit_cadence_are_mutually_exclusive(self):
+        result = self._run(
+            "--hw",
+            "cpu",
+            "--suite",
+            "stage-b-cpu",
+            "--nightly",
+            "--cadence",
+            NIGHTLY_CADENCE,
+            "--list-only",
+        )
+        assert result.returncode == 2
+        assert "not allowed with argument" in result.stderr
+
+    def test_unknown_suite_exits_nonzero(self):
+        result = self._run(
+            "--hw",
+            "cuda",
+            "--suite",
+            "stage-c-unknown",
+            "--list-only",
+        )
+        assert result.returncode != 0
+        assert "Unknown suite stage-c-unknown" in result.stderr
+        assert "No tests to run. Exiting with success." not in result.stdout
+
+
+# --- run_a_suite: resolved policy reaches cadence and runner behavior --------
+
+
+def _run_args(*, hw: str, suite: str, cadence: str, labels: list[str] | None = None):
+    return SimpleNamespace(
+        hw=hw,
+        suite=suite,
+        cadence=cadence,
+        labels=labels or [],
+        match_all_labels=False,
+        continue_on_error=False,
+        auto_partition_id=None,
+        auto_partition_size=None,
+        list_only=False,
+        timeout_per_file=1800,
+        enable_retry=False,
+        retry_timeout_increase=600,
+        max_attempts=2,
+        retry_wait_seconds=60,
+    )
+
+
+class TestRunSuitePolicyIntegration:
+    @staticmethod
+    def _stub_collection(monkeypatch, tests):
+        monkeypatch.setattr(run_suite_module, "discover_ci_files", lambda: [])
+        monkeypatch.setattr(run_suite_module, "collect_tests", lambda *_args, **_kwargs: tests)
+
+    def test_regular_all_scope_does_not_unlock_nightly_only(self):
+        tests = [
+            _make("tests/e2e/regular.py", labels=["megatron"]),
+            _make("tests/e2e/nightly.py", labels=["megatron"], nightly=True),
+        ]
+        policy = resolve_policy(REGULAR_CADENCE, {"run-ci-all"})
+        enabled, _ = filter_tests(
+            tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            nightly=policy.is_nightly,
+            labels=set(policy.include_labels),
+        )
+        assert _names(enabled) == {"tests/e2e/regular.py"}
+
+    def test_nightly_bypass_reaches_cpu_runner(self, monkeypatch):
+        tests = [_make("tests/fast/test_regular.py", backend=HWBackend.CPU, suite="stage-a-cpu")]
+        self._stub_collection(monkeypatch, tests)
+        captured = {}
+
+        def fake_call(cmd):
+            captured["cmd"] = cmd
+            return 0
+
+        monkeypatch.setattr(run_suite_module.subprocess, "call", fake_call)
+        result = run_suite_module.run_a_suite(_run_args(hw="cpu", suite="stage-a-cpu", cadence=NIGHTLY_CADENCE))
+        assert result == 0
+        assert "-x" not in captured["cmd"]
+
+    def test_nightly_bypass_reaches_cuda_runner(self, monkeypatch):
+        tests = [_make("tests/e2e/test_regular.py", suite="stage-c-8-gpu-h100")]
+        self._stub_collection(monkeypatch, tests)
+        captured = {}
+
+        def fake_run_unittest_files(ci_tests, **kwargs):
+            captured.update(kwargs)
+            return 0
+
+        monkeypatch.setattr(run_suite_module, "run_unittest_files", fake_run_unittest_files)
+        result = run_suite_module.run_a_suite(
+            _run_args(hw="cuda", suite="stage-c-8-gpu-h100", cadence=NIGHTLY_CADENCE)
+        )
+        assert result == 0
+        assert captured["continue_on_error"] is True
 
 
 # --- discover_ci_files: location-based discovery across the CI roots --------
@@ -356,8 +546,8 @@ class TestFilterTestsLabels:
         }
 
     def test_case4_full_include_set_runs_everything_in_suite(self, cuda_h100_tests):
-        # The full registry as include set (run-ci-all / workflow_dispatch /
-        # --match-all-labels): every enabled hw/suite/nightly match runs.
+        # The full registry as include set (run-ci-all / --match-all-labels):
+        # every enabled hw/suite/cadence match runs.
         enabled, skipped = filter_tests(
             cuda_h100_tests,
             HWBackend.CUDA,
@@ -405,7 +595,7 @@ class TestFilterTestsBroadScopes:
             broad_scope_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            labels=resolve_scope("pull_request", {"run-ci-image"}),
+            labels=set(resolve_policy(REGULAR_CADENCE, {"run-ci-image"}).include_labels),
         )
         # ft/long.py still runs: its `long` label is in the include set. A
         # subtraction is not a per-test veto (maintainer-decided semantics).
@@ -420,7 +610,8 @@ class TestFilterTestsBroadScopes:
             broad_scope_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            labels=resolve_scope("schedule", set()),
+            nightly=True,
+            labels=set(resolve_policy(NIGHTLY_CADENCE, set()).include_labels),
         )
         # ft/long.py again enters via `long`; a soak test that must never
         # run at nightly must carry only FT labels.
@@ -441,7 +632,8 @@ class TestFilterTestsBroadScopes:
             tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            labels=resolve_scope("schedule", set()),
+            nightly=True,
+            labels=set(resolve_policy(NIGHTLY_CADENCE, set()).include_labels),
         )
         # A test whose only labels were subtracted is out of scope entirely,
         # including from the skip report.
@@ -453,12 +645,12 @@ class TestFilterTestsBroadScopes:
             broad_scope_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
-            labels=resolve_scope("pull_request", {"run-ci-all"}),
+            labels=set(resolve_policy(REGULAR_CADENCE, {"run-ci-all"}).include_labels),
         )
         assert _names(enabled) == _names(broad_scope_tests)
 
 
-# --- filter_tests: hw/suite/nightly partitioning still works ----------------
+# --- filter_tests: hw/suite/cadence eligibility ------------------------------
 
 
 class TestFilterTestsBaseDimensions:
@@ -491,19 +683,85 @@ class TestFilterTestsBaseDimensions:
         )
         assert _names(enabled) == {"tests/fast/t.py"}
 
-    def test_nightly_dimension_respected(self):
-        tests = [
-            _make("tests/e2e/per_commit.py", labels=["megatron"], nightly=False),
+    @staticmethod
+    def _cadence_tests():
+        return [
+            _make("tests/e2e/regular.py", labels=["megatron"], nightly=False),
             _make("tests/e2e/nightly.py", labels=["megatron"], nightly=True),
         ]
+
+    def test_regular_run_excludes_nightly_only(self):
         enabled, _ = filter_tests(
+            self._cadence_tests(),
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            nightly=False,
+            labels={"megatron"},
+        )
+        assert _names(enabled) == {"tests/e2e/regular.py"}
+
+    def test_nightly_run_includes_regular_and_nightly_only(self):
+        enabled, _ = filter_tests(
+            self._cadence_tests(),
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            nightly=True,
+            labels={"megatron"},
+        )
+        assert _names(enabled) == {"tests/e2e/regular.py", "tests/e2e/nightly.py"}
+
+    def test_disabled_nightly_only_is_skipped_only_when_eligible(self):
+        tests = [
+            _make("tests/e2e/regular.py", labels=["megatron"]),
+            _make("tests/e2e/nightly.py", labels=["megatron"], nightly=True, disabled="flaky"),
+        ]
+        _, regular_skipped = filter_tests(
             tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
             nightly=False,
             labels={"megatron"},
         )
-        assert _names(enabled) == {"tests/e2e/per_commit.py"}
+        _, nightly_skipped = filter_tests(
+            tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            nightly=True,
+            labels={"megatron"},
+        )
+        assert regular_skipped == []
+        assert _names(nightly_skipped) == {"tests/e2e/nightly.py"}
+
+    def test_nightly_only_ft_long_still_obeys_domain_scope(self):
+        tests = [_make("tests/e2e/ft/soak.py", labels=["ft-long"], nightly=True)]
+        standard_policy = resolve_policy(NIGHTLY_CADENCE, set())
+        explicit_policy = resolve_policy(NIGHTLY_CADENCE, {"run-ci-ft-long"})
+
+        standard, _ = filter_tests(
+            tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            nightly=True,
+            labels=set(standard_policy.include_labels),
+        )
+        explicit, _ = filter_tests(
+            tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            nightly=True,
+            labels=set(explicit_policy.include_labels),
+        )
+        assert standard == []
+        assert _names(explicit) == {"tests/e2e/ft/soak.py"}
+
+    def test_unknown_suite_fails_instead_of_green_empty(self):
+        with pytest.raises(ValueError, match="Unknown suite stage-c-unknown"):
+            filter_tests([], HWBackend.CUDA, "stage-c-unknown")
+
+    def test_known_empty_suite_is_valid(self):
+        enabled, skipped = filter_tests([], HWBackend.CPU, "stage-b-cpu")
+        assert enabled == []
+        assert skipped == []
 
     def test_stage_b_2_gpu_h200_is_addressable(self):
         # The always-run GPU bucket must be a first-class suite that
