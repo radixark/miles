@@ -4,12 +4,12 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h100", labels=["ckpt"])
+register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h200", labels=["ckpt"])
 
 ENABLE_EVAL = 0
 USE_DEEPEP = 0
 
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "0")))
+TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
