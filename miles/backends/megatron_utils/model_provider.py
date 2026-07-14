@@ -104,6 +104,7 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
             args, "gradient_accumulation_fusion", provider.gradient_accumulation_fusion
         )
 
+
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
 class LinearForLastLayer(torch.nn.Linear):
     def __init__(
