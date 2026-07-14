@@ -172,6 +172,41 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         miles_validate_args(args)
 
 
+class TestMultiLoRAValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(
+            [
+                "--multi-lora-n-adapters",
+                "2",
+                "--lora-rank",
+                "8",
+                "--target-modules",
+                "linear_qkv",
+                "--num-rollout",
+                "1",
+            ]
+            + extra
+            + REQUIRED_ARGS
+        )
+
+    def test_rejects_multiple_tokenizer_workers(self):
+        # Each sglang tokenizer worker holds its own LoRA registry, so per-step
+        # upserts fail non-deterministically; fail at launch, not first push.
+        args = self._parse(["--sglang-tokenizer-worker-num", "2"])
+
+        with pytest.raises(AssertionError, match="sglang-tokenizer-worker-num 1"):
+            miles_validate_args(args)
+
+    def test_accepts_default_single_tokenizer_worker(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.multi_lora is True
+
+
 class TestResolveFtComponents:
     def test_disabled_with_no_components_returns_empty_without_warning(self, caplog) -> None:
         """use_fault_tolerance off and no ft_components yields an empty list and no warning."""

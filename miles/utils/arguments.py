@@ -2558,6 +2558,13 @@ def miles_validate_args(args):
             "Multi-LoRA requires disaggregated rollout engines: weight sync is only "
             "implemented for the distributed path, not the colocated tensor path."
         )
+        assert getattr(args, "sglang_tokenizer_worker_num", 1) == 1, (
+            "Multi-LoRA requires --sglang-tokenizer-worker-num 1: each tokenizer "
+            "worker process holds its own LoRA registry, so per-step adapter "
+            "upserts resolve against whichever worker the router picks and fail "
+            "non-deterministically. sglang rejects the upsert at runtime anyway; "
+            "fail at launch instead of burning GPU time until the first weight push."
+        )
         args.megatron_to_hf_mode = "bridge"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
