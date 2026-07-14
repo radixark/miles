@@ -32,8 +32,12 @@ function selectedKeys(meta) {
   if (saved !== null) {
     return new Set(JSON.parse(saved).filter((k) => meta.metric_keys.includes(k)));
   }
-  const pinned = [...PINNED_STORE, ...PINNED_DUMP].filter((k) => meta.metric_keys.includes(k));
-  return new Set(pinned.slice(0, 6));
+  // L0 defaults come from the telemetry stream only (the tracking-backend
+  // fan-out, ms-cheap at any run length). dump/* series torch.load raw
+  // sample dumps — a fallback for dump-only dirs and an explicit opt-in
+  // otherwise, never part of the first paint.
+  const pinned = meta.capabilities.has_metrics ? PINNED_STORE : PINNED_DUMP;
+  return new Set(pinned.filter((k) => meta.metric_keys.includes(k)).slice(0, 6));
 }
 
 export async function renderMetrics(view, meta) {
@@ -55,13 +59,14 @@ export async function renderMetrics(view, meta) {
             sessionStorage.setItem("selectedMetrics", JSON.stringify([...selected]));
             renderCharts();
           };
-          return el("label", {}, [box, ` ${key}`]);
+          const slow = key.startsWith("dump/") && meta.capabilities.has_metrics;
+          return el("label", {}, [box, ` ${key}`, ...(slow ? [el("span", { class: "muted" }, [" · slow: reads dumps"])] : [])]);
         }),
     );
   };
   filterInput.oninput = renderKeyList;
 
-  async function renderCharts() {
+  function renderCharts() {
     if (!selected.size) {
       chartsPanel.replaceChildren(el("p", { class: "muted" }, ["select metrics on the left"]));
       return;
@@ -72,36 +77,45 @@ export async function renderMetrics(view, meta) {
       if (!byAxis.has(axis)) byAxis.set(axis, []);
       byAxis.get(axis).push(key);
     }
-    const series = {};
-    await Promise.all(
-      [...byAxis.entries()].map(async ([axis, keys]) => {
-        const got = await api("/api/metrics", {
-          keys: keys.join(","),
-          x: axis === "dump" ? "rollout/step" : axis,
-        });
-        Object.assign(series, got);
-      }),
-    );
-
+    // panels render immediately; each fills as its response arrives, so a
+    // slow group (dump/* cold scans) only ever delays its own charts
+    const slots = new Map();
     chartsPanel.replaceChildren(
       ...[...selected].map((key) => {
-        const axis = axisOf(key);
         const canvas = el("canvas", { class: "chart" });
-        const panel = el("div", { class: "panel" }, [el("p", { class: "chart-title" }, [key]), canvas]);
-        queueMicrotask(() => {
-          const s = series[key] ?? { x: [], y: [] };
-          const stepNavigable = axis === "dump" || axis === "rollout/step";
-          drawChart(
-            canvas,
-            s.x.map((x, i) => ({ x, y: s.y[i], label: `step ${x}\n${key} = ${s.y[i]}` })),
-            {
-              onClick: stepNavigable ? (p) => (location.hash = `#/rollout/${p.x}`) : null,
-            },
-          );
-        });
-        return panel;
+        const status = el("p", { class: "muted" }, ["computing…"]);
+        slots.set(key, { canvas, status });
+        return el("div", { class: "panel" }, [el("p", { class: "chart-title" }, [key]), status, canvas]);
       }),
     );
+    const epoch = (renderCharts.epoch = (renderCharts.epoch ?? 0) + 1);
+    for (const [axis, keys] of byAxis.entries()) {
+      api("/api/metrics", { keys: keys.join(","), x: axis === "dump" ? "rollout/step" : axis })
+        .then((series) => {
+          if (epoch !== renderCharts.epoch) return; // selection changed meanwhile
+          for (const key of keys) {
+            const slot = slots.get(key);
+            if (!slot) continue;
+            slot.status.remove();
+            const s = series[key] ?? { x: [], y: [] };
+            const stepNavigable = axis === "dump" || axis === "rollout/step";
+            drawChart(
+              slot.canvas,
+              s.x.map((x, i) => ({ x, y: s.y[i], label: `step ${x}\n${key} = ${s.y[i]}` })),
+              {
+                onClick: stepNavigable ? (p) => (location.hash = `#/rollout/${p.x}`) : null,
+              },
+            );
+          }
+        })
+        .catch((err) => {
+          if (epoch !== renderCharts.epoch) return;
+          for (const key of keys) {
+            const slot = slots.get(key);
+            if (slot) slot.status.textContent = String(err);
+          }
+        });
+    }
   }
 
   view.replaceChildren(
@@ -115,10 +129,12 @@ export async function renderMetrics(view, meta) {
     ]),
   );
   renderKeyList();
-  await renderCharts();
+  renderCharts();
 
   if (meta.mode === "follow") {
-    const intervalId = setInterval(() => renderCharts().catch(() => {}), 5000);
+    // renderCharts is fire-and-forget: failures land in per-panel status
+    // and the epoch guard drops stale responses across ticks
+    const intervalId = setInterval(renderCharts, 5000);
     setViewCleanup(() => clearInterval(intervalId));
   }
 }
