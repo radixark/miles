@@ -240,8 +240,11 @@ async def _generate_rollout_sample_completion_backfill_async(
     while len(data) < target_data_size:
         if not pendings:
             # Defensive fallback for group-level task exceptions. Normal flow keeps
-            # pending sample slots replenished from sample completion credits.
-            submit_groups(max(1, target_data_size - len(data)))
+            # pending sample slots replenished from sample completion credits. If the
+            # data source is exhausted and nothing is in flight, stop instead of
+            # blocking forever on the sample-completion queue.
+            if submit_groups(max(1, target_data_size - len(data))) == 0:
+                break
 
         sample_done_task = asyncio.create_task(sample_done_queue.get())
         done, _ = await asyncio.wait(pendings | {sample_done_task}, return_when=asyncio.FIRST_COMPLETED)

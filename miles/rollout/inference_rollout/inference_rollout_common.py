@@ -139,6 +139,11 @@ async def generate_and_rm_group(
             current_sampling_params["sampling_seed"] = args.rollout_seed + idx
         task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
         if sample_done_callback is not None:
+            # Fires for every sample task regardless of outcome (success, exception,
+            # or cancellation): each submitted sample yields exactly one completion
+            # credit, so in-flight sample concurrency is conserved exactly. Do not
+            # condition this on task success -- skipping failed samples would leak
+            # scheduling credits and decay concurrency over time.
             task.add_done_callback(lambda _task: sample_done_callback())
         tasks.append(task)
 
