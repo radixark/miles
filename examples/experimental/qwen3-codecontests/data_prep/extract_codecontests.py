@@ -191,8 +191,11 @@ def prepare(
 
     total = 0
     for p in pqs:
+        if limit is not None and total >= limit:
+            break
         print(f"extracting {p.name} ...")
-        total += extract_parquet(p, out_dir, limit=limit, workers=workers)
+        remaining_limit = limit - total if limit is not None else None
+        total += extract_parquet(p, out_dir, limit=remaining_limit, workers=workers)
     print(f"done: {total} task dirs under {out_dir}")
     if base_image:
         n = rewrite_dockerfiles(str(out_dir), base_image)
