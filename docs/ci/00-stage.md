@@ -35,7 +35,13 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 
 **Image resolution (`resolve-ci-image`).** Before the GPU stages, a small `ubuntu-latest` job resolves the container image: it reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. Every GPU stage uses this as its `container_image`. Distinct from this, the **`run-ci-image` label** selects the image scope — every enabled tag except `ft-short`/`ft-long` — which is how you validate a PR that bumps the image without scheduling FT tests.
 
-**Policy resolution (`resolve-ci-policy`).** `pull_request`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope. The workflow job passes those trigger facts to `tests/ci/ci_policy.py` and publishes its explicit `cadence`, `raw_labels`, and `bypass_fastfail` outputs. That module owns both trigger adaptation and the shared `resolve_policy` consumed by `run_suite.py`. A PR `nightly` label maps to nightly cadence. For scheduled runs, the exact `github.event.schedule` cron string is mapped explicitly: the current `0 15 * * *` entry maps to nightly, an unknown cron fails, and a future weekly entry must add its own mapping. A manual dispatch keeps regular cadence and has no PR labels, so it runs the ordinary always-on selection; its existing inputs configure the operation but do not broaden CI scope.
+**Policy resolution (`resolve-ci-policy`).**
+
+- `pull_request`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope.
+- The workflow job passes trigger facts to `tests/ci/ci_policy.py` and publishes its `cadence`, `raw_labels`, and `bypass_fastfail` outputs. That module owns trigger adaptation and the shared `resolve_policy` consumed by `run_suite.py`.
+- A PR `nightly` label maps to nightly cadence.
+- A scheduled run maps its exact `github.event.schedule` cron: the current `0 15 * * *` entry maps to nightly, an unknown cron fails, and a future weekly entry must add its own mapping.
+- A manual dispatch keeps regular cadence and has no PR labels, so it runs the ordinary always-on selection; its operation inputs do not broaden CI scope.
 
 A **nightly** policy selects every enabled tag except `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. Regular cadence admits only regular registrations. Both cadences use the same stage inventory.
 

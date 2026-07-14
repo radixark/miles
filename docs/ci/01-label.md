@@ -38,6 +38,8 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 ## Cadence eligibility
 
+There are two CI cadences: `regular`, the ordinary mode; and `nightly`, which admits `nightly=True` tests, broadens the default scope, and bypasses fast-fail.
+
 `register_*_ci(nightly=True)` means the test is eligible only under nightly cadence. It does not create a separate suite inventory and does not replace domain-label filtering. A regular run selects regular registrations only; a nightly run selects regular plus nightly-only registrations, then applies the same suite and domain-label filters to both. For example, a nightly-only test carrying only `ft-long` remains outside the standard nightly scope unless `run-ci-ft-long` or `run-ci-all` explicitly includes it.
 
 ## Broad CI scopes
