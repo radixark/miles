@@ -7,14 +7,14 @@ import miles.utils.external_utils.command_utils as U
 # MoE-expert LoRA smoke test on gpt-oss-20b (expert-only targets, bridge mode; CI-sized
 # version of examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh). Runs both serving
 # combinations — {shared-outer + virtual-experts, per-expert + no-virtual-experts} — and
-# every combination must pass. Functionality, not accuracy; 2 GPUs (TP=2, EP=1).
+# every combination must pass. Functionality, not accuracy; 4 GPUs (TP=4, EP=1).
 
 
-register_cuda_ci(est_time=1500, suite="stage-c-2-gpu-h200", labels=["megatron", "model-scripts", "lora"])
+register_cuda_ci(est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
-NUM_GPUS = 2
+NUM_GPUS = 4
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
