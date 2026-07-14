@@ -23,6 +23,11 @@ from miles.utils.tracking_utils.tracking import init_tracking
 
 from ....utils.profile_utils import TrainProfiler
 from ...training_utils.ci_utils import check_grad_norm
+
+try:
+    from miles.utils.data_transfer import release_mooncake_rollout_data
+except ImportError:
+    pass
 from ...training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from ...training_utils.log_utils import (
     aggregate_forward_results,
@@ -438,15 +443,11 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             if self.args.debug_rollout_only:
                 if getattr(self.args, "transfer_backend", "ray") == "mooncake":
-                    from miles.utils.data_transfer import release_mooncake_rollout_data
-
                     release_mooncake_rollout_data(self.args, rollout_data)
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
         if getattr(self.args, "transfer_backend", "ray") == "mooncake":
-            from miles.utils.data_transfer import release_mooncake_rollout_data
-
             release_mooncake_rollout_data(self.args, rollout_data)
 
         train_metric_utils.log_perf_data_raw(
