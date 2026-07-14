@@ -217,8 +217,9 @@ is a thin wrapper around the custom agent. It:
 1. Creates a session on MilesRouter and builds a session-scoped `base_url`.
 2. Calls the custom agent (from `--custom-agent-function-path`) to send one or more
    chat requests.
-3. Collects session records via `OpenAIEndpointTracer`.
-4. Converts records into `Sample` objects via `compute_samples_from_openai_records`.
+3. Collects server-assembled `Sample` objects via `OpenAIEndpointTracer.collect_samples`
+   (the session server converts records into samples, truncates and merges on the
+   owning instance; records never leave the server).
 
 For broader customization beyond the OpenAI wrapper, see the `/generate` path above.
 

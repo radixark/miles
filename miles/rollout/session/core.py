@@ -4,6 +4,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 
 - ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
+- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
 """
 
 import json
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 
 from starlette.responses import Response
 
+from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -20,6 +22,11 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.samples import (
+    compute_samples_from_openai_records,
+    encode_samples_reply,
+    truncate_samples_by_total_tokens,
+)
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 
 logger = logging.getLogger(__name__)
@@ -42,6 +49,11 @@ class ProxyRequest:
 def _render_json(payload) -> bytes:
     """Encode like Starlette's JSONResponse (compact, non-ASCII preserved)."""
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+
+def _samples_response(payload: bytes) -> Response:
+    """The samples-op reply: one codec envelope (JSON meta + raw binary segments)."""
+    return Response(content=payload, status_code=200, media_type="application/octet-stream")
 
 
 _CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
@@ -107,8 +119,10 @@ class SessionCore:
         session_id = self.registry.create_session()
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def get_session(self, session_id: str) -> Response:
-        session = self.registry.get_session(session_id)
+    def _session_metadata(self, session_id: str, session) -> dict:
+        """The per-session assembly/inspection metadata dict, shared by
+        `get_session` (records debug dump) and `collect_samples` (samples op)
+        so the two can never drift."""
         metadata: dict = {}
         try:
             mismatch = self.registry.compute_session_mismatch(session)
@@ -119,10 +133,54 @@ class SessionCore:
             metadata["tito_session_mismatch"] = mismatch
         metadata["accumulated_token_ids"] = session.token_ids
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
+        return metadata
+
+    async def get_session(self, session_id: str) -> Response:
+        session = self.registry.get_session(session_id)
+        metadata = self._session_metadata(session_id, session)
         payload = GetSessionResponse(session_id=session_id, records=session.records, metadata=metadata)
         return Response(
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
+
+    async def collect_samples(self, session_id: str, *, multi_samples: bool, max_seq_len: int | None) -> Response:
+        """Assemble training Samples from this session's records, on the server.
+
+        Runs synchronously on the server loop — no await between reading the
+        session state and finishing the reply — the same invariant that makes
+        the lock-free `get_session` safe against concurrent chat updates. Do
+        not offload the assembly to an executor without snapshotting records
+        or holding the session lock.
+
+        Deterministic assembly failures map to 422 with the assertion text as
+        the body. They are caught HERE so they never escape
+        as an unhandled 500; the ValueError catch also
+        covers corrupt stored R3 payloads (binascii/reshape errors) — equally
+        deterministic record damage. Unknown exceptions still propagate (a real
+        bug must not masquerade as 422).
+        """
+        session = self.registry.get_session(session_id)
+        metadata = self._session_metadata(session_id, session)
+        tokenizer = self.registry.tokenizer
+        if not session.records:
+            return _samples_response(encode_samples_reply([], metadata, empty_reason="no_records"))
+        try:
+            samples = compute_samples_from_openai_records(
+                self.args,
+                session.records,
+                tokenizer,
+                accumulated_token_ids=metadata.get("accumulated_token_ids"),
+                max_trim_tokens=metadata.get("max_trim_tokens", 0),
+            )
+            if max_seq_len is not None:
+                samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
+            if not samples:
+                return _samples_response(encode_samples_reply([], metadata, empty_reason="all_truncated"))
+            if not multi_samples:
+                samples = [merge_samples(samples, tokenizer)]
+        except (AssertionError, ValueError) as exc:
+            return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
+        return _samples_response(encode_samples_reply(samples, metadata))
 
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)

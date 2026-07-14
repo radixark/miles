@@ -224,6 +224,28 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
     return output
 
 
+async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
+    """Single POST over the shared client: no retries, raw-bytes reply.
+
+    For endpoints where a retry cannot help (the session samples endpoint: a
+    5xx means the owning worker died and its state died with it, a 422 is a
+    deterministic assembly failure) and where the reply is a binary envelope
+    that `post()`'s json()/text decoding would mangle. A non-2xx raises with
+    the response body text; `timeout` bounds the whole call via wait_for (the
+    shared client itself has timeout=None, and httpx timeouts are per-phase,
+    not total).
+    """
+    assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
+
+    async def _do() -> bytes:
+        response = await _http_client.post(url, json=payload)
+        if not (200 <= response.status_code < 300):
+            raise RuntimeError(f"POST {url} failed with {response.status_code}: {response.text}")
+        return response.content
+
+    return await asyncio.wait_for(_do(), timeout=timeout)
+
+
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled
