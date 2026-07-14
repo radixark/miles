@@ -1,24 +1,15 @@
 import { api } from "./api.js";
 import { el, setViewCleanup } from "./app.js";
-import { drawChart } from "./charts.js";
+import { drawChart, drawMultiLine } from "./charts.js";
 
-const PINNED_STORE = [
-  "rollout/rewards_mean",
-  "train/loss",
-  "perf/step_time",
-  "perf/wait_time_ratio",
-  // staleness (fully async): logged by miles when weight versions appear
-  "weight_version/mean",
-  "weight_version/mixed_version_ratio",
-];
-const PINNED_DUMP = [
-  "dump/reward_mean",
-  "dump/mean_abs_lp_diff",
-  "dump/mean_entropy",
-  "dump/truncated_frac",
-  "dump/zero_std_group_frac",
-  "dump/mixed_version_frac",
-];
+// wandb-shaped L0: metric names come verbatim from the tracking fan-out, so
+// categories are simply the key prefixes. One category at a time (wandb
+// sidebar idiom); every key of the active category renders as a line chart.
+// "dump" only ever appears for dump-only dirs — the server does not
+// advertise it while a telemetry stream exists.
+const CATEGORY_ORDER = ["rollout", "perf", "train", "eval", "dump"];
+
+const categoryOf = (key) => key.split("/")[0];
 
 function axisOf(key) {
   if (key.startsWith("dump/")) return "dump";
@@ -27,114 +18,152 @@ function axisOf(key) {
   return "rollout/step";
 }
 
-function selectedKeys(meta) {
-  const saved = sessionStorage.getItem("selectedMetrics");
-  if (saved !== null) {
-    return new Set(JSON.parse(saved).filter((k) => meta.metric_keys.includes(k)));
-  }
-  // L0 defaults come from the telemetry stream only (the tracking-backend
-  // fan-out, ms-cheap at any run length). dump/* series torch.load raw
-  // sample dumps — a fallback for dump-only dirs and an explicit opt-in
-  // otherwise, never part of the first paint.
-  const pinned = meta.capabilities.has_metrics ? PINNED_STORE : PINNED_DUMP;
-  return new Set(pinned.filter((k) => meta.metric_keys.includes(k)).slice(0, 6));
+function orderedCategories(meta) {
+  const present = [...new Set(meta.metric_keys.map(categoryOf))];
+  const cats = [
+    ...CATEGORY_ORDER.filter((c) => present.includes(c)),
+    ...present.filter((c) => !CATEGORY_ORDER.includes(c) && c !== "dump").sort(),
+  ];
+  // grafana-parity category: scraped engine metrics, x = wall clock
+  if (meta.engine_metric_keys?.length) cats.splice(cats.includes("dump") ? cats.length - 1 : cats.length, 0, "sglang");
+  return cats;
 }
 
 export async function renderMetrics(view, meta) {
-  const selected = selectedKeys(meta);
-  const chartsPanel = el("div", { style: "flex: 3; min-width: 500px" });
+  const cats = orderedCategories(meta);
+  let active = sessionStorage.getItem("metricsCategory");
+  if (!cats.includes(active)) active = cats[0] ?? null;
 
-  const filterInput = el("input", { type: "text", placeholder: "filter keys…" });
-  const keyList = el("div", { class: "keylist" });
-  const renderKeyList = () => {
-    const needle = filterInput.value.toLowerCase();
-    keyList.replaceChildren(
-      ...meta.metric_keys
-        .filter((k) => k.toLowerCase().includes(needle))
-        .map((key) => {
-          const box = el("input", { type: "checkbox" });
-          box.checked = selected.has(key);
-          box.onchange = () => {
-            box.checked ? selected.add(key) : selected.delete(key);
-            sessionStorage.setItem("selectedMetrics", JSON.stringify([...selected]));
-            renderCharts();
-          };
-          const slow = key.startsWith("dump/") && meta.capabilities.has_metrics;
-          return el("label", {}, [box, ` ${key}`, ...(slow ? [el("span", { class: "muted" }, [" · slow: reads dumps"])] : [])]);
-        }),
+  const chartsPanel = el("div", { style: "flex: 3; min-width: 500px" });
+  const filterInput = el("input", { type: "text", placeholder: "filter…" });
+  const catList = el("div", { class: "keylist" });
+
+  const renderCategories = () => {
+    catList.replaceChildren(
+      ...cats.map((cat) =>
+        el(
+          "button",
+          {
+            class: cat === active ? "active" : "",
+            style: "text-align: left",
+            onclick: () => {
+              active = cat;
+              sessionStorage.setItem("metricsCategory", cat);
+              renderCategories();
+              buildPanels();
+            },
+          },
+          [cat],
+        ),
+      ),
     );
   };
-  filterInput.oninput = renderKeyList;
 
-  function renderCharts() {
-    if (!selected.size) {
-      chartsPanel.replaceChildren(el("p", { class: "muted" }, ["select metrics on the left"]));
+  const activeKeys = () => {
+    const needle = filterInput.value.toLowerCase();
+    const pool = active === "sglang" ? meta.engine_metric_keys : meta.metric_keys.filter((k) => categoryOf(k) === active);
+    return pool.filter((k) => k.toLowerCase().includes(needle));
+  };
+
+  // slots persist across refreshes; a chart repaints ONLY when its data
+  // changed (signature check), so a live page sits visually still between
+  // real updates instead of flickering on every poll
+  const slots = new Map(); // key -> {canvas, status, signature}
+  let epoch = 0;
+
+  function buildPanels() {
+    slots.clear();
+    const keys = activeKeys();
+    if (!keys.length) {
+      chartsPanel.replaceChildren(el("p", { class: "muted" }, [active ? "no metrics here" : "no metrics logged"]));
+      return;
+    }
+    chartsPanel.replaceChildren(
+      ...keys.map((key) => {
+        const canvas = el("canvas", { class: "chart" });
+        const status = el("p", { class: "muted" }, ["loading…"]);
+        slots.set(key, { canvas, status, signature: null });
+        return el("div", { class: "panel" }, [el("p", { class: "chart-title" }, [key]), status, canvas]);
+      }),
+    );
+    refresh();
+  }
+
+  function refresh() {
+    const current = ++epoch;
+    if (active === "sglang") {
+      for (const [key, slot] of slots.entries()) {
+        api("/api/timeline/engine_series", { metric: key, max_points: 1000 })
+          .then(({ series }) => {
+            if (current !== epoch) return;
+            const signature = series.map((s) => `${s.addr}:${s.ts.length}:${s.ts.at(-1)}`).join("|");
+            if (signature === slot.signature) return;
+            slot.signature = signature;
+            slot.status.remove();
+            drawMultiLine(
+              slot.canvas,
+              series.map((s) => ({ label: s.addr, ts: s.ts, value: s.value })),
+            );
+          })
+          .catch((err) => {
+            if (current === epoch && slot.signature === null) slot.status.textContent = String(err);
+          });
+      }
       return;
     }
     const byAxis = new Map();
-    for (const key of selected) {
+    for (const key of slots.keys()) {
       const axis = axisOf(key);
       if (!byAxis.has(axis)) byAxis.set(axis, []);
       byAxis.get(axis).push(key);
     }
-    // panels render immediately; each fills as its response arrives, so a
-    // slow group (dump/* cold scans) only ever delays its own charts
-    const slots = new Map();
-    chartsPanel.replaceChildren(
-      ...[...selected].map((key) => {
-        const canvas = el("canvas", { class: "chart" });
-        const status = el("p", { class: "muted" }, ["computing…"]);
-        slots.set(key, { canvas, status });
-        return el("div", { class: "panel" }, [el("p", { class: "chart-title" }, [key]), status, canvas]);
-      }),
-    );
-    const epoch = (renderCharts.epoch = (renderCharts.epoch ?? 0) + 1);
     for (const [axis, keys] of byAxis.entries()) {
       api("/api/metrics", { keys: keys.join(","), x: axis === "dump" ? "rollout/step" : axis })
         .then((series) => {
-          if (epoch !== renderCharts.epoch) return; // selection changed meanwhile
+          if (current !== epoch) return; // category/filter changed meanwhile
           for (const key of keys) {
             const slot = slots.get(key);
             if (!slot) continue;
-            slot.status.remove();
             const s = series[key] ?? { x: [], y: [] };
-            const stepNavigable = axis === "dump" || axis === "rollout/step";
+            const signature = `${s.x.length}:${s.x.at(-1)}:${s.y.at(-1)}`;
+            if (signature === slot.signature) continue; // unchanged: no repaint
+            slot.signature = signature;
+            slot.status.remove();
             drawChart(
               slot.canvas,
               s.x.map((x, i) => ({ x, y: s.y[i], label: `step ${x}\n${key} = ${s.y[i]}` })),
-              {
-                onClick: stepNavigable ? (p) => (location.hash = `#/rollout/${p.x}`) : null,
-              },
             );
           }
         })
         .catch((err) => {
-          if (epoch !== renderCharts.epoch) return;
+          if (current !== epoch) return;
           for (const key of keys) {
             const slot = slots.get(key);
-            if (slot) slot.status.textContent = String(err);
+            if (slot && slot.signature === null) slot.status.textContent = String(err);
           }
         });
     }
   }
 
+  filterInput.oninput = buildPanels;
+
   view.replaceChildren(
     el("div", { class: "row" }, [
-      el("div", { class: "panel", style: "flex: 1; min-width: 260px; max-width: 340px" }, [
+      el("div", { class: "panel", style: "flex: 0 0 200px" }, [
         el("h3", {}, ["metrics"]),
         el("div", { class: "controls" }, [filterInput]),
-        keyList,
+        catList,
       ]),
       chartsPanel,
     ]),
   );
-  renderKeyList();
-  renderCharts();
+  renderCategories();
+  buildPanels();
 
   if (meta.mode === "follow") {
-    // renderCharts is fire-and-forget: failures land in per-panel status
-    // and the epoch guard drops stale responses across ticks
-    const intervalId = setInterval(renderCharts, 5000);
+    // refresh is fire-and-forget and idempotent: unchanged charts skip the
+    // repaint entirely, so the live page sits still between real updates
+    const intervalId = setInterval(refresh, 5000);
     setViewCleanup(() => clearInterval(intervalId));
   }
 }

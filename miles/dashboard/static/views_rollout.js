@@ -109,6 +109,7 @@ export async function renderRollout(view, meta, route) {
     statBox("reward mean", mean(rewards)),
     statBox("truncated frac", mean(rows.map((r) => (r.truncated ? 1 : 0)))),
     statBox("zero-std groups", `${zeroStdGroups}/${groups.rows.length}`),
+    statBox("mixed-version frac", mean(rows.map((r) => (r.mixed_version === null ? null : +r.mixed_version)).filter((v) => v !== null))),
     statBox("mean |lp diff|", mean(rows.map((r) => r.mean_abs_lp_diff).filter((v) => v !== null))),
     statBox("mean entropy", mean(rows.map((r) => r.mean_entropy).filter((v) => v !== null))),
   ]);

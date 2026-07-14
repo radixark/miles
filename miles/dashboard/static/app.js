@@ -58,6 +58,12 @@ function crumbs(route, meta) {
   if (meta.capabilities.has_timeline) {
     parts.push(" · ", el("a", { href: "#/timeline" }, ["timeline"]));
   }
+  // steps: the per-step data view is a top-level destination, not a hidden
+  // click-through from chart points; land on the newest train step
+  const latest = meta.rollout_ids.train.at(-1);
+  if (latest !== undefined) {
+    parts.push(" · ", el("a", { href: `#/rollout/${latest}` }, ["steps"]));
+  }
   if (route.view === "timeline") {
     parts.push("› ", "efficiency");
   }

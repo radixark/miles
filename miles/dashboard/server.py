@@ -67,7 +67,12 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
     @app.get("/api/meta")
     def meta():
         ids = reader.rollout_ids()
-        dump_keys = [DUMP_METRIC_PREFIX + column for column in STEP_AGGREGATE_METRICS] if ids.train else []
+        # dump-derived aggregates are the L0 fallback for dump-only dirs; a
+        # run with a telemetry stream never advertises them (they torch.load
+        # raw sample dumps — the /api/metrics handler still serves explicit
+        # requests, but the catalog stays wandb-shaped)
+        offline = ids.train and not store.records[Stream.METRICS]
+        dump_keys = [DUMP_METRIC_PREFIX + column for column in STEP_AGGREGATE_METRICS] if offline else []
         return dict(
             mode="follow" if follow else "static",
             run_name=store.meta.run_name if store.meta else None,
@@ -75,6 +80,7 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
             time_range=store.time_range(),
             rollout_ids=dict(train=ids.train, eval=ids.eval),
             metric_keys=store.metric_keys() + dump_keys,
+            engine_metric_keys=store.engine_metric_names(),
             step_keys=store.step_keys(),
             capabilities=dict(
                 has_metrics=store.has_stream(Stream.METRICS),

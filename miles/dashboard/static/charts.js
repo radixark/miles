@@ -159,3 +159,75 @@ export function divergingColor(t) {
 export function sequentialColor(t) {
   return `rgba(70, 194, 142, ${Math.min(1, Math.max(0, t)) * 0.85})`;
 }
+
+
+// seriesList: [{label, ts: [], value: []}] — one thin line per engine on a
+// shared scale; identity via hover (30+ engines make per-line color noise)
+export function drawMultiLine(canvas, seriesList, opts = {}) {
+  const { ctx, width, height } = setupCanvas(canvas);
+  const css = getComputedStyle(document.documentElement);
+  const colText = css.getPropertyValue("--muted").trim();
+  const colBorder = css.getPropertyValue("--border").trim();
+  const colMain = css.getPropertyValue("--accent").trim();
+  ctx.clearRect(0, 0, width, height);
+  const plotW = width - MARGIN.left - MARGIN.right;
+  const plotH = height - MARGIN.top - MARGIN.bottom;
+  ctx.font = "11px ui-monospace, monospace";
+
+  const alive = seriesList.filter((s) => s.ts.length);
+  if (!alive.length) {
+    ctx.fillStyle = colText;
+    ctx.fillText("no data", MARGIN.left + plotW / 2 - 20, MARGIN.top + plotH / 2);
+    return;
+  }
+  const xMin = Math.min(...alive.map((s) => s.ts[0]));
+  const xMax = Math.max(...alive.map((s) => s.ts.at(-1)));
+  let yMin = Math.min(...alive.map((s) => Math.min(...s.value)));
+  let yMax = Math.max(...alive.map((s) => Math.max(...s.value)));
+  if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];
+  const X = (t) => MARGIN.left + ((t - xMin) / Math.max(xMax - xMin, 1e-9)) * plotW;
+  const Y = (v) => MARGIN.top + (1 - (v - yMin) / (yMax - yMin)) * plotH;
+
+  ctx.strokeStyle = colBorder;
+  ctx.fillStyle = colText;
+  for (const tick of niceTicks(yMin, yMax, 4)) {
+    ctx.beginPath();
+    ctx.moveTo(MARGIN.left, Y(tick));
+    ctx.lineTo(width - MARGIN.right, Y(tick));
+    ctx.stroke();
+    ctx.fillText(fmt(tick), 6, Y(tick) + 4);
+  }
+  for (const tick of niceTicks(0, xMax - xMin, 6)) {
+    const rel = Math.round(tick);
+    ctx.fillText(`+${Math.floor(rel / 60)}:${String(rel % 60).padStart(2, "0")}`, X(xMin + tick) - 12, height - 6);
+  }
+
+  ctx.strokeStyle = colMain;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = Math.max(0.25, Math.min(1, 4 / alive.length));
+  for (const s of alive) {
+    ctx.beginPath();
+    s.ts.forEach((t, i) => (i ? ctx.lineTo(X(t), Y(s.value[i])) : ctx.moveTo(X(t), Y(s.value[i]))));
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  canvas.onmousemove = (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    const my = ev.clientY - rect.top;
+    let best = null;
+    for (const s of alive) {
+      for (let i = 0; i < s.ts.length; i++) {
+        const d = (X(s.ts[i]) - mx) ** 2 + (Y(s.value[i]) - my) ** 2;
+        if (!best || d < best.d) best = { d, s, i };
+      }
+    }
+    if (!best || best.d > 30 ** 2) {
+      hideTooltip();
+      return;
+    }
+    showTooltip(ev.clientX, ev.clientY, `${best.s.label}\n+${fmt(best.s.ts[best.i] - xMin)}s = ${fmt(best.s.value[best.i])}`);
+  };
+  canvas.onmouseleave = hideTooltip;
+}

@@ -34,7 +34,9 @@ def test_meta(client):
     assert meta["run_name"] == "dummy-run"
     assert meta["rollout_ids"] == {"train": [0, 1], "eval": [0]}
     assert "rollout/rewards_mean" in meta["metric_keys"]
-    assert "dump/reward_mean" in meta["metric_keys"]
+    # telemetry present: the catalog stays wandb-shaped, dump aggregates
+    # are not advertised (they remain servable on explicit request)
+    assert "dump/reward_mean" not in meta["metric_keys"]
     assert meta["step_keys"] == ["rollout/step", "train/step"]
     assert meta["capabilities"]["has_metrics"] is True
     assert meta["capabilities"]["has_tokenizer"] is True
@@ -124,6 +126,28 @@ def test_static_index(client):
     response = client.get("/")
     assert response.status_code == 200
     assert "miles dashboard" in response.text
+
+
+def test_dump_keys_advertised_only_without_telemetry(tmp_path):
+    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+
+    dump_dummy_run(tmp_path)  # dumps only: no dashboard/ telemetry at all
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+    meta = client.get("/api/meta").json()
+    assert meta["capabilities"]["has_metrics"] is False
+    assert "dump/reward_mean" in meta["metric_keys"]
+
+
+def test_engine_metric_catalog(tmp_path):
+    from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
+
+    dump_dummy_telemetry(tmp_path)
+    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+
+    dump_dummy_run(tmp_path)
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+    meta = client.get("/api/meta").json()
+    assert "sglang_num_running_reqs" in meta["engine_metric_keys"]
 
 
 def test_make_demo_dir(tmp_path):

@@ -892,6 +892,10 @@ class MetricStore:
             )
         return out
 
+    def engine_metric_names(self) -> list[str]:
+        """Distinct scraped engine metrics — the L0 sglang category catalog."""
+        return sorted(self._readers[Stream.ENGINE_SERIES].window(None, None).get_column("metric").unique())
+
     def engine_series(
         self, metric: str, *, t0: float | None = None, t1: float | None = None, max_points: int = 2000
     ) -> list[dict]:
