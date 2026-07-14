@@ -73,9 +73,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # Hard wall-clock cap (seconds) per episode. An episode that does not return
     # within the limit is terminated and scored reward 0, bounding long-trajectory
     # stragglers that would otherwise stall the whole rollout batch.
-    openenv_max_rollout_time_seconds: int = int(
-        os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600")
-    )
+    openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
     # When set, miles dumps full per-episode agent trajectories (tokens, logprobs,
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
@@ -188,9 +186,7 @@ def execute(args: ScriptArgs):
         f"{dump_args}"
     )
 
-    extra_env_vars = C.base_env_vars(
-        args, str(SCRIPT_DIR), args.megatron_path, U.repo_base_dir
-    )
+    extra_env_vars = C.base_env_vars(args, str(SCRIPT_DIR), args.megatron_path, U.repo_base_dir)
     C.apply_optional_env_vars(extra_env_vars, args)
 
     U.execute_train(

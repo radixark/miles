@@ -110,6 +110,7 @@ def _parse_reward_marker(output: str) -> float:
                 return 0.0
     return 0.0
 
+
 # Per-message WS recv timeout. Docker-mode tbench2 reset (container create),
 # exec, and evaluate (pytest) each routinely exceed the EnvClient default of 60s.
 _MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "600"))
@@ -254,9 +255,7 @@ async def _multi_turn(
                 break
 
             t0 = time.monotonic()
-            step_result = await env.step(
-                action_cls(action_type="exec", command=_apply_workdir(command))
-            )
+            step_result = await env.step(action_cls(action_type="exec", command=_apply_workdir(command)))
             tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
             # Feed the command output back as a user turn, not a tool turn. GLM
@@ -272,9 +271,7 @@ async def _multi_turn(
             convo.append({"role": "user", "content": content})
 
         t0 = time.monotonic()
-        eval_result = await env.step(
-            action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD)
-        )
+        eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
         eval_time = time.monotonic() - t0
         reward = _parse_reward_marker(_obs_field(eval_result, "output"))
 
@@ -306,9 +303,7 @@ async def _multi_turn(
 
         return reward, turns, gen_times, tool_times, reset_time, eval_time
 
-    reward, turns, gen_times, tool_times, reset_time, eval_time = await _with_env(
-        classes["env"], env_url, body
-    )
+    reward, turns, gen_times, tool_times, reset_time, eval_time = await _with_env(classes["env"], env_url, body)
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -351,16 +346,11 @@ async def run(
         # is interrupted and the env session is closed by _with_env's async-with
         # during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
-            _multi_turn(
-                classes, env_url, policy, model_name, messages, request_kwargs, metadata
-            ),
+            _multi_turn(classes, env_url, policy, model_name, messages, request_kwargs, metadata),
             timeout=_MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
-        logger.warning(
-            f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; "
-            "terminating with reward 0"
-        )
+        logger.warning(f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
         # eval_report empty: the episode was cancelled before the canonical
         # eval ever ran, so there is no pytest report to surface.
         return {
