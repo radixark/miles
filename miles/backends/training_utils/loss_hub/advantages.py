@@ -140,7 +140,7 @@ def normalize_advantages(
         assert (
             all_advs.size() == all_masks.size()
         ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-        dp_group = parallel_state.intra_dp.group
+        dp_group = parallel_state.effective_dp.group
 
         whitened_advs_flat = distributed_masked_whiten(
             all_advs,

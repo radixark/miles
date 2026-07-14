@@ -27,14 +27,17 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | `resolve-ci-image`, `stage-a-cpu` |
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | `resolve-ci-image`, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 2 | `resolve-ci-image`, `stage-a-cpu` |
+| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 2 | `resolve-ci-image`, `stage-a-cpu` |
 
 `tier a` (CPU fast) gates the GPU fleet after `resolve-ci-image`; the GPU stages (`b` / `c`) all depend on `resolve-ci-image` and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline.
 
 ## What each stage does
 
-**Image resolution (`resolve-ci-image`).** Before the GPU stages, a small `ubuntu-latest` job resolves the container image: it reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. Every GPU stage uses this as its `container_image`. Distinct from this, the **`run-ci-image` label** (alongside `run-ci-all`, any `workflow_dispatch`, and the nightly `schedule` run on `main`) makes each stage add `--match-all-labels`, running the full suite regardless of per-test labels — this is how you validate a PR that bumps the image.
+**Image resolution (`resolve-ci-image`).** Before the GPU stages, a small `ubuntu-latest` job resolves the container image: it reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. Every GPU stage uses this as its `container_image`. Distinct from this, the **`run-ci-image` label** makes each stage add `--match-all-labels --exclude-labels ft-short ft-long`, running every enabled non-FT tag — this is how you validate a PR that bumps the image without scheduling FT tests.
 
-A **nightly** run is the full suite with fast-fail off, triggered either by the nightly `schedule` cron on `main` or by a PR carrying the `nightly` label. Concretely it adds `--match-all-labels` and turns off fast-fail like the `bypass-fastfail` label.
+A **nightly** run includes `ft-short` but excludes `ft-long`, with fast-fail off. It is triggered either by the nightly `schedule` cron on `main` or by a PR carrying the `nightly` label; concretely it adds `--match-all-labels --exclude-labels ft-long` and turns off fast-fail like the `bypass-fastfail` label.
+
+`run-ci-all` and a manual `workflow_dispatch` add `--match-all-labels` without exclusions, so every enabled tag is included. If scope labels overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`.
 
 **Dependencies / gating.** The job graph is `resolve-ci-image` → `stage-a-cpu` → all GPU stages (in parallel). GPU stages require `resolve-ci-image` to succeed; by default they also require `stage-a-cpu` to succeed, so a CPU-test failure short-circuits the expensive GPU fleet. The `bypass-fastfail` PR label relaxes only the `stage-a-cpu` failure gate and passes `--continue-on-error` to each stage; it does not bypass `resolve-ci-image`. `stage-b-cpu` has no dependency and runs alongside `stage-a-cpu`, outside the GPU gating path.
 

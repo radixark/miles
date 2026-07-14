@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from miles.utils.logging_utils import configure_logger
+from miles.utils.logging_utils import configure_logger_raw
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def _wrap_ipv6(host):
 
 def run_router(args):
     # Spawned as a fresh interpreter, so it inherits no logging config.
-    configure_logger()
+    configure_logger_raw("router")
     try:
         from sglang_router.launch_router import launch_router
 

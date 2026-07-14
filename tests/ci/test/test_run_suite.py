@@ -4,9 +4,8 @@ These cover the Python-side label pipeline:
 
 * `strip_run_ci_prefix`: empty input, prefix stripping, ignoring inputs
   without the `run-ci-` prefix (warning only).
-* `filter_tests`: the six scenarios around `--labels` and
-  `--match-all-labels` with the new "empty labels means always run"
-  semantic.
+* `filter_tests`: domain-label inclusion, match-all behavior, and broad-scope
+  exclusions with the "empty labels means always run" semantic.
 * `PER_COMMIT_SUITES`: locked to the new taxonomy including the
   always-run GPU bucket `stage-b-2-gpu-h200`.
 
@@ -79,6 +78,7 @@ class TestPerCommitSuites:
         assert PER_COMMIT_SUITES[HWBackend.CUDA] == [
             "stage-b-2-gpu-h200",
             "stage-c-8-gpu-h100",
+            "stage-c-8-gpu-h200",
             "stage-c-4-gpu-h200",
             "stage-c-2-gpu-h200",
         ]
@@ -291,6 +291,57 @@ class TestFilterTestsLabels:
             match_all_labels=True,
         )
         assert _names(enabled_with_labels) == _names(enabled_without_labels)
+
+
+# --- filter_tests: broad CI scope exclusions ---------------------------------
+
+
+@pytest.fixture
+def broad_scope_tests():
+    return [
+        _make("tests/e2e/always.py", labels=[]),
+        _make("tests/e2e/megatron.py", labels=["megatron"]),
+        _make("tests/e2e/ft/short.py", labels=["ft-short"]),
+        _make("tests/e2e/ft/long.py", labels=["ft-long", "long"]),
+    ]
+
+
+class TestFilterTestsBroadScopes:
+    def test_image_scope_excludes_all_ft_labels(self, broad_scope_tests):
+        enabled, _ = filter_tests(
+            broad_scope_tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            match_all_labels=True,
+            exclude_labels={"ft-short", "ft-long"},
+        )
+        assert _names(enabled) == {
+            "tests/e2e/always.py",
+            "tests/e2e/megatron.py",
+        }
+
+    def test_nightly_scope_includes_ft_short_and_excludes_ft_long(self, broad_scope_tests):
+        enabled, _ = filter_tests(
+            broad_scope_tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            match_all_labels=True,
+            exclude_labels={"ft-long"},
+        )
+        assert _names(enabled) == {
+            "tests/e2e/always.py",
+            "tests/e2e/megatron.py",
+            "tests/e2e/ft/short.py",
+        }
+
+    def test_all_scope_includes_every_label(self, broad_scope_tests):
+        enabled, _ = filter_tests(
+            broad_scope_tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            match_all_labels=True,
+        )
+        assert _names(enabled) == _names(broad_scope_tests)
 
 
 # --- filter_tests: hw/suite/nightly partitioning still works ----------------

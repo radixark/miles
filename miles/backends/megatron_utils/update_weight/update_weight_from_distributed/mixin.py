@@ -9,9 +9,10 @@ from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.timer import timer
 
-from ...lora_utils import LORA_ADAPTER_NAME, _is_adapter_param_name, build_lora_sync_config, is_lora_weight_name
+from ...lora_utils import _is_adapter_param_name, build_lora_sync_config, is_lora_weight_name
 from ...megatron_to_hf import convert_to_hf
 from ..common import (
     all_gather_param,
@@ -277,6 +278,12 @@ class DistBucketedWeightUpdateMixin:
         if dist.get_rank() == 0:
             end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+
+    def pop_metrics(self) -> dict[str, float]:
+        """Return and clear ``update_weight_metrics``. Drained by the actor onto the step log;
+        empty unless the updater recorded metrics during the last ``update_weights`` call."""
+        out = self.__dict__.pop("update_weight_metrics", {})
+        return out
 
     @torch.no_grad()
     def update_weights(self) -> None:

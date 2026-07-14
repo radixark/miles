@@ -11,10 +11,9 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.lora import is_lora_enabled
 
 logger = logging.getLogger(__name__)
-
-LORA_ADAPTER_NAME = "miles_lora"
 
 # ---------------------------------------------------------------------------
 # Unified HF <-> Megatron module name mappings
@@ -78,22 +77,20 @@ _MLA_HF_TO_MEGATRON = {
     "kv_a_proj_with_mqa": "linear_kv_down_proj",
     "q_b_proj": "linear_q_up_proj",
     "kv_b_proj": "linear_kv_up_proj",
+    # DSA indexer (GLM-5 / DeepSeek-V3.2): HF/SGLang leaf names vs Megatron-Bridge linear_* names.
+    "wq_b": "linear_wq_b",
+    "wk": "linear_wk",
+    "weights_proj": "linear_weights_proj",
 }
 _MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
 
-# SGLang default get_hidden_dim (lora/utils.py) handles fused_qkv_a_proj_with_mqa via q_a / kv_a mapping,
-# but not separate q_b_proj / kv_b_proj yet — omit from rollout adapter config to avoid init crashes.
-_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset({"q_b_proj", "kv_b_proj"})
+# Empty: dropping a module here makes sglang silently skip its shipped adapter tensors.
+_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 
 
 # ---------------------------------------------------------------------------
 # Core helpers
 # ---------------------------------------------------------------------------
-
-
-def is_lora_enabled(args: Namespace) -> bool:
-    """Check if LoRA is enabled based on arguments."""
-    return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
 
 
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
@@ -255,7 +252,7 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
 
 
 def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
-    """HF target_modules for SGLang LoRA init/sync, with MLA q_b/kv_b dropped (unsupported)."""
+    """HF target_modules for SGLang LoRA init/sync (minus _SGLANG_UNSUPPORTED_HF_TARGETS, currently empty)."""
     raw = list(args.target_modules) if args.target_modules else []
     hf = convert_target_modules_to_hf(raw)
     out = [m for m in hf if m not in _SGLANG_UNSUPPORTED_HF_TARGETS]
@@ -315,9 +312,9 @@ def create_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
-    # Opt-in to SGLang PR #21466's shared-outer grouped-expert LoRA. Only the
-    # standard ``LoRA`` class supports the flag today.
-    if lora_cls is LoRA and getattr(args, "experts_shared_outer_loras", False):
+    # shared-outer grouped-expert LoRA (SGLang PR #21466); per-expert is the default
+    if getattr(args, "experts_shared_outer_loras", False):
+        assert lora_cls is LoRA, "--experts-shared-outer-loras requires the standard LoRA adapter type"
         lora_kwargs["experts_shared_outer_loras"] = True
 
     lora = lora_cls(**lora_kwargs)
@@ -368,7 +365,7 @@ def save_lora_checkpoint(
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    is_dp_rank_0 = get_parallel_state().intra_dp.rank == 0
+    is_dp_rank_0 = get_parallel_state().effective_dp.rank == 0
     tp_rank = get_parallel_state().tp.rank
     pp_rank = get_parallel_state().pp.rank
 

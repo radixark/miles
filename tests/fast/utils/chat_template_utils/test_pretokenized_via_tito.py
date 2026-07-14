@@ -5,6 +5,7 @@ that omits the ``\\n`` insertion at the ``<|im_end|>`` boundary.
 """
 
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 from tests.ci.ci_register import register_cpu_ci
@@ -87,6 +88,46 @@ def test_via_tito_pass_on_registered_families(family, model_id, roles):
     failures = [r for r in results if not r.passed]
     assert not failures, (
         f"Expected all PASS for {family.value} × {sorted(roles)} via TITO primitive; "
+        f"got {len(failures)} FAIL(s) out of {len(results)}:\n"
+        + "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
+    )
+
+
+# ---------------------------------------------------------------------------
+# (1b) PASS on DeepSeek V4 (official-encoder family, local checkpoint only)
+# ---------------------------------------------------------------------------
+
+
+_DEEPSEEK_V4_MODEL = "/cluster-storage/models/deepseek-ai/DeepSeek-V4-Flash"
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [
+        pytest.param(frozenset({"tool"}), id="deepseekv4-tool"),
+        pytest.param(frozenset({"tool", "user"}), id="deepseekv4-tool_user"),
+    ],
+)
+def test_via_tito_pass_on_deepseek_v4(roles):
+    """DSv4's encoder folds contiguous tool/user turns into one ``<｜User｜>``
+    block and auto-appends the assistant opener after a user tail; the
+    subclass's real-history diff + opener strip must round-trip on both
+    registered surfaces (the ``{tool, user}`` cuts land mid-user-block).
+    """
+    if not Path(_DEEPSEEK_V4_MODEL).exists():
+        pytest.skip(f"DeepSeek V4 tokenizer not found: {_DEEPSEEK_V4_MODEL}")
+    tokenizer = AutoTokenizer.from_pretrained(_DEEPSEEK_V4_MODEL, trust_remote_code=True)
+    _fixed_path, extra_kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4, sorted(roles))
+    results = run_all_checks_via_tito(
+        tokenizer,
+        TITOTokenizerType.DEEPSEEKV4,
+        allowed_append_roles=set(roles),
+        thinking="both",
+        extra_template_kwargs=dict(extra_kwargs),
+    )
+    failures = [r for r in results if not r.passed]
+    assert not failures, (
+        f"Expected all PASS for deepseekv4 × {sorted(roles)} via TITO primitive; "
         f"got {len(failures)} FAIL(s) out of {len(results)}:\n"
         + "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
     )
