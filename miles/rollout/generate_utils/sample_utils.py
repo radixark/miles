@@ -111,9 +111,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert _startswith(short=a.tokens, long=b.tokens), "b.tokens must start with a.tokens"
         assert obs_len > 0, f"obs_len must be > 0, got {obs_len}"
         if a.rollout_routed_experts is not None:
-            assert (
-                b.rollout_routed_experts is not None
-            ), "cannot merge: a has rollout_routed_experts but b does not"
+            assert b.rollout_routed_experts is not None, "cannot merge: a has rollout_routed_experts but b does not"
             assert a.rollout_routed_experts.shape[0] <= b.rollout_routed_experts.shape[0]
         if a.rollout_indexer_topk is not None:
             assert b.rollout_indexer_topk is not None, "cannot merge: a has rollout_indexer_topk but b does not"
