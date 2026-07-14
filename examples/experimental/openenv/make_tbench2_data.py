@@ -1,6 +1,6 @@
 """Generate a prompt dataset for the OpenEnv Terminal-Bench-2 (tbench2) run.
 
-Unlike the coding/echo examples, the *tasks* are not hand-written: they are the
+The *tasks* are not hand-written: they are the
 Terminal-Bench-2 suite shipped in the laude-institute/terminal-bench-2 repo. The
 env serves the per-task instruction at reset(), so each prompt-data row only
 needs the system prompt (how the agent should behave) plus the ``task_id`` in

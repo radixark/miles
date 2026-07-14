@@ -1,8 +1,9 @@
-"""Reward function for the OpenEnv Phase-1 smoke run.
+"""Reward function for the OpenEnv Terminal-Bench-2 (tbench2) run.
 
-Task-agnostic: the agent function (``openenv_echo_agent_function.run``) stores the
-env-provided reward in ``sample.metadata["reward"]``; this just reads it back.
-Mirrors ``swe-agent-v2/generate.py:reward_func`` so it works for both the
+Task-agnostic: the agent function (``openenv_agent_function.run``) stores the
+env-computed binary pytest reward in ``sample.metadata["reward"]``; this just
+reads it back. Wired via ``--custom-rm-path openenv_generate.reward_func`` and
+mirrors ``swe-agent-v2/generate.py:reward_func`` so it works for both the
 single-sample (``async_rm``) and batched (``--custom-rm-path``) call paths.
 """
 

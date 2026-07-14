@@ -1,12 +1,12 @@
 """Shared launch helpers for the OpenEnv tbench2 learning launchers.
 
-``run-openenv-tbench2.py`` (GLM-4.7-Flash) and ``run-openenv-tbench2-dsv4.py``
-(DeepSeek-V4-Flash) drive the same agentic adapter and differ only in the
-model-family serving/training profile. The model-agnostic fragments (process
-cleanup, GRPO/optimizer/rollout/agent flags, W&B + Prometheus wiring, and the
-OpenEnv/Daytona env-var plumbing) live here so the two launchers cannot silently
-drift apart. Each launcher keeps only its own perf/sglang/misc profile and its
-``ScriptArgs`` defaults.
+``run-openenv-tbench2.py`` (GLM-4.7-Flash) is the launcher in this example;
+sibling per-model launchers (e.g. a DeepSeek-V4-Flash variant) reuse the same
+agentic adapter and differ only in the model-family serving/training profile.
+The model-agnostic fragments (process cleanup, GRPO/optimizer/rollout/agent
+flags, W&B + Prometheus wiring, and the OpenEnv/Daytona env-var plumbing) live
+here so those launchers cannot silently drift apart. Each launcher keeps only
+its own perf/sglang/misc profile and its ``ScriptArgs`` defaults.
 """
 
 import os
