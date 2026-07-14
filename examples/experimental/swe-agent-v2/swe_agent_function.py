@@ -20,6 +20,16 @@ from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_AGENT_TRIAL_TIMEOUT_S = 3600
+
+
+def _agent_trial_timeout_s() -> int:
+    """Per-trial wall-clock cap (seconds) for the agent-server call.
+
+    Override via env var AGENT_TRIAL_TIMEOUT (set by launchers).
+    """
+    return int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
+
 
 async def run(
     base_url: str,
@@ -71,13 +81,14 @@ async def run(
     if session_server_instance_id is not None:
         request["session_server_instance_id"] = session_server_instance_id
 
+    timeout_s = _agent_trial_timeout_s()
     try:
         response = await asyncio.wait_for(
             post(f"{agent_server_url}/run", request),
-            timeout=3600,  # 1 hour max per trial
+            timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.error("Agent server call timed out after 3600s")
+        logger.error(f"Agent server call timed out after {timeout_s}s")
         return None
     except asyncio.CancelledError:
         logger.warning("Agent server call cancelled (sibling task failure?)")
