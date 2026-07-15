@@ -237,7 +237,7 @@ jobs:
         env:
           UV_SYSTEM_PYTHON: "1"
         run: |
-          uv pip install -r requirements.txt -r requirements-ci-cpu.txt
+          uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
           python tests/ci/verify_source_resolution.py
 
       - name: Resolve suite plan
