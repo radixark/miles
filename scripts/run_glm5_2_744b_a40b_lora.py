@@ -252,8 +252,7 @@ def _train(args: ScriptArgs):
 
     if _is_full:
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
-        # fits engine=min(8, ngpu) on one node. Big-engine fp8 profile is full-model only:
-        # the toy at ep8/dp8 shows a large rollout<->train deviation (abs_diff 2.19 vs 0.27).
+        # fits engine=min(8, ngpu) on one node
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
         _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
@@ -315,8 +314,6 @@ def _train(args: ScriptArgs):
             "INDEXER_ROPE_NEOX_STYLE": "0",
             "SGLANG_NSA_FORCE_MLA": "1",
             # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True breaks torch_memory_saver
-            # No SGLANG_SHARED_EXPERT_TP1: it double-counts shared experts under dp-attention/EP;
-            # the fp8 LoRA-init crash it papered over is fixed in sglang lora/mem_pool.py.
         },
         megatron_path=args.megatron_path,
     )
