@@ -5,7 +5,7 @@ from miles.ray.placement_group import create_placement_groups, create_rollout_ma
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.data_transfer import cleanup_mooncake_rollout_refs
+from miles.utils.data_transfer import cleanup_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.control_server.server import start_control_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -78,8 +78,7 @@ async def train(args):
             else:
                 await actor_model.train(rollout_id, rollout_data_curr_ref)
         finally:
-            if getattr(args, "transfer_backend", "ray") == "mooncake":
-                cleanup_mooncake_rollout_refs(args, rollout_data_curr_ref)
+            cleanup_rollout_data_refs(args, rollout_data_curr_ref)
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             await actor_model.save_model(

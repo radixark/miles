@@ -10,7 +10,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.data_transfer import check_mooncake_available
+from miles.utils.data_transfer import ROLLOUT_DATA_TRANSPORT_CHOICES, validate_rollout_data_transport
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
@@ -434,11 +434,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--transfer-backend",
+                "--rollout-data-transport",
                 type=str,
-                choices=["ray", "mooncake"],
-                default="ray",
-                help="Backend used for rollout data put/get transfer.",
+                choices=ROLLOUT_DATA_TRANSPORT_CHOICES,
+                default="object-store",
+                help="Transport for rollout data refs sent from rollout manager to trainer.",
             )
             parser.add_argument(
                 "--mooncake-store-init-kwargs",
@@ -2184,8 +2184,7 @@ def parse_args(add_custom_arguments=None):
 
     miles_validate_args(args)
 
-    if getattr(args, "transfer_backend", "ray") == "mooncake":
-        check_mooncake_available()
+    validate_rollout_data_transport(args)
 
     if backend == "megatron":
         megatron_validate_args(args)

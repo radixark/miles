@@ -1,18 +1,11 @@
 from typing import Any
 
-import ray
 import torch
 
-from miles.utils.data_transfer import check_mooncake_available, put_mooncake_rollout_data
+from miles.utils.data_transfer import put_rollout_data_ref
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import Sample
-
-try:
-    from mooncake.structured_object_store import FieldSchema
-except ImportError:
-    FieldSchema = None
-
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
@@ -159,28 +152,24 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
 def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
     rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
-    if getattr(args, "transfer_backend", "ray") == "mooncake":
-        return [
-            put_mooncake_rollout_data(
-                args,
-                rollout_data,
-                partition=f"dp{i}",
-                field_schemas=_rollout_field_schemas_for_data(rollout_data),
-            )
-            for i, rollout_data in enumerate(rollout_data_list)
-        ]
-    return [Box(ray.put(rollout_data)) for rollout_data in rollout_data_list]
+    return [
+        put_rollout_data_ref(
+            args,
+            rollout_data,
+            partition=f"dp{i}",
+            field_schema_specs=ROLLOUT_DATA_FIELD_SCHEMA_SPECS,
+        )
+        for i, rollout_data in enumerate(rollout_data_list)
+    ]
 
 
 def put_unsplit_train_data(args, data: dict[str, Any], *, rollout_id: int) -> Box:
-    if getattr(args, "transfer_backend", "ray") == "mooncake":
-        return put_mooncake_rollout_data(
-            args,
-            data,
-            partition=f"rollout-{rollout_id}",
-            field_schemas=_rollout_field_schemas_for_data(data),
-        )
-    return Box(ray.put(data))
+    return put_rollout_data_ref(
+        args,
+        data,
+        partition=f"rollout-{rollout_id}",
+        field_schema_specs=ROLLOUT_DATA_FIELD_SCHEMA_SPECS,
+    )
 
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
@@ -232,20 +221,3 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
             rollout_data[key] = data[key]
         ans.append(rollout_data)
     return ans
-
-
-def _rollout_field_schemas_for_data(data):
-    if FieldSchema is None:
-        check_mooncake_available()
-        raise ImportError("transfer_backend=mooncake requires mooncake.structured_object_store.FieldSchema")
-
-    schemas = {}
-    for field, spec in ROLLOUT_DATA_FIELD_SCHEMA_SPECS.items():
-        if field not in data:
-            continue
-        codec, dtype, section = (*spec, "non_tensor_batch")[:3]
-        metadata = {"section": section}
-        if dtype:
-            metadata["dtype"] = dtype
-        schemas[field] = FieldSchema(codec=codec, nullable=False, metadata=metadata)
-    return schemas

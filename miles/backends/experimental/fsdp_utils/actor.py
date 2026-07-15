@@ -12,7 +12,7 @@ from tqdm import tqdm
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
-from miles.utils.data_transfer import release_mooncake_rollout_data
+from miles.utils.data_transfer import release_rollout_data
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
@@ -439,13 +439,11 @@ class FSDPTrainRayActor(TrainRayActor):
         with inverse_timer("train_wait"), timer("train"):
             rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             if self.args.debug_rollout_only:
-                if getattr(self.args, "transfer_backend", "ray") == "mooncake":
-                    release_mooncake_rollout_data(self.args, rollout_data)
+                release_rollout_data(self.args, rollout_data)
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
-        if getattr(self.args, "transfer_backend", "ray") == "mooncake":
-            release_mooncake_rollout_data(self.args, rollout_data)
+        release_rollout_data(self.args, rollout_data)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,

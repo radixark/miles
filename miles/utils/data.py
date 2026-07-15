@@ -9,7 +9,7 @@ import numpy as np
 import ray
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
-from miles.utils.data_transfer import get_mooncake_rollout_data
+from miles.utils.data_transfer import get_rollout_data_ref
 from .audit_utils.witness.allocator import WitnessInfo
 
 try:
@@ -283,10 +283,7 @@ def process_rollout_data(
     dp_size,
     witness_info: WitnessInfo | None,
 ):
-    if getattr(args, "transfer_backend", "ray") == "mooncake":
-        get_rollout_ref = lambda ref: get_mooncake_rollout_data(args, ref)
-    else:
-        get_rollout_ref = lambda ref: ray.get(ref.inner)
+    get_rollout_ref = lambda ref: get_rollout_data_ref(args, ref)
 
     if args.delay_split_train_data_by_dp:
         raw = get_rollout_ref(rollout_data_ref)
