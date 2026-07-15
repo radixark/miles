@@ -6,7 +6,7 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.ft.conftest_ft.scenario_ft_random import run_ci
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h200", labels=["ft-long"])
+register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["ft-long"])
 
 _MODE: str = "dp2_cp2_tp2_ep2"
 

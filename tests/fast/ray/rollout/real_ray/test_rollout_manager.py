@@ -561,32 +561,6 @@ class TestEval:
         assert isinstance(captured[0], RolloutFnEvalInput)
         assert captured[0].rollout_id == 10
 
-    async def test_reports_stop_after_metric_success(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-        monkeypatch,
-    ):
-        import miles.ray.rollout.rollout_manager as rmgr
-
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        args.ci_test = True
-        args.ci_metric_checker_key = "eval/gsm8k"
-        args.ci_metric_checker_threshold = 0.55
-        args.ci_metric_checker_stop_on_success = True
-        pg = placement_group_factory(2)
-
-        manager = _make_manager(args, pg)
-        manager.eval_generate_rollout = lambda input: RolloutFnEvalOutput(
-            data={"gsm8k": {"rewards": [1.0]}},
-            metrics={},
-        )
-        monkeypatch.setattr(rmgr, "log_eval_rollout_data", lambda *a, **kw: {"eval/gsm8k": 0.56})
-
-        assert await manager.eval(rollout_id=10) is True
-
     async def test_skipped_in_debug_train_only_mode(
         self,
         ray_local_mode,

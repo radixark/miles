@@ -107,9 +107,6 @@ def make_args(**overrides: Any) -> Namespace:
         save=None,
         # CI
         ci_test=False,
-        ci_metric_checker_key=None,
-        ci_metric_checker_threshold=None,
-        ci_metric_checker_stop_on_success=False,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
         dumper_inference=False,

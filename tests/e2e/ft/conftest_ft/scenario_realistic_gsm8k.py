@@ -156,7 +156,6 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         "--ci-disable-kl-checker "
         "--ci-metric-checker-key eval/gsm8k "
         f"--ci-metric-checker-threshold {metric_threshold} "
-        "--ci-metric-checker-stop-on-success "
     )
 
     misc_args = (

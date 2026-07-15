@@ -14,7 +14,7 @@ class MetricChecker:
         self.args = args
         self._exists_check_success = False
 
-    def on_eval(self, metrics: dict[str, float]) -> bool:
+    def on_eval(self, metrics: dict[str, float]):
         actual_value = metrics.get(self.args.ci_metric_checker_key)
         assert actual_value is not None, f"{metrics=} {self.args.ci_metric_checker_key=}"
 
@@ -22,7 +22,6 @@ class MetricChecker:
         logger.info(f"[MetricChecker] {check_success=} {actual_value=} {self.args.ci_metric_checker_threshold=}")
 
         self._exists_check_success |= check_success
-        return self._exists_check_success
 
     def dispose(self):
         assert self._exists_check_success, "[MetricChecker] accuracy check failed"

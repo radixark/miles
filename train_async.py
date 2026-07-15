@@ -53,10 +53,7 @@ async def train(args):
         )
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
-        if await rollout_manager.eval.remote(0):
-            logger.info("CI metric threshold reached at rollout_id=0; stopping training")
-            await rollout_manager.dispose.remote()
-            return
+        await rollout_manager.eval.remote(0)
 
     # async train loop.
     rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
@@ -96,9 +93,7 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
-            if await rollout_manager.eval.remote(rollout_id):
-                logger.info("CI metric threshold reached at rollout_id=%d; stopping training", rollout_id)
-                break
+            await rollout_manager.eval.remote(rollout_id)
 
         if (
             args.debug_exit_after_rollout is not None
