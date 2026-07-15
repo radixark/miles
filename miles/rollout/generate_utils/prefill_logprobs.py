@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
@@ -37,7 +37,7 @@ def _build_prefill_scoring_payload(
         "logprob_start_len": prompt_len - 1,
     }
 
-    if is_lora_enabled(args):
+    if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):

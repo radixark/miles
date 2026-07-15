@@ -118,6 +118,38 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Example: --offload-rollout-level kv_cache weight"
                 ),
             )
+            parser.add_argument(
+                "--offload-train-target",
+                type=str,
+                choices=["cpu", "disk"],
+                default="cpu",
+                help=(
+                    "Where the training actor is backed up while offloaded during rollout "
+                    "(only used with --offload-train on the megatron backend). "
+                    "'cpu' (default) keeps a pinned host copy; 'disk' streams it to node-local "
+                    "NVMe (--offload-train-disk-dir) for the case where even CPU RAM cannot hold it."
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-disk-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Node-local directory for train disk-offload files when "
+                    "--offload-train-target=disk. Should be fast local NVMe (e.g. /scratch). "
+                    "Files are per-process and overwritten in place every step (bounded size); "
+                    "defaults to $SCRATCH/miles_train_offload."
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-disk-chunk-mb",
+                type=int,
+                default=256,
+                help=(
+                    "Chunk size (MiB) for streaming the training actor GPU<->disk in disk-offload "
+                    "mode. Bounds the pinned host staging buffer regardless of the total offloaded size."
+                ),
+            )
 
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
@@ -1179,6 +1211,47 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_inkling_arguments(parser):
+            """Inkling plugin knobs (formerly environment switches).
+
+            Defaults are the production-validated recipe; recipe scripts under
+            the launch scripts spell out every value explicitly.
+            """
+            parser.add_argument(
+                "--inkling-attn-backend",
+                choices=["flex", "te", "fa4"],
+                default="flex",
+                help="Training-side attention kernel for Inkling: flex (default; block-sparse FlexAttention, fastest fwd+bwd and lowest memory), te (TE-DPA reference), fa4 (serving-bit-identical fa4 fwd + TE-recompute bwd).",
+            )
+            parser.add_argument(
+                "--inkling-sconv-impl",
+                choices=["triton", "torch"],
+                default="triton",
+                help="Short-conv implementation on the training side (triton fwd is bit-identical to serving).",
+            )
+            parser.add_argument(
+                "--inkling-sconv-packed",
+                action="store_true",
+                help="Run packed sequences as one full-length sconv with exact boundary re-compute.",
+            )
+            parser.add_argument(
+                "--inkling-freeze-global-scale",
+                choices=["all", "router", "none"],
+                default="all",
+                help="Freeze per-layer global_scale params (router = MoE gate only).",
+            )
+            parser.add_argument(
+                "--inkling-mm-towers",
+                action="store_true",
+                help="Enable Inkling multimodal: HF-loaded frozen vision/audio towers + the Inkling train processor.",
+            )
+            parser.add_argument(
+                "--inkling-train-mm-towers",
+                action="store_true",
+                help="Train the multimodal towers instead of freezing them (weight-sync/ckpt not wired yet).",
+            )
+            return parser
+
         def add_lora_arguments(parser):
             """Add LoRA-related arguments for Megatron backend."""
             parser.add_argument(
@@ -1239,6 +1312,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
                     "onload/offload. Ignored unless --colocate and LoRA are both on."
+                ),
+            )
+            parser.add_argument(
+                "--lora-train-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
+                    "base policy: SGLang LoRA serving and adapter weight sync are disabled "
+                    "(only the base weights are synced). For models without SGLang LoRA "
+                    "support (e.g. Inkling native LoRA)."
+                ),
+            )
+            parser.add_argument(
+                "--check-lora-weight-equal",
+                action="store_true",
+                default=False,
+                help=(
+                    "Verify the megatron->sglang LoRA adapter weight-sync: on every sync the "
+                    "trainer ships a per-tensor sha256 manifest of the adapter it sends, and "
+                    "each rollout engine hashes the tensors it received and asserts they match "
+                    "(raising on any mismatch/missing name). The LoRA analogue of "
+                    "--check-weight-update-equal, which only covers base weights."
                 ),
             )
             parser.add_argument(
@@ -1882,6 +1978,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_algo_arguments(parser)
         parser = add_on_policy_distillation_arguments(parser)
         parser = add_lora_arguments(parser)
+        parser = add_inkling_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
@@ -2222,10 +2319,10 @@ def miles_validate_args(args):
 
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
-        if args.experts_shared_outer_loras:
+        if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
             args.sglang_experts_shared_outer_loras = True
         assert args.experts_shared_outer_loras == bool(
-            args.sglang_experts_shared_outer_loras
+            getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
@@ -2321,9 +2418,9 @@ def miles_validate_args(args):
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
-        if args.sglang_enforce_piecewise_cuda_graph:
+        if getattr(args, "sglang_enforce_piecewise_cuda_graph", False):
             logger.warning("Warning: colocate mode with --sglang-enforce-piecewise-cuda-graph may trigger NVLS OOM.")
-        if not args.sglang_disable_piecewise_cuda_graph:
+        if hasattr(args, "sglang_disable_piecewise_cuda_graph") and not args.sglang_disable_piecewise_cuda_graph:
             args.sglang_disable_piecewise_cuda_graph = True
             logger.info(
                 "Colocate mode: defaulting --sglang-disable-piecewise-cuda-graph to avoid NVLS OOM. "
@@ -2346,6 +2443,23 @@ def miles_validate_args(args):
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+
+    if args.offload_train_target == "disk":
+        assert args.offload_train, "--offload-train-target=disk requires --offload-train"
+        assert (
+            args.train_backend == "megatron"
+        ), "--offload-train-target=disk is only supported on the megatron backend"
+        assert args.enable_weights_backuper, (
+            "--offload-train-target=disk requires the weights backuper (do not pass "
+            "--disable-weights-backuper): disk-offloaded weights are read from GPU after resume, "
+            "not from a CPU backup."
+        )
+        if args.offload_train_disk_dir is None:
+            args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), "miles_train_offload")
+        logger.info(
+            f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
+            f"chunk={args.offload_train_disk_chunk_mb}MB"
+        )
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path

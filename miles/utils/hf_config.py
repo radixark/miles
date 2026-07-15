@@ -81,6 +81,12 @@ def register_hf_config_aliases() -> None:
             auto_cls.register(compat_config, compat_model_cls, exist_ok=alias.override_hf_native)
         _REGISTERED_ALIASES.add(alias.model_type)
 
+    # Importing self-registers Inkling configs into transformers CONFIG_MAPPING.
+    try:
+        import sglang.srt.configs.inkling  # noqa: F401
+    except ImportError:
+        pass
+
 
 def load_hf_config(
     checkpoint_path: str,

@@ -1,4 +1,7 @@
+import atexit
+import glob
 import logging
+import os
 import random
 import socket
 from argparse import Namespace
@@ -34,7 +37,7 @@ from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
 from .initialize import init, is_megatron_main_rank
-from .lora_utils import is_lora_enabled
+from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
@@ -49,6 +52,35 @@ if TYPE_CHECKING:
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _setup_disk_offload_reclaim(disk_dir: str) -> None:
+    """Reclaim train disk-offload files for --offload-train-target=disk.
+
+    torch_memory_saver unlinks each backup file when its allocation is freed on a
+    graceful teardown, but a SIGKILL'd run can leave stale files behind. So on
+    startup we wipe any leftover ``tms_*.bin`` from previous runs (bounded,
+    node-local /scratch), and register an atexit hook to remove this process's
+    own files on a clean exit.
+    """
+    if not disk_dir:
+        return
+    os.makedirs(disk_dir, exist_ok=True)
+    for f in glob.glob(os.path.join(disk_dir, "tms_*.bin")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    def _reclaim(pid: int = os.getpid(), d: str = disk_dir) -> None:
+        for f in glob.glob(os.path.join(d, f"tms_{pid}_*.bin")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    atexit.register(_reclaim)
+    logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -106,6 +138,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 # --train-memory-margin-bytes can tune this
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
+            if args.offload_train_target == "disk":
+                _setup_disk_offload_reclaim(args.offload_train_disk_dir)
 
         if self.args.debug_rollout_only:
             return 0
@@ -185,7 +219,7 @@ class MegatronTrainRayActor(TrainRayActor):
             weights_getter=lambda: self.weights_backuper.get("actor"),
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
-            is_lora=is_lora_enabled(args),
+            is_lora=lora_rollout_enabled(args),
         )
 
         # empty cache after initialization
@@ -215,7 +249,7 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before offload model")
         destroy_process_groups()
 
-        tag = "default" if is_lora_enabled(self.args) else None
+        tag = "default" if lora_rollout_enabled(self.args) else None
         torch_memory_saver.pause(tag=tag)
 
         print_memory("after offload model")
@@ -228,7 +262,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.offload_train
         print_memory("before wake_up model")
 
-        tag = "default" if is_lora_enabled(self.args) else None
+        tag = "default" if lora_rollout_enabled(self.args) else None
         torch_memory_saver.resume(tag=tag)
 
         clear_memory()

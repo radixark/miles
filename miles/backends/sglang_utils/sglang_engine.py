@@ -16,8 +16,9 @@ from urllib3.exceptions import NewConnectionError
 from miles.backends.megatron_utils.lora_utils import (
     LORA_ADAPTER_NAME,
     convert_target_modules_to_hf,
-    is_lora_enabled,
     lora_base_cpu_backup_enabled,
+    lora_rollout_enabled,
+    sglang_lora_target_all_sentinel,
 )
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
@@ -166,7 +167,6 @@ class SGLangEngine(RayActor):
         host = _format_v6_uri(host)
         ip_part, port_part = dist_init_addr.rsplit(":", 1)
         dist_init_addr = f"{_format_v6_uri(ip_part)}:{port_part}"
-
         server_args_dict, external_engine_need_check_fields = _compute_server_args(
             self.args,
             self.rank,
@@ -341,22 +341,31 @@ class SGLangEngine(RayActor):
         self,
         lora_name: str,
         config_dict: dict,
-        serialized_named_tensors: list,
+        serialized_tensors: str | None = None,
+        serialized_named_tensors: list | None = None,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        expected_checksums: dict | None = None,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a LoRA adapter via per-rank ``serialized_named_tensors`` or full ``serialized_tensors`` (exactly one)."""
+        if (serialized_tensors is None) == (serialized_named_tensors is None):
+            raise ValueError("pass exactly one of serialized_tensors / serialized_named_tensors")
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
-            "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
+        if serialized_tensors is not None:
+            payload["serialized_tensors"] = serialized_tensors
+        else:
+            payload["serialized_named_tensors"] = serialized_named_tensors
         if load_format is not None:
             payload["load_format"] = load_format
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
+        if expected_checksums is not None:
+            payload["expected_checksums"] = expected_checksums
 
         return self._make_request(
             "load_lora_adapter_from_tensors",
@@ -563,11 +572,21 @@ class SGLangEngine(RayActor):
 
     def begin_weight_update(self):
         """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._make_request("begin_weight_update", {})
+        return self._weight_update_session_request("begin_weight_update")
 
     def end_weight_update(self):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
-        return self._make_request("end_weight_update", {})
+        return self._weight_update_session_request("end_weight_update")
+
+    def _weight_update_session_request(self, endpoint: str):
+        """Call a packed-weight session endpoint; 404 (dev-lineage sglang) is treated as success."""
+        try:
+            return self._make_request(endpoint, {})
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                logger.warning(f"{endpoint} endpoint absent (dev-lineage sglang); skipping")
+                return {"success": True, "message": f"{endpoint} absent; skipped"}
+            raise
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(
@@ -668,6 +687,12 @@ def _compute_server_args(
         "enable_metrics": True,
     }
 
+    import os as _os
+
+    if _os.environ.get("MILES_SGLANG_DUMMY_LOAD") == "1":
+        # RL fast-init: dummy weights; the pre-rollout megatron->sglang sync provides the real weights.
+        kwargs["load_format"] = "dummy"
+
     if sglang_overrides:
         kwargs.update(sglang_overrides)
 
@@ -692,14 +717,20 @@ def _compute_server_args(
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
-    if is_lora_enabled(args):
+    if lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+        if sglang_lora_target_all_sentinel(args):
+            kwargs["lora_target_modules"] = ["all"]
+        else:
+            kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
-        if args.lora_adapter_path is not None:
+        if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+        elif args.lora_adapter_path is not None:
+            # Dummy base: adapter arrives via weight-sync, so allocate LoRA buffers but don't set lora_paths.
+            logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 

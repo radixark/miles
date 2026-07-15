@@ -106,6 +106,33 @@ def _is_muon_optimizer(optimizer: str | None) -> bool:
     return optimizer is not None and "muon" in optimizer.lower()
 
 
+def _wrap_provider_with_gs_freeze(provider_func, args):
+    """Optionally freeze Inkling router/dense ``global_scale`` params per --inkling-freeze-global-scale."""
+    mode = getattr(args, "inkling_freeze_global_scale", "all")
+    if mode == "none":
+        return provider_func
+
+    def wrapped(*a, **kw):
+        model = provider_func(*a, **kw)
+        n = 0
+        for name, p in model.named_parameters():
+            if name.rsplit(".", 1)[-1] != "global_scale":
+                continue
+            is_router = "router.global_scale" in name
+            if mode == "all" or (mode == "router" and is_router):
+                if p.requires_grad:
+                    p.requires_grad = False
+                    n += 1
+        if is_megatron_main_rank():
+            logger.info(
+                f"inkling-freeze-global-scale={mode}: froze {n} global_scale params "
+                f"(requires_grad=False; excluded from optimizer + grad norm)"
+            )
+        return model
+
+    return wrapped
+
+
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -130,7 +157,19 @@ def setup_model_and_optimizer(
     if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
         model = _setup_lora_model_via_bridge(args)
     else:
-        model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+        provider_func = get_model_provider_func(args, role)
+        if is_lora_enabled(args) and role == "actor":
+            # Native (non-bridge) LoRA: apply adapters inside the provider so DDP wraps an already-frozen base.
+            if "inkling" not in (getattr(args, "custom_model_provider_path", None) or ""):
+                raise NotImplementedError(
+                    "LoRA with --megatron-to-hf-mode raw is only implemented for the Inkling "
+                    "plugin (miles_plugins.models.inkling). Use bridge mode for other models."
+                )
+            from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
+
+            provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+        provider_func = _wrap_provider_with_gs_freeze(provider_func, args)
+        model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
         if is_megatron_main_rank():
@@ -149,6 +188,13 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        # Inkling's fused unequal-width qkvr breaks muon's split_qkv reshape; orthogonalize the whole matrix instead.
+        if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+            if is_megatron_main_rank():
+                logger.info(
+                    "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
+                )
+            config.muon_split_qkv = False
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
@@ -526,6 +572,11 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+    # Sum native-LoRA replicated-param partial grads over TP/EP before the DP reduce-scatter; no-op otherwise.
+    from .lora_utils import log_lora_grad_layer_norms, reduce_marked_lora_grads
+
+    reduce_marked_lora_grads(args[0])
+    log_lora_grad_layer_norms(args[0])
     return finalize_model_grads(*args, **kwargs)
 
 
@@ -831,13 +882,50 @@ def initialize_model_and_optimizer(
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
-    iteration, _ = load_checkpoint(
-        model,
-        optimizer,
-        opt_param_scheduler,
-        checkpointing_context={},
-        skip_load_to_model_and_opt=False,
-    )
+    # Skip load_checkpoint when --load has no real checkpoint, keeping the provider-initialized weights.
+    import os as _os
+    from pathlib import Path as _Path
+
+    def _has_real_ckpt(_p):
+        _p = _Path(_p) if _p else None
+        if not _p or not _p.exists():
+            return False
+        # recognise both iter_NNN/ and a 'release' checkpoint.
+        for _it in list(_p.glob("iter_*")) + list(_p.glob("release")):
+            if (_it / "common.pt").exists() or any(_it.glob("*.distcp")):
+                return True
+        return False
+
+    if _has_real_ckpt(args.load):
+        iteration, _ = load_checkpoint(
+            model,
+            optimizer,
+            opt_param_scheduler,
+            checkpointing_context={},
+            skip_load_to_model_and_opt=False,
+        )
+    else:
+        if int(_os.environ.get("RANK", "0")) == 0:
+            logger.warning(
+                "[inkling] no real checkpoint at args.load=%r; using model_provider-initialized weights", args.load
+            )
+        iteration = 0
+
+    # Native Inkling LoRA: load the HF-format adapter AFTER the base load (adapter params are outside the dist-ckpt).
+    if (
+        is_lora_enabled(args)
+        and role == "actor"
+        and args.megatron_to_hf_mode != "bridge"
+        and getattr(args, "lora_adapter_path", None)
+        and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+    ):
+        from pathlib import Path as _P
+
+        if (_P(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+            from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
+
+            load_inkling_lora_adapter(model, args.lora_adapter_path)
+
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 

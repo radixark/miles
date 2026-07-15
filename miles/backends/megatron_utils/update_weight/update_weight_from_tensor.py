@@ -1,4 +1,6 @@
 import logging
+import math
+import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -21,6 +23,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
 from .hf_weight_iterator_base import HfWeightIteratorBase
+
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
@@ -28,6 +31,47 @@ from .update_weight_from_distributed.broadcast import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _pp_assemble_full_adapter(
+    hf_named_tensors: list[tuple[str, torch.Tensor]],
+) -> list[tuple[str, torch.Tensor]]:
+    """Assemble the complete adapter on every PP rank (exporter gathers TP/EP but not PP)."""
+    pp_group = get_parallel_state().pp.group
+    pp_size = dist.get_world_size(group=pp_group)
+    if pp_size == 1:
+        return hf_named_tensors
+    pp_rank = dist.get_rank(group=pp_group)
+    global_ranks = dist.get_process_group_ranks(pp_group)
+    device = torch.cuda.current_device()
+
+    local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
+    all_meta: list = [None] * pp_size
+    dist.all_gather_object(all_meta, local_meta, group=pp_group)
+
+    local_by_name = {n: t for n, t in hf_named_tensors}
+    merged: dict[str, torch.Tensor] = {}
+    for src_pp, meta in enumerate(all_meta):
+        by_dtype: dict = {}
+        for n, shape, dtype in meta:
+            by_dtype.setdefault(dtype, []).append((n, shape))
+        for dtype, entries in by_dtype.items():
+            numel = sum(math.prod(shape) for _, shape in entries)
+            flat = torch.empty(numel, dtype=dtype, device=device)
+            if src_pp == pp_rank:
+                off = 0
+                for n, shape in entries:
+                    k = math.prod(shape)
+                    flat[off : off + k].copy_(local_by_name[n].reshape(-1))
+                    off += k
+            dist.broadcast(flat, src=global_ranks[src_pp], group=pp_group)
+            off = 0
+            for n, shape in entries:
+                k = math.prod(shape)
+                # tensors replicated across stages resolve to the last copy (identical by construction)
+                merged[n] = flat[off : off + k].view(shape)
+                off += k
+    return sorted(merged.items())
 
 
 class UpdateWeightFromTensor:
@@ -70,9 +114,10 @@ class UpdateWeightFromTensor:
             self._lora_loaded = False
             self._lora_base_synced = False
 
-        # Create IPC gather groups within megatron.
+        self._mm_tower_cache: list[tuple[str, torch.Tensor]] | None = None
+
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
-            end_rank = start_rank + self.args.rollout_num_gpus_per_engine
+            end_rank = min(start_rank + self.args.rollout_num_gpus_per_engine, dist.get_world_size())
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(ranks=group_ranks, backend="gloo")
             if dist.get_rank() in group_ranks:
@@ -181,12 +226,13 @@ class UpdateWeightFromTensor:
 
         rank = dist.get_rank()
 
-        # LoRA never mutates the base. With either path that retains it on the
-        # rollout side (distributed keeps it on GPU; colocate + cpu_backup keeps
-        # a host mirror across pause/resume), we can skip the base sync entirely
-        # and the surrounding restore_weights_before_load / post_process_quantization
-        # calls that would otherwise prep / re-quantize fresh base bytes.
-        skip_base_sync = self.is_lora and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+        # LoRA never mutates the base, so any path that retains it on the rollout side can skip the base sync.
+        colocate_base_persistent = getattr(self.args, "colocate", False) and not getattr(
+            self.args, "offload_rollout", True
+        )
+        skip_base_sync = self.is_lora and (
+            self.use_distribute or lora_base_cpu_backup_enabled(self.args) or colocate_base_persistent
+        )
 
         if rank == 0:
             mode = self.args.pause_generation_mode
@@ -207,6 +253,16 @@ class UpdateWeightFromTensor:
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
 
+            mm_tower_tensors = self._mm_tower_named_tensors()
+            if mm_tower_tensors is not None:
+                mm_tower_tensors = [
+                    (name, tensor.to(torch.cuda.current_device())) for name, tensor in mm_tower_tensors
+                ]
+                refs, long_lived_tensors = self._send_base_params(mm_tower_tensors)
+                results = ray.get(refs)
+                _check_weight_sync_results(results, is_lora=False)
+                del long_lived_tensors, mm_tower_tensors
+
         if self.is_lora:
             # SGLang's load_lora_adapter_from_tensors expects the full adapter in
             # one call; drain the bridge's chunker so --update-weight-buffer-size
@@ -224,10 +280,17 @@ class UpdateWeightFromTensor:
                     "the Megatron-Bridge or SGLang version is incompatible."
                 )
 
+            # Assemble the full adapter on every rank before serializing.
+            accumulated_named_tensors = _pp_assemble_full_adapter(accumulated_named_tensors)
+
             refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
             results = ray.get(refs)
             _check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
+            del accumulated_named_tensors
+            # Reclaim producer IPC storages now to avoid OOM on the next step.
+            torch.cuda.ipc_collect()
+            torch.cuda.empty_cache()
 
             if not self._lora_base_synced:
                 self._lora_base_synced = True
@@ -240,6 +303,49 @@ class UpdateWeightFromTensor:
                 end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
+
+    def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
+        """Frozen vision/audio tower tensors to append to every base sync (see
+        __init__ comment). Returns None when the run has no MM towers. EVERY
+        gather-group rank contributes the full tower set (read once from its local
+        HF checkpoint, the same bytes the engine loaded at boot): the colocated
+        send requires homogeneous per-rank bucket counts (num_dtypes is taken from
+        rank 0 and indexed into every rank's list), so a src-only contribution
+        breaks assembly. The duplicates are ~15MB/rank and load idempotently."""
+        if not getattr(self.args, "inkling_mm_towers", False):
+            return None
+        if self._mm_tower_cache is None:
+            if self._ipc_gather_group is not None:
+                import json
+
+                from safetensors import safe_open
+
+                ckpt_dir = self.args.hf_checkpoint
+                with open(os.path.join(ckpt_dir, "model.safetensors.index.json"), encoding="utf-8") as f:
+                    weight_map = json.load(f)["weight_map"]
+                tower_keys = sorted(
+                    k
+                    for k in weight_map
+                    if ".visual." in f".{k}" or ".audio." in f".{k}" or k.startswith(("visual.", "audio."))
+                )
+                by_shard: dict[str, list[str]] = {}
+                for k in tower_keys:
+                    by_shard.setdefault(weight_map[k], []).append(k)
+                cache = []
+                for shard, keys in by_shard.items():
+                    with safe_open(os.path.join(ckpt_dir, shard), framework="pt", device="cpu") as f:
+                        for k in keys:
+                            cache.append((k, f.get_tensor(k)))
+                logger.info(
+                    "mm tower sync: caching %d tower tensors from %s: %s",
+                    len(cache),
+                    ckpt_dir,
+                    [k for k, _ in cache],
+                )
+                self._mm_tower_cache = cache
+            else:
+                self._mm_tower_cache = []
+        return self._mm_tower_cache
 
     def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
@@ -269,18 +375,20 @@ class UpdateWeightFromTensor:
             )
         if self.use_distribute and self._is_distributed_src_rank:
             raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
-        else:
-            refs, long_lived_tensors = _send_to_colocated_engine(
-                hf_named_tensors=hf_named_tensors,
-                ipc_engine=self._ipc_engine,
-                ipc_gather_src=self._ipc_gather_src,
-                ipc_gather_group=self._ipc_gather_group,
-                lora_config=self._lora_config,
-                lora_name=LORA_ADAPTER_NAME,
-                lora_loaded=self._lora_loaded,
-            )
-            self._lora_loaded = True
-            return refs or [], long_lived_tensors
+
+        # Adapter-only sync: the full unsharded adapter goes to the engine, which shards it per TP rank internally.
+        refs, long_lived_tensors = _send_to_colocated_engine(
+            hf_named_tensors=hf_named_tensors,
+            ipc_engine=self._ipc_engine,
+            ipc_gather_src=self._ipc_gather_src,
+            ipc_gather_group=self._ipc_gather_group,
+            lora_config=self._lora_config,
+            lora_name=LORA_ADAPTER_NAME,
+            lora_loaded=self._lora_loaded,
+            check_equal=getattr(self.args, "check_lora_weight_equal", False),
+        )
+        self._lora_loaded = True
+        return refs or [], long_lived_tensors
 
 
 def _send_to_colocated_engine(
@@ -293,6 +401,7 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    check_equal: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -303,7 +412,13 @@ def _send_to_colocated_engine(
     is_gather_src = dist.get_rank() == ipc_gather_src
     long_live_tensors = []
 
-    if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+    if is_lora:
+        # Serialize the named dict directly (no FlattenedTensorBucket); the pickler memoizes storages so IPC shares each flat once.
+        payload = dict(hf_named_tensors)
+        long_live_tensors.append(payload)
+        converted_named_tensors_by_dtypes = {}
+        serialized_lora = MultiprocessingSerializer.serialize(payload, output_str=True)
+    elif getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
         converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
     else:
         converted_named_tensors_by_dtypes = {}
@@ -313,7 +428,7 @@ def _send_to_colocated_engine(
                 converted_named_tensors_by_dtypes[dtype] = []
             converted_named_tensors_by_dtypes[dtype].append((name, tensor))
 
-    serialized_tensors: list = []
+    serialized_tensors: list = [serialized_lora] if is_lora else []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
         flattened_tensor_data = {
@@ -334,22 +449,29 @@ def _send_to_colocated_engine(
     refs = []
     if is_gather_src:
         if is_lora:
-            if lora_loaded:
+            # Unload before (re)loading: the engine rejects a duplicate adapter name.
+            try:
                 ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
+            except Exception as _unload_err:  # noqa: BLE001 - first sync: nothing to unload
+                logger.debug("lora unload before load skipped: %s", _unload_err)
 
-            # (Yusheng) to-do-1: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
-            # currently, we only support 1 type. If there are multiple dtypes, we need to serialize the tensors for each dtype.
-            # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
-            # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
+            # Per-rank transport: engine TP rank j deserializes the bucket of the train rank sharing its GPU.
+            _expected_checksums = None
+            if check_equal:
+                import hashlib
 
+                _expected_checksums = {
+                    n: hashlib.sha256(
+                        t.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
+                    ).hexdigest()
+                    for n, t in hf_named_tensors
+                }
             refs.append(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
                     config_dict=lora_config,
-                    serialized_named_tensors=[
-                        per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
-                    ],
-                    load_format="flattened_bucket",
+                    serialized_named_tensors=[t[0] for t in serialized_named_tensors],
+                    expected_checksums=_expected_checksums,
                 )
             )
 

@@ -27,6 +27,18 @@ def add_conversion_args(parser):
         default="raw",
         help="The method to convert megatron weights to hugging face weights for SGLang.",
     )
+    parser.add_argument(
+        "--custom-model-provider-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to a custom model provider function (e.g. for models like Inkling whose mcore "
+            "module structure differs from a plain GPTModel -- model-level embed_norm, custom "
+            "router/shared-experts). When set, the offline mcore model is built by this provider "
+            "(via miles' get_model_provider_func), then the mbridge bridge populates its weights. "
+            "Signature: def provider(pre_process, post_process, vp_stage=None) -> GPTModel."
+        ),
+    )
     try:
         parser.add_argument("--padded-vocab-size", type=int, default=None)
     except Exception:
@@ -52,7 +64,9 @@ def get_args():
     def ceildiv(a, b):
         return -(a // -b)
 
-    if args.pipeline_model_parallel_size == 1 and world_size > 1:
+    # CONVERT_KEEP_PP1=1 skips the PP auto-boost (needed for small models with high EP:
+    # e.g. 4-layer EP16 on 16 GPUs requires PP1 since world % (etp*ep*pp) must be 0).
+    if args.pipeline_model_parallel_size == 1 and world_size > 1 and not os.environ.get("CONVERT_KEEP_PP1"):
         pp_size = world_size
         while True:
             args.pipeline_model_parallel_size = pp_size

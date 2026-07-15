@@ -182,7 +182,14 @@ class Sample:
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
-            assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
+            mm = self.multimodal_train_inputs or {}
+            extra = sum(
+                int(c) - 1 for key in ("mm_vision_num_patches", "mm_audio_num_tokens") for c in list(mm.get(key) or [])
+            )
+            assert actual in (expect, expect + extra), (
+                f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
+                f" or media-expanded ({expect + extra})"
+            )
         if self.rollout_indexer_topk is not None:
             actual = len(self.rollout_indexer_topk)
             expect = len(self.tokens) - 1

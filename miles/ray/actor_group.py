@@ -68,15 +68,28 @@ class RayTrainGroup:
         if self.args.offload_train and self.args.train_backend == "megatron":
             import torch_memory_saver
 
-            dynlib_path = os.path.join(
-                os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
-                "torch_memory_saver_hook_mode_preload.abi3.so",
-            )
+            try:
+                from torch_memory_saver.utils import get_binary_path_from_package
+
+                dynlib_path = str(get_binary_path_from_package("torch_memory_saver_hook_mode_preload"))
+            except ImportError:
+                dynlib_path = os.path.join(
+                    os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
+                    "torch_memory_saver_hook_mode_preload.abi3.so",
+                )
             assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
 
             env_vars["LD_PRELOAD"] = dynlib_path
             env_vars["TMS_INIT_ENABLE"] = "1"
-            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
+            if self.args.offload_train_target == "disk":
+                # Spill the offloaded training actor to node-local disk instead of
+                # a pinned CPU copy, for the case where even CPU RAM cannot hold it.
+                env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "0"
+                env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
+                env_vars["TMS_DISK_BACKUP_DIR"] = self.args.offload_train_disk_dir
+                env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(self.args.offload_train_disk_chunk_mb)
+            else:
+                env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
         backend = self.args.train_backend
         if backend == "megatron":

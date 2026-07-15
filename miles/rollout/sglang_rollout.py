@@ -13,7 +13,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.compatibility import load_generate_function
@@ -142,7 +142,10 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+    if state.processor and (
+        isinstance(sample.prompt, (list, tuple))
+        or (sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()))
+    ):
         processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
         prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
@@ -172,7 +175,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
 
-    if is_lora_enabled(args):
+    if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
@@ -183,6 +186,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+
+    if sample.multimodal_inputs and sample.multimodal_inputs.get("audios"):
+        import base64 as _b64
+
+        payload["audio_data"] = [
+            f"data:audio;base64,{_b64.b64encode(a).decode('ascii')}" for a in sample.multimodal_inputs["audios"]
+        ]
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
@@ -225,14 +235,20 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     sample.rollout_log_probs += new_response_log_probs
 
     if "routed_experts" in output["meta_info"]:
-        sample.rollout_routed_experts = np.frombuffer(
+        _re = np.frombuffer(
             pybase64.b64decode(output["meta_info"]["routed_experts"].encode("ascii")),
             dtype=np.int32,
-        ).reshape(
-            len(sample.tokens) - 1,
-            args.num_layers,
-            args.moe_router_topk,
         )
+        # meta_info.prompt_tokens = engine-side (media-expanded) prompt length.
+        _ntok = int(output["meta_info"]["prompt_tokens"]) + len(new_response_tokens) - 1
+        # topk from the buffer, not args.moe_router_topk (custom providers may override it).
+        _topk = _re.size // max(1, _ntok * args.num_layers)
+        assert _re.size == _ntok * args.num_layers * _topk, (
+            f"routed_experts buffer {_re.size} != ntok({_ntok}) x layers({args.num_layers}) x topk({_topk}); "
+            f"prompt_tokens={output['meta_info'].get('prompt_tokens')} response={len(new_response_tokens)} "
+            f"unexpanded_tokens={len(sample.tokens)}"
+        )
+        sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
     if "indexer_topk" in output["meta_info"]:
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 

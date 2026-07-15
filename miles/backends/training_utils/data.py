@@ -276,11 +276,19 @@ def get_batch(
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
+        # per-sample start offsets in the packed (pre-pad) stream: "*_positions"
+        # keys carry SAMPLE-LOCAL media token positions (Inkling) and become
+        # packed-global here so the model can scatter tower embeds directly
+        sample_offsets = [0]
+        for t in batch["unconcat_tokens"]:
+            sample_offsets.append(sample_offsets[-1] + t.size(0))
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
-        for mm_input_dict in multimodal_train_inputs:
+        for i, mm_input_dict in enumerate(multimodal_train_inputs):
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
+                    if key.endswith("_positions"):
+                        mm_tensor = mm_tensor + sample_offsets[i]
                     if key not in multimodal_data:
                         multimodal_data[key] = mm_tensor
                         multimodal_num_items[key] = [mm_tensor.size(0)]

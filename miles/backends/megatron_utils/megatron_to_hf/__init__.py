@@ -2,6 +2,7 @@ from .deepseekv3 import convert_deepseekv3_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
+from .inkling import convert_inkling_to_hf
 from .kimi_vl import convert_kimi_k25_to_hf, convert_kimivl_to_hf
 from .llama import convert_llama_to_hf
 from .mimo import convert_mimo_to_hf
@@ -52,6 +53,8 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_qwen2_to_hf(args, name, param)
     elif "deepseekv4" in model_name:
         converted_named_tensors = convert_deepseekv4_to_hf(args, name, param)
+    elif "inkling" in model_name:
+        converted_named_tensors = convert_inkling_to_hf(args, name, param)
     elif "llama" in model_name:
         converted_named_tensors = convert_llama_to_hf(args, name, param)
     elif "mimo" in model_name:

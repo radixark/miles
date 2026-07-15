@@ -1,10 +1,11 @@
 """Multimodal-specific preprocessing for rollout data.
 
-Currently Kimi-VL / Kimi-K2.5-only: the rollout side emits one media
-placeholder token per image, and training expands it to grid-derived token
-counts so the LM sees a position per vision patch.  Kept separate from
-data.py (generic batching / CP slicing) so additional VL models can land
-without inflating that module.
+The rollout side emits one media placeholder/sentinel per media item; training
+expands it to the per-item token count so the LM sees a position per vision
+patch / audio frame. Two families live here: Kimi-VL / Kimi-K2.5 (grid-derived
+expansion of an in-vocab placeholder) and Inkling (out-of-vocab sentinels expanded
+to in-vocab placeholder runs with explicit positions). Kept separate from
+data.py (generic batching / CP slicing).
 """
 
 import logging
@@ -114,12 +115,105 @@ def _batch_has_media_placeholders(
     return any((token_tensor == media_token_id).any().item() for token_tensor in tokens)
 
 
+# Inkling rollout emits one out-of-vocab sentinel per media item; expanded here to in-vocab placeholder runs so train/serve align 1:1.
+INKLING_IMAGE_SENTINEL_ID = -101
+INKLING_AUDIO_SENTINEL_ID = -102
+INKLING_MM_PLACEHOLDER_TOKEN_ID = 200023
+INKLING_MM_AUDIO_PLACEHOLDER_TOKEN_ID = 200025
+
+
+def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
+    """Replace media sentinels with placeholder runs, recording their sample-local positions into mm; idempotent."""
+    spec = (
+        (INKLING_IMAGE_SENTINEL_ID, INKLING_MM_PLACEHOLDER_TOKEN_ID, "mm_vision_num_patches", "mm_vision_positions"),
+        (
+            INKLING_AUDIO_SENTINEL_ID,
+            INKLING_MM_AUDIO_PLACEHOLDER_TOKEN_ID,
+            "mm_audio_num_tokens",
+            "mm_audio_positions",
+        ),
+    )
+    splices = []  # (pos, run_len, placeholder_id, positions_key)
+    for sentinel, placeholder, counts_key, positions_key in spec:
+        counts = mm.get(counts_key) if mm else None
+        positions = (token_tensor == sentinel).nonzero(as_tuple=True)[0]
+        if positions.numel() == 0:
+            continue  # nothing to expand (text-only sample, or already expanded)
+        assert counts is not None and positions.numel() == len(counts), (
+            f"sample {sample_idx}: {positions.numel()} sentinel(s) {sentinel} but "
+            f"{counts_key}={'missing' if counts is None else len(counts)}"
+        )
+        splices.append((positions.tolist(), [int(c) for c in counts], placeholder, positions_key))
+
+    if not splices:
+        return token_tensor
+
+    prompt_len = len(token_tensor) - len(loss_mask)
+    flat = sorted(
+        (pos, n, placeholder, positions_key)
+        for positions, counts, placeholder, positions_key in splices
+        for pos, n in zip(positions, counts, strict=True)
+    )
+    assert all(
+        p < prompt_len for p, _, _, _ in flat
+    ), "Inkling media sentinels must be in the prompt; found one in the response"
+
+    pieces, prev, shift = [], 0, 0
+    out_positions: dict[str, list[int]] = {}
+    for pos, n, placeholder, positions_key in flat:
+        pieces.append(token_tensor[prev:pos])
+        pieces.append(torch.full((n,), placeholder, dtype=token_tensor.dtype, device=token_tensor.device))
+        start = pos + shift
+        out_positions.setdefault(positions_key, []).extend(range(start, start + n))
+        shift += n - 1
+        prev = pos + 1
+    pieces.append(token_tensor[prev:])
+    for positions_key, plist in out_positions.items():
+        mm[positions_key] = torch.tensor(plist, dtype=torch.long, device=token_tensor.device)
+    return torch.cat(pieces)
+
+
+def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
+    mm_list = rollout_data["multimodal_train_inputs"]
+    tokens = rollout_data["tokens"]
+    loss_masks = rollout_data["loss_masks"]
+    old_total_lengths = list(rollout_data["total_lengths"])
+
+    new_tokens_list, new_total_lengths = [], []
+    for i, (token_tensor, loss_mask) in enumerate(zip(tokens, loss_masks, strict=False)):
+        mm = mm_list[i] if i < len(mm_list) else None
+        expanded = _expand_inkling_sample(token_tensor, loss_mask, mm, i)
+        new_tokens_list.append(expanded)
+        new_total_lengths.append(expanded.size(0))
+
+    if new_total_lengths != old_total_lengths:
+        # Media live in the prompt, so response-aligned fields are unchanged; CP>1 would shift THD shard boundaries.
+        try:
+            cp_size = get_parallel_state().cp.size
+        except Exception:  # parallel state absent in unit tests
+            cp_size = 1
+        assert cp_size == 1, "Inkling multimodal expansion does not support CP>1 yet"
+        rollout_data["tokens"] = new_tokens_list
+        rollout_data["total_lengths"] = new_total_lengths
+        logger.info(
+            "Expanded Inkling image sentinels: total_lengths %s -> %s",
+            old_total_lengths,
+            new_total_lengths,
+        )
+
+
 def expand_multimodal_rollout_data_in_place(
     rollout_data: RolloutBatch,
     media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
     qkv_format: str = "thd",
 ) -> None:
     multimodal_train_inputs = rollout_data.get("multimodal_train_inputs", None)
+    if multimodal_train_inputs is not None and any(
+        mm is not None and ("mm_vision_num_patches" in mm or "mm_audio_num_tokens" in mm)
+        for mm in multimodal_train_inputs
+    ):
+        _expand_inkling_rollout_data_in_place(rollout_data)
+        return
     mm_inputs_list = _collect_multimodal_grid_inputs(multimodal_train_inputs)
     if not mm_inputs_list or not any(mm is not None for mm in mm_inputs_list):
         return
