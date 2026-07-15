@@ -41,8 +41,8 @@ PROVENANCE = RunProvenance(
 # test file's literal steps / constraint values.
 LAST_STEPS_KEY = '"last"'
 STEP_LIST_KEY = "[0,1]"
-REL_CONSTRAINT_KEY = '{"rel":0.2}'
-ABS_CONSTRAINT_KEY = '{"abs_floor":0.02}'
+REL_CONSTRAINT_KEY = '{"rel_down":0.2,"rel_up":0.2}'
+ABS_CONSTRAINT_KEY = '{"abs_floor_down":0.02,"abs_floor_up":0.02}'
 
 
 def _sample(metric_key, value, *, steps_key=LAST_STEPS_KEY, constraint_key=REL_CONSTRAINT_KEY, step=-1):

@@ -31,12 +31,12 @@ class MetricSample:
     """One comparison-coordinate value a run contributed.
 
     The coordinate is the declaring gate's literal content plus the point:
-    `steps_key` / `constraint_key` are canonical JSON of the declaration's
-    raw `steps` / `constraint` literals; `step` is the point the value came
-    from -- step `k`, or `-1` for a whole-series reduction (e.g.
-    `steps="last"`), which must key on a constant rather than the step it
-    happened to land on, or its history would fragment across runs of
-    different lengths.
+    `steps_key` / `constraint_key` are canonical JSON of the declaration's raw
+    `steps` / `constraint` literals (serialization pinned by
+    `register._canonical_key`); `step` is the point the value came from -- step `k`, or `-1`
+    for a whole-series reduction (e.g. `steps="last"`), which must key on
+    a constant rather than the step it happened to land on, or its history
+    would fragment across runs of different lengths.
     """
 
     metric_key: str
