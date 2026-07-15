@@ -491,6 +491,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--async-max-concurrent-tasks",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum number of concurrently generating trajectories in fully async mode, "
+                    "decoupling generation concurrency from the training batch size. None (default) "
+                    "keeps the legacy bound of one training batch worth of trajectories "
+                    "(rollout_batch_size groups, i.e. rollout_batch_size * n_samples_per_prompt)."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
