@@ -13,18 +13,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
+    hardware: Literal["MI350X", "MI355X"] = "MI355X"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     rollout_fp8: bool = False
-    rollout_mxfp8: bool = False
-    rollout_int4: bool = False
-    rollout_attn_fp8: bool = False
     train_fp8: bool = False
-    train_mxfp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
@@ -32,16 +28,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
-        if self.rollout_int4:
-            assert not self.rollout_fp8, "rollout_int4 and rollout_fp8 cannot be enabled at the same time"
-            assert not self.rollout_mxfp8, "rollout_int4 and rollout_mxfp8 cannot be enabled at the same time"
-        if self.rollout_mxfp8:
-            assert not self.rollout_fp8, "rollout_mxfp8 and rollout_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "rollout_mxfp8 only supports Blackwell GPUs"
-        if self.train_mxfp8:
-            assert not self.train_fp8, "train_mxfp8 and train_fp8 cannot be enabled at the same time"
-            assert self.hardware in ("B200", "B300", "GB200", "GB300"), "train_mxfp8 only supports Blackwell GPUs"
-            assert self.rollout_mxfp8, "train_mxfp8 requires rollout_mxfp8 to be enabled"
 
 
 def prepare(args: ScriptArgs):
@@ -52,18 +38,6 @@ def prepare(args: ScriptArgs):
 
     if args.rollout_fp8:
         U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
-
-    if args.rollout_mxfp8:
-        U.exec_command(
-            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
-            f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
-            f"{args.extra_args} "
-        )
-
-    if args.rollout_int4:
-        U.exec_command(
-            f"python tools/convert_hf_to_int4_direct.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-INT4"
-        )
 
     if not args.enable_megatron_bridge:
         U.convert_checkpoint(
@@ -88,10 +62,6 @@ def execute(args: ScriptArgs):
 
     if args.rollout_fp8:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
-    elif args.train_mxfp8:
-        hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
-    elif args.rollout_int4:
-        hf_checkpoint = f"{args.model_dir}/{args.model_name}-INT4"
     else:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
     ckpt_args = (
@@ -175,104 +145,46 @@ def execute(args: ScriptArgs):
     )
     misc_env_vars = {}
 
-    if args.rollout_int4:
+    if args.train_fp8:
+        misc_args += (
+            "--transformer-impl transformer_engine "
+            "--bf16 "
+            "--fp8-format e4m3 "
+            "--fp8-recipe blockwise "
+            "--no-gradient-accumulation-fusion "
+        )
         misc_env_vars |= {
-            "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
-            "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
+            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "0",
+            "GPU_MAX_HW_QUEUES": "1",
+            # keep Ray from blanking HIP/CUDA visibility for the job entrypoint
+            "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES": "1",
+            "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
         }
-
-    if args.train_fp8 or args.train_mxfp8:
-        match args.hardware:
-            case "B200" | "B300" | "GB200" | "GB300":
-                misc_args += (
-                    "--transformer-impl transformer_engine "
-                    "--bf16 "
-                    "--fp8-format e4m3 "
-                    "--fp8-recipe mxfp8 "
-                    # "--fp8-param-gather "
-                    # "--reuse-grad-buf-for-mxfp8-param-ag "
-                    # --moe-router-padding-for-quantization
-                )
-            case "H100" | "H200":
-                # ref: fp8 blog
-                misc_args += (
-                    "--transformer-impl transformer_engine "
-                    "--bf16 "
-                    "--fp8-format e4m3 "
-                    "--fp8-recipe blockwise "
-                    # "--fp8-param-gather "
-                )
-                misc_env_vars |= {
-                    "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-                }
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
 
     match (args.hardware, args.num_nodes):
-        case ("H100", 1):
+        case ("MI350X" | "MI355X", 1 | 2):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
+                "--tensor-model-parallel-size 1 "
                 "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
+                "--pipeline-model-parallel-size 2 "
+                "--context-parallel-size 2 "
+                "--expert-model-parallel-size 4 "
                 "--expert-tensor-parallel-size 1 "
+                "--max-tokens-per-gpu 16384 "
             )
             sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 1 if args.rollout_int4 else 8} "
+                "--rollout-num-gpus-per-engine 2 "
                 "--sglang-mem-fraction-static 0.7 "
-                "--sglang-cuda-graph-max-bs 512 "
+                "--sglang-max-running-requests 512 "
             )
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
-        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4):
-            perf_args += (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
-                "--expert-tensor-parallel-size 1 "
-            )
-            sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
-            if args.rollout_fp8:
-                sglang_world_size = 2
-                sglang_attn_tp_size = 2
-                sglang_decode_max_bs = 256
-                sglang_args += (
-                    f"--rollout-num-gpus-per-engine 2 "
-                    f"--sglang-ep-size {sglang_world_size} "
-                    "--sglang-moe-runner-backend deep_gemm "
-                    "--sglang-moe-a2a-backend deepep "
-                    f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
-                    f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
-                )
-            elif args.rollout_mxfp8:
-                sglang_world_size = 1
-                sglang_attn_tp_size = 1
-                sglang_decode_max_bs = 256
-                sglang_args += (
-                    f"--rollout-num-gpus-per-engine 1 "
-                    "--sglang-fp8-gemm-backend triton "
-                    # Currently, only cutlass moe runner is supported in sglang for mxfp8, which does not support ep
-                    # f"--sglang-ep-size {sglang_world_size} "
-                    "--sglang-moe-runner-backend cutlass "
-                    # TODO: mxfp8 deepep and deepgemm is not supported in sglang yet
-                    # "--sglang-moe-a2a-backend deepep "
-                    f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
-                    f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
-                )
-            else:
-                sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
         case _:
             raise NotImplementedError
-
-    if args.rollout_attn_fp8:
-        sglang_args += "--sglang-kv-cache-dtype fp8_e4m3 "
 
     if args.enable_mis:
         config_text = f"""
