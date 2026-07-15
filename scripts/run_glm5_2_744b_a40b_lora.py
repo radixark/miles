@@ -252,12 +252,8 @@ def _train(args: ScriptArgs):
 
     if _is_full:
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
-        # fits engine=min(8, ngpu) on one node.
-        # The big-engine fp8 profile is FULL-MODEL ONLY: on the 5-layer toy the ep8/dp8
-        # engine gives a large rollout<->train deviation (abs_diff 2.19 / kl 1.64 vs
-        # 0.27 / 0.06 at ep2/dp2; bisected: not the kv dtype, not the decode backend,
-        # not the LoRA layout), so the toy keeps the small-engine bf16-style serving
-        # profile and only swaps the weights to fp8.
+        # fits engine=min(8, ngpu) on one node. Big-engine fp8 profile is full-model only:
+        # the toy at ep8/dp8 shows a large rollout<->train deviation (abs_diff 2.19 vs 0.27).
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
         _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
