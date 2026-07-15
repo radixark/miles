@@ -323,11 +323,11 @@ def _train(args: ScriptArgs):
             "INDEXER_ROPE_NEOX_STYLE": "0",
             "SGLANG_NSA_FORCE_MLA": "1",
             # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True breaks torch_memory_saver
-            # fp8 + LoRA: the quantized load path builds mlp.shared_experts TP-sharded while
-            # the LoRA B buffer is sized from the global gate_up dim, so set_lora_info fails
-            # at engine init (e.g. B 4096 vs partition prefix 2048). TP1 shared experts match
-            # the bf16 layout the LoRA buffers assume.
-            **({"SGLANG_SHARED_EXPERT_TP1": "1"} if args.fp8_rollout else {}),
+            # Do NOT set SGLANG_SHARED_EXPERT_TP1 here: TP1-replicated shared experts get
+            # double-counted under dp-attention/EP topologies that skip the in-layer
+            # all-reduce (garbage rollouts). The fp8 LoRA-init crash it papered over is
+            # fixed in sglang lora/mem_pool.py (column-parallel output-axis shard probe);
+            # fp8_rollout requires an sglang build with that fix.
         },
         megatron_path=args.megatron_path,
     )
