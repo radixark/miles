@@ -1,6 +1,6 @@
 import os
 
-from scripts.run_glm5_2_744b_a40b import (
+from scripts.run_glm5_744b_a40b import (
     ScriptArgs,
     _convert_to_fp8,
     _execute_train,
@@ -12,21 +12,25 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-# Smoke test for the GLM-5.2 (glm_moe_dsa) training script. Exercises the DSA
-# cross-layer index-sharing path (5 layers = 3 dense + 2 MoE, computing layers
-# 0,1,2 + skip layers 3,4). Verifies the script is functional, not model accuracy.
+# This CI test is an example smoke test for the DSA model code path used by DeepSeek V3.2 and GLM-5. It only verifies that the training script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
-        model_name="GLM-5.2_5layer",
+        model_name="GLM-5_4layer",
         num_nodes=1,
-        num_gpus_per_node=8,
+        num_gpus_per_node=2,
         num_rollout=2,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
+        enable_optimizer_offload=True,
+        extra_args=(
+            "--ci-test "
+            "--ci-disable-logprobs-checker "
+            "--disable-weights-backuper "
+            "--tensor-model-parallel-size 2 "
+        ),
     )
 
 

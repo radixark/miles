@@ -32,7 +32,7 @@ python scripts/run_glm5_744b_a40b.py prepare --model-name GLM-5 --num-nodes 16
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
-Also handled by `prepare`. The launcher patches `config.json` to set `model_type=deepseek_v32` (`_process_glm_checkpoint`) before conversion — GLM-5 is loaded through the DeepseekV32 architecture path. Run `prepare-cp` afterwards on every node to copy the converted checkpoint from shared NFS to local disk.
+Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`) and fails fast if it does not, then converts it to the `glm5-744B-A40B` Megatron model type. Run `prepare-cp` afterwards on every node to copy the converted checkpoint from shared NFS to local disk.
 
 ## 4. Launch
 

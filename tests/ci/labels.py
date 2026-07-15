@@ -11,9 +11,10 @@ Adding a new label:
    The workflow does not need editing -- the generic stage job filters tests
    by labels at runtime.
 
-The workflow-only scope labels are intentionally NOT listed here. `run-ci-all`
-uses `--match-all-labels` without exclusions; `run-ci-image` and nightly pair
-it with scope-specific `--exclude-labels` values (handled in run_suite.py).
+The workflow-only scope labels (`run-ci-all`, `run-ci-image`, `nightly`) are
+intentionally NOT listed here: they select a broad scope or cadence, which
+`tests/ci/ci_policy.py` `resolve_policy` maps to an include-label set drawn
+from the registry below.
 """
 
 KNOWN_LABELS: dict[str, str] = {
