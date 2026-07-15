@@ -15,13 +15,16 @@ ROLLOUT_DATA_TRANSPORT_CHOICES = (
     ROLLOUT_DATA_TRANSPORT_MOONCAKE,
 )
 
+_MOONCAKE_IMPORT_ERROR: ImportError | None = None
+
 try:
     from mooncake.store import MooncakeDistributedStore
     from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref
 
     _MOONCAKE_AVAILABLE = True
-except ImportError:
+except ImportError as exc:
     _MOONCAKE_AVAILABLE = False
+    _MOONCAKE_IMPORT_ERROR = exc
     FieldSchema = None
 
 
@@ -36,14 +39,18 @@ def is_mooncake_rollout_data_transport(args: Any) -> bool:
     return get_rollout_data_transport(args) == ROLLOUT_DATA_TRANSPORT_MOONCAKE
 
 
+def _check_mooncake_available_if_needed(args: Any) -> None:
+    if is_mooncake_rollout_data_transport(args):
+        check_mooncake_available()
+
+
 def check_mooncake_available() -> None:
     if not _MOONCAKE_AVAILABLE:
-        raise ImportError("rollout-data-transport='mooncake' requires the mooncake package")
+        raise ImportError("rollout-data-transport='mooncake' requires the mooncake package") from _MOONCAKE_IMPORT_ERROR
 
 
 def validate_rollout_data_transport(args: Any) -> None:
-    if is_mooncake_rollout_data_transport(args):
-        check_mooncake_available()
+    _check_mooncake_available_if_needed(args)
 
 
 def put_rollout_data_ref(
@@ -53,6 +60,7 @@ def put_rollout_data_ref(
     partition: str,
     field_schema_specs: dict[str, tuple] | None = None,
 ) -> Box:
+    _check_mooncake_available_if_needed(args)
     if is_mooncake_rollout_data_transport(args):
         return _put_mooncake_rollout_data(
             args,
@@ -64,6 +72,7 @@ def put_rollout_data_ref(
 
 
 def get_rollout_data_ref(args: Any, ref: Box) -> dict[str, Any]:
+    _check_mooncake_available_if_needed(args)
     if is_mooncake_rollout_data_transport(args):
         return _mooncake_transfer(args, contribute_segment=_should_contribute_segment()).get_legacy_dict(
             import_ref(ref.inner)
@@ -72,11 +81,13 @@ def get_rollout_data_ref(args: Any, ref: Box) -> dict[str, Any]:
 
 
 def release_rollout_data(args: Any, data: dict[str, Any]) -> None:
+    _check_mooncake_available_if_needed(args)
     if is_mooncake_rollout_data_transport(args):
         MooncakeBundleTransfer.release_result(data)
 
 
 def cleanup_rollout_data_refs(args: Any, refs: Any) -> None:
+    _check_mooncake_available_if_needed(args)
     if not is_mooncake_rollout_data_transport(args):
         return
     if isinstance(refs, dict) and "data_ref" in refs:
