@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci, ut_parse_one_file
 from tests.ci.metric_history.constraints import evaluate_constraint
-from tests.ci.metric_history.register import parse_ci_gate_specs
+from tests.ci.metric_history.register import GATE_DEFAULTS, parse_ci_gate_specs
 from tests.ci.metric_history.selection import SelectionError, select
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
@@ -321,6 +321,78 @@ def test_missing_required_field_rejected(tmp_path, missing):
     )
     with pytest.raises(ValueError, match=f"{missing} is required"):
         parse_ci_gate_specs(path)
+
+
+def test_one_liner_fills_from_gate_defaults(tmp_path):
+    # A bare metric_key declaration on a standard metric is complete: steps and
+    # constraint come from the table, and the declaration keys derive from the
+    # TABLE literals (canonical JSON), not from any normalized form.
+    path = _make_fixture(
+        """
+        from tests.ci.metric_history import register_ci_gate
+        register_ci_gate(metric_key="train/ppo_kl")
+        """,
+        tmp_path,
+    )
+    s = parse_ci_gate_specs(path)[0]
+    assert s.steps == "last"
+    assert s.constraint == {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02}
+    assert s.steps_key == '"last"'
+    assert s.constraint_key == '{"abs_floor_down":0.02,"abs_floor_up":0.02,"rel_down":0.8,"rel_up":0.5}'
+
+
+def test_partial_default_written_literal_wins(tmp_path):
+    # Each omitted field fills independently: an explicit constraint keeps its
+    # own literal (and key) while steps still comes from the table.
+    path = _make_fixture(
+        """
+        from tests.ci.metric_history import register_ci_gate
+        register_ci_gate(metric_key="rollout/raw_reward",
+                         constraint={"rel_up": 0.1, "rel_down": 0.1})
+        """,
+        tmp_path,
+    )
+    s = parse_ci_gate_specs(path)[0]
+    assert s.steps == "last"  # from GATE_DEFAULTS
+    assert s.constraint_key == '{"rel_down":0.1,"rel_up":0.1}'  # written literal, not the table's
+
+
+def test_one_liner_without_table_entry_rejected(tmp_path):
+    path = _make_fixture(
+        """
+        from tests.ci.metric_history import register_ci_gate
+        register_ci_gate(metric_key="train/not_a_standard_metric")
+        """,
+        tmp_path,
+    )
+    with pytest.raises(ValueError, match="has no GATE_DEFAULTS entry"):
+        parse_ci_gate_specs(path)
+
+
+def test_gate_defaults_within_capture_whitelist_and_valid(tmp_path):
+    # Two table invariants: every defaulted key must be captured (a default for
+    # an uncaptured metric guarantees an ERROR verdict), and every table entry
+    # must survive the parser's own schema validation.
+    from miles.utils.tracking_utils.ci_history import TARGET_METRIC_KEYS
+
+    assert set(GATE_DEFAULTS) <= set(TARGET_METRIC_KEYS)
+
+    # Concatenate instead of interpolating into an indented f-string: the
+    # joined lines would defeat the fixture's dedent.
+    body = "from tests.ci.metric_history import register_ci_gate\n" + "\n".join(
+        f'register_ci_gate(metric_key="{key}")' for key in GATE_DEFAULTS
+    )
+    path = _make_fixture(body, tmp_path)
+    specs = parse_ci_gate_specs(path)
+    assert len(specs) == len(GATE_DEFAULTS)
+
+
+def test_one_liner_runtime_is_noop():
+    # The Python signature must accept the one-liner form at import time; the
+    # parser, not the signature, decides validity.
+    from tests.ci.metric_history import register_ci_gate
+
+    assert register_ci_gate(metric_key="rollout/raw_reward") is None
 
 
 def test_positional_arg_rejected(tmp_path):
