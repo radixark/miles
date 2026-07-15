@@ -10,6 +10,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.data_transfer import check_mooncake_available
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
@@ -2184,8 +2185,6 @@ def parse_args(add_custom_arguments=None):
     miles_validate_args(args)
 
     if getattr(args, "transfer_backend", "ray") == "mooncake":
-        from miles.utils.data_transfer import check_mooncake_available
-
         check_mooncake_available()
 
     if backend == "megatron":

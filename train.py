@@ -7,6 +7,7 @@ from miles.ray.placement_group import create_placement_groups, create_rollout_ma
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.data_transfer import cleanup_mooncake_rollout_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.control_server.server import start_control_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -102,18 +103,19 @@ async def train(args):
                 offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
             await rollout_manager.offload.remote(tags=offload_tags)
 
-        if args.use_critic:
-            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))
-            if rollout_id >= args.num_critic_only_steps:
+        try:
+            if args.use_critic:
+                critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))
+                try:
+                    if rollout_id >= args.num_critic_only_steps:
+                        await actor_model.train(rollout_id, rollout_data_ref)
+                finally:
+                    await critic_task
+            else:
                 await actor_model.train(rollout_id, rollout_data_ref)
-            await critic_task
-        else:
-            await actor_model.train(rollout_id, rollout_data_ref)
-
-        if getattr(args, "transfer_backend", "ray") == "mooncake":
-            from miles.utils.data_transfer import cleanup_mooncake_rollout_refs
-
-            cleanup_mooncake_rollout_refs(args, rollout_data_ref)
+        finally:
+            if getattr(args, "transfer_backend", "ray") == "mooncake":
+                cleanup_mooncake_rollout_refs(args, rollout_data_ref)
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             await save(rollout_id)

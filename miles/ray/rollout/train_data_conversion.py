@@ -3,9 +3,15 @@ from typing import Any
 import ray
 import torch
 
+from miles.utils.data_transfer import check_mooncake_available, put_mooncake_rollout_data
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import Sample
+
+try:
+    from mooncake.structured_object_store import FieldSchema
+except ImportError:
+    FieldSchema = None
 
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
@@ -154,8 +160,6 @@ def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
     rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
     if getattr(args, "transfer_backend", "ray") == "mooncake":
-        from miles.utils.data_transfer import put_mooncake_rollout_data
-
         return [
             put_mooncake_rollout_data(
                 args,
@@ -170,8 +174,6 @@ def split_train_data_by_dp(args, data, dp_size):
 
 def put_unsplit_train_data(args, data: dict[str, Any], *, rollout_id: int) -> Box:
     if getattr(args, "transfer_backend", "ray") == "mooncake":
-        from miles.utils.data_transfer import put_mooncake_rollout_data
-
         return put_mooncake_rollout_data(
             args,
             data,
@@ -233,7 +235,9 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
 
 
 def _rollout_field_schemas_for_data(data):
-    from mooncake.structured_object_store import FieldSchema
+    if FieldSchema is None:
+        check_mooncake_available()
+        raise ImportError("transfer_backend=mooncake requires mooncake.structured_object_store.FieldSchema")
 
     schemas = {}
     for field, spec in ROLLOUT_DATA_FIELD_SCHEMA_SPECS.items():

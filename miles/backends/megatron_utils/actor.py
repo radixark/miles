@@ -17,6 +17,7 @@ from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
+from miles.utils.data_transfer import release_mooncake_rollout_data
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
@@ -342,8 +343,6 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.debug_rollout_only:
                 log_rollout_data(rollout_id, self.args, rollout_data)
                 if getattr(self.args, "transfer_backend", "ray") == "mooncake":
-                    from miles.utils.data_transfer import release_mooncake_rollout_data
-
                     release_mooncake_rollout_data(self.args, rollout_data)
                 return TrainStepOutcome.NORMAL
 
@@ -353,8 +352,6 @@ class MegatronTrainRayActor(TrainRayActor):
             result = self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
 
         if getattr(self.args, "transfer_backend", "ray") == "mooncake":
-            from miles.utils.data_transfer import release_mooncake_rollout_data
-
             release_mooncake_rollout_data(self.args, rollout_data)
 
         return result

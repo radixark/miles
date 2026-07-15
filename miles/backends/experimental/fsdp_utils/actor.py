@@ -12,6 +12,7 @@ from tqdm import tqdm
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
+from miles.utils.data_transfer import release_mooncake_rollout_data
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
@@ -24,10 +25,6 @@ from miles.utils.tracking_utils.tracking import init_tracking
 from ....utils.profile_utils import TrainProfiler
 from ...training_utils.ci_utils import check_grad_norm
 
-try:
-    from miles.utils.data_transfer import release_mooncake_rollout_data
-except ImportError:
-    pass
 from ...training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from ...training_utils.log_utils import (
     aggregate_forward_results,
