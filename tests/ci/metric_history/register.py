@@ -9,6 +9,12 @@
   (the pass/fail rule).
 * `constraint` is a literal dict of band params (`rel` / `abs_floor` /
   `direction`), validated against the schema in :mod:`constraints`.
+* For the captured standard metrics, :data:`GATE_DEFAULTS` supplies `steps`
+  and `constraint`: each field a declaration omits is filled from the table at
+  parse time, through the same validation, so
+  `register_ci_gate(metric_key="train/ppo_kl")` alone is a complete
+  declaration. A written literal always wins; a metric with no table entry
+  must write both fields.
 * A spec also carries `steps_key` / `constraint_key` -- canonical JSON of the
   raw `steps` / `constraint` literals (see :func:`_canonical_key` for the
   exact serialization) -- which, plus the selection's `step`, form the
@@ -34,8 +40,8 @@ from tests.ci.metric_history.constraints import CONSTRAINT_SCHEMA, DIRECTIONS
 def register_ci_gate(
     *,
     metric_key: str,
-    steps: str | list[int],
-    constraint: dict,
+    steps: str | list[int] | None = None,
+    constraint: dict | None = None,
     enforce: bool = False,
     allowlist_reason: str | None = None,
 ):
@@ -48,8 +54,12 @@ def register_ci_gate(
     step present, fanned out), or a non-empty list of step indices.
     `constraint` is a literal dict of band params -- see
     :data:`constraints.CONSTRAINT_SCHEMA`; at least one of `rel` / `abs_floor`
-    must be written. `enforce` and `allowlist_reason` are policy metadata the
-    gate carries without acting on (the verdict is informational this round).
+    must be written. An omitted `steps` / `constraint` is filled from
+    :data:`GATE_DEFAULTS` when `metric_key` has an entry there; the Python
+    defaults of None exist only so a one-liner call runs as a no-op -- the
+    parser, not this signature, decides validity. `enforce` and
+    `allowlist_reason` are policy metadata the gate carries without acting on
+    (the verdict is informational this round).
     """
     return None
 
@@ -57,13 +67,46 @@ def register_ci_gate(
 _REGISTER_NAME = "register_ci_gate"
 _REQUIRED = object()
 
-# Top-level register_ci_gate fields: name -> (required, default).
+# Top-level register_ci_gate fields: name -> (required, default). `steps` and
+# `constraint` are required unless GATE_DEFAULTS fills them first (the fill
+# runs before this table is enforced).
 _FIELDS: dict[str, tuple[bool, object]] = {
     "metric_key": (True, _REQUIRED),
     "steps": (True, _REQUIRED),
     "constraint": (True, _REQUIRED),
     "enforce": (False, False),
     "allowlist_reason": (False, None),
+}
+
+# Per-metric_key declaration defaults for the captured standard metrics: the
+# `steps` / `constraint` literals filled in when a declaration omits them.
+# These literals feed the SAME key derivation as written literals, so a
+# defaulted coordinate keys on the table entry -- editing a value here re-keys
+# every declaration that relied on it and cold-starts those baselines. Band
+# values are shadow-calibration starting points, deliberately loose. Keys must
+# stay within the capture whitelist (miles.utils.tracking_utils
+# TARGET_METRIC_KEYS; test-enforced, not imported here).
+GATE_DEFAULTS: dict[str, dict] = {
+    "train/grad_norm": {
+        "steps": "last",
+        "constraint": {"rel": 0.5, "abs_floor": 0.1, "direction": "higher_is_worse"},
+    },
+    "train/ppo_kl": {
+        "steps": "last",
+        "constraint": {"rel": 0.5, "abs_floor": 0.02, "direction": "higher_is_worse"},
+    },
+    "train/train_rollout_logprob_abs_diff": {
+        "steps": "last",
+        "constraint": {"rel": 0.5, "abs_floor": 0.02, "direction": "higher_is_worse"},
+    },
+    "train/train_rollout_kl": {
+        "steps": "last",
+        "constraint": {"rel": 0.5, "abs_floor": 0.02, "direction": "higher_is_worse"},
+    },
+    "rollout/raw_reward": {
+        "steps": "last",
+        "constraint": {"rel": 0.2, "abs_floor": 0.05, "direction": "lower_is_worse"},
+    },
 }
 
 
@@ -247,9 +290,24 @@ def _parse_ci_gate_call(call: ast.Call, filename: str) -> CiGateSpec:
         except _ParseError as e:
             raise ValueError(f"{prefix}: {kw.arg} {e}") from None
 
+    # Defaults fill runs before the required check: an omitted steps/constraint
+    # is an error only when the metric has no GATE_DEFAULTS entry. The table
+    # literal enters the same validation and key derivation a written literal
+    # would (see GATE_DEFAULTS).
+    metric_key = raw.get("metric_key")
+    defaults = GATE_DEFAULTS.get(metric_key) if isinstance(metric_key, str) else None
+    if defaults is not None:
+        for field in ("steps", "constraint"):
+            if field not in raw:
+                raw[field] = defaults[field]
+
     for field, (required, default) in _FIELDS.items():
         if field not in raw:
             if required:
+                if field in ("steps", "constraint"):
+                    raise ValueError(
+                        f"{prefix}: {field} is required (metric_key {metric_key!r} has no GATE_DEFAULTS entry)"
+                    )
                 raise ValueError(f"{prefix}: {field} is required")
             raw[field] = default
 
