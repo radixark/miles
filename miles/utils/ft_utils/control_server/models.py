@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 from typing import Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
