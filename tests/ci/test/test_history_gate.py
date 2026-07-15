@@ -13,7 +13,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from tests.ci.ci_register import register_cpu_ci
+from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
 from tests.ci.metric_history import MetricSample, RunIdentity, RunProvenance, SQLiteMetricHistoryStore
 from tests.ci.metric_history.gate import GateStatus, evaluate_gate, parse_merged_record
 
@@ -596,3 +596,99 @@ def test_gate_writes_no_rows(tmp_path, store):
 
     n = store._conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
     assert n == 0
+
+
+# --- dual-register files + harness-supplied registry ------------------------
+
+
+def _write_dual_register_file(tmp_path: Path, gate_lines: str, *, name: str = "test_dual_fixture.py") -> str:
+    """A real-shaped e2e file: BOTH register_cuda_ci and register_rocm_ci.
+
+    Mirrors tests/e2e/short/test_qwen2.5_0.5B_gsm8k_short.py, which trips the
+    single-registry reparse (two register_*_ci calls). The harness passes the
+    chosen registry in.
+    """
+    body = (
+        "from tests.ci.ci_register import register_cuda_ci, register_rocm_ci\n"
+        "from tests.ci.metric_history import register_ci_gate\n"
+        'register_cuda_ci(est_time=360, suite="stage-c-8-gpu-h100", labels=["short"])\n'
+        'register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short"])\n'
+        + textwrap.dedent(gate_lines).strip()
+        + "\n"
+    )
+    p = tmp_path / name
+    p.write_text(body)
+    return str(p)
+
+
+def test_dual_register_with_gate_uses_supplied_registry(tmp_path, store):
+    # A file with BOTH register_cuda_ci and register_rocm_ci would make the
+    # single-registry reparse raise (ambiguous). With the harness passing the
+    # CUDA registry explicitly, the gate uses that identity and does not raise.
+    test_file = _write_dual_register_file(
+        tmp_path,
+        """
+        register_ci_gate(metric_key="rollout/raw_reward",
+                         steps="last", constraint={"rel": 0.20})
+        """,
+    )
+    record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.31]]})
+    cuda_registry = CIRegistry(
+        backend=HWBackend.CUDA,
+        filename=test_file,
+        est_time=360,
+        suite="stage-c-8-gpu-h100",
+        labels=["short"],
+    )
+
+    result = evaluate_gate(test_file, record, store, registry=cuda_registry)
+
+    assert len(result.metrics) == 1
+    assert result.metrics[0].historical_status == GateStatus.INACTIVE
+    # Identity is the supplied CUDA registry, not the ROCm one.
+    assert result.backend == "cuda"
+    assert result.suite == "stage-c-8-gpu-h100"
+    assert result.test_path == test_file
+
+
+def test_dual_register_no_spec_registry_none_vacuously_trusted(tmp_path, store):
+    # A dual-registered file with NO register_ci_gate spec, evaluated with
+    # registry=None, must be vacuously trusted -- it must NOT raise on the
+    # ambiguous (two register_*_ci) file because no gate identity is needed.
+    body = textwrap.dedent(
+        """
+        from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+        register_cuda_ci(est_time=360, suite="stage-c-8-gpu-h100", labels=["short"])
+        register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short"])
+        """
+    ).lstrip("\n")
+    p = tmp_path / "test_dual_nogate.py"
+    p.write_text(body)
+    record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.3]]})
+
+    result = evaluate_gate(str(p), record, store, registry=None)
+
+    assert result.metrics == []
+    assert result.trusted is True
+    assert result.test_path == str(p)
+
+
+def test_single_register_gate_registry_none_still_reparses(tmp_path, store):
+    # The isolated unit-test convenience path: a single-register file with a
+    # gate spec and registry=None still reparses identity via _registry_for.
+    test_file = _write_test_file(
+        tmp_path,
+        """
+        register_ci_gate(metric_key="rollout/raw_reward",
+                         steps="last", constraint={"rel": 0.20})
+        """,
+    )
+    record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.31]]})
+
+    result = evaluate_gate(test_file, record, store, registry=None)
+
+    assert len(result.metrics) == 1
+    assert result.metrics[0].historical_status == GateStatus.INACTIVE
+    assert result.backend == "cuda"
+    assert result.suite == "stage-c-8-gpu-h100"
+    assert result.trusted is True
