@@ -1,21 +1,34 @@
-"""Fully-async multi-LoRA rollout: continuous background producer + collect-a-batch."""
+"""Fully-async multi-LoRA rollout with per-adapter gradient accumulation.
+
+A background producer generates continuously into per-adapter buffers. Each
+train batch is collected by popping groups from the buffers round-robin, in
+multiples of the adapter's ``min_groups_per_dp_split`` capped at its remaining
+batch, so:
+
+- any batch splits evenly across data-parallel ranks;
+- an adapter's batch (``rollout_batch_size`` prompt groups, i.e.
+  ``adapter_global_batch_size`` samples) is never overshot;
+- adapters whose batch completes here are stamped as stepping.
+"""
 
 import asyncio
 import itertools
 import logging
-import queue
 import threading
 import time
+from collections import defaultdict, deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from miles.ray.multi_lora_controller import AdaptersCache, get_multi_lora_controller
 from miles.rollout.base_types import RolloutFnTrainOutput
-from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.filter_hub.base_types import call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
 from miles.utils.misc import load_function
+from miles.utils.multi_lora import min_groups_per_dp_split
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -32,6 +45,79 @@ def iter_group_samples(group: Group):
 
 def first_sample(group: Group) -> Sample:
     return group[0][0] if isinstance(group[0], list) else group[0]
+
+
+def group_adapter_name(group: Group) -> str | None:
+    head = first_sample(group) if group else None
+    return head.adapter.name if head is not None and head.adapter else None
+
+
+def group_sample_count(group: Group) -> int:
+    return sum(1 for _ in iter_group_samples(group))
+
+
+# Safety valve, same convention as fully_async's queue.Queue(maxsize=1000):
+# never hit in practice, just bounds memory if training stalls entirely.
+MAX_BUFFERED_GROUPS = 1000
+EMPTY_BATCH_TIMEOUT_S = 30.0
+
+
+class GroupBuffer:
+    """One adapter's completed prompt groups: a FIFO queue you can also
+    len(), and sweep for staleness. Bounded; the oldest group is dropped
+    when a put exceeds the cap."""
+
+    def __init__(self) -> None:
+        self._groups: deque[Group] = deque(maxlen=MAX_BUFFERED_GROUPS)
+
+    def __len__(self) -> int:
+        return len(self._groups)
+
+    def put(self, group: Group) -> None:
+        self._groups.append(group)
+
+    def get(self, n_groups: int) -> list[Group]:
+        """Remove and return the n oldest groups (queue.Queue-style API)."""
+        return [self._groups.popleft() for _ in range(n_groups)]
+
+    def drop_stale(self, current_version: int, max_staleness: int | None) -> list[int]:
+        """Drop groups generated too many weight versions ago; returns the
+        staleness of each dropped group (for metrics)."""
+        if max_staleness is None or not self._groups:
+            return []
+        kept: deque[Group] = deque(maxlen=MAX_BUFFERED_GROUPS)
+        dropped: list[int] = []
+        for group in self._groups:
+            stamped = first_sample(group).metadata.get("slot_version")
+            staleness = current_version - stamped if stamped is not None else 0
+            if stamped is not None and staleness > max_staleness:
+                for sample in iter_group_samples(group):
+                    sample.reset_for_retry()
+                dropped.append(staleness)
+            else:
+                kept.append(group)
+        self._groups = kept
+        return dropped
+
+
+@dataclass
+class TrainBatch:
+    """One train batch: the groups for one train call, with its per-adapter bookkeeping."""
+
+    groups: list[Group]
+    group_counts: dict[str, int]  # prompt groups per adapter in this batch
+    step_names: list[str]  # adapters whose adapter batch completes -> they step
+    step_slots: list[int]
+
+
+def remaining_groups(adapter) -> int:
+    """Groups still needed to complete the adapter's batch."""
+    remaining = adapter.config.rollout_batch_size - adapter.accumulated_groups
+    assert remaining > 0, (
+        f"adapter '{adapter.name}' accumulated_groups={adapter.accumulated_groups} >= "
+        f"rollout_batch_size={adapter.config.rollout_batch_size}; batch accounting drifted"
+    )
+    return remaining
 
 
 async def process_group(
@@ -64,7 +150,8 @@ async def process_group(
 
 
 class AsyncMultiLoRAWorker:
-    """Background producer: continuously generate groups into a thread-safe queue."""
+    """Background producer filling bounded per-adapter completed-group buffers;
+    the collection loop pops from them via ``get_groups``."""
 
     global_worker = None
     worker_lock = threading.Lock()
@@ -75,9 +162,22 @@ class AsyncMultiLoRAWorker:
         self.generate_fn = generate_fn
         self.concurrency = concurrency or args.rollout_batch_size
         self.running = True
-        self.output_queue: queue.Queue = queue.Queue(maxsize=1000)
         self.worker_thread: threading.Thread | None = None
         self.state = GenerateState(args)
+        self.dynamic_filter = (
+            load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path else None
+        )
+        # Guards the buffers: the producer thread puts completed groups while
+        # get_groups (trainer side) pops them.
+        self.buffer_lock = threading.Lock()
+        self.buffers: dict[str, GroupBuffer] = defaultdict(GroupBuffer)
+        # Fairness cursor: the adapter whose buffer get_groups visits first.
+        # Advances past every visited adapter, persisting across calls and
+        # batches, so adapters are served round-robin.
+        self.rotation: deque[str] = deque()
+        self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
+        self.stale_dropped = 0
+        self.staleness_values: list[int] = []
 
     @classmethod
     def get_or_create(cls, args, data_source, generate_fn: GenerateFn, concurrency: int = None):
@@ -95,6 +195,14 @@ class AsyncMultiLoRAWorker:
         self.running = False
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=5)
+
+    @classmethod
+    def stop_global(cls) -> None:
+        with cls.worker_lock:
+            if cls.global_worker is None:
+                return
+            cls.global_worker.stop()
+            cls.global_worker = None
 
     def thread_main(self) -> None:
         asyncio.run(self.run_loop())
@@ -116,105 +224,213 @@ class AsyncMultiLoRAWorker:
                     samples = self.data_source.get_samples(1)
                     if not samples:
                         break
-                    group = samples[0]
-                    active.add(asyncio.create_task(self.process_and_enqueue(group)))
+                    active.add(asyncio.create_task(self.process_and_enqueue(samples[0])))
 
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.01)
         finally:
+            for task in active:
+                task.cancel()
             if active:
-                await asyncio.wait(active)
+                await asyncio.gather(*active, return_exceptions=True)
 
     async def process_and_enqueue(self, group: list[Sample]) -> None:
         result = await process_group(self.args, group, self.state.sampling_params, self.generate_fn, self.data_source)
-        if result is not None:
-            self.output_queue.put(result)
+        if result is None:
+            return
+
+        filter_result = call_dynamic_filter(self.dynamic_filter, self.args, result)
+        if not filter_result.keep:
+            if filter_result.reason:
+                with self.buffer_lock:
+                    self.dynamic_filter_drop_counts[filter_result.reason] += 1
+            return
+
+        adapter_name = group_adapter_name(result)
+        if adapter_name is None:
+            return
+        with self.buffer_lock:
+            self.buffers[adapter_name].put(result)
 
     def queue_size(self) -> int:
-        return self.output_queue.qsize()
+        with self.buffer_lock:
+            return sum(len(buffer) for buffer in self.buffers.values())
+
+    def get_groups(
+        self, snapshot: dict, num_samples: int, group_counts: dict[str, int]
+    ) -> tuple[list[Group], dict[str, int]]:
+        """Pop groups for the batch being collected. Returns the popped groups
+        ([] when nothing is poppable right now) and an updated copy of
+        ``group_counts`` (adapter name -> groups in the batch); passing the
+        counts back on each fetch is what keeps a batch from overshooting an
+        adapter's remaining groups.
+
+        Pops round-robin from the cursor, one ``min_groups_per_dp_split`` at a
+        time, until ``num_samples`` is covered (the final multiple may overshoot
+        it) or no adapter can contribute. An adapter can't contribute when its
+        buffer holds less than a whole multiple, or the batch already holds all
+        its remaining groups.
+        """
+        adapters = {**snapshot["active"], **snapshot["retiring"]}
+        dp_size = self.args.multi_lora_dp_size
+        max_staleness = getattr(self.args, "max_weight_staleness", None)
+        group_counts = dict(group_counts)  # updated copy; the argument is not modified
+        popped: list[Group] = []
+        popped_samples = 0
+
+        with self.buffer_lock:
+            # Adapters retired at the last reconcile sync point: their buffered
+            # tail is discarded (base deregistration semantics).
+            for name in list(self.buffers):
+                if name not in adapters:
+                    self.buffers.pop(name)
+
+            # Keep the rotation in sync with live adapters.
+            self.rotation = deque(name for name in self.rotation if name in adapters)
+            for name in sorted(set(adapters) - set(self.rotation)):
+                self.rotation.append(name)
+
+            while popped_samples < num_samples:
+                made_progress = False
+                for _ in range(len(self.rotation)):
+                    name = self.rotation[0]
+                    self.rotation.rotate(-1)
+                    adapter = adapters[name]
+                    buffer = self.buffers[name]
+                    if dropped := buffer.drop_stale(adapter.version, max_staleness):
+                        self.stale_dropped += len(dropped)
+                        self.staleness_values += dropped
+                    min_groups_per_pop = min_groups_per_dp_split(adapter.config.n_samples_per_prompt, dp_size)
+                    available_groups = len(buffer) // min_groups_per_pop * min_groups_per_pop
+                    remaining_allowed_groups = max(0, remaining_groups(adapter) - group_counts.get(name, 0))
+                    groups_to_pop = min(min_groups_per_pop, available_groups, remaining_allowed_groups)
+                    if groups_to_pop <= 0:
+                        continue
+                    popped.extend(buffer.get(groups_to_pop))
+                    popped_samples += groups_to_pop * adapter.config.n_samples_per_prompt
+                    group_counts[name] = group_counts.get(name, 0) + groups_to_pop
+                    made_progress = True
+                    break
+                if not made_progress:
+                    break  # a full pass over rotation yielded nothing
+        return popped, group_counts
+
+    def pop_metrics(self) -> dict[str, float]:
+        with self.buffer_lock:
+            metrics = {
+                f"rollout/dynamic_filter/drop_{reason}": count
+                for reason, count in self.dynamic_filter_drop_counts.items()
+            }
+            self.dynamic_filter_drop_counts.clear()
+            metrics["perf/fully_async/stale_dropped"] = self.stale_dropped
+            if self.staleness_values:
+                metrics["perf/fully_async/stale_dropped_avg_staleness"] = sum(self.staleness_values) / len(
+                    self.staleness_values
+                )
+                metrics["perf/fully_async/stale_dropped_max_staleness"] = max(self.staleness_values)
+            self.stale_dropped = 0
+            self.staleness_values = []
+            return metrics
+
+
+async def collect_batch(args, worker: AsyncMultiLoRAWorker, snapshot: dict) -> TrainBatch:
+    """Collect one train batch from the worker's buffers (same loop shape as
+    fully_async's generate_rollout_async): keep popping group multiples until
+    the batch reaches ``--global-batch-size`` samples, or it is non-empty and
+    made no progress for ``--multi-lora-max-coalesce-wait-s`` (the target can
+    be permanently unreachable when the live adapters' remaining batches are
+    smaller than the target, so ship what there is).
+
+    The remaining-groups math relies on the sequential trainer loop: the
+    previous batch's ``mark_batch_trained`` has landed before this generate
+    call, so the snapshot's ``accumulated_groups`` is current.
+    """
+    adapters = {**snapshot["active"], **snapshot["retiring"]}
+    target_samples = args.global_batch_size
+    wait_s = getattr(args, "multi_lora_max_coalesce_wait_s", 0.5)
+    empty_wait_s = getattr(args, "multi_lora_max_empty_wait_s", EMPTY_BATCH_TIMEOUT_S)
+
+    collected: list[Group] = []
+    group_counts: dict[str, int] = {}
+    total_samples = 0
+    last_progress = time.time()
+    last_warning = time.time()
+
+    while total_samples < target_samples:
+        groups, group_counts = worker.get_groups(snapshot, target_samples - total_samples, group_counts)
+        if groups:
+            collected.extend(groups)
+            total_samples += sum(adapters[group_adapter_name(g)].config.n_samples_per_prompt for g in groups)
+            last_progress = time.time()
+            continue
+        stalled_s = time.time() - last_progress
+        if collected and stalled_s > wait_s:
+            break
+        if not collected and stalled_s > empty_wait_s:
+            raise RuntimeError(
+                "No poppable groups collected before empty timeout; this likely means every live adapter is "
+                "below min_groups_per_dp_split (or sources are exhausted). "
+                f"queue={worker.queue_size()} active={sorted(snapshot['active'])} retiring={sorted(snapshot['retiring'])}"
+            )
+        if not collected and time.time() - last_warning > 30:
+            logger.warning(
+                "No completed groups for 30s. "
+                f"queue={worker.queue_size()} active={sorted(snapshot['active'])} "
+                f"retiring={sorted(snapshot['retiring'])}"
+            )
+            last_warning = time.time()
+        await asyncio.sleep(0.01)
+
+    step_names = sorted(name for name, count in group_counts.items() if count == remaining_groups(adapters[name]))
+    return TrainBatch(
+        groups=collected,
+        group_counts=group_counts,
+        step_names=step_names,
+        step_slots=sorted(adapters[name].slot for name in step_names),
+    )
 
 
 async def generate_rollout_multi_lora_async(
     args, rollout_id: int, data_source, generate_fn: GenerateFn = generate_and_rm_group
-) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
-    """Fully-async multi-LoRA rollout. Collect a batch from the background worker,
-    then run the same postprocess as ``generate_rollout_async``."""
+) -> RolloutFnTrainOutput:
+    """Collect one train batch and record its contents on the controller."""
     assert args.rollout_global_dataset
 
     state = GenerateState(args)
-
-    dynamic_filter = load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path else None
-    metric_gatherer = MetricGatherer()
-    target_data_size = args.rollout_batch_size
-
     worker = AsyncMultiLoRAWorker.get_or_create(args, data_source, generate_fn)
-
-    # Groups whose submission-time slot version fell too far behind are dropped.
-    max_staleness = getattr(args, "max_weight_staleness", None)
-
-    data: list[Group] = []
-    stale_dropped = 0
-    staleness_values: list[int] = []
     start_time = time.time()
-    last_progress = start_time
     queue_length = worker.queue_size()
-    while len(data) < target_data_size:
-        made_progress = False
-        current_adapters = await AdaptersCache().get_all()
-        # Pop one at a time so surplus groups stay queued for the next batch.
-        while len(data) < target_data_size:
-            try:
-                group = worker.output_queue.get_nowait()
-            except queue.Empty:
-                break
-            head = first_sample(group) if group else None
-            adapter_name = head.adapter.name if head is not None and head.adapter else None
-            if adapter_name not in current_adapters:
-                continue  # adapter deregistered; drop
-            if max_staleness is not None:
-                stamped = head.metadata.get("slot_version")
-                if stamped is not None:
-                    staleness = current_adapters[adapter_name].version - stamped
-                    if staleness > max_staleness:
-                        for s in iter_group_samples(group):
-                            s.reset_for_retry()
-                        stale_dropped += 1
-                        staleness_values.append(staleness)
-                        logger.info(
-                            f"Dropped stale group (adapter={adapter_name}, "
-                            f"stamped={stamped}, current={current_adapters[adapter_name].version}, "
-                            f"staleness={staleness} > max={max_staleness})"
-                        )
-                        continue
-            f = call_dynamic_filter(dynamic_filter, args, group)
-            if not f.keep:
-                metric_gatherer.on_dynamic_filter_drop(reason=f.reason)
-                continue
-            data.append(group)
-            made_progress = True
 
-        if made_progress:
-            last_progress = time.time()
-        elif time.time() - last_progress > 30:
-            logger.warning(
-                f"No progress for 30s. queue={worker.queue_size()} collected={len(data)}/{target_data_size}"
-            )
-            last_progress = time.time()
+    # Driver contract: generate is only called with live adapters, and the
+    # sequential loop retires adapters and commits accumulated_groups only
+    # between generate calls — so one snapshot serves the whole collection.
+    snapshot = await get_multi_lora_controller().snapshot.remote()
+    assert snapshot["active"] or snapshot["retiring"], "generate called with no live adapters"
 
-        if len(data) < target_data_size:
-            await asyncio.sleep(0.01)
+    batch = await collect_batch(args, worker, snapshot)
 
-    if stale_dropped:
-        logger.info(
-            f"Staleness stats: dropped={stale_dropped}, "
-            f"avg_staleness={sum(staleness_values) / len(staleness_values):.1f}, "
-            f"max_staleness={max(staleness_values)}"
-        )
+    data = sorted(
+        batch.groups,
+        key=lambda group: (
+            first_sample(group).adapter.slot if first_sample(group).adapter is not None else -1,
+            first_sample(group).index,
+        ),
+    )
 
-    data = sorted(data, key=lambda g: first_sample(g).index)
+    # Per-sample adapter batch size (drives loss normalization) and batch-level step
+    # decision (drives selective optimizer stepping), shipped via sample metadata.
+    adapters = {**snapshot["active"], **snapshot["retiring"]}
+    for group in data:
+        adapter = adapters[group_adapter_name(group)]
+        for sample in iter_group_samples(group):
+            sample.metadata["adapter_global_batch_size"] = adapter.config.adapter_global_batch_size
+    if data:
+        head = first_sample(data[0])
+        head.metadata["step_slots"] = list(batch.step_slots)
+        head.metadata["step_adapter_names"] = list(batch.step_names)
 
-    batch_adapters = sorted({first_sample(g).adapter.name for g in data if g and first_sample(g).adapter})
-    if batch_adapters:
-        await get_multi_lora_controller().record_batch_adapters.remote(rollout_id, batch_adapters)
+    await get_multi_lora_controller().record_batch_adapters.remote(
+        rollout_id, batch.group_counts, batch.step_names
+    )
 
     if (x := args.rollout_sample_filter_path) is not None:
         load_function(x)(args, data)
@@ -227,13 +443,14 @@ async def generate_rollout_multi_lora_async(
     )
 
     metrics = {
-        **metric_gatherer.collect(),
+        **worker.pop_metrics(),
         "perf/fully_async/queue_length": queue_length,
         "perf/fully_async/batch_wait_time": time.time() - start_time,
-        "perf/fully_async/stale_dropped": stale_dropped,
+        "perf/fully_async/batch_adapters": len(batch.group_counts),
+        "perf/fully_async/batch_prompt_groups": len(data),
+        "perf/fully_async/batch_samples": sum(group_sample_count(group) for group in data),
+        "perf/fully_async/batch_step_count": len(batch.step_names),
     }
-    if staleness_values:
-        metrics["perf/fully_async/stale_dropped_avg_staleness"] = sum(staleness_values) / len(staleness_values)
 
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
 

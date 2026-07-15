@@ -11,6 +11,7 @@ from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.audit_utils.event_logger.models import TrainAdvantageComputationEvent
 from miles.utils.types import RolloutBatch
 
@@ -154,6 +155,11 @@ def loss_function(
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
+    # Multi-LoRA: samples enter the gradient buffers with weight 1; per-adapter
+    # normalization (1/adapter_global_batch_size, a constant known in advance)
+    # is applied to the accumulated slot gradient at optimizer-step time.
+    if is_multi_lora_enabled(args):
+        global_batch_size = 1
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
             loss_parallel_size = (

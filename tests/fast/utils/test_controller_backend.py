@@ -10,21 +10,47 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 import pytest
 
 from miles.utils.adapter_config import AdapterRunConfig
-from miles.utils.multi_lora import AdapterRegistry, AdapterState, MultiLoRABackend, make_rid, parse_adapter
+from miles.utils.multi_lora import (
+    AdapterRegistry,
+    AdapterState,
+    MultiLoRABackend,
+    min_groups_per_dp_split,
+    make_rid,
+    parse_adapter,
+)
 
 
-def make_args(max_adapters: int = 4, save: str | None = None) -> SimpleNamespace:
-    return SimpleNamespace(multi_lora_n_adapters=max_adapters, save=save)
-
-
-def make_backend(max_adapters: int = 4, save: str | None = None) -> MultiLoRABackend:
-    return MultiLoRABackend(make_args(max_adapters, save), "http://unused")
-
-
-def make_config(save: str | None = None) -> AdapterRunConfig:
-    return AdapterRunConfig(
-        rank=8, alpha=16, data="/d", save=save, input_key="text", label_key="label", rm_type="math"
+def make_args(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) -> SimpleNamespace:
+    return SimpleNamespace(
+        multi_lora_n_adapters=max_adapters,
+        save=save,
+        lora_rank=32,
+        lora_alpha=32,
+        rollout_batch_size=16,
+        n_samples_per_prompt=4,
+        multi_lora_dp_size=dp_size,
+        multi_lora_max_adapter_global_batch_size=256,
     )
+
+
+def make_backend(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) -> MultiLoRABackend:
+    return MultiLoRABackend(make_args(max_adapters, save, dp_size), "http://unused")
+
+
+def make_config(save: str | None = None, **overrides) -> AdapterRunConfig:
+    kwargs = dict(
+        rank=8,
+        alpha=16,
+        data="/d",
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        save=save,
+        input_key="text",
+        label_key="label",
+        rm_type="math",
+    )
+    kwargs.update(overrides)
+    return AdapterRunConfig(**kwargs)
 
 
 def register_and_promote(registry: AdapterRegistry, name: str, config=None) -> None:
@@ -112,23 +138,38 @@ def test_deregister_retires_but_keeps_serving_until_demoted():
     assert registry.retire_adapters() == []  # idempotent
 
 
-def test_batch_record_counts_steps_on_confirmation():
-    registry = AdapterRegistry(max_adapters=4)
-    register_and_promote(registry, "A")
-    register_and_promote(registry, "B")
+# make_config(): rollout_batch_size=4 groups/step, n_samples_per_prompt=4.
 
-    registry.record_batch_adapters(7, ["A"])
-    assert registry.step_count("A") == 0  # recorded, not yet trained
-    assert registry.mark_batch_trained(7) == ["A"]
+
+def test_mark_batch_trained_accumulates_and_steps_on_completion():
+    registry = AdapterRegistry(max_adapters=4)
+    register_and_promote(registry, "A", make_config())
+    register_and_promote(registry, "B", make_config())
+
+    # Two partial batches accumulate; the third completes the adapter batch.
+    registry.record_batch_adapters(1, {"A": 1, "B": 2}, step_names=[])
+    assert registry.mark_batch_trained(1) == []
+    assert registry.records["A"].accumulated_groups == 1
+    assert registry.records["B"].accumulated_groups == 2
+
+    registry.record_batch_adapters(2, {"A": 1}, step_names=[])
+    assert registry.mark_batch_trained(2) == []
+    assert registry.records["A"].accumulated_groups == 2
+
+    registry.record_batch_adapters(3, {"A": 2, "B": 2}, step_names=["A", "B"])
+    assert registry.mark_batch_trained(3) == ["A", "B"]
     assert registry.step_count("A") == 1
-    assert registry.step_count("B") == 0
-    assert registry.mark_batch_trained(7) == []  # record consumed
+    assert registry.step_count("B") == 1
+    assert registry.records["A"].accumulated_groups == 0
+    assert registry.records["B"].accumulated_groups == 0
+
+    assert registry.mark_batch_trained(3) == []  # record consumed
 
 
 def test_batch_trained_counts_deregistered_adapter_until_freed():
     registry = AdapterRegistry(max_adapters=4)
-    register_and_promote(registry, "A")
-    registry.record_batch_adapters(3, ["A"])
+    register_and_promote(registry, "A", make_config())
+    registry.record_batch_adapters(3, {"A": 4}, step_names=["A"])
     registry.deregister("A")  # deregistered while its batch is training
     assert registry.mark_batch_trained(3) == ["A"]
     assert registry.step_count("A") == 1  # final ckpt reads this
@@ -140,12 +181,49 @@ def test_batch_trained_counts_deregistered_adapter_until_freed():
 
 def test_set_step_on_resume():
     registry = AdapterRegistry(max_adapters=2)
-    registry.register("A", None)
+    registry.register("A", make_config())
     registry.set_step("A", 40)
-    registry.record_batch_adapters(1, ["A"])
+    registry.record_batch_adapters(1, {"A": 4}, step_names=["A"])
     registry.record_weight_update(["A"])
     registry.mark_batch_trained(1)
     assert registry.step_count("A") == 41
+
+
+def test_min_groups_per_dp_split():
+    assert min_groups_per_dp_split(n_samples_per_prompt=4, dp_size=8) == 2  # divisor
+    assert min_groups_per_dp_split(n_samples_per_prompt=8, dp_size=8) == 1  # equal
+    assert min_groups_per_dp_split(n_samples_per_prompt=16, dp_size=8) == 1  # multiple
+    with pytest.raises(ValueError, match="divisor or a multiple"):
+        min_groups_per_dp_split(n_samples_per_prompt=6, dp_size=8)
+
+
+@pytest.mark.asyncio
+async def test_register_resolves_batch_shape_defaults(tmp_path):
+    backend = make_backend(save=str(tmp_path))
+    await backend.register("A", AdapterRunConfig(data="/d"))
+    config = backend.registry.records["A"].config
+    assert config.rollout_batch_size == 16  # <- args.rollout_batch_size
+    assert config.n_samples_per_prompt == 4  # <- args.n_samples_per_prompt
+    assert config.rank == 32 and config.alpha == 32
+    assert config.adapter_global_batch_size == 64
+
+
+@pytest.mark.asyncio
+async def test_register_rejects_bad_batch_shapes(tmp_path):
+    backend = make_backend(save=str(tmp_path), dp_size=8)
+    with pytest.raises(ValueError, match="divisor or a multiple"):
+        await backend.register("B", make_config(n_samples_per_prompt=6, rollout_batch_size=4))
+    with pytest.raises(ValueError, match="min_groups_per_dp_split"):
+        # dp=8, n_samples=4 -> multiple of 2 groups; 3 groups is not
+        await backend.register("C", make_config(rollout_batch_size=3))
+    with pytest.raises(ValueError, match="exceeding"):
+        await backend.register("D", make_config(rollout_batch_size=128))  # 512 samples > cap 256
+    with pytest.raises(ValueError, match="exceeds the allocated maximum rank"):
+        await backend.register("E", make_config(rank=64))
+    with pytest.raises(ValueError, match="positive integer"):
+        await backend.register("F", make_config(rollout_batch_size=0))
+    # A valid shape registers fine.
+    await backend.register("OK", make_config(rollout_batch_size=8))
 
 
 def test_deregister_holds_slot_until_free_slot():
@@ -164,7 +242,7 @@ def test_deregister_holds_slot_until_free_slot():
 @pytest.mark.asyncio
 async def test_free_slot_reaborts_before_releasing_slot():
     """Requests can survive the single retire-time abort (multi-turn groups
-    submitting between turns, engine tokenizer-window misses); free_slot must
+    submitting between turns, engine tokenizer-adapter batch misses); free_slot must
     fire one more abort round before the slot becomes reusable."""
     backend = make_backend()
     aborted: list[str] = []

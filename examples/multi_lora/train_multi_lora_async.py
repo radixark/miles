@@ -60,7 +60,8 @@ async def main(args):
             continue
 
         # Reconcile + push before generate: the push promotes pending adapters,
-        # and only then does the data source sample them.
+        # and only then does the data source sample them. The actor pushes only
+        # stale adapter weights (newly loaded, or stepped by the last batch).
         await actor_model.reconcile_adapters()
         await actor_model.update_weights()
 

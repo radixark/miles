@@ -56,6 +56,26 @@ def slot_lora_name(slot: int) -> str:
     return f"__miles_slot_{slot}"
 
 
+def min_groups_per_dp_split(n_samples_per_prompt: int, dp_size: int) -> int:
+    """Minimum prompt-group count that splits cleanly across data-parallel
+    ranks.
+
+    Train batches only pop groups in multiples of this value, so each popped
+    slice has a sample count divisible by ``dp_size`` with no trimming.
+
+    Requires ``n_samples_per_prompt`` and ``dp_size`` to divide each other
+    (one must be a multiple of the other).
+    """
+    larger = max(dp_size, n_samples_per_prompt)
+    smaller = min(dp_size, n_samples_per_prompt)
+    if larger % smaller == 0:
+        return larger // n_samples_per_prompt
+    raise ValueError(
+        f"n_samples_per_prompt={n_samples_per_prompt} must be a divisor or a multiple of "
+        f"the data-parallel size {dp_size} so whole prompt groups can split evenly across ranks"
+    )
+
+
 class AdapterState(str, Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
@@ -79,6 +99,9 @@ class AdapterRecord:
     slot: int
     config: Any
     step: int = 0
+    # Committed prompt groups accumulated toward the current optimizer step.
+    # Only advanced by mark_batch_trained (after a successful train call).
+    accumulated_groups: int = 0
     state: AdapterState = AdapterState.PENDING
 
 
@@ -95,7 +118,7 @@ class AdapterRegistry:
         self.free_slots: set[int] = set(range(max_adapters))
         self.slot_versions: list[int] = [0] * max_adapters
         self.records: dict[str, AdapterRecord] = {}
-        self.batch_adapters: dict[int, list[str]] = {}
+        self.batch_records: dict[int, dict] = {}
 
     def in_state(self, *states: AdapterState) -> dict[str, AdapterRecord]:
         return {name: r for name, r in self.records.items() if r.state in states}
@@ -172,23 +195,51 @@ class AdapterRegistry:
             if record.state is AdapterState.PENDING:
                 record.state = AdapterState.ACTIVE
 
-    def record_batch_adapters(self, rollout_id: int, names: list[str]) -> None:
-        self.batch_adapters[rollout_id] = list(names)
-        while len(self.batch_adapters) > MAX_BATCH_RECORDS:
-            self.batch_adapters.pop(next(iter(self.batch_adapters)))
+    def record_batch_adapters(self, rollout_id: int, groups: dict[str, int], step_names: list[str]) -> None:
+        """Register what a train batch contains before it trains.
+
+        ``groups`` maps adapter name -> prompt groups riding in this batch;
+        ``step_names`` lists adapters whose adapter batch completes with
+        this batch (decided by the collection loop, which caps per-adapter
+        contributions at the adapter's remaining groups).
+        """
+        unknown = set(step_names) - set(groups)
+        assert not unknown, f"step adapters {sorted(unknown)} not present in batch groups"
+        self.batch_records[rollout_id] = {"groups": dict(groups), "step_names": list(step_names)}
+        while len(self.batch_records) > MAX_BATCH_RECORDS:
+            self.batch_records.pop(next(iter(self.batch_records)))
 
     def mark_batch_trained(self, rollout_id: int) -> list[str]:
-        trained = []
-        for name in self.batch_adapters.pop(rollout_id, []):
+        """A train call over this batch succeeded: bank each adapter's groups, fire steps.
+
+        This is the only place accumulation/step state advances, so a failed or
+        retried train call leaves the registry untouched. Returns the adapters
+        that stepped.
+        """
+        record_entry = self.batch_records.pop(rollout_id, None)
+        if record_entry is None:
+            return []
+        stepped = []
+        for name, n_groups in record_entry["groups"].items():
             record = self.records.get(name)
-            if record is not None and record.state in (
+            if record is None or record.state not in (
                 AdapterState.ACTIVE,
                 AdapterState.RETIRING,
                 AdapterState.CLEANUP,
             ):
+                continue
+            record.accumulated_groups += n_groups
+            if name in record_entry["step_names"]:
+                target = record.config.rollout_batch_size
+                if record.accumulated_groups != target:
+                    logger.warning(
+                        f"Adapter '{name}' stepped with accumulated_groups={record.accumulated_groups} "
+                        f"!= rollout_batch_size={target}; adapter batch accounting drifted"
+                    )
                 record.step += 1
-                trained.append(name)
-        return trained
+                record.accumulated_groups = 0
+                stepped.append(name)
+        return stepped
 
     def set_step(self, name: str, step: int) -> None:
         if (record := self.find(name)) is not None:
@@ -205,6 +256,7 @@ class AdapterRegistry:
             slot=record.slot,
             version=self.slot_versions[record.slot],
             step=record.step,
+            accumulated_groups=record.accumulated_groups,
         )
 
     def active_adapters(self) -> dict[str, AdapterRun]:
@@ -248,18 +300,78 @@ class MultiLoRABackend:
     async def validate_adapter(self, name: str, config: Any) -> None:
         """Override to reject adapter registrations (raise ValueError)."""
 
-    def resolve_save_dir(self, name: str, config: Any) -> Any:
-        if config is None or not hasattr(config, "save"):
+    def resolve_adapter_config(self, name: str, config: Any) -> Any:
+        """Resolve optional adapter-local values against process-wide defaults
+        and validate the batch shape against the trainer's DP layout.
+
+        All batch-shape constraints are enforced here, at registration, so a
+        bad config fails immediately instead of crashing an arbitrary later
+        train batch.
+        """
+        if config is None or not isinstance(config, AdapterRunConfig):
             return config
-        if config.save is not None:
-            return config
-        if getattr(self.args, "save", None) is None:
-            raise ValueError(f"Adapter '{name}' has no save dir: set 'save' in the adapter config or pass --save")
-        return replace(config, save=Path(self.args.save) / "adapters" / name)
+
+        rank = config.rank if config.rank is not None else getattr(self.args, "lora_rank", 1)
+        alpha = config.alpha if config.alpha is not None else getattr(self.args, "lora_alpha", rank)
+        rollout_batch_size = (
+            config.rollout_batch_size
+            if config.rollout_batch_size is not None
+            else getattr(self.args, "rollout_batch_size", None)
+        )
+        n_samples_per_prompt = (
+            config.n_samples_per_prompt
+            if config.n_samples_per_prompt is not None
+            else getattr(self.args, "n_samples_per_prompt", 1)
+        )
+
+        if type(rank) is not int or rank <= 0:
+            raise ValueError(f"Adapter '{name}' rank must be a positive integer")
+        if rank > getattr(self.args, "lora_rank", rank):
+            raise ValueError(f"Adapter '{name}' rank {rank} exceeds the allocated maximum rank {self.args.lora_rank}")
+        if alpha is None or alpha <= 0:
+            raise ValueError(f"Adapter '{name}' must have a positive alpha")
+        if type(rollout_batch_size) is not int or rollout_batch_size <= 0:
+            raise ValueError(f"Adapter '{name}' rollout_batch_size must be a positive integer (prompt groups)")
+        if type(n_samples_per_prompt) is not int or n_samples_per_prompt <= 0:
+            raise ValueError(f"Adapter '{name}' n_samples_per_prompt must be a positive integer")
+        adapter_global_batch_size = rollout_batch_size * n_samples_per_prompt
+        if (max_batch := getattr(self.args, "multi_lora_max_adapter_global_batch_size", None)) is not None:
+            if adapter_global_batch_size > max_batch:
+                raise ValueError(
+                    f"Adapter '{name}' consumes {adapter_global_batch_size} samples per step "
+                    f"(rollout_batch_size {rollout_batch_size} x n_samples_per_prompt {n_samples_per_prompt}), "
+                    f"exceeding --multi-lora-max-adapter-global-batch-size {max_batch}"
+                )
+        if (dp_size := getattr(self.args, "multi_lora_dp_size", None)) is not None:
+            try:
+                group_multiple = min_groups_per_dp_split(n_samples_per_prompt, dp_size)
+            except ValueError as e:
+                raise ValueError(f"Adapter '{name}': {e}") from None
+            if rollout_batch_size % group_multiple != 0:
+                raise ValueError(
+                    f"Adapter '{name}' rollout_batch_size {rollout_batch_size} must be a multiple of "
+                    f"its min_groups_per_dp_split ({group_multiple} at dp_size={dp_size}), so the "
+                    f"adapter batch can complete from evenly-splitting takes"
+                )
+
+        save = Path(config.save) if config.save is not None else None
+        if save is None:
+            if getattr(self.args, "save", None) is None:
+                raise ValueError(f"Adapter '{name}' has no save dir: set 'save' in the adapter config or pass --save")
+            save = Path(self.args.save) / "adapters" / name
+
+        return replace(
+            config,
+            rank=rank,
+            alpha=alpha,
+            rollout_batch_size=rollout_batch_size,
+            n_samples_per_prompt=n_samples_per_prompt,
+            save=save,
+        )
 
     async def register(self, name: str, config: Any) -> dict:
+        config = self.resolve_adapter_config(name, config)
         await self.validate_adapter(name, config)
-        config = self.resolve_save_dir(name, config)
         result = self.registry.register(name, config)
         resolved = getattr(config, "save", None)
         if resolved is not None:
@@ -281,7 +393,7 @@ class MultiLoRABackend:
         The abort in ``retire_adapters`` fires once at the RETIRING->CLEANUP
         flip, but requests can survive it: a multi-turn group between turns
         submits its next turn only after that round, and a request still inside
-        the engine's tokenizer window can be missed by the scheduler-side
+        the engine's tokenizer adapter batch can be missed by the scheduler-side
         matching. Aborting again here — right before the slot becomes reusable —
         closes those escapes, so a later tenant of the slot cannot serve a
         retired adapter's orphaned requests.

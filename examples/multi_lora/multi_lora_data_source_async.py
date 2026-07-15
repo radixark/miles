@@ -59,6 +59,7 @@ class MultiLoRAAsyncDataSource(DataSource):
         adapter_args.metadata_key = config.metadata_key or self.args.metadata_key
         adapter_args.save = config.save or self.args.save
         adapter_args.load = config.save or self.args.load
+        adapter_args.n_samples_per_prompt = config.n_samples_per_prompt or self.args.n_samples_per_prompt
         adapter_args.start_rollout_id = 0
         return RolloutDataSource(adapter_args)
 
@@ -74,56 +75,44 @@ class MultiLoRAAsyncDataSource(DataSource):
                 new_queue.append(name)
         self.source_queue = new_queue
 
-    def get_samples(self, num_samples: int) -> list[list[Sample]]:
+    def get_samples(self, num_samples: int = 1) -> list[list[Sample]]:
+        """Return the next prompt group, round-robined across adapters.
+
+        One rotation of the queue: pull one group from the first adapter that
+        yields, stamp it, and return. Empty list when no adapter can produce.
+        """
+        assert num_samples == 1, "the async producer dispatches one prompt group at a time"
         snapshot = fetch_snapshot()
         adapters = sampleable(snapshot)
         self.reconcile(adapters)
-        if not self.sources:
-            return []
         self.update_queue(set(self.sources))
 
-        refs = {name: AdapterRef(name=name, slot=adapters[name].slot) for name in self.sources}
-        reward_specs = {
-            name: RewardSpec(
-                rm_type=adapters[name].config.rm_type,
-                custom_rm_path=adapters[name].config.custom_rm_path,
-            )
-            for name in self.sources
-        }
-
-        samples_per_adapter, remainder = divmod(num_samples, len(self.source_queue))
-        all_samples: list[list[Sample]] = []
-        to_deregister: list[str] = []
-
-        for i in range(len(self.source_queue)):
-            extra = int(i < remainder)
-            samples_needed = samples_per_adapter + extra
-            if samples_needed == 0:
-                break
+        for _ in range(len(self.source_queue)):
             name = self.source_queue.popleft()
-            config = adapters[name].config
             self.source_queue.append(name)
             source = self.sources[name]
-            adapter_samples = source.get_samples(samples_needed)
-            ref = refs[name]
-            reward_spec = reward_specs[name]
-            for group in adapter_samples:
-                for sample in group:
-                    sample.adapter = ref
-                    sample.reward_spec = reward_spec
-                    sample.metadata = {**config.metadata, **sample.metadata}
-            all_samples.extend(adapter_samples)
+            groups = source.get_samples(1)
+            if not groups:
+                continue
+
+            adapter = adapters[name]
+            config = adapter.config
+            ref = AdapterRef(name=name, slot=adapter.slot)
+            reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)
+            for sample in groups[0]:
+                sample.adapter = ref
+                sample.reward_spec = reward_spec
+                sample.metadata = {**config.metadata, **sample.metadata}
 
             default_num_row = (getattr(config, "num_epoch", 1) or 1) * len(source.dataset)
             num_row = config.num_row or default_num_row
             if source.sample_group_index >= num_row and name not in snapshot["retiring"]:
                 logger.info(f"Adapter '{name}' reached num_row={num_row}, deregistering")
-                to_deregister.append(name)
+                ray.get(get_multi_lora_controller().deregister_adapter.remote(name))
 
-        for name in to_deregister:
-            ray.get(get_multi_lora_controller().deregister_adapter.remote(name))
+            return groups
 
-        return all_samples
+        return []
 
     def add_samples(self, samples: list[list[Sample]]) -> None:
         """Recycle retried/aborted groups; drop groups for deregistered adapters."""
@@ -142,3 +131,8 @@ class MultiLoRAAsyncDataSource(DataSource):
     def load(self, rollout_id=None):
         for source in self.sources.values():
             source.load(rollout_id)
+
+    def close(self) -> None:
+        from examples.multi_lora.multi_lora_async_rollout import AsyncMultiLoRAWorker
+
+        AsyncMultiLoRAWorker.stop_global()

@@ -28,18 +28,50 @@ Controller code lives in the library: `miles/utils/multi_lora.py` (registry +
 backend + HTTP API, torch-free) and `miles/ray/multi_lora_controller.py` (named
 Ray actor, pinned to the head node).
 
-## Design (no drain, no state machine)
+## Design (decoupled per-adapter optimizers)
 
 - **Controller** (Ray actor + control-plane HTTP API) is the source of truth:
   `POST/GET/DELETE /adapter_runs` plus `GET /adapter_runs/state`. The data source
   reads it; the trainer reads it. Generation traffic goes straight to the router;
   on deregister the controller aborts the adapter's in-flight requests
   engine-side by rid prefix (`rid = {adapter}::{uuid}`, set in `generate`).
-- **No drain / no rollout-id / no train_steps / no PENDING-DRAINING-DRAINED states.**
-  The data source deregisters an adapter at `num_row`; the trainer's
-  `reconcile_adapters` (before each generate) cleans up gone adapters (save ckpt +
-  clear Megatron slot) and loads new ones. `update_weights` upserts active adapters'
-  weights in place (SGLang page table, `upsert=True`).
+- **Per-adapter gradient accumulation.** Each adapter has its own batch shape:
+  `rollout_batch_size` prompt groups per optimizer step, each group holding
+  `n_samples_per_prompt` responses (`adapter_global_batch_size =
+  rollout_batch_size x n_samples_per_prompt` samples per step). Completed
+  prompt groups flow into training continuously in multiples of the
+  adapter's `min_groups_per_dp_split` (the smallest group count whose samples
+  split evenly across data-parallel ranks), gradients
+  accumulate in the DDP buffers across train batches, and an adapter's
+  optimizer steps exactly when its adapter batch fills — independent of every other
+  adapter. The controller tracks adapter batch progress (`accumulated_groups`) and commits
+  it only after a successful train call.
+- **Per-slot optimizers.** One Adam per adapter slot under Megatron's
+  `LayerWiseDistributedOptimizer` (whole-parameter ZeRO-1): per-slot state,
+  step counts, and gradient clipping; optimizer state sharded across DP ranks;
+  plain DDP all-reduce (no distributed optimizer) makes cross-batch gradient
+  retention idempotent.
+- **Batch collection.** The collection loop (same shape as fully_async's)
+  pops groups from the per-adapter buffers round-robin, one
+  `min_groups_per_dp_split` at a time, capped at each adapter's remaining
+  batch, until the batch reaches `--global-batch-size` samples or a non-empty
+  batch makes no progress for `--multi-lora-max-coalesce-wait-s` (the target
+  can be permanently unreachable, so it trains on whatever is ready) — a
+  single adapter with a small batch trains alone without waiting for
+  anyone. Samples enter the gradient buffers with weight 1; at step time the
+  slot's accumulated gradient is scaled by `1/adapter_global_batch_size`
+  (a constant known in advance), so an adapter's update is identical to what
+  it would get training alone.
+- **Selective weight sync.** Only adapters whose optimizer stepped are pushed
+  to the engines (upsert into the slot-keyed page table); only their slot
+  versions bump, keeping staleness filtering per-adapter accurate.
+- The data source deregisters an adapter at `num_row`; the trainer's
+  `reconcile_adapters` (before each generate) retires it at the next sync
+  point and cleans up (save ckpt + clear Megatron slot + zero its optimizer
+  state and retained gradients). The adapter's untrained tail — buffered
+  groups and any partially accumulated gradients — is discarded. TODO: revisit
+  num_row semantics (the tail means slightly fewer trained rows than
+  configured).
 - **Batch ⊆ loaded property:** `reconcile_adapters` runs before `generate`, so the
   batch is fetched with loaded = active; active only shrinks during generate, so every
   adapter in the batch is live on the trainer.
@@ -75,6 +107,8 @@ Per-adapter `rank` in `adapter.yaml` must be `<= --lora-rank`.
 ```yaml
 rank: 16
 alpha: 16
+rollout_batch_size: 32      # prompt groups per optimizer step (defaults to --rollout-batch-size)
+n_samples_per_prompt: 4     # group shape (defaults to --n-samples-per-prompt)
 data: /root/gsm8k/train.parquet
 input_key: messages
 label_key: label
@@ -82,3 +116,14 @@ rm_type: math
 num_row: 400                # stop adapter after N rows
 # optional: save, num_epoch, custom_rm_path, ...
 ```
+
+The derived `adapter_global_batch_size = rollout_batch_size x
+n_samples_per_prompt` is the adapter's samples-per-optimizer-step (the
+per-adapter analog of `--global-batch-size`).
+
+Batch-shape constraints (validated at registration, not at runtime):
+`n_samples_per_prompt` must be a divisor or multiple of the trainer's
+data-parallel size; `rollout_batch_size` must be a multiple of the adapter's
+`min_groups_per_dp_split`;
+`adapter_global_batch_size` is capped by
+`--multi-lora-max-adapter-global-batch-size` (default 4x `--global-batch-size`).

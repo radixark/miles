@@ -88,7 +88,19 @@ async def running_controller(server_cls=MultiLoRAHTTPServer):
     await site.start()
     router_url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
 
-    backend = MultiLoRABackend(SimpleNamespace(multi_lora_n_adapters=4, save=None), router_url)
+    backend = MultiLoRABackend(
+        SimpleNamespace(
+            multi_lora_n_adapters=4,
+            save=None,
+            lora_rank=32,
+            lora_alpha=32,
+            rollout_batch_size=16,
+            n_samples_per_prompt=4,
+            multi_lora_dp_size=2,
+            multi_lora_max_adapter_global_batch_size=256,
+        ),
+        router_url,
+    )
     srv = server_cls(backend)
     await backend.init()
     await srv.start()

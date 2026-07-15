@@ -21,6 +21,13 @@ class AdapterRunConfig:
     rank: int | None = None
     alpha: int | None = None
 
+    # Prompt groups consumed per optimizer step for this adapter (group units,
+    # like --rollout-batch-size, which it defaults to). The samples-per-step
+    # analog of --global-batch-size is derived: adapter_global_batch_size =
+    # rollout_batch_size * n_samples_per_prompt.
+    rollout_batch_size: int | None = None
+    n_samples_per_prompt: int | None = None
+
     save: str | Path | None = None
 
     input_key: str = "text"
@@ -35,6 +42,12 @@ class AdapterRunConfig:
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def adapter_global_batch_size(self) -> int:
+        """Samples per optimizer step (per-adapter analog of --global-batch-size)."""
+        assert self.rollout_batch_size is not None and self.n_samples_per_prompt is not None
+        return self.rollout_batch_size * self.n_samples_per_prompt
+
 
 @dataclass(frozen=True)
 class AdapterRun:
@@ -45,6 +58,8 @@ class AdapterRun:
     slot: int
     version: int = 0
     step: int = 0
+    # Committed prompt groups accumulated toward the current optimizer step.
+    accumulated_groups: int = 0
 
 
 def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
@@ -60,6 +75,8 @@ def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
         rank=raw.get("rank"),
         alpha=raw.get("alpha"),
         data=raw["data"],
+        rollout_batch_size=raw.get("rollout_batch_size"),
+        n_samples_per_prompt=raw.get("n_samples_per_prompt"),
         save=Path(raw["save"]) if raw.get("save", None) else None,
         input_key=raw.get("input_key", "text"),
         label_key=raw.get("label_key"),

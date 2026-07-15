@@ -23,7 +23,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 4 \
    --rollout-num-gpus 4 \
-   --calculate-per-token-loss \
    --use-miles-router \
    ${MODEL_ARGS[@]} \
    \

@@ -135,6 +135,10 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
+    if is_multi_lora_enabled(args):
+        # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
+        # every rank (whole-param sharding + retained-gradient idempotency).
+        use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=use_distributed_optimizer)
     ddp_config.finalize()
 

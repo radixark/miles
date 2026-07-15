@@ -87,8 +87,8 @@ class MultiLoRAController:
     def record_weight_update(self, names: list[str]) -> None:
         self.backend.registry.record_weight_update(names)
 
-    def record_batch_adapters(self, rollout_id: int, names: list[str]) -> None:
-        self.backend.registry.record_batch_adapters(rollout_id, names)
+    def record_batch_adapters(self, rollout_id: int, groups: dict[str, int], step_names: list[str]) -> None:
+        self.backend.registry.record_batch_adapters(rollout_id, groups, step_names)
 
     def mark_batch_trained(self, rollout_id: int) -> list[str]:
         return self.backend.registry.mark_batch_trained(rollout_id)

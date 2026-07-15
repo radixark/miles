@@ -90,6 +90,8 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
     chained = getattr(optimizer, "chained_optimizers", [optimizer])
     for chained_optimizer in chained:
         inner = getattr(chained_optimizer, "optimizer", chained_optimizer)
+        if inner is None:
+            continue
         for param, state in inner.state.items():
             if id(param) not in target_main_params:
                 continue
@@ -97,6 +99,12 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
                 state["exp_avg"].zero_()
             if "exp_avg_sq" in state:
                 state["exp_avg_sq"].zero_()
+            # Bias correction restarts for the slot's next tenant.
+            if "step" in state:
+                if isinstance(state["step"], torch.Tensor):
+                    state["step"].zero_()
+                else:
+                    state["step"] = 0
 
 
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:
@@ -174,8 +182,8 @@ def save_multi_lora_checkpoints(
             if is_dp_rank_0:
                 shard: dict[str, torch.Tensor] = {
                     name: param.data.cpu()
-                    for chunk in model
-                    for name, param in chunk.named_parameters()
+                    for batch in model
+                    for name, param in batch.named_parameters()
                     if ".adapter." in name
                 }
                 native_path = tmp_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
@@ -281,10 +289,14 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
     clear_adapter_slot(model, slot)
     logger.info(f"{log_prefix} cleared adapter slot {slot}")
 
-    # Prevent future slot tenants from inheriting optimizer momentum.
+    # Prevent future slot tenants from inheriting optimizer momentum or the
+    # previous tenant's partially accumulated gradients.
+    from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
+
     zero_optimizer_state_for_adapter(optimizer, model, slot)
+    zero_adapter_slot_grads(model, slot)
     optimizer.reload_model_params()
-    logger.info(f"{log_prefix} cleared optimizer state for slot {slot}")
+    logger.info(f"{log_prefix} cleared optimizer state and retained grads for slot {slot}")
 
 
 def load_adapters(args, model, optimizer, adapters) -> int:

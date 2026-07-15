@@ -128,7 +128,7 @@ def get_batch(
     Steps:
     - Fetch raw fields via iterator.
     - Save original token tensors under "unconcat_tokens".
-    - Slice tokens into two chunks for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
+    - Slice tokens into two batches for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
     - Build cu_seqlens and `PackedSeqParams` with T-H-D layout (T: sequence length, H: attention heads, D: head dimension).
 
     Args:
@@ -188,14 +188,14 @@ def get_batch(
         if allgather_cp:
             assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             # DSA mode: concatenate all sequences first, then slice once with CP.
-            # We also pad the *global* concatenated stream to make per-rank chunks equal.
+            # We also pad the *global* concatenated stream to make per-rank batches equal.
             cu_seqlens_list: list[int] = [0]
             for t in tokens:
                 cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
 
             tokens = torch.cat(tokens, dim=0)
 
-            # Pad global stream so (1) divisible by cp_size (equal chunks),
+            # Pad global stream so (1) divisible by cp_size (equal batches),
             # (2) divisible by pad_size (reduce fragmentation).
             global_pad_size = cp_size * pad_size
             pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
@@ -204,7 +204,7 @@ def get_batch(
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
             cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
-            tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
+            tokens = tokens.batch(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
             sample_token_lengths = [t.size(0) for t in tokens]
@@ -307,7 +307,7 @@ def get_batch(
         loss_masks = torch.cat(loss_masks, dim=0)
         if pad != 0:
             loss_masks = F.pad(loss_masks, (0, pad), value=0)
-        loss_masks = loss_masks.chunk(cp_size, dim=0)[cp_rank].unsqueeze(0)
+        loss_masks = loss_masks.batch(cp_size, dim=0)[cp_rank].unsqueeze(0)
     elif qkv_format == "thd":
         loss_masks = torch.cat(loss_masks)
         loss_masks = F.pad(loss_masks, (0, pad), value=0).unsqueeze(0)
@@ -367,7 +367,7 @@ class DataIterator:
 
         - If `micro_batch_indices` is provided, selects rows according to the current
           index list for each requested key.
-        - Otherwise, slices a contiguous window of size `micro_batch_size` starting
+        - Otherwise, slices a contiguous adapter batch of size `micro_batch_size` starting
           at the current offset.
 
         Returns a dict mapping each key to a list subset (or None if absent).
@@ -447,6 +447,12 @@ def get_data_iterator(
         return data_iterator
 
     if not args.use_dynamic_batch_size:
+        if "adapter_slots" in rollout_data and num_local_gbs % args.micro_batch_size != 0:
+            raise ValueError(
+                "A multi-LoRA local batch must be divisible by --micro-batch-size; "
+                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.micro_batch_size}. "
+                "Use --use-dynamic-batch-size or choose compatible adapter batch shapes."
+            )
         num_microbatches = [num_local_gbs // args.micro_batch_size for _ in range(num_steps_per_rollout)]
         data_iterator = _generate_data_iterator(rollout_data, args.micro_batch_size)
     else:
@@ -484,6 +490,10 @@ def get_data_iterator(
             for j in range(num_mbs):
                 for k in range(len(partitions[j])):
                     partitions[j][k] += start
+                # Multi-LoRA: microbatches must be contiguous-by-slot for the
+                # grouped GEMM's per-adapter token-count math.
+                if "adapter_slots" in rollout_data:
+                    partitions[j].sort(key=lambda index: rollout_data["adapter_slots"][index])
             micro_batch_indices.extend(partitions)
 
         assert len(set(sum(micro_batch_indices, []))) == num_local_samples

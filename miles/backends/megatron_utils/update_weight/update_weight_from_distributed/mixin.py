@@ -263,18 +263,14 @@ class DistBucketedWeightUpdateMixin:
         self._lora_loaded = True
 
     def _update_multi_lora_weights(self) -> None:
-        """Push every loaded adapter (upsert, never unload), then report the
-        set to the controller. The push set is the reconcile-time loaded map,
-        identical on every rank, so per-adapter TP collectives line up."""
-        from miles.ray.multi_lora_controller import get_multi_lora_controller
-
+        """Push the selected adapters (upsert, never unload). The push set is
+        chosen by the actor before each call and is identical on every rank, so
+        per-adapter TP collectives line up. Version bumps are recorded by the
+        actor after the push succeeds."""
         adapters = self.multi_lora_adapters
         assert adapters is not None, "actor must set multi_lora_adapters before update_weights"
         for name in sorted(adapters):
             self._send_one_multi_lora_adapter(adapters[name], upsert=True)
-
-        if self._is_lora_source and adapters:
-            ray.get(get_multi_lora_controller().record_weight_update.remote(sorted(adapters)))
 
     def _send_one_multi_lora_adapter(self, adapter, upsert: bool) -> None:
         """All ranks iterate the bridge (TP collectives); only the source
