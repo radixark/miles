@@ -17,7 +17,7 @@ import miles.utils.external_utils.command_utils as U
 # side consumes the per-layer topk emitted by SGLang.
 
 register_cuda_ci(
-    est_time=1200,
+    est_time=1400,
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "replay"],
 )
