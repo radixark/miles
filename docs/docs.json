@@ -178,6 +178,7 @@
               {
                 "group": "Performance",
                 "pages": [
+                  "advanced/megatron_param_tuning",
                   "advanced/fp8-low-precision",
                   "advanced/int4-qat",
                   "advanced/speculative-decoding",

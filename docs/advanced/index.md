@@ -2,11 +2,15 @@
 title: Advanced Features
 description: Systems-level features for large-scale and long-running RL.
 ---
-This section covers the Miles features that the Core-features section of the
-homepage points at: low-precision training (FP8 / MXFP8 / INT4 QAT), Rollout
-Routing Replay for MoE, speculative decoding, and LoRA training and serving.
+This section covers Megatron capacity planning and the Miles features that the Core-features section of the homepage points at: low-precision training (FP8 / MXFP8 / INT4 QAT), Rollout Routing Replay for MoE, speculative decoding, and LoRA training and serving.
 
 <CardGroup cols={2}>
+
+  <Card title="Megatron Parameter Tuning" icon="calculator" href="/advanced/megatron_param_tuning">
+
+    Size parallel groups, static training state, host backups, and activation headroom before launching a full run.
+
+  </Card>
 
   <Card title="Low Precision RL" icon="bolt" href="/advanced/fp8-low-precision">
 
