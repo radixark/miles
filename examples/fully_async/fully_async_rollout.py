@@ -60,7 +60,7 @@ def get_global_worker(args, data_buffer: DataSource):
     with _worker_lock:
         if _global_worker is None or not _global_worker.worker_thread.is_alive():
             print("Creating new global async worker...")
-            _global_worker = AsyncRolloutWorker(args, data_buffer, concurrency=args.sglang_server_concurrency)
+            _global_worker = AsyncRolloutWorker(args, data_buffer)
             _global_worker.start()
         return _global_worker
 
@@ -80,10 +80,14 @@ class AsyncRolloutWorker:
     Supports continuous running, independent of rollout function lifecycle
     """
 
-    def __init__(self, args, data_buffer: DataSource, concurrency=10):
+    def __init__(self, args, data_buffer: DataSource):
+        if args.async_max_concurrent_samples is not None:
+            assert args.async_max_concurrent_samples <= args.sglang_server_concurrency, (
+                f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must not exceed "
+                f"--sglang-server-concurrency ({args.sglang_server_concurrency})"
+            )
         self.args = args
         self.data_buffer = data_buffer  # Directly save data_buffer reference
-        self.concurrency = concurrency
         self.running = True
         self.output_queue = queue.Queue(maxsize=1000)  # Continuous output queue
         self.worker_thread = None
@@ -94,10 +98,8 @@ class AsyncRolloutWorker:
         print("Continuous async rollout worker started")
 
         active_tasks = set()
-        # Concurrency is counted in trajectories; each in-flight group holds
-        # n_samples_per_prompt of them.
-        if self.args.async_max_concurrent_tasks is not None:
-            max_concurrent_tasks = max(1, self.args.async_max_concurrent_tasks // self.args.n_samples_per_prompt)
+        if self.args.async_max_concurrent_samples is not None:
+            max_concurrent_tasks = max(1, self.args.async_max_concurrent_samples // self.args.n_samples_per_prompt)
         else:
             max_concurrent_tasks = self.args.rollout_batch_size
         group_id_counter = 0

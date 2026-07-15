@@ -491,7 +491,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--async-max-concurrent-tasks",
+                "--async-max-concurrent-samples",
                 type=int,
                 default=None,
                 help=(
