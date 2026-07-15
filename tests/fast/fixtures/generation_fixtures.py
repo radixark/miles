@@ -18,7 +18,6 @@ from miles.rollout.session.server import SessionServer
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
-from miles.utils.test_utils import mock_tools
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
@@ -252,6 +251,9 @@ def with_session_server(
 
 @pytest.fixture
 def generation_env(request, variant):
+    # tests/conftest.py imports this fixture for every test; load the tokenizer-backed helper only when it is used.
+    from miles.utils.test_utils import mock_tools
+
     SingletonMeta.clear_all_instances()
     params = getattr(request, "param", {})
     args_kwargs = params.get("args_kwargs", {})
