@@ -3,7 +3,7 @@ import os
 from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts"])
+register_cuda_ci(est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
@@ -12,7 +12,7 @@ def _args() -> ScriptArgs:
         task="gsm8k",
         enable_eval=False,
         num_nodes=1,
-        num_gpus_per_node=8,
+        num_gpus_per_node=4,
         skip_saving=True,
         use_fault_tolerance=False,
         extra_args=(

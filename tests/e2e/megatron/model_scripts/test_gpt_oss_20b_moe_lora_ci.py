@@ -10,7 +10,7 @@ import miles.utils.external_utils.command_utils as U
 # every combination must pass. Functionality, not accuracy; 4 GPUs (TP=4, EP=1).
 
 
-register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts", "lora"])
+register_cuda_ci(est_time=1600, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
@@ -58,7 +58,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        f"--tensor-model-parallel-size {NUM_GPUS} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -83,7 +83,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
     grpo_args = "--advantage-estimator grpo --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 4 "
+        f"--rollout-num-gpus-per-engine {NUM_GPUS} "
         "--sglang-dtype bfloat16 "
         "--sglang-mem-fraction-static 0.2 "
         "--sglang-moe-runner-backend triton "
@@ -98,6 +98,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
         "--update-weight-buffer-size 536870912 "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS} "
+        f"--num-gpus-per-node {NUM_GPUS} "
         "--colocate "
         "--ci-test "
         "--ci-disable-logprobs-checker "

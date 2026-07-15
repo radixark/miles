@@ -8,10 +8,10 @@ import miles.utils.external_utils.command_utils as U
 # Smoke test for scripts/run_glm5_1_744b_a40b_lora.py on the 6-layer toy (full rollout ->
 # train -> save loop). Runs the MoE-expert LoRA matrix — {shared-outer + virtual-experts,
 # per-expert + no-virtual-experts} x {tilelang, megatron} — and every combination must pass.
-# Functionality, not accuracy; 4 GPUs (TP=EP=4).
+# Functionality, not accuracy; 8 GPUs (TP=EP=8).
 
 
-register_cuda_ci(est_time=2200, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts", "lora"])
+register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"])
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)
@@ -35,7 +35,7 @@ def _args(dsa: str, shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
     return ScriptArgs(
         model_name="GLM-5.1-6layer",
         num_nodes=1,
-        num_gpus_per_node=4,
+        num_gpus_per_node=8,
         num_rollout=1,
         enable_wandb=False,
         dsa_attention_backend=dsa,

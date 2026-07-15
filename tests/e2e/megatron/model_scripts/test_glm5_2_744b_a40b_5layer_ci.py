@@ -17,15 +17,16 @@ import miles.utils.external_utils.command_utils as U
 # 0,1,2 + skip layers 3,4). Verifies the script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=1000, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts"])
+register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
-        num_gpus_per_node=8,
+        num_gpus_per_node=4,
         num_rollout=2,
+        enable_optimizer_offload=True,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
     )
 
