@@ -280,12 +280,8 @@ def _train(args: ScriptArgs):
         sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
 
     if args.fp8_rollout:
-        # Point the sglang engines at the pre-converted fp8 checkpoint via the --sglang-config
-        # YAML (model_path override). update_weights must stay ON so the per-step LoRA adapter
-        # sync still reaches the engine (a model_path != hf_checkpoint otherwise auto-disables
-        # it); the base-weight sync is already skipped under --lora-base-cpu-backup +
-        # --colocate (skip_base_sync in update_weight_from_tensor.py), so the quantized base
-        # on the engine is never overwritten by bf16 training weights.
+        # Serve the fp8 ckpt via --sglang-config; update_weights stays on so the per-step LoRA
+        # sync reaches the engine (the bf16 base sync is already skipped under colocate + backup).
         sglang_config_path = f"{load_save_path}/sglang_fp8_rollout.yaml"
         os.makedirs(load_save_path, exist_ok=True)
         with open(sglang_config_path, "w") as f:
@@ -323,11 +319,8 @@ def _train(args: ScriptArgs):
             "INDEXER_ROPE_NEOX_STYLE": "0",
             "SGLANG_NSA_FORCE_MLA": "1",
             # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True breaks torch_memory_saver
-            # Do NOT set SGLANG_SHARED_EXPERT_TP1 here: TP1-replicated shared experts get
-            # double-counted under dp-attention/EP topologies that skip the in-layer
-            # all-reduce (garbage rollouts). The fp8 LoRA-init crash it papered over is
-            # fixed in sglang lora/mem_pool.py (column-parallel output-axis shard probe);
-            # fp8_rollout requires an sglang build with that fix.
+            # No SGLANG_SHARED_EXPERT_TP1: it double-counts shared experts under dp-attention/EP;
+            # the fp8 LoRA-init crash it papered over is fixed in sglang lora/mem_pool.py.
         },
         megatron_path=args.megatron_path,
     )
