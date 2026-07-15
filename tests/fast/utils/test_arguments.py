@@ -65,6 +65,20 @@ class TestAddArgumentsSupport:
             get_miles_extra_args_provider()(parser)
 
 
+def test_custom_megatron_after_train_step_hook_path_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args, _ = parser.parse_known_args(
+        [
+            "--custom-megatron-after-train-step-hook-path",
+            "custom_hooks.after_train_step",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    assert args.custom_megatron_after_train_step_hook_path == "custom_hooks.after_train_step"
+
+
 class TestMaybeApplyDumperOverrides:
     def _make_args(
         self,

@@ -28,6 +28,7 @@ and the default it replaces.
 | **Megatron hooks** | `--custom-megatron-init-path` | After Megatron init |
 | | `--custom-megatron-before-log-prob-hook-path` | Before logprob compute |
 | | `--custom-megatron-before-train-step-hook-path` | Before each train step |
+| | `--custom-megatron-after-train-step-hook-path` | After each successful train step |
 | | `--custom-megatron-post-save-hook-path` | After each checkpoint save |
 | **Logging** | `--custom-rollout-log-function-path` | Train-rollout logging |
 | | `--custom-eval-rollout-log-function-path` | Eval-rollout logging |
@@ -224,10 +225,13 @@ def convert_samples_to_train_data(args, samples) -> dict:
 | `--custom-megatron-init-path` | `def custom_init(args) -> None` |
 | `--custom-megatron-before-log-prob-hook-path` | `def custom_hook(args, model, store_prefix) -> None` |
 | `--custom-megatron-before-train-step-hook-path` | `def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler) -> None` |
+| `--custom-megatron-after-train-step-hook-path` | `def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler, loss_dict, num_microbatches) -> None` |
 | `--custom-megatron-post-save-hook-path` | `def hook(args, rollout_id: int, checkpoint_dir: str, hf_checkpoint_dir: str | None) -> None` |
 
 The Megatron init, log-prob, and train-step hooks give access to the live model
 and optimizer, useful for custom probes, weight clipping, or surgical interventions.
+The after-train-step hook runs only after a successful training step and can add
+metrics to `loss_dict` before the standard train-step logging path runs.
 The post-save hook runs on rank 0 after checkpoint save completion and receives
 the saved checkpoint paths instead of live model objects.
 

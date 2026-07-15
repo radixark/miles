@@ -102,13 +102,14 @@ command.
 
 ### Hooks
 
-Three extension points override Megatron behavior without forking:
+Four extension points override Megatron behavior without forking:
 
 | Flag | Runs |
 |---|---|
 | `--custom-megatron-init-path` | After Megatron initialization |
 | `--custom-megatron-before-log-prob-hook-path` | Before every log-probability computation |
 | `--custom-megatron-before-train-step-hook-path` | Before every training step |
+| `--custom-megatron-after-train-step-hook-path` | After every successful training step |
 
 Typical use cases: mixing in an auxiliary loss, instrumenting per-step metrics, or
 clipping weights surgically. See [Customization](/user-guide/customization#megatron-hooks).

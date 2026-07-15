@@ -1946,6 +1946,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
             )
+            parser.add_argument(
+                "--custom-megatron-after-train-step-hook-path",
+                type=str,
+                default=None,
+            )
             return parser
 
         def add_mtp_training_arguments(parser):
