@@ -3,12 +3,13 @@
 
 * No network dependency; the store runs entirely in-process. An in-memory
   database (`:memory:`) makes it a drop-in fixture for unit tests.
-* Query and write semantics mirror the hosted Postgres backend, so tests
-  exercising this implementation validate the contract the gate relies on in
-  production — including the authoritative baseline query's plain-equality
-  match on the `(metric_key, steps_key, constraint_key, step)` coordinate.
+* Query and write semantics mirror the hosted Postgres backend
+  (:class:`NeonMetricHistoryStore` in neon_store.py), so tests exercising this
+  implementation validate the contract the gate relies on in production —
+  including the authoritative baseline query's plain-equality match on the
+  `(metric_key, steps_key, constraint_key, step)` coordinate.
 * This module owns a small local schema literal for tests; production Postgres
-  setup is out-of-band until the hosted backend is implemented.
+  schema setup is out-of-band (provisioned outside the repo).
 * Schema is applied at construction (`apply_schema`), never on the
   read/write path.
 """

@@ -242,4 +242,7 @@ sys.exit(1)
     attempt_2 = Path(_attempt_record_dir(str(record_base), child.name, attempt=2))
     assert (attempt_1 / "seen.txt").read_text() == str(attempt_1)
     assert (attempt_2 / "seen.txt").read_text() == str(attempt_2)
-    assert not list(record_base.glob("**/*.merged.jsonl"))
+    # Only the PASSING attempt's records are merged for the gate hook; the
+    # failed attempt keeps its per-process records unmerged.
+    assert not Path(f"{attempt_1}.merged.jsonl").exists()
+    assert Path(f"{attempt_2}.merged.jsonl").exists()
