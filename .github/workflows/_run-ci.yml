@@ -131,6 +131,10 @@ jobs:
           echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
           echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
 
+      - name: Reconcile Miles dependencies
+        shell: bash
+        run: python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
+
       - name: Sync dependency sources
         if: ${{ !inputs.skip_dependency_install }}
         shell: bash
