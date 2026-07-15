@@ -13,12 +13,13 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.tracking_utils.tracking import init_tracking
 
 from ....utils.profile_utils import TrainProfiler
 from ...training_utils.ci_utils import check_grad_norm
@@ -38,6 +39,7 @@ from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTe
 
 if TYPE_CHECKING:
     from miles.ray.rollout.rollout_manager import EnginesAndLock
+    from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +58,21 @@ class FSDPTrainRayActor(TrainRayActor):
     """
 
     @with_defer(lambda: Timer().start("train_wait"))
-    def init(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> int:  # type: ignore[override]
+    def init(
+        self,
+        args: Namespace,
+        role: str,
+        *,
+        with_ref: bool = False,
+        with_opd_teacher: bool = False,
+        recv_ckpt_src_rank: int | None = None,
+        indep_dp_info: IndepDPInfo,
+    ) -> int | None:  # type: ignore[override]
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+
+        # Unsupported
+        assert recv_ckpt_src_rank is None
+        assert indep_dp_info.quorum_id == 0
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
@@ -394,7 +409,13 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.model.cuda()
                     dist.barrier(group=get_gloo_group())
 
-    def train(self, rollout_id: int, rollout_data_ref: Box) -> None:
+    def train(
+        self,
+        rollout_id: int,
+        rollout_data_ref: Box,
+        witness_info: "WitnessInfo | None" = None,
+        attempt: int = 0,
+    ) -> None:
         """Run one training update over a rollout batch.
 
         Parameters:
@@ -405,11 +426,16 @@ class FSDPTrainRayActor(TrainRayActor):
                 `rollout_log_probs`, etc.). It will be fetched and partitioned
                 by `process_rollout_data` based on data-parallel rank/size.
         """
+        assert witness_info is None
+        assert attempt == 0
+
+        self._heartbeat.bump()
+
         if self.args.offload_train:
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref)
+            rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
@@ -420,6 +446,8 @@ class FSDPTrainRayActor(TrainRayActor):
             is_primary_rank=dist.get_rank() == 0,
             compute_total_fwd_flops=None,
         )
+
+        self._heartbeat.bump()
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)

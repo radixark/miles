@@ -1,9 +1,10 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
 register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "replay"])
+register_rocm_ci(est_time=1500, suite="stage-c-4-gpu-mi350", labels=["megatron", "replay"])
 
 CASE = CaseConfig(
     use_deepep=False,

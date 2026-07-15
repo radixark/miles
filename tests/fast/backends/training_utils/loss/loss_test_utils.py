@@ -51,6 +51,7 @@ def make_parallel_state() -> ParallelState:
         pp=_trivial_group(),
         ep=_trivial_group(),
         etp=_trivial_group(),
+        indep_dp=_trivial_group(),
         is_pp_last_stage=True,
     )
     set_parallel_state(state)

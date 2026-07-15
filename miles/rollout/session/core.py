@@ -207,6 +207,14 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
+            # Chat template kwargs should also be forwarded to sglang to make sure
+            # parsers work correctly.
+            server_ctk = self.registry.tito_tokenizer.chat_template_kwargs
+            if server_ctk:
+                request_body["chat_template_kwargs"] = {
+                    **server_ctk,
+                    **(request_body.get("chat_template_kwargs") or {}),
+                }
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
@@ -222,6 +230,7 @@ class SessionCore:
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
@@ -298,6 +307,7 @@ class SessionCore:
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
     ) -> Response:
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), path, body=body, headers=headers
         )

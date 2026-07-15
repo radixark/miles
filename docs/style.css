@@ -95,11 +95,25 @@ td {
 
 /* =============================================
    Images — always responsive
+   Scope to content images: this rule is unlayered, so a bare
+   `img` selector overrides Mintlify's layered Tailwind utilities
+   (e.g. the navbar logo's `h-7`) despite lower specificity, which
+   stretches the logo to fill the header. Exclude the nav logo.
    ============================================= */
-img {
+img:not(.nav-logo) {
   max-width: 100%;
   height: auto;
   border-radius: 4px;
+}
+
+/* Navbar logo — bump up from Mintlify's default h-7 (28px).
+   Fixed height + auto width + no max-width clamp keeps it sharp and
+   prevents the aspect-ratio blow-up. The top bar is a constant 64px
+   across breakpoints, so 40px stays clear on desktop and mobile. */
+img.nav-logo {
+  height: 40px !important;
+  width: auto !important;
+  max-width: none !important;
 }
 
 /* =============================================

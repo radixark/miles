@@ -1,15 +1,18 @@
 # doc-dev: docs/ci/02-docker-build.md
 # Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
 #
-# 1. rocm/sgl-dev:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
-#    use default settings
+# 1. rocm700-mi35x  (gfx950, ROCm 7.0 / MI350 / MI355X)
+#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
 #
-# 2. rocm/sgl-dev:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
-#    build-arg:GPU_ARCH=gfx942
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+# 2. rocm700-mi30x  (gfx942, ROCm 7.0 / MI300 / MI325)
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+#
+# 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
-FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
+ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
+ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
+FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
@@ -24,9 +27,6 @@ ARG MILES_COMMIT=main
 
 ARG GPU_ARCH=gfx950
 ARG MAX_JOBS=128
-
-ARG AITER_REPO=https://github.com/ROCm/aiter.git
-ARG AITER_COMMIT=v0.1.11.post1
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
@@ -58,12 +58,14 @@ ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/miles.patch /tmp/amd_patch/miles.patch
 COPY docker/amd_patch/latest/sglang_attn_bridge /tmp/amd_patch/sglang_attn_bridge
+COPY docker/amd_patch/latest/tile_kernels.patch /tmp/amd_patch/tile_kernels.patch
+COPY docker/amd_patch/latest/tilelang_hip_fp8.patch /tmp/amd_patch/tilelang_hip_fp8.patch
 COPY requirements.txt /tmp/requirements.txt
 
 # ======================================== Apt dependencies =====================================
 RUN apt update
 # Install build tools and diagnostics utilities.
-RUN apt install -y build-essential cmake dnsutils ethtool git nvtop rsync
+RUN apt install -y build-essential cmake dnsutils ethtool git nvtop patch rsync
 
 # Build rccl-tests diagnostics binaries.
 RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/rocm-systems && \
@@ -90,31 +92,28 @@ RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
 
 RUN pip install flash-linear-attention==0.4.2
 
+# Enable deepseek-ai/TileKernels on ROCm/gfx950 for mHC and FP8 QAT cast-back.
+# These temporary build-time patches make tile_kernels import lazy, remove CUDA/Hopper-only PDL from mhc_post,
+# and fix TileLang's HIP fp8->float conversion to use ROCm device intrinsics instead of the SDK host-only operator.
+# Drop these patches once the corresponding tilelang/tile_kernels fixes land in the base image.
+RUN pip install --no-deps tile_kernels==1.0.0 && \
+    patch -p1 -d /opt/venv/lib/python3.10/site-packages < /tmp/amd_patch/tile_kernels.patch && \
+    patch -p1 -d /opt/tilelang/src/tl_templates/hip < /tmp/amd_patch/tilelang_hip_fp8.patch
+
 RUN rm -rf /root/Megatron-LM && \
     git clone --recursive -b ${MEGATRON_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
     cd /root/Megatron-LM && \
     git apply /tmp/amd_patch/megatron.patch && \
     pip install -e .
 
-RUN pip uninstall -y sgl_kernel sglang || true
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
-    git clean -fdx && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
     else \
       git checkout FETCH_HEAD; \
     fi && \
-    git submodule sync --recursive && \
-    git submodule update --init --recursive && \
-    cd sgl-kernel && \
-    rm -f pyproject.toml && \
-    mv pyproject_rocm.toml pyproject.toml && \
-    AMDGPU_TARGET=${GPU_ARCH} python setup_rocm.py install && \
-    cd .. && \
-    rm -rf python/pyproject.toml && \
-    mv python/pyproject_other.toml python/pyproject.toml && \
     pip install -e "python[all_hip]" --no-deps
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
@@ -130,11 +129,11 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 # still import it; re-pin to the base image's setuptools.
 RUN pip install "setuptools==79.0.1"
 
-# Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
-RUN pip install "typer==0.25.1" "click==8.2.1"
-
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
     pip install -r /tmp/requirements.txt
+
+# Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
+RUN pip install "typer==0.25.1" "click==8.2.1"
 
 # Pin numpy 1.x for Megatron compatibility.
 RUN pip install "numpy<2"
@@ -148,6 +147,24 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
+
+# ====================================== Install sgl-model-gateway ============================================
+ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
+ARG SGL_ROUTER_BRANCH=main
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    export PATH="/root/.cargo/bin:${PATH}"; \
+    git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+    cd /build/sgl-model-gateway/bindings/python && \
+    ulimit -n 65536 && \
+    maturin build --release --features vendored-openssl --out /build/gateway_wheels && \
+    cd /build/sgl-model-gateway && \
+    cargo build --release --bin sgl-model-gateway --features vendored-openssl && \
+    cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
+    chmod +x /usr/local/bin/sgl-model-gateway && \
+    pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl && \
+    rm -rf /build/sgl-model-gateway /build/gateway_wheels
 
 # ====================================== Runtime knobs ==========================================
 

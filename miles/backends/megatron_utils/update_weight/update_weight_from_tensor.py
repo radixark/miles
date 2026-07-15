@@ -80,6 +80,15 @@ class UpdateWeightFromTensor:
                 self._ipc_gather_src = start_rank
 
         self._model_update_groups = None
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale: bool = False
+
+    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
+    def is_rollout_engines_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
 
     def connect_rollout_engines(
         self,
@@ -93,6 +102,7 @@ class UpdateWeightFromTensor:
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
+        self._connection_stale = False
 
         if engine_gpu_counts is None:
             engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
@@ -171,6 +181,12 @@ class UpdateWeightFromTensor:
             end = start + colocate_gpu_counts[i]
             if start <= dist.get_rank() < end:
                 self._ipc_engine = engine
+
+    def pop_metrics(self) -> dict[str, float]:
+        """Return and clear ``update_weight_metrics``. Empty under colocate today; kept symmetric
+        with the distributed updaters so the actor can drain unconditionally."""
+        out = self.__dict__.pop("update_weight_metrics", {})
+        return out
 
     @torch.no_grad()
     def update_weights(self) -> None:
