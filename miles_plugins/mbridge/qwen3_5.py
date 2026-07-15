@@ -15,10 +15,10 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     ``model.language_model.layers``, separate ``in_proj_qkv`` + ``in_proj_z``
     for linear attention, and nested ``text_config``.
 
-    Qwen3.6-35B-A3B's only structural difference is MTP-expert packing —
-    fused 3-D ``gate_up_proj`` / ``down_proj`` tensors instead of the
-    per-expert ``.weight`` files used by Qwen3.5 — which
-    ``_mtp_experts_fused()`` autodetects from the safetensor index.
+    Qwen3.5 stores MoE experts as per-expert ``.weight`` files. Some newer
+    checkpoints store experts as fused 3-D ``gate_up_proj`` / ``down_proj``
+    tensors instead. The regular-layer and MTP expert formats are detected
+    independently from the safetensor index.
     """
 
     _DIRECT_MAPPING = {
@@ -88,7 +88,18 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         ],
         "mlp.router.weight": ["model.language_model.layers.{layer_number}.mlp.gate.weight"],
         "shared_experts.gate_weight": ["model.language_model.layers.{layer_number}.mlp.shared_expert_gate.weight"],
-        # Fused expert format: single 3D tensor for all experts
+    }
+
+    _MLP_EXPERT_MAPPING_UNFUSED = {
+        "mlp.experts.linear_fc1": [
+            "model.language_model.layers.{layer_number}.mlp.experts.{expert_id}.gate_proj.weight",
+            "model.language_model.layers.{layer_number}.mlp.experts.{expert_id}.up_proj.weight",
+        ],
+        "mlp.experts.linear_fc2": [
+            "model.language_model.layers.{layer_number}.mlp.experts.{expert_id}.down_proj.weight"
+        ],
+    }
+    _MLP_EXPERT_MAPPING_FUSED = {
         "mlp.experts.linear_fc1": [
             "model.language_model.layers.{layer_number}.mlp.experts.gate_up_proj",
         ],
@@ -181,10 +192,11 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         return ret
 
     def _weight_name_mapping_mlp(self, name: str) -> list[str]:
-        """Override to handle fused expert weights."""
+        """Override to handle regular expert weight formats."""
         layer_number = name.split(".")[2]
+        mapping = self._MLP_EXPERT_MAPPING if "mlp.experts.linear_fc" in name else self._MLP_MAPPING
         convert_names = []
-        for keyword, mapping_names in self._MLP_MAPPING.items():
+        for keyword, mapping_names in mapping.items():
             if keyword in name:
                 if "{expert_id}" in mapping_names[0]:
                     expert_id = name.split("weight")[-1]
@@ -197,6 +209,27 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if len(convert_names) == 0:
             raise NotImplementedError(f"Unsupported parameter name: {name}")
         return convert_names
+
+    def _regular_experts_fused(self) -> bool:
+        """Detect whether regular MoE expert weights are stored in fused 3-D tensors."""
+        cached = getattr(self, "_regular_experts_fused_cached", None)
+        if cached is not None:
+            return cached
+        io = getattr(self, "safetensor_io", None)
+        index = getattr(io, "index", None) if io is not None else None
+        if not index:
+            return False
+        fused = any(
+            k.startswith("model.language_model.layers.")
+            and (k.endswith("mlp.experts.gate_up_proj") or k.endswith("mlp.experts.down_proj"))
+            for k in index
+        )
+        self._regular_experts_fused_cached = fused
+        return fused
+
+    @property
+    def _MLP_EXPERT_MAPPING(self):
+        return self._MLP_EXPERT_MAPPING_FUSED if self._regular_experts_fused() else self._MLP_EXPERT_MAPPING_UNFUSED
 
     def _mtp_experts_fused(self) -> bool:
         """Detect whether MTP expert weights are stored in fused 3-D tensors.
