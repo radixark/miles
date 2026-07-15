@@ -87,6 +87,8 @@ def test_multimodal_request_contract():
 
     with pytest.raises(ValueError, match="same length"):
         build_rollout_engine_multimodal_payload({"videos": [object()]}, None)
+    with pytest.raises(ValueError, match="audios"):
+        build_rollout_engine_multimodal_payload({"audios": [object()]}, None)
 
 
 def test_prompt_processing_keeps_training_and_rollout_ids_separate():

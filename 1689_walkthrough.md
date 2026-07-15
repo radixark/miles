@@ -126,6 +126,7 @@ video_data: list[str]  # original path, URL, or data URI
 
 Before constructing `video_data`, Miles checks:
 
+- `multimodal_inputs` contains only `images` and `videos`.
 - Every source is a string.
 - The source count equals the number of locally processed logical videos.
 - Video item dictionaries do not contain per-item processing options that the request cannot replay.
@@ -212,6 +213,7 @@ SGLang expands the multimodal prompt before producing token logprobs, so the ret
 ### `tests/fast/rollout/generate_utils/test_multimodal.py`
 
 - Verifies image and video HTTP payloads, prompt-prefix replacement, and context-length calculation.
+- Rejects unsupported `multimodal_inputs` keys such as `audios`.
 - Verifies processor IDs and rollout IDs remain separate.
 - Locks existing image-only behavior.
 - Exercises a single-turn video request through response integration.

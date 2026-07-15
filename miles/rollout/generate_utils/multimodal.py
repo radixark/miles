@@ -8,6 +8,9 @@ def build_rollout_engine_multimodal_payload(
     rollout_video_sources: list[str] | None,
 ) -> dict[str, list[str]]:
     multimodal_inputs = multimodal_inputs or {}
+    unsupported_keys = multimodal_inputs.keys() - {"images", "videos"}
+    if unsupported_keys:
+        raise ValueError(f"Unsupported multimodal input keys: {sorted(unsupported_keys)}")
 
     payload = {}
     if image_data := multimodal_inputs.get("images"):
