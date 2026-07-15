@@ -141,11 +141,11 @@ def _execute_train(args: ScriptArgs):
 
     if args.num_nodes == 1:  # single-node 2-layer minimal test
         perf_args = (
-            "--tensor-model-parallel-size 8 "
+            f"--tensor-model-parallel-size {args.num_gpus_per_node} "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
             "--context-parallel-size 1 "
-            "--expert-model-parallel-size 8 "
+            f"--expert-model-parallel-size {args.num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
         max_tokens_per_gpu = 2048

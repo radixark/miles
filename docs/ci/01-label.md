@@ -10,7 +10,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Kind | Example | Effect |
 |---|---|---|
 | Domain label | `run-ci-megatron` | selects which tests run |
-| Scope label | `run-ci-image` | run every enabled non-FT tag |
+| Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
 | Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
@@ -50,7 +50,7 @@ The workflow's `resolve-ci-policy` job forwards trigger-specific facts to `tests
 |---|---|---|---|---|
 | all | `run-ci-all` label | every enabled tag | — | determined by cadence |
 | nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag incl. `ft-short` | `ft-long` | disabled on both levels (within-stage only for local runs) |
-| image | `run-ci-image` label | every enabled non-FT tag | `ft-short`, `ft-long` | determined by cadence |
+| image | `run-ci-image` label | every enabled tag except `long` and FT tags | `long`, `ft-short`, `ft-long` | determined by cadence |
 
 Rows are in precedence order: when scope signals overlap, the higher row wins (`run-ci-all` > nightly > `run-ci-image`, the branch order of `resolve_policy`). `run-ci-all` widens only the domain scope; without nightly cadence it does not admit nightly-only registrations.
 
@@ -58,7 +58,7 @@ The generic triggers carry no policy. The current nightly schedule is identified
 
 A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must never run at nightly must carry only FT labels.
 
-A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-ft-short` runs the image scope *and* the ft-short tests, rather than silently dropping the explicit request.
+A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short` runs the image scope *and* the explicitly requested tests, rather than silently dropping the request.
 
 ## Registration and scan scope
 

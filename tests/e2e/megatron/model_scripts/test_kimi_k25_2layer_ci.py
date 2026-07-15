@@ -6,18 +6,18 @@ from tests.ci.ci_register import register_cuda_ci
 import miles.utils.external_utils.command_utils as U
 
 # Smoke test for the Kimi-K2.5 (MoE + MLA, INT4 rollout + BF16 Megatron bridge) training
-# script. It runs the 2-layer pruned model on a single 8-GPU node and only verifies that
+# script. It runs the 2-layer pruned model on a single 4-GPU H200 node and only verifies that
 # the training script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts"])
+register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="Kimi-K2.5-2layer",
         num_nodes=1,
-        num_gpus_per_node=8,
+        num_gpus_per_node=4,
         num_rollout=2,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
     )

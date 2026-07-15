@@ -1,4 +1,4 @@
-"""DeepSeek V3.2 5-layer CI smoke test on H100.
+"""DeepSeek V3.2 5-layer CI smoke test on H200.
 
 FP8 rollout using the raw DeepSeek FP8 checkpoint (no re-quantization).
 BF16 training via Megatron. Thin wrapper around scripts/run_deepseek_v32.py.
@@ -15,7 +15,7 @@ from scripts.run_deepseek_v32 import (
 )
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=1900, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts"])
+register_cuda_ci(est_time=1700, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
@@ -23,7 +23,7 @@ def _args() -> ScriptArgs:
         model_org="Pinaster",
         model_name="DeepSeek-V3.2-5layer",
         megatron_model_type="deepseek-v32-5layer",
-        hardware="H100",
+        hardware="H200",
         use_single_node=True,
         from_bf16_ckpt=False,
         num_rollout=2,

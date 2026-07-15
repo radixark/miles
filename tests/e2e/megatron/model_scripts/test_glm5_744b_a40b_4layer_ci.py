@@ -15,16 +15,22 @@ import miles.utils.external_utils.command_utils as U
 # This CI test is an example smoke test for the DSA model code path used by DeepSeek V3.2 and GLM-5. It only verifies that the training script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=800, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts"])
+register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="GLM-5_4layer",
         num_nodes=1,
-        num_gpus_per_node=8,
+        num_gpus_per_node=2,
         num_rollout=2,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
+        enable_optimizer_offload=True,
+        extra_args=(
+            "--ci-test "
+            "--ci-disable-logprobs-checker "
+            "--disable-weights-backuper "
+            "--tensor-model-parallel-size 2 "
+        ),
     )
 
 
