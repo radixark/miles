@@ -117,7 +117,7 @@ def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornT
     try:
         server.start()
         args.session_server_ip = "127.0.0.1"
-        args.session_server_port = port
+        args.session_server_ports = [port]
         yield server
     finally:
         server.stop()
