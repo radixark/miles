@@ -4,7 +4,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=5000, suite="stage-c-2-gpu-h200", labels=["long"])
+register_cuda_ci(est_time=5400, suite="stage-c-2-gpu-h200", labels=["long"])
 register_rocm_ci(est_time=5000, suite="stage-c-2-gpu-mi350", labels=["long"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
