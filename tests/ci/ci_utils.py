@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import re
@@ -9,6 +10,21 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from tests.ci.ci_register import CIRegistry
+
+# Env var the training process reads to find the per-attempt record directory; kept
+# in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
+CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
+
+
+def _sanitize_for_path(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+def _attempt_record_dir(base_dir: str, filename: str, attempt: int) -> str:
+    """Per-test, per-attempt subdir for CI metric-history records."""
+    record_key = f"{_sanitize_for_path(filename)}-{hashlib.sha1(filename.encode()).hexdigest()[:10]}"
+    return os.path.join(base_dir, record_key, f"attempt-{attempt}")
+
 
 # Configure logger to output to stdout
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -200,12 +216,19 @@ def run_unittest_files(
         process = None
         output_lines = []
 
-        def run_one_file(filename, capture_output=False, _i=i, _estimated_time=estimated_time):
+        def run_one_file(filename, capture_output=False, record_dir=None, _i=i, _estimated_time=estimated_time):
             nonlocal process, output_lines
 
             full_path = os.path.join(os.getcwd(), filename)
             logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
             file_tic = time.perf_counter()
+
+            child_env = None
+            if record_dir is not None:
+                # Point the training process at this attempt's own record dir.
+                os.makedirs(record_dir, exist_ok=True)
+                child_env = os.environ.copy()
+                child_env[CI_GATE_RECORD_DIR_ENV] = record_dir
 
             if capture_output:
                 # Capture output for retry decision
@@ -216,6 +239,7 @@ def run_unittest_files(
                     text=True,
                     errors="ignore",
                     start_new_session=True,
+                    env=child_env,
                 )
                 output_lines = []
                 for line in process.stdout:
@@ -228,6 +252,7 @@ def run_unittest_files(
                     stdout=None,
                     stderr=None,
                     start_new_session=True,
+                    env=child_env,
                 )
                 process.wait()
 
@@ -255,12 +280,17 @@ def run_unittest_files(
             attempt_timeout_after: float | None = None
             attempt_elapsed: float = 0.0
 
+            gate_base_dir = os.environ.get(CI_GATE_RECORD_DIR_ENV)
+            attempt_record_dir = (
+                _attempt_record_dir(gate_base_dir, filename, current_attempt) if gate_base_dir else None
+            )
+
             try:
                 try:
                     ret_code = run_with_timeout(
                         run_one_file,
                         args=(filename,),
-                        kwargs={"capture_output": enable_retry},
+                        kwargs={"capture_output": enable_retry, "record_dir": attempt_record_dir},
                         timeout=effective_timeout,
                     )
                     attempt_elapsed = time.perf_counter() - attempt_tic
