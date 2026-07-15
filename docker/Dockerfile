@@ -199,6 +199,5 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 RUN rm -rf /tmp/wheels
 
-# cu130 sglang base ships rust at /root/.cargo/bin but not on PATH; a later CI
-# step calls `rustc` directly. Last so cached layers above stay valid.
+# The cu130 sglang base ships its baked Rust toolchain outside the default PATH.
 ENV PATH="/root/.cargo/bin:${PATH}"
