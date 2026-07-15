@@ -176,7 +176,7 @@ class TestResolvePolicy:
             (REGULAR_CADENCE, set(), set(), False),
             (REGULAR_CADENCE, {"run-ci-megatron"}, {"megatron"}, False),
             (REGULAR_CADENCE, {"bypass-fastfail"}, set(), True),
-            (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"ft-short", "ft-long"}, False),
+            (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"long", "ft-short", "ft-long"}, False),
             (REGULAR_CADENCE, {"run-ci-all"}, _ALL, False),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-all"}, _ALL, False),
             (NIGHTLY_CADENCE, set(), _ALL - {"ft-long"}, True),
@@ -206,14 +206,15 @@ class TestResolvePolicy:
     @pytest.mark.parametrize(
         ("cadence", "labels", "expected"),
         [
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"ft-long"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-long"}, _ALL - {"ft-short", "ft-long"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"long", "ft-long"}),
             (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _ALL),
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL - {"long"}),
             (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _ALL),
         ],
     )
     def test_explicit_domain_label_wins_over_scope_subtraction(self, cadence, labels, expected):
-        # Asking for FT coverage on an image bump must not be silently
+        # Asking for long or FT coverage on an image bump must not be silently
         # dropped: explicit requests are unioned in after the subtraction.
         assert resolve_policy(cadence, labels).include_labels == expected
 
@@ -575,25 +576,23 @@ def broad_scope_tests():
     return [
         _make("tests/e2e/always.py", labels=[]),
         _make("tests/e2e/megatron.py", labels=["megatron"]),
+        _make("tests/e2e/long.py", labels=["long"]),
         _make("tests/e2e/ft/short.py", labels=["ft-short"]),
         _make("tests/e2e/ft/long.py", labels=["ft-long", "long"]),
     ]
 
 
 class TestFilterTestsBroadScopes:
-    def test_image_scope_selects_no_ft_only_tests(self, broad_scope_tests):
+    def test_image_scope_excludes_long_and_ft_tests(self, broad_scope_tests):
         enabled, _ = filter_tests(
             broad_scope_tests,
             HWBackend.CUDA,
             "stage-c-8-gpu-h100",
             labels=set(resolve_policy(REGULAR_CADENCE, {"run-ci-image"}).include_labels),
         )
-        # ft/long.py still runs: its `long` label is in the include set. A
-        # subtraction is not a per-test veto (maintainer-decided semantics).
         assert _names(enabled) == {
             "tests/e2e/always.py",
             "tests/e2e/megatron.py",
-            "tests/e2e/ft/long.py",
         }
 
     def test_nightly_scope_selects_ft_short_but_not_ft_only_soak(self, broad_scope_tests):
@@ -609,6 +608,7 @@ class TestFilterTestsBroadScopes:
         assert _names(enabled) == {
             "tests/e2e/always.py",
             "tests/e2e/megatron.py",
+            "tests/e2e/long.py",
             "tests/e2e/ft/short.py",
             "tests/e2e/ft/long.py",
         }
