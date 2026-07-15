@@ -174,14 +174,16 @@ class P2PTransferManager:
     def wait_transfers(self) -> None:
         """Wait for all submitted tasks to complete and propagate failures."""
         errors: list[Exception] = []
-        for future in self.transfer_futures:
-            try:
-                future.result(timeout=self.transfer_timeout)
-            except Exception as e:
-                logger.error(f"[P2P] Transfer future failed: {e}")
-                errors.append(e)
+        try:
+            for future in self.transfer_futures:
+                try:
+                    future.result(timeout=self.transfer_timeout)
+                except Exception as e:
+                    logger.error(f"[P2P] Transfer future failed: {e}")
+                    errors.append(e)
+        finally:
+            self.transfer_futures.clear()
 
-        self.transfer_futures.clear()
         if errors:
             raise errors[0]
 
