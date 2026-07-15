@@ -345,14 +345,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 release_rollout_data(self.args, rollout_data)
                 return TrainStepOutcome.NORMAL
 
-        if self.role == "critic":
-            result = self.train_critic(rollout_id, rollout_data)
-        else:
-            result = self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
-
-        release_rollout_data(self.args, rollout_data)
-
-        return result
+        try:
+            if self.role == "critic":
+                return self.train_critic(rollout_id, rollout_data)
+            return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
+        finally:
+            release_rollout_data(self.args, rollout_data)
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:

@@ -57,7 +57,7 @@ def put_rollout_data_ref(
     args: Any,
     data: dict[str, Any],
     *,
-    partition: str,
+    store_partition: str,
     field_schema_specs: dict[str, tuple] | None = None,
 ) -> Box:
     _check_mooncake_available_if_needed(args)
@@ -65,7 +65,7 @@ def put_rollout_data_ref(
         return _put_mooncake_rollout_data(
             args,
             data,
-            partition=partition,
+            store_partition=store_partition,
             field_schemas=_rollout_field_schemas_for_data(data, field_schema_specs),
         )
     return Box(ray.put(data))
@@ -102,14 +102,14 @@ def cleanup_rollout_data_refs(args: Any, refs: Any) -> None:
 def _put_mooncake_rollout_data(
     args: Any,
     data: dict[str, Any],
-    partition: str,
+    store_partition: str,
     field_schemas: dict | None = None,
 ) -> Box:
     config = getattr(args, "mooncake_store_init_kwargs", None) or {}
     ref = _mooncake_transfer(args, contribute_segment=True).put_legacy_dict(
         data,
         namespace="miles",
-        partition=partition,
+        partition=store_partition,
         stage="rollout",
         chunk_bytes=config.get("chunk_bytes"),
         field_schemas=field_schemas,

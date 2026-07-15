@@ -441,9 +441,10 @@ class FSDPTrainRayActor(TrainRayActor):
             if self.args.debug_rollout_only:
                 release_rollout_data(self.args, rollout_data)
                 return
-            self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
-
-        release_rollout_data(self.args, rollout_data)
+            try:
+                self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+            finally:
+                release_rollout_data(self.args, rollout_data)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,

@@ -3,7 +3,6 @@ from typing import Any
 import torch
 
 from miles.utils.data_transfer import put_rollout_data_ref
-from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import Sample
 
@@ -156,20 +155,11 @@ def split_train_data_by_dp(args, data, dp_size):
         put_rollout_data_ref(
             args,
             rollout_data,
-            partition=f"dp{i}",
+            store_partition=f"dp{i}",
             field_schema_specs=ROLLOUT_DATA_FIELD_SCHEMA_SPECS,
         )
         for i, rollout_data in enumerate(rollout_data_list)
     ]
-
-
-def put_unsplit_train_data(args, data: dict[str, Any], *, rollout_id: int) -> Box:
-    return put_rollout_data_ref(
-        args,
-        data,
-        partition=f"rollout-{rollout_id}",
-        field_schema_specs=ROLLOUT_DATA_FIELD_SCHEMA_SPECS,
-    )
 
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
