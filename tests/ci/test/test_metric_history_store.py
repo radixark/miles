@@ -244,6 +244,12 @@ def test_baseline_sql_matches_authoritative_shape():
         assert fragment in sql, f"baseline query missing: {fragment!r}"
 
 
-def test_neon_store_is_deferred():
-    with pytest.raises(NotImplementedError):
+def test_neon_store_requires_dsn(monkeypatch):
+    # No DSN passed and the env var unset: construction fails with a clear error
+    # (not NotImplementedError -- the backend is implemented now). It must not
+    # attempt a connection, so the failure is purely about the missing DSN.
+    from tests.ci.metric_history import NEON_DATABASE_URL_ENV
+
+    monkeypatch.delenv(NEON_DATABASE_URL_ENV, raising=False)
+    with pytest.raises(RuntimeError, match=NEON_DATABASE_URL_ENV):
         NeonMetricHistoryStore()

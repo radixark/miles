@@ -3,8 +3,8 @@
 * One import surface for consumers, re-exporting the :class:`MetricHistoryStore`
   contract and its record types (:class:`MetricSample`, :class:`RunIdentity`,
   :class:`RunProvenance`).
-* The two backends: offline :class:`SQLiteMetricHistoryStore` and the deferred
-  :class:`NeonMetricHistoryStore` placeholder, plus :data:`NEON_DATABASE_URL_ENV`.
+* The two backends: offline :class:`SQLiteMetricHistoryStore` and hosted
+  :class:`NeonMetricHistoryStore`, plus :data:`NEON_DATABASE_URL_ENV`.
 * The gate declaration marker :func:`register_ci_gate` and its parsed
   :class:`CiGateSpec`.
 * Not re-exported: gate evaluation (:mod:`tests.ci.metric_history.gate`),

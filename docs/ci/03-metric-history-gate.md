@@ -47,6 +47,48 @@ register_ci_gate(
 )
 ```
 
+
+
+## Roles & data flow
+
+**Goal:** split the pipeline into three decoupled roles — collector, harness, gate library — connected only by JSONL files and one store, so the training process never blocks on gating and the gate stays a pure, read-only library.
+
+Three roles, connected only by JSONL files and one DB — there is no long-lived "metrics manager"; the pipeline is per-test, driven by the harness:
+
+- **Collector (training process)** — `miles.utils.tracking_utils.TrackingManager` fans every `log()` out to all enabled backends; `WandbBackend` and `CiHistoryBackend` are parallel siblings in that registry, so wandb receives the same data independently and nothing downstream ever reads it back. `CiHistoryBackend` snapshots the fixed metric whitelist into per-process JSONL files under the harness-assigned record dir (`MILES_CI_GATE_RECORD_DIR`, injected by the CI harness; no CLI flag).
+- **Harness / finalizer (CI runner)** — `run_suite.py` builds the store from env (`NEON_DATABASE_URL`, a CI secret), resolves the nightly signal + provenance, and allocates the record dir (CUDA suites only); `ci_utils.run_unittest_files` hands each attempt its own record subdir and merges the PASSING attempt's per-process records into the merged per-run JSONL record (a metric key appearing in several processes gets its series concatenated and sorted by step); `ci_utils.run_gate_hook` then assigns identity, runs the gate, and acts on the verdict.
+- **Gate library (pure functions, read-only against storage)** — `register.py` parses `register_ci_gate` declarations out of the test file's AST at evaluation time (the call itself is a runtime no-op; nothing registers at runtime), `selection.py` picks comparison coordinates, `constraints.py` judges pass/fail, `gate.py:evaluate_gate` composes them over the store's baseline read.
+
+One CUDA test run, end to end:
+
+```mermaid
+flowchart TD
+    subgraph training_process["training process (miles core)"]
+        training_code["training code"] -- "log()" --> tracking_manager["TrackingManager"]
+        tracking_manager -- "fan-out (parallel)" --> wandb_backend["WandbBackend<br>write-only sink, never read back"]
+        tracking_manager --> ci_history_backend["CiHistoryBackend"]
+    end
+    ci_history_backend -- "per-process JSONL snapshots<br>(whitelist only; non-finite → string markers)" --> run_unittest_files
+    subgraph ci_harness["CI harness (tests/ci)"]
+        run_suite["run_suite.py<br>store from env · nightly signal · provenance · record dir"] --> run_unittest_files["run_unittest_files<br>per-attempt record subdir; merge the PASSING attempt"]
+        run_unittest_files --> run_gate_hook["run_gate_hook<br>assign identity → run the gate → act on the verdict"]
+    end
+    gate_specs["register_ci_gate specs in the test file<br>(runtime no-op)"] -. "AST parse" .-> evaluate_gate
+    run_gate_hook --> evaluate_gate
+    subgraph gate_library["gate library (pure, read-only against storage)"]
+        evaluate_gate["register → selection → constraints → evaluate_gate"]
+    end
+    evaluate_gate -- "recent_trusted_values (baseline read)" --> metric_store
+    run_gate_hook -- "nightly: write_run(values + trusted)<br>ordinary PR: shadow verdict → log + GITHUB_STEP_SUMMARY, no write" --> metric_store
+    subgraph storage
+        metric_store[("MetricHistoryStore<br>SQLite offline · Neon CI/prod")]
+    end
+```
+
+
+
+Capture is runtime behavior inside the training process, so it never blocks the run on metric *content*: a non-finite value (`NaN` / `±Inf`) is real evidence of the run and is recorded faithfully, encoded in the JSONL as the string marker `"NaN"` / `"Infinity"` / `"-Infinity"` so every line stays strict JSON (the gate-side reader decodes markers back to floats). Judging non-finite values is the gate's job, not the recorder's. A wrong *type* (non-int/float) is an authoring bug, not run evidence, and still fails loud at capture.
+
 ## The gate: drift against trusted history
 
 **Goal:** judge every declared coordinate against its own trusted past, so slow drift gets caught while a fresh baseline can seed itself.
@@ -73,6 +115,16 @@ flowchart TD
         decl -- "read the file's AST, never execute it<br>(hence literal-only args); per-name schema validation<br>parse_ci_gate_specs" --> spec
     end
 
+    subgraph capture_sg["capture & merge — per attempt, harness-side"]
+        snaps(["per-process JSONL snapshots (one record subdir per attempt)<br>atomically rewritten during the run; non-finite → string markers"])
+        passq{"did the test attempt pass?"}
+        drop["outcome: records discarded — no merge, no gate, no write;<br>a retried test is judged on its passing attempt's own records"]
+        merge["merge the PASSING attempt's files into the merged per-run record<br>same metric key in several processes: series are concatenated, then sorted by step<br>ci_utils.run_unittest_files"]
+        snaps --> passq
+        passq -- "failed" --> drop
+        passq -- "passed" --> merge
+    end
+
     record(["the run's captured metrics (one file per run, parsed once)<br>merged per-run JSONL record: raw per-step log() values,<br>capture whitelist TARGET_METRIC_KEYS only<br>parse_merged_record → {metric_key: series}"])
 
     subgraph eval_sg["evaluate — _evaluate_spec, once per spec"]
@@ -97,6 +149,7 @@ flowchart TD
     end
 
     spec --> lookup
+    merge --> record
     record --> lookup
 
     trust["run-level verdict — after all specs, once per run<br>run trusted ⇔ every coordinate: historical ∈ {PASS, INACTIVE}<br>(what the verdict triggers: see 'Trust, cleanup, who writes')"]
@@ -132,7 +185,7 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 - `metric_values` — one row per value: `run_id` FK + `(metric_key, steps_key, constraint_key, step)` + `value`.
 - The baseline read is served by the composite index `runs(test_path, backend, suite, trusted, created_at DESC)`.
 
-**Operations** — hosted Postgres setup is out-of-band in this round: when `NeonMetricHistoryStore` is implemented, provision the equivalent two tables and application role outside this repo, and keep runtime gate code DML-only. Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
+**Operations** — hosted Postgres setup is out-of-band: the two tables and application role are provisioned outside this repo, and runtime gate code stays DML-only (`NeonMetricHistoryStore` never issues DDL). Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
 
 ## Trust, cleanup, who writes
 
@@ -141,12 +194,9 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 - A run is `trusted` iff it passed **all** active gates. A drifting run is still recorded, with `trusted = false`, so it can't drag the baseline. A test that fails then passes on **retry** is gated on its passing attempt's metrics and trusted normally — needing a retry is not itself a trust penalty.
 - **Clean a bad point**: `mark_untrusted` = `UPDATE runs SET trusted = false` on the run. The next gate read excludes it immediately — no rebaseline, no row deletion.
 - **Nightly-marked runs write baselines** — either the `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records which, so a label-PR baseline is distinguishable from a post-merge one and can be `mark_untrusted`'d if it turns out bad. Ordinary (unlabeled) PR runs are read-only and only shadow.
+- **What one nightly run writes** — one `runs` row plus one `metric_values` row per value coordinate: two specs sharing a coordinate (identical `steps` + `constraint` literals, differing only in policy metadata) collapse to a single row, so a duplicated declaration cannot double-weight the baseline mean; and a file that declares no gate writes nothing at all — `run_gate_hook` skips the write instead of leaving an empty `runs` row.
 
-## Collection
 
-`CiHistoryBackend` runs alongside `WandbBackend` on the same `log()` fan-out and writes JSONL snapshots under the harness-assigned per-test attempt directory. After the test passes, the later gate/finalizer consumes those records, assigns identity + provenance, runs the gate, and (on a nightly-marked run only) writes the rows. Nothing is read back from wandb.
-
-Capture is runtime behavior inside the training process, so it never blocks the run on metric *content*: a non-finite value (`NaN` / `±Inf`) is real evidence of the run and is recorded faithfully, encoded in the JSONL as the string marker `"NaN"` / `"Infinity"` / `"-Infinity"` so every line stays strict JSON (the gate-side reader decodes markers back to floats). Judging non-finite values is the gate's job, not the recorder's. A wrong *type* (non-int/float) is an authoring bug, not run evidence, and still fails loud at capture.
 
 ## Rollout
 
@@ -161,6 +211,8 @@ Shadow-first: collect, store, and evaluate, but **never block a PR** initially �
 - A test-file edit does not reset the series: `test_file_hash` was dropped from the run-series identity because a tiny edit to a test kept wiping its whole history. A test change that genuinely shifts a metric's expected level surfaces as gate failures instead; the reset levers are manual — `mark_untrusted` the stale runs, or edit the declaration literals (new `steps_key` / `constraint_key` ⇒ fresh coordinate).
 - The nightly trigger (`schedule` cron + `nightly` label) already shipped (#1491); detection here is harness-side via `GITHUB_EVENT_NAME`, so this feature needs **no** `pr-test.yml` **edit**.
 - Open: should a brand-new test's first baselines need human confirmation before counting as trusted? (v1: no.)
+
+
 
 ## TODO
 
@@ -177,3 +229,4 @@ Shadow-first: collect, store, and evaluate, but **never block a PR** initially �
 - **Capture set becomes** `TARGET_METRIC_KEYS` **∪ declared keys** — the harness parses specs pre-launch and injects the extras via env.
 - **Self-calibrating constraint** — band = k·std of the coordinate's own history, for heteroskedastic tests; and a `mean` (step-average) reduction.
 - **Enforcement** — the per-test allowlist + global kill-switch from Rollout; shadow mode is current behavior.
+

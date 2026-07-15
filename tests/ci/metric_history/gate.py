@@ -3,8 +3,8 @@
 
 * Consumes one merged per-run JSONL record plus the `register_ci_gate` specs
   declared in the test file, and decides whether the run is *trusted*.
-* The record is the passed attempt's merged JSONL; a later round picks which
-  attempt.
+* The record is the passing attempt's merged JSONL, selected and merged by the
+  harness caller (`tests.ci.ci_utils`) before the gate is invoked.
 * Each spec pairs a STEPS selection (which value(s) to pull: `"last"` /
   `"all"` / a step list) with a CONSTRAINT (the pass/fail rule). `"all"` and a
   step list fan out to one comparison coordinate per step, each judged only
@@ -21,8 +21,9 @@
 
 Caveats:
 
-* Do not add store writes here. Persistence is a later round; the gate stays
-  read-only.
+* Do not add store writes here. Persistence is the caller's job --
+  :func:`tests.ci.ci_utils.run_gate_hook` writes rows on nightly-marked runs --
+  and the gate itself stays read-only.
 """
 
 from __future__ import annotations
@@ -239,19 +240,54 @@ def evaluate_gate(
     merged_record_path: str,
     store: MetricHistoryStore,
     *,
+    registry: CIRegistry | None = None,
     history_limit: int = 20,
 ) -> GateResult:
     """Evaluate every `register_ci_gate` spec in `test_filename` against a record.
 
-    `test_filename` is the repo-relative test path; its CIRegistry supplies the
-    (backend, suite) identity.
+    `test_filename` is the repo-relative test path. Gate identity
+    (test_path/backend/suite) comes from `registry` when the real harness
+    passes one -- it has already chosen which `register_*_ci()` call applies,
+    so a file with several (e.g. `register_cuda_ci` + `register_rocm_ci`)
+    is handled without reparsing. When `registry` is None and the file has
+    gate specs, identity is reparsed via `_registry_for` (the isolated
+    unit-test convenience, which still refuses a no-register or ambiguous file).
+
+    A file with no gate specs is vacuously trusted and does NOT require a unique
+    registry: identity is taken from `registry` if given, else filled
+    best-effort from `test_filename` without raising on a dual-register or
+    no-register file.
+
     `merged_record_path` is the merged per-run JSONL of the passed attempt --
     the gate never globs a base directory to find it. `store` answers the
     baseline query and nothing else (no writes, no connection opened here). A
     fanned-out spec contributes one MetricGateResult per step.
     """
     specs = parse_ci_gate_specs(test_filename)
-    registry = _registry_for(test_filename)
+    if not specs:
+        # No gate spec can regress, so identity is informational here and must
+        # never raise on a dual-register / no-register file. Use the harness's
+        # registry if it gave one, otherwise fill best-effort from the filename.
+        if registry is not None:
+            return GateResult(
+                test_path=registry.filename,
+                backend=_BACKEND_STR[registry.backend],
+                suite=registry.suite,
+                metrics=[],
+            )
+        return GateResult(
+            test_path=test_filename,
+            backend="",
+            suite="",
+            metrics=[],
+        )
+
+    # The harness already selected one register_*_ci() call; use it directly and
+    # do not reparse (the file may carry several register calls). With no registry
+    # this is the isolated-unit-test path, which reparses and may still raise on
+    # an ambiguous (multi-register) or no-register file.
+    if registry is None:
+        registry = _registry_for(test_filename)
     backend = _BACKEND_STR[registry.backend]
     by_metric = parse_merged_record(merged_record_path)
 
