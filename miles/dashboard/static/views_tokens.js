@@ -2,6 +2,7 @@ import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
 import { el, fmtNum } from "./app.js";
 import { divergingColor, drawChart, hideTooltip, sequentialColor, showTooltip } from "./charts.js";
+import { renderConversation } from "./conversation.js";
 
 const WINDOW_SIZES = [256, 1024, 4096];
 
@@ -33,11 +34,75 @@ function colorFor(stat, values) {
 
 export async function renderTokens(view, meta, route) {
   const { rolloutId, sampleIndex, evaluation } = route;
-  view.replaceChildren(
-    el("p", { class: "muted" }, [
-      "loading sample… the first open of a step detokenizes its whole dump and can take several minutes",
-    ]),
-  );
+  view.replaceChildren(el("p", { class: "muted" }, ["loading sample…"]));
+
+  // cheap panels first: the lifecycle lane (telemetry) and the conversation
+  // (trajectory sidecar); the token machinery costs a full dump load plus
+  // detokenize, so it only starts when its tab is opened
+  const panels = [];
+  if (!evaluation) {
+    try {
+      const trajectories = await api(`/api/rollout/${rolloutId}/trajectories`, { sample_index: sampleIndex });
+      if (trajectories.lanes.length) {
+        panels.push(
+          createAnatomy({
+            lanes: trajectories.lanes,
+            consumeTs: trajectories.consume_ts,
+            rowsByIndex: new Map(),
+            onClickSample: () => {},
+          }),
+        );
+      }
+    } catch {
+      /* endpoint absent or no events: token view stands alone */
+    }
+  }
+
+  let conversationRow = null;
+  try {
+    conversationRow = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/messages`, { eval: evaluation });
+  } catch (err) {
+    if (!String(err).includes("404")) throw err; // 404 = run recorded no conversation
+  }
+
+  const tokensPane = el("div");
+  let tokensStarted = false;
+  const startTokens = () => {
+    if (tokensStarted) return;
+    tokensStarted = true;
+    tokensPane.replaceChildren(
+      el("p", { class: "muted" }, [
+        "loading tokens… the first open of a step detokenizes its whole dump and can take several minutes",
+      ]),
+    );
+    loadTokensPane(tokensPane, rolloutId, sampleIndex, evaluation).catch((err) => {
+      tokensPane.replaceChildren(el("div", { class: "error" }, [String(err)]));
+    });
+  };
+
+  if (conversationRow === null) {
+    view.replaceChildren(...panels, tokensPane);
+    startTokens();
+    return;
+  }
+
+  const conversationPane = renderConversation(conversationRow);
+  const tabs = el("div", { class: "tabs" });
+  const body = el("div");
+  const select = (name) => {
+    tabs.replaceChildren(
+      ...["conversation", "tokens"].map((tab) =>
+        el("button", { class: tab === name ? "active" : "", onclick: () => select(tab) }, [tab]),
+      ),
+    );
+    body.replaceChildren(name === "conversation" ? conversationPane : tokensPane);
+    if (name === "tokens") startTokens();
+  };
+  view.replaceChildren(...panels, tabs, body);
+  select("conversation");
+}
+
+async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
   const probe = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
     start: 0,
     end: 1,
@@ -179,26 +244,6 @@ export async function renderTokens(view, meta, route) {
 
   }
 
-  // this sample's own lifecycle lane (train steps with the trajectory
-  // probes; empty for eval samples and probe-less runs -> no panel)
-  const panels = [];
-  if (!evaluation) {
-    try {
-      const trajectories = await api(`/api/rollout/${rolloutId}/trajectories`, { sample_index: sampleIndex });
-      if (trajectories.lanes.length) {
-        panels.push(
-          createAnatomy({
-            lanes: trajectories.lanes,
-            consumeTs: trajectories.consume_ts,
-            rowsByIndex: new Map(),
-            onClickSample: () => {},
-          }),
-        );
-      }
-    } catch {
-      /* endpoint absent or no events: token view stands alone */
-    }
-  }
-  view.replaceChildren(...panels, controls, strip, chartPanel);
+  root.replaceChildren(controls, strip, chartPanel);
   await Promise.all([load(), loadChart()]);
 }

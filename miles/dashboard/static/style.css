@@ -103,3 +103,16 @@ canvas.anatomy { width: 100%; display: block; cursor: pointer; }
   border-radius: 3px; font-size: 12px; cursor: pointer; font-variant-numeric: tabular-nums;
 }
 .bubble:hover { border-color: var(--accent); }
+
+.msg { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+.msg-head { display: flex; gap: 8px; padding: 6px 10px; cursor: pointer; align-items: baseline; }
+.msg-head:hover { background: var(--bg); }
+.msg-role { font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+.role-user { color: var(--accent); }
+.role-assistant { color: var(--good); }
+.role-tool { color: #d97706; }
+.role-system { color: var(--muted); }
+.msg-body { padding: 0 10px 8px; }
+.msg-body.closed { display: none; }
+.msg-text { white-space: pre-wrap; word-break: break-word; font-size: 13px; margin: 4px 0; max-height: 320px; overflow-y: auto; background: var(--bg); border-radius: 4px; padding: 8px; }
+.msg-thinking { white-space: pre-wrap; font-style: italic; color: var(--muted); font-size: 12px; max-height: 200px; overflow-y: auto; border-left: 3px solid var(--border); padding: 6px 10px; margin: 4px 0; }

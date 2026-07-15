@@ -155,6 +155,7 @@ class DumpReader:
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self.dump_dir / "dashboard" / "cache"
         self.tensor_lru = tensor_lru
         self._joined_cache: OrderedDict[tuple[int, bool], JoinedRollout] = OrderedDict()
+        self._trajectory_cache: OrderedDict[tuple[int, bool], dict[int, dict]] = OrderedDict()
         self._tokenizer = None
         self._tokenizer_loaded = False
 
@@ -297,6 +298,23 @@ class DumpReader:
                 )
             )
         return pl.DataFrame(rows, strict=False)
+
+    def trajectory_messages(self, rollout_id: int, sample_index: int, *, evaluation: bool = False) -> dict:
+        """Sidecar row for one sample; missing file or sample raises (-> 404),
+        which is how the frontend learns the run recorded no conversation."""
+        key = (rollout_id, evaluation)
+        if key not in self._trajectory_cache:
+            name = f"eval_{rollout_id}.jsonl" if evaluation else f"{rollout_id}.jsonl"
+            with open(self.dump_dir / "trajectory" / name) as f:
+                rows = {row["sample_index"]: row for row in map(json.loads, f)}
+            self._trajectory_cache[key] = rows
+            while len(self._trajectory_cache) > 4:
+                self._trajectory_cache.popitem(last=False)
+        self._trajectory_cache.move_to_end(key)
+        rows = self._trajectory_cache[key]
+        if sample_index not in rows:
+            raise KeyError(f"sample {sample_index} has no recorded conversation in rollout {rollout_id}")
+        return rows[sample_index]
 
     # ------------------------------- L2 view --------------------------------
 

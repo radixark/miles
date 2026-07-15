@@ -95,6 +95,8 @@ def dump_dummy_run(
             )
             for i in range(n)
         ]
+        for sample in samples[:2]:
+            sample.metadata["messages"] = _dummy_messages(sample)
         save_debug_rollout_data(args, samples, rollout_id=rollout_id, evaluation=False)
         if with_eval and rollout_id == 0:
             # eval takes the real input shape: {dataset_name: {"samples": [...]}}
@@ -122,6 +124,21 @@ def dump_dummy_run(
 
     age_files(dump_dir)
     return truth
+
+
+def _dummy_messages(sample) -> list[dict]:
+    return [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": str(sample.prompt)},
+        {
+            "role": "assistant",
+            "content": "Let me look that up.",
+            "reasoning_content": "The user asks a question; call the lookup tool first.",
+            "tool_calls": [{"function": {"name": "lookup", "arguments": '{"query": "answer"}'}}],
+        },
+        {"role": "tool", "name": "lookup", "content": '{"result": 42}'},
+        {"role": "assistant", "content": f"The answer for sample {sample.index} is 42."},
+    ]
 
 
 def _make_args(dump_dir: Path, *, num_prompts: int, n_samples_per_prompt: int) -> Namespace:

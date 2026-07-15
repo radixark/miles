@@ -150,6 +150,20 @@ def test_engine_metric_catalog(tmp_path):
     assert "sglang_num_running_reqs" in meta["engine_metric_keys"]
 
 
+def test_sample_messages_from_trajectory_sidecar(tmp_path):
+    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+
+    dump_dummy_run(tmp_path)
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+
+    row = client.get("/api/rollout/0/sample/0/messages").json()
+    assert [m["role"] for m in row["messages"]] == ["system", "user", "assistant", "tool", "assistant"]
+    assert row["messages"][2]["tool_calls"][0]["function"]["name"] == "lookup"
+    # sample 2 recorded no conversation; eval dumps carry none at all
+    assert client.get("/api/rollout/0/sample/2/messages").status_code == 404
+    assert client.get("/api/rollout/0/sample/0/messages?eval=1").status_code == 404
+
+
 def test_make_demo_dir(tmp_path):
     from miles.dashboard.serve import make_demo_dir
 

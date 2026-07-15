@@ -219,6 +219,11 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
             df = reader.groups(rollout_id, evaluation=evaluation)
             return dict(rollout_id=rollout_id, evaluation=evaluation, **_table(df))
 
+    @app.get("/api/rollout/{rollout_id}/sample/{sample_index}/messages")
+    def sample_messages(rollout_id: int, sample_index: int, evaluation: bool = Query(False, alias="eval")):
+        with _translate_errors():
+            return reader.trajectory_messages(rollout_id, sample_index, evaluation=evaluation)
+
     @app.get("/api/rollout/{rollout_id}/sample/{sample_index}/tokens")
     def sample_tokens(
         rollout_id: int,
