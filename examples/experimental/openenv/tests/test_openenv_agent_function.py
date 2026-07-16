@@ -9,11 +9,13 @@ Covers the two things a live episode cannot cheaply prove:
   - backend dispatch: the per-task-sandbox leg and the shared-server leg of
     _multi_turn each use their own exec form and scoring path;
   - sandbox-create throttling: Daytona rate-limit errors are retried with
-    backoff and a bounded budget, anything else propagates immediately.
+    backoff and a bounded budget, anything else propagates immediately; a
+    cancel mid-create reaps the orphaned sandbox instead of leaking it.
 """
 
 import asyncio
 import sys
+import threading
 import types
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -199,6 +201,34 @@ def test_create_gives_up_after_retry_budget(monkeypatch):
     with pytest.raises(_Throttled):
         run_async(oaf._start_task_sandbox("t1"))
     assert calls["n"] == 3  # initial attempt + 2 retries
+
+
+def test_cancel_during_create_reaps_orphaned_sandbox(monkeypatch):
+    """Cancelling an episode mid-create must not leak the sandbox: the worker
+    thread finishes the create in the background and the reaper deletes it."""
+    started = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    def slow_start(task_id, tasks_dir):
+        started.set()
+        assert release.wait(5)
+        return (lambda: closed.set()), "http://sandbox:8000"
+
+    monkeypatch.setattr(oaf, "_start_declarative", slow_start)
+    monkeypatch.setenv("OPENENV_TB2_TASKS_DIR", "/nonexistent")
+
+    async def scenario():
+        task = asyncio.create_task(oaf._start_task_sandbox("t1"))
+        await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Only now does the in-flight create finish — after the awaiter is gone.
+        release.set()
+
+    run_async(scenario())
+    assert closed.wait(5)  # the reaper deleted the orphan
 
 
 def test_create_non_throttle_error_propagates_immediately(monkeypatch):

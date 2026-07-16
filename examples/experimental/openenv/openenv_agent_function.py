@@ -50,6 +50,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -318,6 +319,43 @@ def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     return (lambda: daytona.delete(sandbox)), url
 
 
+async def _create_once(task_id: str, tasks_dir: str) -> tuple[Any, str]:
+    """One sandbox-create attempt, safe against cancellation mid-create.
+
+    asyncio.to_thread is not cancellable: when the episode's wall-clock cap
+    cancels this coroutine mid-create, the worker thread keeps running and its
+    (close_fn, url) result would be discarded — leaking a sandbox that never
+    auto-stops (auto_stop_interval=0). Record the result thread-side and, on
+    cancellation, hand it to a reaper that deletes the orphan once the create
+    finishes.
+    """
+    result: list[tuple[Any, str]] = []
+    done = threading.Event()
+
+    def _start() -> tuple[Any, str]:
+        try:
+            result.append(_start_declarative(task_id, tasks_dir))
+        finally:
+            done.set()
+        return result[0]
+
+    try:
+        return await asyncio.to_thread(_start)
+    except asyncio.CancelledError:
+
+        def _reap() -> None:
+            done.wait()
+            for close_fn, _url in result:
+                try:
+                    close_fn()
+                    logger.info(f"Deleted sandbox orphaned by cancelled episode: {task_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete orphaned sandbox for {task_id}: {e}")
+
+        threading.Thread(target=_reap, name=f"tb2-sandbox-reap-{task_id}", daemon=True).start()
+        raise
+
+
 async def _start_task_sandbox(task_id: str) -> tuple[Any, str]:
     """Create one per-task sandbox with the env server running.
 
@@ -326,16 +364,13 @@ async def _start_task_sandbox(task_id: str) -> tuple[Any, str]:
     """
     tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
 
-    def _start() -> tuple[Any, str]:
-        return _start_declarative(task_id, tasks_dir)
-
     attempt = 0
     while True:
         try:
             # Hold the semaphore only for the create attempt; release it during
             # backoff so other episodes keep the pipeline full.
             async with _get_create_sem():
-                return await asyncio.to_thread(_start)
+                return await _create_once(task_id, tasks_dir)
         except Exception as e:
             if not _is_throttle_error(e) or attempt >= _CREATE_MAX_RETRIES:
                 raise
