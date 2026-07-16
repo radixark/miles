@@ -12,6 +12,11 @@
 * The DSN comes from the `NEON_DATABASE_URL` environment variable (a CI
   secret, provisioned out-of-band) unless one is passed explicitly. Credentials
   are never embedded and the host is never hardcoded.
+* Every operation opens a fresh connection and closes it before returning;
+  construction only resolves the DSN. The store lives for a whole CI suite
+  while individual e2e tests run tens of minutes, so a connection cached at
+  construction would outlive Neon's pooler idle timeout / compute autosuspend
+  and every write after the first idle gap would fail on a dead socket.
 * The schema (the two tables and the application role) is provisioned
   out-of-band, outside this repo. This module stays DML-only -- insert runs,
   read baselines, mark runs untrusted -- and never issues DDL on the
@@ -87,15 +92,13 @@ class NeonMetricHistoryStore(MetricHistoryStore):
                     "Set the environment variable to the Neon Postgres DSN, or pass dsn= explicitly."
                 )
         self._dsn = dsn
-        self._conn = self._connect(dsn)
 
-    @staticmethod
-    def _connect(dsn: str):
+    def _connect(self):
         # Lazy import: see module docstring. autocommit stays off so write_run
         # controls its own transaction boundary explicitly.
         import psycopg
 
-        return psycopg.connect(dsn)
+        return psycopg.connect(self._dsn)
 
     def write_run(
         self,
@@ -107,8 +110,9 @@ class NeonMetricHistoryStore(MetricHistoryStore):
     ) -> str:
         validate_finite_values(values)
         run_id = uuid.uuid4().hex
+        conn = self._connect()
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(
                     _INSERT_RUN_SQL,
                     (
@@ -130,10 +134,12 @@ class NeonMetricHistoryStore(MetricHistoryStore):
                     _INSERT_METRIC_SQL,
                     [(run_id, s.metric_key, s.steps_key, s.constraint_key, s.step, s.value) for s in values],
                 )
-            self._conn.commit()
+            conn.commit()
         except Exception:
-            self._conn.rollback()
+            conn.rollback()
             raise
+        finally:
+            conn.close()
         return run_id
 
     def recent_trusted_values(
@@ -147,12 +153,16 @@ class NeonMetricHistoryStore(MetricHistoryStore):
         step: int,
         limit: int,
     ) -> list[float]:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                _BASELINE_SQL,
-                (test_path, backend, suite, metric_key, steps_key, constraint_key, step, limit),
-            )
-            rows = cur.fetchall()
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    _BASELINE_SQL,
+                    (test_path, backend, suite, metric_key, steps_key, constraint_key, step, limit),
+                )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
         return [row[0] for row in rows]
 
     def mark_untrusted(
@@ -170,18 +180,23 @@ class NeonMetricHistoryStore(MetricHistoryStore):
                 f"got {sorted(provided)}"
             )
         column, value = next(iter(provided.items()))
+        conn = self._connect()
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(
                     f"UPDATE runs SET trusted = false WHERE {column} = %s AND trusted = true",
                     (value,),
                 )
                 affected = cur.rowcount
-            self._conn.commit()
+            conn.commit()
         except Exception:
-            self._conn.rollback()
+            conn.rollback()
             raise
+        finally:
+            conn.close()
         return affected
 
     def close(self) -> None:
-        self._conn.close()
+        # No connection outlives an operation; kept for interface symmetry
+        # with the SQLite store so callers can close either unconditionally.
+        pass
