@@ -37,7 +37,9 @@ class TestSglangConfigUpdateWeights:
         # Before resolve, update_weights is None (not yet inferred)
         assert config.models[0].update_weights is None
         # After resolve with matching hf_checkpoint, defaults to True
-        args = Namespace(hf_checkpoint="/path/to/model", rollout_num_gpus_per_engine=1)
+        args = Namespace(
+            hf_checkpoint="/path/to/model", rollout_num_gpus_per_engine=1, sglang_mm_process_config=None
+        )
         config.models[0].resolve(args)
         assert config.models[0].update_weights is True
 

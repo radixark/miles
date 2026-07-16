@@ -539,6 +539,7 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+            video_process_config=(args.sglang_mm_process_config or {}).get("video"),
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
 

@@ -151,6 +151,58 @@ def load_processor(name_or_path: str, **kwargs):
     return proc
 
 
+VIDEO_PROCESSING_OPTIONS = {
+    "fps",
+    "nframes",
+    "min_frames",
+    "max_frames",
+    "min_pixels",
+    "max_pixels",
+    "total_pixels",
+    "resized_height",
+    "resized_width",
+}
+
+
+def prepare_rollout_video_sources(prompt: list[dict], video_process_config: dict | None = None) -> list[str] | None:
+    video_process_config = video_process_config or {}
+    unsupported_config = video_process_config.keys() - VIDEO_PROCESSING_OPTIONS
+    if unsupported_config:
+        raise NotImplementedError(f"Unsupported SGLang video processing options: {sorted(unsupported_config)}")
+
+    video_sources = []
+    for message in prompt:
+        content = message["content"]
+        if not isinstance(content, list):
+            continue
+
+        for item in content:
+            if item.get("type") != "video":
+                continue
+
+            item_options = item.keys() - {"type", "video"}
+            unsupported_options = item_options - VIDEO_PROCESSING_OPTIONS
+            if unsupported_options:
+                raise NotImplementedError(f"Unsupported per-video processing options: {sorted(unsupported_options)}")
+
+            # TODO: Extend SGLang /generate to accept per-video processing options.
+            mismatched_options = {
+                key
+                for key in item_options
+                if key not in video_process_config or item[key] != video_process_config[key]
+            }
+            if mismatched_options:
+                raise NotImplementedError(
+                    "Per-video processing options must match --sglang-mm-process-config: "
+                    f"{sorted(mismatched_options)}"
+                )
+
+            item.update(video_process_config)
+            video_sources.append(item["video"])
+
+    return video_sources or None
+
+
 def process_vision_info(prompt, processor):
     # TODO: temporary solution, will write image utils for miles later
     from qwen_vl_utils import process_vision_info as qwen_process_vision_info

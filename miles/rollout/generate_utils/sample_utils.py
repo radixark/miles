@@ -125,6 +125,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             prompt=b.prompt,
             tokens=b.tokens,
             multimodal_inputs=_merge_equal_value("multimodal_inputs"),
+            rollout_video_sources=_merge_equal_value("rollout_video_sources"),
             multimodal_train_inputs=_merge_equal_value("multimodal_train_inputs"),
             response=a.response + obs_text + b.response,
             response_length=a.response_length + obs_len + b.response_length,
