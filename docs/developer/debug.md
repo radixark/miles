@@ -26,7 +26,7 @@ If the very first rollout is gibberish:
 * **Pretrained vs. instruct.** Try the instruct version of the same architecture. If
   that works, your pretrained model + chat template combination is wrong.
 
-#### Are `log_probs` and `ref_log_probs` exactly equal in step 1?
+#### Are `trainer_logprobs` and `ref_logprobs` exactly equal in step 1?
 
 They should be: at step 1 the actor and reference are the same weights. If KL > 0:
 

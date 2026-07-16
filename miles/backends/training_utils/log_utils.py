@@ -21,6 +21,15 @@ from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 
+# WandB/TensorBoard display names for logged rollout metrics. The underlying
+# `rollout_data` keys are load-bearing across loss/training code and stay as-is;
+# only the logged metric name is remapped so each logprob source is unambiguous.
+_METRIC_DISPLAY_NAMES = {
+    "log_probs": "trainer_logprobs",
+    "rollout_log_probs": "sglang_logprobs",
+    "ref_log_probs": "ref_logprobs",
+}
+
 
 def gather_log_data(
     metric_name: str,
@@ -183,17 +192,17 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 val = val.float().mean()
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
-            log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
+            log_dict[_METRIC_DISPLAY_NAMES.get(key, key)] = val.item() if isinstance(val, torch.Tensor) else val
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
             if (
                 rollout_id == 0
-                and "rollout/log_probs" in reduced_log_dict
-                and "rollout/ref_log_probs" in reduced_log_dict
+                and "rollout/trainer_logprobs" in reduced_log_dict
+                and "rollout/ref_logprobs" in reduced_log_dict
             ):
                 # When R3 (rollout routing replay) is enabled, ref model does not use R3
-                # so log_probs and ref_log_probs may diverge; use a relaxed tolerance.
+                # so trainer_logprobs and ref_logprobs may diverge; use a relaxed tolerance.
                 # When --sglang-config deploys multiple models, the heavier offload/onload
                 # cycle can amplify flash-attention non-determinism; use 1e-8.
                 # The default branch also covers larger TP/CP/EP variants (e.g. stage-c-long
@@ -207,20 +216,24 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 else:
                     abs_tol = 1e-8
                 assert isclose(
-                    reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/ref_log_probs"], abs_tol=abs_tol
-                ), f"CI check failed: log_probs ({reduced_log_dict['rollout/log_probs']}) != ref_log_probs ({reduced_log_dict['rollout/ref_log_probs']})"
-            if "rollout/log_probs" in reduced_log_dict and "rollout/rollout_log_probs" in reduced_log_dict:
+                    reduced_log_dict["rollout/trainer_logprobs"],
+                    reduced_log_dict["rollout/ref_logprobs"],
+                    abs_tol=abs_tol,
+                ), f"CI check failed: trainer_logprobs ({reduced_log_dict['rollout/trainer_logprobs']}) != ref_logprobs ({reduced_log_dict['rollout/ref_logprobs']})"
+            if "rollout/trainer_logprobs" in reduced_log_dict and "rollout/sglang_logprobs" in reduced_log_dict:
                 assert isclose(
-                    reduced_log_dict["rollout/log_probs"], reduced_log_dict["rollout/rollout_log_probs"], abs_tol=0.03
-                ), f"CI check failed: log_probs ({reduced_log_dict['rollout/log_probs']}) != rollout_log_probs ({reduced_log_dict['rollout/rollout_log_probs']})"
+                    reduced_log_dict["rollout/trainer_logprobs"],
+                    reduced_log_dict["rollout/sglang_logprobs"],
+                    abs_tol=0.03,
+                ), f"CI check failed: trainer_logprobs ({reduced_log_dict['rollout/trainer_logprobs']}) != sglang_logprobs ({reduced_log_dict['rollout/sglang_logprobs']})"
             if "rollout/entropy" in reduced_log_dict:
                 assert 0 < reduced_log_dict["rollout/entropy"] < 0.7
 
         if args.ci_test and args.true_on_policy_mode:
-            assert log_dict["log_probs"] == log_dict["rollout_log_probs"], (
-                f"CI check failed: true_on_policy_mode is enabled, but log_probs "
-                f"({log_dict['log_probs']}) != rollout_log_probs "
-                f"({log_dict['rollout_log_probs']})"
+            assert log_dict["trainer_logprobs"] == log_dict["sglang_logprobs"], (
+                f"CI check failed: true_on_policy_mode is enabled, but trainer_logprobs "
+                f"({log_dict['trainer_logprobs']}) != sglang_logprobs "
+                f"({log_dict['sglang_logprobs']})"
             )
 
     if args.log_multi_turn:
