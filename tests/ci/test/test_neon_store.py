@@ -100,7 +100,9 @@ class _FakeConn:
         self.events: list = []
         self.commit_count = 0
         self.rollback_count = 0
-        self.closed = False
+        self.connect_count = 0
+        self.connected_dsns: list = []
+        self.close_count = 0
         self.fail_on_execute = False
         self.fetch_rows: list = []
         self.next_rowcount: int | None = None
@@ -117,16 +119,22 @@ class _FakeConn:
         self.events.append(("rollback", None, None))
 
     def close(self):
-        self.closed = True
+        self.close_count += 1
 
 
 @pytest.fixture
 def fake_conn(monkeypatch):
-    """Install a fake `psycopg` module whose `connect` returns one shared
-    fake connection, and hand that connection to the test."""
+    """Install a fake `psycopg` module whose `connect` hands out one shared
+    fake connection while recording every connect call and its DSN."""
     conn = _FakeConn()
     fake_psycopg = types.ModuleType("psycopg")
-    fake_psycopg.connect = lambda dsn: conn  # noqa: ARG005
+
+    def _connect(dsn):
+        conn.connect_count += 1
+        conn.connected_dsns.append(dsn)
+        return conn
+
+    fake_psycopg.connect = _connect
     monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
     return conn
 
@@ -150,17 +158,21 @@ def test_requires_dsn_when_env_unset(monkeypatch):
 def test_reads_dsn_from_env(monkeypatch, fake_conn):
     monkeypatch.setenv(NEON_DATABASE_URL_ENV, "postgresql://env/db")
     s = NeonMetricHistoryStore()
-    assert s._conn is fake_conn
+    s.recent_trusted_values("t", "b", "s", "m", LAST_STEPS_KEY, REL_CONSTRAINT_KEY, -1, limit=1)
+    assert fake_conn.connected_dsns == ["postgresql://env/db"]
 
 
 def test_explicit_dsn_takes_precedence(monkeypatch, fake_conn):
     monkeypatch.delenv(NEON_DATABASE_URL_ENV, raising=False)
     s = NeonMetricHistoryStore(dsn="postgresql://explicit/db")
-    assert s._conn is fake_conn
+    s.recent_trusted_values("t", "b", "s", "m", LAST_STEPS_KEY, REL_CONSTRAINT_KEY, -1, limit=1)
+    assert fake_conn.connected_dsns == ["postgresql://explicit/db"]
 
 
 def test_no_ddl_at_construction(store, fake_conn):
-    # Construction must not issue any statement -- schema is provisioned out-of-band.
+    # Construction must not connect nor issue any statement -- schema is
+    # provisioned out-of-band and connections are per-operation.
+    assert fake_conn.connect_count == 0
     assert fake_conn.events == []
 
 
@@ -320,6 +332,23 @@ def test_mark_untrusted_issues_parameterized_update(store, fake_conn, kwargs, co
     assert params == (value,)
     assert fake_conn.commit_count == 1
     assert fake_conn.rollback_count == 0
+
+
+def test_each_operation_opens_and_closes_its_own_connection(store, fake_conn):
+    # A store built at suite start must not cache a connection across the
+    # minutes-long gaps between e2e tests (Neon kills idle sockets); every
+    # operation gets a fresh connection and releases it before returning.
+    store.write_run(IDENTITY, PROVENANCE, "2026-06-02T00:00:00+00:00", True, [_sample("m", 0.5)])
+    store.recent_trusted_values("t", "b", "s", "m", LAST_STEPS_KEY, REL_CONSTRAINT_KEY, -1, limit=1)
+    assert fake_conn.connect_count == 2
+    assert fake_conn.close_count == 2
+
+
+def test_connection_closed_even_when_operation_fails(store, fake_conn):
+    fake_conn.fail_on_execute = True
+    with pytest.raises(RuntimeError, match="boom"):
+        store.write_run(IDENTITY, PROVENANCE, "2026-06-02T00:00:00+00:00", True, [_sample("m", 1.0)])
+    assert fake_conn.close_count == 1
 
 
 def test_mark_untrusted_rolls_back_on_error(store, fake_conn):
