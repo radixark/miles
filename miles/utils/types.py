@@ -17,7 +17,6 @@ class Sample:
     tokens: list[int] = field(default_factory=list)
     multimodal_inputs: dict[str, Any] = None
     rollout_video_sources: list[str] | None = None
-    rollout_prompt_ids: list[int] | None = None  # Tokenizer-only IDs paired with raw video for rollout.
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # response
     response: str = ""
@@ -224,7 +223,6 @@ class Sample:
         dataclass defaults.
         """
         self.tokens = []
-        self.rollout_prompt_ids = None
         self.multimodal_train_inputs = None
         self.response = ""
         self.response_length = 0

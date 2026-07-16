@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from examples.experimental.video_rollout import generate as video_rollout
+from examples.video_rollout import generate as video_rollout
+from examples.video_rollout import prefill_logprobs as video_prefill_logprobs
 from miles.rollout.base_types import GenerateFnInput
 from miles.utils.types import Sample
 
@@ -27,6 +28,7 @@ def _args(**overrides):
         rollout_max_response_len=16,
         rollout_max_context_len=None,
         partial_rollout=True,
+        recompute_logprobs_via_prefill=False,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         lora_rank=0,
@@ -137,3 +139,44 @@ async def test_multi_turn_replays_video_with_each_context_suffix(monkeypatch):
     ]
     assert all(request["video_data"] == ["video.mp4"] for request in requests)
     assert output.samples.tokens == PROCESSOR_PROMPT_IDS + [20, 30, 21]
+
+
+@pytest.mark.asyncio
+async def test_video_prefill_uses_rollout_prompt_and_expanded_logprob_offset(monkeypatch):
+    sample = _sample(
+        tokens=PROCESSOR_PROMPT_IDS + [20, 21],
+        response_length=2,
+        status=Sample.Status.COMPLETED,
+    )
+    args = _args(
+        recompute_logprobs_via_prefill=True,
+        sglang_enable_lora=False,
+        sglang_router_policy="round_robin",
+    )
+    requests = []
+
+    async def fake_post(url, payload, headers=None):
+        requests.append((url, payload))
+        if url.endswith("/flush_cache"):
+            return {}
+        return {
+            "meta_info": {
+                "input_token_logprobs": [(None, 102), (-0.1, 20), (-0.2, 21)],
+            }
+        }
+
+    monkeypatch.setattr(video_prefill_logprobs, "post", fake_post)
+
+    await video_prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
+        args,
+        [sample],
+        url="http://localhost/generate",
+        sampling_params={},
+        tokenizer=_Tokenizer(),
+    )
+
+    payload = requests[1][1]
+    assert payload["input_ids"] == ROLLOUT_PROMPT_IDS + [20, 21]
+    assert payload["video_data"] == ["video.mp4"]
+    assert payload["logprob_start_len"] == 2
+    assert sample.rollout_log_probs == [-0.1, -0.2]

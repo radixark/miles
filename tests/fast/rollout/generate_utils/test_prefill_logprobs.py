@@ -167,22 +167,3 @@ async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
     assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 22]]
     assert calls[3][1]["logprob_start_len"] == 2
     assert calls[3][1]["input_ids"] == [[10, 11, 12, 21]]
-
-
-def test_video_prefill_uses_rollout_prompt_ids_and_expanded_logprob_offset():
-    sample = Sample(
-        tokens=[100, 101, 102, 20, 21],
-        response_length=2,
-        status=Sample.Status.COMPLETED,
-        multimodal_inputs={"videos": [object()]},
-        rollout_video_sources=["video.mp4"],
-        rollout_prompt_ids=[1, 2],
-    )
-    args = SimpleNamespace(sglang_enable_lora=False, sglang_router_policy="round_robin")
-
-    payload = prefill_logprobs._build_prefill_scoring_payload(args, sample, {})
-
-    assert payload["input_ids"] == [1, 2, 20, 21]
-    assert payload["video_data"] == ["video.mp4"]
-    assert payload["logprob_start_len"] == 2
-    assert prefill_logprobs._can_batch_prefill_score(args, [sample]) is False

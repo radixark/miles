@@ -22,13 +22,8 @@ def _build_prefill_scoring_payload(
             f"tokens={len(sample.tokens)}, response_length={sample.response_length}"
         )
 
-    rollout_input_ids = (
-        sample.rollout_prompt_ids + sample.tokens[prompt_len:]
-        if sample.rollout_prompt_ids is not None
-        else sample.tokens
-    )
     payload = {
-        "input_ids": rollout_input_ids,
+        "input_ids": sample.tokens,
         "sampling_params": {
             **dict(sampling_params),
             "max_new_tokens": 0,
@@ -45,10 +40,9 @@ def _build_prefill_scoring_payload(
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
-    if images := (sample.multimodal_inputs or {}).get("images"):
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in images]
-    if sample.rollout_video_sources:
-        payload["video_data"] = sample.rollout_video_sources
+    if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
+        image_data = sample.multimodal_inputs["images"]
+        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
     return payload
 
@@ -56,13 +50,7 @@ def _build_prefill_scoring_payload(
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
     if getattr(args, "sglang_router_policy", None) == "consistent_hashing":
         return False
-
-    for sample in samples:
-        multimodal_inputs = sample.multimodal_inputs or {}
-        if multimodal_inputs.get("images") or multimodal_inputs.get("videos") or sample.rollout_video_sources:
-            return False
-
-    return True
+    return not any(sample.multimodal_inputs and sample.multimodal_inputs.get("images") for sample in samples)
 
 
 def _build_batch_prefill_scoring_payload(
