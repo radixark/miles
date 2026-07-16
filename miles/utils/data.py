@@ -183,6 +183,7 @@ class Dataset:
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
+        video_process_config=None,
     ):
         origin_samples = []
         for data in read_file(path):
@@ -214,16 +215,16 @@ class Dataset:
                 output_prompt = prompt
 
             if processor:
-                from miles.utils.processing_utils import extract_rollout_video_inputs, process_vision_info
+                from miles.utils.processing_utils import prepare_rollout_video_sources, process_vision_info
 
                 assert isinstance(
                     prompt, list
                 ), f"prompt must be a list when processor is not None, got {type(prompt)} instead"
-                rollout_video_inputs = extract_rollout_video_inputs(prompt)
+                rollout_video_sources = prepare_rollout_video_sources(prompt, video_process_config)
                 multimodal_inputs = process_vision_info(prompt, processor)
             else:
                 multimodal_inputs = None
-                rollout_video_inputs = None
+                rollout_video_sources = None
 
             origin_samples.append(
                 Sample(
@@ -231,7 +232,7 @@ class Dataset:
                     label=data[label_key] if label_key is not None else None,
                     metadata=metadata,
                     multimodal_inputs=multimodal_inputs,
-                    rollout_video_inputs=rollout_video_inputs,
+                    rollout_video_sources=rollout_video_sources,
                 )
             )
 

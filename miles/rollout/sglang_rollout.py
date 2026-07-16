@@ -27,11 +27,11 @@ from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
+    build_rollout_media_payload,
     compute_prompt_ids_from_sample,
     compute_rollout_input_ids,
     get_indexer_topk_from_response,
 )
-from .generate_utils.multimodal import build_rollout_engine_multimodal_payload
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
@@ -172,7 +172,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
 
-    payload.update(build_rollout_engine_multimodal_payload(sample.multimodal_inputs, sample.rollout_video_inputs))
+    payload.update(build_rollout_media_payload(sample.multimodal_inputs, sample.rollout_video_sources))
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
@@ -526,6 +526,7 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+            video_process_config=(args.sglang_mm_process_config or {}).get("video"),
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
 

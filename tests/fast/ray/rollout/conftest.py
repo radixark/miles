@@ -69,6 +69,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_router_request_timeout_secs=600,
         sglang_dp_size=1,
         sglang_speculative_algorithm=None,
+        sglang_mm_process_config=None,
         sglang_config=None,
         sglang_model_routers=None,
         prefill_num_servers=None,

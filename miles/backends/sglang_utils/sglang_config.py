@@ -64,11 +64,19 @@ class ModelConfig:
         """Resolve per-group defaults from model-level then args-level values."""
         default_gpus_per_engine = self.num_gpus_per_engine or args.rollout_num_gpus_per_engine
         default_model_path = self.model_path or args.hf_checkpoint
+        video_process_config = (args.sglang_mm_process_config or {}).get("video") or {}
         for g in self.server_groups:
             if g.num_gpus_per_engine is None:
                 g.num_gpus_per_engine = default_gpus_per_engine
             if "model_path" not in g.overrides:
                 g.overrides["model_path"] = default_model_path
+            group_video_config = (
+                g.overrides.get("mm_process_config", args.sglang_mm_process_config) or {}
+            ).get("video") or {}
+            if g.worker_type != "placeholder" and group_video_config != video_process_config:
+                raise NotImplementedError(
+                    "All SGLang server groups must use the video config from --sglang-mm-process-config"
+                )
 
         if self.server_groups:
             model_paths = {g.overrides["model_path"] for g in self.server_groups}

@@ -9,10 +9,20 @@ import numpy as np
 import pybase64
 
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.utils.processing_utils import call_processor
+from miles.utils.processing_utils import call_processor, encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
-from .multimodal import build_rollout_engine_multimodal_payload
+
+def build_rollout_media_payload(
+    multimodal_inputs: dict[str, Any] | None,
+    video_sources: list[str] | None,
+) -> dict[str, list[str]]:
+    payload = {}
+    if images := (multimodal_inputs or {}).get("images"):
+        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in images]
+    if video_sources:
+        payload["video_data"] = video_sources
+    return payload
 
 
 # Make this an isolated function because users may want to compute their own
@@ -36,7 +46,7 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
         sample.rollout_prompt_ids = None
         return state.tokenizer.encode(prompt, add_special_tokens=False)
 
-    if sample.rollout_video_inputs:
+    if sample.rollout_video_sources:
         if not isinstance(prompt, str):
             prompt = state.tokenizer.apply_chat_template(
                 prompt,
@@ -70,7 +80,7 @@ def compute_request_payload(
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
-    rollout_video_inputs: list[dict[str, Any]] | None = None,
+    rollout_video_sources: list[str] | None = None,
     rollout_input_ids: list[int] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
@@ -89,7 +99,7 @@ def compute_request_payload(
     }
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
-    payload.update(build_rollout_engine_multimodal_payload(multimodal_inputs, rollout_video_inputs))
+    payload.update(build_rollout_media_payload(multimodal_inputs, rollout_video_sources))
 
     return payload, None
 

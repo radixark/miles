@@ -8,7 +8,7 @@ from miles.utils.http_utils import post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.types import Sample
 
-from .multimodal import build_rollout_engine_multimodal_payload
+from .generate_endpoint_utils import build_rollout_media_payload
 
 
 def _build_prefill_scoring_payload(
@@ -44,7 +44,7 @@ def _build_prefill_scoring_payload(
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
-    payload.update(build_rollout_engine_multimodal_payload(sample.multimodal_inputs, sample.rollout_video_inputs))
+    payload.update(build_rollout_media_payload(sample.multimodal_inputs, sample.rollout_video_sources))
 
     return payload
 
@@ -55,7 +55,7 @@ def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
 
     for sample in samples:
         multimodal_inputs = sample.multimodal_inputs or {}
-        if multimodal_inputs.get("images") or multimodal_inputs.get("videos") or sample.rollout_video_inputs:
+        if multimodal_inputs.get("images") or multimodal_inputs.get("videos") or sample.rollout_video_sources:
             return False
 
     return True

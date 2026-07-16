@@ -134,6 +134,18 @@ class TestModelConfigResolve:
         m.resolve(args)
         assert m.update_weights is False  # not flipped
 
+    def test_resolve_rejects_a_different_server_group_video_config(self):
+        m = ModelConfig(
+            name="actor",
+            server_groups=[
+                ServerGroupConfig(
+                    worker_type="regular", num_gpus=4, overrides={"mm_process_config": {"video": {"fps": 2}}}
+                )
+            ],
+        )
+        with pytest.raises(NotImplementedError, match="--sglang-mm-process-config"):
+            m.resolve(make_args(sglang_mm_process_config={"video": {"fps": 4}}))
+
 
 # ----------------------------- has_pd_disaggregation aggregation -----------------
 

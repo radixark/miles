@@ -16,7 +16,7 @@ class Sample:
     prompt: str | list[dict[str, str]] = ""
     tokens: list[int] = field(default_factory=list)
     multimodal_inputs: dict[str, Any] = None
-    rollout_video_inputs: list[dict[str, Any]] | None = None
+    rollout_video_sources: list[str] | None = None
     rollout_prompt_ids: list[int] | None = None  # Tokenizer-only IDs paired with raw video for rollout.
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # response
@@ -219,7 +219,7 @@ class Sample:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, rollout_video_inputs, metadata,
+        multimodal_inputs, rollout_video_sources, metadata,
         generate_function_path, session_id) and restores everything else to
         dataclass defaults.
         """
