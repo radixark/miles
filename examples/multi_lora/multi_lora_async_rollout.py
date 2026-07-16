@@ -149,6 +149,81 @@ async def process_group(
     return result
 
 
+class MultiLoRAWorkerMetrics:
+    """The worker's cross-batch metric state, kept out of its buffer
+    machinery: dynamic-filter drop counts, staleness drops, and per-adapter
+    reward accumulation flushed as a step mean. Has its own lock — the
+    producer thread records drops while the trainer thread flushes."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
+        self.stale_dropped = 0
+        self.staleness_values: list[int] = []
+        # Rewards of shipped samples, accumulated per adapter across train
+        # batches and flushed as a step-mean metric when the adapter steps.
+        self.reward_sums: dict[str, float] = defaultdict(float)
+        self.reward_counts: dict[str, int] = defaultdict(int)
+
+    def record_dynamic_filter_drop(self, reason: str) -> None:
+        with self.lock:
+            self.dynamic_filter_drop_counts[reason] += 1
+
+    def record_stale_drops(self, staleness_values: list[int]) -> None:
+        with self.lock:
+            self.stale_dropped += len(staleness_values)
+            self.staleness_values += staleness_values
+
+    def record_shipped_rewards(self, args, data: list[Group], step_names: list[str]) -> dict[str, float]:
+        """Accumulate the shipped batch's rewards per adapter; for adapters
+        stepping with this batch, flush the mean over their whole adapter
+        batch (accumulated across shipped batches, so it covers all
+        ``adapter_global_batch_size`` samples of the step, not just this
+        batch's slice).
+
+        Counted at ship time, not train commit: a failed train call aborts the
+        run anyway, so the distinction has no practical effect.
+        """
+        with self.lock:
+            for group in data:
+                name = group_adapter_name(group)
+                if name is None:
+                    continue
+                for sample in iter_group_samples(group):
+                    self.reward_sums[name] += sample.get_reward_value(args)
+                    self.reward_counts[name] += 1
+
+            metrics: dict[str, float] = {}
+            for name in step_names:
+                if (count := self.reward_counts.pop(name, 0)) > 0:
+                    metrics[f"{name}/rollout/raw_reward/step_mean"] = self.reward_sums.pop(name) / count
+                    metrics[f"{name}/rollout/raw_reward/step_n"] = count
+            return metrics
+
+    def discard_adapter(self, name: str) -> None:
+        """Drop a retired adapter's partial reward accumulation."""
+        with self.lock:
+            self.reward_sums.pop(name, None)
+            self.reward_counts.pop(name, None)
+
+    def pop_metrics(self) -> dict[str, float]:
+        with self.lock:
+            metrics = {
+                f"rollout/dynamic_filter/drop_{reason}": count
+                for reason, count in self.dynamic_filter_drop_counts.items()
+            }
+            self.dynamic_filter_drop_counts.clear()
+            metrics["perf/fully_async/stale_dropped"] = self.stale_dropped
+            if self.staleness_values:
+                metrics["perf/fully_async/stale_dropped_avg_staleness"] = sum(self.staleness_values) / len(
+                    self.staleness_values
+                )
+                metrics["perf/fully_async/stale_dropped_max_staleness"] = max(self.staleness_values)
+            self.stale_dropped = 0
+            self.staleness_values = []
+            return metrics
+
+
 class AsyncMultiLoRAWorker:
     """Background producer filling bounded per-adapter completed-group buffers;
     the collection loop pops from them via ``get_groups``."""
@@ -175,9 +250,7 @@ class AsyncMultiLoRAWorker:
         # Advances past every visited adapter, persisting across calls and
         # batches, so adapters are served round-robin.
         self.rotation: deque[str] = deque()
-        self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
-        self.stale_dropped = 0
-        self.staleness_values: list[int] = []
+        self.metrics = MultiLoRAWorkerMetrics()
 
     @classmethod
     def get_or_create(cls, args, data_source, generate_fn: GenerateFn, concurrency: int = None):
@@ -241,8 +314,7 @@ class AsyncMultiLoRAWorker:
         filter_result = call_dynamic_filter(self.dynamic_filter, self.args, result)
         if not filter_result.keep:
             if filter_result.reason:
-                with self.buffer_lock:
-                    self.dynamic_filter_drop_counts[filter_result.reason] += 1
+                self.metrics.record_dynamic_filter_drop(filter_result.reason)
             return
 
         adapter_name = group_adapter_name(result)
@@ -279,10 +351,12 @@ class AsyncMultiLoRAWorker:
 
         with self.buffer_lock:
             # Adapters retired at the last reconcile sync point: their buffered
-            # tail is discarded (base deregistration semantics).
+            # tail is discarded (base deregistration semantics), along with any
+            # partially accumulated reward stats.
             for name in list(self.buffers):
                 if name not in adapters:
                     self.buffers.pop(name)
+                    self.metrics.discard_adapter(name)
 
             # Keep the rotation in sync with live adapters.
             self.rotation = deque(name for name in self.rotation if name in adapters)
@@ -297,8 +371,7 @@ class AsyncMultiLoRAWorker:
                     adapter = adapters[name]
                     buffer = self.buffers[name]
                     if dropped := buffer.drop_stale(adapter.version, max_staleness):
-                        self.stale_dropped += len(dropped)
-                        self.staleness_values += dropped
+                        self.metrics.record_stale_drops(dropped)
                     min_groups_per_pop = min_groups_per_dp_split(adapter.config.n_samples_per_prompt, dp_size)
                     trainable_groups = len(buffer) // min_groups_per_pop * min_groups_per_pop
                     remaining_allowed_groups = max(0, remaining_groups(adapter) - group_counts.get(name, 0))
@@ -313,23 +386,6 @@ class AsyncMultiLoRAWorker:
                 if not made_progress:
                     break  # a full pass over rotation yielded nothing
         return popped, group_counts
-
-    def pop_metrics(self) -> dict[str, float]:
-        with self.buffer_lock:
-            metrics = {
-                f"rollout/dynamic_filter/drop_{reason}": count
-                for reason, count in self.dynamic_filter_drop_counts.items()
-            }
-            self.dynamic_filter_drop_counts.clear()
-            metrics["perf/fully_async/stale_dropped"] = self.stale_dropped
-            if self.staleness_values:
-                metrics["perf/fully_async/stale_dropped_avg_staleness"] = sum(self.staleness_values) / len(
-                    self.staleness_values
-                )
-                metrics["perf/fully_async/stale_dropped_max_staleness"] = max(self.staleness_values)
-            self.stale_dropped = 0
-            self.staleness_values = []
-            return metrics
 
 
 async def collect_batch(args, worker: AsyncMultiLoRAWorker, snapshot: dict) -> TrainBatch:
@@ -443,7 +499,8 @@ async def generate_rollout_multi_lora_async(
     )
 
     metrics = {
-        **worker.pop_metrics(),
+        **worker.metrics.pop_metrics(),
+        **worker.metrics.record_shipped_rewards(args, data, batch.step_names),
         "perf/fully_async/queue_length": queue_length,
         "perf/fully_async/batch_wait_time": time.time() - start_time,
         "perf/fully_async/batch_adapters": len(batch.group_counts),
