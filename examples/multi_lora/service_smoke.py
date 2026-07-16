@@ -24,14 +24,23 @@ class ServiceClient:
         self.timeout_s = timeout_s
         self.http = httpx.Client(timeout=30.0)
 
-    def active_adapters(self) -> dict:
+    def adapters(self, states: set[str] | None = None) -> dict:
         response = self.http.get(f"{self.api_url}/adapter_runs")
         response.raise_for_status()
+        wanted_states = states if states is not None else {"ACTIVE"}
         return {
-            status["name"]: {"slot": status["slot"], "version": status["version"], "step": status["step"]}
+            status["name"]: {
+                "slot": status["slot"],
+                "version": status["version"],
+                "step": status["step"],
+                "state": status["state"],
+            }
             for status in response.json()["adapters"]
-            if status["state"] == "ACTIVE"
+            if status["state"] in wanted_states
         }
+
+    def active_adapters(self) -> dict:
+        return self.adapters(states={"ACTIVE"})
 
     def register(self, name: str, config: dict) -> httpx.Response:
         return self.http.post(f"{self.api_url}/adapter_runs", json={"name": name, "config": config})
@@ -57,9 +66,15 @@ class ServiceClient:
         raise SmokeFailure(f"timed out after {self.timeout_s}s waiting for: {description}")
 
     def wait_for_step(self, name: str, min_step: int) -> None:
+        # Step-triggered deregistration can move an adapter to RETIRING quickly;
+        # count both ACTIVE and RETIRING for progress waits.
         self.wait_for(
             f"'{name}' to reach step {min_step}",
-            lambda adapters: name in adapters and adapters[name]["step"] >= min_step,
+            lambda _active: (
+                (adapters := self.adapters(states={"ACTIVE", "RETIRING"}))
+                and name in adapters
+                and adapters[name]["step"] >= min_step
+            ),
         )
 
     def register_when_allowed(self, name: str, config: dict) -> None:
