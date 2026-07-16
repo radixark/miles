@@ -157,5 +157,17 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
     if args.openenv_tb2_tasks_dir:
         if not args.daytona_api_key:
             raise ValueError("DAYTONA_API_KEY required in per-task Daytona mode")
+        # Preflight the lazily-imported SDK. Without this, a missing install only
+        # surfaces inside each episode's sandbox start, where the failed sample is
+        # aborted, the group dropped, and the rollout loop refills forever — a
+        # silent GPU-burning churn instead of a launch-time error.
+        try:
+            import daytona  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "per-task Daytona mode needs the daytona SDK in the rollout "
+                "process's environment: pip install daytona "
+                "(or pip install -e '<OpenEnv>/envs/tbench2_env[daytona]')"
+            ) from e
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
         env["DAYTONA_API_KEY"] = args.daytona_api_key
