@@ -308,7 +308,7 @@ def _get_create_sem() -> asyncio.Semaphore:
 def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     from tbench2_env import task_snapshots
 
-    daytona = task_snapshots._make_daytona()
+    daytona = task_snapshots.make_daytona()
     sandbox, url = task_snapshots.create_task_sandbox(
         daytona,
         Path(tasks_dir) / task_id,
