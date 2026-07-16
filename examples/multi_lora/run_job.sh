@@ -89,6 +89,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    # --use-wandb \
    # --wandb-host https://wandb.ai/ \
    # --wandb-team staging \
-   # --wandb-project miles-multilora \
+   # --wandb-project miles-multi-lora \
    # --wandb-group qwen3-4B
 
