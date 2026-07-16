@@ -74,6 +74,12 @@ generation. If it is empty, rollout is still the bottleneck and async cannot hid
 | `--global-batch-size` | Number of samples the trainer drains per step |
 | `--num-steps-per-rollout` | Number of optimizer steps per queue drain cycle |
 | `--max-weight-staleness` | When the rollout engine's weight version lags the trainer's by more than this, the worker recycles the stale group instead of feeding it to the loss |
+| `--use-dynamic-global-batch-size` | Sizes each `global_batch_size` to the samples actually drained, pinning `num_steps_per_rollout` to 1 (one optimizer step per queue drain) |
+
+With `--use-dynamic-global-batch-size`, each drained batch produces exactly one
+optimizer step (`num_steps_per_rollout = 1`), so per-batch off-policyness stays at
+zero and the only off-policyness left is the inter-batch weight-version gap bounded
+by `--max-weight-staleness`.
 
 The reference worker caps its output queue at 1000 groups, so if training is slower
 than rollout the producer eventually blocks rather than growing the queue without
