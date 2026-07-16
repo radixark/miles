@@ -37,6 +37,9 @@ class TrackingBackend(ABC):
 class WandbBackend(TrackingBackend):
     # Delegates to the existing ``wandb_utils`` helpers.
 
+    def __init__(self) -> None:
+        self._defined_step_keys: set[str] = set()
+
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         from . import wandb_utils
 
@@ -45,9 +48,18 @@ class WandbBackend(TrackingBackend):
         else:
             wandb_utils.init_wandb_secondary(args, **kwargs)
 
-    def log(self, metrics: dict[str, Any], step: int | None = None, **kwargs) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None, *, step_key: str | None = None, **kwargs) -> None:
         import wandb
 
+        if step_key is not None and step_key not in self._defined_step_keys:
+            # Declare the axis on first sight so the key's family plots
+            # against it instead of wandb's global step. Static families
+            # (train/rollout/eval) are already declared at init; this makes
+            # runtime axes (e.g. a per-adapter "{name}/step") work the same.
+            wandb.define_metric(step_key)
+            if "/" in step_key:
+                wandb.define_metric(f"{step_key.rsplit('/', 1)[0]}/*", step_metric=step_key)
+            self._defined_step_keys.add(step_key)
         wandb.log(metrics)
 
     def finish(self) -> None:

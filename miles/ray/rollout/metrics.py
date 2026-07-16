@@ -12,7 +12,6 @@ from miles.utils.metric_utils import (
     has_repetition,
 )
 from miles.utils.misc import load_function
-from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
@@ -52,21 +51,6 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
     return log_dict
 
 
-def _compute_per_adapter_metrics(args, samples: list[Sample]) -> dict:
-    """Compute reward and response length metrics grouped by adapter name."""
-    by_adapter = group_by(samples, lambda s: s.adapter.name if s.adapter else None)
-    log_dict = {}
-    for name, adapter_samples in by_adapter.items():
-        if name is None:
-            continue
-        rewards = [s.get_reward_value(args) for s in adapter_samples]
-        response_lengths = [s.effective_response_length for s in adapter_samples]
-        prefix = f"{name}/rollout/"
-        log_dict |= dict_add_prefix(compute_statistics(rewards), f"{prefix}raw_reward/")
-        log_dict |= dict_add_prefix(compute_statistics(response_lengths), f"{prefix}response_len/")
-    return log_dict
-
-
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
@@ -79,9 +63,6 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     log_dict = {**(rollout_extra_metrics or {})}
     log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
     log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
-
-    if is_multi_lora_enabled(args):
-        log_dict |= _compute_per_adapter_metrics(args, samples)
     logger.info(f"perf {rollout_id}: {log_dict}")
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step

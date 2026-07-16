@@ -29,6 +29,7 @@ from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, g
 from miles.utils.async_utils import run
 from miles.utils.misc import load_function
 from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
+from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -152,34 +153,41 @@ async def process_group(
 class MultiLoRAWorkerMetrics:
     """The worker's cross-batch metric state, kept out of its buffer
     machinery: dynamic-filter drop counts, staleness drops, and per-adapter
-    reward accumulation flushed as a step mean. Has its own lock — the
-    producer thread records drops while the trainer thread flushes."""
+    sample stats flushed when the adapter's optimizer step completes. Has its
+    own lock — the producer thread records drops while the trainer thread
+    flushes."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
         self.stale_dropped = 0
         self.staleness_values: list[int] = []
-        # Rewards of shipped samples, accumulated per adapter across train
-        # batches and flushed as a step-mean metric when the adapter steps.
-        self.reward_sums: dict[str, float] = defaultdict(float)
-        self.reward_counts: dict[str, int] = defaultdict(int)
+        # Shipped-sample stats and stale drops, accumulated per adapter across
+        # train batches and flushed when the adapter steps.
+        self.step_reward_sums: dict[str, float] = defaultdict(float)
+        self.step_response_len_sums: dict[str, float] = defaultdict(float)
+        self.step_sample_counts: dict[str, int] = defaultdict(int)
+        self.step_staleness_values: dict[str, list[int]] = defaultdict(list)
 
     def record_dynamic_filter_drop(self, reason: str) -> None:
         with self.lock:
             self.dynamic_filter_drop_counts[reason] += 1
 
-    def record_stale_drops(self, staleness_values: list[int]) -> None:
+    def record_stale_drops(self, name: str, staleness_values: list[int]) -> None:
         with self.lock:
             self.stale_dropped += len(staleness_values)
             self.staleness_values += staleness_values
+            self.step_staleness_values[name] += staleness_values
 
-    def record_shipped_rewards(self, args, data: list[Group], step_names: list[str]) -> dict[str, float]:
-        """Accumulate the shipped batch's rewards per adapter; for adapters
-        stepping with this batch, flush the mean over their whole adapter
-        batch (accumulated across shipped batches, so it covers all
-        ``adapter_global_batch_size`` samples of the step, not just this
-        batch's slice).
+    def record_shipped_samples(self, args, data: list[Group], step_names: list[str]) -> dict[str, dict[str, float]]:
+        """Accumulate the shipped batch's rewards and response lengths per
+        adapter; for adapters stepping with this batch, flush means over their
+        whole adapter batch (accumulated across shipped batches, so each mean
+        covers all ``adapter_global_batch_size`` samples of the step, not just
+        this batch's slice). Returns {adapter name: flushed metrics}.
+
+        ``n`` should always equal the adapter's ``adapter_global_batch_size``;
+        any deviation means batch accounting drifted.
 
         Counted at ship time, not train commit: a failed train call aborts the
         run anyway, so the distinction has no practical effect.
@@ -190,21 +198,32 @@ class MultiLoRAWorkerMetrics:
                 if name is None:
                     continue
                 for sample in iter_group_samples(group):
-                    self.reward_sums[name] += sample.get_reward_value(args)
-                    self.reward_counts[name] += 1
+                    self.step_reward_sums[name] += sample.get_reward_value(args)
+                    self.step_response_len_sums[name] += sample.effective_response_length
+                    self.step_sample_counts[name] += 1
 
-            metrics: dict[str, float] = {}
+            flushed: dict[str, dict[str, float]] = {}
             for name in step_names:
-                if (count := self.reward_counts.pop(name, 0)) > 0:
-                    metrics[f"{name}/rollout/raw_reward/step_mean"] = self.reward_sums.pop(name) / count
-                    metrics[f"{name}/rollout/raw_reward/step_n"] = count
-            return metrics
+                if (count := self.step_sample_counts.pop(name, 0)) > 0:
+                    flushed[name] = {
+                        "rollout/raw_reward/mean": self.step_reward_sums.pop(name) / count,
+                        "rollout/response_len/mean": self.step_response_len_sums.pop(name) / count,
+                        "rollout/n": count,
+                    }
+                    staleness = self.step_staleness_values.pop(name, [])
+                    flushed[name]["rollout/stale_dropped"] = len(staleness)
+                    if staleness:
+                        flushed[name]["rollout/stale_dropped_avg_staleness"] = sum(staleness) / len(staleness)
+                        flushed[name]["rollout/stale_dropped_max_staleness"] = max(staleness)
+            return flushed
 
     def discard_adapter(self, name: str) -> None:
-        """Drop a retired adapter's partial reward accumulation."""
+        """Drop a retired adapter's partial step accumulation."""
         with self.lock:
-            self.reward_sums.pop(name, None)
-            self.reward_counts.pop(name, None)
+            self.step_reward_sums.pop(name, None)
+            self.step_response_len_sums.pop(name, None)
+            self.step_sample_counts.pop(name, None)
+            self.step_staleness_values.pop(name, None)
 
     def pop_metrics(self) -> dict[str, float]:
         with self.lock:
@@ -327,6 +346,11 @@ class AsyncMultiLoRAWorker:
         with self.buffer_lock:
             return sum(len(buffer) for buffer in self.buffers.values())
 
+    def queue_sizes(self) -> dict[str, int]:
+        """Buffered (completed, not yet shipped) prompt groups per adapter."""
+        with self.buffer_lock:
+            return {name: len(buffer) for name, buffer in self.buffers.items()}
+
     def get_groups(
         self, snapshot: dict, num_samples: int, group_counts: dict[str, int]
     ) -> tuple[list[Group], dict[str, int]]:
@@ -371,7 +395,7 @@ class AsyncMultiLoRAWorker:
                     adapter = adapters[name]
                     buffer = self.buffers[name]
                     if dropped := buffer.drop_stale(adapter.version, max_staleness):
-                        self.metrics.record_stale_drops(dropped)
+                        self.metrics.record_stale_drops(name, dropped)
                     min_groups_per_pop = min_groups_per_dp_split(adapter.config.n_samples_per_prompt, dp_size)
                     trainable_groups = len(buffer) // min_groups_per_pop * min_groups_per_pop
                     remaining_allowed_groups = max(0, remaining_groups(adapter) - group_counts.get(name, 0))
@@ -498,15 +522,27 @@ async def generate_rollout_multi_lora_async(
         sampling_params=state.sampling_params,
     )
 
+    # Adapter metrics live on the adapter's own optimizer-step axis
+    # ({name}/step), not rollout/step: one point per completed step, means
+    # over exactly the samples that step trained on. adapters[name].step is
+    # the committed count at snapshot time; this batch completes step + 1.
+    if flushed := worker.metrics.record_shipped_samples(args, data, batch.step_names):
+        queue_sizes = worker.queue_sizes()
+        for name, step_metrics in flushed.items():
+            step_key = f"{name}/step"
+            log_dict = {step_key: adapters[name].step + 1}
+            log_dict |= {f"{name}/{key}": value for key, value in step_metrics.items()}
+            log_dict[f"{name}/rollout/queue_length"] = queue_sizes.get(name, 0)
+            tracking.log(args, log_dict, step_key=step_key)
+
     metrics = {
         **worker.metrics.pop_metrics(),
-        **worker.metrics.record_shipped_rewards(args, data, batch.step_names),
         "perf/fully_async/queue_length": queue_length,
         "perf/fully_async/batch_wait_time": time.time() - start_time,
-        "perf/fully_async/batch_adapters": len(batch.group_counts),
-        "perf/fully_async/batch_prompt_groups": len(data),
-        "perf/fully_async/batch_samples": sum(group_sample_count(group) for group in data),
-        "perf/fully_async/batch_step_count": len(batch.step_names),
+        "perf/fully_async/batch_n_adapters": len(batch.group_counts),
+        "perf/fully_async/batch_n_groups": len(data),
+        "perf/fully_async/batch_n_samples": sum(group_sample_count(group) for group in data),
+        "perf/fully_async/batch_n_adapters_to_step": len(batch.step_names),
     }
 
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
