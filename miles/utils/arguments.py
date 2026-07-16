@@ -1397,11 +1397,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rollout-backend",
                 choices=["sglang", "dynamo"],
                 default="sglang",
-                help=(
-                    "Rollout router / worker stack. 'sglang' keeps the existing "
-                    "miles-router + sglang path; 'dynamo' selects the Dynamo "
-                    "backend (currently stubbed — raises NotImplementedError)."
-                ),
+                help="Rollout backend stack (default: sglang). 'dynamo' is stubbed.",
             )
             parser.add_argument(
                 "--use-miles-router",
