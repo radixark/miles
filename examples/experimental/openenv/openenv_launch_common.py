@@ -169,5 +169,23 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
                 "process's environment: pip install daytona "
                 "(or pip install -e '<OpenEnv>/envs/tbench2_env[daytona]')"
             ) from e
+        # Same preflight for the sandbox recipe itself: it only exists on the
+        # openenv #965/#972/#966 branch, so an upstream-main tbench2_env
+        # install passes the daytona check above and then fails per-episode
+        # in exactly the churn described there.
+        try:
+            from tbench2_env import task_snapshots
+        except ImportError as e:
+            raise RuntimeError(
+                "per-task Daytona mode needs tbench2_env in the rollout "
+                "process's environment: pip install -e '<OpenEnv>/envs/tbench2_env'"
+            ) from e
+        if not (hasattr(task_snapshots, "make_daytona") and hasattr(task_snapshots, "create_task_sandbox")):
+            raise RuntimeError(
+                "the installed tbench2_env lacks the per-task sandbox recipe "
+                "(task_snapshots.make_daytona / create_task_sandbox): install "
+                "an OpenEnv checkout with huggingface/openenv PRs "
+                "#965/#972/#966 applied."
+            )
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
         env["DAYTONA_API_KEY"] = args.daytona_api_key
