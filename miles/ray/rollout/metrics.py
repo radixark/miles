@@ -34,10 +34,20 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
             truncated = data[key]["truncated"]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
         if args.log_passrate:
+            # Multi-turn / tool eval list-expands a prompt into variable sample
+            # counts; bucket by the per-prompt group_index assigned at sample
+            # creation. Samples without group identity (e.g. from custom eval
+            # rollout functions) fall back to contiguous chunking.
+            group_ids = None
+            if (samples := data[key].get("samples")) is not None:
+                ids = [s.group_index for s in samples]
+                if all(i is not None for i in ids):
+                    group_ids = ids
             log_dict |= dict_add_prefix(
                 compute_pass_rate(
                     flat_rewards=rewards,
                     group_size=args.n_samples_per_eval_prompt,
+                    group_ids=group_ids,
                 ),
                 f"eval/{key}-",
             )

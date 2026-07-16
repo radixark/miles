@@ -37,6 +37,9 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
+        # group identity for raw_reward, e.g. pass@k bucketing; kept full-batch
+        # (not DP-partitioned) so it stays aligned with raw_reward.
+        "group_indices": [sample.group_index for sample in samples],
     }
 
     # loss mask
@@ -168,6 +171,7 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
         # keys that need to be splited at train side
         for key in [
             "raw_reward",
+            "group_indices",
             "total_lengths",
             "dynamic_global_batch_size",
         ]:

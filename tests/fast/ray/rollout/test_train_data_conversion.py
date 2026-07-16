@@ -47,10 +47,24 @@ class TestConvertSamplesToTrainData:
             "raw_reward",
             "truncated",
             "sample_indices",
+            "group_indices",
             "loss_masks",
         ):
             assert key in out, f"missing required key {key}"
         assert len(out["tokens"]) == len(samples)
+
+    def test_group_indices_align_with_raw_reward(self):
+        args = make_args(rewards_normalization=False)
+        samples = make_samples_grouped(n_groups=2, group_size=3)
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert out["group_indices"] == [0, 0, 0, 1, 1, 1]
+        assert len(out["group_indices"]) == len(out["raw_reward"])
 
     def test_loss_mask_none_filled_with_ones(self):
         args = make_args(rewards_normalization=False)
@@ -442,7 +456,9 @@ class TestSplitTrainDataByDp:
         assert "round_number" in parts[0]
 
     def test_shared_keys_not_split(self):
-        """raw_reward, total_lengths, dynamic_global_batch_size are shared, not split."""
+        """raw_reward, group_indices, total_lengths, dynamic_global_batch_size are
+        shared, not split — group_indices must stay aligned with the full-batch
+        raw_reward on every rank."""
         args = make_args(balance_data=False)
         data = {
             "tokens": [[1], [2], [3], [4]],
@@ -452,12 +468,14 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1]] * 4,
             "sample_indices": [0, 1, 2, 3],
             "raw_reward": [9.0, 8.0, 7.0, 6.0],
+            "group_indices": [0, 0, 1, 1],
             "dynamic_global_batch_size": 4,
         }
         refs = split_train_data_by_dp(args, data, dp_size=2)
         parts = [ray.get(r.inner) for r in refs]
         for p in parts:
             assert p["raw_reward"] == [9.0, 8.0, 7.0, 6.0]
+            assert p["group_indices"] == [0, 0, 1, 1]
             assert p["dynamic_global_batch_size"] == 4
 
     def test_partition_indices_form_a_partition(self):

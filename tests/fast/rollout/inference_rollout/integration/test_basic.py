@@ -66,4 +66,4 @@ def test_eval(rollout_env):
     samples = out.data["toy"]["samples"]
     assert len(rewards) == len(samples) == env.args.n_samples_per_eval_prompt
     assert rewards[0] == 1
-    assert samples[0] == expected_sample(group_index=None)
+    assert samples[0] == expected_sample(group_index=0)
