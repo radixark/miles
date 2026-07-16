@@ -1,12 +1,10 @@
 import sys
 from types import SimpleNamespace
 
-import pytest
-
-from miles.utils.processing_utils import extract_rollout_video_sources, process_vision_info
+from miles.utils.processing_utils import extract_rollout_video_inputs, process_vision_info
 
 
-def test_vision_inputs_and_rollout_sources_follow_prompt_order(monkeypatch):
+def test_vision_inputs_and_rollout_video_inputs_follow_prompt_order(monkeypatch):
     calls = {}
 
     def fake_process_vision_info(prompt, image_patch_size):
@@ -31,22 +29,24 @@ def test_vision_inputs_and_rollout_sources_follow_prompt_order(monkeypatch):
     ]
     processor = SimpleNamespace(image_processor=SimpleNamespace(patch_size=16))
 
-    rollout_video_sources = extract_rollout_video_sources(prompt)
+    rollout_video_inputs = extract_rollout_video_inputs(prompt)
     processor_inputs = process_vision_info(prompt, processor)
 
     assert processor_inputs == {
         "images": ["resolved-image"],
         "videos": ["processed-video-1", "processed-video-2"],
     }
-    assert rollout_video_sources == ["first.mp4", "https://example.test/second.mp4"]
+    assert rollout_video_inputs == [
+        {"type": "video", "video": "first.mp4"},
+        {"type": "video", "video": "https://example.test/second.mp4"},
+    ]
     assert calls == {"prompt": prompt, "image_patch_size": 16}
 
 
-def test_extract_rollout_video_sources_rejects_inputs_the_engine_cannot_replay():
-    invalid_items = [
-        ({"type": "video", "video": ["frame-1.png"]}, TypeError),
-        ({"type": "video", "video": "video.mp4", "fps": 4}, ValueError),
+def test_extract_rollout_video_inputs_preserves_the_complete_items():
+    video_items = [
+        {"type": "video", "video": ["frame-1.png"], "sample_fps": 1},
+        {"type": "video", "video": "video.mp4", "fps": 4},
     ]
-    for item, error_type in invalid_items:
-        with pytest.raises(error_type):
-            extract_rollout_video_sources([{"role": "user", "content": [item]}])
+
+    assert extract_rollout_video_inputs([{"role": "user", "content": video_items}]) == video_items

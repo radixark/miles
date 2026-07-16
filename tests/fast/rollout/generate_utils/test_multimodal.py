@@ -56,7 +56,7 @@ def _video_sample():
     return Sample(
         prompt="<video>describe it",
         multimodal_inputs={"videos": [object()]},
-        rollout_video_sources=["video.mp4"],
+        rollout_video_inputs=[{"type": "video", "video": "video.mp4"}],
     )
 
 
@@ -64,7 +64,7 @@ def test_multimodal_request_contract():
     image = Image.new("RGB", (2, 2), color="red")
     media_payload = build_rollout_engine_multimodal_payload(
         {"images": [image], "videos": [object()]},
-        ["https://example.test/video.mp4"],
+        [{"type": "video", "video": "https://example.test/video.mp4"}],
     )
     rollout_ids = build_rollout_input_ids(
         PROCESSOR_PROMPT_IDS + [20],
@@ -89,6 +89,10 @@ def test_multimodal_request_contract():
         build_rollout_engine_multimodal_payload({"videos": [object()]}, None)
     with pytest.raises(ValueError, match="audios"):
         build_rollout_engine_multimodal_payload({"audios": [object()]}, None)
+    with pytest.raises(NotImplementedError, match="fps"):
+        build_rollout_engine_multimodal_payload(
+            {"videos": [object()]}, [{"type": "video", "video": "video.mp4", "fps": 4}]
+        )
 
 
 def test_prompt_processing_keeps_training_and_rollout_ids_separate():

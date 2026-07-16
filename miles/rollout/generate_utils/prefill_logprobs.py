@@ -51,7 +51,7 @@ def _build_prefill_scoring_payload(
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
-    payload.update(build_rollout_engine_multimodal_payload(sample.multimodal_inputs, sample.rollout_video_sources))
+    payload.update(build_rollout_engine_multimodal_payload(sample.multimodal_inputs, sample.rollout_video_inputs))
 
     return payload
 
@@ -59,7 +59,7 @@ def _build_prefill_scoring_payload(
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
     if getattr(args, "sglang_router_policy", None) == "consistent_hashing":
         return False
-    return not any(has_multimodal_inputs(sample.multimodal_inputs, sample.rollout_video_sources) for sample in samples)
+    return not any(has_multimodal_inputs(sample.multimodal_inputs, sample.rollout_video_inputs) for sample in samples)
 
 
 def _build_batch_prefill_scoring_payload(

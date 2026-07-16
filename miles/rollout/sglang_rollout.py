@@ -172,7 +172,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
 
-    payload.update(build_rollout_engine_multimodal_payload(sample.multimodal_inputs, sample.rollout_video_sources))
+    payload.update(build_rollout_engine_multimodal_payload(sample.multimodal_inputs, sample.rollout_video_inputs))
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:

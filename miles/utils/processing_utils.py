@@ -151,8 +151,8 @@ def load_processor(name_or_path: str, **kwargs):
     return proc
 
 
-def extract_rollout_video_sources(prompt: list[dict]) -> list[str] | None:
-    video_sources = []
+def extract_rollout_video_inputs(prompt: list[dict]) -> list[dict] | None:
+    video_inputs = []
     for message in prompt:
         content = message["content"]
         if not isinstance(content, list):
@@ -162,32 +162,23 @@ def extract_rollout_video_sources(prompt: list[dict]) -> list[str] | None:
             if item.get("type") != "video":
                 continue
 
-            unsupported_options = set(item) - {"type", "video"}
-            if unsupported_options:
-                raise ValueError(
-                    f"Video rollout supports source-only items; unsupported fields: {sorted(unsupported_options)}"
-                )
+            video_inputs.append(dict(item))
 
-            source = item["video"]
-            if not isinstance(source, str):
-                raise TypeError("Video rollout input must be a path, URL, or data URI")
-            video_sources.append(source)
-
-    return video_sources or None
+    return video_inputs or None
 
 
 def process_vision_info(prompt, processor):
-    # TODO: temporary solution, will write model-independent media utils later
+    # TODO: temporary solution, will write image utils for miles later
     from qwen_vl_utils import process_vision_info as qwen_process_vision_info
 
-    image_processor = getattr(processor, "image_processor", None)
-    if image_processor is not None and hasattr(image_processor, "patch_size"):
-        image_patch_size = image_processor.patch_size
+    if hasattr(processor.image_processor, "patch_size"):
+        image_patch_size = processor.image_processor.patch_size
     else:
         logger.info(f"Using default patch size: {DEFAULT_PATCH_SIZE}")
         image_patch_size = DEFAULT_PATCH_SIZE
     images, videos = qwen_process_vision_info(prompt, image_patch_size=image_patch_size)
-    return {"images": images, "videos": videos}
+    multimodal_inputs = {"images": images, "videos": videos}
+    return multimodal_inputs
 
 
 def encode_image_for_rollout_engine(image) -> str:

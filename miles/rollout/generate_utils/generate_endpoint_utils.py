@@ -30,7 +30,7 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
     if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
-        rollout_prompt = _render_prompt(state.tokenizer, prompt, tools=tools) if sample.rollout_video_sources else None
+        rollout_prompt = _render_prompt(state.tokenizer, prompt, tools=tools) if sample.rollout_video_inputs else None
         processor_output = call_processor(
             state.processor, rollout_prompt if rollout_prompt is not None else prompt, sample.multimodal_inputs
         )
@@ -57,7 +57,7 @@ def compute_request_payload(
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
-    rollout_video_sources: list[str] | None = None,
+    rollout_video_inputs: list[dict[str, Any]] | None = None,
     rollout_input_ids: list[int] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
@@ -76,7 +76,7 @@ def compute_request_payload(
     }
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
-    payload.update(build_rollout_engine_multimodal_payload(multimodal_inputs, rollout_video_sources))
+    payload.update(build_rollout_engine_multimodal_payload(multimodal_inputs, rollout_video_inputs))
 
     return payload, None
 
