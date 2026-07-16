@@ -62,6 +62,10 @@ MAX_BUFFERED_GROUPS = 1000
 EMPTY_BATCH_TIMEOUT_S = 30.0
 
 
+class EmptyBatchTimeoutError(RuntimeError):
+    """No trainable groups arrived before empty-wait timeout."""
+
+
 class GroupBuffer:
     """One adapter's completed prompt groups: a FIFO queue you can also
     len(), and sweep for staleness. Bounded; the oldest group is dropped
@@ -300,9 +304,9 @@ class AsyncMultiLoRAWorker:
                         self.stale_dropped += len(dropped)
                         self.staleness_values += dropped
                     min_groups_per_pop = min_groups_per_dp_split(adapter.config.n_samples_per_prompt, dp_size)
-                    available_groups = len(buffer) // min_groups_per_pop * min_groups_per_pop
+                    trainable_groups = len(buffer) // min_groups_per_pop * min_groups_per_pop
                     remaining_allowed_groups = max(0, remaining_groups(adapter) - group_counts.get(name, 0))
-                    groups_to_pop = min(min_groups_per_pop, available_groups, remaining_allowed_groups)
+                    groups_to_pop = min(min_groups_per_pop, trainable_groups, remaining_allowed_groups)
                     if groups_to_pop <= 0:
                         continue
                     popped.extend(buffer.get(groups_to_pop))
@@ -366,7 +370,7 @@ async def collect_batch(args, worker: AsyncMultiLoRAWorker, snapshot: dict) -> T
         if collected and stalled_s > wait_s:
             break
         if not collected and stalled_s > empty_wait_s:
-            raise RuntimeError(
+            raise EmptyBatchTimeoutError(
                 "No poppable groups collected before empty timeout; this likely means every live adapter is "
                 "below min_groups_per_dp_split (or sources are exhausted). "
                 f"queue={worker.queue_size()} active={sorted(snapshot['active'])} retiring={sorted(snapshot['retiring'])}"

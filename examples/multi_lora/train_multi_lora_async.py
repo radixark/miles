@@ -4,6 +4,9 @@ import asyncio
 import logging
 from pathlib import Path
 
+import ray
+
+from examples.multi_lora.multi_lora_async_rollout import EmptyBatchTimeoutError
 from miles.ray.multi_lora_controller import create_controller, get_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.adapter_config import parse_adapter_run_yaml
@@ -16,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 ROLLOUT_FUNCTION_PATH = "examples.multi_lora.multi_lora_async_rollout.generate_rollout_multi_lora"
 DATA_SOURCE_PATH = "examples.multi_lora.multi_lora_data_source_async.MultiLoRAAsyncDataSource"
+
+
+def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
+    cause = getattr(task_error, "cause", None)
+    if isinstance(cause, EmptyBatchTimeoutError):
+        return True
+    return isinstance(task_error.as_instanceof_cause(), EmptyBatchTimeoutError)
 
 
 async def main(args):
@@ -70,7 +80,13 @@ async def main(args):
         if not (post_update["active"] or post_update["retiring"]):
             continue
 
-        rollout_data = await rollout_manager.generate.remote(rollout_id)
+        try:
+            rollout_data = await rollout_manager.generate.remote(rollout_id)
+        except ray.exceptions.RayTaskError as e:
+            if _is_empty_batch_timeout(e):
+                logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
+                continue
+            raise
         await actor_model.train(rollout_id, rollout_data)
 
         # Per-adapter save cadence decided inside save_model.
