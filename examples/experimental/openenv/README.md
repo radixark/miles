@@ -72,6 +72,7 @@ scores via the standard `evaluate` action on this backend. Skip step 2 entirely
 and set:
 
 ```bash
+pip install daytona   # the SDK is imported lazily by tbench2_env, not installed with it
 export DAYTONA_API_KEY=dtn_...
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2   # the checkout from step 1
 python run-openenv-tbench2.py
