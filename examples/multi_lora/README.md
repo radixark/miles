@@ -18,7 +18,7 @@ run_service.sh                       # service mode: idles for registrations (po
 service_smoke.py                     # register/deregister smoke test against the API
 train_multi_lora_async.py            # trainer (entry point)
 multi_lora_async_rollout.py          # fully-async rollout function
-multi_lora_data_source_async.py      # data source (reads controller, deregisters at num_row)
+multi_lora_data_source_async.py      # data source (reads controller, legacy num_row fallback)
 adapters/
   gsm8k.yaml
   dapo_math.yaml
@@ -65,13 +65,15 @@ Ray actor, pinned to the head node).
 - **Selective weight sync.** Only adapters whose optimizer stepped are pushed
   to the engines (upsert into the slot-keyed page table); only their slot
   versions bump, keeping staleness filtering per-adapter accurate.
-- The data source deregisters an adapter at `num_row`; the trainer's
+- Adapters deregister on committed optimizer-step count (`num_step`) in the
+  controller's train-commit path (`mark_batch_trained`), so stop checks happen
+  exactly when steps advance. `num_step` is relative to the adapter's
+  start/resume step. The data source still supports legacy `num_row`
+  deregistration when configured. The trainer's
   `reconcile_adapters` (before each generate) retires it at the next sync
   point and cleans up (save ckpt + clear Megatron slot + zero its optimizer
   state and retained gradients). The adapter's untrained tail — buffered
-  groups and any partially accumulated gradients — is discarded. TODO: revisit
-  num_row semantics (the tail means slightly fewer trained rows than
-  configured).
+  groups and any partially accumulated gradients — is discarded.
 - **Batch ⊆ loaded property:** `reconcile_adapters` runs before `generate`, so the
   batch is fetched with loaded = active; active only shrinks during generate, so every
   adapter in the batch is live on the trainer.
@@ -90,7 +92,7 @@ Downloads `Qwen/Qwen3-4B`, `zhuzilin/dapo-math-17k`, and `zhuzilin/gsm8k`.
 bash examples/multi_lora/run_job.sh
 ```
 
-Registers the two adapters from CLI flags and trains until each hits its `num_row`
+Registers the two adapters from CLI flags and trains until each hits its `num_step`
 (or `--num-rollout`), then exits.
 
 ## Multi-LoRA CLI flags
@@ -113,7 +115,7 @@ data: /root/gsm8k/train.parquet
 input_key: messages
 label_key: label
 rm_type: math
-num_row: 400                # stop adapter after N rows
+num_step: 400               # stop adapter after N optimizer steps
 # optional: save, num_epoch, custom_rm_path, ...
 ```
 

@@ -1,4 +1,4 @@
-"""Round-robin per-adapter data source; deregisters adapters at num_row."""
+"""Round-robin per-adapter data source; legacy num_row-based deregistration."""
 
 import copy
 import logging
@@ -104,11 +104,12 @@ class MultiLoRAAsyncDataSource(DataSource):
                 sample.reward_spec = reward_spec
                 sample.metadata = {**config.metadata, **sample.metadata}
 
-            default_num_row = (getattr(config, "num_epoch", 1) or 1) * len(source.dataset)
-            num_row = config.num_row or default_num_row
-            if source.sample_group_index >= num_row and name not in snapshot["retiring"]:
-                logger.info(f"Adapter '{name}' reached num_row={num_row}, deregistering")
-                ray.get(get_multi_lora_controller().deregister_adapter.remote(name))
+            if config.num_step is None:
+                default_num_row = (getattr(config, "num_epoch", 1) or 1) * len(source.dataset)
+                num_row = config.num_row or default_num_row
+                if source.sample_group_index >= num_row and name not in snapshot["retiring"]:
+                    logger.info(f"Adapter '{name}' reached num_row={num_row}, deregistering")
+                    ray.get(get_multi_lora_controller().deregister_adapter.remote(name))
 
             return groups
 

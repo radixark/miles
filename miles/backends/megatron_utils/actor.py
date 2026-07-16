@@ -547,9 +547,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         Deregistered (RETIRING) adapters are retired here, at the sync point
         before the next generate — their untrained tail (buffered groups and
-        any partially accumulated gradients) is discarded. TODO: revisit num_row
-        semantics — the tail means an adapter trains on slightly fewer rows
-        than configured.
+        any partially accumulated gradients) is discarded.
         """
         if not is_multi_lora_enabled(self.args):
             return

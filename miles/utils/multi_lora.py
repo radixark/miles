@@ -99,6 +99,8 @@ class AdapterRecord:
     slot: int
     config: Any
     step: int = 0
+    # Baseline step for relative num_step stopping (supports checkpoint resume).
+    start_step: int = 0
     # Committed prompt groups accumulated toward the current optimizer step.
     # Only advanced by mark_batch_trained (after a successful train call).
     accumulated_groups: int = 0
@@ -220,6 +222,7 @@ class AdapterRegistry:
         if record_entry is None:
             return []
         stepped = []
+        reached_num_step = []
         for name, n_groups in record_entry["groups"].items():
             record = self.records.get(name)
             if record is None or record.state not in (
@@ -239,11 +242,24 @@ class AdapterRegistry:
                 record.step += 1
                 record.accumulated_groups = 0
                 stepped.append(name)
+                if (
+                    getattr(record.config, "num_step", None) is not None
+                    and record.state is AdapterState.ACTIVE
+                    and (record.step - record.start_step) >= record.config.num_step
+                ):
+                    reached_num_step.append(name)
+        for name in reached_num_step:
+            logger.info(
+                f"Adapter '{name}' reached num_step={self.records[name].config.num_step} "
+                f"(start_step={self.records[name].start_step}, step={self.records[name].step}), deregistering"
+            )
+            self.deregister(name)
         return stepped
 
     def set_step(self, name: str, step: int) -> None:
         if (record := self.find(name)) is not None:
             record.step = step
+            record.start_step = step
 
     def step_count(self, name: str) -> int:
         record = self.find(name)
@@ -334,6 +350,16 @@ class MultiLoRABackend:
             raise ValueError(f"Adapter '{name}' rollout_batch_size must be a positive integer (prompt groups)")
         if type(n_samples_per_prompt) is not int or n_samples_per_prompt <= 0:
             raise ValueError(f"Adapter '{name}' n_samples_per_prompt must be a positive integer")
+        if config.num_step is not None and (type(config.num_step) is not int or config.num_step <= 0):
+            raise ValueError(f"Adapter '{name}' num_step must be a positive integer")
+        if config.num_row is not None and (type(config.num_row) is not int or config.num_row <= 0):
+            raise ValueError(f"Adapter '{name}' num_row must be a positive integer")
+        if config.num_step is not None and config.num_row is not None:
+            logger.warning(
+                f"Adapter '{name}' sets both num_step and num_row; num_step takes precedence and num_row is ignored"
+            )
+        elif config.num_step is None and config.num_row is not None:
+            logger.warning(f"Adapter '{name}' uses deprecated num_row={config.num_row}; prefer num_step")
         adapter_global_batch_size = rollout_batch_size * n_samples_per_prompt
         if (max_batch := getattr(self.args, "multi_lora_max_adapter_global_batch_size", None)) is not None:
             if adapter_global_batch_size > max_batch:

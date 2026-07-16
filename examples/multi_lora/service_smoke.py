@@ -87,6 +87,12 @@ def main() -> int:
     parser.add_argument("--alpha", type=int, default=16)
     parser.add_argument("--save", default=None, help="per-adapter save dir root override (default: trainer --save)")
     parser.add_argument("--steps", type=int, default=2, help="training steps to wait for per phase")
+    parser.add_argument(
+        "--num-step-smoke",
+        type=int,
+        default=1,
+        help="num_step used by the auto-deregister smoke adapter",
+    )
     parser.add_argument("--timeout", type=float, default=1800.0, help="per-phase timeout in seconds")
     args = parser.parse_args()
 
@@ -108,25 +114,32 @@ def main() -> int:
         print("phase 1: api reachable, no active adapters expected")
         client.wait_for("api reachable", lambda adapters: True)
 
-        print("phase 2: register smoke_a; expect promotion + training progress")
+        print("phase 2: register smoke_auto with num_step; expect auto-deregister after committed steps")
+        auto_cfg = config("smoke_auto")
+        auto_cfg["num_step"] = args.num_step_smoke
+        client.register_when_allowed("smoke_auto", auto_cfg)
+        client.wait_for_step("smoke_auto", args.num_step_smoke)
+        client.wait_for("'smoke_auto' auto-deregistered", lambda adapters: "smoke_auto" not in adapters)
+
+        print("phase 3: register smoke_a; expect promotion + training progress")
         client.register_when_allowed("smoke_a", config("smoke_a"))
         client.wait_for_step("smoke_a", args.steps)
 
-        print("phase 3: register smoke_b mid-run; both must train")
+        print("phase 4: register smoke_b mid-run; both must train")
         client.register_when_allowed("smoke_b", config("smoke_b"))
         client.wait_for_step("smoke_b", args.steps)
 
-        print("phase 4: deregister smoke_a mid-run; smoke_b must keep training")
+        print("phase 5: deregister smoke_a mid-run; smoke_b must keep training")
         step_b = client.active_adapters()["smoke_b"]["step"]
         client.deregister("smoke_a")
         client.wait_for("'smoke_a' gone from active set", lambda adapters: "smoke_a" not in adapters)
         client.wait_for_step("smoke_b", step_b + 1)
 
-        print("phase 5: re-register the name smoke_a (waits out cleanup, reuses slot)")
+        print("phase 6: re-register the name smoke_a (waits out cleanup, reuses slot)")
         client.register_when_allowed("smoke_a", config("smoke_a"))
         client.wait_for_step("smoke_a", 1)
 
-        print("phase 6: deregister everything; service should drain to idle")
+        print("phase 7: deregister everything; service should drain to idle")
         client.deregister("smoke_a")
         client.deregister("smoke_b")
         client.wait_for("no active adapters", lambda adapters: not adapters)

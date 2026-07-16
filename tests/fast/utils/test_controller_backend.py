@@ -189,6 +189,35 @@ def test_set_step_on_resume():
     assert registry.step_count("A") == 41
 
 
+def test_num_step_deregisters_on_committed_steps():
+    registry = AdapterRegistry(max_adapters=2)
+    register_and_promote(registry, "A", make_config(num_step=2))
+    registry.record_batch_adapters(1, {"A": 4}, step_names=["A"])
+    assert registry.mark_batch_trained(1) == ["A"]
+    assert registry.adapter_state("A") == AdapterState.ACTIVE
+
+    registry.record_batch_adapters(2, {"A": 4}, step_names=["A"])
+    assert registry.mark_batch_trained(2) == ["A"]
+    assert registry.step_count("A") == 2
+    assert registry.adapter_state("A") == AdapterState.RETIRING
+
+
+def test_num_step_is_relative_to_resume_step():
+    registry = AdapterRegistry(max_adapters=2)
+    register_and_promote(registry, "A", make_config(num_step=2))
+    registry.set_step("A", 40)
+
+    registry.record_batch_adapters(1, {"A": 4}, step_names=["A"])
+    registry.mark_batch_trained(1)
+    assert registry.step_count("A") == 41
+    assert registry.adapter_state("A") == AdapterState.ACTIVE
+
+    registry.record_batch_adapters(2, {"A": 4}, step_names=["A"])
+    registry.mark_batch_trained(2)
+    assert registry.step_count("A") == 42
+    assert registry.adapter_state("A") == AdapterState.RETIRING
+
+
 def test_min_groups_per_dp_split():
     assert min_groups_per_dp_split(n_samples_per_prompt=4, dp_size=8) == 2  # divisor
     assert min_groups_per_dp_split(n_samples_per_prompt=8, dp_size=8) == 1  # equal
@@ -222,8 +251,21 @@ async def test_register_rejects_bad_batch_shapes(tmp_path):
         await backend.register("E", make_config(rank=64))
     with pytest.raises(ValueError, match="positive integer"):
         await backend.register("F", make_config(rollout_batch_size=0))
+    with pytest.raises(ValueError, match="num_step must be a positive integer"):
+        await backend.register("G", make_config(num_step=0))
+    with pytest.raises(ValueError, match="num_row must be a positive integer"):
+        await backend.register("H", make_config(num_row=0))
     # A valid shape registers fine.
     await backend.register("OK", make_config(rollout_batch_size=8))
+
+
+@pytest.mark.asyncio
+async def test_num_step_takes_precedence_over_num_row(tmp_path):
+    backend = make_backend(save=str(tmp_path))
+    await backend.register("A", make_config(num_step=10, num_row=1000))
+    config = backend.registry.records["A"].config
+    assert config.num_step == 10
+    assert config.num_row == 1000
 
 
 def test_deregister_holds_slot_until_free_slot():
