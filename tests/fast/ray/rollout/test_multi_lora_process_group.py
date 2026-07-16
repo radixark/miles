@@ -1,4 +1,4 @@
-"""Tests for the testable core of the multi-LoRA async rollout (process_group):
+"""Tests for the multi-LoRA async rollout process_group core:
 keep-vs-recycle plus submission-time slot-version stamping."""
 
 import examples.multi_lora.multi_lora_async_rollout as mod

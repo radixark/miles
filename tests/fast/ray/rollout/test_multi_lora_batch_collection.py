@@ -1,4 +1,4 @@
-"""Unit tests for batch collection (get_groups + collect_batch):
+"""Unit tests for multi-LoRA batch collection (get_groups + collect_batch):
 group-multiple math, adapter batch capping, step stamping, coalesce timeout,
 round-robin fairness, retirement, and staleness filtering. No Ray, no engines:
 the worker is built bare."""
