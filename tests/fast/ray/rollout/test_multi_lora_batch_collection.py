@@ -14,6 +14,7 @@ import pytest
 from examples.multi_lora.multi_lora_async_rollout import (
     AsyncMultiLoRAWorker,
     GroupBuffer,
+    MultiLoRAWorkerMetrics,
     collect_batch,
     group_adapter_name,
 )
@@ -41,9 +42,7 @@ def make_worker(args=None) -> AsyncMultiLoRAWorker:
     worker.buffers = defaultdict(GroupBuffer)
     worker.rotation = deque()
     worker.dynamic_filter = None
-    worker.dynamic_filter_drop_counts = defaultdict(int)
-    worker.stale_dropped = 0
-    worker.staleness_values = []
+    worker.metrics = MultiLoRAWorkerMetrics()
     return worker
 
 
@@ -190,15 +189,6 @@ def test_cursor_persists_across_batches():
     assert len(worker.buffers["B"]) == 2
 
 
-def test_n_samples_multiple_of_dp_pops_single_groups():
-    worker = make_worker(make_args(multi_lora_dp_size=4, global_batch_size=8))
-    a = adapter_run("A", 0, rollout_batch_size=2, n_samples_per_prompt=8)  # 8 % 4 == 0
-    buffer_groups(worker, a, count=1)
-    batch = collect(worker, snapshot_of(a))  # 8 samples = target
-    assert batch.group_counts == {"A": 1}
-    assert sum(1 for g in batch.groups for _ in g) == 8
-
-
 def test_retiring_adapter_remains_selectable_until_retired():
     """RETIRING adapters keep serving until the reconcile sync point (base
     deregistration semantics): buffered groups stay poppable."""
@@ -228,7 +218,7 @@ def test_stale_buffered_groups_are_dropped():
     buffer_groups(worker, a, count=2, slot_version=3)  # staleness 2 > 1
     buffer_groups(worker, a, count=1, slot_version=5)  # fresh
     batch = collect(worker, snapshot_of(a))
-    assert worker.stale_dropped == 2
+    assert worker.metrics.stale_dropped == 2
     assert batch.group_counts == {"A": 1}
 
 

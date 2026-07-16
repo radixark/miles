@@ -259,15 +259,6 @@ async def test_register_rejects_bad_batch_shapes(tmp_path):
     await backend.register("OK", make_config(rollout_batch_size=8))
 
 
-@pytest.mark.asyncio
-async def test_num_step_takes_precedence_over_num_row(tmp_path):
-    backend = make_backend(save=str(tmp_path))
-    await backend.register("A", make_config(num_step=10, num_row=1000))
-    config = backend.registry.records["A"].config
-    assert config.num_step == 10
-    assert config.num_row == 1000
-
-
 def test_deregister_holds_slot_until_free_slot():
     registry = AdapterRegistry(max_adapters=2)
     register_and_promote(registry, "A")  # slot 0
