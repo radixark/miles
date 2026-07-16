@@ -166,8 +166,8 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--prompt-data` | str | – | Path to a single JSONL file. |
-| `--input-key` | str | `prompt` | JSONL key to `Sample.prompt`. |
-| `--label-key` | str | `label` | JSONL key to `Sample.label`. |
+| `--input-key` | str | `input` | JSONL key to `Sample.prompt`. |
+| `--label-key` | str | `None` | JSONL key to `Sample.label`. |
 | `--metadata-key` | str | `metadata` | JSONL key to `Sample.metadata`. |
 | `--apply-chat-template` | flag | off | Apply tokenizer chat template. |
 | `--rollout-shuffle` | flag | off | Shuffle prompts each rollout. |
@@ -175,7 +175,7 @@ Sections mirror the launch-script argument groups.
 | `--rollout-batch-size` | int | – | Prompts per rollout. |
 | `--n-samples-per-prompt` | int | `1` | Responses per prompt. |
 | `--global-batch-size` | int | derived | Samples per optimizer step. |
-| `--num-steps-per-rollout` | int | `1` | Optimizer steps per rollout. |
+| `--num-steps-per-rollout` | int | – | Optimizer steps per rollout. Alternative to `--global-batch-size`; setting one derives the other. |
 | `--over-sampling-batch-size` | int | – | Oversample size for dynamic sampling (DAPO). |
 | `--balance-data` | flag | off | Balance per-rank token count. |
 

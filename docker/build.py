@@ -78,6 +78,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
+            "APPLY_ROCR_VMMFIX": "1",
         },
     },
 }
