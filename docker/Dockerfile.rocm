@@ -33,7 +33,7 @@ ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.14
 ARG MAX_JOBS=128
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
-ARG RCCL_TESTS_BRANCH=develop
+ARG RCCL_TESTS_COMMIT=746c7b3c9e78b094389e19499919fdd43a0b6a90
 ARG RCCL_TESTS_PATH=projects/rccl-tests
 
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
@@ -72,12 +72,12 @@ RUN apt update
 RUN apt install -y build-essential cmake dnsutils ethtool git nvtop patch rsync
 
 # Build rccl-tests diagnostics binaries.
-RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/rocm-systems && \
-    make -C /tmp/rocm-systems/${RCCL_TESTS_PATH} -j$(nproc) \
-      HIP_HOME=/opt/rocm \
-      NCCL_HOME=/opt/rocm \
-      GPU_TARGETS=${GPU_ARCH} && \
-    cp /tmp/rocm-systems/${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
+RUN mkdir -p /tmp/rocm-systems && cd /tmp/rocm-systems && git init -q && \
+    git remote add origin ${RCCL_TESTS_REPO} && \
+    git fetch --depth 1 origin ${RCCL_TESTS_COMMIT} && git checkout -q FETCH_HEAD && \
+    make -C ${RCCL_TESTS_PATH} -j$(nproc) \
+      HIP_HOME=/opt/rocm NCCL_HOME=/opt/rocm GPU_TARGETS=${GPU_ARCH} && \
+    cp ${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
