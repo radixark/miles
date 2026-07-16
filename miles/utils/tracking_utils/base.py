@@ -38,7 +38,7 @@ class WandbBackend(TrackingBackend):
     # Delegates to the existing ``wandb_utils`` helpers.
 
     def __init__(self) -> None:
-        self._defined_step_keys: set[str] = set()
+        self._defined_metrics: set[str] = set()
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         from . import wandb_utils
@@ -51,13 +51,21 @@ class WandbBackend(TrackingBackend):
     def log(self, metrics: dict[str, Any], step: int | None = None, *, step_key: str | None = None, **kwargs) -> None:
         import wandb
 
-        if step_key is not None and step_key not in self._defined_step_keys:
-            # Same glob pattern as _init_wandb_common, for axes whose names
+        if step_key is not None:
+            # Pin every logged key to its axis with an exact-name definition.
+            # Glob definitions (like the "rollout/*" ones at init) are not
+            # expanded client-side anymore; the raw glob is sent to the server
+            # for expansion, which not every server version supports
+            # (wandb#11533) — charts then silently fall back to the global
+            # step axis. Exact names always work, including for axes that
             # only exist at runtime (e.g. a per-adapter "{name}/step").
-            wandb.define_metric(step_key)
-            if "/" in step_key:
-                wandb.define_metric(f"{step_key.rsplit('/', 1)[0]}/*", step_metric=step_key)
-            self._defined_step_keys.add(step_key)
+            if step_key not in self._defined_metrics:
+                wandb.define_metric(step_key)
+                self._defined_metrics.add(step_key)
+            for key in metrics:
+                if key != step_key and key not in self._defined_metrics:
+                    wandb.define_metric(key, step_metric=step_key)
+                    self._defined_metrics.add(key)
         wandb.log(metrics)
 
     def finish(self) -> None:
