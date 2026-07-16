@@ -29,6 +29,8 @@ class CaseConfig:
     colocate: bool = True
     rollout_num_gpus: int = None
     update_weight_transfer_mode: str = None
+    # Appended last so it can override any default above (argparse last-wins).
+    extra_train_args: str = ""
 
     def __post_init__(self):
         # Validation only — topology values are passed explicitly, not inferred.
@@ -218,6 +220,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
+        f"{case.extra_train_args} "
     )
     return train_args
 

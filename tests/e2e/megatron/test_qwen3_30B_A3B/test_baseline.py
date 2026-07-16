@@ -26,6 +26,9 @@ CASE = CaseConfig(
     tp_size=1,
     ep_size=2,
     rollout_num_gpus_per_engine=4,
+    # DO NOT MERGE -- negative validation of the metric-history gate:
+    # 1000x the default lr (1e-6) to blow up train/grad_norm and train/ppo_kl.
+    extra_train_args="--lr 1e-3",
 )
 
 
