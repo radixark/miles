@@ -23,15 +23,15 @@ from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.misc import SingletonMeta, load_function
-from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.processing_utils import (
+    call_processor,
+    encode_image_for_rollout_engine,
+    load_processor,
+    load_tokenizer,
+)
 from miles.utils.types import Sample
 
-from .generate_utils.generate_endpoint_utils import (
-    build_rollout_media_payload,
-    compute_prompt_ids_from_sample,
-    compute_rollout_input_ids,
-    get_indexer_topk_from_response,
-)
+from .generate_utils.generate_endpoint_utils import get_indexer_topk_from_response
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
@@ -142,7 +142,15 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    prompt_ids = compute_prompt_ids_from_sample(state, sample)
+    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+        processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
+        prompt_ids = processor_output["input_ids"][0]
+        prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
+        sample.multimodal_train_inputs = {
+            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
+        } or None
+    else:
+        prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
 
     if len(sample.response) > 0:
         sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
@@ -172,16 +180,17 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
 
-    payload.update(build_rollout_media_payload(sample.multimodal_inputs, sample.rollout_video_sources))
+    if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
+        image_data = sample.multimodal_inputs["images"]
+        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
-        input_ids = sample.tokens
+        payload["input_ids"] = sample.tokens
     else:
-        input_ids = prompt_ids
+        payload["input_ids"] = prompt_ids
         if not sample.tokens:  # Initialize sample.tokens for the first turn
-            sample.tokens = prompt_ids.copy()
-    payload["input_ids"] = compute_rollout_input_ids(sample, input_ids, prompt_ids)
+            sample.tokens = prompt_ids
 
     # Use session_id for consistent hashing routing if router uses consistent_hashing policy
     headers = None

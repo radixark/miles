@@ -9,7 +9,6 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
-    compute_rollout_input_ids,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -47,15 +46,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     for _turn in range(args.generate_max_turns):
         # ----------------------- Call inference endpoint -------------------------
 
-        rollout_input_ids = compute_rollout_input_ids(sample, sample.tokens, prompt_tokens_ids)
-        payload, halt_status = compute_request_payload(
-            args,
-            sample.tokens,
-            input.sampling_params,
-            multimodal_inputs=sample.multimodal_inputs,
-            rollout_video_sources=sample.rollout_video_sources,
-            rollout_input_ids=rollout_input_ids,
-        )
+        payload, halt_status = compute_request_payload(args, sample.tokens, input.sampling_params)
         if payload is None:
             sample.status = halt_status
             if args.generate_multi_samples and multi_samples:
@@ -63,13 +54,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             break
 
         if args.generate_multi_samples:
-            context_tokens = sample.tokens
-            multimodal_train_inputs = sample.multimodal_train_inputs
-            rollout_prompt_ids = sample.rollout_prompt_ids
             sample = deepcopy(input.sample)
-            sample.tokens = context_tokens.copy()
-            sample.multimodal_train_inputs = multimodal_train_inputs
-            sample.rollout_prompt_ids = rollout_prompt_ids
 
         output = await post(url, payload)
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)

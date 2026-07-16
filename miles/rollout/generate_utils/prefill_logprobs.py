@@ -6,9 +6,8 @@ from typing import Any
 
 from miles.utils.http_utils import post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
-
-from .generate_endpoint_utils import build_rollout_media_payload
 
 
 def _build_prefill_scoring_payload(
@@ -46,7 +45,10 @@ def _build_prefill_scoring_payload(
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
-    payload.update(build_rollout_media_payload(sample.multimodal_inputs, sample.rollout_video_sources))
+    if images := (sample.multimodal_inputs or {}).get("images"):
+        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in images]
+    if sample.rollout_video_sources:
+        payload["video_data"] = sample.rollout_video_sources
 
     return payload
 
