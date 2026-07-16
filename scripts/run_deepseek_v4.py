@@ -73,6 +73,7 @@ matchers:
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
+    async_training: bool = False
     run_id: str = U.create_run_id()
     model_org: str = ""
     model_name: Literal[
@@ -599,6 +600,7 @@ def _train(args: ScriptArgs):
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
+        train_script="train_async.py" if args.async_training else "train.py",
         extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
     )
