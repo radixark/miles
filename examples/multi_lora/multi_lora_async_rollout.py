@@ -478,7 +478,7 @@ async def generate_rollout_multi_lora_async(
     state = GenerateState(args)
     worker = AsyncMultiLoRAWorker.get_or_create(args, data_source, generate_fn)
     start_time = time.time()
-    queue_length = worker.queue_size()
+    queue_sizes = worker.queue_sizes()
 
     # Driver contract: generate is only called with live adapters, and the
     # sequential loop retires adapters and commits accumulated_groups only
@@ -526,18 +526,16 @@ async def generate_rollout_multi_lora_async(
     # ({name}/step), not rollout/step: one point per completed step, means
     # over exactly the samples that step trained on. adapters[name].step is
     # the committed count at snapshot time; this batch completes step + 1.
-    if flushed := worker.metrics.record_shipped_samples(args, data, batch.step_names):
-        queue_sizes = worker.queue_sizes()
-        for name, step_metrics in flushed.items():
-            step_key = f"{name}/step"
-            log_dict = {step_key: adapters[name].step + 1}
-            log_dict |= {f"{name}/{key}": value for key, value in step_metrics.items()}
-            log_dict[f"{name}/rollout/queue_length"] = queue_sizes.get(name, 0)
-            tracking.log(args, log_dict, step_key=step_key)
+    for name, step_metrics in worker.metrics.record_shipped_samples(args, data, batch.step_names).items():
+        step_key = f"{name}/step"
+        log_dict = {step_key: adapters[name].step + 1}
+        log_dict |= {f"{name}/{key}": value for key, value in step_metrics.items()}
+        tracking.log(args, log_dict, step_key=step_key)
 
     metrics = {
         **worker.metrics.pop_metrics(),
-        "perf/fully_async/queue_length": queue_length,
+        "perf/fully_async/queue_length": sum(queue_sizes.values()),
+        **{f"perf/fully_async/queue_length/{name}": size for name, size in queue_sizes.items()},
         "perf/fully_async/batch_wait_time": time.time() - start_time,
         "perf/fully_async/batch_n_adapters": len(batch.group_counts),
         "perf/fully_async/batch_n_groups": len(data),
