@@ -28,7 +28,7 @@ from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_roll
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
 from miles.utils.misc import load_function
-from miles.utils.multi_lora import min_groups_per_dp_split
+from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -60,10 +60,6 @@ def group_sample_count(group: Group) -> int:
 # never hit in practice, just bounds memory if training stalls entirely.
 MAX_BUFFERED_GROUPS = 1000
 EMPTY_BATCH_TIMEOUT_S = 30.0
-
-
-class EmptyBatchTimeoutError(RuntimeError):
-    """No trainable groups arrived before empty-wait timeout."""
 
 
 class GroupBuffer:

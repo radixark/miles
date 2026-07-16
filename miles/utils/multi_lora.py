@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AdapterRegistry",
     "AdapterState",
+    "EmptyBatchTimeoutError",
     "MultiLoRABackend",
     "MultiLoRAHTTPServer",
     "RID_SEPARATOR",
@@ -36,6 +37,10 @@ __all__ = [
 RID_SEPARATOR = "::"
 
 VALID_ADAPTER_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class EmptyBatchTimeoutError(RuntimeError):
+    """No trainable groups arrived before empty-wait timeout."""
 
 
 def is_multi_lora_enabled(args: Any) -> bool:

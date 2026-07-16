@@ -6,11 +6,11 @@ from pathlib import Path
 
 import ray
 
-from examples.multi_lora.multi_lora_async_rollout import EmptyBatchTimeoutError
 from miles.ray.multi_lora_controller import create_controller, get_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
+from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.logging_utils import configure_logger
 from miles.utils.tracking_utils.tracking import init_tracking
