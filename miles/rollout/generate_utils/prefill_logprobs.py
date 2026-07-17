@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
+from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing_headers, policy_uses_routing_key
 from miles.utils.http_utils import post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine
@@ -48,7 +49,7 @@ def _build_prefill_scoring_payload(
 
 
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
-    if getattr(args, "sglang_router_policy", None) == "consistent_hashing":
+    if policy_uses_routing_key(args):
         return False
     return not any(sample.multimodal_inputs and sample.multimodal_inputs.get("images") for sample in samples)
 
@@ -161,10 +162,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
         return
 
     for sample in samples_to_score:
-        headers = None
-        uses_consistent_hashing = getattr(args, "sglang_router_policy", None) == "consistent_hashing"
-        if uses_consistent_hashing and sample.session_id:
-            headers = {"X-SMG-Routing-Key": sample.session_id}
+        headers = compute_routing_headers(args, sample)
 
         await post(flush_url, {}, headers=headers)
         await recompute_rollout_logprobs_via_prefill(

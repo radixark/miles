@@ -31,7 +31,11 @@ from miles.utils.processing_utils import (
 )
 from miles.utils.types import Sample
 
-from .generate_utils.generate_endpoint_utils import get_indexer_topk_from_response
+from .generate_utils.generate_endpoint_utils import (
+    compute_routing_headers,
+    get_indexer_topk_from_response,
+    policy_uses_routing_key,
+)
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
@@ -192,10 +196,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
 
-    # Use session_id for consistent hashing routing if router uses consistent_hashing policy
-    headers = None
-    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
-        headers = {"X-SMG-Routing-Key": sample.session_id}
+    headers = compute_routing_headers(args, sample)
 
     output = await post(url, payload, headers=headers)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
@@ -313,11 +314,11 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    # Generate a unique session_id for each sample in the group (consistent hashing only)
-    if args.sglang_router_policy == "consistent_hashing":
+    # Generate a unique routing_key for each sample in the group (routing-key policies only)
+    if policy_uses_routing_key(args):
         for sample in group:
-            if sample.session_id is None:
-                sample.session_id = str(uuid.uuid4())
+            if sample.routing_key is None:
+                sample.routing_key = str(uuid.uuid4())
 
     tasks = []
     for idx, sample in enumerate(group):
@@ -565,6 +566,8 @@ async def eval_rollout_single_dataset(
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
             sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
+            if policy_uses_routing_key(args):
+                sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
             if getattr(args, "sglang_enable_deterministic_inference", False):
                 sampling_params = base_sampling_params.copy()
