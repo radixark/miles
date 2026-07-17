@@ -125,6 +125,8 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
+# nvidia-resiliency-ext is NVIDIA-only (needs CUDA, glibc 2.39); keep it out of the shared requirements.txt so the ROCm image skips it.
+RUN pip install "nvidia-resiliency-ext~=0.6.0"
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
