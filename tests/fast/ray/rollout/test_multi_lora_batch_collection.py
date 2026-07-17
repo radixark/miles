@@ -218,8 +218,7 @@ def test_stale_buffered_groups_are_dropped():
     buffer_groups(worker, a, count=2, slot_version=3)  # staleness 2 > 1
     buffer_groups(worker, a, count=1, slot_version=5)  # fresh
     batch = collect(worker, snapshot_of(a))
-    assert worker.metrics.stale_dropped == 2
-    assert batch.group_counts == {"A": 1}
+    assert batch.group_counts == {"A": 1}  # only the fresh group ships
 
 
 def test_empty_collection_times_out_instead_of_spinning_forever():

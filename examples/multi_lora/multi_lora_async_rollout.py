@@ -152,22 +152,21 @@ async def process_group(
 
 class MultiLoRAWorkerMetrics:
     """The worker's cross-batch metric state, kept out of its buffer
-    machinery: dynamic-filter drop counts, staleness drops, and per-adapter
-    sample stats flushed when the adapter's optimizer step completes. Has its
-    own lock — the producer thread records drops while the trainer thread
-    flushes."""
+    machinery. Two cadences: dynamic-filter drops and staleness drops drain
+    every batch, per-adapter sample stats flush when the adapter's optimizer
+    step completes. Has its own lock — the producer thread records drops
+    while the trainer thread drains."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
-        self.stale_dropped = 0
-        self.staleness_values: list[int] = []
-        # Shipped-sample stats and stale drops, accumulated per adapter across
-        # train batches and flushed when the adapter steps.
+        # Staleness of dropped groups per adapter, drained every batch.
+        self.staleness_values: dict[str, list[int]] = defaultdict(list)
+        # Shipped-sample stats, accumulated per adapter across train batches
+        # and flushed as step means when the adapter steps.
         self.step_reward_sums: dict[str, float] = defaultdict(float)
         self.step_response_len_sums: dict[str, float] = defaultdict(float)
         self.step_sample_counts: dict[str, int] = defaultdict(int)
-        self.step_staleness_values: dict[str, list[int]] = defaultdict(list)
 
     def record_dynamic_filter_drop(self, reason: str) -> None:
         with self.lock:
@@ -175,19 +174,23 @@ class MultiLoRAWorkerMetrics:
 
     def record_stale_drops(self, name: str, staleness_values: list[int]) -> None:
         with self.lock:
-            self.stale_dropped += len(staleness_values)
-            self.staleness_values += staleness_values
-            self.step_staleness_values[name] += staleness_values
+            self.staleness_values[name] += staleness_values
 
-    def record_shipped_samples(self, args, data: list[Group], step_names: list[str]) -> dict[str, dict[str, float]]:
+    def pop_stale_drops(self) -> dict[str, list[int]]:
+        """Drain the staleness values of groups dropped since the last batch."""
+        with self.lock:
+            drained = dict(self.staleness_values)
+            self.staleness_values.clear()
+            return drained
+
+    def record_shipped_samples(
+        self, args, data: list[Group], step_names: list[str], adapters: dict
+    ) -> dict[str, dict[str, float]]:
         """Accumulate the shipped batch's rewards and response lengths per
         adapter; for adapters stepping with this batch, flush means over their
         whole adapter batch (accumulated across shipped batches, so each mean
         covers all ``adapter_global_batch_size`` samples of the step, not just
         this batch's slice). Returns {adapter name: flushed metrics}.
-
-        ``n`` should always equal the adapter's ``adapter_global_batch_size``;
-        any deviation means batch accounting drifted.
 
         Counted at ship time, not train commit: a failed train call aborts the
         run anyway, so the distinction has no practical effect.
@@ -205,16 +208,16 @@ class MultiLoRAWorkerMetrics:
             flushed: dict[str, dict[str, float]] = {}
             for name in step_names:
                 if (count := self.step_sample_counts.pop(name, 0)) > 0:
+                    expected = adapters[name].config.adapter_global_batch_size
+                    if count != expected:
+                        logger.warning(
+                            f"Adapter '{name}' stepped with {count} shipped samples, expected "
+                            f"adapter_global_batch_size={expected}; batch accounting drifted"
+                        )
                     flushed[name] = {
                         "rollout/raw_reward/mean": self.step_reward_sums.pop(name) / count,
                         "rollout/response_len/mean": self.step_response_len_sums.pop(name) / count,
-                        "rollout/n": count,
                     }
-                    staleness = self.step_staleness_values.pop(name, [])
-                    flushed[name]["rollout/stale_dropped"] = len(staleness)
-                    if staleness:
-                        flushed[name]["rollout/stale_dropped_avg_staleness"] = sum(staleness) / len(staleness)
-                        flushed[name]["rollout/stale_dropped_max_staleness"] = max(staleness)
             return flushed
 
     def discard_adapter(self, name: str) -> None:
@@ -223,7 +226,7 @@ class MultiLoRAWorkerMetrics:
             self.step_reward_sums.pop(name, None)
             self.step_response_len_sums.pop(name, None)
             self.step_sample_counts.pop(name, None)
-            self.step_staleness_values.pop(name, None)
+            self.staleness_values.pop(name, None)
 
     def pop_metrics(self) -> dict[str, float]:
         with self.lock:
@@ -232,14 +235,6 @@ class MultiLoRAWorkerMetrics:
                 for reason, count in self.dynamic_filter_drop_counts.items()
             }
             self.dynamic_filter_drop_counts.clear()
-            metrics["perf/fully_async/stale_dropped"] = self.stale_dropped
-            if self.staleness_values:
-                metrics["perf/fully_async/stale_dropped_avg_staleness"] = sum(self.staleness_values) / len(
-                    self.staleness_values
-                )
-                metrics["perf/fully_async/stale_dropped_max_staleness"] = max(self.staleness_values)
-            self.stale_dropped = 0
-            self.staleness_values = []
             return metrics
 
 
@@ -526,22 +521,37 @@ async def generate_rollout_multi_lora_async(
     # ({name}/step), not rollout/step: one point per completed step, means
     # over exactly the samples that step trained on. adapters[name].step is
     # the committed count at snapshot time; this batch completes step + 1.
-    for name, step_metrics in worker.metrics.record_shipped_samples(args, data, batch.step_names).items():
+    for name, step_metrics in worker.metrics.record_shipped_samples(args, data, batch.step_names, adapters).items():
         step_key = f"{name}/step"
         log_dict = {step_key: adapters[name].step + 1}
         log_dict |= {f"{name}/{key}": value for key, value in step_metrics.items()}
         tracking.log(args, log_dict, step_key=step_key)
 
+    stale_drops = worker.metrics.pop_stale_drops()
+    all_staleness = [staleness for values in stale_drops.values() for staleness in values]
     metrics = {
         **worker.metrics.pop_metrics(),
         "perf/fully_async/queue_length": sum(queue_sizes.values()),
-        **{f"perf/fully_async/queue_length/{name}": size for name, size in queue_sizes.items()},
+        "perf/fully_async/stale_dropped": len(all_staleness),
+        # Adapter-prefixed keys land in the adapter's dashboard section; the
+        # exact-name define pins them to this call's rollout/step axis (unlike
+        # the {name}/step-axis metrics, which ship in their own step-keyed
+        # calls above).
+        **{f"{name}/perf/queue_length": size for name, size in queue_sizes.items()},
+        **{f"{name}/perf/stale_dropped": len(stale_drops.get(name, [])) for name in adapters},
         "perf/fully_async/batch_wait_time": time.time() - start_time,
         "perf/fully_async/batch_n_adapters": len(batch.group_counts),
         "perf/fully_async/batch_n_groups": len(data),
         "perf/fully_async/batch_n_samples": sum(group_sample_count(group) for group in data),
         "perf/fully_async/batch_n_adapters_to_step": len(batch.step_names),
     }
+    if all_staleness:
+        metrics["perf/fully_async/stale_dropped_avg_staleness"] = sum(all_staleness) / len(all_staleness)
+        metrics["perf/fully_async/stale_dropped_max_staleness"] = max(all_staleness)
+    for name, values in stale_drops.items():
+        if values:
+            metrics[f"{name}/perf/stale_dropped_avg_staleness"] = sum(values) / len(values)
+            metrics[f"{name}/perf/stale_dropped_max_staleness"] = max(values)
 
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
