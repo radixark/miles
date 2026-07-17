@@ -26,6 +26,11 @@ CASE = CaseConfig(
     tp_size=1,
     ep_size=2,
     rollout_num_gpus_per_engine=4,
+    # DO NOT MERGE -- negative validation of the metric-history gate:
+    # 100x the default lr (1e-6) to push train/ppo_kl and the train-rollout
+    # consistency metrics past their bands. 1e-3 was too violent: it tripped
+    # the R3 mismatch assertion and failed the test before the gate could run.
+    extra_train_args="--lr 1e-4",
 )
 
 

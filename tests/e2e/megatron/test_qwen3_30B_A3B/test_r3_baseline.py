@@ -25,6 +25,12 @@ CASE = CaseConfig(
     tp_size=2,
     ep_size=4,
     rollout_num_gpus_per_engine=4,
+    # DO NOT MERGE -- negative validation of the metric-history gate:
+    # overheat sampling (default 1.0) so math accuracy degrades and
+    # rollout/raw_reward drops below its lower_is_worse band. Truncating to
+    # 400 tokens was too violent: the all-truncated zero-advantage batch
+    # crashed a train actor before the gate could run.
+    extra_train_args="--rollout-temperature 1.5",
 )
 
 
