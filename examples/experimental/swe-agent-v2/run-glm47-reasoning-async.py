@@ -2,7 +2,7 @@
 
 Disaggregated fully-async variant of run-glm47-reasoning.py: training and
 rollout run on separate nodes concurrently. Uses train_async.py and the
-fully_async_rollout module so that weight updates do not block generation.
+miles.rollout.fully_async_rollout module so that weight updates do not block generation.
 
 Default split: 4 nodes training + 12 nodes inference (configurable via
 --train-num-nodes). Same model architecture as GLM-4.5-355B-A32B.
@@ -28,7 +28,6 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-FULLY_ASYNC_DIR = (Path(__file__).resolve().parent.parent.parent / "fully_async").resolve()
 
 
 @dataclass
@@ -141,7 +140,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
+        "--rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async "
         f"--prompt-data {args.prompt_data} "
         "--input-key messages "
         "--label-key label "
@@ -324,7 +323,7 @@ def execute(args: ScriptArgs):
     miles_root = U.repo_base_dir
 
     extra_env_vars = {
-        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}:{miles_root}",
+        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "NCCL_NVLS_ENABLE": "0",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "true",

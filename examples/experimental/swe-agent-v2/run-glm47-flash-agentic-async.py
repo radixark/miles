@@ -1,8 +1,8 @@
 """GLM-4.7-Flash fully-async agentic training with SWE-bench data.
 
 Disaggregated fully-async variant for agentic tasks: training and rollout run
-on separate nodes concurrently. Uses train_async.py and the fully_async_rollout
-module so that weight updates do not block generation. Agent tasks are dispatched
+on separate nodes concurrently. Uses train_async.py and the
+miles.rollout.fully_async_rollout module so that weight updates do not block generation. Agent tasks are dispatched
 to a Harbor-based agent server.
 
 GLM-4.7-Flash architecture: 47 layers, 20 attention heads, 64 routed experts,
@@ -35,7 +35,6 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-FULLY_ASYNC_DIR = (Path(__file__).resolve().parent.parent.parent / "fully_async").resolve()
 
 # Cluster-wide GPU-node ceiling for the ckpt-conversion job. Kept below the
 # raw node count so ckpt conversion doesn't starve the rest of the cluster.
@@ -155,7 +154,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
+        "--rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async "
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
         "--metadata-key metadata "
@@ -348,7 +347,7 @@ def execute(args: ScriptArgs):
     miles_root = U.repo_base_dir
 
     extra_env_vars = {
-        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}:{miles_root}",
+        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "NCCL_NVLS_ENABLE": os.environ.get("HAS_NVLINK", "0"),
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "true",
