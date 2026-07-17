@@ -7,7 +7,7 @@ through ``run_one(cfg)``.  The runner is a thin wrapper around
 """
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from miles.utils.test_utils.session_verify_runner import (
     ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD,
@@ -40,10 +40,6 @@ class ModelConfig:
     # tool_calls.  Default "rollback" is universal (pop assistant + retry);
     # see ToolCallFailureMode for "append_tool" / "append_user" variants.
     tool_call_failure_mode: str = "rollback"
-    # Per-test env overrides forwarded into the Ray runtime-env-json. Use for
-    # test-specific SGLang/aiter knobs that should NOT apply to other tests in
-    # this directory.
-    extra_env: dict[str, str] = field(default_factory=dict)
 
 
 def run_one(cfg: ModelConfig) -> None:
@@ -62,7 +58,6 @@ def run_one(cfg: ModelConfig) -> None:
         session_verify_cycles=cfg.cycles,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
         assistant_text_threshold=cfg.assistant_text_threshold,
-        extra_env=cfg.extra_env,
         **invariants,
     )
     run_session_verify(args=args)
