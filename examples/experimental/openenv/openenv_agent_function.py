@@ -29,11 +29,12 @@ Env vars:
 Per-task Daytona sandbox backend (alternative to OPENENV_ENV_URL): every episode
 gets its OWN cloud sandbox built from the task's OFFICIAL image plus an env
 server layer, deleted when the episode ends. The sandbox recipe lives in
-``tbench2_env.task_snapshots`` -- ``tbench2_env`` is OpenEnv's Terminal-Bench-2
-environment package (``envs/tbench2_env`` in huggingface/openenv), and this
-backend needs the patched branch proposed in openenv#965 + #966. Full per-task
-image fidelity with zero shared infrastructure (no Docker host, no resident
-env server) and zero cross-episode state leakage.
+``tb2_task_sandbox`` (sibling module); it bakes the installed ``tbench2_env``
+package -- OpenEnv's Terminal-Bench-2 environment package -- into the image,
+so this backend needs the pinned tbench2_env install from the README (canonical
+test.sh scoring and verifier-asset withholding built into the server). Full
+per-task image fidelity with zero shared infrastructure (no Docker host, no
+resident env server) and zero cross-episode state leakage.
   OPENENV_TB2_TASKS_DIR        path to a terminal-bench-2 checkout: build the
                      sandbox declaratively per episode. Daytona caches image
                      layers by definition hash, so only the first episode of a
@@ -247,12 +248,12 @@ _DEFAULT_ENV_URL = "http://localhost:8003"
 
 # --- Per-task Daytona sandboxes (one per episode) -----------------------------
 # The per-task image recipe (official task image + env server layer) lives in
-# OpenEnv's tbench2_env package (tbench2_env.task_snapshots). Each episode
-# materializes it declaratively from the Image definition, read off the local
-# TB2 checkout (OPENENV_TB2_TASKS_DIR); repeat creates hit Daytona's build
-# cache, and no named snapshot is involved.
+# the sibling tb2_task_sandbox module. Each episode materializes it
+# declaratively from the Image definition, read off the local TB2 checkout
+# (OPENENV_TB2_TASKS_DIR); repeat creates hit Daytona's build cache, and no
+# named snapshot is involved.
 #
-# The sandbox's env server is the PATCHED tbench2_env baked by task_snapshots
+# The sandbox's env server is the PATCHED tbench2_env baked by the recipe
 # (canonical tests/test.sh scoring built into `evaluate`, per-task WORKDIR
 # resolved server-side, configurable exec timeout). The adapter-driven fidelity
 # machinery above (_apply_workdir / _CANONICAL_EVAL_CMD) exists to compensate
@@ -307,7 +308,7 @@ def _get_create_sem() -> asyncio.Semaphore:
 
 
 def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
-    from tbench2_env import task_snapshots
+    import tb2_task_sandbox as task_snapshots
 
     daytona = task_snapshots.make_daytona()
     sandbox, url = task_snapshots.create_task_sandbox(
@@ -324,10 +325,10 @@ async def _create_once(task_id: str, tasks_dir: str) -> tuple[Any, str]:
 
     asyncio.to_thread is not cancellable: when the episode's wall-clock cap
     cancels this coroutine mid-create, the worker thread keeps running and its
-    (close_fn, url) result would be discarded — leaking a sandbox that never
-    auto-stops (auto_stop_interval=0). Record the result thread-side and, on
-    cancellation, hand it to a reaper that deletes the orphan once the create
-    finishes.
+    (close_fn, url) result would be discarded — leaking a sandbox that would
+    otherwise run (and bill) until the recipe's TTL backstop reclaims it.
+    Record the result thread-side and, on cancellation, hand it to a reaper
+    that deletes the orphan promptly once the create finishes.
     """
     result: list[tuple[Any, str]] = []
     done = threading.Event()

@@ -12,6 +12,7 @@ perf/sglang/misc profile and its ``ScriptArgs`` defaults.
 import os
 import subprocess
 import time
+from pathlib import Path
 from typing import Protocol
 
 
@@ -169,23 +170,28 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
                 "process's environment: pip install daytona "
                 "(or pip install -e '<OpenEnv>/envs/tbench2_env[daytona]')"
             ) from e
-        # Same preflight for the sandbox recipe itself: it only exists on the
-        # openenv #965/#972/#966 branch, so an upstream-main tbench2_env
-        # install passes the daytona check above and then fails per-episode
-        # in exactly the churn described there.
+        # Same preflight for the env package the recipe bakes into each task
+        # image. The import check catches a missing install; the source probe
+        # catches an install that imports fine but lacks the server features
+        # the per-task leg scores through (canonical tests/test.sh evaluate,
+        # TB2_WITHHOLD_TESTS) — that one would not even fail per-episode, it
+        # would silently mis-score every episode.
         try:
-            from tbench2_env import task_snapshots
+            import tbench2_env
         except ImportError as e:
             raise RuntimeError(
                 "per-task Daytona mode needs tbench2_env in the rollout "
-                "process's environment: pip install -e '<OpenEnv>/envs/tbench2_env'"
+                "process's environment: pip install -e '<OpenEnv>/envs/tbench2_env' "
+                "from the pinned checkout in this directory's README"
             ) from e
-        if not (hasattr(task_snapshots, "make_daytona") and hasattr(task_snapshots, "create_task_sandbox")):
+        server_src = Path(tbench2_env.__file__).resolve().parent / "server" / "tbench2_env_environment.py"
+        src_text = server_src.read_text(encoding="utf-8") if server_src.is_file() else ""
+        if "TB2_WITHHOLD_TESTS" not in src_text:
             raise RuntimeError(
-                "the installed tbench2_env lacks the per-task sandbox recipe "
-                "(task_snapshots.make_daytona / create_task_sandbox): install "
-                "an OpenEnv checkout with huggingface/openenv PRs "
-                "#965/#972/#966 applied."
+                "the installed tbench2_env server lacks the per-task sandbox "
+                "contract (canonical test.sh scoring / TB2_WITHHOLD_TESTS): "
+                "install the pinned checkout from this directory's README, "
+                "not upstream main"
             )
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
         env["DAYTONA_API_KEY"] = args.daytona_api_key
