@@ -285,6 +285,19 @@ class AdapterRegistry:
             self.deregister(name)
         return stepped
 
+    def resolve_num_step(self, name: str, dataset_rows: int) -> None:
+        """Derive num_step from num_epoch once the data source knows the
+        post-filter dataset length. No-op when num_step was set explicitly."""
+        record = self.find(name)
+        if record is None or not isinstance(record.config, AdapterRunConfig):
+            return
+        if record.config.num_step is not None:
+            return
+        num_epoch = record.config.num_epoch or 1
+        num_step = max(1, num_epoch * dataset_rows // record.config.rollout_batch_size)
+        record.config = replace(record.config, num_step=num_step)
+        logger.info(f"Adapter '{name}': num_epoch={num_epoch} x {dataset_rows} rows -> num_step={num_step}")
+
     def set_step(self, name: str, step: int) -> None:
         if (record := self.find(name)) is not None:
             record.step = step
@@ -381,14 +394,11 @@ class MultiLoRABackend:
             raise ValueError(f"Adapter '{name}' n_samples_per_prompt must be a positive integer")
         if config.num_step is not None and (type(config.num_step) is not int or config.num_step <= 0):
             raise ValueError(f"Adapter '{name}' num_step must be a positive integer")
-        if config.num_row is not None and (type(config.num_row) is not int or config.num_row <= 0):
-            raise ValueError(f"Adapter '{name}' num_row must be a positive integer")
-        if config.num_step is not None and config.num_row is not None:
-            logger.warning(
-                f"Adapter '{name}' sets both num_step and num_row; num_step takes precedence and num_row is ignored"
-            )
-        elif config.num_step is None and config.num_row is not None:
-            logger.warning(f"Adapter '{name}' uses deprecated num_row={config.num_row}; prefer num_step")
+        if config.num_epoch is not None and (type(config.num_epoch) is not int or config.num_epoch <= 0):
+            raise ValueError(f"Adapter '{name}' num_epoch must be a positive integer")
+        if config.num_step is not None and config.num_epoch is not None:
+            logger.warning(f"Adapter '{name}' sets both num_step and num_epoch; num_step takes precedence")
+
         adapter_global_batch_size = rollout_batch_size * n_samples_per_prompt
         if (max_batch := getattr(self.args, "multi_lora_max_adapter_global_batch_size", None)) is not None:
             if adapter_global_batch_size > max_batch:

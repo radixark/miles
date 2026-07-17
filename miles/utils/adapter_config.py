@@ -37,9 +37,9 @@ class AdapterRunConfig:
     rm_type: str | None = None
     custom_rm_path: str | None = None
 
-    num_epoch: int | None = None
+    # Stop after N optimizer steps; derived from num_epoch (default 1) when absent.
     num_step: int | None = None
-    num_row: int | None = None
+    num_epoch: int | None = None
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -84,8 +84,7 @@ def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
         metadata_key=raw.get("metadata_key"),
         rm_type=raw.get("rm_type"),
         custom_rm_path=raw.get("custom_rm_path"),
-        num_epoch=raw.get("num_epoch"),
         num_step=raw.get("num_step"),
-        num_row=raw.get("num_row"),
+        num_epoch=raw.get("num_epoch"),
         metadata=raw.get("metadata") or {},
     )

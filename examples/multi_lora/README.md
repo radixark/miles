@@ -18,7 +18,7 @@ run_service.sh                       # service mode: idles for registrations (po
 service_smoke.py                     # register/deregister smoke test against the API
 train_multi_lora_async.py            # trainer (entry point)
 multi_lora_async_rollout.py          # fully-async rollout function
-multi_lora_data_source_async.py      # data source (reads controller, legacy num_row fallback)
+multi_lora_data_source_async.py      # data source (reads controller)
 adapters/
   gsm8k.yaml
   dapo_math.yaml
@@ -68,8 +68,10 @@ Ray actor, pinned to the head node).
 - Adapters deregister on committed optimizer-step count (`num_step`) in the
   controller's train-commit path (`mark_batch_trained`), so stop checks happen
   exactly when steps advance. `num_step` is relative to the adapter's
-  start/resume step. The data source still supports legacy `num_row`
-  deregistration when configured. The trainer's
+  start/resume step. When an adapter doesn't set `num_step`, it is derived
+  from `num_epoch` (default 1) as `num_epoch x len(dataset) //
+  rollout_batch_size` once the data source loads the dataset (post-filter
+  length). The trainer's
   `reconcile_adapters` (before each generate) retires it at the next sync
   point and cleans up (save ckpt + clear Megatron slot + zero its optimizer
   state and retained gradients). The adapter's untrained tail — buffered
@@ -116,6 +118,7 @@ input_key: messages
 label_key: label
 rm_type: math
 num_step: 400               # stop adapter after N optimizer steps
+                            # (default: derived from num_epoch, itself default 1)
 # optional: save, num_epoch, custom_rm_path, ...
 ```
 

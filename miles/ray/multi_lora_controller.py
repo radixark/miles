@@ -93,6 +93,9 @@ class MultiLoRAController:
     def mark_batch_trained(self, rollout_id: int) -> list[str]:
         return self.backend.registry.mark_batch_trained(rollout_id)
 
+    def resolve_num_step(self, name: str, dataset_rows: int) -> None:
+        self.backend.registry.resolve_num_step(name, dataset_rows)
+
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)
 

@@ -253,8 +253,8 @@ async def test_register_rejects_bad_batch_shapes(tmp_path):
         await backend.register("F", make_config(rollout_batch_size=0))
     with pytest.raises(ValueError, match="num_step must be a positive integer"):
         await backend.register("G", make_config(num_step=0))
-    with pytest.raises(ValueError, match="num_row must be a positive integer"):
-        await backend.register("H", make_config(num_row=0))
+    with pytest.raises(ValueError, match="num_epoch must be a positive integer"):
+        await backend.register("H", make_config(num_epoch=0))
     # A valid shape registers fine.
     await backend.register("OK", make_config(rollout_batch_size=8))
 

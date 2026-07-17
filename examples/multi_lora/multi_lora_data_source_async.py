@@ -1,4 +1,6 @@
-"""Round-robin per-adapter data source; legacy num_row-based deregistration."""
+"""Round-robin per-adapter data source. Deregistration is step-based and
+lives in the controller (``mark_batch_trained``); every adapter gets a
+``num_step`` at registration, explicit or derived from ``num_epoch``."""
 
 import copy
 import logging
@@ -48,6 +50,9 @@ class MultiLoRAAsyncDataSource(DataSource):
             for name, source in built:
                 self.sources[name] = source
                 logger.info(f"Created data source for adapter '{name}'")
+                # Post-filter dataset length; the controller derives num_step
+                # from num_epoch for adapters that didn't set it.
+                ray.get(get_multi_lora_controller().resolve_num_step.remote(name, len(source.dataset)))
         self.update_queue(set(adapters))
 
     def create_source(self, adapter: AdapterRun) -> RolloutDataSource:
@@ -103,13 +108,6 @@ class MultiLoRAAsyncDataSource(DataSource):
                 sample.adapter = ref
                 sample.reward_spec = reward_spec
                 sample.metadata = {**config.metadata, **sample.metadata}
-
-            if config.num_step is None:
-                default_num_row = (getattr(config, "num_epoch", 1) or 1) * len(source.dataset)
-                num_row = config.num_row or default_num_row
-                if source.sample_group_index >= num_row and name not in snapshot["retiring"]:
-                    logger.info(f"Adapter '{name}' reached num_row={num_row}, deregistering")
-                    ray.get(get_multi_lora_controller().deregister_adapter.remote(name))
 
             return groups
 
