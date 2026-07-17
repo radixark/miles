@@ -62,6 +62,34 @@ def load_function(path):
     return getattr(module, attr)
 
 
+async def call_agent_abort_hook(args) -> None:
+    """Invoke the agent plugin's optional abort hook, if it defines one.
+
+    When oversampling collects enough samples, the rollout aborts SGLang, but an
+    external agent loop (driven by ``--custom-agent-function-path``) keeps running
+    and keeps issuing fresh completion requests until it hits its own limit. The
+    agent integration knows how to tell its backend to stop, so we look for a
+    sibling ``abort`` callable in the same module as the configured agent function
+    and call it. Backends that don't expose one are left to drain as before.
+    """
+    agent_function_path = getattr(args, "custom_agent_function_path", None)
+    if not agent_function_path:
+        return
+
+    module_path, _, _ = agent_function_path.rpartition(".")
+    if not module_path:
+        return
+    try:
+        abort_hook = load_function(f"{module_path}.abort")
+    except (AttributeError, ModuleNotFoundError):
+        return  # plugin doesn't expose an abort hook; nothing to tear down
+
+    try:
+        await abort_hook(args)
+    except Exception as e:
+        logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
+
+
 class SingletonMeta(type):
     """
     A metaclass for creating singleton classes.
