@@ -11,15 +11,22 @@ turning that recipe into a running cloud sandbox:
       the declarative path avoids the quota entirely, and repeat creates hit
       Daytona's build cache (~1min after the first build). Daytona does not
       run the image CMD, so this execs ``server_cmd()`` and waits for /health.
+      Sandboxes carry ownership labels (task / launcher / run id) and an
+      auto-stop+auto-delete TTL armed as a dead-man's switch: a keepalive
+      thread beats the activity timer while the creating process lives, so
+      a hard-killed caller's orphans are reclaimed instead of billing forever.
   bake CLI (``python tb2_sandbox_daytona.py ...``)  optionally pre-register
       named snapshots ``<prefix><task-id>`` as a warm cache.
 """
 
 import argparse
+import getpass
 import os
 import re
 import shlex
 import sys
+import threading
+import time
 from pathlib import Path
 
 from tb2_sandbox_recipe import (
@@ -61,6 +68,63 @@ def task_resources(task_dir: Path):
     )
 
 
+def sandbox_labels(task_dir: Path) -> dict[str, str]:
+    """Labels for a per-task sandbox: what it runs, and who launched it.
+
+    The Daytona API records no creator, so in a shared org labels are the only
+    attribution. ``openenv-tbench2-task`` keys sweep/cleanup tooling to exactly
+    the sandboxes this recipe created (shared orgs run other workloads).
+    ``openenv-launcher`` is OPENENV_LAUNCHER when set — do set it on shared
+    hosts, where the unix user is a generic account — else the local unix
+    user. ``openenv-run-id`` (OPENENV_RUN_ID, optional) additionally groups
+    one run's sandboxes for targeted sweeps.
+    """
+    try:
+        user = getpass.getuser()
+    except Exception:  # no passwd entry / login env on minimal hosts
+        user = "unknown"
+    labels = {
+        "openenv-tbench2-task": task_dir.name,
+        "openenv-launcher": os.environ.get("OPENENV_LAUNCHER") or user,
+    }
+    run_id = os.environ.get("OPENENV_RUN_ID")
+    if run_id:
+        labels["openenv-run-id"] = run_id
+    return labels
+
+
+# Keepalive cadence: 6 beats per 30-minute auto-stop window, and up to 3
+# consecutive failed beats (15 minutes of API blips) tolerated before the
+# thread concludes the sandbox is gone and exits.
+_KEEPALIVE_INTERVAL_S = 300.0
+_KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _start_keepalive(sandbox, task_id: str) -> None:
+    """Refresh the sandbox's activity timer for as long as THIS process lives.
+
+    Daytona's auto-stop clock counts only SDK interactions — preview-proxy
+    traffic, which is ALL of an episode's I/O, does not reset it — so without
+    a heartbeat any healthy episode longer than the auto-stop interval would
+    be stopped mid-run. A daemon thread has exactly the right lifetime: it
+    dies with the process, which is what turns auto-stop into a dead-man's
+    switch for orphans. The thread exits once refreshes fail persistently
+    (the normal case: the episode ended and the caller deleted the sandbox).
+    """
+
+    def _beat() -> None:
+        failures = 0
+        while failures < _KEEPALIVE_MAX_CONSECUTIVE_FAILURES:
+            time.sleep(_KEEPALIVE_INTERVAL_S)
+            try:
+                sandbox.refresh_activity()
+                failures = 0
+            except Exception:
+                failures += 1
+
+    threading.Thread(target=_beat, name=f"tb2-sandbox-keepalive-{task_id}", daemon=True).start()
+
+
 def create_task_sandbox(
     daytona,
     task_dir: Path,
@@ -68,22 +132,32 @@ def create_task_sandbox(
     command_timeout_s: int = 900,
     create_timeout_s: float = 1800.0,
     ready_timeout_s: float = 300.0,
+    auto_stop_minutes: int = 30,
+    auto_delete_minutes: int = 120,
 ):
     """Create ONE per-episode sandbox for *task_dir*, declaratively (no named snapshot).
 
     Returns ``(sandbox, base_url)``. Caller must ``daytona.delete(sandbox)``
     when the episode ends. First create for a task pays the image build;
     repeat creates hit Daytona's build cache.
+
+    Orphan TTL: a caller that dies without reaching its delete (SIGKILL, OOM,
+    node loss) leaks the sandbox, and Daytona's defaults would keep it running
+    — and billing — forever. Auto-stop/auto-delete arm a backstop, and a
+    keepalive thread (see ``_start_keepalive``) beats the activity timer for
+    as long as the creating process lives: a live episode of any length is
+    safe, while a dead caller stops beating and Daytona stops the sandbox
+    within *auto_stop_minutes* of the last beat, then deletes the stopped
+    remains after *auto_delete_minutes* more.
     """
     from daytona import CreateSandboxFromImageParams
 
     params = CreateSandboxFromImageParams(
         image=build_task_image(task_dir),
         resources=task_resources(task_dir),
-        auto_stop_interval=0,
-        # Ownership marker: lets sweep/cleanup tooling target exactly the
-        # sandboxes this recipe created (shared orgs run other workloads).
-        labels={"openenv-tbench2-task": task_dir.name},
+        auto_stop_interval=auto_stop_minutes,
+        auto_delete_interval=auto_delete_minutes,
+        labels=sandbox_labels(task_dir),
     )
     sandbox = daytona.create(params, timeout=create_timeout_s)
     try:
@@ -94,6 +168,7 @@ def create_task_sandbox(
         )
         url = sandbox.create_signed_preview_url(8000, expires_in_seconds=86400).url
         wait_server_ready(url, timeout_s=ready_timeout_s)
+        _start_keepalive(sandbox, task_dir.name)
         return sandbox, url
     except Exception:
         daytona.delete(sandbox)
