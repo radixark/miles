@@ -5,16 +5,10 @@
 assistant's generated token sequence, then merges them with the pretokenized
 prefix — handling model-specific boundary tokens at the junction.
 
-The default implementation incrementally tokenizes appended non-assistant turns
-with role-specific synthetic prefixes:
-
-- contiguous ``tool`` runs use ``[dummy_system, dummy_assistant]``
-- each ``user`` or ``system`` message uses ``[dummy_system]``
-
-The appended suffix is processed left-to-right, then the generation prompt for
-the next assistant turn is appended once at the end.  Model-specific
-subclasses only override ``merge_tokens`` for boundary quirks at the prefix
-junction.
+The default implementation renders the complete appended non-assistant suffix
+and the next generation prompt once under a synthetic
+``[dummy_system, dummy_assistant]`` prefix.  Model-specific subclasses only
+override ``merge_tokens`` for boundary quirks at the prefix junction.
 """
 
 from __future__ import annotations
@@ -61,24 +55,13 @@ class FixedTemplateRow:
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
-def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a dummy assistant message with tool_calls matching *tool_responses*,
-    so the template correctly renders the subsequent tool-response turn boundaries."""
+def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
+    """Build a dummy assistant that preserves the stored turn's tool calls."""
     return {
         "role": "assistant",
         "content": "",
         "reasoning_content": " ",
-        "tool_calls": [
-            {
-                "id": resp.get("tool_call_id") or f"call0000{i}",
-                "type": "function",
-                "function": {
-                    "name": resp.get("name") or "dummy_func",
-                    "arguments": {},
-                },
-            }
-            for i, resp in enumerate(tool_responses)
-        ],
+        "tool_calls": stored_assistant.get("tool_calls") or [],
     }
 
 
@@ -148,28 +131,6 @@ class TITOTokenizer:
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def _split_appended_segments(self, appended_messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-        segments: list[list[dict[str, Any]]] = []
-        i = 0
-        while i < len(appended_messages):
-            role = appended_messages[i]["role"]
-            # Many templates wrap a contiguous tool-response run as one logical
-            # block, so tool messages are diffed together instead of one-by-one.
-            if role == "tool":
-                j = i + 1
-                while j < len(appended_messages) and appended_messages[j]["role"] == "tool":
-                    j += 1
-                segments.append(appended_messages[i:j])
-                i = j
-                continue
-            if role in {"user", "system"}:
-                segments.append([appended_messages[i]])
-                i += 1
-                continue
-            raise ValueError(f"unsupported appended role for TITO segmentation: {role}")
-
-        return segments
-
     def _tokenize_rendered_suffix(
         self,
         base_messages: list[dict[str, Any]],
@@ -194,30 +155,6 @@ class TITOTokenizer:
             roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
             raise ValueError(f"rendered suffix diff failed for {roles}")
         return self._encode_text(text_with[len(text_without) :])
-
-    def _tokenize_tool_segment(
-        self,
-        appended_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> list[int]:
-        # No dummy user to avoid cut think issues.
-        return self._tokenize_rendered_suffix(
-            [_DUMMY_SYSTEM, _build_dummy_assistant(appended_messages)],
-            appended_messages,
-            tools=tools,
-        )
-
-    def _tokenize_user_and_system_segment(
-        self,
-        appended_message: dict[str, Any],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> list[int]:
-        # User/system single-message appends share one synthetic context.
-        return self._tokenize_rendered_suffix(
-            [_DUMMY_SYSTEM],
-            [appended_message],
-            tools=tools,
-        )
 
     def tokenize_additional_non_assistant(
         self,
@@ -246,25 +183,9 @@ class TITOTokenizer:
         """
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
         appended_messages = new_messages[len(old_messages) :]
-        incremental: list[int] = []
-
-        # Incremental non-assistant content is assembled segment-by-segment
-        # using the smallest synthetic context that preserves each role's
-        # boundary tokens.
-        for segment in self._split_appended_segments(appended_messages):
-            role = segment[0]["role"]
-            if role == "tool":
-                incremental.extend(self._tokenize_tool_segment(segment, tools))
-            elif role == "user" or role == "system":
-                incremental.extend(self._tokenize_user_and_system_segment(segment[0], tools))
-            else:
-                raise ValueError(f"unsupported appended role for TITO tokenization: {role}")
-
-        # The next assistant opener depends on the full post-append history, so
-        # it is derived from the real messages once and appended only at the end.
-        return incremental + self._tokenize_rendered_suffix(
-            new_messages,
-            [],
+        return self._tokenize_rendered_suffix(
+            [_DUMMY_SYSTEM, _build_dummy_assistant(old_messages[-1])],
+            appended_messages,
             tools=tools,
             add_generation_prompt=True,
         )
