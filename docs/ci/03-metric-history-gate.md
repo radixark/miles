@@ -1,44 +1,61 @@
 ---
-
-## title: Metric history & regression gate
-description: How CI keeps per-test training metrics across runs, runs a two-layer gate against that history, and how to add a gate spec or clean a bad data point.
+title: Metric history & regression gate
+description: How CI keeps per-test training metrics across runs, runs a historical gate against that history, and how to add a gate spec or clean a bad data point.
+---
 
 # Metric history & regression gate
 
-CI keeps each test's per-metric numbers from every run in our own store and runs a two-layer gate against that history — catching the slow drift that fixed `--ci-<metric>` thresholds miss. wandb stays a write-only sink; the gate never reads from it. The baseline lives in our DB.
+CI keeps each test's per-metric numbers from every run in our own store and runs a historical gate against that history — catching the slow drift a single run cannot see. wandb stays a write-only sink; the gate never reads from it. The baseline lives in our DB.
 
 ## Identity: what shares a baseline
 
+**Goal:** pin down exactly which past values a new number may be compared against — same test, same metric, same rule, same point — so baselines never mix across meanings.
+
 The gate compares a number only against earlier numbers of the same kind, from the same test. Two keys decide that:
 
-- **Run series** (the "same test"): `(test_path, backend, suite, test_file_hash)`. `test_file_hash` = sha256 of the test file's **contents**, so editing the test starts a fresh series. Runs differing on any field never share a baseline.
-- **Value within a run**: `(metric_key, steps_key, constraint_key, step)` — the declaring gate's literal content plus which point:
-  - `steps_key` / `constraint_key` are canonical JSON of the declaration's raw `steps` / `constraint` literals. The key is built from what the author wrote — never a normalized form — so a code-side default change can never silently re-key a series; any edit to the declaration already resets the series via `test_file_hash`.
+- **Run series** (the "same test"): `(test_path, backend, suite)`. Runs differing on any field never share a baseline. A test-file edit does not reset the series (see Notes).
+- **Value within a run**: `(metric_key, steps_key, constraint_key, step)` — the declaring gate's literal content plus which point. `steps_key` and `step` are not redundant: a fanned-out declaration (`steps=[0, 1]` / `steps="all"`) produces several values in one run — one per selected step — and each must be judged only against its own step's history, so the literals identify the spec while `step` identifies the point:
+  - `steps_key` / `constraint_key` are canonical JSON of the declaration's raw `steps` / `constraint` literals: no whitespace, dict keys sorted, list order kept as written, a string keyword stored with its JSON quotes — `steps=[0, 1]` → `[0,1]`, `steps="last"` → `"last"` (quotes included). Built from the raw literal, never the normalized form, so a code-side default change can never silently re-key a series; editing the declaration's literals changes these keys, so a declaration edit starts a fresh coordinate history by construction.
   - `step` is the point the value came from: step `k` for a per-step value, `-1` for a whole-series reduction (e.g. `steps="last"`) — a reduced value keys on a constant, never the step it happened to land on, or its history would fragment across runs of different lengths.
   - Step-0 `ppo_kl` is compared only against past step-0 `ppo_kl` — never against step 1 or `grad_norm`.
 
-The store's baseline query keys on exactly these (plus a `limit` for how many recent points to read): `recent_trusted_values(test_path, backend, suite, metric_key, steps_key, constraint_key, step, test_file_hash, limit)`.
+The store's baseline query keys on exactly these (plus a `limit` for how many recent points to read): `recent_trusted_values(test_path, backend, suite, metric_key, steps_key, constraint_key, step, limit)`.
 
-## The gate: two layers
+## The gate: drift against trusted history
 
-After a test passes, each comparison coordinate's value is checked with `|cur - ref| > max(rel * |ref|, abs_floor)` (`rel` default `0.20`; `abs_floor` only matters for metrics near zero, e.g. step-0 `ppo_kl`).
+**Goal:** judge every declared coordinate against its own trusted past, so slow drift gets caught while a fresh baseline can seed itself.
 
-- **Hard gate** — always on. `ref` = a hardcoded safety limit. Runs even with zero history; generalizes today's `--ci-<metric>` thresholds.
-- **Historical gate** — activates with ≥1 trusted point in the series. `ref` = mean of the series' trusted runs. Catches drift.
-- **Cold start** (0 trusted): historical gate is inactive, hard gate only — not an error.
+After a test passes, each comparison coordinate's value is judged by its spec's constraint against the coordinate's own history:
+
+- **Historical gate** — activates with ≥1 trusted point at the coordinate. `ref` = mean of the coordinate's trusted values. Catches drift.
+- **Cold start** (0 trusted): the gate is inactive — not an error. Zero active checks means the run is vacuously trusted: that is how a fresh baseline gets seeded (recover a poisoned seed via `mark_untrusted`).
 
 ## Storage: two backends, two tables
 
-- Backends: `SQLiteMetricHistoryStore` is the local/offline backend for unit tests and in-process development; `NeonMetricHistoryStore` is the hosted Postgres backend for CI/prod. Callers use only `MetricHistoryStore`: for the same inputs, both backends must persist the same run and metric fields, return the same trusted baseline rows in newest-first order, and revoke trust for the same runs via `mark_untrusted`.
-- `write_run(...)` stores one CI run, its identity/provenance, its run-level `trusted` flag, and all metric values from that run. It rejects (raises on) non-finite metric values before persisting anything: the DB is the write boundary where validity is enforced, so `NaN` / `±Inf` never enter a baseline — upstream they are gate-side ERROR evidence, not storable measurements.
-- `recent_trusted_values(...)` returns the newest trusted values for one exact run series and one exact metric coordinate; this is the historical-gate baseline read.
-- `mark_untrusted(...)` flips matching runs to `trusted = false` by `run_id`, `github_run_id`, or `commit_sha`, so the next baseline read excludes those runs without deleting rows.
+**Goal:** persist runs and metric values behind one `MetricHistoryStore` contract so gate code stays backend-agnostic (SQLite offline, Neon in CI), with the write boundary guaranteeing only finite values ever enter a baseline.
+
+**Backends** — one `MetricHistoryStore` contract, two implementations; callers see only the contract, and for the same inputs both backends must persist the same run and metric fields, return the same trusted baseline rows in newest-first order, and revoke trust for the same runs:
+
+- `SQLiteMetricHistoryStore` — the local/offline backend, for unit tests and in-process development.
+- `NeonMetricHistoryStore` — the hosted Postgres backend, for CI/prod.
+
+**Store API** — the whole contract is three calls:
+
+- `write_run(...)` — persists one CI run: its identity/provenance, its run-level `trusted` flag, and all metric values from that run. It rejects (raises on) non-finite metric values before persisting anything: the DB is the write boundary where validity is enforced, so `NaN` / `±Inf` never enter a baseline — upstream they are gate-side ERROR evidence, not storable measurements.
+- `recent_trusted_values(...)` — the historical-gate baseline read: the newest trusted values for one exact run series and one exact value coordinate.
+- `mark_untrusted(...)` — flips matching runs to `trusted = false` by `run_id`, `github_run_id`, or `commit_sha`, so the next baseline read excludes those runs without deleting rows.
+
+**Tables & read path**:
+
 - `runs` — one row per CI run of one series: the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
 - `metric_values` — one row per value: `run_id` FK + `(metric_key, steps_key, constraint_key, step)` + `value`.
-- Read path: composite index `runs(test_path, backend, suite, test_file_hash, trusted, created_at DESC)`.
-- Hosted Postgres setup is out-of-band in this round: when `NeonMetricHistoryStore` is implemented, provision the equivalent two tables and application role outside this repo, and keep runtime gate code DML-only. Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
+- The baseline read is served by the composite index `runs(test_path, backend, suite, trusted, created_at DESC)`.
+
+**Operations** — hosted Postgres setup is out-of-band in this round: when `NeonMetricHistoryStore` is implemented, provision the equivalent two tables and application role outside this repo, and keep runtime gate code DML-only. Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
 
 ## Trust, cleanup, who writes
+
+**Goal:** keep the baseline self-protecting — only nightly-marked runs (with recorded provenance) write at all, a nightly run whose metrics fail the gate is still persisted but flagged `trusted = false` so it never enters the baseline, and a point later found bad is revoked by one flag flip instead of deletion.
 
 - A run is `trusted` iff it passed **all** active gates. A drifting run is still recorded, with `trusted = false`, so it can't drag the baseline. A test that fails then passes on **retry** is gated on its passing attempt's metrics and trusted normally — needing a retry is not itself a trust penalty.
 - **Clean a bad point**: `mark_untrusted` = `UPDATE runs SET trusted = false` on the run. The next gate read excludes it immediately — no rebaseline, no row deletion.
@@ -52,25 +69,14 @@ Capture is runtime behavior inside the training process, so it never blocks the 
 
 ## Rollout
 
+**Goal:** land the gate observe-only first, so it accumulates history and proves its verdicts on real runs before any PR can be blocked; enforcement is a later, reversible switch.
+
 Shadow-first: collect, store, and evaluate, but **never block a PR** initially — a historical-gate failure lands as an untrusted row and is surfaced, not enforced. Enforcement arrives later behind a per-test **allowlist** + a global **kill-switch**.
-
-## Map: files & knobs
-
-
-| Thing                    | Where                                                                                  |
-| ------------------------ | -------------------------------------------------------------------------------------- |
-| Enable capture           | set `MILES_CI_GATE_RECORD_DIR` (injected by the CI harness; no CLI flag)               |
-| DB connection            | `NEON_DATABASE_URL` (CI secret)                                                        |
-| Storage contract         | `tests/ci/metric_history/storage/store.py` (+ `storage/sqlite_store.py` offline, `storage/neon_store.py` prod) |
-| Gate logic               | `tests/ci/history_gate.py`                                                             |
-| Collection backend       | `miles/utils/tracking_utils/ci_history.py`                                             |
-| Declare a gate on a test | `register_ci_gate(...)` in the test file                                               |
-
-
-
 
 ## Notes
 
-- Any test-file edit is an intentional baseline reset for that series (the hash changes).
+**Goal:** record accepted caveats and open questions beside the behavior they qualify; planned-but-unimplemented work lives in TODO below.
+
+- A test-file edit does not reset the series: `test_file_hash` was dropped from the run-series identity because a tiny edit to a test kept wiping its whole history. A test change that genuinely shifts a metric's expected level surfaces as gate failures instead; the reset levers are manual — `mark_untrusted` the stale runs, or edit the declaration literals (new `steps_key` / `constraint_key` ⇒ fresh coordinate).
 - The nightly trigger (`schedule` cron + `nightly` label) already shipped (#1491); detection here is harness-side via `GITHUB_EVENT_NAME`, so this feature needs **no** `pr-test.yml` **edit**.
-- Open: should a brand-new test's first baselines need human confirmation before counting as trusted? (v1: no.) Per-series `rel` / `abs_floor` overrides beyond the global defaults.
+- Open: should a brand-new test's first baselines need human confirmation before counting as trusted? (v1: no.)
