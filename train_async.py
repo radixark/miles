@@ -18,7 +18,7 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 logger = logging.getLogger(__name__)
 
 
-# The framework supports other asynchronous approaches such as fully async (which is shown in examples/full_async).
+# The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
     validate_async_off_policy_correction(args)
