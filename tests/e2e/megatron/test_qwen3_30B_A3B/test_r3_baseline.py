@@ -26,9 +26,11 @@ CASE = CaseConfig(
     ep_size=4,
     rollout_num_gpus_per_engine=4,
     # DO NOT MERGE -- negative validation of the metric-history gate:
-    # truncate generations (default 8192) so most math answers are cut off and
-    # rollout/raw_reward collapses below its lower_is_worse band.
-    extra_train_args="--rollout-max-response-len 400",
+    # overheat sampling (default 1.0) so math accuracy degrades and
+    # rollout/raw_reward drops below its lower_is_worse band. Truncating to
+    # 400 tokens was too violent: the all-truncated zero-advantage batch
+    # crashed a train actor before the gate could run.
+    extra_train_args="--rollout-temperature 1.5",
 )
 
 
