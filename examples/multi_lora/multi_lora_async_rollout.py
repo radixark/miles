@@ -27,6 +27,7 @@ from miles.rollout.filter_hub.base_types import call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
+from miles.utils.metric_utils import compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
 from miles.utils.tracking_utils import tracking
@@ -162,11 +163,17 @@ class MultiLoRAWorkerMetrics:
         self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
         # Staleness of dropped groups per adapter, drained every batch.
         self.staleness_values: dict[str, list[int]] = defaultdict(list)
-        # Shipped-sample stats, accumulated per adapter across train batches
-        # and flushed as step means when the adapter steps.
-        self.step_reward_sums: dict[str, float] = defaultdict(float)
-        self.step_response_len_sums: dict[str, float] = defaultdict(float)
-        self.step_sample_counts: dict[str, int] = defaultdict(int)
+        # Shipped-sample values, accumulated per adapter across train batches
+        # and flushed as step statistics when the adapter steps. Bounded by
+        # adapter_global_batch_size values per adapter.
+        self.step_rewards: dict[str, list[float]] = defaultdict(list)
+        self.step_response_lens: dict[str, list[float]] = defaultdict(list)
+        # Per-sample mean engine log prob (rough per-adapter entropy trend).
+        self.step_log_prob_means: dict[str, list[float]] = defaultdict(list)
+        # Group outcomes for zero-std rates: total groups shipped, and the
+        # common reward of each uniform-reward (zero advantage) group.
+        self.step_group_counts: dict[str, int] = defaultdict(int)
+        self.step_zero_std_rewards: dict[str, list[float]] = defaultdict(list)
 
     def record_dynamic_filter_drop(self, reason: str) -> None:
         with self.lock:
@@ -187,10 +194,10 @@ class MultiLoRAWorkerMetrics:
         self, args, data: list[Group], step_names: list[str], adapters: dict
     ) -> dict[str, dict[str, float]]:
         """Accumulate the shipped batch's rewards and response lengths per
-        adapter; for adapters stepping with this batch, flush means over their
-        whole adapter batch (accumulated across shipped batches, so each mean
-        covers all ``adapter_global_batch_size`` samples of the step, not just
-        this batch's slice). Returns {adapter name: flushed metrics}.
+        adapter; for adapters stepping with this batch, flush statistics over
+        their whole adapter batch (accumulated across shipped batches, so the
+        stats cover all ``adapter_global_batch_size`` samples of the step, not
+        just this batch's slice). Returns {adapter name: flushed metrics}.
 
         Counted at ship time, not train commit: a failed train call aborts the
         run anyway, so the distinction has no practical effect.
@@ -200,32 +207,62 @@ class MultiLoRAWorkerMetrics:
                 name = group_adapter_name(group)
                 if name is None:
                     continue
+                group_rewards = []
                 for sample in iter_group_samples(group):
-                    self.step_reward_sums[name] += sample.get_reward_value(args)
-                    self.step_response_len_sums[name] += sample.effective_response_length
-                    self.step_sample_counts[name] += 1
+                    reward = sample.get_reward_value(args)
+                    group_rewards.append(reward)
+                    self.step_rewards[name].append(reward)
+                    self.step_response_lens[name].append(sample.effective_response_length)
+                    if sample.rollout_log_probs:
+                        self.step_log_prob_means[name].append(
+                            sum(sample.rollout_log_probs) / len(sample.rollout_log_probs)
+                        )
+                self.step_group_counts[name] += 1
+                if len(group_rewards) > 1 and all(reward == group_rewards[0] for reward in group_rewards):
+                    self.step_zero_std_rewards[name].append(round(group_rewards[0], 1))
 
             flushed: dict[str, dict[str, float]] = {}
             for name in step_names:
-                if (count := self.step_sample_counts.pop(name, 0)) > 0:
-                    expected = adapters[name].config.adapter_global_batch_size
-                    if count != expected:
-                        logger.warning(
-                            f"Adapter '{name}' stepped with {count} shipped samples, expected "
-                            f"adapter_global_batch_size={expected}; batch accounting drifted"
-                        )
-                    flushed[name] = {
-                        "rollout/raw_reward/mean": self.step_reward_sums.pop(name) / count,
-                        "rollout/response_len/mean": self.step_response_len_sums.pop(name) / count,
-                    }
+                rewards = self.step_rewards.pop(name, [])
+                response_lens = self.step_response_lens.pop(name, [])
+                log_prob_means = self.step_log_prob_means.pop(name, [])
+                total_groups = self.step_group_counts.pop(name, 0)
+                zero_std_rewards = self.step_zero_std_rewards.pop(name, [])
+                if not rewards:
+                    continue
+                expected = adapters[name].config.adapter_global_batch_size
+                if len(rewards) != expected:
+                    logger.warning(
+                        f"Adapter '{name}' stepped with {len(rewards)} shipped samples, expected "
+                        f"adapter_global_batch_size={expected}; batch accounting drifted"
+                    )
+                # Keys are single-segment ("raw_reward_mean", not
+                # "rollout/raw_reward/mean") so that, prefixed with
+                # "{name}/", they sit one level under the "{name}/*" glob —
+                # the same shape as "train/loss" under "train/*". Deeper keys
+                # never get their axis: glob expansion only matches one
+                # segment on the server.
+                flushed[name] = {
+                    **dict_add_prefix(compute_statistics(rewards), "raw_reward_"),
+                    **dict_add_prefix(compute_statistics(response_lens), "response_len_"),
+                }
+                if log_prob_means:
+                    flushed[name]["log_probs"] = sum(log_prob_means) / len(log_prob_means)
+                if total_groups:
+                    zero = sum(1 for reward in zero_std_rewards if reward == 0.0)
+                    one = sum(1 for reward in zero_std_rewards if reward == 1.0)
+                    flushed[name]["zero_std_all_zero_percentage"] = zero / total_groups
+                    flushed[name]["zero_std_all_one_percentage"] = one / total_groups
             return flushed
 
     def discard_adapter(self, name: str) -> None:
         """Drop a retired adapter's partial step accumulation."""
         with self.lock:
-            self.step_reward_sums.pop(name, None)
-            self.step_response_len_sums.pop(name, None)
-            self.step_sample_counts.pop(name, None)
+            self.step_rewards.pop(name, None)
+            self.step_response_lens.pop(name, None)
+            self.step_log_prob_means.pop(name, None)
+            self.step_group_counts.pop(name, None)
+            self.step_zero_std_rewards.pop(name, None)
             self.staleness_values.pop(name, None)
 
     def pop_metrics(self) -> dict[str, float]:
@@ -533,12 +570,11 @@ async def generate_rollout_multi_lora_async(
         **worker.metrics.pop_metrics(),
         "perf/fully_async/queue_length": sum(queue_sizes.values()),
         "perf/fully_async/stale_dropped": len(all_staleness),
-        # Adapter-prefixed keys land in the adapter's dashboard section; the
-        # exact-name define pins them to this call's rollout/step axis (unlike
-        # the {name}/step-axis metrics, which ship in their own step-keyed
-        # calls above).
-        **{f"{name}/perf/queue_length": size for name, size in queue_sizes.items()},
-        **{f"{name}/perf/stale_dropped": len(stale_drops.get(name, [])) for name in adapters},
+        # Per-adapter cycle metrics live in their own {name}_perf namespace:
+        # a namespace maps to exactly one x-axis, and these ride rollout/step
+        # while the {name}/ namespace is on the adapter's step axis.
+        **{f"{name}_perf/queue_length": size for name, size in queue_sizes.items()},
+        **{f"{name}_perf/stale_dropped": len(stale_drops.get(name, [])) for name in adapters},
         "perf/fully_async/batch_wait_time": time.time() - start_time,
         "perf/fully_async/batch_n_adapters": len(batch.group_counts),
         "perf/fully_async/batch_n_groups": len(data),
@@ -550,8 +586,8 @@ async def generate_rollout_multi_lora_async(
         metrics["perf/fully_async/stale_dropped_max_staleness"] = max(all_staleness)
     for name, values in stale_drops.items():
         if values:
-            metrics[f"{name}/perf/stale_dropped_avg_staleness"] = sum(values) / len(values)
-            metrics[f"{name}/perf/stale_dropped_max_staleness"] = max(values)
+            metrics[f"{name}_perf/stale_dropped_avg_staleness"] = sum(values) / len(values)
+            metrics[f"{name}_perf/stale_dropped_max_staleness"] = max(values)
 
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
 

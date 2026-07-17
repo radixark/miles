@@ -26,6 +26,7 @@ __all__ = [
     "MultiLoRABackend",
     "MultiLoRAHTTPServer",
     "RID_SEPARATOR",
+    "define_new_adapter_metrics",
     "is_multi_lora_enabled",
     "make_rid",
     "parse_adapter",
@@ -45,6 +46,25 @@ class EmptyBatchTimeoutError(RuntimeError):
 
 def is_multi_lora_enabled(args: Any) -> bool:
     return getattr(args, "multi_lora", False)
+
+
+def define_new_adapter_metrics(snapshot: dict) -> None:
+    """Declare metric axes for adapters not seen before ({name}/* ->
+    {name}/step, {name}_perf/* -> rollout/step); already-declared adapters
+    are skipped internally, so calling this every snapshot is free.
+
+    Must run in the the primary tracking writer, whose wandb
+    definitions are the only ones that reliably persist — and before the
+    adapter's first metrics, which is guaranteed at snapshot time: an adapter
+    can't ship step metrics until it has been promoted and trained a full
+    adapter batch.
+    """
+    # lazy import tracking deps
+    from miles.utils.tracking_utils.tracking import define_step_key_metric_group
+
+    for name in {**snapshot["pending"], **snapshot["active"], **snapshot["retiring"]}:
+        define_step_key_metric_group(prefix=name, step_key=f"{name}/step")
+        define_step_key_metric_group(prefix=f"{name}_perf", step_key="rollout/step")
 
 
 def make_rid(adapter_name: str) -> str:
