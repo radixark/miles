@@ -921,7 +921,9 @@ def initialize_model_and_optimizer(
 
     check_model_hashes(args, model, iteration)
 
-    if opt_param_scheduler is not None:
+    # Megatron checkpoint loads can restore scheduler state directly. In that
+    # case, stepping by the checkpoint iteration here would double-count.
+    if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
     return model, optimizer, opt_param_scheduler, iteration

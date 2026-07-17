@@ -2,9 +2,10 @@
 
 Covers the AST-collection behavior of the suite-as-runner-class refactor:
 `labels` is optional (default None ≡ []); a non-empty list of canonical
-domain labels gates the test on PR labels, while None / [] / omitted means
-the test runs on every PR; `num_gpus` is gone; `labels` must be passed
-by keyword (not as a positional third argument).
+domain labels gates the test on the resolved domain scope, while None / [] /
+omitted means always-on within an eligible cadence; `nightly=True` makes a
+registration nightly-only; `num_gpus` is gone; `labels` must be passed by
+keyword (not as a positional third argument).
 """
 
 import ast
@@ -136,6 +137,21 @@ class TestRegisterPositive:
         r = ut_parse_one_file(path)[0]
         assert r.disabled == "known regression in megatron 0.12"
 
+    def test_nightly_true_passthrough(self, tmp_path):
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=600,
+                suite="stage-c-8-gpu-h100",
+                labels=["megatron"],
+                nightly=True,
+            )
+            """,
+            tmp_path,
+        )
+        assert ut_parse_one_file(path)[0].nightly is True
+
 
 # --- Negative: rejected shapes (each error message is part of the contract) -
 
@@ -188,6 +204,23 @@ class TestRegisterNegative:
             tmp_path,
         )
         with pytest.raises(ValueError, match=r"must be a list of string literals or None"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize("value", ['"yes"', "1", "None"])
+    def test_nightly_non_boolean_rejected(self, tmp_path, value):
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=600,
+                suite="stage-c-8-gpu-h100",
+                labels=["megatron"],
+                nightly={value},
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"nightly must be a boolean"):
             ut_parse_one_file(path)
 
     def test_positional_third_arg_rejected(self, tmp_path):

@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'requirements.txt'
 
   schedule:
     # Every 12 hours: midnight and noon UTC

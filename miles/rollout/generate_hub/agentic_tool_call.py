@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
-    assert getattr(input.args, "session_server_ip", None) and getattr(input.args, "session_server_port", None), (
-        "agentic_tool_call.generate requires session_server_ip/session_server_port. "
+    assert getattr(input.args, "session_server_ip", None) and getattr(input.args, "session_server_ports", None), (
+        "agentic_tool_call.generate requires session_server_ip/session_server_ports. "
         "Pass --use-session-server to start the session server."
     )
     tracer = await OpenAIEndpointTracer.create(input.args)
@@ -66,10 +66,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     log_prefix = f"[session={tracer.session_id}]"
 
-    session_ip = getattr(input.args, "session_server_ip", None)
-    session_port = getattr(input.args, "session_server_port", None)
-    if session_ip and session_port:
-        metadata = {**metadata, "session_server_id": f"{session_ip}:{session_port}"}
+    # From the tracer, not args: with multiple instances the owning ip:port is per-session.
+    metadata = {**metadata, "session_server_id": tracer.session_server_id}
 
     agent_metadata = None
     t_start = time.monotonic()
@@ -111,6 +109,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     )
     for s in samples:
         s.metadata.update(agent_metadata or {})
+
+    # If the agent function reports wall-clock time spent outside policy generation
+    # (env/tool steps), surface it on Sample.non_generation_time so throughput
+    # accounting subtracts it. Must be equal across all turn-samples: merge_samples
+    # collapses them with _merge_equal_value, which asserts the values match.
+    ngt = ((agent_metadata or {}).get("agent_metrics") or {}).get("total_tool_time")
+    if ngt is not None:
+        for s in samples:
+            s.non_generation_time = ngt
 
     if max_seq_len is not None:
         samples = truncate_samples_by_total_tokens(samples, max_seq_len, input.state.tokenizer)
