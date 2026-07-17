@@ -1,0 +1,61 @@
+[build-system]
+requires = [
+    "packaging",
+    "setuptools >= 49.4.0",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.isort]
+profile = "black"  # black-compatible
+line_length = 119  # should match black parameters
+ignore_whitespace = true  # ignore whitespace for compatibility with the initial style
+py_version = 310  # python 3.10 as a target version
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+default_section = "THIRDPARTY"
+extend_skip = ["setup.py", "docs/source/conf.py"]
+known_first_party = ["miles", "miles_plugins"]
+known_third_party = ["megatron", "wandb", "ray", "transformers"]
+src_paths = ["miles", "miles_plugins"]
+
+
+[tool.black]
+line_length = 119
+
+[tool.ruff]
+line-length = 320  # TODO
+select = [
+    "E",      # Pycodestyle Errors (Structural/Fundamental Errors like bad indentation)
+    "F",      # Pyflakes (Core Errors: Unused imports, undefined names)
+    "B",      # Flake8-Bugbear (Logic Bugs: Variable shadowing, dangerous default arguments)
+    "UP",     # pyupgrade (Modernization and compatibility issues)
+]
+ignore = [
+    "E402", # module-import-not-at-top-of-file
+    "E501", # Line too long # TODO handle it later
+]
+
+[tool.pytest.ini_options]
+# durations=0 will display all tests execution time, sorted in ascending order starting from from the slowest one.
+# -vv will also display tests with duration = 0.00s
+addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
+testpaths = ["./tests"]  # must be an explicit path to avoid importing another "tests" module
+# directories to ignore when discovering tests
+norecursedirs = [
+    "external",
+    "examples",
+    "docs",
+    "scripts",
+    "tools",
+    "tutorials",
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "venv",
+    "{arch}",
+]
+asyncio_mode = "auto"
+# NOTE: we do not use pytest markers currently. tests are mainly separated by folders, i.e. tests/fast vs tests/e2e

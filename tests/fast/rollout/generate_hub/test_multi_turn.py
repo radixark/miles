@@ -1,0 +1,765 @@
+import re
+from copy import deepcopy
+from dataclasses import dataclass, replace
+from itertools import groupby
+
+import numpy as np
+import pybase64
+import pytest
+from tests.ci.ci_register import register_cpu_ci
+from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
+
+
+from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
+from miles.utils.processing_utils import load_tokenizer
+from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
+from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
+from miles.utils.types import Sample
+
+register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=[])
+
+_ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
+
+
+def is_agentic_variant(variant: str) -> bool:
+    return variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples")
+
+
+# ------------------------------------ fixtures and consts ----------------------------------------
+
+
+MODEL_NAME = "Qwen/Qwen3-0.6B"
+DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
+TOKENIZER = load_tokenizer(MODEL_NAME, trust_remote_code=True)
+
+
+@pytest.fixture(
+    params=[
+        "multi_turn_single_sample",
+        "multi_turn_multi_samples",
+        "agentic_tool_call_single_sample",
+        "agentic_tool_call_multi_samples",
+    ]
+)
+def variant(request):
+    return request.param
+
+
+@dataclass(frozen=True)
+class SampleParsedChunk:
+    tokens_decoded_str: str
+    loss_mask_value: int
+    rollout_log_probs: list[float]
+
+
+@dataclass
+class ExpectedSampleInfo:
+    chunks: list[SampleParsedChunk]
+    partial_sample: Sample
+
+
+def token_len(text: str) -> int:
+    return len(TOKENIZER(text, add_special_tokens=False)["input_ids"])
+
+
+def expected_chunk(text: str, loss_mask: int) -> SampleParsedChunk:
+    n = token_len(text)
+    log_probs = [-1 / 128 * i for i in range(n)] if loss_mask else [0.0] * n
+    return SampleParsedChunk(text, loss_mask, log_probs)
+
+
+def parse_sample_into_chunks(sample: Sample, tokenizer) -> list[SampleParsedChunk]:
+    prompt_len = len(sample.tokens) - sample.response_length
+    response_tokens = sample.tokens[prompt_len:]
+    loss_mask = sample.loss_mask or []
+    log_probs = sample.rollout_log_probs or []
+
+    chunks = []
+    idx = 0
+    for mask_val, group in groupby(loss_mask):
+        group_len = len(list(group))
+        sli = slice(idx, idx + group_len)
+        chunks.append(
+            SampleParsedChunk(
+                tokens_decoded_str=tokenizer.decode(response_tokens[sli]),
+                loss_mask_value=mask_val,
+                rollout_log_probs=log_probs[sli],
+            )
+        )
+        idx += group_len
+    return chunks
+
+
+def expected_partial_sample(
+    *,
+    prompt: list[dict],
+    response: str,
+    response_length: int,
+    status: Sample.Status = Sample.Status.COMPLETED,
+) -> Sample:
+    return Sample(
+        prompt=prompt,
+        response=response,
+        response_length=response_length,
+        status=status,
+        tokens=[],
+        loss_mask=[],
+        rollout_log_probs=[],
+        weight_versions=[],
+        spec_info=Sample.SpecInfo(),
+        prefix_cache_info=Sample.PrefixCacheInfo(),
+    )
+
+
+def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleInfo]):
+    actual = listify(actual)
+    assert len(actual) == len(expected)
+
+    for actual_item, expected_item in zip(actual, expected, strict=True):
+        actual_chunks = parse_sample_into_chunks(actual_item, TOKENIZER)
+        assert actual_chunks == expected_item.chunks
+
+        actual_partial = replace(
+            deepcopy(actual_item),
+            tokens=[],
+            loss_mask=[],
+            rollout_log_probs=[],
+            prefix_cache_info=Sample.PrefixCacheInfo(),
+        )
+        # Session server populates diagnostic metadata (token IDs,
+        # trim config, mismatch analysis) that varies with mock setup.
+        # Strip these before comparing sample structure.
+        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens"):
+            actual_partial.metadata.pop(key, None)
+        assert actual_partial == expected_item.partial_sample
+
+
+def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_params: dict | None = None):
+    return run_generate(env, sample, sampling_params, variant=variant)
+
+
+def expected_request(
+    input_ids: list[int],
+    sampling_params: dict | None = None,
+    *,
+    return_routed_experts: bool = False,
+    return_indexer_topk: bool = False,
+) -> dict:
+    return {
+        "input_ids": input_ids,
+        "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
+        "return_logprob": True,
+        "return_routed_experts": return_routed_experts,
+        "return_indexer_topk": return_indexer_topk,
+    }
+
+
+def expected_openai_request(messages: list[dict], **extra) -> dict:
+    return {
+        "messages": messages,
+        "model": "default",
+        "tools": SAMPLE_TOOLS,
+        # Injected by the session route for TITO token tracking
+        "logprobs": True,
+        "return_meta_info": True,
+        "no_stop_trim": False,
+        **extra,
+    }
+
+
+_SESSION_PRETOKENIZED_KEYS = {"input_ids"}
+
+
+def _strip_pretokenized(requests: list[dict]) -> list[dict]:
+    """Strip session-injected pretokenized fields for deterministic comparison."""
+    return [{k: v for k, v in r.items() if k not in _SESSION_PRETOKENIZED_KEYS} for r in requests]
+
+
+SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
+SINGLE_TURN_RESPONSE = "The answer is 2."
+_SINGLE_TURN_PROMPT_TEXT = TOKENIZER.apply_chat_template(
+    SINGLE_TURN_PROMPT, tokenize=False, add_generation_prompt=True, tools=SAMPLE_TOOLS
+)
+SINGLE_TURN_PROMPT_TOKEN_IDS = TOKENIZER(_SINGLE_TURN_PROMPT_TEXT, add_special_tokens=False)["input_ids"]
+SINGLE_TURN_PROMPT_TOKEN_LEN = len(SINGLE_TURN_PROMPT_TOKEN_IDS)
+
+
+# ------------------------------------ tests ----------------------------------------
+
+
+class TestBasicMultiTurn:
+    def test_single_turn_no_tool_call(self, variant, generation_env):
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=SINGLE_TURN_RESPONSE, finish_reason="stop"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [expected_openai_request(SINGLE_TURN_PROMPT)]
+        else:
+            assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
+        verify_samples(
+            result.sample,
+            [
+                ExpectedSampleInfo(
+                    chunks=[
+                        SampleParsedChunk(
+                            tokens_decoded_str=SINGLE_TURN_RESPONSE,
+                            loss_mask_value=1,
+                            rollout_log_probs=[-1 / 128 * i for i in range(6)],
+                        ),
+                    ],
+                    partial_sample=expected_partial_sample(
+                        prompt=SINGLE_TURN_PROMPT, response=SINGLE_TURN_RESPONSE, response_length=6
+                    ),
+                ),
+            ],
+        )
+
+    def test_two_turns_with_tool_call(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        S = TwoTurnStub
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [
+                expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN),
+                expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT),
+            ]
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS),
+            ]
+        if variant in ("multi_turn_single_sample", "agentic_tool_call_single_sample"):
+            full_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[
+                        expected_chunk(S.FIRST_RESPONSE, 1),
+                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                        expected_chunk(S.SECOND_RESPONSE, 1),
+                    ],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=full_response,
+                        response_length=token_len(full_response),
+                    ),
+                ),
+            ]
+        else:
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE),
+                    ),
+                ),
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.SECOND_RESPONSE,
+                        response_length=token_len(S.SECOND_RESPONSE),
+                    ),
+                ),
+            ]
+        verify_samples(result.sample, expected)
+
+
+class TestExitConditions:
+    def test_partial_rollout_not_supported(self, variant, generation_env):
+        if is_agentic_variant(variant):
+            pytest.skip("agentic_tool_call does not check partial_rollout flag")
+        generation_env.args.partial_rollout = True
+
+        with pytest.raises(AssertionError, match="Partial rollout is not supported"):
+            _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+    def test_abort_preserves_content(self, variant, generation_env):
+        if is_agentic_variant(variant):
+            pytest.skip("agentic_tool_call does not handle abort finish_reason")
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=SINGLE_TURN_RESPONSE, finish_reason="abort"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+        assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
+        verify_samples(
+            result.sample,
+            [
+                ExpectedSampleInfo(
+                    chunks=[
+                        SampleParsedChunk(
+                            tokens_decoded_str=SINGLE_TURN_RESPONSE,
+                            loss_mask_value=1,
+                            rollout_log_probs=[-1 / 128 * i for i in range(6)],
+                        ),
+                    ],
+                    partial_sample=expected_partial_sample(
+                        prompt=SINGLE_TURN_PROMPT,
+                        response=SINGLE_TURN_RESPONSE,
+                        response_length=6,
+                        status=Sample.Status.ABORTED,
+                    ),
+                ),
+            ],
+        )
+
+    def test_finish_reason_length_exits_and_preserves_content(self, variant, generation_env):
+        S = TwoTurnStub
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(text=S.FIRST_RESPONSE, finish_reason="length")
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
+        else:
+            assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
+        verify_samples(
+            result.sample,
+            [
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE),
+                        status=Sample.Status.TRUNCATED,
+                    ),
+                ),
+            ],
+        )
+
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"generate_max_turns": 1}}], indirect=True)
+    def test_max_turns_reached(self, variant, generation_env):
+        S = TwoTurnStub
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(text=S.FIRST_RESPONSE, finish_reason="stop")
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
+        else:
+            assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
+        if variant == "multi_turn_single_sample":
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[
+                        expected_chunk(S.FIRST_RESPONSE, 1),
+                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                    ],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE),
+                    ),
+                ),
+            ]
+        else:
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE),
+                    ),
+                ),
+            ]
+        verify_samples(result.sample, expected)
+
+
+class TestRespectMaxContextLen:
+    @pytest.mark.parametrize(
+        "generation_env", [{"args_kwargs": {"rollout_max_context_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
+    )
+    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+        if is_agentic_variant(variant):
+            pytest.skip("TODO: implement")
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+        assert result.requests == []
+        if variant == "multi_turn_single_sample":
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[],
+                    partial_sample=expected_partial_sample(
+                        prompt=SINGLE_TURN_PROMPT, response="", response_length=0, status=Sample.Status.TRUNCATED
+                    ),
+                )
+            ]
+        else:
+            expected = []
+        verify_samples(result.sample, expected)
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [
+            {
+                "args_kwargs": {
+                    "rollout_max_context_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS)
+                    + token_len(TwoTurnStub.FIRST_RESPONSE)
+                    + token_len(TwoTurnStub.FIRST_TOOL_RESPONSE)
+                }
+            }
+        ],
+        indirect=True,
+    )
+    def test_second_turn_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+        if is_agentic_variant(variant):
+            pytest.skip("TODO: implement")
+        S = TwoTurnStub
+        generation_env.mock_server.process_fn = S.process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
+        if variant == "multi_turn_single_sample":
+            partial_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[
+                        expected_chunk(S.FIRST_RESPONSE, 1),
+                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                    ],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=partial_response,
+                        response_length=token_len(partial_response),
+                        status=Sample.Status.TRUNCATED,
+                    ),
+                ),
+            ]
+        else:
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE),
+                        status=Sample.Status.TRUNCATED,
+                    ),
+                ),
+            ]
+        verify_samples(result.sample, expected)
+
+    @pytest.mark.parametrize(
+        "generation_env,expected_max_new_tokens",
+        [
+            (
+                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
+                10,
+            ),
+            (
+                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
+                64,
+            ),
+        ],
+        indirect=["generation_env"],
+    )
+    def test_second_turn_adjusts_max_new_tokens(self, variant, generation_env, expected_max_new_tokens):
+        if is_agentic_variant(variant):
+            pytest.skip("TODO: implement")
+        S = TwoTurnStub
+        generation_env.mock_server.process_fn = S.process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        assert len(result.requests) >= 2
+        assert result.requests[1]["sampling_params"]["max_new_tokens"] == expected_max_new_tokens
+        assert result.requests[1]["sampling_params"]["temperature"] == DEFAULT_SAMPLING_PARAMS["temperature"]
+
+
+class TestThreeTurn:
+    """Need to test 3-turn case besides 2-turn, because e.g. merge_samples may behave differently."""
+
+    def test_three_turns_with_sequential_tool_calls(self, variant, generation_env):
+        generation_env.mock_server.process_fn = ThreeTurnStub.process_fn
+
+        S = ThreeTurnStub
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [
+                expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN),
+                expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT),
+                expected_openai_request(S.OPENAI_MESSAGES_THIRD_TURN_FROM_CLIENT),
+            ]
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS),
+                expected_request(S.THIRD_PROMPT_TOKEN_IDS),
+            ]
+        if variant in ("multi_turn_single_sample", "agentic_tool_call_single_sample"):
+            full_response = (
+                S.FIRST_RESPONSE
+                + S.FIRST_TOOL_RESPONSE
+                + S.SECOND_RESPONSE
+                + S.SECOND_TOOL_RESPONSE
+                + S.THIRD_RESPONSE
+            )
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[
+                        expected_chunk(S.FIRST_RESPONSE, 1),
+                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                        expected_chunk(S.SECOND_RESPONSE, 1),
+                        expected_chunk(S.SECOND_TOOL_RESPONSE, 0),
+                        expected_chunk(S.THIRD_RESPONSE, 1),
+                    ],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=full_response,
+                        response_length=token_len(full_response),
+                    ),
+                ),
+            ]
+        else:
+            expected = [
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.FIRST_RESPONSE,
+                        response_length=token_len(S.FIRST_RESPONSE),
+                    ),
+                ),
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.SECOND_RESPONSE,
+                        response_length=token_len(S.SECOND_RESPONSE),
+                    ),
+                ),
+                ExpectedSampleInfo(
+                    chunks=[expected_chunk(S.THIRD_RESPONSE, 1)],
+                    partial_sample=expected_partial_sample(
+                        prompt=S.PROMPT,
+                        response=S.THIRD_RESPONSE,
+                        response_length=token_len(S.THIRD_RESPONSE),
+                    ),
+                ),
+            ]
+        verify_samples(result.sample, expected)
+
+
+class TestRoutedExpertsMultiTurn:
+    @pytest.mark.parametrize(
+        "generation_env",
+        [
+            {
+                "args_kwargs": {
+                    "use_rollout_routing_replay": True,
+                }
+            }
+        ],
+        indirect=True,
+    )
+    def test_two_turns_routed_experts(self, variant, generation_env):
+        S = TwoTurnStub
+        num_layers, moe_router_topk = 2, 4
+        generation_env.args.num_layers = num_layers
+        generation_env.args.moe_router_topk = moe_router_topk
+        if is_agentic_variant(variant):
+            tito = get_tito_tokenizer(
+                TOKENIZER,
+                # Note: tokenizer_type needs to match MODEL_NAME
+                tokenizer_type=TITOTokenizerType.QWEN3,
+                allowed_append_roles=["tool"],
+            )
+            first_prompt_token_ids = tito.render_messages(
+                S.OPENAI_MESSAGES_FIRST_TURN,
+                tools=SAMPLE_TOOLS,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+            second_prompt_token_ids = tito.render_messages(
+                S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
+                tools=SAMPLE_TOOLS,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+        else:
+            first_prompt_token_ids = S.FIRST_PROMPT_TOKEN_IDS
+            second_prompt_token_ids = S.SECOND_PROMPT_TOKEN_IDS
+
+        def make_routed_experts(prompt_token_ids, response_text):
+            total_tokens = len(prompt_token_ids) + token_len(response_text)
+            routed_experts_len = total_tokens - 1
+            return np.arange(routed_experts_len * num_layers * moe_router_topk, dtype=np.int32).reshape(
+                routed_experts_len, num_layers, moe_router_topk
+            )
+
+        first_routed_experts = make_routed_experts(first_prompt_token_ids, S.FIRST_RESPONSE)
+        second_routed_experts = make_routed_experts(second_prompt_token_ids, S.SECOND_RESPONSE)
+
+        def process_fn(prompt: str) -> ProcessResult:
+            if prompt == S.FIRST_PROMPT:
+                text, routed_experts = S.FIRST_RESPONSE, first_routed_experts
+            elif prompt == S.SECOND_PROMPT:
+                text, routed_experts = S.SECOND_RESPONSE, second_routed_experts
+            else:
+                raise ValueError(f"Unexpected prompt: {prompt}")
+            return ProcessResult(
+                text=text,
+                finish_reason="stop",
+                meta_info=ProcessResultMetaInfo(
+                    routed_experts=pybase64.b64encode(routed_experts.tobytes()).decode("ascii")
+                ),
+            )
+
+        generation_env.mock_server.process_fn = process_fn
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT), DEFAULT_SAMPLING_PARAMS)
+
+        if is_agentic_variant(variant):
+            assert len(result.requests) == 2
+            assert result.requests[0]["messages"] == S.OPENAI_MESSAGES_FIRST_TURN
+            assert result.requests[1]["messages"] == S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT
+            for req in result.requests:
+                assert req["logprobs"] is True
+                assert req["return_meta_info"] is True
+                assert req["no_stop_trim"] is False
+                assert req["return_routed_experts"] is True
+                assert "input_ids" in req
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS, return_routed_experts=True),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS, return_routed_experts=True),
+            ]
+
+        sample = result.sample[-1] if isinstance(result.sample, list) else result.sample
+        expected_second_turn_log_probs = [-1 / 128 * i for i in range(token_len(S.SECOND_RESPONSE))]
+        assert sample.rollout_log_probs is not None
+        assert sample.rollout_log_probs[-len(expected_second_turn_log_probs) :] == expected_second_turn_log_probs
+        assert sample.rollout_routed_experts is not None
+        assert sample.rollout_routed_experts.shape == second_routed_experts.shape
+        np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)
+        assert len(sample.tokens) - 1 == second_routed_experts.shape[0]
+
+
+_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"]
+_AGENT_METADATA = {"reward": 1.0, "exit_status": "Submitted", "eval_report": {"passed": True}}
+
+
+class TestAgentMetadata:
+    """Tests specific to agentic_tool_call: agent function returning dict | None → metadata merge."""
+
+    @pytest.fixture(params=_AGENTIC_VARIANTS)
+    def variant(self, request):
+        return request.param
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"agentic_return_metadata": _AGENT_METADATA}}],
+        indirect=True,
+    )
+    def test_agent_metadata_merged_into_samples(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+        samples = listify(result.sample)
+        for s in samples:
+            for key, value in _AGENT_METADATA.items():
+                assert key in s.metadata, f"metadata should contain key '{key}'"
+                assert s.metadata[key] == value, f"metadata['{key}'] should be {value}, got {s.metadata[key]}"
+
+    def test_tito_session_mismatch_present_in_metadata(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+        sample = result.sample if not isinstance(result.sample, list) else result.sample[-1]
+        assert "tito_session_mismatch" in sample.metadata, "tito_session_mismatch should be present in sample metadata"
+        mismatches = sample.metadata["tito_session_mismatch"]
+        assert isinstance(mismatches, list)
+        for m in mismatches:
+            assert {"type", "segment_index", "expected_text", "actual_text", "detail"} == set(m.keys())
+
+    def test_agent_returns_none_metadata_unchanged(self, variant, generation_env):
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+        sample = make_sample(prompt=TwoTurnStub.PROMPT)
+        sample.metadata = {"instance_id": "test-123"}
+
+        result = _run_generate(variant, generation_env, sample)
+
+        samples = listify(result.sample)
+        for s in samples:
+            assert s.metadata.get("instance_id") == "test-123"
+            assert "reward" not in s.metadata
+
+    def test_session_server_identity_forwarded_to_agent_metadata(self, variant, generation_env):
+        from miles.utils.test_utils import mock_tools
+
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        _SESSION_KEYS = ("session_server_id", "session_server_instance_id")
+
+        def _echo_session(metadata=None):
+            metadata = metadata or {}
+            return {k: metadata[k] for k in _SESSION_KEYS if k in metadata}
+
+        mock_tools.AGENTIC_RETURN_METADATA = _echo_session
+        try:
+            result = _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+        finally:
+            mock_tools.AGENTIC_RETURN_METADATA = None
+
+        samples = listify(result.sample)
+        (session_server_port,) = generation_env.args.session_server_ports
+        expected_session_server_id = f"127.0.0.1:{session_server_port}"
+        for s in samples:
+            assert s.metadata["session_server_id"] == expected_session_server_id
+            assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
+
+
+class TestAgentNoRecords:
+    """When agent makes no model calls, generate should return an ABORTED sample."""
+
+    @pytest.mark.parametrize("agentic_variant", _AGENTIC_VARIANTS)
+    def test_no_records_returns_aborted(self, agentic_variant):
+        from tests.fast.fixtures.generation_fixtures import (
+            GenerateEnv,
+            extra_argv_for_variant,
+            make_args,
+            with_session_server,
+        )
+        from miles.utils.http_utils import find_available_port
+        from miles.utils.misc import SingletonMeta
+        from miles.utils.test_utils.mock_sglang_server import with_mock_server
+
+        SingletonMeta.clear_all_instances()
+
+        with with_mock_server(
+            model_name=MODEL_NAME,
+            process_fn=lambda _: ProcessResult(text="unused", finish_reason="stop"),
+        ) as mock_server:
+            session_port = find_available_port(31000)
+            noop_argv = extra_argv_for_variant(
+                agentic_variant,
+                custom_agent_function_path="miles.utils.test_utils.mock_tools.run_agentic_noop",
+            )
+            args = make_args(
+                variant=agentic_variant,
+                router_port=session_port,
+                extra_argv=noop_argv,
+            )
+            with with_session_server(mock_server.url, args, port=session_port):
+                args.session_server_ip = "127.0.0.1"
+                args.session_server_ports = [session_port]
+                env = GenerateEnv(args=args, mock_server=mock_server)
+                result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+        SingletonMeta.clear_all_instances()
+
+        samples = listify(result.sample)
+        assert len(samples) == 1
+        assert samples[0].status == Sample.Status.ABORTED

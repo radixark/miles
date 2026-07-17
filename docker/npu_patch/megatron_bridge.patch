@@ -1,0 +1,55 @@
+diff --git a/src/megatron/bridge/models/conversion/param_mapping.py b/src/megatron/bridge/models/conversion/param_mapping.py
+index a0421273..7f9203ab 100644
+--- a/src/megatron/bridge/models/conversion/param_mapping.py
++++ b/src/megatron/bridge/models/conversion/param_mapping.py
+@@ -1097,15 +1097,19 @@ class AutoMapping(MegatronParamMapping[torch.Tensor]):
+             "LinearCrossEntropyModule",
+             "TEColumnParallelLinear",
+             "TELayerNormColumnParallelLinear",
++            "MindSpeedTELayerNormColumnParallelLinear",
+             "TEColumnParallelGroupedLinear",
++            "MindSpeedTEColumnParallelGroupedLinear",
+             "VocabParallelEmbedding",
+             "DotProductAttention",  # for attention sink only
+             "TEDotProductAttention",  # for attention sink only
++            "MindSpeedTEDotProductAttention",
+         },
+         "row": {
+             "RowParallelLinear",
+             "TERowParallelLinear",
+             "TERowParallelGroupedLinear",
++            "MindSpeedTERowParallelGroupedLinear",
+         },
+         "replicated": {
+             # Normalization layers
+@@ -1176,7 +1180,7 @@ class AutoMapping(MegatronParamMapping[torch.Tensor]):
+         # Handle fused modules like TELayerNormColumnParallelLinear
+         # These modules have both column-parallel weights (weight, bias)
+         # and replicated layer norm weights (layer_norm_weight, layer_norm_bias)
+-        if module_type == "TELayerNormColumnParallelLinear":
++        if module_type == "TELayerNormColumnParallelLinear" or module_type == "MindSpeedTELayerNormColumnParallelLinear":
+             # Check the actual parameter name to determine the correct parallelism type
+             if self.megatron_param and (
+                 self.megatron_param.endswith("layer_norm_weight") or self.megatron_param.endswith("layer_norm_bias")
+@@ -1207,7 +1211,7 @@ class AutoMapping(MegatronParamMapping[torch.Tensor]):
+             return "replicated"
+ 
+         # Check parallel_mode for TELinear
+-        if module_type == "TELinear":
++        if module_type == "TELinear" or module_type == "MindSpeedTELinear":
+             if module.parallel_mode == "column":
+                 return "column"
+             elif module.parallel_mode == "row":
+diff --git a/src/megatron/bridge/peft/utils.py b/src/megatron/bridge/peft/utils.py
+index 1ca5b18b..3d8ec12a 100644
+--- a/src/megatron/bridge/peft/utils.py
++++ b/src/megatron/bridge/peft/utils.py
+@@ -62,7 +62,7 @@ HAVE_TE = all(
+     )
+ )
+ 
+-MixedFusedLayerNorm, HAVE_APEX = safe_import_from("apex.normalization.fused_layer_norm", "MixedFusedLayerNorm")
++# MixedFusedLayerNorm, HAVE_APEX = safe_import_from("apex.normalization.fused_layer_norm", "MixedFusedLayerNorm")
+ 
+ TECL = (TEColumnParallelLinear, TELayerNormColumnParallelLinear, TEColumnParallelGroupedLinear)
+ TERL = (TERowParallelLinear, TERowParallelGroupedLinear)

@@ -1,0 +1,20 @@
+diff --git a/megatron/legacy/fused_kernels/__init__.py b/megatron/legacy/fused_kernels/__init__.py
+--- a/megatron/legacy/fused_kernels/__init__.py
++++ b/megatron/legacy/fused_kernels/__init__.py
+@@ -3,6 +3,7 @@
+ import os
+ import pathlib
+ import subprocess
++import torch
+ 
+ from torch.utils import cpp_extension
+ 
+@@ -15,6 +16,8 @@
+ 
+ 
+ def load(args):
++    if not torch.version.cuda:
++        return
+ 
+     # Check if cuda 11 is installed for compute capability 8.0
+     cc_flag = []

@@ -1,0 +1,238 @@
+# doc-dev: docs/ci/00-stage.md
+# doc-dev: docs/ci/01-label.md
+name: PR Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  schedule:
+    # Nightly CI on main runs every enabled tag except ft-long, with fast-fail disabled.
+    # 15:00 UTC = 08:00 PDT / 07:00 PST (cron is UTC, no DST).
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+    inputs:
+      infinite_run:
+        description: 'Run training infinitely'
+        required: false
+        type: boolean
+        default: false
+      ci_megatron_pr:
+        description: 'Megatron-LM branch/commit (default: miles-main)'
+        required: false
+        type: string
+        default: 'miles-main'
+      ci_sglang_pr:
+        description: 'SGLang branch/commit (default: sglang-miles)'
+        required: false
+        type: string
+        default: 'sglang-miles'
+      ci_image_tag:
+        description: 'Miles Docker image tag (default: dev)'
+        required: false
+        type: string
+        default: 'dev'
+
+permissions:
+  contents: read
+
+concurrency:
+  # PR updates supersede their previous run; distinct cron schedules and
+  # manual operations must not cancel one another on the default branch.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
+  cancel-in-progress: true
+
+# `resolve-ci-policy` passes trigger-specific facts to `ci_policy.py`, which
+# owns the explicit cadence, raw labels, test scope, and fast-fail policy.
+# `run_suite.py` consumes that shared policy; GPU jobs consume the shared
+# bypass output for their cross-stage gate.
+#
+# Trigger type is not policy: the current nightly cron is mapped by its exact
+# expression, while workflow_dispatch remains a regular manual operation with
+# no implicit domain scope.
+
+jobs:
+  resolve-ci-policy:
+    runs-on: ubuntu-latest
+    outputs:
+      cadence: ${{ steps.resolve.outputs.cadence }}
+      raw_labels: ${{ steps.resolve.outputs.raw_labels }}
+      bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve CI policy inputs
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule || '' }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python -m tests.ci.ci_policy
+
+  resolve-ci-image:
+    runs-on: ubuntu-latest
+    outputs:
+      container_image: ${{ steps.resolve.outputs.container_image }}
+    steps:
+      - name: Resolve CI image
+        id: resolve
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+        run: |
+          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          if [ -n "$PR_BODY" ]; then
+            PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
+            [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
+          fi
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="dev"
+          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
+            exit 1
+          fi
+          echo "container_image=radixark/miles:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
+
+  # Stage A: CPU-only fast tests (always runs on PR)
+  # Runs on GitHub-hosted ubuntu-latest (cpu_runner: true) to avoid
+  # occupying GPU-fleet runner slots.
+  stage-a-cpu:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2, 3]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      cpu_runner: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+    secrets: inherit
+
+  # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
+  # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
+  stage-b-cpu:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      cpu_runner: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+    secrets: inherit
+
+  stage-b-2-gpu-h200:
+    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "2gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+    secrets: inherit
+
+  stage-c-8-gpu-h100:
+    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h100", "8gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+    secrets: inherit
+
+  stage-c-8-gpu-h200:
+    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "8gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+    secrets: inherit
+
+  stage-c-4-gpu-h200:
+    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "4gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+    secrets: inherit
+
+  stage-c-2-gpu-h200:
+    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "2gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+    secrets: inherit
