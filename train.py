@@ -54,6 +54,7 @@ async def train(args):
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,
         )
+        await rollout_manager.check_weights.remote(action="clear_snapshot")
 
     if args.offload_rollout:
         await rollout_manager.onload_kv.remote()

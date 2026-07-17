@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch
@@ -27,6 +28,25 @@ class TestRunImplValidation:
                 _make_run_args(
                     tp=2,
                     routing_replay_dump_path=Path("/dump"),
+                )
+            )
+
+    @patch("miles.utils.debug_utils.run_megatron.cli.commands.run.resolve_megatron_path")
+    @patch("miles.utils.debug_utils.run_megatron.cli.commands.run.exec_command")
+    def test_token_ids_file_length_must_match_seq_length(
+        self,
+        mock_exec: object,
+        mock_resolve_megatron: object,
+        tmp_path: Path,
+    ) -> None:
+        del mock_exec, mock_resolve_megatron
+        token_ids_file = tmp_path / "tokens.json"
+        token_ids_file.write_text("[1, 2, 3]")
+        with pytest.raises(ValueError, match="--seq-length is 4"):
+            run_impl(
+                _make_run_args(
+                    token_ids_file=token_ids_file,
+                    seq_length=4,
                 )
             )
 
@@ -90,6 +110,13 @@ class TestRunImplExecCommand:
         cmd = self.mock_exec.call_args[0][0]
         assert "--script-role critic" in cmd
         assert "--script-top-k 5" in cmd
+
+    def test_cmd_uses_supplied_token_ids_file(self, tmp_path: Path) -> None:
+        token_ids_file = tmp_path / "tokens.json"
+        token_ids_file.write_text(json.dumps(list(range(137))))
+        run_impl(_make_run_args(token_ids_file=token_ids_file))
+        cmd = self.mock_exec.call_args[0][0]
+        assert f"--script-token-ids-file {token_ids_file}" in cmd
 
     def test_routing_replay_nproc1_ok(self) -> None:
         run_impl(

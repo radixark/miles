@@ -1,0 +1,58 @@
+patches:
+  - target: sglang.srt.layers.attention.linear.kda_backend.KDAAttnBackend.forward_extend
+    edits:
+      - match: |
+          v = v.unflatten(-1, (-1, layer.head_v_dim)).unsqueeze(0)  # n (h d) -> 1 n h d
+        append: |
+          dumper.dump("kda_q", q, dims="1 t heads[tp] d")
+          dumper.dump("kda_k", k, dims="1 t heads[tp] d")
+          dumper.dump("kda_v", v, dims="1 t heads[tp] d")
+          dumper.dump("kda_forget_gate", a, dims="1 t heads[tp] d")
+          dumper.dump("kda_beta", b, dims="1 t heads[tp]")
+      - match: |
+          if track_ssm:
+        prepend: |
+          dumper.dump("kda_core_output", core_attn_out, dims="1 t heads[tp] d")
+  - target: sglang.srt.models.kimi_k3.KimiK3DeltaAttention.forward
+    edits:
+      - match: |
+          core_attn_out = self.o_norm(core_attn_out, norm_gate)
+        append: |
+          dumper.dump("kda_gated_norm_output", core_attn_out, dims="1 t heads[tp] d")
+  - target: sglang.srt.models.kimi_k3.KimiK3DecoderLayer._forward_attn_residual_clean
+    edits:
+      - match: |
+          prefix_sum = hidden_states
+        append: |
+          dumper.dump("layer_input", prefix_sum, dims="t h # tp:replicated")
+      - match: |
+          if self.is_block_write_layer:
+              block_residual[:, self.block_write_idx, :].copy_(prefix_sum)
+        prepend: |
+          dumper.dump("attention_input", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          attn_out = self._run_self_attn(
+              hidden_states, positions, forward_batch, zero_allocator
+          )
+        append: |
+          dumper.dump("attention_output", attn_out, dims="t h # tp:replicated")
+      - match: |
+          # ---- MLP + accumulate ----
+        prepend: |
+          dumper.dump("mlp_input", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          prefix_sum = self.mlp(hidden_states, residual=prefix_sum)
+        append: |
+          dumper.dump("layer_output", prefix_sum, dims="t h # tp:replicated")
+  - target: sglang.srt.models.kimi_k3.KimiK3LinearModel.forward
+    edits:
+      - match: |
+          return hidden_states
+        prepend: |
+          dumper.dump("final_hidden_states", hidden_states, dims="t h # tp:replicated")
+  - target: sglang.srt.layers.logits_processor.LogitsProcessor._get_logits
+    edits:
+      - match: |
+          logits = self._copy_logits_to_buffer(logits, logits_metadata)
+        append: |
+          dumper.dump("logits", logits, dims="t vocab # tp:replicated")

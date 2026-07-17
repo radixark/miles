@@ -145,7 +145,7 @@ def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) ->
         )
 
     for m in model:
-        m.train()
+        m.train(script.run_backward)
     return model
 
 

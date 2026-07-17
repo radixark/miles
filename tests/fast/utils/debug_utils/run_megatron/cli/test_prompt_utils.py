@@ -12,6 +12,7 @@ from miles.utils.debug_utils.run_megatron.cli.prompt_utils import (
     _build_math_sequence,
     _resolve_raw_text,
     generate_token_ids,
+    load_token_ids,
     write_token_ids_to_tmpfile,
 )
 
@@ -92,6 +93,25 @@ class TestWriteTokenIdsToTmpfile:
         path = write_token_ids_to_tmpfile([1, 2, 3])
         assert path.name.startswith("run_megatron_token_ids_")
         assert path.name.endswith(".json")
+
+
+class TestLoadTokenIds:
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        path = tmp_path / "tokens.json"
+        path.write_text("[10, 20, 30]")
+        assert load_token_ids(path, seq_length=3) == [10, 20, 30]
+
+    def test_rejects_non_integer_token(self, tmp_path: Path) -> None:
+        path = tmp_path / "tokens.json"
+        path.write_text('[10, "20"]')
+        with pytest.raises(ValueError, match="list of integer token IDs"):
+            load_token_ids(path, seq_length=2)
+
+    def test_rejects_length_mismatch(self, tmp_path: Path) -> None:
+        path = tmp_path / "tokens.json"
+        path.write_text("[10, 20]")
+        with pytest.raises(ValueError, match="--seq-length is 3"):
+            load_token_ids(path, seq_length=3)
 
 
 class TestGenerateTokenIds:

@@ -60,6 +60,15 @@ def write_token_ids_to_tmpfile(token_ids: list[int]) -> Path:
     return Path(tmp.name)
 
 
+def load_token_ids(path: Path, seq_length: int) -> list[int]:
+    token_ids = json.loads(path.read_text())
+    if not isinstance(token_ids, list) or not all(type(token_id) is int for token_id in token_ids):
+        raise ValueError(f"{path} must contain a JSON list of integer token IDs")
+    if len(token_ids) != seq_length:
+        raise ValueError(f"Token IDs file contains {len(token_ids)} tokens, but --seq-length is {seq_length}")
+    return token_ids
+
+
 def _resolve_raw_text(prompt: PromptConfig) -> str:
     if prompt.mode == "math":
         return _build_math_sequence(target_char_length=prompt.seq_length * 16)

@@ -1,0 +1,60 @@
+patches:
+  - target: miles_plugins.models.kimi_k3.layers.KimiK3Attention._forward_kda
+    edits:
+      - match: |
+          beta = self.b_proj(x).float().sigmoid()
+        append: |
+          dumper.dump("kda_q", q, dims="1 t heads d # tp:replicated")
+          dumper.dump("kda_k", k, dims="1 t heads d # tp:replicated")
+          dumper.dump("kda_v", v, dims="1 t heads d # tp:replicated")
+          dumper.dump("kda_forget_gate", forget_gate, dims="1 t heads d # tp:replicated")
+          dumper.dump("kda_beta", beta, dims="1 t heads # tp:replicated")
+      - match: |
+          gate = rearrange(self.g_proj(x), "b s (h d) -> b s h d", h=self.num_heads)
+        prepend: |
+          dumper.dump("kda_core_output", output, dims="1 t heads d # tp:replicated")
+      - match: |
+          output = output.view(*gate.shape).flatten(-2)
+        prepend: |
+          dumper.dump("kda_gated_norm_output", output.view(*gate.shape), dims="1 t heads d # tp:replicated")
+  - target: miles_plugins.models.kimi_k3.layers.KimiK3TransformerLayer.forward
+    edits:
+      - match: |
+          prefix_sum = hidden_states
+        append: |
+          dumper.dump("layer_input", prefix_sum, dims="t 1 h # tp:replicated")
+      - match: |
+          is_block_write_layer = layer_idx % self.attn_res_block_size == 0
+        prepend: |
+          dumper.dump("attention_input", attention_input, dims="t 1 h # tp:replicated")
+      - match: |
+          prefix_sum = attention_output if is_block_write_layer else prefix_sum + attention_output
+        prepend: |
+          dumper.dump("attention_output", attention_output, dims="t 1 h # tp:replicated")
+      - match: |
+          mlp_kwargs = {"padding_mask": padding_mask}
+        prepend: |
+          dumper.dump("mlp_input", mlp_input, dims="t 1 h # tp:replicated")
+      - match: |
+          prefix_sum = prefix_sum + mlp_output
+        prepend: |
+          dumper.dump("mlp_output", mlp_output, dims="t 1 h # tp:replicated")
+      - match: |
+          prefix_sum = prefix_sum + mlp_output
+        append: |
+          dumper.dump("layer_output", prefix_sum, dims="t 1 h # tp:replicated")
+  - target: megatron.core.transformer.transformer_block.TransformerBlock.forward
+    edits:
+      - match: |
+          hidden_states = self.final_layernorm(hidden_states)
+        append: |
+          dumper.dump("final_hidden_states", hidden_states, dims="t 1 h # tp:replicated")
+  - target: megatron.core.models.gpt.gpt_model.GPTModel._postprocess
+    edits:
+      - match: |
+          logits, _ = self.output_layer(
+              hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
+          )
+          logits = self._apply_true_on_policy_logits_contract(logits)
+        append: |
+          dumper.dump("logits", logits, dims="t 1 vocab # tp:replicated")

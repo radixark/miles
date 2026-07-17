@@ -11,6 +11,7 @@ from miles.utils.debug_utils.run_megatron.cli.path_utils import resolve_megatron
 from miles.utils.debug_utils.run_megatron.cli.prompt_utils import (
     PromptConfig,
     generate_token_ids,
+    load_token_ids,
     write_token_ids_to_tmpfile,
 )
 from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
@@ -38,15 +39,19 @@ def run_impl(args: RunArgs) -> None:
 
     resolved_megatron: Path = resolve_megatron_path(args.megatron_path)
 
-    prompt: PromptConfig = PromptConfig(
-        mode=args.prompt_mode,  # type: ignore[arg-type]
-        text=args.prompt_text,
-        file=args.prompt_file,
-        seq_length=args.seq_length,
-        apply_chat_template=args.apply_chat_template,
-    )
-    token_ids: list[int] = generate_token_ids(prompt=prompt, tokenizer_path=args.hf_checkpoint)
-    token_ids_file: Path = write_token_ids_to_tmpfile(token_ids)
+    if args.token_ids_file is None:
+        prompt: PromptConfig = PromptConfig(
+            mode=args.prompt_mode,  # type: ignore[arg-type]
+            text=args.prompt_text,
+            file=args.prompt_file,
+            seq_length=args.seq_length,
+            apply_chat_template=args.apply_chat_template,
+        )
+        token_ids: list[int] = generate_token_ids(prompt=prompt, tokenizer_path=args.hf_checkpoint)
+        token_ids_file: Path = write_token_ids_to_tmpfile(token_ids)
+    else:
+        token_ids_file = args.token_ids_file
+        token_ids = load_token_ids(token_ids_file, args.seq_length)
     print(f"[cli] Token IDs written to {token_ids_file} ({len(token_ids)} tokens)", flush=True)
 
     script_args: WorkerScriptArgs = WorkerScriptArgs(

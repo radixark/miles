@@ -23,6 +23,7 @@ class CommonRunArgs:
     prompt_mode: str = _field(default="math", help="Prompt mode: math / file / text")
     prompt_text: str | None = _field(default=None, help="Prompt text (for text mode)")
     prompt_file: Path | None = _field(default=None, help="Prompt file (for file mode)")
+    token_ids_file: Path | None = _field(default=None, help="Pre-tokenized JSON input; bypasses prompt tokenization")
     # odd + somewhat large; also the fine-structure constant
     seq_length: int = _field(default=137, help="Sequence length")
     batch_size: int = _field(default=1, help="Micro batch size")

@@ -10,6 +10,7 @@ Miles supports Moonshot's MoE line from top to bottom. The latest Kimi K2.6 and 
 |---|---|---|---|
 | Kimi-K2.6 | 32 B / 1 T | `moonshotai/Kimi-K2.6` | [kimi-k2.5](/models/kimi/kimi-k2.5) |
 | Kimi-K2.5 | 32 B / 1 T | `moonshotai/Kimi-K2.5` | [kimi-k2.5](/models/kimi/kimi-k2.5) |
+| Kimi K3 | TBD | `moonshotai/Kimi-K3` | [Megatron backend](/models/kimi/kimi-k3-megatron) |
 | Kimi-K2-Instruct | 32 B / 1 T | `moonshotai/Kimi-K2-Instruct` | [kimi-k2](/models/kimi/kimi-k2) |
 | Kimi-K2-Thinking | 32 B / 1 T | `moonshotai/Kimi-K2-Thinking` | [kimi-k2](/models/kimi/kimi-k2) |
 | Moonlight-16B-A3B | 3 B / 16 B | `moonshotai/Moonlight-16B-A3B` | [moonlight](/models/kimi/moonlight) |
