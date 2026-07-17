@@ -267,7 +267,7 @@ atexit.register(stop_global_worker)
 class AsyncRandomRolloutWorker:
     """Background asyncio loop that fills an output queue with random sample groups.
 
-    Mirrors ``examples/fully_async/fully_async_rollout.AsyncRolloutWorker`` but
+    Mirrors ``miles.rollout.fully_async_rollout.AsyncRolloutWorker`` but
     skips the data buffer and reward model entirely.
     """
 
