@@ -24,7 +24,11 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin import (
     DistBucketedWeightUpdateMixin,
 )
-from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import (
+    UpdateWeightFromTensor,
+    _send_to_colocated_engine,
+    _should_skip_lora_base_sync,
+)
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
@@ -72,6 +76,30 @@ def _make_args(**overrides):
     )
     defaults.update(overrides)
     return Namespace(**defaults)
+
+
+@pytest.mark.parametrize(
+    ("is_lora", "retains_rollout_base", "check_weight_update_equal", "lora_base_synced", "expected"),
+    [
+        (False, True, False, False, False),
+        (True, False, False, False, False),
+        (True, True, False, False, True),
+        (True, True, True, False, False),
+        (True, True, True, True, True),
+    ],
+)
+def test_should_skip_lora_base_sync(
+    is_lora, retains_rollout_base, check_weight_update_equal, lora_base_synced, expected
+):
+    assert (
+        _should_skip_lora_base_sync(
+            is_lora=is_lora,
+            retains_rollout_base=retains_rollout_base,
+            check_weight_update_equal=check_weight_update_equal,
+            lora_base_synced=lora_base_synced,
+        )
+        is expected
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +398,36 @@ class _FakeRemote:
 
 class _FakeEngine:
     def __init__(self, load_result=None):
+        self.load_lora_adapter_from_tensors = _FakeRemote(result=load_result)
         self.load_lora_adapter_from_distributed = _FakeRemote(result=load_result)
         self.unload_lora_adapter = _FakeRemote()
+
+
+def test_colocated_lora_sync_uses_sglang_single_adapter_payload():
+    engine = _FakeEngine(load_result="load-ref")
+
+    with patch(f"{_UW_MODULE}.dist") as dist_mock:
+        dist_mock.get_rank.return_value = 0
+        dist_mock.get_world_size.return_value = 2
+
+        def gather_object(local_payloads, object_gather_list, **_kwargs):
+            object_gather_list[:] = [local_payloads, []]
+
+        dist_mock.gather_object.side_effect = gather_object
+        refs, _ = _send_to_colocated_engine(
+            SAMPLE_LORA_WEIGHTS,
+            ipc_engine=engine,
+            ipc_gather_src=0,
+            ipc_gather_group=MagicMock(),
+            lora_config={"r": 32},
+            lora_name=LORA_ADAPTER_NAME,
+        )
+
+    assert refs == ["load-ref"]
+    kwargs = engine.load_lora_adapter_from_tensors.calls[0]
+    assert isinstance(kwargs["serialized_tensors"], str)
+    assert "serialized_named_tensors" not in kwargs
+    assert kwargs["load_format"] == "flattened_bucket"
 
 
 class TestDistLoraUpdateOrchestration:

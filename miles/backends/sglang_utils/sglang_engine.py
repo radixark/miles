@@ -337,16 +337,16 @@ class SGLangEngine(RayActor):
         self,
         lora_name: str,
         config_dict: dict,
-        serialized_named_tensors: list,
+        serialized_tensors: str,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a complete LoRA adapter; SGLang applies TP slicing internally."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
-            "serialized_named_tensors": serialized_named_tensors,
+            "serialized_tensors": serialized_tensors,
             "pinned": pinned,
         }
         if load_format is not None:

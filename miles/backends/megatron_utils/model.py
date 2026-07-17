@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
+from .fp32_param_utils import enforce_marked_param_dtypes
 from .lora_utils import save_lora_checkpoint
 
 
@@ -139,6 +140,7 @@ def setup_model_and_optimizer(
 
     if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
         model = _setup_lora_model_via_bridge(args)
+        enforce_marked_param_dtypes(model)
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 

@@ -30,6 +30,16 @@ from .update_weight_from_distributed.broadcast import (
 logger = logging.getLogger(__name__)
 
 
+def _should_skip_lora_base_sync(
+    *,
+    is_lora: bool,
+    retains_rollout_base: bool,
+    check_weight_update_equal: bool,
+    lora_base_synced: bool,
+) -> bool:
+    return is_lora and retains_rollout_base and (not check_weight_update_equal or lora_base_synced)
+
+
 class UpdateWeightFromTensor:
     """
     Update rollout engines from tensor dict:
@@ -202,11 +212,11 @@ class UpdateWeightFromTensor:
         # a host mirror across pause/resume), we can skip the base sync entirely
         # and the surrounding restore_weights_before_load / post_process_quantization
         # calls that would otherwise prep / re-quantize fresh base bytes.
-        # TODO: implement lora weight checker
-        skip_base_sync = (
-            self.is_lora
-            and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
-            and not getattr(self.args, "check_weight_update_equal", False)
+        skip_base_sync = _should_skip_lora_base_sync(
+            is_lora=self.is_lora,
+            retains_rollout_base=self.use_distribute or lora_base_cpu_backup_enabled(self.args),
+            check_weight_update_equal=getattr(self.args, "check_weight_update_equal", False),
+            lora_base_synced=self._lora_base_synced if self.is_lora else False,
         )
 
         if rank == 0:
@@ -363,13 +373,14 @@ def _send_to_colocated_engine(
             # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
             # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
 
+            source_payloads = serialized_named_tensors[0]
+            assert len(source_payloads) == 1, "LoRA tensor sync requires a single adapter dtype"
+
             refs.append(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
                     config_dict=lora_config,
-                    serialized_named_tensors=[
-                        per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
-                    ],
+                    serialized_tensors=source_payloads[0],
                     load_format="flattened_bucket",
                 )
             )

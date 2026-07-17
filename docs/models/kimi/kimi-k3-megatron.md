@@ -331,3 +331,62 @@ post-training transfer updated all 90 tensor groups. The initial strict weight
 comparison reported every included language-model tensor equal after the
 rollout model was randomized, so the check validates the mapping and transfer
 rather than only same-value assignment.
+
+### LoRA training
+
+`scripts/run_kimi_k3_lora.py` is the verified LoRA launcher. It uses Megatron
+Bridge to construct the K3 model, apply the adapters, load the base DCP
+checkpoint without requiring adapter entries in that checkpoint, and export
+both native Megatron and HF PEFT adapter checkpoints. Parameters such as KDA
+`A_log` and `dt_bias` that are marked for fp32 recurrence are restored to fp32
+after Bridge applies the adapters.
+
+The initial target set covers the modules whose Megatron and SGLang LoRA
+contracts agree without changing a fused K3 operator:
+
+- KDA and MLA output projection (`self_attention.o_proj`)
+- MLA q/kv low-rank input projections (`q_a_proj` and
+  `kv_a_proj_with_mqa`)
+- dense MLP gate/up and down projections
+- latent routed-expert gate/up and down projections
+
+KDA's q/k/v, convolution, decay, and gate projections are intentionally not
+targeted because SGLang packs them into K3-specific fused serving modules.
+Shared-expert projections are also excluded from this first target set because
+the serving path may fuse the shared expert into the routed MoE. The launcher
+disables shared-expert fusion and `SGLANG_K3_FUSE_MOE_FRONT` so the supported
+module boundaries stay explicit.
+
+Routed experts use Megatron's shared-outer adapter layout: gate/up A and down B
+are shared across experts, while gate/up B and down A remain per expert. K3's
+routed experts operate on the 3584-dimensional latent state, whereas shared
+experts operate on the 7168-dimensional transformer hidden state. SGLang must
+therefore size routed `gate_up_proj_moe` and `down_proj_moe` buffers from
+`routed_expert_hidden_size`, not `hidden_size`, and must initialize the A and B
+per-expert dictionaries independently when only one factor is shared.
+
+For colocated rollout, `--lora-base-cpu-backup` retains the immutable base
+weights while SGLang sleeps. With `--check-weight-update-equal`, the first
+update transfers the full base and performs the strict randomized-snapshot
+comparison; subsequent updates unload and reload only the complete adapter.
+Without the checker, all LoRA updates skip the base transfer. The current
+generic Miles checker validates the base mapping exactly; adapter validation is
+provided by successful SGLang loading and versioned rollout execution rather
+than a separate tensor-by-tensor adapter checker.
+
+The verified topology is TP8, EP8, sequence parallel, and PP1 on one 8-H200
+node. This is already the parallel Megatron/TE implementation rather than a
+single-rank reference path, so a second TP-specific implementation is not
+needed. PP greater than one remains unsupported by the underlying K3 backend.
+
+The final four-layer LoRA smoke completed two rollouts and two valid training
+steps. The deterministic-random raw rewards were `0.4375` and `0.5625`, and the
+gradient norms were `0.4762578444` and `0.4851193323`. The generated text was
+nonsensical, as expected from a four-layer prefix; the rewards only force
+nonzero gradients and are not quality measurements. Each TP rank saved 28
+native adapter tensors and rank 0 exported 8091 HF PEFT tensors. Between the
+two TP0 checkpoints, 15 of the 28 native adapter tensors changed, with an L2
+delta of `1.7596e-7` at the smoke learning rate. Across the three rollout
+updates, the log contains three adapter loads but only one base transaction
+(89 base chunks), proving that the second and final updates were adapter-only.
+The second update took 2.27 seconds and the final update took 2.3 seconds.

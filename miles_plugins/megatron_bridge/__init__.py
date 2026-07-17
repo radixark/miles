@@ -75,3 +75,8 @@ try:
     from . import nemotron_h  # noqa: F401
 except Exception as _e:  # pragma: no cover - defensive
     logger.warning("miles nemotron_h plugin failed to load: %s", _e)
+
+try:
+    from . import kimi_k3  # noqa: F401
+except Exception as _e:  # pragma: no cover - optional model dependencies
+    logger.warning("miles kimi_k3 plugin failed to load: %s", _e)

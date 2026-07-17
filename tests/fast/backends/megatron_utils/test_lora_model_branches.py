@@ -96,11 +96,13 @@ class TestSetupModelAndOptimizerLoraBranch:
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
     @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
+    @patch(f"{_MODEL_MODULE}.enforce_marked_param_dtypes")
     @patch(f"{_MODEL_MODULE}._setup_lora_model_via_bridge")
-    def test_lora_actor_bridge_routes_to_lora_setup(self, mock_lora_setup, mock_opt, mock_sched):
+    def test_lora_actor_bridge_routes_to_lora_setup(self, mock_lora_setup, mock_enforce_dtypes, mock_opt, mock_sched):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
-        mock_lora_setup.return_value = [MagicMock()]
+        model = [MagicMock()]
+        mock_lora_setup.return_value = model
         mock_opt.return_value = MagicMock(param_groups=[])
         mock_sched.return_value = MagicMock()
 
@@ -108,6 +110,7 @@ class TestSetupModelAndOptimizerLoraBranch:
         model, _, _ = setup_model_and_optimizer(args, role="actor")
 
         mock_lora_setup.assert_called_once_with(args)
+        mock_enforce_dtypes.assert_called_once_with(model)
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
     @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
