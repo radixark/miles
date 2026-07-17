@@ -79,6 +79,12 @@ _TB2_TESTS_SRC = os.getenv("OPENENV_TB2_TESTS_SRC", "/task/tests")
 
 # The eval exec echoes reward.txt on this marker so we can parse it out of stdout.
 _REWARD_MARKER = "__TB2_REWARD__:"
+# test.sh's exit code, echoed on its own marker purely for diagnostics: when a
+# sample is dropped for having no recoverable reward, a nonzero rc points at a
+# test.sh crash (infra/harness failure) vs. a clean run that wrote no verdict.
+# It does NOT drive the drop decision -- a nonzero rc from merely-failing tests
+# is a legitimate reward 0, not an infra error.
+_TESTSH_RC_MARKER = "__TB2_TESTSH_RC__:"
 # Honor an empty _TASK_WORKDIR (workdir prefix disabled) the same way
 # _apply_workdir does, instead of silently forcing /app.
 _EVAL_CD_CMD = f"cd {_TASK_WORKDIR} && " if _TASK_WORKDIR else ""
@@ -88,6 +94,8 @@ _CANONICAL_EVAL_CMD = (
     "mkdir -p /tests /logs/verifier && rm -f /logs/verifier/reward.txt && "
     f"cp -a {_TB2_TESTS_SRC}/. /tests/ 2>/dev/null || true; "
     f"{_EVAL_CD_CMD}bash /tests/test.sh > /tmp/tb2_testsh.log 2>&1; "
+    # $? here is test.sh's exit code (captured before any other command runs).
+    f"echo {_TESTSH_RC_MARKER}$?; "
     f"echo {_REWARD_MARKER}$(cat /logs/verifier/reward.txt 2>/dev/null)"
 )
 
@@ -116,6 +124,18 @@ def _parse_reward_marker(output: str) -> float | None:
                 return None
             try:
                 return float(raw)
+            except ValueError:
+                return None
+    return None
+
+
+def _parse_testsh_rc(output: str) -> int | None:
+    """Parse test.sh's exit code off its marker line (diagnostic only, may be absent)."""
+    for line in output.splitlines()[::-1]:
+        if _TESTSH_RC_MARKER in line:
+            raw = line.split(_TESTSH_RC_MARKER, 1)[1].strip()
+            try:
+                return int(raw)
             except ValueError:
                 return None
     return None
@@ -225,7 +245,7 @@ async def _multi_turn(
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
 
-    async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float]:
+    async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float, int | None]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
         # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
         # eval_time bracket the one-off reset() and the final evaluate() env steps.
@@ -283,7 +303,9 @@ async def _multi_turn(
         t0 = time.monotonic()
         eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
         eval_time = time.monotonic() - t0
-        reward = _parse_reward_marker(_obs_field(eval_result, "output"))
+        eval_output = _obs_field(eval_result, "output")
+        reward = _parse_reward_marker(eval_output)
+        testsh_rc = _parse_testsh_rc(eval_output)
 
         # rm-hack: the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
         # leaves a per-episode trial dir under that path after every episode, which
@@ -311,9 +333,11 @@ async def _multi_turn(
         except Exception:
             pass
 
-        return reward, turns, gen_times, tool_times, reset_time, eval_time
+        return reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc
 
-    reward, turns, gen_times, tool_times, reset_time, eval_time = await _with_env(classes["env"], env_url, body)
+    reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc = await _with_env(
+        classes["env"], env_url, body
+    )
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -328,6 +352,7 @@ async def _multi_turn(
         "eval_time": eval_time,
         "total_gen_time": total_gen_time,
         "total_tool_time": total_tool_time,
+        "testsh_rc": testsh_rc,
     }
 
 
@@ -379,7 +404,11 @@ async def run(
     # (infra/harness failure, not a legitimate task failure). Drop the sample --
     # returning it as reward 0.0 would inject a false negative into training.
     if reward is None:
-        logger.warning("OpenEnv tbench2 episode produced no canonical reward (infra/harness failure); dropping sample")
+        logger.warning(
+            "OpenEnv tbench2 episode produced no canonical reward "
+            f"(test.sh exit code={agent_metrics.get('testsh_rc')}); "
+            "infra/harness failure, dropping sample"
+        )
         return None
 
     # eval_report is intentionally empty: the canonical-eval marker protocol
