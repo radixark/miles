@@ -27,7 +27,6 @@ def _args() -> ScriptArgs:
         use_single_node=True,
         from_bf16_ckpt=False,
         num_rollout=2,
-        no_save=True,
         extra_args=(
             "--ci-test --check-weight-update-allow-quant-error --bf16 --freeze-indexer "
             "--use-rollout-routing-replay "
