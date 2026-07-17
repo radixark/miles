@@ -12,9 +12,12 @@ Output lines match eval_tbench2_via_api.py's format ("  [1|0|ERR] <task>
 
 import argparse
 import asyncio
+import base64
+import io
 import json
 import os
 import sys
+import tarfile
 import time
 from pathlib import Path
 
@@ -22,6 +25,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import openenv_agent_function as oaf
 
 CAP_S = float(os.getenv("GOLDEN_TASK_CAP_S", "1800"))
+
+# base64 is shell-safe (A-Za-z0-9+/=), so each chunk rides an unquoted printf.
+# 64KB per exec keeps every command far below message-size limits while the
+# largest suite solution (make-doom-for-mips, ~432KB raw) still stages in a
+# handful of execs.
+_SOLUTION_CHUNK = 65536
+
+
+def _solution_push_commands(task_id: str) -> list[str]:
+    """Stage the LOCAL checkout's solution/ into the sandbox at /solution.
+
+    The task image withholds verifier assets (solution/ never enters it), so
+    the oracle's solution must be pushed at golden time — the same
+    stage-at-use model the official harness's oracle runs use.
+    """
+    sol = Path(os.environ["OPENENV_TB2_TASKS_DIR"]) / task_id / "solution"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(sol, arcname=".")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    cmds = ["rm -f /tmp/solution.b64"]
+    for i in range(0, len(b64), _SOLUTION_CHUNK):
+        cmds.append(f"printf %s {b64[i:i + _SOLUTION_CHUNK]} >> /tmp/solution.b64")
+    cmds.append("mkdir -p /solution && base64 -d /tmp/solution.b64 | tar xz -C /solution && rm -f /tmp/solution.b64")
+    return cmds
 
 
 async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, float | None, dict]:
@@ -48,13 +76,12 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
                         sol_env += f" {k}={v!r}"
                 except Exception:
                     pass
+                for cmd in _solution_push_commands(task_id):
+                    await env.step(action(action_type="exec", command=cmd))
                 res = await env.step(
                     action(
                         action_type="exec",
-                        command=(
-                            f"mkdir -p /solution && cp -a /opt/tb2-tasks/{task_id}/solution/. /solution/ && "
-                            f"{sol_env} bash /solution/solve.sh > /tmp/solve.log 2>&1; echo SOLVE_EXIT=$?"
-                        ),
+                        command=(f"{sol_env} bash /solution/solve.sh > /tmp/solve.log 2>&1; echo SOLVE_EXIT=$?"),
                     )
                 )
                 out = oaf._obs_field(res, "output")
