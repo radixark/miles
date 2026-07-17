@@ -7,8 +7,8 @@ This reuses the exact agent-env loop miles runs during training
 swaps miles' session-server policy for a plain API client. The machine running
 this only orchestrates; the policy runs in the cloud (e.g. DeepSeek) and each
 episode runs in its own per-task Daytona sandbox (the task's OFFICIAL image +
-env server layer — recipe in ``tbench2_env.task_snapshots``), created before
-the episode and deleted after.
+env server layer — recipe in the sibling ``tb2_task_sandbox`` module), created
+before the episode and deleted after.
 
 Why a separate script and not ``run-openenv-tbench2.py``: those launchers always
 bring up Megatron+sglang via Ray (the policy must be miles' own engine so the

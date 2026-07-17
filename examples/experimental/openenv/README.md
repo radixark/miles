@@ -60,19 +60,26 @@ Docker socket, no shared server to size or babysit, no cross-episode state), at
 the cost of per-episode sandbox creation (~1 min warm; the first episode of each
 task builds its image in ~10 min, cached after that by definition hash).
 
-The sandbox recipe lives upstream-side in `tbench2_env.task_snapshots` —
-`tbench2_env` is OpenEnv's Terminal-Bench-2 environment package
-(`envs/tbench2_env` in [huggingface/openenv](https://github.com/huggingface/openenv),
-the same package step 2's shared server runs) — and needs its patched branch
-(canonical `tests/test.sh` scoring built into `evaluate`, per-task WORKDIR
-resolved server-side — the fidelity fixes proposed in
-[openenv#965](https://github.com/huggingface/openenv/pull/965) /
-[openenv#966](https://github.com/huggingface/openenv/pull/966)); the adapter then
-scores via the standard `evaluate` action on this backend. Skip step 2 entirely
-and set:
+The sandbox recipe lives in [`tb2_task_sandbox.py`](tb2_task_sandbox.py) (this
+directory). It bakes the **installed** `tbench2_env` package — OpenEnv's
+Terminal-Bench-2 environment package, the same one step 2's shared server
+runs — into each task image, and on this backend the adapter scores via the
+standard `evaluate` action, so the install must carry the server-side fixes
+this leg relies on (canonical `tests/test.sh` scoring built into `evaluate`,
+per-task WORKDIR resolved server-side, `TB2_WITHHOLD_TESTS` verifier-asset
+withholding — not yet in upstream main). Install the pinned checkout
+(editable: the recipe embeds the package source, which needs `pyproject.toml`
+present next to the package):
 
 ```bash
-pip install daytona   # the SDK is imported lazily by tbench2_env, not installed with it
+git clone https://github.com/nblintao/OpenEnv.git && git -C OpenEnv checkout d2b7a245
+pip install -e OpenEnv/envs/tbench2_env
+```
+
+Skip step 2 entirely and set:
+
+```bash
+pip install daytona   # the SDK is imported lazily, not installed with tbench2_env
 export DAYTONA_API_KEY=dtn_...
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2   # the checkout from step 1
 python run-openenv-tbench2.py
