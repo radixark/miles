@@ -269,7 +269,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
-        server_args_module._global_server_args = server_args
+        server_args_module.set_global_server_args_for_scheduler(server_args)
         initialize_moe_config(server_args)
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)

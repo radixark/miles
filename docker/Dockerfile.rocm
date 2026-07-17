@@ -153,7 +153,9 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 # still import it; re-pin to the base image's setuptools.
 RUN pip install "setuptools==79.0.1"
 
+# nvidia-resiliency-ext is NVIDIA-only (CUDA + glibc 2.39); drop it here so the ROCm requirements install does not fail.
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
+    sed -i '/nvidia-resiliency-ext/d' /tmp/requirements.txt && \
     pip install -r /tmp/requirements.txt
 
 # Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
