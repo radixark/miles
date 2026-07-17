@@ -1,4 +1,9 @@
-from enum import StrEnum, auto
+from enum import auto
+
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 
 class TrainStepOutcome(StrEnum):

@@ -28,6 +28,9 @@ _STANDARD_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1",
     "up_proj": "linear_fc1",
     "down_proj": "linear_fc2",
+    # GDN (Qwen3.5/Qwen3-Next): both slices live in the single fused megatron in_proj
+    "in_proj_qkvz": "in_proj",
+    "in_proj_ba": "in_proj",
 }
 
 _STANDARD_LORA_ALL_MODULES = ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
@@ -41,6 +44,8 @@ _CANONICAL_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1_gate",
     "up_proj": "linear_fc1_up",
     "down_proj": "linear_fc2",
+    "in_proj_qkvz": "in_proj",
+    "in_proj_ba": "in_proj",
 }
 
 _CANONICAL_LORA_ALL_MODULES = [
@@ -67,9 +72,21 @@ _MEGATRON_TO_HF_MODULES = {
     "linear_v": ["v_proj"],
     "linear_fc1_gate": ["gate_proj"],
     "linear_fc1_up": ["up_proj"],
+    # GDN linear attention: SGLang serves the fused in_proj as two modules
+    "in_proj": ["in_proj_qkvz", "in_proj_ba"],
 }
 
-_HF_MODULE_NAMES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+_HF_MODULE_NAMES = {
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+    "in_proj_qkvz",
+    "in_proj_ba",
+}
 
 # DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).
 _MLA_HF_TO_MEGATRON = {
@@ -235,13 +252,14 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
         megatron_modules = list(megatron_modules)
     hf_modules: list[str] = []
     for module in megatron_modules:
-        lookup_key = module.rsplit(".", 1)[-1] if "*" in module else module
+        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
         if lookup_key in _MEGATRON_MLA_TO_HF:
             hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
         elif lookup_key in _MEGATRON_TO_HF_MODULES:
             hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
         else:
-            hf_modules.append(module)
+            # same-name passthrough; SGLang needs the leaf, not a path or pattern
+            hf_modules.append(lookup_key)
     seen: set[str] = set()
     unique: list[str] = []
     for m in hf_modules:

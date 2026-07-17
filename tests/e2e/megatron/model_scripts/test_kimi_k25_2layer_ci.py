@@ -1,28 +1,23 @@
 import os
 
-from scripts.run_glm5_744b_a40b import (
-    ScriptArgs,
-    _convert_to_fp8,
-    _execute_train,
-    _prepare_download,
-    _prepare_megatron_ckpt,
-    _validate_glm_checkpoint,
-)
+from scripts.run_kimi_k25 import ScriptArgs, _convert_to_bf16, _execute_train, _prepare_download
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-# This CI test is an example smoke test for the DSA model code path used by DeepSeek V3.2 and GLM-5. It only verifies that the training script is functional, not model accuracy.
+# Smoke test for the Kimi-K2.5 (MoE + MLA, INT4 rollout + BF16 Megatron bridge) training
+# script. It runs the 2-layer pruned model on a single 4-GPU H200 node and only verifies that
+# the training script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
-        model_name="GLM-5_4layer",
+        model_name="Kimi-K2.5-2layer",
         num_nodes=1,
-        num_gpus_per_node=8,
+        num_gpus_per_node=4,
         num_rollout=2,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
     )
@@ -31,10 +26,7 @@ def _args() -> ScriptArgs:
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
-    _validate_glm_checkpoint(args)
-    if args.fp8_rollout:
-        _convert_to_fp8(args)
-    _prepare_megatron_ckpt(args)
+    _convert_to_bf16(args)
 
 
 def execute(args: ScriptArgs):
