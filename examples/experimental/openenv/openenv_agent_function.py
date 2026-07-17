@@ -88,7 +88,12 @@ _TESTSH_RC_MARKER = "__TB2_TESTSH_RC__:"
 # Honor an empty _TASK_WORKDIR (workdir prefix disabled) the same way
 # _apply_workdir does, instead of silently forcing /app.
 _EVAL_CD_CMD = f"cd {_TASK_WORKDIR} && " if _TASK_WORKDIR else ""
-_CANONICAL_EVAL_CMD = (
+# The default grades canonical TB2 tasks. Override with OPENENV_EVAL_CMD to grade
+# any other task family (e.g. swebench-style test.sh + exit-code scoring) without
+# touching this adapter or the OpenEnv server: the custom command just has to end
+# by printing "<_REWARD_MARKER><float>" on stdout (its own line). The marker string
+# itself stays fixed as _REWARD_MARKER; only the command that produces it varies.
+_CANONICAL_EVAL_CMD = os.getenv("OPENENV_EVAL_CMD") or (
     # rm the reward file first so a stale one can never be read back if test.sh
     # fails to run (e.g. in a reused sandbox where /logs survives across episodes).
     "mkdir -p /tests /logs/verifier && rm -f /logs/verifier/reward.txt && "
