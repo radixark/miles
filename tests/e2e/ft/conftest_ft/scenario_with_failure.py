@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
-from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.test_utils.comparisons.dumps import (
@@ -88,6 +88,7 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
+    base += get_train_env_vars_arg(mode, deterministic=False)
 
     if is_target:
         base += get_ft_args(mode)
