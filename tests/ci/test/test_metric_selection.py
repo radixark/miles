@@ -98,13 +98,22 @@ def test_steps_missing_named_step_errors():
 
 def test_rel_two_sided():
     c = {"rel": 0.20, "abs_floor": 0.0, "direction": "two_sided"}
-    assert evaluate_constraint(c, 1.1, 1.0).ok  # band 0.2
+    assert evaluate_constraint(c, 1.1, 1.0).ok
     assert not evaluate_constraint(c, 1.3, 1.0).ok
     assert not evaluate_constraint(c, 0.7, 1.0).ok
 
 
+def test_rel_band_is_symmetric_across_both_operands():
+    c = {"rel": 0.20, "abs_floor": 0.0, "direction": "two_sided"}
+    forward = evaluate_constraint(c, 1.21, 1.0)
+    reverse = evaluate_constraint(c, 1.0, 1.21)
+    assert forward.ok and reverse.ok
+    assert forward.band == pytest.approx(0.242)
+    assert reverse.band == pytest.approx(forward.band)
+
+
 def test_abs_floor_covers_near_zero():
-    # ref ~0 makes rel*|ref| vanish; abs_floor is the only tolerance left.
+    # Both values near zero make the relative band vanish; the floor remains.
     c = {"abs_floor": 1e-6, "rel": 0.20, "direction": "two_sided"}
     assert evaluate_constraint(c, 1e-7, 0.0).ok
     assert not evaluate_constraint(c, 0.5, 0.0).ok
@@ -112,9 +121,8 @@ def test_abs_floor_covers_near_zero():
 
 def test_abs_band_is_max_of_rel_and_floor():
     c = {"abs_floor": 0.1, "rel": 0.20, "direction": "two_sided"}
-    # ref=1.0: rel band 0.2 > floor 0.1 -> band 0.2.
-    assert evaluate_constraint(c, 1.19, 1.0).ok
-    assert not evaluate_constraint(c, 1.21, 1.0).ok
+    assert evaluate_constraint(c, 0.55, 0.5).band == pytest.approx(0.11)
+    assert evaluate_constraint(c, 0.4, 0.5).band == pytest.approx(0.1)
 
 
 def test_higher_is_worse_one_sided():

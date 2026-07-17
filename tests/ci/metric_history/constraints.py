@@ -4,10 +4,11 @@
 * A constraint decides whether one extracted scalar `cur` passes against a
   reference `ref` -- the mean of the trusted baseline for the historical
   gate.
-* One band family, no name dispatch: `band = max(rel * |ref|, abs_floor)`.
-  `rel` is a relative percentage; `abs_floor` keeps a metric riding near zero
-  (where `rel * |ref|` vanishes) from flagging on a meaningless relative
-  percentage.
+* One symmetric band family, no name dispatch:
+  `band = max(rel * |cur|, rel * |ref|, abs_floor)`. `rel` is a relative
+  percentage; scaling from both magnitudes makes operand order irrelevant,
+  while `abs_floor` keeps metrics near zero from flagging on a meaningless
+  relative percentage.
 * `direction` narrows what counts as a failure: `two_sided` -- any
   deviation beyond the band fails; `higher_is_worse` -- only an increase
   beyond the band fails (a drop passes); `lower_is_worse` -- only a decrease
@@ -54,5 +55,5 @@ CONSTRAINT_SCHEMA: dict[str, tuple[str, bool, object]] = {
 
 def evaluate_constraint(constraint: dict, cur: float, ref: float) -> ConstraintOutcome:
     """Apply a normalized constraint dict to `cur` vs `ref`."""
-    band = max(constraint["rel"] * abs(ref), constraint["abs_floor"])
+    band = max(constraint["rel"] * abs(cur), constraint["rel"] * abs(ref), constraint["abs_floor"])
     return ConstraintOutcome(_within(cur, ref, band, constraint["direction"]), band)

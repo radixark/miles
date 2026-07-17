@@ -223,8 +223,8 @@ def test_drift_beyond_historical_band_not_trusted(tmp_path, store):
         step=-1,
         values=[1.0, 1.0, 1.0],
     )
-    # current 1.8: historical |1.8-1.0|=0.8 > 0.5 fail.
-    record = _write_record(tmp_path, {"train/grad_norm": [[0, 1.8]]})
+    # current 2.1: historical |2.1-1.0|=1.1 > max(0.5*2.1, 0.5*1.0)=1.05 fail.
+    record = _write_record(tmp_path, {"train/grad_norm": [[0, 2.1]]})
 
     result = evaluate_gate(test_file, record, store)
     m = result.metrics[0]
