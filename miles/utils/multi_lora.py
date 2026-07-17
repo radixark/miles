@@ -50,8 +50,12 @@ def is_multi_lora_enabled(args: Any) -> bool:
 
 def define_new_adapter_metrics(snapshot: dict) -> None:
     """Declare metric axes for adapters not seen before ({name}/* ->
-    {name}/step, {name}_perf/* -> rollout/step); already-declared adapters
+    {name}/step, {name}/perf/* -> rollout/step); already-declared adapters
     are skipped internally, so calling this every snapshot is free.
+
+    Glob expansion only reaches one path segment, so {name}/perf/* keys are
+    out of {name}/*'s reach despite the shared prefix — each key group must
+    stay exactly one segment under its glob.
 
     Must run in the the primary tracking writer, whose wandb
     definitions are the only ones that reliably persist — and before the
@@ -64,7 +68,7 @@ def define_new_adapter_metrics(snapshot: dict) -> None:
 
     for name in {**snapshot["pending"], **snapshot["active"], **snapshot["retiring"]}:
         define_step_key_metric_group(prefix=name, step_key=f"{name}/step")
-        define_step_key_metric_group(prefix=f"{name}_perf", step_key="rollout/step")
+        define_step_key_metric_group(prefix=f"{name}/perf", step_key="rollout/step")
 
 
 def make_rid(adapter_name: str) -> str:
