@@ -99,16 +99,26 @@ def _apply_workdir(command: str) -> str:
     return f"cd {_TASK_WORKDIR} && {command}"
 
 
-def _parse_reward_marker(output: str) -> float:
-    """Parse the reward.txt value the canonical-eval exec echoed on its marker line."""
+def _parse_reward_marker(output: str) -> float | None:
+    """Parse the reward.txt value the canonical-eval exec echoed on its marker line.
+
+    Returns None when no reward can be recovered -- no marker line, an empty
+    value (reward.txt absent, i.e. test.sh never wrote a verdict), or a
+    non-numeric value. These are infra/harness failures, not a task the agent
+    legitimately failed, so the caller drops the sample rather than scoring a
+    false 0.0 that would pollute the training signal. A genuine failure writes
+    reward.txt = 0 and is returned as 0.0.
+    """
     for line in output.splitlines()[::-1]:
         if _REWARD_MARKER in line:
             raw = line.split(_REWARD_MARKER, 1)[1].strip()
+            if not raw:
+                return None
             try:
-                return float(raw) if raw else 0.0
+                return float(raw)
             except ValueError:
-                return 0.0
-    return 0.0
+                return None
+    return None
 
 
 # Per-message WS recv timeout. Docker-mode tbench2 reset (container create),
@@ -201,7 +211,7 @@ async def _multi_turn(
     messages: list[dict[str, str]],
     request_kwargs: dict[str, Any],
     metadata: dict[str, Any],
-) -> tuple[float, dict[str, Any]]:
+) -> tuple[float | None, dict[str, Any]]:
     """Agentic loop: reset(task) -> {policy -> exec -> feed output back} -> evaluate (tbench2).
 
     The policy emits one shell command per turn (a ```bash block or the bare
@@ -215,7 +225,7 @@ async def _multi_turn(
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
 
-    async def body(env: Any) -> tuple[float, int, list[float], list[float], float, float]:
+    async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
         # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
         # eval_time bracket the one-off reset() and the final evaluate() env steps.
@@ -364,6 +374,13 @@ async def run(
         return None
     finally:
         await policy.close()
+
+    # No recoverable reward means the canonical harness never produced a verdict
+    # (infra/harness failure, not a legitimate task failure). Drop the sample --
+    # returning it as reward 0.0 would inject a false negative into training.
+    if reward is None:
+        logger.warning("OpenEnv tbench2 episode produced no canonical reward (infra/harness failure); dropping sample")
+        return None
 
     # eval_report is intentionally empty: the canonical-eval marker protocol
     # (see _REWARD_MARKER) echoes back only the scalar reward. The detailed
