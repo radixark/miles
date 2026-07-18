@@ -12,8 +12,8 @@ Each model name links to its recipe page.
 
 | Family | Models |
 |---|---|
-| **Thinking Machines** | [Inkling](/models/thinkingmachines/inkling) |
 | **DeepSeek** | [DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash)<br/>[DeepSeek-R1](/models/deepseek/deepseek)<br/>[DeepSeek-V3](/models/deepseek/deepseek) |
+| **Thinking Machines** | [Inkling](/models/thinkingmachines/inkling) |
 | **Qwen** | [Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5)<br/>[Qwen3-Next-80B-A3B-Thinking](/models/qwen/qwen3-next)<br/>[Qwen3-30B-A3B / 235B-A22B](/models/qwen/qwen3-moe)<br/>[Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B](/models/qwen/qwen3) |
 | **GLM** | [GLM-5.1](/models/glm/glm5)<br/>[GLM-5](/models/glm/glm5)<br/>[GLM-4.7-Flash](/models/glm/glm4-7-flash)<br/>[GLM-4.5](/models/glm/glm4-5)<br/>[GLM-Z1-9B-0414](/models/glm/glm4) |
 | **Kimi** | [Kimi-K2.6](/models/kimi/kimi-k2.5)<br/>[Kimi-K2.5](/models/kimi/kimi-k2.5)<br/>[Kimi-K2-Instruct / Thinking](/models/kimi/kimi-k2)<br/>[Moonlight-16B-A3B](/models/kimi/moonlight) |

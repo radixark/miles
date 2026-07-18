@@ -56,7 +56,6 @@
       "group": "Models",
       "root": "models/index",
       "pages": [
-       "models/thinkingmachines/inkling",
        {
         "group": "DeepSeek",
         "root": "models/deepseek/index",
@@ -70,6 +69,14 @@
           "expanded": false
          },
          "models/deepseek/deepseek"
+        ],
+        "expanded": false
+       },
+       {
+        "group": "Thinking Machines",
+        "root": "models/thinkingmachines/index",
+        "pages": [
+         "models/thinkingmachines/inkling"
         ],
         "expanded": false
        },
