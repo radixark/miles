@@ -167,7 +167,6 @@ def get_batch(
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
-        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
 
         if allgather_cp:
             assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
@@ -204,7 +203,7 @@ def get_batch(
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
             cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
-            tokens = tokens.batch(cp_size, dim=0)[cp_rank]
+            tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
             sample_token_lengths = [t.size(0) for t in tokens]
@@ -307,7 +306,7 @@ def get_batch(
         loss_masks = torch.cat(loss_masks, dim=0)
         if pad != 0:
             loss_masks = F.pad(loss_masks, (0, pad), value=0)
-        loss_masks = loss_masks.batch(cp_size, dim=0)[cp_rank].unsqueeze(0)
+        loss_masks = loss_masks.chunk(cp_size, dim=0)[cp_rank].unsqueeze(0)
     elif qkv_format == "thd":
         loss_masks = torch.cat(loss_masks)
         loss_masks = F.pad(loss_masks, (0, pad), value=0).unsqueeze(0)
