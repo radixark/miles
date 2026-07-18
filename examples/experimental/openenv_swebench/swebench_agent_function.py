@@ -158,7 +158,11 @@ _CANONICAL_EVAL_CMD = os.getenv("OPENENV_EVAL_CMD") or (
     f"cp -a {_TESTS_SRC}/. /tests/ 2>/dev/null || true; "
     "bash /tests/test.sh > /tmp/sb_testsh.log 2>&1; rc=$?; "
     f"echo {_TESTSH_RC_MARKER}$rc; "
-    "V=$(grep -aoE 'RESULT: (PASSED|FAILED)' /tmp/sb_testsh.log | tail -1); "
+    # The tbench2 env wraps every command as bash -c '<cmd>' and docker-py
+    # shlex-splits that string, so any single quote here collides with the
+    # wrapper's quotes and shreds the command. Keep this command
+    # single-quote-free: use double quotes for the grep pattern.
+    'V=$(grep -aoE "RESULT: (PASSED|FAILED)" /tmp/sb_testsh.log | tail -1); '
     f'if echo "$V" | grep -q PASSED; then echo {_REWARD_MARKER}1.0; '
     f'elif echo "$V" | grep -q FAILED; then echo {_REWARD_MARKER}0.0; '
     # No verdict line: verifier crashed before scoring -> emit empty value so the
