@@ -78,8 +78,23 @@ logger = logging.getLogger(__name__)
 _CAPACITY_MAX_WAIT_S = 1800.0
 _CAPACITY_BACKOFF_S = (1.0, 5.0)
 
-# Strip a single fenced block: ```python / ```bash / ``` ... ```.
-_FENCE_RE = re.compile(r"```(?:python|py|bash|sh)?\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
+# Command extraction. The policy narrates in prose, often with illustrative
+# ```python planning snippets, before emitting the ONE command it wants to run.
+# So we must pick the *last* shell fence and never execute a ```python block.
+# _CMD_FENCE_RE captures every fence's language tag (group 1) and body (group 2);
+# _extract_command keeps only shell-flavored (or language-less) ones.
+_CMD_FENCE_RE = re.compile(r"```([A-Za-z0-9_.+-]*)[ \t]*\r?\n?(.*?)```", re.DOTALL)
+_SHELL_LANGS = {"", "bash", "sh", "shell", "console", "shell-session", "shellsession", "zsh"}
+# GLM-4.7 sometimes ignores the prompt and emits its native tool-call format
+# `<tool_call>bash<arg_value>CMD</arg_value></tool_call>` as raw text (SGLang has no
+# matching tool parser, so it lands in message.content). Recover the command from it.
+_TOOLCALL_ARG_RE = re.compile(r"<arg_value>(.*?)</arg_value>", re.DOTALL | re.IGNORECASE)
+
+_FORMAT_NUDGE = (
+    "Your last message contained no runnable shell command. Respond with EXACTLY ONE "
+    "shell command inside a single ```bash code block and nothing else, or reply "
+    "TASK_COMPLETE (with no code block) when the task is fully done."
+)
 
 # Max chars of command output fed back to the policy per turn (keeps context bounded).
 _OBS_CHAR_CAP = 4000
@@ -236,12 +251,34 @@ def _extract_messages(prompt: Any) -> list[dict[str, str]]:
     return [{"role": "user", "content": str(prompt)}]
 
 
-def _strip_fence(text: str) -> str:
-    """Return the contents of a single fenced block, else the stripped text."""
-    match = _FENCE_RE.search(text)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
+def _extract_command(reply: str) -> str | None:
+    """Extract the single shell command the policy wants to run this turn.
+
+    Returns None when the reply carries no runnable command (pure reasoning, a
+    lone ```python planning snippet, or a TASK_COMPLETE sentinel). We prefer the
+    *last* shell fence (the command usually follows the reasoning), skip
+    ```python/```py blocks (planning, not commands), and fall back to GLM's
+    native <tool_call> format. We never execute the whole raw reply, which used
+    to feed prose/pseudo-code to bash and produce a syntax-error storm.
+    """
+    shell_bodies = [
+        body.strip()
+        for lang, body in _CMD_FENCE_RE.findall(reply)
+        if lang.lower() in _SHELL_LANGS and body.strip()
+    ]
+    if shell_bodies:
+        return shell_bodies[-1]
+    tool_args = [a.strip() for a in _TOOLCALL_ARG_RE.findall(reply) if a.strip()]
+    if tool_args:
+        return tool_args[-1]
+    return None
+
+
+def _is_task_complete(reply: str) -> bool:
+    """True when the policy signals completion (TASK_COMPLETE after its reasoning)."""
+    tail = reply.rsplit("</think>", 1)[-1]
+    tail = re.sub(r"<\|.*?\|>", "", tail).strip().upper()
+    return tail.startswith("TASK_COMPLETE") or tail.endswith("TASK_COMPLETE")
 
 
 def _obs_field(result: Any, name: str) -> str:
@@ -333,9 +370,14 @@ async def _multi_turn(
             # (extras like reasoning_content included).
             convo.append(message.model_dump(exclude_none=True))
 
-            command = _strip_fence(reply) if "```" in reply else reply.strip()
-            if not command or command.upper().startswith("TASK_COMPLETE"):
-                break
+            command = _extract_command(reply)
+            if command is None:
+                if _is_task_complete(reply):
+                    break
+                # No runnable command and not done: nudge for the right format and
+                # retry rather than executing the raw reply (prose/planning code).
+                convo.append({"role": "user", "content": _FORMAT_NUDGE})
+                continue
 
             t0 = time.monotonic()
             step_result = await env.step(action_cls(action_type="exec", command=_apply_workdir(command)))
