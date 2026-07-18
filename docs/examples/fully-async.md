@@ -31,7 +31,7 @@ instead of the sum.
 ## Files
 
 ```text
-miles/rollout/fully_async_rollout.py # AsyncRolloutWorker + entry function
+miles/rollout/fully_async_rollout.py # FullyAsyncRolloutFn (worker + drain)
 examples/fully_async/
 ├── run-qwen3-4b-fully_async.sh     # launch script (Qwen3-4B)
 └── run_qwen3_30b_a3b_fully_async.py # MoE variant
@@ -47,9 +47,8 @@ bash examples/fully_async/run-qwen3-4b-fully_async.sh
 You should see:
 
 ```text
-Creating new global async worker...
-Continuous async rollout worker started
-[trainer] iter 1/3000 | drained 32 samples (queued: 18)
+Started fully-async rollout worker
+First rollout sample: ...
 ```
 
 ## What changes vs. the default recipe
@@ -59,62 +58,65 @@ Just two flags:
 ```diff
 - python3 train.py ...
 + python3 train_async.py ...
-+   --rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async
++   --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
 ```
 
 Everything else — model args, optimizer, GRPO config — stays the same.
 
 ## Walkthrough
 
-The interesting code is small. Here's the global worker manager:
+The interesting code is small. `FullyAsyncRolloutFn` is a class-based rollout
+function: the constructor receives the args and data source once, and the worker is a
+long-lived task on the shared rollout event loop, started lazily on the first train
+call:
 
 ```python miles/rollout/fully_async_rollout.py
-_global_worker = None
-_worker_lock = threading.Lock()
-
-def get_global_worker(args, data_buffer):
-    global _global_worker
-    with _worker_lock:
-        if _global_worker is None or not _global_worker.worker_thread.is_alive():
-            print("Creating new global async worker...")
-            _global_worker = AsyncRolloutWorker(args, data_buffer,
-                                                concurrency=args.sglang_server_concurrency)
-            _global_worker.start()
-        return _global_worker
+class FullyAsyncRolloutFn:
+    async def __call__(self, input):
+        if input.evaluation:
+            raise ValueError(...)
+        if self._worker is None:
+            self._output = asyncio.Queue(maxsize=OUTPUT_QUEUE_MAX_GROUPS)
+            self._worker = asyncio.create_task(self._worker_loop())
+        return await self._drain(input.rollout_id)
 ```
 
 Key points:
 
-* **Singleton.** One worker per process — multiple `train.py` calls share it.
-* **Thread + asyncio loop.** Cheaper than a subprocess; SGLang HTTP calls are I/O-bound,
-  so an asyncio loop in a single thread saturates them.
-* **`atexit` hook.** Worker is torn down when the process exits — no orphaned
-  generation tasks.
+* **Instance state, no globals.** The worker, queue, and `GenerateState` live on the
+  rollout-fn instance that `RolloutManager` holds for the process lifetime.
+* **One event loop.** Worker, drain, and eval coroutines all run on the shared rollout
+  loop — plain `asyncio.Queue`, no threads, no locks, no `atexit`.
+* **Errors are loud.** A failed generation task kills the worker, and the next drain
+  raises instead of hanging.
 
-The worker itself keeps `--rollout-batch-size` tasks in flight using
+The worker keeps `--rollout-batch-size` groups in flight using
 `generate_and_rm_group`:
 
 ```python
-async def _producer(self):
-    while not self._stop:
-        if len(self._inflight) < self.target_inflight:
-            self._inflight.add(asyncio.create_task(self._launch_one()))
-        done, self._inflight = await asyncio.wait(
-            self._inflight, return_when=asyncio.FIRST_COMPLETED
-        )
+async def _worker_loop(self):
+    active = set()
+    while True:
+        while len(active) < self._max_in_flight_groups():
+            active.add(self._submit_one_group())
+        done, active = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
-            self._output_queue.put(task.result())
+            await self._output.put(task.result())
 ```
 
-And the trainer-side entry simply drains:
+And each training step simply drains, recycling aborted or stale groups back into the
+data source:
 
 ```python
-async def generate_rollout_fully_async(args, rollout_id, *, evaluation=False):
-    worker = get_global_worker(args, data_buffer)
-    samples = []
-    while len(samples) < args.global_batch_size:
-        samples.append(worker._output_queue.get(timeout=600))
-    return RolloutFnTrainOutput(samples=samples)
+async def _drain(self, rollout_id):
+    data = []
+    while len(data) < self.args.rollout_batch_size:
+        group = await self._next_group()
+        if any(s.status == Sample.Status.ABORTED for s in _iter_samples(group)):
+            self._recycle(group)
+            continue
+        data.append(group)
+    return RolloutFnTrainOutput(samples=data, metrics=...)
 ```
 
 ## What's happening underneath
@@ -122,7 +124,7 @@ async def generate_rollout_fully_async(args, rollout_id, *, evaluation=False):
 ```mermaid
 sequenceDiagram
     participant T as train_async.py
-    participant W as AsyncRolloutWorker
+    participant W as FullyAsyncRolloutFn worker
     participant S as SGLang engines
 
     par Background
@@ -172,13 +174,13 @@ check GPU utilization.
 
 ## Limitations
 
-* **No evaluation mode in this example.** Eval still runs through the synchronous path
-  in `train_async.py`. Adding async eval is straightforward — copy the worker pattern
-  and use `evaluation=True`.
+* **No evaluation mode.** `FullyAsyncRolloutFn` raises on eval; set
+  `--eval-function-path` to the standard
+  `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn`.
+* **Requires `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`.** Class-based rollout functions
+  only load on the new rollout API.
 * **Best-effort ordering.** Samples are sorted by index at drain time, but exact-order
   guarantees aren't provided.
-* **Minimal error handling.** If a generate task throws, it's logged but the worker
-  keeps going. Production users wire in [fault tolerance](/advanced/fault-tolerance).
 
 ## Variations
 

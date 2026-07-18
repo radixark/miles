@@ -140,7 +140,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async "
+        "--rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn "
         f"--prompt-data {args.prompt_data} "
         "--input-key messages "
         "--label-key label "
